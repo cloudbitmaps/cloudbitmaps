@@ -31,9 +31,6 @@ take a run's numbers from one derivation, and hold them to it with one matcher.
 |---|---|---|
 | [`2026-09-23-94416.md`](2026-09-23-94416.md) · [`2026-09-23-94416.json`](2026-09-23-94416.json) | 2026-09-23 (UTC), `us-east-1`, from a laptop outside the region | The single-bucket bill for a cold intersect and a load, pointer included, and chunk-skipping on real S3. Not latency or throughput: the client measured its own connection. |
 
-The July 2026 run predates this directory. Its harness and raw file were removed with the tier they metered, and
-[`docs/benchmarks.md`](../../docs/benchmarks.md#real-cloud-calibration--aws) keeps its figures as the record.
-
 ## Adding a run
 
 1. **Run it**, with `pnpm calibrate:aws --run` or, for latency that means anything, from AWS CloudShell with

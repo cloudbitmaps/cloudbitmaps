@@ -19,10 +19,8 @@ import { WriteConflictError } from '@/core/errors';
 import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
 import { CountingObjectStore, counting } from '../helpers/counting';
 
-// Guards on a script that spends real money against a real cloud account. Every case below is a bug that
-// actually happened in the harness this replaces — the one that ran the July 2026 calibration and was deleted
-// with the warm tier, taking its regression suite with it. Each is rebuilt from what went wrong, which its test
-// below records, because a guard nobody can plant a defect against is decoration.
+// Guards on a script that spends real money against a real cloud account. Each case below plants the defect its
+// guard prevents, because a guard nobody can plant a defect against is decoration.
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const require_ = createRequire(import.meta.url);
 

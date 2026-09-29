@@ -79,8 +79,7 @@ $81.60. Writing and publishing a segment is **$11.20 per million**, pointer incl
 lists and collects, is expected at about twice that — against an always-on Redis-HA line of **$346/month,
 standing**, and a modelled **$0.03/month** for 1.2 GiB of segments at rest.
 Request counts are read off the AWS SDK layer rather than estimated from sizes. `count()` on a published
-segment does **0 payload reads**; an older run, which kept the pointer in a NoSQL registry that no longer
-ships, measured it at **$0.14 per million** without the pointer.
+segment does **0 payload reads**.
 
 The trade is stated plainly rather than buried: a membership check that misses the cache costs a ranged GET
 against object storage, where an in-process RAM store costs a memory read. If you need a sub-millisecond p99 on a

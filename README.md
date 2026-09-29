@@ -205,30 +205,20 @@ data — the topology that ships: 12 loads and 40 cold intersects, all 40 exact.
 | Cold `intersect` of two 500,000-id segments sharing 100 of 1,999 chunks: 206 GETs at the median | **$82.40 / million** | measured requests at list prices | **$346 / month**, standing: one three-node cluster, a fixed reference |
 | The same inside the region, each pointer read once: 204 GETs | $81.60 / million | expected | whether you send traffic or not |
 | Loading a segment: the write and the publish, pointer included | **$11.20 / million** | measured requests at list prices | |
-| `count()` on a published segment (an older run; the pointer is **not** in this figure) | **$0.14 / million** | measured requests at list prices | |
 | 1.2 GiB of segments at rest, no traffic | **$0.03 / month** | modelled | |
 
 Each intersect requested 100 of the 1,999 chunks per segment — the ones the two share — and never requested the
 rest: chunk-skipping, on real S3. `store.load()`, which also lists the segment and collects old generations, is
-about twice the load figure. The `count()` figure comes from an older run, `2026-07-25-60291`, which kept the
-pointer in a NoSQL table the library no longer ships, so it is the object-store half of that shape. The
-[run's report](bench/calibration/2026-09-23-94416.md) explains every figure, and the
-[benchmarks page](docs/benchmarks.md) states exactly what each run did and did not measure.
+about twice the load figure. The [run's report](bench/calibration/2026-09-23-94416.md) explains every figure, and
+the [benchmarks page](docs/benchmarks.md) states exactly what the run did and did not measure.
 
 Request counts are read off the AWS SDK layer, command by command — not estimated from sizes, and not taken
-from the library's own metrics, which cannot see a PUT. The older run also measured the things a cost model can
-only assume: **zero retry billing** (HTTP
-attempts equalled commands), **zero LIST calls** on the read path (LIST bills at 12.5× a GET — a stray
-list-per-read is this design's classic cost blowup), and **23 S3 GETs serving 2,000 reads** as the bounded
-cache did its job.
-
-The older run also exercised an incremental-write path that **no longer exists** (see *Status* below), so its
-write-side line items and its grand total are not quoted here. The loaded store's in-region latency and load
-throughput are the next benchmark pass; the benchmarks page keeps the list of
+from the library's own metrics, which cannot see a PUT. The loaded store's in-region latency and load throughput
+are the next benchmark pass; the benchmarks page keeps the list of
 [what is still owed](docs/benchmarks.md#what-is-still-owed).
 
-**On latency, the honest version:** both runs were driven from outside the region — the newer one's client sat
-83 ms of internet from it, measured rather than inferred — so their timings are network transit. They calibrate
+**On latency, the honest version:** the run was driven from outside the region — its client sat 83 ms of
+internet from it, measured rather than inferred — so its timings are network transit. It calibrates
 **cost**, not in-region latency, and we don't publish an in-region latency figure until an in-region run happens.
 Full numbers, method, and an explicit list of what each run does *not* establish:
 **[benchmarks](docs/benchmarks.md#real-cloud-calibration--aws)**.
@@ -629,8 +619,8 @@ keeping a list beside it, a **snapshot handle** so a long export or reconciliati
 than whichever generations were current as it ran, and a curated public surface. The loaded store's own
 benchmarks of in-region latency and load throughput are **owed, not shipped**; the benchmarks page lists
 [what is still owed](docs/benchmarks.md#what-is-still-owed). What the [benchmarks page](docs/benchmarks.md) does
-quote from the cloud is cost: the single-bucket bill of the September 2026 calibration run, pointer included, and
-the S3-side figures of the July 2026 run — both driven from outside the region, so neither carries a latency. Its
+quote from the cloud is cost: the single-bucket bill of the September 2026 calibration run, pointer included,
+driven from outside the region, so it carries no latency. Its
 crossover chart is modelled, its at-scale table is a local-disk run, and its RSS ceiling comes from a local
 container under a hard memory limit — and it labels each as such. The
 public roadmap tracks all of it: [`docs/ROADMAP.md`](docs/ROADMAP.md).

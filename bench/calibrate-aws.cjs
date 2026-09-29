@@ -3,12 +3,9 @@
  * Real-cloud calibration for the LOADED STORE — load throughput, cold intersect latency, and what a
  * single-bucket topology actually costs.
  *
- * WHY THIS EXISTS AGAIN. A harness by this name ran the July 2026 calibration and was deleted with the warm
- * tier, because it metered a write path through a NoSQL registry that no longer ships. Everything it measured
- * is therefore the object-store half of a shape you cannot deploy: today the pointer lives in the same bucket
- * as the data, so resolving a generation costs an object GET and advancing it costs a conditional PUT — terms
- * billed to DynamoDB in that run and simply absent from the published figures. `docs/benchmarks.md` lists
- * those measurements as owed. This is the tool that pays them.
+ * WHY THIS EXISTS. The pointer lives in the same bucket as the data, so resolving a generation costs an object
+ * GET and advancing it costs a conditional PUT, and a published bill has to include both. `docs/benchmarks.md`
+ * publishes what a run measured and lists what is still owed. This is the tool that measures it.
  *
  * IT SPENDS REAL MONEY, so it is built to be hard to run by accident and impossible to run blind. The guards
  * live in `bench/lib/calibrate-guards.cjs` as pure functions with a regression test each, because every one of
@@ -24,8 +21,8 @@
  * WHAT A RUN CAN AND CANNOT CLAIM. A request costs the same from anywhere, and the timed stores never re-read
  * their pointers on a timer, so the request count does too (on the default 2 s pointer refresh, a slow client re-reads it); what a
  * client far from the region adds to the bill is transfer out, which this harness does not meter. LATENCY is
- * location-dependent: from outside the region it measures internet transit, which is why the July run's wall-clock was
- * withheld and why the first run of this harness — from a laptop — produced a p50 of 112 ms that describes the
+ * location-dependent: from outside the region it measures internet transit, which is why the first run of this
+ * harness — from a laptop — produced a p50 of 112 ms that describes the
  * network, not the library. So every run now measures its own distance to the region (the round-trip floor of a
  * trivial request) and records it, and the results say whether the latency figures are in-region or not. A
  * number that cannot be told apart from the network is not a latency number.

@@ -56,33 +56,11 @@ const PAST = {
  * The only lines that may match, each named by its file and a phrase of its own. Every entry must still match, so
  * the list shrinks rather than goes stale.
  *
- * The July 2026 calibration run measured a registry and a write path the library does not have, and these lines
- * say so beside its figures. Whether the figures stay is open; until it is decided, these are its exceptions.
  * Two backends refuse, by name, what a caller wiring them the way an earlier release did would pass: the
  * local-filesystem backend a `cold/` directory, and the GCS backend a `storage` option. Whether those refusals
  * stay is open too.
  */
 const EXCEPTIONS: ReadonlyArray<readonly [file: string, phrase: string]> = [
-  ['README.md', 'pointer in a NoSQL table the library no longer ships'],
-  ['docs/benchmarks.md', 'a retired one: the pointer lived in a NoSQL table'],
-  [
-    'docs/benchmarks.md',
-    'The registry in that run was a NoSQL table. **CloudBitmaps no longer ships one**',
-  ],
-  ['docs/benchmarks.md', "topology's NoSQL uses: the delta tier the library no longer has"],
-  ['docs/benchmarks.md', 'was billed to the NoSQL registry, whose line items are withheld'],
-  ['docs/benchmarks.md', 'Generation resolution ran against a NoSQL table'],
-  ['docs/ROADMAP.md', 'figures described the removed warm tier'],
-  ['docs/ROADMAP.md', 'other half metered the removed delta tier'],
-  ['packages/roaring/README.md', 'which kept the pointer in a NoSQL registry that no longer ships'],
-  ['site/benchmarks.html', 'was billed to a NoSQL registry that no longer ships'],
-  [
-    'site/benchmarks.html',
-    "The other half's line items metered a NoSQL delta tier the library no longer has",
-  ],
-  ['site/benchmarks.html', 'Its other half metered a NoSQL delta tier the library no longer has'],
-  ['site/benchmarks.html', 'Generation resolution ran against a NoSQL table in the July run'],
-  ['site/llms.txt', 'which kept the pointer in a NoSQL registry that no longer ships'],
   [
     'packages/core/src/drivers/backends.ts',
     'It refuses a store written before the tier was renamed',
@@ -135,10 +113,15 @@ export function pastTense(
  * places its phrase appears, so a new phrase on the same line is still reported; `used` collects the exceptions that
  * covered something.
  */
-function uncovered(file: string, text: string, used: Set<number>): string[] {
+function uncovered(
+  file: string,
+  text: string,
+  used: Set<number>,
+  exceptions: ReadonlyArray<readonly [string, string]> = EXCEPTIONS,
+): string[] {
   const { flat } = unwrap(text);
   const spans: Array<{ e: number; start: number; end: number }> = [];
-  EXCEPTIONS.forEach(([f, phrase], e) => {
+  exceptions.forEach(([f, phrase], e) => {
     if (f !== file) return;
     for (let i = flat.indexOf(phrase); i >= 0; i = flat.indexOf(phrase, i + 1)) {
       spans.push({ e, start: i, end: i + phrase.length });
@@ -168,13 +151,16 @@ describe('the library is described as it is', () => {
   });
 
   it('lets an exception cover its own phrase only, so a new one on the same line is reported', () => {
-    const file = 'README.md';
-    const text = readFileSync(join(ROOT, file), 'utf8');
-    const phrase = EXCEPTIONS.find(([f]) => f === file)?.[1] ?? '';
-    expect(text).toContain(phrase);
-    expect(uncovered(file, text, new Set())).toEqual([]);
-    const planted = text.replace(phrase, `${phrase}, formerly`);
-    expect(uncovered(file, planted, new Set())).toHaveLength(1);
+    const phrase = 'the delta tier this line names on purpose';
+    const exceptions = [['docs/x.md', phrase]] as const;
+    const text = `A line: ${phrase}.\n`;
+    const used = new Set<number>();
+    expect(uncovered('docs/x.md', text, used, exceptions)).toEqual([]);
+    expect([...used]).toEqual([0]);
+    expect(uncovered('docs/y.md', text, new Set(), exceptions)).toHaveLength(1);
+    expect(
+      uncovered('docs/x.md', text.replace(phrase, `${phrase}, formerly`), new Set(), exceptions),
+    ).toHaveLength(1);
   });
 
   it('reads the shipped source, the docs and the site', () => {

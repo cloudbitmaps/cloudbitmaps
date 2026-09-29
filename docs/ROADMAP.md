@@ -186,15 +186,13 @@ envelope**:
 | **Scale** | up to ~100K segments; tens of millions of IDs per segment | billions of IDs in one segment (wants the reserved 64-bit format + external-merge bulk load) |
 | **Backends** | S3 storage — the validated tier | the GCS and Azure Blob registries and storage: conformance-passing and correctness-clean, but not envelope-validated. The S3 registry has been through one publishable real-cloud run, for cost only: the September 2026 calibration run kept its pointer in the same bucket as the data |
 | **Tenancy / region** | single-tenant, single-region | multi-tenant isolation; multi-region active/active |
-| **Cost figures** | the **single-bucket bill of the September 2026 calibration run** (`us-east-1`, 2026-09-23: a cold intersect and a load, pointer included) and the **S3-side figures of the July 2026 run** — published prices applied to wire-metered requests — plus the estimator, all with published methodology | the invoice itself; **in-region latency**, which no run has measured — both calibration runs were driven from outside the region and calibrate cost only; what `store.load()` costs on S3; and every loaded-store figure listed as owed below |
+| **Cost figures** | the **single-bucket bill of the September 2026 calibration run** (`us-east-1`, 2026-09-23: a cold intersect and a load, pointer included) — published prices applied to wire-metered requests — plus the estimator, all with published methodology | the invoice itself; **in-region latency**, which no run has measured — the calibration run was driven from outside the region and calibrates cost only; what `store.load()` costs on S3; and every loaded-store figure listed as owed below |
 
 **Measured, not asserted — and measured on what.** The cloud figures on the [benchmarks page](benchmarks.md) are
-the cost of the requests the engine actually issued, from two runs. The September 2026 run measured the topology
-that ships, with the pointer in the same bucket as the data: what a cold intersect and a load cost, pointer
-included. The July 2026 run's S3-side figures are the object-store half of a retired topology; its write-side
-figures described the removed warm tier and are no longer quoted. **Neither carries a latency figure** — both were
-driven from a laptop outside the region, so their wall-clock numbers measured internet transit, and in-region
-latency is [owed](benchmarks.md#what-is-still-owed) rather than published. What is **not** yet measured is the
+the cost of the requests the engine actually issued, from the September 2026 run. It measured the topology that
+ships, with the pointer in the same bucket as the data: what a cold intersect and a load cost, pointer included.
+**It carries no latency figure** — it was driven from a laptop outside the region, so its wall-clock numbers
+measured internet transit, and in-region latency is [owed](benchmarks.md#what-is-still-owed) rather than published. What is **not** yet measured is the
 rest of the loaded store's own shape — load throughput, `intersect` and `*Into` latency — and those are owed
 before `1.0`; until they exist this page quotes no number for them. RSS under a soak is measured and published
 as a ceiling. Benchmark numbers come with their methodology — we never publish a
@@ -211,10 +209,8 @@ between here and there:
    median cold intersect of that shape, **$82.40 per million** (204 GETs, $81.60, expected inside the region);
    writing and publishing a segment **$11.20 per million**, pointer included. Its
    [report](../bench/calibration/2026-09-23-94416.md) explains every figure, and a gate holds each one to the
-   run's committed results file. The July 2026 run's object-store half stays published as that run's record
-   (**$0.14 per million** `count()`s without the pointer), and its total is deliberately not published — the
-   other half metered the removed delta tier. **No latency figure is published**, from either run: both were
-   driven from a laptop outside the region, so they calibrate cost only. What remains: an **in-region** run for
+   run's committed results file. **No latency figure is published**: the run was driven from a laptop outside the
+   region, so it calibrates cost only. What remains: an **in-region** run for
    latency and load throughput, which `bash bench/calibrate-cloudshell.sh` makes from AWS CloudShell; what
    `store.load()` costs on S3, since the run measured the write and the publish; and a
    **Lambda** run for the serverless figure with cold-start and init included, which needs a run from inside a
