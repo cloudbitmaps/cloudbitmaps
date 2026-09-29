@@ -1411,7 +1411,7 @@ export class CloudRoaring {
    * ```ts
    * // In your scheduled handler. Start with a preview in a new deployment.
    * const preview = await store.retireExpired({ namespace: 'active-daily', dryRun: true });
-   * console.log(`would retire ${preview.retired} of ${preview.scanned} (limited: ${preview.limited})`);
+   * console.log(`would retire ${preview.wouldRetire} of ${preview.scanned} (limited: ${preview.limited})`);
    *
    * const swept = await store.retireExpired({ namespace: 'active-daily' });
    * for (const e of swept.entries) {

@@ -219,8 +219,8 @@ describe('a backend is all the wiring a store needs', () => {
   });
 
   // The failure this prevents is not "it does not work" — it is that it fails wearing someone else's
-  // symptoms. A 0.9 store keeps its generations in `<root>/cold`; point `LocalFsStorage` at that root and the
-  // registry half resolves a pointer the storage half cannot satisfy, which reports
+  // symptoms. A root that keeps its generations in `<root>/cold`, pointed at by `LocalFsStorage`, gives the
+  // registry half a pointer the storage half cannot satisfy, which reports
   // `missing-storage-generation` — the torn-restore signature, whose runbook remedy is to roll `currentGen`
   // back. Destructive, on a store that was never damaged.
   it('refuses a root written before the tier was renamed, naming the directory to rename', async () => {

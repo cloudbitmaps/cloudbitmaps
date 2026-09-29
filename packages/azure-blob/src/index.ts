@@ -8,7 +8,9 @@
  * import { CloudRoaring } from '@cloudbitmaps/roaring';
  * import { AzureBlobStorage } from '@cloudbitmaps/azure-blob';
  *
- * const store = new CloudRoaring({ storage: new AzureBlobStorage({ bucket: 'bitmaps', prefix: 'cr' }) });
+ * const store = new CloudRoaring({
+ *   storage: new AzureBlobStorage({ connectionString, container: 'bitmaps', prefix: 'cr' }),
+ * });
  * ```
  *
  * These drivers move opaque payload bytes, so they are codec-agnostic: the same package serves every
