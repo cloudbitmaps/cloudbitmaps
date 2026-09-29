@@ -67,9 +67,8 @@ export async function drainRegistry(
  * the export/eject scan, and the all-namespaces GDPR paths.
  *
  * This is the ONE place a reserved family is declared, and a new one belongs here rather than at the call
- * sites. An earlier cut inlined the comparison per site and shipped with three missed — including
- * `subjectReport`, where the rows consumed an Art. 15 request's per-op budget. A filter you have to remember at
- * each site is a check that cannot fire.
+ * sites. A comparison inlined per site is easy to miss at one of them — at `subjectReport`, the rows would consume
+ * an Art. 15 request's per-op budget. A filter you have to remember at each site is a check that cannot fire.
  */
 export function isReservedRow(record: Pick<RegistryRecord, 'namespace'>): boolean {
   return isDueIndexRow(record);

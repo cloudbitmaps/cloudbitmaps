@@ -335,10 +335,9 @@ export async function eraseIdFromSegment(
     //
     // The bound is not `< from`. An object above the pointer can be reachable data: after a rollback, the
     // generations above the pointer include the one it rolled back from, and `rollbackSegment` with
-    // `allowForward` moves the pointer onto it again. With
-    // `< from`, a rollback and then an erasure would report `'not-member'` — filtered out of the subject ledger
-    // entirely, a clean Art. 17 receipt — while the subject's bit sat in a generation one rollback away from
-    // being served again, with no race at all.
+    // `allowForward` moves the pointer onto it again. With `< from`, a rollback and then an erasure would report
+    // `'not-member'` — filtered out of the subject ledger entirely, a clean Art. 17 receipt — while the subject's
+    // bit sat in a generation one rollback away from being served again, with no race at all.
     const superseded: number[] = [];
     for await (const key of deps.storage.list(ref)) {
       if (key.generation !== from) superseded.push(key.generation);

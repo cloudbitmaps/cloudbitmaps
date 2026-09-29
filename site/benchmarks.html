@@ -235,9 +235,9 @@
             </table>
           </div>
           <!-- The baseline's SPEC belongs in the assumptions footnote, because that is what it is: an
-               assumption, and without its spec the least examinable one on the page. $346 appears eight times
-               across the site, and without saying what it buys it would be unauditable — a reader cannot tell
-               whether the node is sized for this dataset or five times larger than it.
+               assumption, and without its spec the least examinable one on the page. $346 is quoted on most
+               pages of the site, and a figure that never says what it buys is unauditable — a reader cannot
+               tell whether the node is sized for this dataset or five times larger than it.
 
                The instance class and node count come from ONE_REDIS_HA_CLUSTER's own comment in
                core/cost.ts. Its MEMORY is deliberately not stated: that figure would be quoted from memory
@@ -256,7 +256,7 @@
       </section>
 
       <!-- ── PAST THE CROSSOVER ──────────────────────────────────────────────
-           This section exists because the page was publishing a threshold and calling it a verdict.
+           This section exists because a threshold is not a verdict.
 
            Five inputs produce the 329.15 figure, and the table below says which way each one was set rather
            than implying all five are pessimal. Two are (cache off; on-demand GET rates). Three are set in OUR
@@ -582,9 +582,8 @@
       </section>
 
       <!-- ── MEMORY AT FLEET SCALE ───────────────────────────────────────────
-           Invariant 6 is "bounded memory & cost, always", and until this section existed the site asserted it
-           without ever printing a memory number. This is the measurement that makes it a claim rather than a
-           promise: the fleet grows a HUNDREDFOLD and the retained heap does not move.
+           Invariant 6 is "bounded memory & cost, always", and without a memory number the site would only assert
+           it. This is the measurement that makes it a claim rather than a promise: the fleet grows a HUNDREDFOLD and the retained heap does not move.
 
            Read the two memory columns together or not at all. Retained heap is the bound — it is a function of
            the reader-cache cap, not of the fleet. Process RSS is NOT the bound and grows, because the harness

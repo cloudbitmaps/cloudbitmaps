@@ -562,7 +562,7 @@ res; // { generation, published, reason?, cardinality, cardinalityBefore, chunkC
 > still fine, because somebody created it deliberately; it is only a name nobody ever created that is refused.
 > Pass `allowAbsentOperands: true` if you mean to combine against a name that may not exist yet.
 
-Three properties, all consequences of "a write is a load":
+Four properties, all consequences of "a write is a load":
 
 - **The destination is superseded, not added to.** `campaign-targets` now holds exactly this result; whatever it
   held before is the previous generation. Re-running a window into the same target each day is therefore correct

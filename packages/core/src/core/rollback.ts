@@ -3,8 +3,8 @@
  *
  * Immutable generations mean the previous version of a segment is usually still sitting in the bucket: a load
  * that replaced it did not overwrite anything, it wrote a new object and moved a pointer. So recovering from a
- * bad load is, in principle, moving the pointer back — which no write path can do, because every write path in
- * the library is deliberately **forward-only** and refuses a regression.
+ * bad load is, in principle, moving the pointer back, which no load, publish or sweep can do, because every other
+ * write path in the library is deliberately **forward-only** and refuses a regression.
  *
  * That refusal is right for a *writer*: a load whose ids came from upstream loses nothing by being out-raced, and
  * letting it regress the pointer would let a slow loader silently undo a fast one. It is wrong for an *operator*,
@@ -147,7 +147,7 @@ export async function rollbackSegment(
     currentGen: toGeneration,
   });
 
-  // THE check, and it has to be here rather than above. The target is by construction at or below the old
+  // THE check, and it has to be here rather than above. Every target but an `allowForward` one is below the old
   // pointer, which is precisely generation collection's range — and a collector never writes the row, so the
   // token fence above cannot see it coming. A listing taken before the swap therefore proves nothing: the object
   // can be collected between that listing and this swap, leaving the pointer naming a missing object.

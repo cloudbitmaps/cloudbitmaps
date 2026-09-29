@@ -123,9 +123,8 @@ A pushed `v*.*.*` tag (or a manual dispatch) starts one gated job that, in order
 
 **The ordering is the design, not an accident.** Everything above the publish is recoverable; the publish is
 not — an npm tarball is immutable outside a 72-hour unpublish window. So every check that can still be *fixed*
-runs before the one step that cannot be undone. (The inverse mistake has already been made here once: the
-GitHub Release object was briefly created before the publish it describes had succeeded, and a run produced a
-release for a version that never reached npm.
+runs before the one step that cannot be undone. (Creating the GitHub Release before its publish succeeds would
+announce a version that never reached npm;
 [`tests/ci/release-workflow.test.ts`](tests/ci/release-workflow.test.ts) asserts this ordering.)
 
 The workflow also declares `concurrency: cancel-in-progress: false` — the opposite of CI. Cancelling a build is

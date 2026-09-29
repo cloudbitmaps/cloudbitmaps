@@ -29,10 +29,10 @@
  * baseline, with the worst event-loop gap down from 568 ms to 13.8 ms.
  *
  * **Three experiments, three sets of numbers — do not mix them.** (a) The end-to-end 1M-id bulk load:
- * 442 ms wall / 450 ms blocked before, 256 ms / 19 ms after. (b) This synthetic yield-primitive comparison:
+ * 442 ms wall / 450 ms blocked unyielded, 256 ms / 19 ms yielded. (b) This synthetic yield-primitive comparison:
  * 568 ms / 568 ms unyielded, 569 ms / 13.8 ms with `setImmediate`. (c) A per-chunk insert microbenchmark:
- * 92 ms sync versus 636 ms via the threadpool. Quoting a baseline from one against a result from another turns a
- * 92 ms operation into one with 819 ms of starvation inside it.
+ * 92 ms sync versus 636 ms via the threadpool. Quoting a baseline from one against a result from another describes
+ * work none of them did, such as a 92 ms operation with 450 ms of starvation inside it.
  */
 /**
  * The only part of a `Clock` that yielding actually needs.

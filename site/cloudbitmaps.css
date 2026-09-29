@@ -2543,9 +2543,9 @@ section > .lede {
 
 /* ── retry policy, its own axis ───────────────────────────────────────────────
    These three answer "would trying again help?", which is NOT the shipping-status axis above. They get their
-   own modifiers even though two of them resolve to colours already in use, because the alternative is what
-   already went wrong once on this site: is-spec was doing double duty for two unrelated meanings, so restyling
-   it for one silently restyled the other page. A shared hook between unrelated axes is a latent bug, not reuse.
+   own modifiers even though two of them resolve to colours already in use: one hook doing double duty for two
+   unrelated meanings means restyling it for one silently restyles the other page. A shared hook between
+   unrelated axes is a latent bug, not reuse.
 
    is-never is deliberately NEUTRAL rather than cache. "Never retried" is the correct and intended behaviour for a
    corruption or a shredded key — colouring it like a warning would tell the reader something is wrong when the

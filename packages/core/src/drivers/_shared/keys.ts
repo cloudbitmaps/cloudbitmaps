@@ -1,9 +1,8 @@
 /**
  * Shared key-grammar fragments used by every driver's logical-ref → physical-key mapping.
  *
- * Extracted once the registry drivers became the third consumer of the same `_default` namespace sentinel
- * (it lived copy-pasted in `s3/keys` and `localfs/paths`). Pure string logic, no SDK, no I/O —
- * lives in the SDK-free `_shared` bundle so any driver may import it.
+ * One copy of the `_default` namespace sentinel for every driver that maps a namespace to a key or a path. Pure
+ * string logic, no SDK, no I/O — it lives in the SDK-free `_shared` bundle so any driver may import it.
  */
 
 /**

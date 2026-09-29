@@ -97,11 +97,11 @@ CloudBitmaps is published through a hardened pipeline so that a consumer can ver
 produced the package they installed**. The controls:
 
 - **Build provenance (SLSA).** The [release workflow](.github/workflows/release.yml) publishes with
-  `--provenance` and `NPM_CONFIG_PROVENANCE=true`, set at the call site rather than in the manifests. (It was
-  briefly also `publishConfig.provenance: true`, which is strictly worse: a manifest flag cannot be overridden
-  by the CLI *or* the environment, so it silently made every non-CI publish — the bootstrap and the break-glass
-  path both — abort with `EUSAGE: … not supported for provider: null`. Opting in where provenance is actually
-  achievable keeps the guarantee and drops the trap.) npm records a **signed,
+  `--provenance` and `NPM_CONFIG_PROVENANCE=true`, set at the call site rather than in the manifests. (A
+  manifest's `publishConfig.provenance: true` would be strictly worse: it cannot be overridden by the CLI *or*
+  the environment, so every non-CI publish — the bootstrap and the break-glass path both — would abort with
+  `EUSAGE: … not supported for provider: null`. Opting in where provenance is actually achievable keeps the
+  guarantee without the trap.) npm records a **signed,
   publicly-verifiable attestation** linking the tarball to the exact GitHub Actions workflow, repository, and
   commit that built it, minted via GitHub **OIDC** (the job runs on a GitHub-hosted runner with
   `id-token: write` and no other write scope). Verify an installed copy with **`npm audit signatures`**, or

@@ -136,8 +136,8 @@
               that changes: <strong>1.2 GiB</strong> at rest is <strong>$0.03</strong> a month,
               against <strong>$346</strong> for a three-node Redis cluster standing by.
             </p>
-            <!-- "How do I get it" was answered five sections down, in the closing install panel. For a library
-                 that is the first question, so the command moves up here as one line. It stays ONE line on
+            <!-- "How do I get it" is a library's first question, so the command is here as one line as well as
+                 in the closing install panel. It stays ONE line on
                  purpose: the rest of the story (the other two storage packages, and that each brings its own
                  SDK) belongs with the closing panel, and repeating it here would make the hero a second
                  install section rather than a pointer to one. The command must stay COMPLETE though — the
@@ -658,11 +658,10 @@
            rather than a design intention. The format row keeps its place unchanged: portability is the one
            property a reader cannot go back and verify later.
 
-           The layout changed too, and not by choice. As two independent lists the columns lined up only where
-           a pair happened to wrap to the same number of lines — row 4 was already 24px out, and rewording made
-           it three rows instead of one. Text tuned to make a layout look aligned comes apart at the next width,
-           font size or zoom level, so the pairing is structural now: one grid, one row per pair. Measured 0px
-           drift on all four pairs at 1024-1600px. -->
+           As two independent lists the columns would line up only where a pair happened to wrap to the same
+           number of lines. Text tuned to make a layout look aligned comes apart at the next width, font size or
+           zoom level, so the pairing is structural: one grid, one row per pair. Measured 0px drift on all four
+           pairs at 1024-1600px. -->
       <section>
         <h2>The hard part is the protocol, not the compression.</h2>
         <p class="lede">
@@ -672,9 +671,9 @@
           actually deletes.
         </p>
         <!-- One grid, not two lists. The section's whole claim is that each left row is the problem its right
-             row solves, and two independent <ul>s could only ever align by coincidence, and rewording would push
-             rows out of line. A pair that shares a
-             grid row aligns because of how it is built, at any width and any font size.
+             row solves. Two independent <ul>s could only ever align by coincidence, and any rewording pushes rows
+             out of line; a pair that shares a grid row aligns because of how it is built, at any width and any
+             font size.
 
              <dl> rather than divs: these ARE term/description pairs, so a screen reader announces the pairing
              instead of eight unrelated blocks. The column labels sit outside the list because they label the

@@ -125,7 +125,8 @@ export async function gcOrphanGenerations(
    *    by token;
    *  - the **ordinary** branch deletes strictly below `cutoff`, so it needs only that the live pointer has not
    *    fallen below `cutoff`. A forward publish moves it up and changes nothing, which is what keeps routine
-   *    collection working on a busy segment; only a purge-and-recreate can move it down.
+   *    collection working on a busy segment. A purge-and-recreate or a `rollbackSegment` can move it down, which
+   *    is why the pointer is re-proved before every delete (below).
    */
   const stillCollectable = async (): Promise<void> => {
     const still = await deps.registry.get(ref);
