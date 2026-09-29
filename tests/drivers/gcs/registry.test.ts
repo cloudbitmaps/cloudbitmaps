@@ -105,7 +105,7 @@ function soleObject(storage: FakeGcs): { key: string; object: FakeObject } {
   return { key, object: storage.objects.get(key) as FakeObject };
 }
 
-const driverOver = (storage: FakeGcs, prefix = 'cloudroaring'): GcsRegistryDriver =>
+const driverOver = (storage: FakeGcs, prefix = 'cloudbitmaps'): GcsRegistryDriver =>
   new GcsRegistryDriver({
     storage: storage as unknown as Storage,
     bucket: 'b',

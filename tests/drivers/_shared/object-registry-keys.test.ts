@@ -28,7 +28,7 @@ describe('normalizeObjectPrefix — containment', () => {
   });
 
   it('accepts ordinary prefixes, including ones that merely contain a percent', () => {
-    for (const prefix of ['cr', 'cloudroaring/v1', 'a/b/c', 'tenant-acme', '100%', 'a.b']) {
+    for (const prefix of ['cr', 'cloudbitmaps/v1', 'a/b/c', 'tenant-acme', '100%', 'a.b']) {
       expect(() => normalizeObjectPrefix(prefix), JSON.stringify(prefix)).not.toThrow();
     }
     expect(normalizeObjectPrefix(undefined)).toBeUndefined();

@@ -43,7 +43,7 @@ export interface S3RegistryDriverOptions {
   readonly client: S3Client;
   /** Target bucket (must already exist). */
   readonly bucket: string;
-  /** Optional key prefix under which all registry objects live (e.g. `cloudroaring/`). */
+  /** Optional key prefix under which all registry objects live (e.g. `cloudbitmaps/`). */
   readonly prefix?: string;
   /** Injected clock for `createdAt`/`updatedAt`; defaults to `Date.now`. */
   readonly now?: () => number;

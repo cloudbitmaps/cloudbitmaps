@@ -72,7 +72,7 @@ export interface S3StorageDriverOptions {
   readonly client: S3Client;
   /** Target bucket (must already exist). */
   readonly bucket: string;
-  /** Optional key prefix under which all objects live (e.g. `cloudroaring/`). */
+  /** Optional key prefix under which all objects live (e.g. `cloudbitmaps/`). */
   readonly prefix?: string;
   /**
    * Largest object this driver will write/advertise. Default = `partBytes × 10,000` (≈ 80 GiB at the default

@@ -152,11 +152,9 @@ export interface IStorageDriver {
 
 /**
  * Lifecycle status of a segment. `active` is the steady state; `destroyed` is the post-crypto-shred tombstone
- * (the row is kept for audit but the segment is logically gone). `compacting`/`erasing` are **reserved** —
- * stored and round-tripped so a row written by an earlier build still reads, but no writer in this build sets
- * them.
+ * (the row is kept for audit but the segment is logically gone).
  */
-export type RegistryStatus = 'active' | 'compacting' | 'erasing' | 'destroyed';
+export type RegistryStatus = 'active' | 'destroyed';
 
 /**
  * Free-form, JSON-serializable governance metadata — a **plain object** (both registry boundaries reject `null`,

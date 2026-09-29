@@ -25,13 +25,6 @@ export interface GcsStorageOptions {
   readonly prefix?: string;
   /** A constructed `@google-cloud/storage` client. One is built from the ambient credentials when absent. */
   readonly client?: GcsClient;
-  /**
-   * Not an option — the old `GcsStorageDriver` took the client as `storage`, and a migrating caller keeps the
-   * name. Typed `never` so the object literal is a compile error, and rejected at runtime for JavaScript
-   * callers, because silently ignoring it falls back to ambient credentials and the **public** endpoint: for
-   * anyone whose client pointed at an emulator, that is production traffic from a wiring typo.
-   */
-  readonly storage?: never;
   /** Project id for the client built when `client` is absent. Falls back to the SDK's own resolution. */
   readonly projectId?: string;
   /** Endpoint override — point it at fake-gcs-server locally. Ignored when `client` is supplied. */
@@ -39,6 +32,20 @@ export interface GcsStorageOptions {
   /** Injected clock for the registry's `createdAt`/`updatedAt`; defaults to `Date.now`. */
   readonly now?: () => number;
 }
+
+/**
+ * The keys `new GcsStorage(options)` takes. Any other is refused by name rather than ignored: an ignored client key
+ * — `storage`, as `GcsStorageDriver` calls it — falls back to ambient credentials and the **public** endpoint, and
+ * for a client pointed at an emulator that is production traffic from a wiring typo.
+ */
+export const GCS_STORAGE_OPTION_KEYS = [
+  'bucket',
+  'prefix',
+  'client',
+  'projectId',
+  'apiEndpoint',
+  'now',
+] as const;
 
 export class GcsStorage implements StorageBackend {
   /** Cross-bundle brand, stamped non-enumerably in the constructor so a spread cannot carry it. */
@@ -49,10 +56,14 @@ export class GcsStorage implements StorageBackend {
   readonly client: GcsClient;
 
   constructor(options: GcsStorageOptions) {
-    if ((options as { storage?: unknown }).storage !== undefined) {
+    const unknown = Object.keys(options).filter(
+      (k) => !(GCS_STORAGE_OPTION_KEYS as readonly string[]).includes(k),
+    );
+    if (unknown.length > 0) {
+      const list = (keys: readonly string[]): string => keys.map((k) => `\`${k}\``).join(', ');
       throw new ValidationError(
-        'GcsStorage takes the @google-cloud/storage client as `client`, not `storage` (which was the old ' +
-          'GcsStorageDriver option). Rename it, or omit it and let the backend build one.',
+        `GcsStorage does not take ${list(unknown)}. It takes ${list(GCS_STORAGE_OPTION_KEYS)}; a ` +
+          '@google-cloud/storage client goes in `client`.',
       );
     }
     this.client =

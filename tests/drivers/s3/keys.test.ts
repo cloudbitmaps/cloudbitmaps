@@ -20,8 +20,8 @@ describe('S3 object-key grammar', () => {
     });
 
     it('applies a caller prefix, trimming stray slashes', () => {
-      expect(storageObjectKey('cloudroaring', { segment: 's', generation: 1 })).toBe(
-        'cloudroaring/_default/segments/s.1.crbm',
+      expect(storageObjectKey('cloudbitmaps', { segment: 's', generation: 1 })).toBe(
+        'cloudbitmaps/_default/segments/s.1.crbm',
       );
       expect(storageObjectKey('/a/b/', { segment: 's', generation: 1 })).toBe(
         'a/b/_default/segments/s.1.crbm',

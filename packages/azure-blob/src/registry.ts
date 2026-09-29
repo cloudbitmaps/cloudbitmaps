@@ -37,7 +37,7 @@ import { isConditionalConflict, isNotFound, isTransient } from './azure-errors';
 export interface AzureBlobRegistryDriverOptions {
   /** A constructed `@azure/storage-blob` `ContainerClient`, scoped to an existing container. */
   readonly containerClient: ContainerClient;
-  /** Optional blob-name prefix under which all registry objects live (e.g. `cloudroaring/`). */
+  /** Optional blob-name prefix under which all registry objects live (e.g. `cloudbitmaps/`). */
   readonly prefix?: string;
   /** Injected clock for `createdAt`/`updatedAt`; defaults to `Date.now`. */
   readonly now?: () => number;

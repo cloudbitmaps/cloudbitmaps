@@ -4,7 +4,6 @@ import {
   CloudRoaring,
   CountingMetricsSink,
   MemoryStorage,
-  MemoryStorageDriver,
   MemoryRegistryDriver,
   bulkLoadCrbmGeneration,
 } from '@/index';
@@ -184,46 +183,44 @@ describe('grouped options reach the thing they configure', () => {
 });
 
 /**
- * Every moved option is a knob whose absence is SILENT and wrong — a dropped `requireEncryption` reads
- * cleartext, a dropped `clock` makes a deterministic job non-deterministic. TypeScript catches these at the
- * call site; this catches the plain-JS caller, the JSON config and the `as` cast, which are exactly the
- * callers who would otherwise get the default and never know.
+ * A key the store does not take is refused, not ignored: a group's key written at the top level is a knob whose
+ * absence is SILENT and wrong — a dropped `required` reads cleartext, a dropped `clock` makes a deterministic job
+ * non-deterministic. TypeScript catches these at the call site; this catches the plain-JS caller, the JSON config
+ * and the `as` cast, which are exactly the callers who would otherwise get the default and never know.
  */
-describe('an option that moved into a group is refused, not ignored', () => {
+describe('a key the store does not take is refused, not ignored', () => {
   const backend = (): MemoryStorage => new MemoryStorage();
   const build = (extra: Record<string, unknown>): CloudRoaring =>
     new CloudRoaring({ storage: backend(), ...extra } as unknown as { storage: MemoryStorage });
 
   it.each([
-    ['cacheMaxChunks', 512, 'cache.maxChunks'],
-    ['cacheTtlMs', 1000, 'cache.ttlMs'],
-    ['storageGenTtlMs', 0, 'cache.genTtlMs'],
-    ['storageReaderCacheMax', 8, 'cache.readerMax'],
-    ['storageReaderCacheMaxBytes', 1024, 'cache.readerMaxBytes'],
-    ['keystore', {}, 'encryption.keystore'],
-    ['requireEncryption', true, 'encryption.required'],
-    ['onRetry', () => {}, 'retry.onRetry'],
-    ['rng', { next: () => 0.5 }, 'seams.rng'],
-    ['registry', new MemoryRegistryDriver(), 'backend'],
-    ['cold', new MemoryStorageDriver(), '`cold` → `storage`'],
-  ])('rejects `%s` and names where it went', (key, value, expected) => {
+    ['maxChunks', 512],
+    ['genTtlMs', 0],
+    ['keystore', {}],
+    ['required', true],
+    ['onRetry', () => {}],
+    ['clock', { now: (): number => 0, sleep: async (): Promise<void> => {} }],
+    ['rng', { next: () => 0.5 }],
+    ['registry', new MemoryRegistryDriver()],
+  ])('refuses `%s` at the top level, naming it and what the store takes', (key, value) => {
     expect(() => build({ [key]: value })).toThrow(ValidationError);
-    expect(() => build({ [key]: value })).toThrow(new RegExp(expected.replace('.', '\\.')));
+    expect(() => build({ [key]: value })).toThrow(`\`${key}\``);
+    expect(() => build({ [key]: value })).toThrow(/The store takes `storage`, `cache`/);
   });
 
   it('names every offender at once, not just the first', () => {
-    // Order follows the declaration list, not the caller's object, so assert presence rather than sequence.
     const both = (): CloudRoaring =>
-      build({ clock: { now: () => 0, sleep: async () => {} }, cacheTtlMs: 5 });
-    expect(both).toThrow(/cacheTtlMs/);
-    expect(both).toThrow(/clock/);
+      build({ clock: { now: (): number => 0, sleep: async (): Promise<void> => {} }, ttlMs: 5 });
+    expect(both).toThrow(/`clock`/);
+    expect(both).toThrow(/`ttlMs`/);
   });
 
-  // `storageGenTtlMs: 0` is falsy and `requireEncryption: false` is too — a presence check written as a
-  // truthiness check would wave both through, and `genTtlMs: 0` is precisely the value tests rely on.
+  // `genTtlMs: 0` and `required: false` are falsy — a presence check written as a truthiness check would wave
+  // both through, and `genTtlMs: 0` is precisely the value tests rely on.
   it('catches a falsy value, which a truthiness check would miss', () => {
-    expect(() => build({ storageGenTtlMs: 0 })).toThrow(ValidationError);
-    expect(() => build({ requireEncryption: false })).toThrow(ValidationError);
+    expect(() => build({ genTtlMs: 0 })).toThrow(ValidationError);
+    expect(() => build({ required: false })).toThrow(ValidationError);
+    expect(() => build({ cache: { maxChunk: 0 } })).toThrow(/`cache\.maxChunk`/);
   });
 
   it('leaves the grouped form alone', () => {

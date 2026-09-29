@@ -40,6 +40,21 @@ already kept.
   that lists a segment's chunks: `iterate`, every combine, and a `count` with no index to sum. A combine used to drop
   the duplicate. The sources the library ships never list a key twice.
 
+These make the library refuse what it used to ignore or accept, so that a wrong input fails where it is written:
+
+- **`new CloudRoaring(options)` refuses every key it does not take**, at the top level and inside `cache`,
+  `encryption`, `retry`, `budget` and `seams`, with a `ValidationError` naming each one and the keys the store or
+  the group takes. It refused a fixed list of spellings before, and ignored any other key.
+- **`new GcsStorage(options)` refuses every key it does not take** the same way, where it refused only `storage`.
+- **`RegistryStatus` is `'active' | 'destroyed'`.** A stored registry row with another status, a field
+  `RegistryRecord` does not declare, or no `schemaVersion` is refused on read with `IntegrityError`. Every row this
+  library's writers produce passes; one written by hand, or by a caller that set a third status, does not.
+- **`LocalFsStorage` does not look for a `cold/` directory.** A root holding `cold/` and no `storage/` opens as an
+  empty store rather than being refused.
+- **The error brands are `Symbol.for('cloudbitmaps.error')` and `Symbol.for('cloudbitmaps.error.transient')`.** The
+  error predicates recognise an error from another copy of core only when that copy carries the same brand, so two
+  copies in one process must both be at this release or later for each to recognise the other's errors.
+
 ### Added
 
 - **An id-range read: `iterate({ after, through })`, and the same two options on `intersect`, `union`, `andNot` and

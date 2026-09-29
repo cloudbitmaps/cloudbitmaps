@@ -2,7 +2,7 @@
 # from the directory, so a second worktree gets its own project — `down -v` there wipes nothing, while
 # the first project's containers keep the ports and their data. The tests then read a dirty store and
 # fail with `generation already exists (write-once)`, which reads exactly like a real regression.
-name: cloud-roaring
+name: cloudbitmaps
 
 # Local integration backends — no real AWS needed.
 # Usage: `docker compose up -d` then `pnpm test:integration`.
@@ -32,7 +32,7 @@ services:
     # re-run the integration suite; do not switch to `:latest` itself. CI would not go red first: it keeps a copy,
     # asks for the digest once a month, and warns on the run that asks if the registry refuses it.
     image: cgr.dev/chainguard/minio@sha256:bd014394a80898e68c149f2311fdf8d5a2c2f3bb2c33b9327ae6d02b4b065ae1
-    container_name: cloud-roaring-minio
+    container_name: cloudbitmaps-minio
     ports:
       - '9000:9000'
       - '9001:9001'
@@ -68,7 +68,7 @@ services:
   # upload path the driver uses for small objects — the write-once assertion depends on it. Bump deliberately.
   fake-gcs:
     image: fsouza/fake-gcs-server:1.52.2
-    container_name: cloud-roaring-fake-gcs
+    container_name: cloudbitmaps-fake-gcs
     ports:
       - '4443:4443'
     command:
@@ -98,7 +98,7 @@ services:
 
   azurite:
     image: mcr.microsoft.com/azure-storage/azurite:3.35.0
-    container_name: cloud-roaring-azurite
+    container_name: cloudbitmaps-azurite
     ports:
       - '10000:10000'
     command:

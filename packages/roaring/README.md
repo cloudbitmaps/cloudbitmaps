@@ -176,8 +176,8 @@ generations collected sooner than the sweep does it). Pass a **backend** — `S3
 `AzureBlobStorage` from the storage package you installed, or `LocalFsStorage` / `MemoryStorage` from this one —
 and you get all of it: generations resolved with one strong read, encrypted segments, and the lifecycle helpers.
 `storage` also accepts a bare driver or a pre-built chunk source for read-only wiring, which carries no registry
-and so offers none of those. There is no separate `registry` option: the backend carries the registry, and a
-`registry` key is refused by name.
+and so offers none of those. There is no separate `registry` option: the backend carries the registry, and the
+store refuses any key it does not take, by name.
 
 Full README, guides, [benchmarks](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/benchmarks.md) (with
 the method and what the numbers do *not* establish), and the design corpus live in the

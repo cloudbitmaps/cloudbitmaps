@@ -101,7 +101,7 @@ function soleBlob(container: FakeContainer): { key: string; blob: FakeBlob } {
   return { key, blob: container.blobs.get(key) as FakeBlob };
 }
 
-const driverOver = (container: FakeContainer, prefix = 'cloudroaring'): AzureBlobRegistryDriver =>
+const driverOver = (container: FakeContainer, prefix = 'cloudbitmaps'): AzureBlobRegistryDriver =>
   new AzureBlobRegistryDriver({
     containerClient: container as unknown as ContainerClient,
     prefix,

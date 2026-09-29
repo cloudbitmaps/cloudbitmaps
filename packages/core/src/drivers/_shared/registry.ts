@@ -14,9 +14,27 @@ import type {
   Token,
 } from '@/core/ports';
 
-/** The valid {@link RegistryStatus} values — used to validate both caller input and stored bytes. `compacting` and
- * `erasing` are reserved (no writer in this build sets them) but stay valid so an older row still reads. */
-const STATUSES: readonly string[] = ['active', 'compacting', 'erasing', 'destroyed'];
+/** The valid {@link RegistryStatus} values — used to validate both caller input and stored bytes. */
+const STATUSES: readonly string[] = ['active', 'destroyed'];
+/**
+ * The fields a stored record may carry: {@link RegistryRecord}'s, and nothing else. A field no reader resolves
+ * through is refused on read-back like any other corruption (invariant 5), rather than ignored.
+ */
+export const RECORD_FIELDS: readonly string[] = [
+  'namespace',
+  'segment',
+  'currentGen',
+  'wrappedDeks',
+  'keyId',
+  'status',
+  'retention',
+  'residency',
+  'createdAt',
+  'updatedAt',
+  'token',
+];
+/** The fields of the persisted envelope around a record. */
+const ENVELOPE_FIELDS: readonly string[] = ['schemaVersion', 'deleted', 'record'];
 /** Cap on a serialized governance blob (retention/residency) — bounds row size so a row can't be bricked. */
 const MAX_GOVERNANCE_BYTES = 64 * 1024;
 /** Bounds on the wrapped-DEK list (one DEK wrapped under a few KEKs) — keeps the row small + rejects abuse. */
@@ -74,7 +92,7 @@ function validateGovernance(meta: unknown, field: string): void {
   // size + serializability checks below happily store `"retention": null` — and `retention.expiresAt` is read with
   // an `in` test, which throws an untyped `TypeError` on a non-object and would abort a whole fleet retention
   // sweep rather than becoming one ledger entry. Reject at the write boundary; the read boundary
-  // ({@link assertStoredRecordShape}) rejects it too, for rows written before this check or edited by hand.
+  // ({@link assertStoredRecordShape}) rejects it too, for a row edited by hand or written by another writer.
   if (meta === null || typeof meta !== 'object' || Array.isArray(meta)) {
     throw new ValidationError(
       `${field} must be a plain object (got ${meta === null ? 'null' : typeof meta})`,
@@ -156,17 +174,19 @@ export interface RegistryEnvelope {
  * registry driver — every one of which persists the `{ deleted, record }` envelope — stamps its rows
  * with this so a reader can fail-closed on a future, incompatible layout instead of misparsing it. Bump only
  * on a backward-incompatible change. Policy: a **higher** stamp than this build knows → `UnsupportedError`
- * (fail-closed); an **absent** stamp → legacy pre-freeze row, tolerated as v1.
+ * (fail-closed); an **absent** or malformed stamp → `IntegrityError`, since every row this build writes has one.
  */
 export const REGISTRY_SCHEMA_VERSION = 1;
 
 /**
- * Validate a persisted registry row's `schemaVersion` (untrusted bytes, invariant 5): absent → legacy v1
- * (tolerated); a malformed value → `IntegrityError`; a version newer than this build → `UnsupportedError`
- * (fail-closed rather than misread a format we don't understand).
+ * Validate a persisted registry row's `schemaVersion` (untrusted bytes, invariant 5): an absent or malformed value
+ * → `IntegrityError`; a version newer than this build → `UnsupportedError` (fail-closed rather than misread a
+ * format we don't understand).
  */
 export function assertRegistrySchemaVersion(raw: unknown, ctx: string): void {
-  if (raw === undefined) return; // pre-stamp rows are v1
+  if (raw === undefined) {
+    throw new IntegrityError(`registry row has no schemaVersion: ${ctx}`);
+  }
   if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 1) {
     throw new IntegrityError(`registry row has a malformed schemaVersion (${String(raw)}): ${ctx}`);
   }
@@ -221,6 +241,12 @@ export function parseRegistryEnvelope(text: string, ctx: string): RegistryEnvelo
   }
   const env = parsed as { schemaVersion?: unknown; deleted?: unknown; record?: unknown };
   assertRegistrySchemaVersion(env.schemaVersion, ctx);
+  const extra = Object.keys(env).filter((k) => !ENVELOPE_FIELDS.includes(k));
+  if (extra.length > 0) {
+    throw new IntegrityError(
+      `registry row has fields its envelope does not declare (${extra.join(', ')}): ${ctx}`,
+    );
+  }
   if (typeof env.deleted !== 'boolean' || env.record === null || typeof env.record !== 'object') {
     throw new IntegrityError(`registry row has a malformed envelope: ${ctx}`);
   }
@@ -279,9 +305,12 @@ export function assertStoredRecordShape(r: Record<string, unknown>, ctx: string)
   if (!STATUSES.includes(r.status)) {
     throw new IntegrityError(`registry record has an unknown status (${r.status}): ${ctx}`);
   }
-  // Rows written by earlier builds may carry the retired compaction bookkeeping (`dirtyChunkCount`, the lease
-  // fields, `lastCompactedAt`, `consecutiveFailures`). They are ignored on read and dropped on the next write —
-  // `applyRegistryPatch` rebuilds the record from the fields this build knows.
+  const extra = Object.keys(r).filter((k) => !RECORD_FIELDS.includes(k));
+  if (extra.length > 0) {
+    throw new IntegrityError(
+      `registry record has fields it does not declare (${extra.join(', ')}): ${ctx}`,
+    );
+  }
   if (r.keyId !== undefined && typeof r.keyId !== 'string') {
     throw new IntegrityError(`registry record has an invalid keyId: ${ctx}`);
   }
@@ -304,7 +333,6 @@ export function assertStoredRecordShape(r: Record<string, unknown>, ctx: string)
  * Apply a patch to an existing record, returning a new one with a fresh `updatedAt` + `token` (identity and
  * `createdAt` are preserved). Optional fields use `'k' in patch` so a patch can *clear* them (set to
  * `undefined`, e.g. dropping `keyId` on crypto-shred); required fields use `??` (they always have a value).
- * Fields this build does not know (an older row's compaction bookkeeping) are not carried over.
  */
 export function applyRegistryPatch(
   prev: RegistryRecord,

@@ -2,47 +2,23 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { MOVED_OPTIONS } from '@/moved-options';
+import { unknownStoreKeys } from '../helpers/option-literals';
 
 /**
- * The executable harnesses — `scripts/`, `bench/` — must not construct a store with an option key it refuses.
+ * The executable harnesses — `scripts/`, `bench/` — pass `new CloudRoaring({ … })` only the option keys it takes, at
+ * the top level and in each group, since the store refuses any other.
  *
- * WHY THIS EXISTS. Three of these shipped broken in a row, each found by something other than a gate:
+ * WHY THIS EXISTS. These files are plain JS, so `tsc` never sees their option bags; they are not Markdown, so the
+ * doc-fence gate does not read them; and most of them do not run in the ordinary unit suite. A harness passing a
+ * key the store refuses fails only when it runs: for `scripts/lambda-smoke.mjs` that is a container build in CI, and
+ * for `bench/scale.cjs` it is the command `docs/benchmarks.md` tells a reader to run to check the at-scale table.
  *
- *   - `scripts/smoke.cjs` passed a top-level `registry`, which the store does not take. Found only when the
- *     constructor guard turned a silent ignore into a throw.
- *   - `bench/soak.cjs` (x2) and `bench/scale.cjs`, same key. Found by an adversarial review, after the sweep
- *     that fixed `scripts/` stopped short of `bench/`. `docs/benchmarks.md` cites `pnpm bench:scale` as the
- *     provenance of the published at-scale table, so the command a reader is told to run to check our numbers
- *     no longer started.
- *   - `scripts/lambda-smoke.mjs`, same key again. Found by CI, on a job that builds a container — the slowest
- *     and most expensive place to learn it.
- *
- * These files are the one corner nothing covers. They are plain JS, so `tsc` never sees their option bags;
- * they are not Markdown, so the doc-fence gate does not read them; and only one of the three runs in the
- * ordinary unit suite. Every one of them kept *passing* while the option did nothing, because a store with a
- * single generation resolves by list-scan to the same answer a registry would have given — the failure was
- * invisible right up until the guard made it loud.
- *
- * WHY IT MATCHES `new <anything>.CloudRoaring`. All three write `new m.CloudRoaring({…})` against a namespace
- * import. A pattern anchored on `new CloudRoaring(` — the obvious one, and the one the doc-fence gate uses
- * because samples always destructure — matches none of them. That is most of why hand searches kept missing
- * these: the grep looked right and returned nothing.
+ * WHY IT MATCHES `new <anything>.CloudRoaring`. The harnesses write `new m.CloudRoaring({…})` against a namespace
+ * import, and a pattern anchored on `new CloudRoaring(`, the one the doc-fence gate uses because samples always
+ * destructure, matches none of them.
  */
 
 const ROOT = join(__dirname, '..', '..');
-
-/**
- * Option keys the store refuses at the top level of its config, and what to write instead.
- *
- * DERIVED, not retyped. The store's own `MOVED_OPTIONS` is the thing that decides at runtime, so it is the
- * thing to read: a hand-maintained copy here would drift from it, and a harness passing a key the copy missed
- * would sail through.
- */
-const REFUSED: ReadonlyArray<readonly [string, string]> = MOVED_OPTIONS.map(([from, to, kind]) => [
-  from,
-  kind === 'gone' ? 'not an option' : `use ${/^[\w.]+$/.test(to) ? `\`${to}\`` : to}`,
-]);
 
 const files = execFileSync('git', ['ls-files', 'scripts/*', 'bench/*'], {
   cwd: ROOT,
@@ -51,54 +27,26 @@ const files = execFileSync('git', ['ls-files', 'scripts/*', 'bench/*'], {
   .split('\n')
   .filter((f) => /\.(c|m)?js$/.test(f));
 
-/** The argument of each `new [ns.]CloudRoaring({ … })`, with everything nested blanked out. */
-function topLevelOptionBodies(src: string): { body: string; line: number }[] {
-  const out: { body: string; line: number }[] = [];
-  for (const m of src.matchAll(/new\s+(?:[A-Za-z_$][\w$]*\s*\.\s*)?CloudRoaring\(\s*\{/g)) {
-    const open = src.indexOf('{', m.index ?? 0);
-    let depth = 0;
-    let end = open;
-    for (; end < src.length; end++) {
-      const ch = src[end];
-      if (ch === '{' || ch === '(' || ch === '[') depth++;
-      else if (ch === '}' || ch === ')' || ch === ']') {
-        depth--;
-        if (depth === 0) break;
-      }
-    }
-    // Blank nested groups so a legitimate nested object — a `cache: { … }` group, or a `{ storage, registry }`
-    // literal handed to `createBackend` — is not read as a top-level key.
-    let flat = '';
-    let d = 0;
-    for (const ch of src.slice(open + 1, end)) {
-      const opening = ch === '{' || ch === '(' || ch === '[';
-      const closing = ch === '}' || ch === ')' || ch === ']';
-      if (closing) d--;
-      flat += d === 0 && !opening && !closing ? ch : ' ';
-      if (opening) d++;
-    }
-    out.push({ body: flat.replace(/\/\/.*$/gm, ''), line: src.slice(0, open).split('\n').length });
-  }
-  return out;
-}
-
 describe('the executable harnesses build a store the way the docs say', () => {
+  it('reads a store built through a namespace import, as the harnesses build it', () => {
+    const src = 'const store = new m.CloudRoaring({ storage, registry, cache: { maxChunk: 1 } });';
+    expect(unknownStoreKeys(src, { namespaced: true }).map((k) => k.key)).toEqual([
+      'registry',
+      'cache.maxChunk',
+    ]);
+    expect(unknownStoreKeys(src)).toEqual([]);
+  });
+
   it('finds the harnesses at all (a zero-file sweep is a green light that proves nothing)', () => {
     expect(files.length).toBeGreaterThan(2);
   });
 
   it.each(files)('%s', (file) => {
     const src = readFileSync(join(ROOT, file), 'utf8');
-    const offenders: string[] = [];
-    for (const { body, line } of topLevelOptionBodies(src)) {
-      for (const [key, hint] of REFUSED) {
-        if (new RegExp(`(^|[{,\\s])${key}\\s*([:,}]|$)`, 'm').test(body)) {
-          offenders.push(
-            `${file}:${line} — passes \`${key}\` to CloudRoaring, which refuses it: ${hint}`,
-          );
-        }
-      }
-    }
+    const offenders = unknownStoreKeys(src, { namespaced: true }).map(
+      ({ line, key }) =>
+        `${file}:${line} — passes \`${key}\` to CloudRoaring, which does not take it`,
+    );
     expect(offenders).toEqual([]);
   });
 });

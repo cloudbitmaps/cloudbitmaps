@@ -7,7 +7,7 @@
     "paths": {
       "@/index": ["./packages/roaring/src/index.ts"],
       "@/roaring-codec": ["./packages/roaring/src/roaring-codec.ts"],
-      "@/moved-options": ["./packages/roaring/src/moved-options.ts"],
+      "@/option-keys": ["./packages/roaring/src/option-keys.ts"],
       "@/system-clock": ["./packages/roaring/src/system-clock.ts"],
       "@/testing/*": ["./packages/roaring/src/testing/*"],
       "@/portable/*": ["./packages/roaring/src/portable/*"],

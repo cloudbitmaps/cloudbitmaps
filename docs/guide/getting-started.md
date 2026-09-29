@@ -333,7 +333,7 @@ import { S3Storage } from '@cloudbitmaps/s3';
 
 // Bucket and prefix stated ONCE, for both halves. It builds its own client from the ambient credential
 // chain; pass `client` for one the SDK cannot infer, or `endpoint` + `pathStyle` + `credentials` for MinIO/R2.
-const backend = new S3Storage({ bucket: 'my-bitmaps', prefix: 'cloudroaring', region: 'us-east-1' });
+const backend = new S3Storage({ bucket: 'my-bitmaps', prefix: 'cloudbitmaps', region: 'us-east-1' });
 
 const store = new CloudRoaring({ storage: backend });
 
@@ -450,7 +450,7 @@ import { CloudRoaring } from '@cloudbitmaps/roaring';
 import { GcsStorage } from '@cloudbitmaps/gcs';
 
 // Builds its own client from ADC; pass `apiEndpoint` to point at fake-gcs-server locally, or `client` for your own.
-const backend = new GcsStorage({ bucket: 'my-bitmaps', prefix: 'cloudroaring' });
+const backend = new GcsStorage({ bucket: 'my-bitmaps', prefix: 'cloudbitmaps' });
 const store = new CloudRoaring({ storage: backend }); // one bucket is the whole deployment
 ```
 
@@ -471,7 +471,7 @@ import { AzureBlobStorage } from '@cloudbitmaps/azure-blob';
 const backend = new AzureBlobStorage({
   connectionString: process.env.AZURE_CONN,
   container: 'bitmaps',
-  prefix: 'cloudroaring',
+  prefix: 'cloudbitmaps',
 });
 const store = new CloudRoaring({ storage: backend }); // one container is the whole deployment
 ```
@@ -767,7 +767,7 @@ const keystore = new InProcessKeystore({
   // recoveryKeyId: 'offline-escrow',         // optional: also wrap under an offline recovery KEK
 });
 
-const backend = new LocalFsStorage('./.cloudroaring');
+const backend = new LocalFsStorage('./.cloudbitmaps');
 // The keystore is wired once, on the store, and applies to both the load and the read.
 const store = new CloudRoaring({ storage: backend, encryption: { keystore } });
 
@@ -1534,7 +1534,7 @@ atomically) — so a directory with a `manifest.json` means the run **finished**
 re-run). It exits non-zero if any segment couldn't be read (see _fault isolation_ below):
 
 ```bash
-CR_EXPORT_ROOT=./.cloudroaring CR_EXPORT_OUT=./dump pnpm exec export-segments
+CR_EXPORT_ROOT=./.cloudbitmaps CR_EXPORT_OUT=./dump pnpm exec export-segments
 # → dump/manifest.json + dump/<namespace|_default>/<segment>.roaring   (CR_EXPORT_FORMAT=ndjson for .ndjson)
 # CR_EXPORT_NAMESPACE=eu             scope the dump to one namespace
 # CR_EXPORT_ROOT holds the local-filesystem store: <root>/storage and <root>/registry

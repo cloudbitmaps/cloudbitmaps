@@ -56,18 +56,9 @@ const PAST = {
  * The only lines that may match, each named by its file and a phrase of its own. Every entry must still match, so
  * the list shrinks rather than goes stale.
  *
- * Two backends refuse, by name, what a caller wiring them the way an earlier release did would pass: the
- * local-filesystem backend a `cold/` directory, and the GCS backend a `storage` option. Whether those refusals
- * stay is open too.
+ * None is needed today; an exception is for a line that must name the past, and says why beside it.
  */
-const EXCEPTIONS: ReadonlyArray<readonly [file: string, phrase: string]> = [
-  [
-    'packages/core/src/drivers/backends.ts',
-    'It refuses a store written before the tier was renamed',
-  ],
-  ['packages/core/src/drivers/backends.ts', 'this store was written before the tier was renamed'],
-  ['packages/gcs/src/backend.ts', 'not `storage` (which was the old GcsStorageDriver option)'],
-];
+const EXCEPTIONS: ReadonlyArray<readonly [file: string, phrase: string]> = [];
 
 const BINARY = /\.(?:png|jpe?g|gif|webp|ico|woff2?|ttf|otf|pdf|gz|tgz|zip|crbm|wasm|node)$/i;
 const READ = [

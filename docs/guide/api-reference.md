@@ -276,11 +276,12 @@ wrote) · `BulkLoadResult` (`{ size, sha256, chunkCount, cardinality, becameCurr
 | `budget?` | `BudgetOption` | `{ maxRequests }` or `false` |
 | `seams?` | `SeamOptions` | `clock?` · `rng?` — determinism, for tests and replayable jobs |
 
-**An option spelling the store does not take, and a caller may still pass, is refused rather than ignored**, and
-the error says what to write instead: that it is set in a group (`keystore` is `encryption.keystore`), spelled
-differently (`cold` is `storage`), or not an option at all. Each is a knob whose absence would be silent — a dropped
-`requireEncryption` reads cleartext, a dropped `clock` makes a deterministic job non-deterministic — so being
-ignored would be worse than being rejected.
+**A key the store does not take is refused rather than ignored**, at the top level and inside each group, and the
+error names each one and lists the keys the store or the group does take. A group's key written at the top level
+(`keystore` for `encryption.keystore`) and a typo inside a group (`cache.maxChunk`) are both knobs whose absence
+would be silent — a dropped `encryption.required` reads cleartext, a dropped `seams.clock` makes a deterministic
+job non-deterministic — so being ignored would be worse than being rejected. `GcsStorage` refuses a key it does not
+take the same way, `storage` among them: its client goes in `client`.
 
 ### Generation bookkeeping & erasure
 
@@ -510,8 +511,7 @@ therefore:
 ### Low-level ports & capabilities (driver-author typing)
 
 `StorageCaps` · `RegCaps` · `ChunkRef` · `GenKey` · `RegistryRecord` · `NewRegistryRecord` · `RegistryPatch` ·
-`RegistryStatus` (`'active' | 'compacting' | 'erasing' | 'destroyed'` — the middle two are reserved and set by no
-writer in this build) · `GovernanceMeta` · `SegmentSize`
+`RegistryStatus` (`'active' | 'destroyed'`) · `GovernanceMeta` · `SegmentSize`
 
 ### Driver option types (one per driver package)
 

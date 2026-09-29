@@ -63,7 +63,7 @@ export interface AzureBlobStorageDriverOptions {
   /** A constructed `@azure/storage-blob` `ContainerClient`, scoped to an existing container (point it at
    * Azurite's connection string for local/integration use). */
   readonly containerClient: ContainerClient;
-  /** Optional blob-name prefix under which all objects live (e.g. `cloudroaring/`). */
+  /** Optional blob-name prefix under which all objects live (e.g. `cloudbitmaps/`). */
   readonly prefix?: string;
   /**
    * Largest blob this driver will write/advertise. Default = `blockBytes × 50,000` (≈ 400 GiB at the default

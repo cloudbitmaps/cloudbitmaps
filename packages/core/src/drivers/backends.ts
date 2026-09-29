@@ -8,9 +8,7 @@
  *
  * Each one exists to state a location **once**. See {@link StorageBackend} for why that is worth a class.
  */
-import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { ValidationError } from '@/core/errors';
 import { brandAsBackend, STORAGE_BACKEND } from '@/core/ports';
 import type { StorageBackend } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from './memory';
@@ -53,13 +51,6 @@ export interface LocalFsStorageOptions {
  * The layout is stated here rather than by the caller, which is the point — two paths a caller wrote out
  * separately could name different roots, and nothing would stop them. It is also the layout
  * the `export-segments` CLI expects, so a store built this way can be ejected without being told where to look.
- *
- * **It refuses a store written before the tier was renamed**, because the alternative is much worse than an
- * error. Such a store keeps its generations in `<root>/cold`, where this class does not look, so the registry
- * half resolves a pointer the storage half cannot satisfy — and the store reports
- * `missing-storage-generation`, which is the signature of a **torn restore**. The runbook's remedies for that
- * include rolling `currentGen` back, which is destructive and would be applied to a store that was never
- * damaged. One `existsSync` at wiring time is a cheap price for not sending someone down that path.
  */
 export class LocalFsStorage implements StorageBackend {
   /** Cross-bundle brand, stamped non-enumerably in the constructor so a spread cannot carry it. */
@@ -71,14 +62,6 @@ export class LocalFsStorage implements StorageBackend {
     readonly root: string,
     options: LocalFsStorageOptions = {},
   ) {
-    if (!existsSync(join(root, 'storage')) && existsSync(join(root, 'cold'))) {
-      throw new ValidationError(
-        `${root} holds a "cold/" directory but no "storage/" — this store was written before the tier was ` +
-          `renamed. Rename it (\`mv ${root}/cold ${root}/storage\`) and re-run; the objects inside are ` +
-          `unchanged. Do NOT treat the "missing-storage-generation" you would otherwise see as a torn ` +
-          `restore — the data is intact, it is the path that moved.`,
-      );
-    }
     this.storage = new LocalFsStorageDriver(join(root, 'storage'));
     this.registry = new LocalFsRegistryDriver(
       join(root, 'registry'),

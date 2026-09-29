@@ -745,7 +745,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
       range(key, offset, length).catch((err: Error) => {
         throw Object.assign(new Error(err.message), {
           name: 'ValidationError',
-          [Symbol.for('cloud-roaring.error')]: true,
+          [Symbol.for('cloudbitmaps.error')]: true,
         });
       });
     await expect(snap.has(11 * C + 1)).rejects.toThrow(/no longer the object this handle pinned/);
@@ -1178,8 +1178,8 @@ describe('what a pin says when its object changes under it, and what pinning cos
         faults -= 1;
         const err = Object.assign(new Error(`${name} from another copy`), {
           name,
-          [Symbol.for('cloud-roaring.error')]: true,
-          ...(transient ? { [Symbol.for('cloud-roaring.error.transient')]: true } : {}),
+          [Symbol.for('cloudbitmaps.error')]: true,
+          ...(transient ? { [Symbol.for('cloudbitmaps.error.transient')]: true } : {}),
         });
         return Promise.reject(err);
       };
@@ -1268,7 +1268,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
       Promise.reject(
         Object.assign(new Error('checksum mismatch'), {
           name: 'IntegrityError',
-          [Symbol.for('cloud-roaring.error')]: true,
+          [Symbol.for('cloudbitmaps.error')]: true,
         }),
       );
     await expect(snap.has(C + 1)).rejects.toThrow(/no longer the object this handle pinned/);
@@ -1908,9 +1908,9 @@ describe('what a pin found out about its object, and how it forgets', () => {
       const foreign = Object.assign(Object.create(Error.prototype) as Error, {
         name,
         message: `foreign ${name}`,
-        [Symbol.for('cloud-roaring.error')]: true,
+        [Symbol.for('cloudbitmaps.error')]: true,
         ...(name === 'TransientError'
-          ? { [Symbol.for('cloud-roaring.error.transient')]: true }
+          ? { [Symbol.for('cloudbitmaps.error.transient')]: true }
           : {}),
       });
       let tails = 0;

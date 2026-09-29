@@ -144,8 +144,8 @@ docker_image_cache_file() { printf '%s/%s.tar' "$DOCKER_IMAGE_CACHE" "$(docker_i
 # The local name a cached image is saved and loaded under. A loaded image answers only to the names it was saved
 # under, and a digest it was pulled by is not one, so an image named by digest is found after a load only by this
 # name. Its registry is under `.invalid`, which never resolves, so a pull of it fails rather than fetch whatever
-# Docker Hub might one day hold under a name like `cloud-roaring-ci/cache`.
-docker_image_local_name() { printf 'cloud-roaring-ci.invalid/cache:%s' "$(docker_image_cache_id "$1")"; }
+# Docker Hub might one day hold under a name like `cloudbitmaps-ci/cache`.
+docker_image_local_name() { printf 'cloudbitmaps-ci.invalid/cache:%s' "$(docker_image_cache_id "$1")"; }
 
 # The name to run an image by once docker_pull_with_backoff has made it local: its local name when that exists, and
 # the image otherwise. `docker run <digest>` on a copy loaded from the cache would pull it again, with no backoff.

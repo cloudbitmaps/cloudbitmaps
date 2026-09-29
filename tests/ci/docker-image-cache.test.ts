@@ -222,7 +222,7 @@ const TAG = 'fsouza/fake-gcs-server:1.52.2';
 const DIGEST = 'cgr.dev/chainguard/minio@sha256:abc';
 /** The part of a cache name that is the image, computed here rather than by the helper under test. */
 const idOf = (image: string) => createHash('sha256').update(image).digest('hex').slice(0, 16);
-const localName = (image: string) => `cloud-roaring-ci.invalid/cache:${idOf(image)}`;
+const localName = (image: string) => `cloudbitmaps-ci.invalid/cache:${idOf(image)}`;
 const tarOf = (w: World, image: string) => join(w.cache, `${idOf(image)}.tar`);
 const pull = (image: string) => `. ${HELPER} && docker_pull_with_backoff '${image}'`;
 const PRUNE = `. ${HELPER} && docker_image_cache_prune`;
@@ -361,7 +361,7 @@ describe('an image CI runs is kept in the Actions cache, and a registry is asked
 
   it('pulls again when the copy loads under a name other than its local one', () => {
     mkdirSync(w.cache, { recursive: true });
-    writeFileSync(tarOf(w, DIGEST), 'cloud-roaring-ci.invalid/cache:ffffffffffffffff');
+    writeFileSync(tarOf(w, DIGEST), 'cloudbitmaps-ci.invalid/cache:ffffffffffffffff');
     const r = w.run(pull(DIGEST), THIS_MONTH());
     expect(r.code, r.out).toBe(0);
     expect(w.pulls()).toEqual([`pull -q ${DIGEST}`]);

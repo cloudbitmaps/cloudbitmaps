@@ -52,21 +52,21 @@ describe('LocalFsRegistryDriver corruption + edge handling', () => {
     ).rejects.toBeInstanceOf(IntegrityError);
   });
 
-  it('reads a legacy row (no schemaVersion) but rejects a future-stamped one (format freeze)', async () => {
+  it('reads a stamped row, and refuses an unstamped or future-stamped one (format freeze)', async () => {
     const d = new LocalFsRegistryDriver(root);
     const record = {
       segment: 's',
       currentGen: 2,
-      dirtyChunkCount: 0,
       status: 'active',
-      consecutiveFailures: 0,
       createdAt: 1,
       updatedAt: 1,
       token: '0',
     };
-    // pre-freeze row (no stamp) must stay readable across the upgrade → tolerated as v1
-    await writeRaw('s.reg', JSON.stringify({ deleted: false, record }));
+    await writeRaw('s.reg', JSON.stringify({ schemaVersion: 1, deleted: false, record }));
     expect((await d.get({ segment: 's' }))!.currentGen).toBe(2);
+    // a row with no stamp is not one this build wrote
+    await writeRaw('s.reg', JSON.stringify({ deleted: false, record }));
+    await expect(d.get({ segment: 's' })).rejects.toBeInstanceOf(IntegrityError);
     // a row from a newer, incompatible writer must fail closed rather than be misparsed
     await writeRaw('s.reg', JSON.stringify({ schemaVersion: 999, deleted: false, record }));
     await expect(d.get({ segment: 's' })).rejects.toBeInstanceOf(UnsupportedError);

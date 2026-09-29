@@ -105,7 +105,7 @@ import type { SegmentInfo } from '@cloudbitmaps/core';
 import { loadSegment } from './codec-bound';
 import { roaringCodec } from './roaring-codec';
 import { SystemClock } from './system-clock';
-import { MOVED_OPTIONS, type MovedOptionKind } from './moved-options';
+import { OPTION_KEYS, type OptionGroup } from './option-keys';
 
 /** Default randomness for backoff jitter — lives outside `core/`, so `Math.random()` is allowed here. */
 class SystemRng implements Rng {
@@ -640,12 +640,12 @@ export class CloudRoaring {
   private readonly budget: Budget | null;
 
   /**
-   * Refuse an option spelling the store does not take, naming what to write instead.
+   * Refuse any option key the store does not take, at the top level or inside a group, naming each one.
    *
-   * Silently ignoring one is the failure this guards against — see {@link MOVED_OPTIONS} for why each of these is
-   * unsafe to drop rather than merely untidy.
+   * An option the store ignored would do nothing and look as if it had — a typo'd `cache.maxChunk`, a key from
+   * another library's config spread into this one — so every key is checked against {@link OPTION_KEYS}.
    */
-  private static rejectMovedOptions(options: CloudRoaringOptions): void {
+  private static rejectUnknownOptions(options: CloudRoaringOptions): void {
     // A nullish or non-object bag never reaches `resolveStorageSource` — the constructor reads
     // `options.seams?.clock` first and would throw a raw TypeError. Report it here, typed, instead.
     if (options === null || options === undefined || typeof options !== 'object') {
@@ -655,37 +655,36 @@ export class CloudRoaring {
       );
     }
     const bag = options as unknown as Record<string, unknown>;
-    const moved = MOVED_OPTIONS.filter(([from]) => bag[from] !== undefined);
-    if (moved.length === 0) return;
-    // One clause per kind, so a reader is never sent to a group that will not have their key. The intra-
-    // clause separator is ` · ` rather than a comma: the guidance prose contains commas and semicolons of its
-    // own, and a comma-joined list reads as one continued sentence.
-    const clause = (kind: MovedOptionKind, one: string, many: string): string | null => {
-      const hits = moved.filter(([, , k]) => k === kind);
-      if (hits.length === 0) return null;
-      const body = hits
-        .map(([from, to]) =>
-          kind === 'gone'
-            ? `\`${from}\` (${to})`
-            : `\`${from}\` → ${/^[\w.]+$/.test(to) ? `\`${to}\`` : to}`,
-        )
-        .join(' · ');
-      return `${hits.length > 1 ? many : one}: ${body}`;
-    };
-    const parts = [
-      clause('group', 'set in a group', 'set in groups'),
-      clause('renamed', 'spelled differently', 'spelled differently'),
-      clause('gone', 'not an option', 'not options'),
-    ].filter((c): c is string => c !== null);
+    const unknown: string[] = Object.keys(bag).filter(
+      (k) => !(OPTION_KEYS.top as readonly string[]).includes(k),
+    );
+    const groups = Object.keys(OPTION_KEYS).filter((g): g is OptionGroup => g !== 'top');
+    for (const group of groups) {
+      const value = bag[group];
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) continue;
+      const known = OPTION_KEYS[group] as readonly string[];
+      for (const k of Object.keys(value)) if (!known.includes(k)) unknown.push(`${group}.${k}`);
+    }
+    if (unknown.length === 0) return;
+    const takes = (keys: readonly string[]): string => keys.map((k) => `\`${k}\``).join(', ');
+    const named = [
+      ...new Set(unknown.map((k) => (k.includes('.') ? k.slice(0, k.indexOf('.')) : 'top'))),
+    ];
     throw new ValidationError(
-      `CloudRoaring options ${parts.join('; ')}. ` +
-        'The store takes one required `storage` and four optional groups — `cache`, `encryption`, `retry` ' +
-        'and `seams` — beside the flat `metrics` and `budget`: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/api-reference.md#build-a-store--new-cloudroaringoptions',
+      `CloudRoaring does not take ${takes(unknown)}. ` +
+        named
+          .map((g) =>
+            g === 'top'
+              ? `The store takes ${takes(OPTION_KEYS.top)}.`
+              : `\`${g}\` takes ${takes(OPTION_KEYS[g as OptionGroup])}.`,
+          )
+          .join(' ') +
+        ' https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/api-reference.md#build-a-store--new-cloudroaringoptions',
     );
   }
 
   constructor(options: CloudRoaringOptions) {
-    CloudRoaring.rejectMovedOptions(options);
+    CloudRoaring.rejectUnknownOptions(options);
     const clock = options.seams?.clock ?? new SystemClock();
     const rng = options.seams?.rng ?? new SystemRng();
     // Wrap the user sink so a throwing/buggy sink can never break I/O (observability is best-effort).

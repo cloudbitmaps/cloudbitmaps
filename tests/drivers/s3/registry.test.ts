@@ -93,7 +93,7 @@ const ticking = (): (() => number) => {
 // ABA-safe token across delete→recreate, which its tombstone-object + monotonic counter provide.
 registryConformance('S3RegistryDriver (fake S3)', () => {
   const client = new FakeS3() as unknown as S3Client;
-  return new S3RegistryDriver({ client, bucket: 'b', prefix: 'cloudroaring', now: ticking() });
+  return new S3RegistryDriver({ client, bucket: 'b', prefix: 'cloudbitmaps', now: ticking() });
 });
 
 describe('S3RegistryDriver — construction + S3 specifics', () => {

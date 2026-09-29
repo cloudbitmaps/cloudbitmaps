@@ -24,7 +24,6 @@
     "segmentation",
     "audience",
     "cloud",
-    "cloud-roaring",
     "cloudbitmaps"
   ],
   "license": "Apache-2.0",
