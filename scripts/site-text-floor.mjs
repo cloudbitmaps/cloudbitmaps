@@ -19,9 +19,11 @@
  * mark out; each generated region must show every run it renders; no list item may draw a marker;
  * and the figures Chrome built into the page, text, attributes and generated content, must be the ones the figures
  * gate read, so a construct the two parse apart fails wherever it stands. Those checks read styles, and a way to paint
- * over text that none of them reads would get past them, so in each colour scheme, once everything has played, every
- * run must also change the pixels where it is drawn when its letters alone are made clear: two screenshots of each
- * view, read with Node's `zlib`, compared inside each run's box.
+ * over text that none of them reads would get past them, so in every one of those states the pixels are compared too:
+ * each view is captured as drawn and with the runs' letters alone made clear, read with Node's `zlib`, and every letter
+ * must change the pixels inside its box, and every run reach 3:1 somewhere against the ground painted behind it. Every
+ * check loads one window height, so the layout must be the same at two more; and nothing in the page's sheets may be
+ * important, as Chrome reads them, since that could out-rank the sheet the comparison adds.
  * A region is also announced by name, and its names drifted twice as well, a run of panels sharing one and a panel
  * taking a file name from the one above it: each region needs a name of its own on the page, and one inside a panel
  * is named for that panel's head.
@@ -32,6 +34,7 @@
  * Usage:  node scripts/site-text-floor.mjs [site|site-next]    (TEXT_FLOOR_PORT=9445 for a second run at once)
  */
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -48,7 +51,7 @@ const FLOOR = 9.5;
 /** What the display-tier homepage's footer says; a page that says it is also held to showing what it states. */
 const homeFigures = createRequire(import.meta.url)('./lib/home-figures.cjs');
 /** Reads the screenshots the pixel comparison takes, with Node's `zlib`. */
-const { decodePng, changedPixels } = createRequire(import.meta.url)('./lib/png-pixels.cjs');
+const { decodePng, bestContrast } = createRequire(import.meta.url)('./lib/png-pixels.cjs');
 const { CLAIM, plain } = homeFigures;
 /** The pages the visibility probe ran on, which the report names so a run that probed none says so. */
 const probed = new Set();
@@ -157,7 +160,9 @@ const MEASURE = `(() => {
     if (el instanceof SVGElement) {
       const m = el.getScreenCTM();
       if (!m) continue;
-      px *= Math.hypot(m.a, m.b);
+      // The scale the letters shrink most along, as for HTML below: a diagram squashed to a tenth of its height draws
+      // its labels a tenth as tall however wide they stay.
+      px *= Math.min(Math.hypot(m.a, m.b), Math.hypot(m.c, m.d));
     } else {
       // A transform on the element or above it draws its text at its scale, on the axis it shrinks most, and a
       // turn is no scale at all; a zoom scales it too.
@@ -192,7 +197,7 @@ const MEASURE = `(() => {
  * under them. A \`display: contents\` element is read through the box its parent draws. And no list item may draw a marker, a number the page's checks do not read.
  */
 const unseen = ({ hit }) => `(() => {
-  const out = { unseen: [], blank: [], markers: [] };
+  const out = { unseen: [], blank: [], markers: [], garbled: [] };
   const W = document.documentElement.scrollWidth;
   const H = document.documentElement.scrollHeight;
   // Any colour a sheet can write, oklch(), color-mix() and system colours included, read as the pixel it paints.
@@ -209,9 +214,11 @@ const unseen = ({ hit }) => `(() => {
     const [R, G, B] = [r, g, b].map((v) => (v /= 255) <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
     return 0.2126 * R + 0.7152 * G + 0.0722 * B;
   };
-  const probe = document.createElement('style');
-  probe.textContent = '*, *::before, *::after { pointer-events: auto !important; }';
-  if (${hit}) document.head.append(probe);
+  // Added as a sheet the page cannot see: a \`<style>\` element is one a selector can test for, and a rule that
+  // uncovered text only while the pass looked would pass it.
+  const probe = new CSSStyleSheet();
+  probe.replaceSync('*, *::before, *::after { pointer-events: auto !important; }');
+  if (${hit}) document.adoptedStyleSheets = [...document.adoptedStyleSheets, probe];
   const first = (range) => [...range.getClientRects()].find((q) => q.width > 0 && q.height > 0);
   /** Every ancestor that scrolls or cuts off what runs past it: a run is seen only inside all of them. */
   const frames = (el) => {
@@ -322,6 +329,27 @@ const unseen = ({ hit }) => `(() => {
     const box = range.getBoundingClientRect();
     const cs = getComputedStyle(el);
     const svg = el instanceof SVGElement;
+    // Letters drawn where a reader can see them but not read them as letters: laid over each other, their lines
+    // stacked, smeared by a shadow, or turned, skewed or mirrored by a transform on the run or anything above it.
+    const size = parseFloat(cs.fontSize);
+    const turned = (m) => Math.abs(m.b) > 1e-6 || Math.abs(m.c) > 1e-6 || m.a < 0 || m.d < 0;
+    const turnedAbove = () => {
+      if (svg) return el.getScreenCTM() !== null && turned(el.getScreenCTM());
+      for (let a = el; a; a = a.parentElement) {
+        const t = getComputedStyle(a).transform;
+        if (t && t !== 'none' && turned(new DOMMatrixReadOnly(t))) return true;
+      }
+      return false;
+    };
+    for (const [why, bad] of [
+      ['lays its letters over each other', parseFloat(cs.letterSpacing) < -0.1 * size],
+      ['lays its words over each other', parseFloat(cs.wordSpacing) < -0.1 * size],
+      ['lays its lines over each other', !svg && cs.lineHeight !== 'normal' && parseFloat(cs.lineHeight) < 0.9 * size],
+      ['casts a shadow over its letters', cs.textShadow !== 'none'],
+      ['is drawn turned, skewed or mirrored', turnedAbove()],
+    ]) {
+      if (bad) out.garbled.push(why + ': ' + text.slice(0, 60));
+    }
     const paint = rgba(svg ? cs.fill : cs.webkitTextFillColor || cs.color);
     const onPage =
       frames(el).some((f) => /(auto|scroll)/.test(getComputedStyle(f).overflowX + getComputedStyle(f).overflowY)) ||
@@ -368,7 +396,7 @@ const unseen = ({ hit }) => `(() => {
     if (region !== undefined && seen) shows.set(region, true);
     if (!seen) out.unseen.push((region ? 'BENCH:' + region + ': ' : '') + text.slice(0, 60));
   }
-  probe.remove();
+  document.adoptedStyleSheets = document.adoptedStyleSheets.filter((s) => s !== probe);
   for (const [name, any] of shows) if (!any) out.blank.push(name);
   for (const el of document.body.querySelectorAll('*')) {
     const cs = getComputedStyle(el);
@@ -380,27 +408,40 @@ const unseen = ({ hit }) => `(() => {
 })()`;
 
 /**
- * The pixel comparison, which does not trust the style checks above: every run of text they read must change the
- * pixels where Chrome draws it when its letters, and only letters, are made clear. A box, a pseudo-element or any
- * paint laid over a run leaves those pixels as they were, however the run's own styles read.
+ * The pixel comparison, which does not trust the style checks above: every letter of every run they read must show,
+ * in pixels, where Chrome draws it. Each view is captured twice, as drawn and with the runs' own letters alone made
+ * clear, and a pixel with the letter gone is the ground as it is actually painted there. A letter something covers
+ * leaves every pixel as it was, a ratio of exactly 1, so each letter must reach 1.5:1 somewhere; a thin one in a muted
+ * run, an `i` or a middle dot, may not reach 3:1 in any pixel, so it is each run that must reach 3:1 somewhere. A box,
+ * a pseudo-element, generated text or any paint laid over a letter, or a ground a run barely stands out from, fails
+ * it, however the run's own styles read. A view reads the whole window at the top of the page, and below the sticky
+ * bar once it has scrolled, so what passes under the bar is read in another view.
  *
- * Runs in the page once per state: finds the runs as `unseen` does and the frames that scroll them, and adds the sheet
- * that makes letters clear, switched off. Its selectors out-rank any rule the page's sheet writes, and the figures
- * gate refuses any `!important` there, the one way a rule could out-rank them.
+ * Runs in the page once per state: finds every letter of every run `unseen` reads, and adds the sheet that makes the
+ * runs' letters clear, switched off. HTML letters are cleared through a highlight whose name is new each time, and
+ * SVG labels, which a highlight does not paint, by their path from the root. The sheet is adopted rather than put in
+ * a `<style>` element, so no selector can see it, and the page's own sheet may hold nothing `!important`, which the
+ * pass reads from Chrome (`IMPORTANT`), so nothing out-ranks it.
  */
-const PIXEL_RUNS = `(() => {
+const pixelSetup = (name) => `(() => {
   const scrolls = (f) => /(auto|scroll)/.test(getComputedStyle(f).overflowX + getComputedStyle(f).overflowY);
-  const frameOf = (el) => {
-    for (let f = el.parentElement; f && f !== document.documentElement; f = f.parentElement) if (scrolls(f)) return f;
-    return null;
+  /** Every frame that scrolls a run, innermost first. */
+  const chainOf = (el) => {
+    const out = [];
+    for (let f = el.parentElement; f && f !== document.documentElement; f = f.parentElement) if (scrolls(f)) out.push(f);
+    return out;
   };
   const boxed = (e) => {
     let a = e;
     while (a && getComputedStyle(a).display === 'contents') a = a.parentElement;
     return a ?? e;
   };
-  const frames = [];
+  const rectOf = (range) => [...range.getClientRects()].find((q) => q.width > 0 && q.height > 0);
+  const letters = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
   const runs = [];
+  const chars = [];
+  const html = [];
+  const svg = new Set();
   const regions = [];
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_COMMENT);
   for (let n = walker.nextNode(); n; n = walker.nextNode()) {
@@ -415,121 +456,203 @@ const PIXEL_RUNS = `(() => {
     if (!text || !el || el.closest('script, style')) continue;
     if (el.closest('a.skip[href^="#"]') && !/\\d/.test(text)) continue;
     if (regions.length > 0 && (!boxed(el).checkVisibility() || el.closest('.k-ph1'))) continue;
-    const range = document.createRange();
-    range.selectNodeContents(n);
+    const whole = document.createRange();
+    whole.selectNodeContents(n);
     // A run with no box is not drawn at all, which the style checks report; there are no pixels of it to compare.
-    if (![...range.getClientRects()].some((q) => q.width > 0 && q.height > 0)) continue;
-    const f = frameOf(el);
-    if (f && !frames.includes(f)) frames.push(f);
-    runs.push({ range, frame: f ? frames.indexOf(f) : -1, done: false });
+    if (!rectOf(whole)) continue;
+    const run = runs.length;
+    runs.push(text.slice(0, 60));
+    if (el instanceof SVGElement) svg.add(el);
+    else html.push(whole);
+    const chain = chainOf(el);
+    for (const seg of letters.segment(n.data)) {
+      if (/^[\\s\\u200b-\\u200d\\u2060\\ufeff]+$/u.test(seg.segment)) continue;
+      const range = document.createRange();
+      range.setStart(n, seg.index);
+      range.setEnd(n, seg.index + seg.segment.length);
+      if (rectOf(range)) chars.push({ range, run, chain, done: false, lost: false });
+    }
   }
-  const X = '*' + [0, 1, 2, 3, 4, 5, 6, 7].map((k) => ':not(#cb-px-' + k + ')').join('');
-  const T = ['text', 'tspan', 'textPath'].map((t) => 'svg ' + t + X.slice(1)).join(', ');
-  const style = document.createElement('style');
-  style.media = 'not all';
-  style.textContent =
-    [X, X + '::before', X + '::after', X + '::marker'].join(', ') +
-    ' { -webkit-text-fill-color: transparent !important; -webkit-text-stroke-color: transparent !important;' +
-    ' text-shadow: none !important; transition: none !important; }\\n' +
-    T + ' { fill: transparent !important; stroke: transparent !important; transition: none !important; }';
-  document.head.append(style);
-  window.__cbPixels = { runs, frames, style };
-  return runs.map((r) => r.range.toString().trim().slice(0, 60));
+  /** A path from the root through nth-child steps, which names one element and gives the page nothing to test for. */
+  const pathOf = (el) => {
+    const steps = [];
+    for (let e = el; e && e.parentElement; e = e.parentElement) {
+      steps.unshift('*:nth-child(' + ([...e.parentElement.children].indexOf(e) + 1) + ')');
+    }
+    return ':root > ' + steps.join(' > ');
+  };
+  CSS.highlights.set(${JSON.stringify(name)}, new Highlight(...html));
+  const sheet = new CSSStyleSheet();
+  sheet.replaceSync(
+    '::highlight(${name}) { color: transparent; -webkit-text-fill-color: transparent; text-shadow: none; }\\n' +
+      [...svg].map((e) => pathOf(e) + ' { fill: transparent !important; stroke: transparent !important; transition: none !important; }').join('\\n'),
+  );
+  sheet.disabled = true;
+  document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+  // The boxes that stay where they are as the page scrolls: a view's band starts below the ones at its top.
+  const pinned = [...document.body.querySelectorAll('*')].filter((e) => /^(fixed|sticky)$/.test(getComputedStyle(e).position));
+  window.__cbPixels = { chars, sheet, rectOf, pinned };
+  return runs;
 })()`;
 
 /**
- * Runs in the page once the viewport is tall: the views that bring every run into a band of it, clear of the sticky
- * bar. The page is stepped through in overlapping bands, and each scrolling frame through its own width and height
- * where it stands.
+ * The band of the viewport a view judges, as an expression for the page: all of it at the top of the page, and below
+ * the boxes that stay put at its top (the sticky bar) once it has scrolled, since what passes under those is read in
+ * another view. Boxes that stay put at its foot are left out the same way.
  */
-const PIXEL_VIEWS = `(() => {
-  const { frames } = window.__cbPixels;
-  window.scrollTo({ top: 0, behavior: 'instant' });
-  const last = Math.max(0, document.documentElement.scrollHeight - innerHeight);
-  const step = Math.max(1, innerHeight - 400);
-  const ys = (from, to) => {
-    const end = Math.min(last, Math.max(0, to));
-    const out = [];
-    for (let y = Math.max(0, Math.min(from, end)); ; y += step) {
-      out.push(Math.min(y, end));
-      if (y >= end) return out;
+const PIXEL_BAND = `(() => {
+  let top = 0;
+  let bottom = innerHeight;
+  if (scrollY > 0) {
+    for (const e of window.__cbPixels.pinned) {
+      const r = e.getBoundingClientRect();
+      if (r.top <= 1 && r.bottom > 0 && r.bottom < innerHeight / 2) top = Math.max(top, Math.ceil(r.bottom));
+      if (r.bottom >= innerHeight - 1 && r.top < innerHeight && r.top > innerHeight / 2) bottom = Math.min(bottom, Math.floor(r.top));
     }
+  }
+  return { top, bottom };
+})()`;
+
+/**
+ * Runs in the page: brings the first letter not yet judged to the top of the band, each frame it sits in scrolled to
+ * it innermost first, as `unseen` brings a run, so each view starts where the last one's judged letters end. The
+ * viewport is the one every other check reads, so a layout that moved with the viewport's height would be read where
+ * a reader reads it.
+ */
+const PIXEL_BRING = `(() => {
+  const { chars, rectOf } = window.__cbPixels;
+  const c = chars.find((c) => !c.done && !c.lost);
+  if (!c) return false;
+  const inBand = () => {
+    const q = rectOf(c.range);
+    return q && q.top >= ${PIXEL_BAND}.top && q.bottom <= ${PIXEL_BAND}.bottom;
   };
-  const offsets = (size, view) => {
-    const out = [];
-    for (let v = 0; ; v += Math.max(1, view - 100)) {
-      out.push(Math.min(v, Math.max(0, size - view)));
-      if (v >= size - view) return out;
-    }
-  };
-  const views = ys(0, last).map((y) => ({ y, frame: -1, left: 0, top: 0 }));
-  frames.forEach((f, frame) => {
+  for (const f of c.chain) {
+    const q = rectOf(c.range);
+    if (!q) break;
     const r = f.getBoundingClientRect();
-    for (const y of ys(r.top - 150, r.top + r.height - (innerHeight - 150))) {
-      for (const left of offsets(f.scrollWidth, f.clientWidth)) {
-        for (const top of offsets(f.scrollHeight, f.clientHeight)) views.push({ y, frame, left, top });
-      }
-    }
-  });
-  return views;
+    if (q.left < r.left || q.right > r.right) f.scrollLeft += (q.left + q.right) / 2 - (r.left + r.right) / 2;
+    if (q.top < r.top || q.bottom > r.bottom) f.scrollTop += (q.top + q.bottom) / 2 - (r.top + r.bottom) / 2;
+  }
+  const q = rectOf(c.range);
+  if (q) {
+    window.scrollTo({ top: scrollY + q.top - 4, behavior: 'instant' });
+    // Once the page has scrolled, the band starts below the sticky bar.
+    const r = rectOf(c.range);
+    const { top } = ${PIXEL_BAND};
+    if (r && r.top < top + 4) window.scrollBy({ top: r.top - top - 4, behavior: 'instant' });
+  }
+  // A letter in a box that stays put, the sticky bar's, does not move with the page: it is read where the page starts.
+  if (!inBand()) window.scrollTo({ top: 0, behavior: 'instant' });
+  return true;
 })()`;
 
 /**
- * Runs in the page: brings one view up, and says which runs it can judge and what to capture. A run is judged in the
- * first view that holds its first letters whole inside the band and inside its frame; the boxes of every run in view
- * come back too, so no run is credited with pixels another run changed. It does no waiting of its own, since a page
- * with scripts off runs no timers.
+ * Runs in the page once nothing is playing: which letters this view can judge, and what to capture. A letter is judged
+ * in the first view that holds it whole inside the band, clear of the sticky bar, and inside every frame it sits in.
+ * The boxes of every letter in view come back too, so no letter is credited with pixels another run's letter changed,
+ * and letters of two runs drawn over each other can be found. The letter brought into view is marked lost if even
+ * this view cannot judge it, so the walk always ends.
  */
-const pixelView = (view) => `((v) => {
-  const { runs, frames } = window.__cbPixels;
-  window.scrollTo({ top: v.y, behavior: 'instant' });
-  frames.forEach((f, i) => {
-    f.scrollLeft = i === v.frame ? v.left : 0;
-    f.scrollTop = i === v.frame ? v.top : 0;
-  });
-  // Anything still playing is read once it has ended, so nothing is judged until then.
+const PIXEL_JUDGE = `(() => {
+  const { chars, rectOf } = window.__cbPixels;
   const moving = document
     .getAnimations()
     .filter((a) => a.playState === 'running' && a.effect?.getComputedTiming().endTime !== Infinity).length;
-  let top = scrollY === 0 ? 0 : 150;
-  let bottom = scrollY >= document.documentElement.scrollHeight - innerHeight - 1 ? innerHeight : innerHeight - 150;
-  let left = 0;
-  let right = innerWidth;
-  if (v.frame >= 0) {
-    const f = frames[v.frame].getBoundingClientRect();
-    top = Math.max(top, f.top);
-    bottom = Math.min(bottom, f.bottom);
-    left = Math.max(left, f.left);
-    right = Math.min(right, f.right);
-  }
+  if (moving > 0) return { moving };
+  const { top, bottom } = ${PIXEL_BAND};
+  const brought = chars.find((c) => !c.done && !c.lost);
   const judge = [];
   const boxes = [];
-  if (moving > 0) return { judge, boxes, clip: { x: 0, y: 0, width: 1, height: 1 }, moving };
-  runs.forEach((r, i) => {
-    const q = [...r.range.getClientRects()].find((q) => q.width > 0 && q.height > 0);
-    if (!q) return;
-    if (q.right > left && q.bottom > top && q.left < right && q.top < bottom) {
-      boxes.push({ i, left: q.left, top: q.top, right: Math.min(q.right, right), bottom: q.bottom });
+  chars.forEach((c, i) => {
+    const q = rectOf(c.range);
+    if (!q || q.right <= 0 || q.left >= innerWidth || q.bottom <= top || q.top >= bottom) return;
+    boxes.push({ i, run: c.run, left: q.left, top: q.top - top, right: q.right, bottom: q.bottom - top });
+    if (c.done || c.lost) return;
+    if (q.top < top || q.bottom > bottom || q.left < 0 || q.right > innerWidth) return;
+    for (const f of c.chain) {
+      const r = f.getBoundingClientRect();
+      if (q.left < r.left || q.right > r.right || q.top < r.top || q.bottom > r.bottom) return;
     }
-    if (r.done || r.frame !== v.frame) return;
-    // The run's first letters, whole, inside the band and its frame: a run wider than its frame is judged where it
-    // starts, on the part of it in view.
-    if (q.top < top || q.bottom > bottom || q.left < left || q.left + Math.min(q.width, 24) > right) return;
-    r.done = true;
+    c.done = true;
     judge.push(i);
   });
-  const x = Math.max(0, Math.floor(left));
-  const y = Math.max(0, Math.floor(top));
-  const clip = { x, y, width: Math.max(1, Math.ceil(right) - x), height: Math.max(1, Math.ceil(bottom) - y) };
-  // The capture is addressed in the page's coordinates, and the boxes in the viewport's.
-  return { judge, boxes, clip, page: { x: x + scrollX, y: y + scrollY }, moving };
-})(${JSON.stringify(view)})`;
+  if (brought && !brought.done) brought.lost = true;
+  return { moving: 0, judge, boxes, clip: { x: 0, y: top + scrollY, width: innerWidth, height: bottom - top } };
+})()`;
 
 /** Runs in the page: turns the clear letters on or off. */
-const clearLetters = (on) => `window.__cbPixels.style.media = ${on ? "'all'" : "'not all'"};`;
+const clearLetters = (on) => `window.__cbPixels.sheet.disabled = ${on ? 'false' : 'true'};`;
 
-/** The tallest viewport the pixel comparison uses, so a page takes a few views rather than dozens. */
-const PIXEL_VIEWPORT = 4000;
+/** Runs in the page: takes the clear sheet and highlight away, and puts the page back at its top. */
+const pixelTeardown = (name) => `(() => {
+  const { sheet, chars } = window.__cbPixels;
+  document.adoptedStyleSheets = document.adoptedStyleSheets.filter((s) => s !== sheet);
+  CSS.highlights.delete(${JSON.stringify(name)});
+  for (const c of chars) for (const f of c.chain) { f.scrollLeft = 0; f.scrollTop = 0; }
+  window.scrollTo({ top: 0, behavior: 'instant' });
+  delete window.__cbPixels;
+})()`;
+
+/**
+ * Runs in the page at the top: where every element and every positioned pseudo-element is laid out. The pass loads
+ * one viewport height, so a layout that follows the height would be checked at that height alone; comparing this at
+ * three heights finds one, however the sheet made it (a fixed box, a percentage of the initial containing block, or
+ * a height the root takes from the window).
+ */
+const HEIGHT_LAYOUT = `(() => {
+  window.scrollTo({ top: 0, behavior: 'instant' });
+  const out = [];
+  const name = (e) => (e.tagName.toLowerCase() + '.' + (e.getAttribute('class') || '').trim().split(/\\s+/).join('.')).replace(/\\.$/, '');
+  // Layout offsets, not client rects: a transform playing in on sight is not the layout, and must not read as a move.
+  const at = (e) => {
+    let x = 0;
+    let y = 0;
+    for (let a = e; a; a = a.offsetParent) {
+      x += a.offsetLeft;
+      y += a.offsetTop;
+    }
+    return [x, y];
+  };
+  for (const e of document.body.querySelectorAll('*')) {
+    if (!(e instanceof HTMLElement)) continue;
+    out.push([name(e), ...at(e), e.offsetWidth, e.offsetHeight].join(' '));
+    for (const p of ['::before', '::after']) {
+      const ps = getComputedStyle(e, p);
+      if (ps.content === 'none' || ps.content === 'normal' || ps.position === 'static') continue;
+      out.push([name(e) + p, ps.top, ps.bottom, ps.left, ps.right, ps.width, ps.height].join(' '));
+    }
+  }
+  return out;
+})()`;
+
+/** Runs in the page once: every declaration the page's own sheets and style attributes mark important, as Chrome reads it. */
+const IMPORTANT = `(() => {
+  const out = [];
+  const walk = (rules) => {
+    for (const r of rules) {
+      if (r.style) {
+        for (let i = 0; i < r.style.length; i++) {
+          if (r.style.getPropertyPriority(r.style[i]) === 'important') out.push((r.selectorText ?? '@' + r.constructor.name) + ' { ' + r.style[i] + ' }');
+        }
+      }
+      if (r.cssRules) walk(r.cssRules);
+    }
+  };
+  for (const s of document.styleSheets) {
+    try {
+      walk(s.cssRules);
+    } catch {
+      out.push('a sheet whose rules cannot be read');
+    }
+  }
+  for (const e of document.querySelectorAll('[style]')) {
+    for (let i = 0; i < e.style.length; i++) {
+      if (e.style.getPropertyPriority(e.style[i]) === 'important') out.push(e.tagName.toLowerCase() + '[style] { ' + e.style[i] + ' }');
+    }
+  }
+  return out;
+})()`;
 
 /**
  * Runs in the page, awaited: with `scroll`, scrolls it top to bottom, so every band that plays on sight plays; then
@@ -647,6 +770,9 @@ const proc = spawn(
     '--hide-scrollbars',
     '--no-first-run',
     '--no-default-browser-check',
+    // A page opened from a file may read its own sheet's rules only with this, and the check for important rules
+    // reads them. The pages are the site's own, in a profile made for this run.
+    '--allow-file-access-from-files',
     `--user-data-dir=${profile}`,
     'about:blank',
   ],
@@ -657,8 +783,14 @@ const problems = [];
 let measured = 0;
 /** The views the pixel comparison captured, twice each. */
 let pixelViews = 0;
-/** The fewest pixels a run's letters must change: a covered run changes none, and a lone full stop only two. */
-const PIXELS_A_RUN = 1;
+/** The other window heights the layout is compared at. */
+const LAYOUT_HEIGHTS = [600, 1400];
+/** A walk that has not judged every letter in this many views is refused rather than left to run on. */
+const PIXEL_VIEW_LIMIT = 400;
+/** The least a letter's best pixel must stand out from the ground painted behind it: a hidden one reaches exactly 1. */
+const LETTER_SHOWS = 1.5;
+/** Two runs' letters are drawn over each other when their boxes share this much of the smaller one. */
+const OVERLAP = 0.25;
 /** The loads at widths between the sheet's breakpoints, on the page that says its figures are gated. */
 let between = 0;
 try {
@@ -683,12 +815,13 @@ try {
         : [];
     between += bands.length;
     for (const width of [...WIDTHS, ...bands]) {
-      // A page the probe cannot finish is a problem with that page, reported beside the others.
+      // A page the probe cannot finish is a problem with that page, reported beside the others, and its tab is closed
+      // either way.
+      let target;
+      let cdp;
       try {
-        const target = await (
-          await fetch(`http://127.0.0.1:${PORT}/json/new`, { method: 'PUT' })
-        ).json();
-        const cdp = connect(target.webSocketDebuggerUrl);
+        target = await (await fetch(`http://127.0.0.1:${PORT}/json/new`, { method: 'PUT' })).json();
+        cdp = connect(target.webSocketDebuggerUrl);
         await cdp.ready;
         await cdp.send('Page.enable');
         await cdp.send('Emulation.setDeviceMetricsOverride', {
@@ -764,6 +897,8 @@ try {
             }
             for (const m of r.markers)
               problems.push(`${at}: a list item draws a marker, ${m}, which no check reads`);
+            for (const g of r.garbled)
+              problems.push(`${at}: the run ${g}, so no reader can read it`);
           };
           const shot = async (clip) =>
             decodePng(
@@ -780,67 +915,85 @@ try {
             );
           const comparePixels = async (when) => {
             const at = `${TREE}/${page} at ${width}px${when}`;
-            const texts = await evaluate(PIXEL_RUNS);
-            const tall = await evaluate('document.documentElement.scrollHeight');
-            await cdp.send('Emulation.setDeviceMetricsOverride', {
-              width,
-              height: Math.min(PIXEL_VIEWPORT, Math.max(900, tall)),
-              deviceScaleFactor: 1,
-              mobile: false,
-            });
-            const views = await evaluate(PIXEL_VIEWS);
-            for (const view of views) {
-              let v = await evaluate(pixelView(view));
-              for (let tries = 0; v.moving > 0 && tries < 100; tries++) {
-                await sleep(50);
-                v = await evaluate(pixelView(view));
-              }
-              const { judge, boxes, clip, page: origin } = v;
-              if (judge.length === 0) continue;
-              const capture = { ...clip, ...origin };
-              const drawn = await shot(capture);
-              await evaluate(clearLetters(true));
-              const clear = await shot(capture);
-              await evaluate(clearLetters(false));
-              pixelViews++;
-              const local = (b) => ({
-                i: b.i,
-                left: b.left - clip.x,
-                top: b.top - clip.y,
-                right: b.right - clip.x,
-                bottom: b.bottom - clip.y,
-              });
-              for (const i of judge) {
-                const box = local(boxes.find((b) => b.i === i));
-                const others = boxes.filter((b) => b.i !== i).map(local);
-                const { changed, compared } = changedPixels(drawn, clear, box, others);
-                const area = (box.right - box.left) * (box.bottom - box.top);
-                if (compared < 0.3 * area) {
-                  problems.push(`${at}: "${texts[i]}" is drawn over another run of text`);
-                } else if (changed < PIXELS_A_RUN) {
+            const name = `cb${randomUUID().replaceAll('-', '')}`;
+            const runs = await evaluate(pixelSetup(name));
+            const hidden = new Map();
+            const runBest = new Map();
+            const over = new Set();
+            try {
+              for (let views = 0; views < PIXEL_VIEW_LIMIT; views++) {
+                if (!(await evaluate(PIXEL_BRING))) break;
+                let v = await evaluate(PIXEL_JUDGE);
+                for (let tries = 0; v.moving > 0 && tries < 100; tries++) {
+                  await sleep(50);
+                  v = await evaluate(PIXEL_JUDGE);
+                }
+                if (v.moving > 0) {
                   problems.push(
-                    `${at}: "${texts[i]}" changes ${changed} pixel(s) when its letters are made clear, so ` +
-                      'something drawn over it hides it from a reader',
+                    `${at}: an animation still ran after 5 s, so the pixel comparison could not look`,
                   );
+                  break;
+                }
+                if (v.judge.length === 0) continue;
+                const drawn = await shot(v.clip);
+                await evaluate(clearLetters(true));
+                const clear = await shot(v.clip);
+                await evaluate(clearLetters(false));
+                pixelViews++;
+                const byIndex = new Map(v.boxes.map((b) => [b.i, b]));
+                for (const i of v.judge) {
+                  const box = byIndex.get(i);
+                  const others = v.boxes.filter(
+                    (o) =>
+                      o.run !== box.run &&
+                      o.left < box.right &&
+                      o.right > box.left &&
+                      o.top < box.bottom &&
+                      o.bottom > box.top,
+                  );
+                  const area = (b) => (b.right - b.left) * (b.bottom - b.top);
+                  for (const o of others) {
+                    const inter =
+                      (Math.min(box.right, o.right) - Math.max(box.left, o.left)) *
+                      (Math.min(box.bottom, o.bottom) - Math.max(box.top, o.top));
+                    if (inter > OVERLAP * Math.min(area(box), area(o)))
+                      over.add([box.run, o.run].sort((x, y) => x - y).join(' '));
+                  }
+                  // A letter a cover hides leaves every pixel as it was, a ratio of exactly 1. A thin one in a muted run,
+                  // an \`i\` or a middle dot, may reach well under 3:1 in every pixel, so a letter must show at all, and
+                  // its run must reach 3:1 somewhere.
+                  const best = bestContrast(drawn, clear, box, others);
+                  if (best < LETTER_SHOWS) hidden.set(box.run, (hidden.get(box.run) ?? 0) + 1);
+                  runBest.set(box.run, Math.max(runBest.get(box.run) ?? 1, best));
                 }
               }
+              const lost = await evaluate(
+                'window.__cbPixels.chars.flatMap((c) => (c.done ? [] : [c.run]))',
+              );
+              for (const r of new Set(lost)) {
+                problems.push(`${at}: "${runs[r]}" was in no view the pixel comparison took`);
+              }
+            } finally {
+              await evaluate(pixelTeardown(name));
             }
-            const missed = await evaluate(
-              'window.__cbPixels.runs.flatMap((r, i) => (r.done ? [] : [i]))',
-            );
-            for (const i of missed) {
-              problems.push(`${at}: "${texts[i]}" was in no view the pixel comparison took`);
+            for (const [r, n] of hidden) {
+              problems.push(
+                `${at}: "${runs[r]}" has ${n} letter(s) that change no pixel when they are made clear, or next to ` +
+                  'none, so something hides them',
+              );
             }
-            await evaluate(
-              'window.__cbPixels.style.remove(); window.__cbPixels.frames.forEach((f) => { f.scrollLeft = 0; ' +
-                "f.scrollTop = 0; }); window.scrollTo({ top: 0, behavior: 'instant' });",
-            );
-            await cdp.send('Emulation.setDeviceMetricsOverride', {
-              width,
-              height: 900,
-              deviceScaleFactor: 1,
-              mobile: false,
-            });
+            for (const [r, best] of runBest) {
+              if (best < 3) {
+                problems.push(
+                  `${at}: "${runs[r]}" reaches ${best.toFixed(2)}:1 at most against what is drawn behind it, under ` +
+                    'the 3:1 a reader needs',
+                );
+              }
+            }
+            for (const pair of over) {
+              const [x, y] = pair.split(' ').map(Number);
+              problems.push(`${at}: "${runs[x]}" and "${runs[y]}" are drawn over each other`);
+            }
           };
           const wait = async (when, scroll) => {
             const stuck = await evaluate(settle({ scroll }), true);
@@ -859,6 +1012,39 @@ try {
               }
             }
           }
+          // Once per page: nothing the page's sheets or style attributes mark important, as Chrome reads them, since an
+          // important rule could out-rank the sheets this pass adds while it looks.
+          if (width === WIDTHS[0]) {
+            for (const d of await evaluate(IMPORTANT)) {
+              problems.push(
+                `${TREE}/${page}: ${d} is important, which could out-rank the sheets this pass adds`,
+              );
+            }
+          }
+          // The layout at two more heights must be the layout at this one: every check here loads one height, and a
+          // box that moved with the window's height would be checked where no reader of another window sees it.
+          const metrics = (height) =>
+            cdp.send('Emulation.setDeviceMetricsOverride', {
+              width,
+              height,
+              deviceScaleFactor: 1,
+              mobile: false,
+            });
+          const atHeight = await evaluate(HEIGHT_LAYOUT);
+          for (const height of LAYOUT_HEIGHTS) {
+            await metrics(height);
+            await sleep(100);
+            const other = await evaluate(HEIGHT_LAYOUT);
+            const moved = other.filter((box, k) => box !== atHeight[k]);
+            if (moved.length > 0 || other.length !== atHeight.length) {
+              problems.push(
+                `${TREE}/${page} at ${width}px: the layout changes with the window's height (at ${height}px tall: ` +
+                  `${(moved[0] ?? 'a different number of boxes').split(' ')[0]}), which no check here varies`,
+              );
+            }
+          }
+          await metrics(900);
+          await sleep(100);
           // As it loads, before anything has played: a band may hold its drawing on a first frame, and the rest shows.
           report('', await evaluate(unseen({ hit: false })), { regions: false });
           // Then reloaded as each reader who gets a different page: with motion, played at twenty times the speed, in
@@ -866,8 +1052,8 @@ try {
           // off. In each, once everything has come to rest, every run is found where it is drawn: a fade that starts
           // late, a rule for one theme, for paper or for a reader without scripts, or text laid under another box.
           const passes = [
-            { when: ', once played, light', scheme: 'light', motion: true, pixels: true },
-            { when: ', once played, dark', scheme: 'dark', motion: true, pixels: true },
+            { when: ', once played, light', scheme: 'light', motion: true },
+            { when: ', once played, dark', scheme: 'dark', motion: true },
             { when: ', light, with less motion', scheme: 'light' },
             { when: ', dark, with less motion', scheme: 'dark' },
             { when: ', printed', scheme: 'light', media: 'print' },
@@ -892,7 +1078,7 @@ try {
             await cdp.send('Animation.setPlaybackRate', { playbackRate: pass.motion ? 20 : 1 });
             await wait(pass.when, pass.motion === true);
             report(pass.when, await evaluate(unseen({ hit: true })));
-            if (pass.pixels) await comparePixels(pass.when);
+            await comparePixels(pass.when);
           }
           await cdp.send('Animation.setPlaybackRate', { playbackRate: 1 });
           await cdp.send('Emulation.setScriptExecutionDisabled', { value: false });
@@ -903,10 +1089,11 @@ try {
           ).result.value;
           for (const n of names) problems.push(`${TREE}/${page}: ${n}`);
         }
-        cdp.close();
-        await fetch(`http://127.0.0.1:${PORT}/json/close/${target.id}`);
       } catch (err) {
         problems.push(`${TREE}/${page} at ${width}px: the probe could not finish (${err.message})`);
+      } finally {
+        cdp?.close();
+        if (target) await fetch(`http://127.0.0.1:${PORT}/json/close/${target.id}`).catch(() => {});
       }
     }
   }

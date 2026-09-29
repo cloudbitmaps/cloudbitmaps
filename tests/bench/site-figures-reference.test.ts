@@ -956,6 +956,32 @@ describe("site:figures holds site-next/'s homepage to its sources", () => {
       'out-rank the sheets the browser pass adds',
     ],
     [
+      'an important flag written with a space',
+      '.cb-caveat::after { pointer-events: none ! important; }',
+      'out-rank the sheets the browser pass adds',
+    ],
+    [
+      'an important flag written with a comment',
+      '.cb-caveat::after { pointer-events: none !/**/important; }',
+      'out-rank the sheets the browser pass adds',
+    ],
+    [
+      'an important flag written with an escape',
+      '.cb-caveat::after { pointer-events: none !\\69mportant; }',
+      'out-rank the sheets the browser pass adds',
+    ],
+    ['a rule that styles a highlight', '::highlight(x) { color: red; }', 'styles a highlight'],
+    [
+      'a text shadow',
+      '.cb-caveat p { text-shadow: 0.2em 0 currentColor; }',
+      'paints, moves or hides text',
+    ],
+    [
+      'a matrix that turns text',
+      '.cb-caveat p { transform: matrix(-1, 0, 0, -1, 0, 0); }',
+      'turns, mirrors or tilts text',
+    ],
+    [
       'a font the sheet does not name',
       '.cb-figure-xl { font-family: Webdings; }',
       'a font the sheet does not name',

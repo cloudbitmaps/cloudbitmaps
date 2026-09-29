@@ -964,6 +964,12 @@ function refuse({ L, page, fail, ROOT, SITE_DIR }) {
     if (/::?first-(?:letter|line)\b/i.test(d.selector)) {
       failOnce(`${where} styles a first letter or line apart from its text (${d.selector})`);
     }
+    // The browser pass clears the letters it compares through a highlight, and a rule for one could restyle it.
+    if (/::highlight\(/i.test(d.selector)) {
+      failOnce(
+        `${where} styles a highlight, which the browser pass clears letters through (${d.selector})`,
+      );
+    }
     if (d.name === '@') {
       // A condition site-text-floor does not probe shows some readers a page no pass has seen. It loads a width on each
       // side of every width the sheet names (`widthsToProbe`), both colour schemes, less motion, more contrast, a
@@ -1001,7 +1007,9 @@ function refuse({ L, page, fail, ROOT, SITE_DIR }) {
     const says = `${where} ${d.name}: ${d.value}`;
     // The browser pass adds sheets of its own while it looks: one makes every box take pointer events, one makes
     // every letter clear. An important rule of the page's could out-rank either, so the sheet writes none.
-    if (/!important\s*$/i.test(d.value)) {
+    // Read as Chrome reads it: `! important`, `!/**/important` and an escaped letter are all the same flag, and the
+    // browser pass reads each declaration's priority from Chrome too (`IMPORTANT` in site-text-floor).
+    if (/!\s*important\s*$/i.test(cssUnescape(d.value.replace(/\/\*[\s\S]*?\*\//g, ' ')))) {
       fail(
         `${says} is important, which could out-rank the sheets the browser pass adds while it looks`,
       );
@@ -1040,7 +1048,7 @@ function refuse({ L, page, fail, ROOT, SITE_DIR }) {
     }
     if (
       /^(?:transform|-webkit-transform)$/.test(d.name) &&
-      /\b(?:rotate|rotate[XYZ]|skew[XY]?|perspective|matrix3d|translate3d|translateZ|scale3d|scaleZ|rotate3d)\(|\bscale[XY]?\(\s*-/i.test(
+      /\b(?:rotate|rotate[XYZ]|skew[XY]?|perspective|matrix|matrix3d|translate3d|translateZ|scale3d|scaleZ|rotate3d)\(|\bscale[XY]?\(\s*-/i.test(
         rest,
       )
     ) {
@@ -1113,6 +1121,7 @@ function refuse({ L, page, fail, ROOT, SITE_DIR }) {
         if (!/^none$/i.test(rest)) fail(`${says} draws marks over its text`);
         break;
       case 'box-shadow':
+      case 'text-shadow':
       case '-webkit-text-stroke':
       case '-webkit-text-stroke-width':
       case '-webkit-text-stroke-color':

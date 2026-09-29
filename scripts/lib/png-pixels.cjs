@@ -15,30 +15,50 @@ function decodePng(buf) {
   let width = 0;
   let height = 0;
   let channels = 0;
+  let ended = false;
   const data = [];
-  for (let at = 8; at + 8 <= buf.length;) {
+  for (let at = 8; at < buf.length;) {
+    if (at + 12 > buf.length) throw new Error('png: a chunk runs past the end of the file');
     const length = buf.readUInt32BE(at);
     const type = buf.toString('latin1', at + 4, at + 8);
+    if (at + 12 + length > buf.length)
+      throw new Error(`png: the ${type} chunk runs past the end of the file`);
     const body = buf.subarray(at + 8, at + 8 + length);
+    if (at === 8 && type !== 'IHDR')
+      throw new Error('png: the first chunk is not the image header');
     if (type === 'IHDR') {
+      if (at !== 8 || length !== 13)
+        throw new Error('png: the image header is not a 13-byte first chunk');
       width = body.readUInt32BE(0);
       height = body.readUInt32BE(4);
-      const [depth, colour, , , interlace] = body.subarray(8, 13);
+      const [depth, colour, compression, filtering, interlace] = body.subarray(8, 13);
       channels = colour === 6 ? 4 : colour === 2 ? 3 : 0;
-      if (depth !== 8 || channels === 0 || interlace !== 0) {
+      if (
+        depth !== 8 ||
+        channels === 0 ||
+        compression !== 0 ||
+        filtering !== 0 ||
+        interlace !== 0
+      ) {
         throw new Error(
-          `png: depth ${depth}, colour type ${colour}, interlace ${interlace} is not read here`,
+          `png: depth ${depth}, colour type ${colour}, compression ${compression}, filtering ${filtering}, ` +
+            `interlace ${interlace} is not read here`,
         );
       }
     } else if (type === 'IDAT') {
       data.push(body);
     } else if (type === 'IEND') {
+      ended = true;
       break;
     }
     at += 12 + length;
   }
   if (width === 0 || height === 0) throw new Error('png: no image header');
-  const raw = inflateSync(Buffer.concat(data));
+  if (!ended) throw new Error('png: no end chunk');
+  const compressed = Buffer.concat(data);
+  const { buffer: raw, engine } = inflateSync(compressed, { info: true });
+  if (engine.bytesWritten !== compressed.length)
+    throw new Error('png: the image data runs on past its stream');
   const stride = width * channels;
   if (raw.length !== height * (stride + 1))
     throw new Error('png: the image data is not the size its header says');
@@ -96,11 +116,22 @@ function decodePng(buf) {
   return { width, height, rgba };
 }
 
+/** A channel as linear light, for WCAG's relative luminance. */
+const LINEAR = Array.from({ length: 256 }, (_, v) => {
+  const c = v / 255;
+  return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+});
+const luminance = (rgba, i) =>
+  0.2126 * LINEAR[rgba[i]] + 0.7152 * LINEAR[rgba[i + 1]] + 0.0722 * LINEAR[rgba[i + 2]];
+
 /**
- * How many pixels inside `box` differ between two same-sized images by at least `threshold` on some channel, and how
- * many were compared. Pixels inside any of `skip` are left out, so a change there is not credited to `box`.
+ * The best contrast any pixel inside `box` reaches between two same-sized images, by WCAG's contrast ratio: 1 when no
+ * pixel changed. Pixels inside any of `skip` are left out, so a change there is not credited to `box`.
+ *
+ * With the letters drawn in `a` and cleared in `b`, a pixel of `b` is the ground as actually painted behind the
+ * letter, so this reads the letter's contrast against what is behind it, a see-through box or a cover included.
  */
-function changedPixels(a, b, box, skip = [], threshold = 48) {
+function bestContrast(a, b, box, skip = []) {
   if (a.width !== b.width || a.height !== b.height)
     throw new Error('png: the two images differ in size');
   const x0 = Math.max(0, Math.floor(box.left));
@@ -109,26 +140,23 @@ function changedPixels(a, b, box, skip = [], threshold = 48) {
   const y1 = Math.min(a.height, Math.ceil(box.bottom));
   // Only the boxes that overlap this one can take pixels from it.
   const near = skip.filter((s) => s.left < x1 && s.right > x0 && s.top < y1 && s.bottom > y0);
-  let changed = 0;
-  let compared = 0;
+  let best = 1;
   for (let y = y0; y < y1; y++) {
     for (let x = x0; x < x1; x++) {
       if (
         near.length > 0 &&
         near.some((s) => x >= s.left && x < s.right && y >= s.top && y < s.bottom)
-      )
+      ) {
         continue;
-      compared++;
+      }
       const i = (y * a.width + x) * 4;
-      const d = Math.max(
-        Math.abs(a.rgba[i] - b.rgba[i]),
-        Math.abs(a.rgba[i + 1] - b.rgba[i + 1]),
-        Math.abs(a.rgba[i + 2] - b.rgba[i + 2]),
-      );
-      if (d >= threshold) changed++;
+      const la = luminance(a.rgba, i);
+      const lb = luminance(b.rgba, i);
+      const r = (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+      if (r > best) best = r;
     }
   }
-  return { changed, compared };
+  return best;
 }
 
-module.exports = { decodePng, changedPixels };
+module.exports = { decodePng, bestContrast };

@@ -9,15 +9,9 @@ import { deflateSync } from 'node:zlib';
 const require_ = createRequire(import.meta.url);
 type Image = { width: number; height: number; rgba: Buffer };
 type Box = { left: number; top: number; right: number; bottom: number };
-const { decodePng, changedPixels } = require_('../../scripts/lib/png-pixels.cjs') as {
+const { decodePng, bestContrast } = require_('../../scripts/lib/png-pixels.cjs') as {
   decodePng: (buf: Buffer) => Image;
-  changedPixels: (
-    a: Image,
-    b: Image,
-    box: Box,
-    skip?: Box[],
-    threshold?: number,
-  ) => { changed: number; compared: number };
+  bestContrast: (a: Image, b: Image, box: Box, skip?: Box[]) => number;
 };
 
 const SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -44,7 +38,7 @@ function png(
   channels: 3 | 4,
   pixels: Uint8Array,
   filters: number[],
-  { depth = 8, interlace = 0, parts = 1 } = {},
+  { depth = 8, interlace = 0, parts = 1, compression = 0, filtering = 0 } = {},
 ): Buffer {
   const stride = width * channels;
   const raw = Buffer.alloc(height * (stride + 1));
@@ -66,6 +60,8 @@ function png(
   header.writeUInt32BE(height, 4);
   header[8] = depth;
   header[9] = channels === 4 ? 6 : 2;
+  header[10] = compression;
+  header[11] = filtering;
   header[12] = interlace;
   const data = deflateSync(raw);
   const step = Math.ceil(data.length / parts);
@@ -126,54 +122,100 @@ describe('decodePng', () => {
     expect(() => decodePng(png(2, 2, 4, pixels, [0], { depth: 16 }))).toThrow(/depth 16/);
     expect(() => decodePng(png(2, 2, 4, pixels, [0], { interlace: 1 }))).toThrow(/interlace 1/);
     expect(() => decodePng(png(2, 2, 4, pixels, [7]))).toThrow(/filter 7/);
+    expect(() => decodePng(png(2, 2, 4, pixels, [0], { compression: 1 }))).toThrow(/compression 1/);
+    expect(() => decodePng(png(2, 2, 4, pixels, [0], { filtering: 1 }))).toThrow(/filtering 1/);
     const short = png(2, 2, 4, pixels, [0]);
     // An image header that claims more rows than the data holds.
     short.writeUInt32BE(3, 8 + 8 + 4);
     expect(() => decodePng(short)).toThrow(/not the size its header says/);
   });
+
+  it('refuses a file whose chunks are out of order, cut short, unended or run on', () => {
+    const good = png(2, 2, 4, noise(2, 2, 4), [0]);
+    expect(decodePng(good).width).toBe(2);
+    // The image header's chunk is 8 + 13 + 4 bytes after the signature; the image data follows it.
+    const header = good.subarray(8, 8 + 25);
+    const rest = good.subarray(8 + 25);
+    expect(() => decodePng(Buffer.concat([SIGNATURE, rest, header]))).toThrow(
+      /first chunk is not the image header/,
+    );
+    expect(() => decodePng(good.subarray(0, good.length - 12))).toThrow(/no end chunk/);
+    expect(() => decodePng(good.subarray(0, good.length - 20))).toThrow(/runs past the end/);
+    const shortHeader = Buffer.from(good);
+    shortHeader.writeUInt32BE(12, 8);
+    expect(() => decodePng(shortHeader)).toThrow(/13-byte first chunk|runs past the end/);
+    // Trailing bytes after the compressed stream, inside the image data.
+    const raw = Buffer.alloc(2 * (2 * 4 + 1));
+    const ihdr = Buffer.alloc(13);
+    ihdr.writeUInt32BE(2, 0);
+    ihdr.writeUInt32BE(2, 4);
+    ihdr[8] = 8;
+    ihdr[9] = 6;
+    const runOn = Buffer.concat([
+      SIGNATURE,
+      chunk('IHDR', ihdr),
+      chunk('IDAT', Buffer.concat([deflateSync(raw), Buffer.from([1, 2, 3])])),
+      chunk('IEND', Buffer.alloc(0)),
+    ]);
+    expect(() => decodePng(runOn)).toThrow(/runs on past its stream/);
+  });
 });
 
-describe('changedPixels', () => {
+describe('bestContrast', () => {
   const solid = (width: number, height: number, v: number): Image => ({
     width,
     height,
     rgba: Buffer.alloc(width * height * 4, v),
   });
+  const grey = (img: Image, x: number, y: number, v: number): void => {
+    const i = (y * img.width + x) * 4;
+    img.rgba[i] = img.rgba[i + 1] = img.rgba[i + 2] = v;
+  };
 
-  it('counts the pixels in the box that differ by the threshold on some channel', () => {
-    const a = solid(10, 10, 200);
-    const b = solid(10, 10, 200);
-    for (const [x, y, d] of [
-      [2, 2, 48],
-      [3, 2, 47],
-      [8, 8, 90],
-    ] as const) {
-      b.rgba[(y * 10 + x) * 4 + 1] = 200 - d;
-    }
-    expect(changedPixels(a, b, { left: 0, top: 0, right: 5, bottom: 5 })).toEqual({
-      changed: 1,
-      compared: 25,
-    });
-    expect(changedPixels(a, b, { left: 0, top: 0, right: 5, bottom: 5 }, [], 40)).toEqual({
-      changed: 2,
-      compared: 25,
-    });
+  it('reads the best contrast a pixel in the box reaches between the two images, by WCAG', () => {
+    // White against greys: #767676 is 4.54:1 on white, #a0a0a0 2.61:1, and black 21:1 outside the box.
+    const a = solid(10, 10, 255);
+    const b = solid(10, 10, 255);
+    grey(b, 2, 2, 0x76);
+    grey(b, 3, 2, 0xa0);
+    grey(b, 8, 8, 0x00);
+    expect(bestContrast(a, b, { left: 0, top: 0, right: 5, bottom: 5 })).toBeCloseTo(4.54, 2);
+    expect(bestContrast(a, b, { left: 3, top: 0, right: 5, bottom: 5 })).toBeCloseTo(2.61, 2);
+    expect(bestContrast(a, b, { left: 0, top: 0, right: 10, bottom: 10 })).toBeCloseTo(21, 5);
+  });
+
+  it('reads exactly 1 where no pixel changed, which is what a cover leaves', () => {
+    expect(
+      bestContrast(solid(4, 4, 90), solid(4, 4, 90), { left: 0, top: 0, right: 4, bottom: 4 }),
+    ).toBe(1);
+  });
+
+  it('puts #949494 on white just over 3:1 and #969696 just under it', () => {
+    const a = solid(2, 1, 255);
+    const b = solid(2, 1, 255);
+    grey(b, 0, 0, 0x94);
+    grey(b, 1, 0, 0x96);
+    expect(bestContrast(a, b, { left: 0, top: 0, right: 1, bottom: 1 })).toBeGreaterThanOrEqual(3);
+    expect(bestContrast(a, b, { left: 1, top: 0, right: 2, bottom: 1 })).toBeLessThan(3);
   });
 
   it('leaves out the pixels inside another run, and clamps the box to the image', () => {
-    const a = solid(10, 10, 0);
+    const a = solid(10, 10, 255);
     const b = solid(10, 10, 255);
+    grey(b, 1, 1, 0x00);
+    grey(b, 3, 3, 0x76);
     const box = { left: -3, top: -3, right: 4, bottom: 4 };
-    expect(changedPixels(a, b, box)).toEqual({ changed: 16, compared: 16 });
-    expect(changedPixels(a, b, box, [{ left: 0, top: 0, right: 2, bottom: 4 }])).toEqual({
-      changed: 8,
-      compared: 8,
-    });
+    expect(bestContrast(a, b, box)).toBeCloseTo(21, 5);
+    expect(bestContrast(a, b, box, [{ left: 0, top: 0, right: 2, bottom: 4 }])).toBeCloseTo(
+      4.54,
+      2,
+    );
+    expect(bestContrast(a, b, box, [{ left: 0, top: 0, right: 4, bottom: 4 }])).toBe(1);
   });
 
   it('refuses two images of different sizes', () => {
     expect(() =>
-      changedPixels(solid(2, 2, 0), solid(3, 2, 0), { left: 0, top: 0, right: 1, bottom: 1 }),
+      bestContrast(solid(2, 2, 0), solid(3, 2, 0), { left: 0, top: 0, right: 1, bottom: 1 }),
     ).toThrow(/differ in size/);
   });
 });
