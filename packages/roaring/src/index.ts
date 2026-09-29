@@ -601,6 +601,17 @@ interface LifecycleDeps {
   readonly requireEncryption?: boolean;
 }
 
+/** How the store names a group value that is an object to `typeof` but configures nothing, by its built-in tag. */
+const NOT_A_GROUP: Readonly<Record<string, string>> = {
+  Null: 'null',
+  Array: 'an array',
+  Map: 'a Map',
+  Set: 'a Set',
+  Boolean: 'a boxed boolean',
+  Number: 'a boxed number',
+  String: 'a boxed string',
+};
+
 export class CloudRoaring {
   private readonly engine: SegmentEngine;
   private readonly cache: BoundedLru<string, CodecBitmap>;
@@ -645,24 +656,11 @@ export class CloudRoaring {
       if (value === undefined) continue;
       const offOk = group === 'retry' || group === 'budget';
       if (value === false && offOk) continue;
-      // A group that is not an object configures nothing: `encryption: true` would build a cleartext store.
-      if (
-        value === null ||
-        typeof value !== 'object' ||
-        Array.isArray(value) ||
-        value instanceof Map ||
-        value instanceof Set
-      ) {
-        const got =
-          value === null
-            ? 'null'
-            : Array.isArray(value)
-              ? 'an array'
-              : value instanceof Map
-                ? 'a Map'
-                : value instanceof Set
-                  ? 'a Set'
-                  : typeof value;
+      // A group that is not an object configures nothing: `encryption: true` would build a cleartext store. The
+      // built-in tag, not `instanceof`, so a boxed `new Boolean(true)` and a Map from another realm are caught.
+      const tag = Object.prototype.toString.call(value).slice(8, -1);
+      if (typeof value !== 'object' || value === null || NOT_A_GROUP[tag] !== undefined) {
+        const got = typeof value !== 'object' ? typeof value : NOT_A_GROUP[tag];
         throw new ValidationError(
           `CloudRoaring's \`${group}\` must be an object${offOk ? ' or `false`' : ''} — got ${got}`,
         );

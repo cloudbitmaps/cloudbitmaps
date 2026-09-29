@@ -7,9 +7,9 @@ import {
 } from '@/index';
 import { S3Storage } from '@cloudbitmaps/s3';
 import { GcsStorage } from '@cloudbitmaps/gcs';
-import { GCS_STORAGE_OPTION_KEYS, type GcsStorageOptions } from '@/gcs/backend';
-import { S3_STORAGE_OPTION_KEYS, type S3StorageOptions } from '@/s3/backend';
-import { AZURE_BLOB_STORAGE_OPTION_KEYS, type AzureBlobStorageOptions } from '@/azure-blob/backend';
+import { GCS_STORAGE_OPTION_KEYS } from '@/gcs/backend';
+import { S3_STORAGE_OPTION_KEYS } from '@/s3/backend';
+import { AZURE_BLOB_STORAGE_OPTION_KEYS } from '@/azure-blob/backend';
 
 import { AzureBlobStorage } from '@cloudbitmaps/azure-blob';
 import { ValidationError } from '@/core/errors';
@@ -129,11 +129,17 @@ describe('a backend configures both halves from one place', () => {
 
   it('each cloud backend takes exactly the keys its options interface declares (checked by the compiler)', () => {
     const agree: {
-      readonly s3: SameKeys<(typeof S3_STORAGE_OPTION_KEYS)[number], keyof S3StorageOptions>;
-      readonly gcs: SameKeys<(typeof GCS_STORAGE_OPTION_KEYS)[number], keyof GcsStorageOptions>;
+      readonly s3: SameKeys<
+        (typeof S3_STORAGE_OPTION_KEYS)[number],
+        keyof ConstructorParameters<typeof S3Storage>[0]
+      >;
+      readonly gcs: SameKeys<
+        (typeof GCS_STORAGE_OPTION_KEYS)[number],
+        keyof ConstructorParameters<typeof GcsStorage>[0]
+      >;
       readonly azure: SameKeys<
         (typeof AZURE_BLOB_STORAGE_OPTION_KEYS)[number],
-        keyof AzureBlobStorageOptions
+        keyof NonNullable<ConstructorParameters<typeof AzureBlobStorage>[0]>
       >;
     } = { s3: true, gcs: true, azure: true };
     expect(Object.values(agree).every(Boolean)).toBe(true);

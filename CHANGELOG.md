@@ -44,14 +44,19 @@ These make the library refuse what it used to ignore or accept, so that a wrong 
 
 - **`new CloudRoaring(options)` refuses every key it does not take**, at the top level and inside `cache`,
   `encryption`, `retry`, `budget` and `seams`, with a `ValidationError` naming each one and the keys the store or
-  the group takes. It refused a fixed list of spellings before, and ignored any other key.
-- **`new GcsStorage(options)` refuses every key it does not take** the same way, where it refused only `storage`.
+  the group takes. It refused a fixed list of spellings before, and ignored any other key. A group that is not an
+  object is refused too — `null`, an array, a Map, a boxed primitive, `encryption: true` — and `false` is taken
+  only by `retry` and `budget`.
+- **`new S3Storage(options)`, `new GcsStorage(options)` and `new AzureBlobStorage(options)` refuse every key they do
+  not take** the same way, and an options bag that is not an object. `GcsStorage` refused only `storage` before,
+  and the other two ignored any key they did not take.
 - **`RegistryStatus` is `'active' | 'destroyed'`.** A stored registry row with another status, a field its record
   or its envelope does not declare, or no `schemaVersion` is refused on read with `IntegrityError`, and so is every
   `list()` of a registry that holds one, which the retention sweep, `checkConsistency` and subject erasure run. Every
-  row a store created at `0.10.0` or later writes passes. A registry with rows from before `0.10.0` does not, a
-  tombstone `0.10.0` wrote over one of them included, since the tombstone keeps the row's fields: load such a
-  store's segments into a new one from their source.
+  row a store created at `0.10.0` or later writes passes. A row last written before `0.10.0` does not, nor does a
+  tombstone `0.10.0` wrote over one, since the tombstone keeps the row's fields, nor a row a caller set to
+  `compacting` or `erasing` through the registry driver: load such a store's segments into a new one from their
+  source.
 - **`LocalFsStorage` does not look for a `cold/` directory.** A root keeps its generations in `storage/`, and one
   that holds them anywhere else opens like any other with its generations missing: a read throws `NotFoundError`,
   and `checkConsistency` reports `missing-storage-generation`.

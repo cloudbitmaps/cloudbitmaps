@@ -35,6 +35,7 @@ const docs = execFileSync('git', ['ls-files', '*.md', '*.html'], { cwd: ROOT, en
 
 interface Fence {
   readonly file: string;
+  /** The line of `file` that the sample's first line of code is on, so line `i` of `code` (from 0) is `line + i`. */
   readonly line: number;
   readonly code: string;
 }
@@ -44,10 +45,9 @@ interface Fence {
  * scanner below found **zero** samples in all seven site pages while the file glob made it look covered.
  * That is worse than not scanning them: it reads as coverage. This strips the markup and hands back the code.
  */
-function htmlSamplesOf(file: string): Fence[] {
-  const text = readFileSync(join(ROOT, file), 'utf8');
+function htmlSamplesOf(file: string, text = readFileSync(join(ROOT, file), 'utf8')): Fence[] {
   const out: Fence[] = [];
-  for (const m of text.matchAll(/<pre[^>]*>\s*<code[^>]*>([\s\S]*?)<\/code>\s*<\/pre>/g)) {
+  for (const m of text.matchAll(/<pre[^>]*>\s*<code[^>]*>([\s\S]*?)<\/code>\s*<\/pre>/dg)) {
     const code = (m[1] as string)
       .replace(/<[^>]+>/g, '')
       .replace(/&lt;/g, '<')
@@ -57,20 +57,21 @@ function htmlSamplesOf(file: string): Fence[] {
       .replace(/&#39;/g, "'");
     // Only the samples that are actually code we ship — skip shell blocks and prose-in-a-box.
     if (!/\b(new CloudRoaring|import\s|const\s|await\s)/.test(code)) continue;
-    out.push({ file, line: text.slice(0, m.index).split('\n').length, code });
+    // The code starts right after `<code …>`, which may be on the `<pre>` line or the one below it.
+    const codeAt = m.indices?.[1]?.[0] ?? m.index;
+    out.push({ file, line: text.slice(0, codeAt).split('\n').length, code });
   }
   return out;
 }
 
 /**
- * Fenced ```ts / ```js blocks, with the 1-based line the fence opens on.
+ * Fenced ```ts / ```js blocks, each with the line its code starts on.
  *
  * Leading indentation is matched and then stripped, because a fence nested inside a list item — which is how
  * every `CHANGELOG.md` sample is written — is indented. An earlier version of this anchored the fence at
  * column 0 and silently scanned none of them, which is the failure mode a gate must not have.
  */
-function fencesOf(file: string): Fence[] {
-  const text = readFileSync(join(ROOT, file), 'utf8');
+function fencesOf(file: string, text = readFileSync(join(ROOT, file), 'utf8')): Fence[] {
   const out: Fence[] = [];
   // An INFO STRING after the language is allowed. `\`\`\`ts title="wiring.ts"` and `\`\`\`ts twoslash` are
   // ordinary Markdown that many renderers act on, and requiring end-of-line after the language meant such a
@@ -84,14 +85,15 @@ function fencesOf(file: string): Fence[] {
       .split('\n')
       .map((l) => l.slice(indent))
       .join('\n');
-    out.push({ file, line: text.slice(0, m.index).split('\n').length, code });
+    // The code starts on the line below the opening fence.
+    out.push({ file, line: text.slice(0, m.index).split('\n').length + 1, code });
   }
   return out;
 }
 
 const allFences = [
-  ...docs.flatMap(fencesOf),
-  ...docs.filter((f) => f.endsWith('.html')).flatMap(htmlSamplesOf),
+  ...docs.flatMap((f) => fencesOf(f)),
+  ...docs.filter((f) => f.endsWith('.html')).flatMap((f) => htmlSamplesOf(f)),
 ];
 
 describe('documentation code samples', () => {
@@ -114,8 +116,8 @@ describe('documentation code samples', () => {
         const first = seen.get(name);
         if (first !== undefined) {
           offenders.push(
-            `${fence.file}:${fence.line + i + 1} — \`${name}\` is already declared on line ` +
-              `${fence.line + first + 1} of the same sample (SyntaxError when pasted)`,
+            `${fence.file}:${fence.line + i} — \`${name}\` is already declared on line ` +
+              `${fence.line + first}, in the same sample (SyntaxError when pasted)`,
           );
         } else {
           seen.set(name, i);
@@ -174,11 +176,20 @@ describe('documentation code samples', () => {
     for (const fence of allFences) {
       for (const { line, key } of unknownStoreKeys(fence.code)) {
         offenders.push(
-          `${fence.file}:${fence.line + line} — passes \`${key}\` to CloudRoaring, which does not take it`,
+          `${fence.file}:${fence.line + line - 1} — passes \`${key}\` to CloudRoaring, which does not take it`,
         );
       }
     }
     expect(offenders).toEqual([]);
+  });
+
+  it("reports the line of the file that each sample's code starts on", () => {
+    const md = 'Wire it:\n\n```ts\nconst a = 1;\n```\n';
+    expect(fencesOf('x.md', md).map((f) => f.line)).toEqual([4]);
+    const html =
+      '<p>Wire it:</p>\n<pre><code>const a = 1;</code></pre>\n<pre>\n<code>const b = 2;</code></pre>\n' +
+      '<pre><code>\nconst c = 3;</code></pre>';
+    expect(htmlSamplesOf('x.html', html).map((f) => f.line)).toEqual([2, 4, 5]);
   });
 
   it('reads a sample the way the store does: groups, shorthand, and comments and strings left out', () => {

@@ -1,14 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import type { Budget } from '@/core/budget';
 import { CloudRoaring, MemoryStorage, ValidationError } from '@/index';
-import type {
-  CacheOptions,
-  CloudRoaringOptions,
-  EncryptionOptions,
-  RetryOptions,
-  SeamOptions,
-} from '@/index';
+import type { CloudRoaringOptions } from '@/index';
 import { OPTION_KEYS } from '@/option-keys';
 import type { SameKeys } from '../helpers/types';
 
@@ -20,29 +13,26 @@ import type { SameKeys } from '../helpers/types';
 type Listed<G extends keyof typeof OPTION_KEYS> = (typeof OPTION_KEYS)[G][number];
 
 /**
- * Checked by the compiler: `pnpm typecheck` fails when the table and an interface part, a key declared and not
- * listed, or listed and no longer declared. Each group is paired with the interface its option is typed with.
+ * Checked by the compiler: `pnpm typecheck` fails when the table and the option's type part, a key declared and not
+ * listed, or listed and no longer declared. Each group is read off the type `CloudRoaringOptions` gives it.
  */
 const AGREE: {
   readonly top: SameKeys<Listed<'top'>, keyof CloudRoaringOptions>;
-  readonly cache: SameKeys<Listed<'cache'>, keyof CacheOptions>;
-  readonly encryption: SameKeys<Listed<'encryption'>, keyof EncryptionOptions>;
-  readonly retry: SameKeys<Listed<'retry'>, keyof RetryOptions>;
-  readonly budget: SameKeys<Listed<'budget'>, keyof Budget>;
-  readonly seams: SameKeys<Listed<'seams'>, keyof SeamOptions>;
-} = { top: true, cache: true, encryption: true, retry: true, budget: true, seams: true };
-
-/** Each group's option is typed with the interface `AGREE` pairs it with, or that interface or `false`. */
-const TYPED: {
-  readonly cache: SameKeys<NonNullable<CloudRoaringOptions['cache']>, CacheOptions>;
-  readonly encryption: SameKeys<NonNullable<CloudRoaringOptions['encryption']>, EncryptionOptions>;
-  readonly retry: SameKeys<Exclude<NonNullable<CloudRoaringOptions['retry']>, false>, RetryOptions>;
-  readonly budget: SameKeys<
-    Exclude<NonNullable<CloudRoaringOptions['budget']>, false>,
-    Partial<Budget>
+  readonly cache: SameKeys<Listed<'cache'>, keyof NonNullable<CloudRoaringOptions['cache']>>;
+  readonly encryption: SameKeys<
+    Listed<'encryption'>,
+    keyof NonNullable<CloudRoaringOptions['encryption']>
   >;
-  readonly seams: SameKeys<NonNullable<CloudRoaringOptions['seams']>, SeamOptions>;
-} = { cache: true, encryption: true, retry: true, budget: true, seams: true };
+  readonly retry: SameKeys<
+    Listed<'retry'>,
+    keyof Exclude<NonNullable<CloudRoaringOptions['retry']>, false>
+  >;
+  readonly budget: SameKeys<
+    Listed<'budget'>,
+    keyof Exclude<NonNullable<CloudRoaringOptions['budget']>, false>
+  >;
+  readonly seams: SameKeys<Listed<'seams'>, keyof NonNullable<CloudRoaringOptions['seams']>>;
+} = { top: true, cache: true, encryption: true, retry: true, budget: true, seams: true };
 
 function refusal(options: unknown): Error | undefined {
   try {
@@ -64,7 +54,6 @@ describe('the option keys the store takes', () => {
       'top',
     ]);
     expect(Object.values(AGREE).every(Boolean)).toBe(true);
-    expect(Object.values(TYPED).every(Boolean)).toBe(true);
   });
 
   it('pass: every group filled in, and `retry: false` and `budget: false`', () => {
@@ -127,6 +116,7 @@ describe('the option keys the store takes', () => {
       ['cache', 5, 'number'],
       ['cache', [1], 'an array'],
       ['cache', new Map([['maxChunks', 1]]), 'a Map'],
+      ['encryption', new Boolean(true), 'a boxed boolean'],
       ['seams', null, 'null'],
       ['retry', true, 'boolean'],
     ] as const) {
