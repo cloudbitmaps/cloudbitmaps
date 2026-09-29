@@ -350,9 +350,9 @@ export async function retireExpired(
   let limited = false;
   // The budget is charged on ATTEMPT, not on success, and that distinction is the whole guard. `dropSegment`
   // writes the tombstone BEFORE sweeping Storage, so a fault in the Storage phase is a segment that is
-  // already retired — counting only successes meant a partial storage outage marched through the entire fleet with
-  // the cap never engaging, reporting `retired: 0, limited: false` (a "completed sweep that retired nothing") while
-  // every segment in the namespace was tombstoned. Reproduced by two independent reviews.
+  // already retired. Counting only successes would let a partial storage outage march through the entire fleet
+  // with the cap never engaging, reporting `retired: 0, limited: false` (a "completed sweep that retired nothing")
+  // while every segment in the namespace is tombstoned.
   let attempted = 0;
 
   for (const rec of mine) {
@@ -363,11 +363,11 @@ export async function retireExpired(
     if (rec.status === 'destroyed') {
       if (!purgeTombstones) continue;
       // Attribution is a POSITIVE MARKER the sweep writes on its own retirements, never an inference from
-      // "destroyed + an expired policy". That inference was wrong and the consequence was serious: `shredSegment`
+      // "destroyed + an expired policy". That inference would be wrong, and the consequence serious: `shredSegment`
       // never touches `retention`, so the ordinary ordering — set a 30-day policy, then a GDPR request arrives
       // mid-window and you `destroySegment` — leaves a **crypto-shred** tombstone carrying an expired policy.
       // Deleting that row destroys the local attestation for a right-to-erasure execution and un-fences the name
-      // for every writer. Two reviews reproduced it. A marker cannot be forged by that ordering.
+      // for every writer. A marker cannot be forged by that ordering.
       const retiredAt = retirementStamp(rec.retention);
       if (retiredAt === null) continue; // not ours — a GDPR tombstone, or one from a manual drop
       if (now - retiredAt < grace) continue; // inside the fence window; not ledger noise

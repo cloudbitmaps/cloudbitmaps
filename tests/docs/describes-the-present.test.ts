@@ -16,9 +16,17 @@ import { lineOf, unwrap } from '../helpers/prose';
  * - a component the library does not have (a warm, delta or live tier, anything NoSQL), or "the removed",
  *   "previous", "legacy" or "retired" tier, registry, layout, API, option or form;
  * - "the library no longer …", "no longer ships", "no longer supported", "deprecated";
- * - an earlier version or draft of the text itself ("an earlier version of this comment", "the first draft");
+ * - an earlier version or draft of the text itself ("an earlier version of this comment", "the first draft", "the
+ *   previous version of this test");
+ * - the code as it was ("the old helper", "the old shim", "the previous behaviour");
  * - "before this fix", "since the rename", "until now";
- * - "was renamed", "renamed from", "was removed in favour of", "was replaced by".
+ * - "was renamed", "renamed from", "was removed in favour of", "was replaced by";
+ * - a defect's history: the state before its fix ("reproduced before the fence existed", "the pre-fix script"), a
+ *   defect that shipped ("shipped broken", "the false positive that redded CI"), and the review that found it
+ *   ("reproduced by two reviews", "an adversarial review found").
+ *
+ * A test or a script says why its check exists by the failure the check prevents ("without the fence, an empty
+ * generation lands over a full one"), not by the defect it was written for or by who found it.
  *
  * These catch honest drift: a stale sentence, a paraphrase of one, the same claim wrapped differently. No list of
  * phrases stops the past being told in words it has never seen. "No longer", "is now", "is gone" and "has since
@@ -27,10 +35,11 @@ import { lineOf, unwrap } from '../helpers/prose';
  * used to encrypt each chunk"), the sentence is reworded ("an earlier published generation", "the DEK that
  * encrypts"); the patterns stay.
  *
- * Read: `packages/[pkg]/src`, `docs/`, `site/`, and the Markdown at the root and in each package, but the
- * changelog, whose job is the history. The tests, scripts and benches are not read: their comments record why a check
- * exists, which is often the defect it was written for. Text is read across wrapped lines and joined strings
- * (`tests/helpers/prose.ts`), so a wrap cannot split a phrase.
+ * Read: `packages/[pkg]/src`, `docs/`, `site/`, `tests/`, `scripts/`, `bench/`, `.github/`, and the Markdown at the
+ * root and in each package. Of the text a reader meets there, only the changelog is skipped: its job is the history.
+ * (This file is not read, because its fixtures are the phrases it refuses; nor is `CLAUDE.md`, a link to
+ * `AGENTS.md`, which is read.) Text is read across wrapped lines and joined strings (`tests/helpers/prose.ts`), so a
+ * wrap cannot split a phrase.
  */
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -45,11 +54,23 @@ const PAST = {
   'the library no longer':
     /\b(?:the library|this library|CloudBitmaps|the package)[ \t]+(?:\w+[ \t]+)?no[ \t]+longer\b|\bno[ \t]+longer[ \t]+(?:ships|supported|owed)\b|\b(?:is|are|was|now)[ \t]+deprecated\b/gi,
   'an earlier version of the text':
-    /\b(?:an|the)[ \t]+(?:earlier|first)[ \t]+(?:version|draft|form)[ \t]+(?:of[ \t]+(?:this|the)[ \t]+\w+|skipped|returned|showed|said|claimed|pushed|did)\b|\bthe[ \t]+(?:earlier|first)[ \t]+(?:form|draft)\b|\bin[ \t]+the[ \t]+first[ \t]+draft\b/gi,
+    /\b(?:an|the)[ \t]+(?:earlier|first)[ \t]+(?:version|draft|form)[ \t]+(?:of[ \t]+(?:this|the)[ \t]+\w+|skipped|returned|showed|said|claimed|pushed|did)\b|\bthe[ \t]+(?:earlier|first)[ \t]+(?:form|draft)\b|\bin[ \t]+the[ \t]+first[ \t]+draft\b|\bthe[ \t]+(?:previous|original|old)[ \t]+version[ \t]+of[ \t]+this\b/gi,
+  'the code as it was':
+    /\bthe[ \t]+(?:old|previous)[ \t]+(?:code|helper|shim|behaviou?r|markup)\b/gi,
   'a change as a point in time':
     /\b(?:before|until|since)[ \t]+(?:that|this|the)[ \t]+(?:fix|rewrite|rename|refactor)\b|\buntil[ \t]+now\b/gi,
   'a rename or a removal':
     /\b(?:was|were|has been|have been)[ \t]+renamed\b|\brenamed[ \t]+from\b|\b(?:was|were|ha(?:s|ve)[ \t]+been)[ \t]+(?:removed|replaced)[ \t]+(?:in[ \t]+favou?r[ \t]+of|by)\b/gi,
+  // "Before the fix" is the family above; these name the state before it by what was measured then, or call the code
+  // of that time "pre-fix".
+  'the state before a fix':
+    /\b(?:measured|reproduced)[ \t]+before[ \t]+(?:the|this|that|it)[ \t]+(?:[\w-]+[ \t]+)?(?:existed|landed|shipped)\b|\bpre-fix\b/gi,
+  'a defect that shipped': /\bshipped[ \t]+broken\b|\bredded\b/gi,
+  // A review is named as who found or reproduced something. "Is caught by review" is how a process works, not a story.
+  'the review that found a defect': new RegExp(
+    String.raw`\breview(?:er)?s?[ \t]+(?:\w+[ \t]+)?(?:found|reproduced|caught|planted|stopped|measured|demonstrated)\b|(?<!\b(?:is|are|be|being|gets?)[ \t]+)\b(?:reproduced|found|caught|measured|demonstrated)[ \t]+(?:\w+[ \t]+)?by[ \t]+(?:[\w-]+[ \t]+){0,2}review(?:er)?s?\b`,
+    'gi',
+  ),
 } as const;
 
 /**
@@ -67,9 +88,14 @@ const READ = [
   /^site\//,
   /^[^/]+\.md$/,
   /^packages\/[^/]+\/[^/]+\.md$/,
+  /^tests\//,
+  /^scripts\//,
+  /^bench\//,
+  /^\.github\//,
 ];
-// The changelog is the history; `CLAUDE.md` is a link to `AGENTS.md`, which is read.
-const SKIP = new Set(['CHANGELOG.md', 'CLAUDE.md']);
+// The changelog is the history; `CLAUDE.md` is a link to `AGENTS.md`, which is read; this file's fixtures are the
+// phrases it refuses.
+const SKIP = new Set(['CHANGELOG.md', 'CLAUDE.md', 'tests/docs/describes-the-present.test.ts']);
 
 function filesRead(): string[] {
   return execFileSync('git', ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8' })
@@ -128,7 +154,7 @@ function uncovered(
 }
 
 describe('the library is described as it is', () => {
-  it('in its code, docs and site', () => {
+  it('in its code, docs, site, tests, scripts, benches and workflows', () => {
     const offenders: string[] = [];
     const used = new Set<number>();
     for (const file of filesRead()) {
@@ -154,17 +180,23 @@ describe('the library is described as it is', () => {
     ).toHaveLength(1);
   });
 
-  it('reads the shipped source, the docs and the site', () => {
+  it('reads the shipped source, the docs, the site, the tests, the scripts, the benches and the workflows', () => {
     const files = filesRead();
     for (const f of [
       'packages/roaring/src/index.ts',
       'docs/guide/getting-started.md',
       'site/llms.txt',
       'README.md',
+      'tests/README.md',
+      'tests/core/load.test.ts',
+      'scripts/leak-scan.cjs',
+      'bench/lib/calibrate-guards.cjs',
+      '.github/workflows/ci.yml',
     ]) {
       expect(files).toContain(f);
     }
     expect(files).not.toContain('CHANGELOG.md');
+    expect(files).not.toContain('tests/docs/describes-the-present.test.ts');
   });
 
   it('refuses each kind', () => {
@@ -201,6 +233,18 @@ describe('the library is described as it is', () => {
       'the previous layout',
       'the legacy option form',
       'the retired tier',
+      'the previous version of this test asserted the length',
+      'the old helper mapped a falsy value to the default',
+      'The old shim exited 1 with no output',
+      'Reproduced before the fence existed: two loaders let an empty generation land',
+      'figures measured before it landed',
+      'Verified against the pre-fix script',
+      'bench/scale.cjs shipped broken once',
+      'JSDoc prose, the false positive that redded CI',
+      'Reproduced by two reviews.',
+      'An adversarial review found 24 real secret shapes',
+      'the finding two reviews reproduced independently',
+      'found only by a reviewer reading every file',
     ]) {
       expect(pastTense(text), text).toHaveLength(1);
     }
@@ -230,6 +274,18 @@ describe('the library is described as it is', () => {
       'a segment that no longer exists',
       'an earlier published generation',
       'what it has since been given',
+      'the original implementation is restored after each test',
+      'the old key unwraps what the old generation holds',
+      'the heap measured before the load',
+      'a run reproduced before the retry fires',
+      'a red run can be reproduced from its seed',
+      "the same vectors reproduced in NIST's validation set",
+      'a key prefix and its separator',
+      'a tarball that ships broken fails the smoke test',
+      'what no pattern reads is caught by review',
+      'where a review sees it',
+      'a reviewer can take a day to approve',
+      'a review finds what the gate cannot',
     ]) {
       expect(pastTense(text), text).toEqual([]);
     }
