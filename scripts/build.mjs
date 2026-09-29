@@ -39,10 +39,10 @@ await rm(dist, { recursive: true, force: true });
 
 // Entries come from the package's OWN `exports` map, so the two cannot disagree.
 //
-// A hardcoded list would be the same list written down in three places — here, each manifest's `exports`, and
-// `scripts/smoke.cjs` — so adding an entry would mean editing all three; deriving it means editing none. A
-// subpath that is declared and not built fails the build rather than 404-ing for a consumer, and `smoke.cjs`
-// independently loads every entry the map declares, so the map is checked from both directions.
+// A hardcoded list here would repeat each manifest's `exports`, so adding an entry would mean editing both;
+// deriving it means editing neither. A subpath that is declared and not built fails the build rather than
+// 404-ing for a consumer, and `smoke.cjs` independently loads every entry the map declares, so the map is
+// checked from both directions.
 const entries = {};
 for (const key of Object.keys(pkg.exports ?? { '.': null })) {
   const name = key === '.' ? 'index' : key.replace(/^\.\//, '');

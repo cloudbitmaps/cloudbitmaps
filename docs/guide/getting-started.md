@@ -554,10 +554,10 @@ res; // { generation, published, reason?, cardinality, cardinalityBefore, chunkC
 ```
 
 > **An operand that names a segment which does not exist is refused.** `store.segment('global-opt-out')` and
-> `store.segment('global-opt-out', { namespace: 'suppression' })` are **different segments**, and before this was
-> checked the first one resolved to nothing and suppressed nobody — returning the full audience, with no error.
+> `store.segment('global-opt-out', { namespace: 'suppression' })` are **different segments**, and unchecked the
+> first one would resolve to nothing and suppress nobody — returning the full audience, with no error.
 > The dangerous direction is the quiet one: a mistyped *include* collapses an intersect to nothing and you
-> notice; a mistyped *exclude* removes a safeguard and you do not. Both are now a `ValidationError` naming the
+> notice; a mistyped *exclude* removes a safeguard and you do not. Both are a `ValidationError` naming the
 > segment. A segment that **exists and is empty** — a row minted by `setRetention` before its first load — is
 > still fine, because somebody created it deliberately; it is only a name nobody ever created that is refused.
 > Pass `allowAbsentOperands: true` if you mean to combine against a name that may not exist yet.

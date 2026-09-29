@@ -50,8 +50,9 @@ const BAD_NAMES: readonly string[] = [
 ];
 
 /**
- * Names a conformant driver MUST accept: names that do not start with a letter or digit or hold a character
- * outside `[A-Za-z0-9._:-]`, and two Windows hazards, a device name and a trailing dot.
+ * Names a conformant driver MUST accept: a sample of names that start with something other than a letter or digit
+ * or hold a character outside `[A-Za-z0-9._:-]`, plus two plain names that are Windows hazards, a device name and a
+ * trailing dot.
  *
  * This is the more important list. A driver that refused characters it could not store, rather than escaping
  * them, would pass the list above and fail here.
@@ -124,7 +125,7 @@ export function storageChunkSourceConformance(
       }
     });
 
-    it('accepts every name outside the plain alphabet, and the Windows hazards', async () => {
+    it('accepts a sample of names outside the plain alphabet, and the Windows hazards', async () => {
       const source = await makeSource([{ chunkKey: 0, bitmap: SafeBitmap.fromValues([1]) }]);
       for (const name of NASTY_NAMES) {
         // A miss is fine — the point is that it VALIDATES and resolves rather than throwing ValidationError.
@@ -391,9 +392,8 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       const listed = await drainRecords(d.list());
       expect(listed.map((r) => [r.segment, r.status])).toEqual([[SEG.segment, 'destroyed']]);
 
-      // `{ currentGen: undefined }` type-checks without `exactOptionalPropertyTypes`, and it used to be a no-op
-      // (the merge was `??`). Under presence-based merging it would silently un-publish the segment's Storage data,
-      // so it is refused rather than coerced. Omitting the key is how you leave the pointer alone.
+      // `{ currentGen: undefined }` type-checks without `exactOptionalPropertyTypes`. Under presence-based merging
+      // it would silently un-publish the segment's Storage data, so it is refused rather than coerced. Omitting the key is how you leave the pointer alone.
       const live = makeDriver();
       const { token: t0 } = await live.create(SEG, { currentGen: 3 });
       await expectValidationReject(

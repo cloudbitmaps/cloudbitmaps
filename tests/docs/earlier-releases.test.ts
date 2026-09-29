@@ -11,48 +11,67 @@ import { describe, expect, it } from 'vitest';
  * repo, and the library is described by what it is, not by what it used to be.
  *
  * A version is a `0.N.P`, `0.N.x` or `0.N.*` with N from 1 to 9, in any case and with any suffix, or a `v0.N`.
- * A bare `0.N` is a number, as in `minRetained: 0.5`, unless the words around it make it a release: a noun after it
- * ("store", "line", "release"), a noun before it ("version", "CloudBitmaps"), a preposition before it ("in",
- * "since") and a stop after, a range ("from 0.N on", "0.N to 0.1N"), or a changelog heading. `0.10.0` and later
- * pass. An npm spec such as `pkg@0.N.P` names another package's version and passes, but not one of ours, in a spec
- * or a manifest, which is refused. Matching runs across line breaks, so where a line wraps changes nothing. Every
- * tracked file is read but the lockfiles, which carry nothing but other packages' versions, and binary files.
+ * A bare `0.N`, plain or marked up as code or bold, is a number, as in `minRetained: 0.5`, unless the words around
+ * it make it a release:
+ * - a noun after it ("store", "line", "format", "-era");
+ * - a noun or verb before it ("version", "releases", "CloudBitmaps", one of our package names, "shipped");
+ * - a preposition before it ("in", "since", "until") and a stop after;
+ * - "from 0.N on", or a range from it to `0.10` or to a full later version;
+ * - a heading, `## [0.N]` or `## 0.N`.
+ *
+ * `0.10.0` and later pass. An npm spec such as `pkg@0.N.P` or `pkg@^0.N.P` names another package's version and
+ * passes, but not one of ours: in a spec, a CDN URL or a manifest's dependencies, in any quoting, it is refused.
+ * Matching runs across line breaks and the comment or quote marker that starts the next line, so where a line wraps
+ * changes nothing. SVG path data (`d="…"`, `points="…"`) is not read.
+ *
+ * Every tracked file is read but the lockfile, which carries nothing but other packages' versions, and binary
+ * files. The words around an ordinary number can make it read as a release: "until" before it and a comma after,
+ * or "lines" after it. So can another package's `0.x.y` in a manifest or an action's pin comment. A sentence that
+ * trips on one is reworded; the patterns stay.
  */
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 /** After a bare `0.N`: not another digit, and not the dot of a longer version. A full stop may follow. */
 const END = String.raw`(?!\d|\.[\dx*])`;
-/** Between two words: spaces, and a line break with the comment or quote marker that starts the next line. */
-const GAP = String.raw`(?:\s+(?:(?:\/\/+|\*|>)\s+)?)`;
-
 /**
- * A release before `0.10.0`, written as a version. A word before a `0.N.P` does not hide it, but a digit, a dot,
- * or a lone SVG path command (`l0.1.2` in path data) does.
+ * Between two words: spaces, or a line break with any spaces and the comment or quote marker (`//`, `*`, `>`, `#`)
+ * that starts the next line. A marker counts only after a line break, so `before * 0.9` is not two words.
  */
+const GAP = String.raw`(?:[^\S\n]+|[^\S\n]*\n[^\S\n]*(?:(?:\/\/+|\*|>|#+)[^\S\n]+)?)`;
+/** Not inside SVG path data. */
+const NOT_SVG = String.raw`(?<!\b(?:d|points)=["'][^"']*)`;
+
+/** A release before `0.10.0`, written as a version. A digit, a dot or an `@` before it (a spec) hides it. */
 const EARLIER_RELEASE = new RegExp(
-  String.raw`(?<![\d.@])(?<!(?:^|[^A-Za-z])[MLHVCSQTAZ])v?0\.[1-9]\.(?:\d+|x|\*)(?!\d|\.\d)` +
-    String.raw`|(?<![\w.@])v0\.[1-9]${END}`,
+  String.raw`(?<![\d.@])(?<!@[\^~=<>]+)${NOT_SVG}v?0\.[1-9]\.(?:\d+|x|\*)(?!\d|\.\d)` +
+    String.raw`|(?<![\w.@])${NOT_SVG}v0\.[1-9]${END}`,
   'gi',
 );
 
-/** One of our packages at an earlier release, in an npm spec or a manifest's dependencies. */
-const OURS = String.raw`(?:@cloudbitmaps\/[\w.-]+|(?<![\w/@.-])(?:cloudbitmaps|cloud-roaring))`;
+/** One of our packages at an earlier release: in an npm spec or CDN URL, or as a manifest's dependency. */
+const OURS = String.raw`(?:@cloudbitmaps\/[\w.-]+|(?<![\w@.-])(?:cloudbitmaps|cloud-roaring))`;
 const EARLIER = String.raw`[\^~=<>]*v?0\.[1-9](?:\.(?:\d+|x|\*))?(?!\d|\.\d)`;
 const OURS_AT_EARLIER = new RegExp(
-  String.raw`${OURS}@${EARLIER}|"${OURS}"\s*:\s*"${EARLIER}`,
+  String.raw`${OURS}@${EARLIER}|["']${OURS}["']?\s*:\s*["']?[^"'\n]*?(?<![\d.])${EARLIER}`,
   'gi',
 );
 
-/** A bare `0.N` the words around it make a release. */
-const BARE = String.raw`(?<![\w.])v?0\.[1-9]${END}`;
+/** A bare `0.N`, plain or marked up, and what the words around it make a release. */
+const BARE = String.raw`(?<![\w.])(?:\x60|\*\*?|_|<code>)?v?0\.[1-9]${END}(?:\x60|\*\*?|_|<\/code>)?`;
+/** Not a measure: `0.9 ms`, `0.5x`, `0.5 GiB`. */
+const NOT_A_MEASURE = String.raw`(?!\s*(?:x|×|%|ms|µs|s|[KMG]i?B)\b|[x×])`;
+/** A later release a range can end at: `0.10`, or a full `0.1N.P`. */
+const LATER = String.raw`v?0\.(?:1\d\.(?:\d+|x|\*)(?!\d)|10${END})`;
 const BARE_RELEASE = new RegExp(
   [
-    String.raw`${BARE}${GAP}(?:stores?|lines?|releases?|series|era|builds?|packages?|APIs?|upgrades?|users?|clients?)\b`,
-    String.raw`\b(?:version|release|cloudbitmaps|cloud-roaring)${GAP}${BARE}`,
+    String.raw`${BARE}${GAP}(?:stores?|lines?|releases?|series|era|builds?|packages?|APIs?|upgrades?|users?|clients?|formats?|layouts?)\b`,
+    String.raw`${BARE}-era\b`,
+    String.raw`(?:\b(?:versions?|releases?|released|shipped|tagged|cloudbitmaps|cloud-roaring)|@cloudbitmaps\/[\w.-]+\x60?)${GAP}${BARE}${NOT_A_MEASURE}`,
     String.raw`\b(?:in|since|until|before|after)${GAP}${BARE}(?=\s*(?:[,;:)]|\.(?!\d)|(?![\s\S])))`,
-    String.raw`\bfrom${GAP}${BARE}${GAP}(?:on|onwards?)\b`,
-    String.raw`${BARE}\s*(?:to|→|->)${GAP}v?0\.1\d(?![\d.])`,
-    String.raw`^#{1,6}\s*\[v?0\.[1-9](?:\.\d+)?\]`,
+    String.raw`\bfrom${GAP}${BARE}${GAP}(?:on|onwards?)(?=\s*(?:[,;:)]|\.(?!\d)|$))`,
+    String.raw`${BARE}${GAP}?(?:to|→|->|–)${GAP}?${LATER}`,
+    String.raw`^#{1,6}\s*\[v?0\.[1-9](?:\.\d+)?\](?=[^\S\n]*(?:$|-|–))`,
+    String.raw`^#{1,6}[^\S\n]+v?0\.[1-9][^\S\n]*$`,
   ].join('|'),
   'gim',
 );
@@ -155,6 +174,28 @@ describe('no file names a CloudBitmaps release before 0.10.0', () => {
       `from ${v(9, '')} onward`,
       `the change landed in\n// ${v(9, '')}, and`,
       `a ${v(9, '')}\n * store`,
+      `it changed in \`${v(9, '')}\`.`,
+      `the \`${v(9, '')}\` line`,
+      `version \`${v(9, '')}\``,
+      `since <code>${v(9, '')}</code>,`,
+      `in **${v(9, '')}**,`,
+      `versions ${v(8, '')} and ${v(9, '')}`,
+      `releases ${v(1, '')} to ${v(9, '')}`,
+      `released ${v(9, '')} last year`,
+      `the ${v(9, '')} format`,
+      `the ${v(9, '')}-era layout`,
+      `\`@cloudbitmaps/roaring\` ${v(9, '')} wrote`,
+      `upgrading from ${v(9, '')} to ${v(10, '.0')}`,
+      `${v(9, '')} → ${v(10, '.x')}`,
+      `migrate ${v(9, '')}–${v(10, '')}`,
+      `## ${v(9, '')}`,
+      `# the change landed in\n# ${v(9, '')}, and`,
+      `the migration runs from ${v(9, '')}\n// to ${v(10, '')}`,
+      `a ${v(9, '')}\n# store`,
+      `https://cdn.jsdelivr.net/npm/cloudbitmaps@${v(9, '.0')}/+esm`,
+      `"@cloudbitmaps/core": "^${v(10, '.0')} || ^${v(9, '')}"`,
+      `'@cloudbitmaps/roaring': ^${v(9, '')}`,
+      `"@cloudbitmaps/roaring": "workspace:^${v(9, '')}"`,
     ]) {
       expect(earlierReleases(text), text).toHaveLength(1);
     }
@@ -182,6 +223,21 @@ describe('no file names a CloudBitmaps release before 0.10.0', () => {
       `<path d="M0 0l${v(1, '.2')}h3"/>`,
       `<path d="M${v(1, '.2')}"/>`,
       'thresholds: [0.5]',
+      'expect(after).toBeLessThan(before * 0.9);',
+      'const cap = after * 0.5;',
+      'const n = Math.ceil(0.9 * lines.length);',
+      'if (version > 0.5) {',
+      '<path d="M0 0 v0.5 h1"/>',
+      '<path d="M1 1l-0.1.2"/>',
+      `<path d="M1 1 ${v(1, '.2')}"/>`,
+      `npx publint@^${v(3, '.1')}`,
+      `npm i -D foo@~${v(3, '.1')}`,
+      'the ratio climbs from 0.5 on the first pass to 0.9 on the last',
+      'a false-positive rate from 0.1 to 0.12',
+      'cloudbitmaps 0.9 ms against roaring 1.2 ms',
+      'CloudBitmaps 0.5x the bytes of a sorted array',
+      '# [0.5] is the default',
+      'opacity 0.95 to 0.15',
     ]) {
       expect(earlierReleases(text), text).toEqual([]);
     }

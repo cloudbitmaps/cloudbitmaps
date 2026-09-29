@@ -100,7 +100,7 @@ CloudBitmaps imposes no fixed RPO/RTO — they fall out of how you back the stor
 | **RTO** (time to recover) | restoring the **largest** store — almost always **storage** — plus the `checkConsistency()` sweep | Object-store restore dominates; the consistency check is `O(registered segments)` at bounded concurrency and is cheap next to it. Budget RTO ≈ storage-restore time + a consistency sweep. |
 
 The practical takeaway: **the registry sets your RPO, storage sets your RTO.** Version both — one bucket
-setting now covers them — and remember that the registry's version history is the thing that bounds how much
+setting covers them — and remember that the registry's version history is the thing that bounds how much
 you can lose.
 
 ## Backup checklist

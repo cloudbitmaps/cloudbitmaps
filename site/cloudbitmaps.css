@@ -319,8 +319,8 @@ p {
 /* ── inline emphasis ───────────────────────────────────────────────────────
    Emphasis in this language is BRIGHTNESS, not weight. The mono faces run 11.5–13.5px, where bolding
    thickens the stems into mud and reads as *less* prominent than a lift to `--cb-ink` — so emphasis keeps
-   weight 400 and changes colour only. Global on purpose: this previously lived on `.trade-list strong`,
-   and every other emphasis site on the page silently missed it. */
+   weight 400 and changes colour only. Global on purpose: on one component's selector, every other emphasis
+   site on the page would silently miss it. */
 b,
 strong,
 em {
@@ -1624,8 +1624,8 @@ section > .lede {
 
   /* Stacked, the pairs must keep reading as pairs. `.ba-pairs` collapses to one column too, which puts each
      problem immediately above its answer — the source order is already problem, answer, problem, answer. The
-     vertical rule becomes a horizontal one on the answer, so the boundary a reader used to get from the column
-     edge is still there. */
+     vertical rule becomes a horizontal one on the answer, so the boundary a reader gets from the column edge at
+     wider widths is still there. */
   .ba-pairs {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -3545,8 +3545,8 @@ section > .lede {
   padding: 0;
 }
 
-/* Spacing where the pair now follows the table inside one section — `section`'s own bottom border used
-   to do this, and folding the two together removed it. */
+/* Spacing where the pair follows the table inside one section, which has no bottom border of its own between
+   the two. */
 .trade {
   margin-top: 40px;
 }

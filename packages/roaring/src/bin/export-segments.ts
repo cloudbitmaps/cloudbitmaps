@@ -194,7 +194,7 @@ export async function main(
  * `realpathSync` can throw, and none of those cases mean "run the CLI", so they resolve to false. The one
  * that genuinely reaches the catch is `node -` (a script on stdin), where `argv[1]` is the literal string
  * `"-"` and resolving it raises `ENOENT`. (Under `node --eval` there is no `argv[1]` at all, so the early
- * return above handles that one — this comment used to cite it, which was wrong.)
+ * return above handles that one.)
  */
 function invokedAsCli(): boolean {
   const entry = process.argv[1];

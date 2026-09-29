@@ -333,12 +333,11 @@ export async function eraseIdFromSegment(
   const notInCurrent = async (): Promise<EraseIdResult> => {
     // EVERY other generation in the bucket, not just the ones below the pointer.
     //
-    // The bound used to be `< from`, on the reasoning that an object above the pointer is permanently
-    // unreachable: forward-only publishing refuses to regress, so nothing up there could ever become current
-    // again. `rollbackSegment` ended that — an operator can move the pointer back onto any generation still in
-    // the bucket, which makes above-pointer objects reachable data. Reproduced with no race at all: roll back,
-    // then erase, and the erasure reported `'not-member'` — filtered out of the subject ledger entirely, a clean
-    // Art. 17 receipt — while the subject's bit sat in a generation one rollback away from being served again.
+    // The bound is not `< from`. An object above the pointer is reachable data: forward-only publishing never
+    // regresses, but `rollbackSegment` can move the pointer back onto any generation still in the bucket. With
+    // `< from`, a rollback and then an erasure would report `'not-member'` — filtered out of the subject ledger
+    // entirely, a clean Art. 17 receipt — while the subject's bit sat in a generation one rollback away from
+    // being served again, with no race at all.
     const superseded: number[] = [];
     for await (const key of deps.storage.list(ref)) {
       if (key.generation !== from) superseded.push(key.generation);

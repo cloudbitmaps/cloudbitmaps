@@ -185,8 +185,8 @@ so the hardening below is part of first-publishing one, not an afterthought:
 ## Bootstrapping a name
 
 **Every package name has to be created by hand once, because a Trusted Publisher cannot be bound to a package
-that does not exist yet.** It runs once for each new package name, **including when one is added to a family
-whose other packages are already on npm**.
+that does not exist yet.** `pnpm release:bootstrap` runs once for each new package name, **including one added to
+a family whose other packages are already on npm**, and publishes only the names the registry does not have.
 
 > [!WARNING]
 > **Do this before tagging, not after.** The release pipeline is tokenless: it authenticates by OIDC against
@@ -194,7 +194,7 @@ whose other packages are already on npm**.
 > workspace topologically and stops at the first failure, so tagging with an unbootstrapped name in the tree
 > publishes `@cloudbitmaps/core` at the new version — immutably, outside a 72-hour window — and then dies
 > before the flagship. The family ships in lockstep; that leaves one package of five on the registry with no
-> way back. `release.yml` now refuses the tag rather than starting, but the refusal is a backstop for this
+> way back. `release.yml` refuses the tag rather than starting, but the refusal is a backstop for this
 > procedure, not a replacement for it.
 
 A manual publish carries **no provenance attestation** — provenance attests to a *workflow* identity, and a

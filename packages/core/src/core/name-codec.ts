@@ -26,8 +26,8 @@
  *   whole rather than its characters — see {@link encodeNameForPath}.
  *
  * **The key alphabet is fixed for good.** Adding a character to it would change what `encodeNameForKey` emits
- * for every name containing that character, silently moving those segments to keys nothing looks up. Tests pin
- * the escapes.
+ * for every name containing that character, silently moving those segments to keys nothing looks up. A test pins
+ * it, one printable ASCII character at a time.
  *
  * **A plain name encodes to itself on the OBJECT-KEY alphabet** — one made only of `[A-Za-z0-9._:-]` that
  * starts with a letter or digit — so S3, GCS and Azure keys read as the names that made them. That is the
@@ -125,8 +125,8 @@ export function encodeNameForKey(name: string): string {
  * ADLS Gen2, where the namespace really is hierarchical, `prefix/../x` and `x` are the same object. Those are
  * the DR-restore and eject paths this library documents.
  *
- * `normalizeS3Prefix` refuses `.`/`..` segments in a **prefix**, which is trusted config; this gives the name, the
- * input an attacker can influence, the same guard.
+ * `normalizeS3Prefix` refuses `.`/`..` segments in a **prefix**, which is trusted config; the name, the input an
+ * attacker can influence, is escaped here instead.
  *
  * Every dot is escaped rather than just the first, so the result cannot end in one either.
  */

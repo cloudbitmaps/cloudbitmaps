@@ -180,12 +180,12 @@ export interface DropResult {
    * Generations still present in Storage when the sweep gave up, ascending. **Empty is the normal outcome** — a
    * non-empty value means the storage was NOT fully reclaimed and the drop should be re-run.
    *
-   * This field exists because its absence was a defect. A drop used to return `dropped: true` with a populated
-   * `generationsDeleted` and no `reason` even when an object holding the **complete set** had just been left in
-   * the bucket by a writer that was already mid-write when the tombstone landed (its publish is refused, but the
-   * object survives). For a cleartext segment those bytes are readable — and `gcOrphanGenerations` only collects
-   * a destroyed segment's generations when something runs it. The result was indistinguishable from a clean
-   * drop, so an operator got no signal to re-run. Now they do.
+   * Without it, a drop would return `dropped: true` with a populated `generationsDeleted` and no `reason` even
+   * when an object holding the **complete set** had just been left in the bucket by a writer that was already
+   * mid-write when the tombstone landed (its publish is refused, but the object survives). For a cleartext
+   * segment those bytes are readable — and `gcOrphanGenerations` only collects a destroyed segment's generations
+   * when something runs it. That result would look like a clean drop, and an operator would get no signal to
+   * re-run.
    */
   readonly generationsRemaining: readonly number[];
   /**
@@ -310,13 +310,13 @@ export async function dropSegment(
   let shred = await shredSegment(ref, deps, true, 'dropSegment');
 
   // ── THE ABSENT CASE. ───────────────────────────────────────────────────────────────────────────────────────
-  // `shredSegment` returns `absent` having written NOTHING when there is no registry row — and this function used
-  // to go on and delete every Storage generation anyway. That skipped the one step that makes the ordering safe
-  // while still running the destructive one: a drop landing between a load's object write and its publish
-  // (minutes apart on a large load) left a published pointer with no object behind it — precisely the
+  // `shredSegment` returns `absent` having written NOTHING when there is no registry row — and going on to delete
+  // every Storage generation anyway would skip the one step that makes the ordering safe while still running the
+  // destructive one: a drop landing between a load's object write and its publish (minutes apart on a large
+  // load) would leave a published pointer with no object behind it — precisely the
   // `missing-storage-generation` state this function exists to PREVENT.
   //
-  // The fix is to claim the identity before deleting anything. A `destroyed` row is exactly the fence the
+  // So the identity is claimed before anything is deleted. A `destroyed` row is exactly the fence the
   // writers already respect — `publishGeneration` and `bulkLoadCrbmGeneration` both refuse one — so creating it
   // converts the race into "the writer is refused and the bytes are collected".
   //

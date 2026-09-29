@@ -131,7 +131,7 @@ export function decodeDueName(name: string): SegmentRef | null {
   const segment = rest.slice(nsLength);
   // A pointer to a segment with no name is meaningless — and would round-trip to a ref the validator rejects.
   // This also covers a length prefix larger than the remainder: the slice then consumes everything and leaves
-  // the segment empty, so a separate overflow guard would be unreachable (it was, and was removed).
+  // the segment empty, so a separate overflow guard would be unreachable.
   if (segment.length === 0) return null;
   return namespace.length === 0 ? { segment } : { namespace, segment };
 }

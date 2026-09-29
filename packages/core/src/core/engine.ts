@@ -387,8 +387,8 @@ export class SegmentEngine {
     // read means the source resolved and cached a non-null snapshot, so `gen` cannot then come back null while
     // storage data is present, and `storageChunk` cannot skip every chunk on a stale null.
     //
-    // Honest note on how much this ordering now buys, because the comment used to claim more than it can and a
-    // future reader should not take an untested claim for a tested one. Against a `CrbmStorageChunkSource` — the
+    // Honest note on how much this ordering buys, so a future reader does not take an untested claim for a tested
+    // one. Against a `CrbmStorageChunkSource` — the
     // only source with a generation to resolve — both reads go through the same resolved-reader memo, so the
     // pathological state (`keys` non-empty, `gen` null) does not arise and swapping the two is observably
     // identical. The ordering is kept because it is the order that is correct for *any* source

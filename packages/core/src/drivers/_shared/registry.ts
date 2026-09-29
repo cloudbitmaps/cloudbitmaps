@@ -35,23 +35,22 @@ function validateGeneration(gen: number | null): void {
 
 /**
  * A patch that *mentions* `currentGen` must give it a real value — `null` to clear the pointer, or a generation.
- * `{ currentGen: undefined }` is refused rather than coerced, and the reason is a regression this check exists to
- * prevent: before `currentGen` was nullable, that patch was a **no-op** (the merge used `??`), so
- * `{ currentGen: maybeUndefined }` — which `strict` alone permits, since `exactOptionalPropertyTypes` is off —
- * left the pointer alone. Under presence-based merging the same call would silently *un-publish* a live segment:
- * every Storage generation goes invisible, and `gcOrphanGenerations` then refuses to collect the objects (no pointer
- * ⇒ nothing to compare against), so they are stranded and billed forever. Fail fast at the boundary instead.
+ * `{ currentGen: undefined }` is refused rather than coerced. `{ currentGen: maybeUndefined }` is what `strict`
+ * alone permits, since `exactOptionalPropertyTypes` is off, and a caller writing it means to leave the pointer
+ * alone. Under presence-based merging the same call would silently *un-publish* a live segment: every Storage
+ * generation goes invisible, and `gcOrphanGenerations` then refuses to collect the objects (no pointer ⇒ nothing
+ * to compare against), so they are stranded and billed forever. Fail fast at the boundary instead.
  */
 function validatePatchGeneration(patch: RegistryPatch): void {
   if (!('currentGen' in patch)) return;
-  // Dropping the old `?? null` is what actually restores the rejection (`validateGeneration(undefined)` fails the
-  // integer test); this branch exists to make the *message* say which value to pass instead, because the generic
+  // `validateGeneration(undefined)` already fails the integer test, since nothing coerces `undefined` to `null`;
+  // this branch exists to make the *message* say which value to pass instead, because the generic
   // "must be a non-negative integer or null" reads like a type error rather than the trap it is.
   if (patch.currentGen === undefined) {
     throw new ValidationError(
       `currentGen was present in the patch but undefined. Pass \`null\` to clear the pointer (the segment has no ` +
-        `Storage generation), or omit the key to leave it unchanged — an undefined value is refused because it used ` +
-        `to be a no-op and would now un-publish the segment's Storage data.`,
+        `Storage generation), or omit the key to leave it unchanged — an undefined value is refused because it ` +
+        `would un-publish the segment's Storage data.`,
     );
   }
   validateGeneration(patch.currentGen);

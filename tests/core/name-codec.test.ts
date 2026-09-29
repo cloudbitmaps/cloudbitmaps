@@ -81,6 +81,21 @@ describe('plain names stay literal', () => {
   });
 });
 
+describe('the key alphabet', () => {
+  it('leaves exactly `[A-Za-z0-9._:-]` literal inside a name, and escapes every other printable ASCII character', () => {
+    // Adding a character to the alphabet moves every segment whose name holds it to a key nothing looks up, so
+    // the alphabet is pinned one character at a time, between two letters so no leading or whole-name rule applies.
+    for (let c = 0x20; c <= 0x7e; c++) {
+      const ch = String.fromCharCode(c);
+      const literal = /[A-Za-z0-9._:-]/.test(ch);
+      const encoded = encodeNameForKey(`a${ch}b`);
+      expect(encoded, JSON.stringify(ch)).toBe(
+        literal ? `a${ch}b` : `a%${c.toString(16).toUpperCase().padStart(2, '0')}b`,
+      );
+    }
+  });
+});
+
 describe('names that need escaping', () => {
   const cases: ReadonlyArray<readonly [string, string]> = [
     ['a/b', 'a%2Fb'],

@@ -100,7 +100,7 @@ export async function runConsistencyCheck(
   }
   const maxScanSegments = options.maxScanSegments ?? DEFAULT_MAX_SCAN_SEGMENTS;
   // Bounded enumeration, shared with the retention sweep — see `registry-scan.ts` for why a fleet-wide scan is
-  // drained rather than streamed, and why the ceiling is not optional. This used to be an inline copy of that loop.
+  // drained rather than streamed, and why the ceiling is not optional.
   const recs = await drainRegistry(deps.registry, {
     namespace: options.namespace,
     maxScanSegments,

@@ -489,10 +489,9 @@
            What replaces it is the same list docs/benchmarks.md keeps under "What is still owed" — the honest
            form of a measurement you have not made. That list is the source; this one follows it.
 
-           Rows 01-06 are debts, not results. Row 07 was one until the gate that measures it started RECORDING
-           what it measured; it is now a published ceiling, and it is marked differently so the two kinds are
-           not read as one. Do not re-generalise this comment to "every row is a debt" — that sentence was true
-           when it was written and stopped being true without anything noticing. -->
+           Rows 01-06 are debts, not results. Row 07 is a published ceiling, because the gate that measures it
+           RECORDS what it measured, and it is marked differently so the two kinds are not read as one. Do not
+           generalise this comment to "every row is a debt". -->
       <section id="owed">
         <h2>What is still owed</h2>
         <p class="lede">
@@ -567,7 +566,7 @@
               <!-- This row said "owed" while the job that measures it ran green on every PR: the soak inside the
                    container ran without SOAK_INJECT, so its verdict reached container stdout and nothing else,
                    and the stage directory is deleted on exit. A measurement nothing records is a measurement
-                   nobody has. `pnpm rss-gate` now writes bench/rss-gate-results.json, which site-figures.cjs
+                   nobody has. `pnpm rss-gate` writes bench/rss-gate-results.json, which site-figures.cjs
                    gates this row against.
                    What is published is the CEILING the workload survives, not a reader-RSS number. The ceiling
                    is a property of the workload; an RSS reading is a property of the machine, and publishing
@@ -884,8 +883,7 @@
             <span class="rl-what">The intersection window is bounded on local drivers, not on a cloud one</span>
             <span class="rl-fig">2 &times; 8 payloads, any segment size</span>
             <span class="rl-note">
-              This row used to say the window was not soak-tested, because it was not. It is now bounded two
-              ways: a per-commit test counts the chunk payloads actually in flight and holds them at
+              The window is bounded two ways: a per-commit test counts the chunk payloads actually in flight and holds them at
               <strong>concurrency &times; operands</strong> &mdash; <strong>8&times; the chunks gives the same
               peak</strong>, which is the claim that matters, since it is residency not scaling with segment
               size that makes a 2,000-chunk intersection fit in a small runtime. And the long-running soak

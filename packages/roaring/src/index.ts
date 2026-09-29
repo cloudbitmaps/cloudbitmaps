@@ -850,15 +850,14 @@ export class CloudRoaring {
    * the same residual and says so. The failure it leaves is an orphan object, which costs storage until
    * something collects it — deliberately the cheaper side of the trade.
    *
-   * Materialising used to do none of that. It wrote and published in one step, so an empty combine — a typo'd
-   * operand, an `exclude` that swallowed everything, an operand that had not loaded yet — silently replaced
-   * `dest` with an empty generation. That is the same failure `load()`'s guard exists to prevent, on the same
-   * data, and it was reachable without passing any option at all.
+   * Without that, writing and publishing in one step, an empty combine — a typo'd operand, an `exclude` that
+   * swallowed everything, an operand that had not loaded yet — would silently replace `dest` with an empty
+   * generation: the same failure `load()`'s guard exists to prevent, on the same data, reachable without passing
+   * any option at all.
    *
-   * **A lost race still throws.** `loadSegment` reports one as `reason: 'superseded'`; the `*Into` verbs have
-   * always thrown {@link WriteConflictError} for it, and a caller who wrote `catch (WriteConflictError)` must
-   * keep working. So that one refusal is translated back into the throw, and `MaterializeResult.reason` never
-   * carries it.
+   * **A lost race throws.** `loadSegment` reports one as `reason: 'superseded'`; the `*Into` verbs throw
+   * {@link WriteConflictError} for it, so a caller can `catch (WriteConflictError)`. That one refusal is
+   * translated into the throw, and `MaterializeResult.reason` never carries it.
    *
    * **A `WriteConflictError` does not by itself mean nothing was published**, and that is worth knowing
    * before you write the retry. `'superseded'` covers four different causes — the write-once PUT collided,
@@ -883,9 +882,9 @@ export class CloudRoaring {
         ...(options?.allowEmpty === undefined ? {} : { allowEmpty: options.allowEmpty }),
         ...(options?.guard === undefined ? {} : { guard: options.guard }),
         // COLLECT NOTHING by default, which `loadSegment` does not — it keeps a grace window of 1 and deletes
-        // the rest. A materialisation has never collected: the guide states "**It deletes nothing.** The
+        // the rest. A materialisation collects nothing: the guide states "**It deletes nothing.** The
         // destination's previous generation stays in the bucket until you collect it", and the ownership table
-        // puts that call on the operator. Inheriting `load()`'s collection would have silently deleted the
+        // puts that call on the operator. Inheriting `load()`'s collection would silently delete the
         // generations an operator's recovery story depends on — `rollbackSegment` refuses a collected target —
         // as a side effect of adding a guard whose entire purpose is preventing data loss. Opt in with `keep`.
         keep: options?.keep ?? KEEP_EVERY_GENERATION,
@@ -913,8 +912,8 @@ export class CloudRoaring {
       // apart: the object either exists as an orphan above the pointer (collected by the next sweep) or was
       // never written at all, because the write-once PUT itself collided. Telling someone to look for an
       // orphan that does not exist is a wasted investigation.
-      // Deliberately does NOT assert which of the four causes it was. The message used to say "a newer
-      // generation was published first", and that is wrong for two of them: a `setRetention` on the
+      // Deliberately does NOT assert which of the four causes it was. "A newer generation was published first"
+      // is wrong for two of them: a `setRetention` on the
       // destination bumps the row's token without publishing anything, and a purge leaves no row at all.
       // Telling an operator to go looking for a newer generation that does not exist costs a real
       // investigation. `size > 0` is the one thing this path can state as fact.
@@ -1726,12 +1725,11 @@ export interface MaterializeOptions extends CombineOptions {
    *
    * It is on the call rather than on the store because that is where every other auditable operation takes it
    * (`eraseSubject`, `dropSegment`, `retireExpired`): the caller who performs the act decides where the record
-   * goes. Without it a `*Into` was the one write path in the library that could make a generation current and
-   * leave no trace in the compliance trail.
+   * goes. Without it a `*Into` would be the one write path in the library that could make a generation current
+   * and leave no trace in the compliance trail.
    *
-   * It sits HERE rather than on {@link BaseCombineOptions}, where it used to, for the reason this type exists:
-   * the streaming verbs write nothing, so an audit sink on `intersect()` was a parameter that could not do
-   * anything. Same rule, now applied to itself.
+   * It sits HERE rather than on {@link BaseCombineOptions} for the reason this type exists: the streaming verbs
+   * write nothing, so an audit sink on `intersect()` would be a parameter that could not do anything.
    */
   readonly audit?: IAuditSink;
   /**
@@ -1746,9 +1744,9 @@ export interface MaterializeOptions extends CombineOptions {
   /**
    * Generations to keep below the new pointer — see {@link LoadOptions.keep}.
    *
-   * **Defaults to keeping everything**, unlike `load()`, which keeps 1 and collects the rest. A
-   * materialisation has never collected, and an operator's recovery story can depend on that: `rollbackSegment`
-   * refuses a target that has been collected. Pass a number to collect on the way through; `0` keeps only the
+   * **Defaults to keeping everything**, unlike `load()`, which keeps 1 and collects the rest. An operator's
+   * recovery story can depend on a materialisation collecting nothing: `rollbackSegment` refuses a target that
+   * has been collected. Pass a number to collect on the way through; `0` keeps only the
    * generation this call publishes.
    */
   readonly keep?: number;
@@ -1977,7 +1975,7 @@ export class Segment {
    * better told than guessed at. Open a handle without `expiresAt` to write, or drop the deadline.
    *
    * (The broader guard — refusing to publish an empty or implausible generation over a non-empty one, with an
-   * `allowEmpty` override — now covers these verbs too: they route through the same guarded write path as
+   * `allowEmpty` override — covers these verbs too: they route through the same guarded write path as
    * {@link CloudRoaring.load}. The two stay separate because they differ in kind. That one is a REPORTED
    * refusal a caller may legitimately override; an expired handle is a wiring mistake, so it THROWS, before
    * any object is written — and `allowEmpty: true` does not reach it.)

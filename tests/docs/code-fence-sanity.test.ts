@@ -10,7 +10,7 @@ import { MOVED_OPTIONS } from '@/moved-options';
  * wiring and uses a name it never declared. Nothing here parses a sample.
  *
  * WHY THIS EXISTS. Doc samples are copy-pasted; a sample that cannot run is worse than no sample, because the
- * reader assumes their own environment is at fault. Two are easy to write:
+ * reader assumes their own environment is at fault. Two of them are easy to write:
  *
  *   - A GCS sample that names its backend `storage`, below the `storage` it made for the client
  *     `@google-cloud/storage` exports: `Identifier 'storage' has already been declared`.
@@ -22,7 +22,8 @@ import { MOVED_OPTIONS } from '@/moved-options';
  * WHAT IT CHECKS, and why only things like these. A full typecheck of every fence would need each sample to be
  * self-contained, which they deliberately are not (they elide imports and setup to stay readable). None of these
  * checks needs that assumption: a duplicate binding is a `SyntaxError` in any context, and a refused option key,
- * or a sample that uses a name it declared the other half of, is wrong no matter what surrounds it.
+ * or a sample that declares `storage` or `registry` but uses a `backend` it never declares, is wrong no matter what
+ * surrounds it.
  */
 
 const ROOT = join(__dirname, '..', '..');
@@ -131,7 +132,7 @@ describe('documentation code samples', () => {
   // What this deliberately does NOT flag is a fence that only *references* `backend` — samples on a page
   // routinely elide the construction shown in an earlier fence, which is why a plain free-identifier check
   // reported eight passages, every one of them correct. The defect is the contradiction, not the elision.
-  it('does not declare `storage` or `registry` and then use an undeclared `backend`, or the reverse', () => {
+  it('does not declare `storage` or `registry` and use an undeclared `backend`, or declare `backend` and use an undeclared `registry`', () => {
     // Comments, strings and template literals are stripped before anything is matched: half these names appear
     // in prose ("the wrapped DEKs live in the backend's registry") and in paths ("pointers under ./x/registry"),
     // and matching those reported ten correct samples. What is left is code.
@@ -181,9 +182,9 @@ describe('documentation code samples', () => {
   // down (`retry.onRetry`, `encryption.keystore`, `seams.clock`/`seams.rng`), and several are also valid on
   // the free-function deps objects. Listing them would fire on the correct spelling. Only keys the store takes
   // nowhere belong here; the others are caught by position, by ILLEGAL_AT_TOP_LEVEL below.
-  const STILL_VALID_ONE_LEVEL_DOWN = new Set(['registry', 'keystore', 'onRetry', 'clock', 'rng']);
+  const VALID_ONE_LEVEL_DOWN = new Set(['registry', 'keystore', 'onRetry', 'clock', 'rng']);
   const REFUSED_KEYS = MOVED_OPTIONS.map(([from]) => from).filter(
-    (from) => !STILL_VALID_ONE_LEVEL_DOWN.has(from),
+    (from) => !VALID_ONE_LEVEL_DOWN.has(from),
   );
 
   // `registry` is a special case: it is not a `CloudRoaringOptions` key, but it is a good option on
@@ -201,7 +202,7 @@ describe('documentation code samples', () => {
    * match cannot.
    */
   const ILLEGAL_AT_TOP_LEVEL: ReadonlyArray<readonly [string, string]> = MOVED_OPTIONS.filter(
-    ([from]) => STILL_VALID_ONE_LEVEL_DOWN.has(from),
+    ([from]) => VALID_ONE_LEVEL_DOWN.has(from),
   ).map(([from, to]) => [from, /^[\w.]+$/.test(to) ? `it goes in \`${to}\`` : to]);
 
   it('no sample passes a key at the top level of CloudRoaring options that goes one level down', () => {
@@ -222,7 +223,7 @@ describe('documentation code samples', () => {
         }
         const body = code.slice(open + 1, end);
         const line = fence.line + code.slice(0, open).split('\n').length - 1;
-        // Top-level `registry` only. Everything nested is blanked out FIRST, because a legitimate backend
+        // Only the top level is scanned. Everything nested is blanked out FIRST, because a legitimate backend
         // literal — `storage: createBackend({ storage: driver, registry: myRegistry })` — carries a perfectly correct
         // `registry` one level down, and on a single line a per-line depth counter still reads it as top
         // level. Blanking makes the depth question positional rather than line-ordered.

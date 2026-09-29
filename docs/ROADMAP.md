@@ -224,7 +224,7 @@ between here and there:
    against a real object store from inside the region. The calibration harness above covers load throughput and a
    two-operand `intersect` at one overlap; `*Into` latency, and the sweep over operand count and overlap, are not in
    it yet.
-   **The RSS soak is no longer owed:** `pnpm rss-gate` now records its run, and
+   **The RSS soak is measured:** `pnpm rss-gate` records its run, and
    the measured ceiling — a sustained read + combine + re-load workload over 400 segments inside a hard
    384 MiB cgroup limit with swap off, no OOM — is published on the
    [benchmarks page](benchmarks.md#what-rss-is-and-why-it-is-the-number-we-bound). Until they exist, the only cloud measurements on the
@@ -331,7 +331,7 @@ move it up.
   design: loads stay in Node, where the native codec is the right tool. **We will not claim this works on any
   runtime until CI runs the conformance suite inside that runtime** — the project has been wrong about
   edge-runtime capabilities three times, and a claim is not a test.
-- **A live tier, if there is demand** — immutable delta generations on the same bucket, read as base ∪ deltas at
+- **Incremental writes, if there is demand** — immutable delta generations on the same bucket, read as base ∪ deltas at
   chunk granularity; never a mutable row store. Nothing is queued; an issue describing a workload that genuinely
   cannot micro-batch into a load is what would move it.
 
@@ -339,11 +339,10 @@ move it up.
 
 Saying no is part of the design:
 
-- **A per-call write API.** `add`/`remove` over a mutable tier was this library's first shape, and it was
-  removed rather than kept beside the loaded store: two write paths with different consistency stories doubled
-  the surface every invariant had to hold across, and every roaring-based engine that needs freshness
-  micro-batches anyway. Compute the set upstream and load it; if a workload genuinely cannot, see the live-tier
-  note above.
+- **A per-call write API.** `add`/`remove` over a mutable tier is not built beside the loaded store: two write
+  paths with different consistency stories would double the surface every invariant has to hold across, and every
+  roaring-based engine that needs freshness micro-batches anyway. Compute the set upstream and load it; if a
+  workload genuinely cannot, see the incremental-writes note above.
 - **A scheduler for the retention sweep.** Segment-level retention ships; the heartbeat that calls it stays yours,
   and that is a decision rather than a gap. A library that started a timer would behave differently in a Lambda, an
   edge isolate and a long-lived server — the first piece of API that works in some runtimes and not others — and it

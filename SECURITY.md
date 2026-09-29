@@ -81,13 +81,10 @@ through a package a consumer installs.
 
 **Currently empty.** No advisory is being ignored — every one the gate sees is either fixed or absent.
 
-Three `tar` advisories (`GHSA-23hp-3jrh-7fpw` critical, `GHSA-8x88-c5mf-7j5w` high, `GHSA-w8wr-v893-vjvp`
-moderate) were previously accepted here on reachability grounds: `tar` is pulled in only by `roaring`'s
-**install-time** native-build chain (`@mapbox/node-pre-gyp` → `node-gyp`), which uses it to extract `roaring`'s
-own trusted prebuilt binary, and is never on CloudBitmaps' runtime path. That entry carried an explicit revisit
-condition — *"`tar` ships a fixed release"* — which upstream met, so the ignores were removed and `tar` upgraded
-to a patched release (2026-07-25) rather than left accepted. Reachability is a reason to **not panic**, never a
-reason to stay unpatched when a patch exists.
+`tar` is the example of the rule. It is pulled in only by `roaring`'s **install-time** native-build chain
+(`@mapbox/node-pre-gyp` → `node-gyp`), which uses it to extract `roaring`'s own trusted prebuilt binary, and it is
+never on CloudBitmaps' runtime path. It is still kept on a patched release rather than accepted on those grounds:
+reachability is a reason to **not panic**, never a reason to stay unpatched when a patch exists.
 
 **The bar for adding an entry here:** a rationale that names the exact path the advisory would have to travel to
 matter, plus a concrete condition under which the entry gets removed. An accepted advisory with no revisit

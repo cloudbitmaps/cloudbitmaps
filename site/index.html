@@ -108,20 +108,18 @@
                  "the bitmap engine", which hard-codes one flavor into the product's own pitch — and
                  @cloudbitmaps/core is codec-agnostic. "bitmaps" is the right noun: it is the umbrella
                  name, and Roaring is named as the shipped flavor rather than as the product.
-                 UPDATE 2026-07-31: the reason given here for avoiding "compressed bitmaps" was that it
-                 would exclude the committed bitset flavor. That flavor is now decided against, so the
-                 phrasing survives on a different and better ground — a Roaring chunk stores itself
-                 uncompressed whenever that is smaller, so "compressed" mis-describes our own default.
+                 It avoids "compressed bitmaps" because a Roaring chunk stores itself uncompressed
+                 whenever that is smaller, so "compressed" mis-describes our own default.
 
                  The mechanism clause is the codec-neutral half of the pitch, which is why it leads:
                  /architecture already states that chunk-key skipping does not depend on the codec, so
                  it stays true for every flavor.
 
-                 The old lede's "a billion-id segment costs cents per month" is gone, and deliberately.
-                 It was never a sourced figure — our anchor is 1.2 GiB -> $0.03/mo, and a billion ids
-                 lands anywhere from ~0.12 GiB dense to ~2 GiB sparse, so the price was not pinned to
-                 the quantity. It slipped past site-figures.cjs only because "cents" is not a dollar
-                 amount the money regex can see. Every figure below is a gated anchor.
+                 The lede does not say "a billion-id segment costs cents per month": that is not a sourced
+                 figure — our anchor is 1.2 GiB -> $0.03/mo, and a billion ids lands anywhere from ~0.12 GiB
+                 dense to ~2 GiB sparse, so the price is not pinned to the quantity — and site-figures.cjs
+                 would not catch it, because "cents" is not a dollar amount the money regex can see. Every
+                 figure below is a gated anchor.
 
                  The headline counts SIX calls, and they are the READ surface. A segment changes only by
                  publishing a whole new generation, so there is no `add` or `remove` to count. The
@@ -212,7 +210,7 @@
                  right under it, because a per-request bill against a standing one is only half a
                  comparison without the rate at which they cross.
 
-                 The last row replaces the write figure this panel used to headline. A load is the only way
+                 The last row is the price of a load. A load is the only way
                  data enters a segment, so its price is the other half of the bill a reader pays — and it
                  bills per OBJECT, which is why it reads per million rather than per id. It is the write and
                  the publish, pointer included; store.load()'s listings come on top. -->
@@ -589,8 +587,7 @@
                  only one with nothing behind it. The codec and each storage package add one dependency each,
                  so a project-wide number would be false however it was totalled. The package is NAMED here
                  because this strip is the only place on Home a reader can learn what "core" refers to.
-                 The final section's meta line used to carry these two figures; it no longer does, so each is
-                 stated once. -->
+                 The final section's meta line does not repeat them, so each is stated once. -->
             <p class="keys-stats">
               <span><strong>2</strong> tiers</span>
               <span><strong>4</strong> drivers</span>
@@ -764,9 +761,9 @@
       </section>
 
       <!-- ── THE CLOSE ──────────────────────────────────────────────────────
-           The page used to end on a code block, which left a reader who had scrolled the whole way with
-           nowhere obvious to go. Same two-column proportion as the hero, so the page opens and shuts on the
-           same shape. -->
+           The page ends on a way forward rather than a code block, which would leave a reader who had
+           scrolled the whole way with nowhere obvious to go. Same two-column proportion as the hero, so the page
+           opens and shuts on the same shape. -->
       <section>
         <div class="close-grid">
           <div class="close-copy">

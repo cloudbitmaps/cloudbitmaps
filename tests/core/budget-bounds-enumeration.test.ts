@@ -3,15 +3,13 @@ import { BudgetExceededError } from '@/core/errors';
 
 // The budget bounds the ENUMERATION, not just the fan-out it feeds.
 //
-// The bug these tests pin: every caller used to drain an async iterable in full and only then call
-// `checkBudget(budget, items.length, op)`. That reads as correct — the fan-out really is refused — but it
-// refuses *after* the list has been materialised, so a tight budget provided no memory protection at all.
-// Measured before the fix: under `budget: { maxRequests: 2 }`, `subjectReport` buffered 20,000 registry
-// records before it threw. That contradicts the bounded-memory invariant, and the documented mitigation
-// (`budget.maxRequests`) was the very thing that did not work.
+// These tests pin that a caller stops reading an async iterable once the budget is exceeded. Checking
+// `items.length` after a full drain refuses the fan-out too, but only after buffering the whole list, so a tight
+// budget would provide no memory protection at all: that contradicts the bounded-memory invariant, and makes the
+// documented mitigation (`budget.maxRequests`) the very thing that does not work.
 //
-// THE ASSERTION THAT MATTERS is not "it throws" — it threw before, too. It is **how far the source was
-// consumed**. A test that only checks for the error passes against the broken code. So each case below counts
+// THE ASSERTION THAT MATTERS is not "it throws" — a full drain throws too. It is **how far the source was
+// consumed**. A test that only checks for the error passes against a full drain. So each case below counts
 // what the iterable actually yielded and asserts the scan was abandoned, which is the only observable
 // difference between the two implementations.
 const budget = resolveBudget({ maxRequests: 2 }, DEFAULT_BUDGET);
