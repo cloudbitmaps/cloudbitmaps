@@ -111,10 +111,10 @@ describe('lazy expiry — set algebra stays coherent with count()', () => {
     // `exclude` is not one of the things being unioned, it is a subtraction applied to the result, so it has to
     // survive the shortcut that fires when every operand has aged out: `(this ∪ nothing) \ exclude`.
     //
-    // It did not. The all-expired branch returned a bare `iterate()`, which takes no options, so the opt-out
-    // list silently did not apply — on a library whose headline is composable suppression, reached by nothing
-    // more exotic than a rolling segment handle passing its deadline. 42 is in `optout` and in `aud`, so a
-    // dropped suppression is visible rather than coincidentally empty.
+    // A shortcut that returns a bare `iterate()`, which takes no options, drops the opt-out list silently — on
+    // a library whose headline is composable suppression, reached by nothing more exotic than a rolling segment
+    // handle passing its deadline. 42 is in `optout` and in `aud`, so a dropped suppression is visible rather
+    // than coincidentally empty.
     const { store, advance } = harness({ aud: [1, 42, 77], rolling: [8], optout: [42] });
     const aud = store.segment('aud');
     const optout = store.segment('optout');
@@ -133,8 +133,8 @@ describe('lazy expiry — set algebra stays coherent with count()', () => {
 
   it('an expired exclusion excludes nothing, and an expired base is empty', async () => {
     // 42 is in `suppress` and NOT in `base`, so the expired-base case below can actually fail: without the
-    // guard, `suppress.andNot([base])` would yield [42]. With [2] alone both paths were empty and the
-    // assertion proved nothing — mutation testing caught it.
+    // guard, `suppress.andNot([base])` would yield [42]. With [2] alone both paths would be empty and the
+    // assertion would prove nothing.
     const { store, advance } = harness({ base: [1, 2, 3], suppress: [2, 42] });
     const base = store.segment('base');
     const suppress = store.segment('suppress', { expiresAt: T0 + DAY });

@@ -3,18 +3,18 @@ import { collect, loadedStore } from '../helpers/loaded';
 /**
  * **An empty combine must not silently replace the destination.**
  *
- * WHY THIS FILE EXISTS. `load()` has refused to publish an empty generation over a non-empty one since it
- * shipped, because an empty result is far more often an upstream failure than an intent and is
- * indistinguishable from success once it lands. The `*Into` verbs write generations of a destination through
- * exactly the same protocol and had **no such guard**: `a.intersectInto(dest, [b])` where the intersection
- * came out empty wiped `dest` and reported a fresh generation number, reachable without passing any option.
+ * WHY THIS FILE EXISTS. `load()` refuses to publish an empty generation over a non-empty one, because an
+ * empty result is far more often an upstream failure than an intent and is indistinguishable from success
+ * once it lands. The `*Into` verbs write generations of a destination through exactly the same protocol, so
+ * they need the same guard: without it, `a.intersectInto(dest, [b])` where the intersection comes out empty
+ * wipes `dest` and reports a fresh generation number, reachable without passing any option.
  *
- * The narrow case where an operand had EXPIRED was already refused (`materialize-expiry-guard.test.ts`).
+ * The narrow case where an operand has EXPIRED is refused on its own (`materialize-expiry-guard.test.ts`).
  * This is the general one: a typo'd operand, an `exclude` that swallowed everything, an operand that has not
  * loaded yet — every shape that produces an empty result on live handles.
  *
- * The verbs now route through `loadSegment`, so what is pinned here is not just "empty is refused" but that
- * the whole guard came with it: the plausibility bounds, the reported (not thrown) refusal, and — the part
+ * The verbs route through `loadSegment`, so what is pinned here is not just "empty is refused" but that the
+ * whole guard applies: the plausibility bounds, the reported (not thrown) refusal, and — the part
  * that is easy to get wrong — that a refusal leaves the destination's PREVIOUS generation readable.
  */
 describe('the *Into verbs refuse an implausible result instead of publishing it', () => {
@@ -111,12 +111,12 @@ describe('the *Into verbs refuse an implausible result instead of publishing it'
   });
 
   it('COLLECTS NOTHING by default — a materialisation is not a retention decision', async () => {
-    // Routing through `loadSegment` nearly changed this silently. `load()` keeps a grace window of 1 and
-    // deletes the rest; a materialisation has never collected, and the guide promises "It deletes nothing".
-    // Inheriting the collection would have deleted the generations an operator's recovery story depends on —
-    // `rollbackSegment` refuses a collected target — as a side effect of adding a guard whose whole purpose
-    // is preventing data loss. Nothing else covered `collected` on an `*Into`, which is how it slipped past a
-    // green suite.
+    // `load()` keeps a grace window of 1 and deletes the rest; a materialisation collects nothing, and the
+    // guide promises "It deletes nothing". The verbs route through `loadSegment`, and a materialisation that
+    // inherited its collection would delete the generations an operator's recovery story depends on —
+    // `rollbackSegment` refuses a collected target — as a side effect of a guard whose whole purpose is
+    // preventing data loss. This test pins `collected` on an `*Into`, so that inheritance cannot pass a green
+    // suite.
     const { store, storage } = await loadedStore({ a: [1, 2, 3], b: [2, 3] });
     const dest = { segment: 'dest' };
     await store.load(dest, [10]);
@@ -155,13 +155,12 @@ describe('the *Into verbs refuse an implausible result instead of publishing it'
 
   it('still REPAIRS a destination whose current object is missing', async () => {
     // `missing-storage-generation`: the row names a generation whose object is gone — a partial drop, a
-    // bucket lifecycle rule, a registry restored without its bucket. Writing over it is the repair, and it
-    // is what this path did before the guard reached it.
+    // bucket lifecycle rule, a registry restored without its bucket. Writing over it is the repair.
     //
-    // The guard nearly broke that: its "before" read opens the current generation's object, which throws
-    // when the object is absent. A segment would then be unreadable AND unrepairable — the opposite of what
-    // a guard is for — with `allowEmpty: true` as the accidental workaround, i.e. the one option that also
-    // disables the protection.
+    // The guard's "before" read opens the current generation's object, which throws when the object is
+    // absent. Were that throw let through, the segment would be unreadable AND unrepairable — the opposite of
+    // what a guard is for — with `allowEmpty: true` as the accidental workaround, i.e. the one option that
+    // also disables the protection.
     const { store, storage } = await loadedStore({ a: [1, 2, 3], b: [2, 3], dest: [9] });
     const current = await storage.list({ segment: 'dest' })[Symbol.asyncIterator]().next();
     await storage.delete(current.value as { segment: string; generation: number });

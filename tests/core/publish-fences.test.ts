@@ -14,12 +14,9 @@ import { roaringCodec } from '@/roaring-codec';
 import { collect, loadedStore, seedSegment } from '../helpers/loaded';
 
 /**
- * The two fences that stand between the write-once protocol and a wrong answer, plus the three guards the suite
- * was found to be carrying without testing.
- *
- * Both fences were added after this change's own adversarial review, and neither was visible to the 1,114 tests
- * that already passed — which is the reason this file exists as its own suite rather than as cases bolted onto
- * the modules' happy paths.
+ * The two fences that stand between the write-once protocol and a wrong answer, plus three guards. None of the
+ * five is visible from a module's happy path — which is the reason this file exists as its own suite rather than
+ * as cases bolted onto those paths.
  *
  *  1 · **A publish that DERIVED its content from a generation must land only on that generation.** Forward-only
  *      is right for a load (its ids come from upstream, so it loses nothing by winning), and wrong for the
@@ -27,7 +24,7 @@ import { collect, loadedStore, seedSegment } from '../helpers/loaded';
  *      discards whatever that generation added). `publishGeneration`'s `expectFrom` is that distinction.
  *  2 · **A segment's encryption posture is decided once, at its first generation.** A keystore is wired on the
  *      store, so it is in scope for segments deliberately left cleartext; minting a DEK on that basis alone
- *      published generations encrypted under a key that was never stored — unrecoverable, and with no race
+ *      publishes generations encrypted under a key that is never stored — unrecoverable, and with no race
  *      required.
  *
  * The guards: `verifyGeneration` on the erasure rewrite, the chunk-key range check on the index-only `count()`
@@ -70,12 +67,10 @@ async function generations(storage: IStorageDriver, ref: SegmentRef): Promise<nu
  * rewrite ends up numbered *above* it and its forward-only publish would win. After the numbering, the
  * interloper collides on the same number and takes a loud write-once conflict.
  *
- * The instant *before* the chunk read used to be dismissed here as an already-safe case — the interloper's
- * `keep: 0` collection deletes the generation this call is still reading, and this comment called the resulting
- * `NotFoundError` "the documented cost of physical deletion on return". No shipped doc said that; the guide and
- * the facade both promised `'superseded'`. It is now reported as `'superseded'`, covered in
- * `erase-swept-generation.test.ts` at all three exposed round trips. Note also that the case below passes with
- * a **single-chunk** fixture, which is why it never reached the rewrite's own re-reads: that suite spans three
+ * The instant *before* the chunk read is a different race: the interloper's `keep: 0` collection deletes the
+ * generation this call is still reading. The guide and the facade both promise `'superseded'` for it, and
+ * `erase-swept-generation.test.ts` covers it at all three exposed round trips. Note also that the case below
+ * passes with a **single-chunk** fixture, which never reaches the rewrite's own re-reads: that suite spans three
  * chunks deliberately.
  */
 function afterFirstChunkRead(base: IStorageDriver, hook: () => Promise<void>): IStorageDriver {
@@ -99,9 +94,9 @@ function afterFirstChunkRead(base: IStorageDriver, hook: () => Promise<void>): I
 
 describe('a publish derived from one generation lands only on that generation', () => {
   it('a load that publishes mid-rewrite is not clobbered: the erasure reports superseded', async () => {
-    // The finding: `nextGeneration` picks a number above everything in the bucket, so the rewrite's publish used
-    // to out-rank the load's and win — and the `keep: 0` collection then deleted the load's object. The load
-    // returns a normal result and emits `segment.publish`, so nothing anywhere would have said the set was lost.
+    // `nextGeneration` picks a number above everything in the bucket, so an unfenced rewrite's publish out-ranks
+    // the load's and wins — and the `keep: 0` collection then deletes the load's object. The load returns a
+    // normal result and emits `segment.publish`, so nothing anywhere would say the set was lost.
     const w = await world();
     await w.load(SEG, [1, 2, 3]);
 
@@ -122,10 +117,10 @@ describe('a publish derived from one generation lands only on that generation', 
   });
 
   it('two erasures racing: the loser reports superseded instead of resurrecting the first id', async () => {
-    // The worst output this module can produce is a FALSE Art. 17 receipt. Before the fence, both calls returned
+    // The worst output this module can produce is a FALSE Art. 17 receipt. Without the fence, both calls return
     // `erased: true` with a `segment.rewrite` event, and the second one's generation — derived from gen 0 —
-    // put the first one's id back while collecting the generation that had evidenced its removal. The tell was
-    // that both receipts named `fromGeneration: 0`.
+    // puts the first one's id back while collecting the generation that evidenced its removal. The tell is
+    // that both receipts name `fromGeneration: 0`.
     const w = await world();
     await w.load(SEG, [1, 2, 3]);
 
@@ -216,9 +211,9 @@ describe('a publish derived from one generation lands only on that generation', 
     expect((await w.registry.get(SEG))!.currentGen).toBe(5);
   });
 
-  it('a load still publishes forward-only — the fence is opt-in, not the new default', async () => {
+  it('a load publishes forward-only — the fence is opt-in, not the default', async () => {
     // The counter-test. A load's ids come from upstream, so it must keep winning over a newer generation; if
-    // `expectFrom` had been made unconditional this would fail, and re-running a batch job would start throwing.
+    // `expectFrom` were unconditional this would fail, and re-running a batch job would throw.
     const w = await world();
     await w.load(SEG, [1]);
     await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 1 }, [7, 8], {
@@ -231,10 +226,10 @@ describe('a publish derived from one generation lands only on that generation', 
 
 describe("a segment's encryption posture is decided at its first generation", () => {
   it('a keystore-wired load onto a cleartext segment stays cleartext and stays readable', async () => {
-    // The bug two independent reviews reproduced, and it needed no race: the load minted a DEK because the row
-    // carried none, encrypted the generation, and the publish's advance branch dropped the wrapping — so the
-    // pointer advanced to an object encrypted under a key that existed in no persistent store. The data was
-    // unrecoverable the moment the call returned, and the call reported success.
+    // Without the posture rule this needs no race: the load mints a DEK because the row carries none, encrypts
+    // the generation, and an advance that drops the wrapping moves the pointer to an object encrypted under a
+    // key that exists in no persistent store. The data is unrecoverable the moment the call returns, and the
+    // call reports success.
     const keystore = new InProcessKeystore({ keys: { k1: key32() }, activeKeyId: 'k1' });
     const w = await world(keystore);
     await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [1, 2, 3], {
@@ -317,8 +312,9 @@ describe("a segment's encryption posture is decided at its first generation", ()
   });
 
   it('intersectInto on a keystore-wired store leaves a cleartext destination readable', async () => {
-    // The second entry point the review found: `materialize` passes the store's keystore unconditionally, so a
-    // `*Into` onto a destination that already had a cleartext generation destroyed it and returned a success.
+    // The second entry point: `materialize` passes the store's keystore unconditionally, so without the posture
+    // rule a `*Into` onto a destination that already has a cleartext generation destroys it and returns a
+    // success.
     const keystore = new InProcessKeystore({ keys: { k1: key32() }, activeKeyId: 'k1' });
     const w = await world(keystore);
     await w.load('a', [1, 2, 3]);
@@ -341,9 +337,9 @@ describe('a materialisation reports whether it actually landed', () => {
   it('throws instead of naming a generation that never became current', async () => {
     // `MaterializeResult.generation` is documented as "the destination's new current generation". A `*Into` is
     // not derived from `dest`'s content, so forward-only is the right publish rule for it — but the REPORTING
-    // was wrong: `bulkLoadCrbmGeneration` used its publish outcome only to gate the audit event and did not
-    // return it, so a materialisation whose publish lost the race resolved successfully, naming an orphan.
-    // The destination held the other writer's content and the caller was told otherwise.
+    // has to follow the publish outcome: a materialisation whose publish lost the race and still resolved
+    // successfully would name an orphan, while the destination holds the other writer's content and the
+    // caller is told otherwise.
     const w = await world();
     await w.load('a', [1, 2, 3]);
     await w.load('b', [2, 3, 4]);
@@ -381,10 +377,9 @@ describe('a materialisation reports whether it actually landed', () => {
   });
 
   it('emits segment.publish for the generation it published, like the load it is', async () => {
-    // A `*Into` is a load in disguise, and it was the one write path that could make a generation current and
-    // leave nothing in the compliance trail: `materialize` never threaded an audit sink and the verbs exposed
-    // no way to pass one. `docs/guide/dashboards.md` reads `segment.publish` as "a loaded generation became
-    // current", which this is.
+    // A `*Into` is a load in disguise: it makes a generation current, so it has to leave `segment.publish` in
+    // the compliance trail as a load does, through an audit sink the verbs take. `docs/guide/dashboards.md`
+    // reads `segment.publish` as "a loaded generation became current", which this is.
     const w = await world();
     await w.load('a', [1, 2, 3]);
     await w.load('b', [2, 3, 4]);
@@ -400,10 +395,9 @@ describe('a materialisation reports whether it actually landed', () => {
   });
 
   it('a streaming combine cannot even be handed an audit sink', async () => {
-    // This used to be a RUNTIME counter-test: `audit` sat on the shared options type, so a read verb had to
-    // ignore it rather than attest to a publish that never happened. It now lives on `MaterializeOptions`,
-    // which only the writing verbs take — so the mistake is a compile error instead of a silent no-op, and
-    // the `@ts-expect-error` below fails the build the day that regresses.
+    // `audit` lives on `MaterializeOptions`, which only the writing verbs take, so handing a sink to a read verb
+    // (which could only ignore it, never attest to a publish that did not happen) is a compile error rather than
+    // a silent no-op. The `@ts-expect-error` below fails the build if a read verb ever takes one.
     const w = await world();
     await w.load('a', [1, 2, 3]);
     await w.load('b', [2, 3, 4]);
@@ -454,12 +448,12 @@ describe('a materialisation reports whether it actually landed', () => {
   });
 });
 
-describe('the guards the suite was carrying untested', () => {
+describe('the guards no happy-path test reaches', () => {
   it('the erasure rewrite verifies what it wrote before publishing (IntegrityError, pointer unmoved)', async () => {
-    // Deleting the `verifyGeneration` call left all 1,114 tests passing. It is the integrity gate on the one path
-    // that rewrites a whole segment for a GDPR erasure: without it, a rewrite that silently dropped a chunk would
-    // be published as the erasure's authoritative generation, and `keep: 0` would then collect the generation
-    // that held the true data.
+    // `verifyGeneration` is the integrity gate on the one path that rewrites a whole segment for a GDPR erasure,
+    // and a happy-path test passes whether it runs or not. Without it, a rewrite that silently dropped a chunk
+    // would be published as the erasure's authoritative generation, and `keep: 0` would then collect the
+    // generation that held the true data.
     const w = await world();
     await w.load(SEG, [1, 2, 70_000, 140_000]); // three chunks, so a dropped one is detectable
     // Truncate the re-read: the freshly written object reports a short chunk-key set on verification.
@@ -487,8 +481,8 @@ describe('the guards the suite was carrying untested', () => {
 
   it('count() range-checks a chunk key that came from the index, not just from a chunk list', async () => {
     // Invariant 5 ("range-check every chunk key that comes back from storage") is enforced in exactly two
-    // places, and the index-only `count()` path — the headline read verb on a loaded segment — had no coverage:
-    // the existing out-of-range test uses a source with no `cardinalities`, so it exercises the other one.
+    // places, and this test covers the index-only `count()` path — the headline read verb on a loaded segment:
+    // the other out-of-range test uses a source with no `cardinalities`, so it exercises the other place.
     const storage = new MemoryStorageChunkSource();
     seedSegment(storage, 's', [1, 2, 3]);
     const hostile: MemoryStorageChunkSource = Object.create(storage) as MemoryStorageChunkSource;
@@ -504,8 +498,8 @@ describe('the guards the suite was carrying untested', () => {
 
   it('a rewrite that published but could not collect throws rather than attesting the erasure', async () => {
     // `EraseIdResult.collected`'s contract: "a rewrite that published but could not collect throws instead of
-    // reporting `erased: true` over bytes that are still there". Nothing exercised it, and it is the branch that
-    // decides whether an Art. 17 ledger over-attests.
+    // reporting `erased: true` over bytes that are still there". It is the branch that decides whether an
+    // Art. 17 ledger over-attests, and only a collect that fails after the publish reaches it.
     const w = await world();
     await w.load(SEG, [1, 2, 3]);
     const storage: IStorageDriver = {

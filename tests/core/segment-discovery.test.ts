@@ -71,10 +71,9 @@ describe('exists()', () => {
   });
 
   it('validates at the boundary — before any registry I/O, not by letting the driver reject it', async () => {
-    // The earlier version of this test only asserted that a ValidationError came back, which every registry
-    // driver already produces from its own key builder — so removing `validateSegmentRef` from both `exists()`
-    // and `segmentExists` left the whole suite green. The guarantee that is actually unique here is that a
-    // malformed ref costs nothing.
+    // Asserting only that a ValidationError comes back proves nothing: every registry driver already produces
+    // one from its own key builder, so such a test passes with `validateSegmentRef` removed from both `exists()`
+    // and `segmentExists`. The guarantee that is actually unique here is that a malformed ref costs nothing.
     const registry = new MemoryRegistryDriver();
     let gets = 0;
     const counting: IRegistryDriver = {
@@ -161,10 +160,9 @@ describe('segments()', () => {
   });
 
   it('streams — breaking out really stops the scan, it does not just stop reading', async () => {
-    // The previous version of this test asserted `seen.length === 2` after breaking at 2, which restates the
-    // break condition and cannot fail. It could not tell a streaming implementation from one that drained the
-    // whole fleet into an array first — which is the only thing the claim is about. Count what the DRIVER
-    // produced instead.
+    // Asserting `seen.length === 2` after breaking at 2 restates the break condition and cannot fail: it cannot
+    // tell a streaming implementation from one that drained the whole fleet into an array first — which is the
+    // only thing the claim is about. So this counts what the DRIVER produced.
     const registry = new MemoryRegistryDriver();
     let pulled = 0;
     const counting: IRegistryDriver = {

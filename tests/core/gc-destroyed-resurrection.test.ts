@@ -147,11 +147,10 @@ describe('gcOrphanGenerations — a segment resurrected while GC is listing', ()
   });
 
   it('ORDINARY branch: refuses to delete the live object of a re-created incarnation', async () => {
-    // The mirror of the case above, on the branch that used to be declared exempt. The old argument was "it
-    // deletes strictly below the pointer it read, and the pointer only moves forward" — true within ONE
-    // incarnation. Purge-and-recreate makes the pointer go BACKWARDS, and `g < current` then selects the new
-    // incarnation's live object. Every step is an ordinary in-repo path, and `keep: 0` is what the erasure
-    // rewrite passes.
+    // The mirror of the case above, on the branch that looks exempt: "it deletes strictly below the pointer it
+    // read, and the pointer only moves forward" is true within ONE incarnation. Purge-and-recreate makes the
+    // pointer go BACKWARDS, and `g < current` then selects the new incarnation's live object. Every step is an
+    // ordinary in-repo path, and `keep: 0` is what the erasure rewrite passes.
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     const load = async (ids: number[]) => {

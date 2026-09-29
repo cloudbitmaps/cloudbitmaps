@@ -238,16 +238,15 @@ describe('the three properties, over arbitrary strings', () => {
   );
 
   /**
-   * The byte-order mark, pinned from the counterexample CI actually produced.
+   * The byte-order mark, pinned as an explicit case.
    *
-   * `TextDecoder` strips a leading U+FEFF unless told not to, so `decodePercent` used to turn
+   * `TextDecoder` strips a leading U+FEFF unless told not to, so a `decodePercent` without `ignoreBOM` turns
    * `%EF%BB%BForders` back into `orders` — not a garbled name, an EXISTING one. Round-trip and injectivity
-   * both fail on it, and the validator accepts U+FEFF, so it was reachable from any caller that took a name
+   * both fail on it, and the validator accepts U+FEFF, so it is reachable from any caller that takes a name
    * from a spreadsheet export or a CSV read without BOM stripping.
    *
-   * It survived because it needs the BOM in FIRST position: the property found it once, on seed -701574071
-   * after 670 draws, and a 4-million-draw sweep afterwards produced BOMs only in non-leading positions. A
-   * property that finds a case this rarely is worth keeping, and worth pinning the moment it does.
+   * It needs the BOM in FIRST position, and the properties below draw one there only very rarely, so the case is
+   * pinned here rather than left to them to find.
    */
   const BOM = String.fromCharCode(0xfeff);
 
@@ -280,10 +279,10 @@ describe('the three properties, over arbitrary strings', () => {
   it('property: injective — swept with a seen-map, not by drawing two random strings', () => {
     // Drawing two independent strings and asserting they differ proves almost nothing: over a 95-character
     // alphabet the chance of drawing a colliding PAIR is ~0 even if collisions were common. It is also a
-    // corollary of round-trip above (a left inverse implies injectivity), so it added no power at all.
+    // corollary of round-trip above (a left inverse implies injectivity), so it would add no power at all.
     //
-    // A seen-map over one stream is what actually finds a collision CLASS — this is the shape that surfaced
-    // the lone-surrogate bug, where every unpaired surrogate encoded to the same replacement bytes.
+    // A seen-map over one stream is what actually finds a collision CLASS, such as every unpaired surrogate
+    // encoding to the same replacement bytes: any two members of the class anywhere in the stream are enough.
     for (const encode of [encodeNameForKey, encodeNameForPath]) {
       const seen = new Map<string, string>();
       fc.assert(

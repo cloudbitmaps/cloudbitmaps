@@ -4,15 +4,15 @@ import { joinId } from '@/core/bit-route';
 
 // Bulk-load buffers remainders and flushes them per chunk, and this covers the branch that flush creates.
 //
-// The insert loop used to call the codec once per id, which measured 1,344 ms for 1M ids with no yield point —
-// a synchronous stall on Node's only thread. It now buffers and inserts per chunk, which brought the same input
-// to 879 ms. The buffer is CAPPED (`BULK_FLUSH_IDS`, 1 << 20) rather than accumulating the whole input, because
-// bucketing everything first would hold every remainder as an uncompressed JS number across up to 65,536
-// chunks — unbounded in exactly the way this library refuses to be.
+// The insert loop buffers remainders and inserts them per chunk rather than calling the codec once per id: a
+// per-id call crosses the JS↔native boundary for every id, a synchronous stall on Node's only thread. The buffer
+// is CAPPED (`BULK_FLUSH_IDS`, 1 << 20) rather than accumulating the whole input, because bucketing everything
+// first would hold every remainder as an uncompressed JS number across up to 65,536 chunks — unbounded in
+// exactly the way this library refuses to be.
 //
 // That cap introduces a branch nothing else reaches: after a mid-stream flush, a chunk seen AGAIN must
 // `addMany` into its existing bitmap instead of constructing a fresh one. Get that wrong — overwrite instead of
-// merge — and ids silently vanish, with no error and no failing test, because every existing bulk-load test
+// merge — and ids silently vanish, with no error and no failing test, because every other bulk-load test
 // uses inputs far below the threshold. So this test deliberately crosses it.
 //
 // It is the slowest test in the suite by design; the alternative is leaving a data-loss branch uncovered.

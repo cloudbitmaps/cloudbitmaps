@@ -6,23 +6,22 @@ import type { ChunkRef, StorageChunkSource, SegmentRef } from '@/core/ports';
 //
 // engine.ts documents it precisely: "the Storage payload footprint is bounded by the window
 // (`concurrency × operands × chunk`), not by segment size — that's the Lambda-friendly property." That sentence
-// is the reason anyone would run this on Lambda at all, and until this file it was the one load-bearing claim in
-// the project with nothing asserting it.
+// is the reason anyone would run this on Lambda at all, and this file is what asserts it.
 //
-// What DID exist, and why none of it covered this:
+// What the neighbouring checks cover, and why none of it covers this:
 //
 //   - `tests/core/concurrency.test.ts` proves `mapWithConcurrency` never exceeds its limit. That is the generic
-//     primitive — and `combine` does not use it. It hand-rolls its own sliding window (engine.ts ~539), so the
-//     primitive being correct says nothing about the path that matters.
+//     primitive — and `combine` does not use it. It hand-rolls its own sliding window (its `inFlight` loop in
+//     engine.ts), so the primitive being correct says nothing about the path that matters.
 //   - `intersect.test.ts` proves chunk *skipping* ("NEVER fetches chunks for non-overlapping keys") and that the
 //     RESULT is identical across concurrency values. Both are about which bytes are fetched and what comes out,
 //     never about how many are held at once.
-//   - `bench/soak.cjs` issues no `intersect` calls at all, so the RSS gate that claims to bound the
-//     "intersection window" cannot observe it. (Fixed separately; the site already disclosed this honestly.)
+//   - `bench/soak.cjs` (and the RSS gate that runs it) issues combines under sustained load and shows that nothing
+//     accumulates across many of them over time. Heap, native and RSS figures cannot show how many payloads one
+//     call holds at once.
 //
-// So the bound was documented, depended upon, and unproven. A deterministic test is also strictly better
-// evidence than an RSS ceiling: RSS infers boundedness from a process not dying, while this counts the actual
-// concurrent payload reads and fails with a number.
+// A deterministic test is also strictly better evidence than an RSS ceiling: RSS infers boundedness from a process
+// not dying, while this counts the actual concurrent payload reads and fails with a number.
 
 /**
  * A storage source that tracks how many `getChunk` calls are in flight *simultaneously*, not just how many happen.

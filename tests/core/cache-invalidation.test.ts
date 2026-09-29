@@ -16,8 +16,8 @@ import type { IStorageDriver, SegmentRef } from '@/index';
  * unwrapped) and decoded chunks keyed by generation. Both exist to notice **a publish that advances
  * `currentGen`** — the TTL re-resolves, the new generation misses the cache.
  *
- * Neither notices an event that *destroys* what they were derived from. Every destructive verb went to the raw
- * drivers and told the caches nothing, so the process that performed an erasure kept answering from RAM — with
+ * Neither notices an event that *destroys* what they were derived from. A destructive verb that goes to the raw
+ * drivers and tells the caches nothing leaves the process that performed an erasure answering from RAM — with
  * no backend read, which is what makes it unreachable by any storage-side control.
  */
 const REF: SegmentRef = { namespace: 'ns', segment: 'seg' };
@@ -92,8 +92,8 @@ describe('destructive verbs invalidate what this store derived from the segment'
   });
 
   it('`store.invalidate` closes a crypto-shred performed beside the store', async () => {
-    // `destroySegment` is a free function over raw drivers, so the store cannot see it. Before the signal
-    // existed, the retained reader kept DECRYPTING — including chunk 1, which it had never fetched.
+    // `destroySegment` is a free function over raw drivers, so the store cannot see it. Without the signal, the
+    // retained reader keeps DECRYPTING — including chunk 1, which it has never fetched.
     const backend = new MemoryStorage();
     const { storage, registry } = backend;
     const keystore = new InProcessKeystore({

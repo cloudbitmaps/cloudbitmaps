@@ -7,11 +7,12 @@ import { loadedStore } from '../helpers/loaded';
  * A concurrent erasure collects with `keep: 0`, which takes every generation below its new pointer — `from`, and
  * the object the losing call just wrote. The documented answer to that race is `reason: 'superseded'`
  * ("the id is still there, re-run against the new generation"), which is what the fenced publish already
- * reports. The read half used to surface a bare `NotFoundError` instead, at three separate round trips.
+ * reports. Without the same answer on the read half, each of its three separate round trips surfaces a bare
+ * `NotFoundError` instead.
  *
- * The pre-existing coverage of this interleaving passed only because its fixture was a **single chunk**: a
- * one-chunk rewrite never re-reads `from` after the interloper's sweep. Every case here spans three chunks
- * (`1`, `70_000`, `140_000` land in different chunks), which is what makes the long window reachable.
+ * A fixture of a **single chunk** cannot tell the two apart mid-stream: a one-chunk rewrite never re-reads
+ * `from` after the interloper's sweep, so a test built on one passes either way. Every case here spans three
+ * chunks (`1`, `70_000`, `140_000` land in different chunks), which is what makes the long window reachable.
  */
 const SEG: SegmentRef = { segment: 's' };
 const THREE_CHUNKS = [1, 70_000, 140_000];
@@ -79,8 +80,8 @@ describe('an erasure whose generation is swept mid-flight reports superseded, no
     const res = await eraseIdFromSegment(SEG, 70_000, { ...w.deps, storage });
     expect(res).toMatchObject({ erased: false, reason: 'superseded', fromGeneration: 0 });
     expect(res.collected).toEqual([]);
-    // Nothing was written, so there is no generation to name. Reporting one here named an object that does not
-    // exist — and once the row had gone too, `nextGeneration` restarted at 0 and named `fromGeneration` itself.
+    // Nothing was written, so there is no generation to name. Reporting one would name an object that does not
+    // exist — and with the row gone too, `nextGeneration` restarts at 0 and would name `fromGeneration` itself.
     expect(res.generation).toBeUndefined();
   });
 
@@ -173,8 +174,8 @@ describe('an erasure whose generation is swept mid-flight reports superseded, no
   });
 
   // BASELINE, not coverage of the catch: a one-chunk rewrite never re-reads `from`, so this returns via the
-  // pre-existing pre-verify pointer check. It is here to prove the previously-passing case still passes.
-  it('BASELINE — the single-chunk fixture still reports superseded (via the pre-verify check)', async () => {
+  // pre-verify pointer check. It is here to prove the single-chunk interleaving reports `superseded` too.
+  it('BASELINE — the single-chunk fixture reports superseded too (via the pre-verify check)', async () => {
     const w = await world();
     await w.load(SEG, [1, 2, 3]);
     const storage = afterFirstChunkRead(w.storage, async () => {
@@ -185,8 +186,8 @@ describe('an erasure whose generation is swept mid-flight reports superseded, no
     expect(res).toMatchObject({ erased: false, reason: 'superseded', fromGeneration: 0 });
   });
 
-  // BASELINE: the up-front row reads are unchanged by this fix.
-  it('BASELINE — a segment with no row at all is still `absent`, not superseded', async () => {
+  // BASELINE: the up-front row read answers before any object is touched, so the catch is never reached.
+  it('BASELINE — a segment with no row at all is `absent`, not superseded', async () => {
     const w = await world();
     const res = await eraseIdFromSegment(SEG, 1, w.deps);
     expect(res).toMatchObject({ erased: false, reason: 'absent' });

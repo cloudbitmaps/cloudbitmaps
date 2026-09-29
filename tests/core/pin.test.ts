@@ -14,9 +14,8 @@ import { NotFoundError, UnsupportedError } from '@/core/errors';
 import type { SegmentRef } from '@/index';
 
 /**
- * A pin exists so a long job describes one instant. The first implementation made the snapshot a `Segment` over
- * a single-segment, generation-locked source, and an adversarial review reproduced five defects that all
- * descended from that one shape. Each has a case here.
+ * A pin exists so a long job describes one instant. The obvious shape for it — a `Segment` over a
+ * single-segment, generation-locked source — gets that wrong in several ways, and each has a case here.
  */
 const REF: SegmentRef = { segment: 's' };
 const OTHER: SegmentRef = { segment: 'other' };
@@ -83,7 +82,7 @@ describe('pin holds one segment at one generation', () => {
   });
 
   it('a pinned handle used as an OPERAND is read at its pin, not live', async () => {
-    // The inverse of the case above, and the one that used to compose silently wrong.
+    // The inverse of the case above, and the one that composes silently wrong if the operand is read live.
     const w = await world();
     const snap = await w.store.segment('s').pin();
     await bulkLoadCrbmGeneration(w.storage, { ...REF, generation: 1 }, [1, 2, 3, 4], {
@@ -150,8 +149,8 @@ describe('pin holds one segment at one generation', () => {
   });
 
   it('a transient fault does not poison a pin for the rest of its life', async () => {
-    // The memoized-rejection bug: `this.reader ??= open()` cached a REJECTED promise, so one fault made the pin
-    // the single read path in the library with no resilience.
+    // A memoized rejection: a reader held as `this.reader ??= open()` caches a REJECTED promise, so one fault
+    // would make the pin the single read path in the library with no resilience.
     const real = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     await bulkLoadCrbmGeneration(real, { ...REF, generation: 0 }, [1, 2, 3], { registry });

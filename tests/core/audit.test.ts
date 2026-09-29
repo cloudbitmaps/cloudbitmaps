@@ -363,8 +363,9 @@ describe('audit: segment.erase / namespace.erase', () => {
   });
 });
 
-// A real compile-time exhaustiveness guard over the AuditEvent union (replaces a hand-written literal list):
-// if a variant is added/removed without updating this switch, `tsc` fails on the `never` assignment.
+// A real compile-time exhaustiveness guard over the AuditEvent union, where a hand-written literal list of kinds
+// would drift silently: if a variant is added/removed without updating this switch, `tsc` fails on the `never`
+// assignment.
 describe('AuditEvent union', () => {
   it('is exhaustively handled', () => {
     const label = (e: AuditEvent): string => {

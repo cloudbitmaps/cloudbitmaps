@@ -31,12 +31,12 @@ import { loadedStore } from '../helpers/loaded';
  *   Storage last      — and best-effort, re-swept, so a partial failure leaves orphaned bytes (a billing problem)
  *                    rather than a live pointer into a hole (a correctness problem).
  *
- * The `leaves no torn pointer` test is the one that would have caught the workaround this function replaces:
- * an object-store lifecycle rule deleting the bytes while the registry still points at them.
+ * The `leaves no torn pointer` test is the one the obvious alternative to this function would fail: an
+ * object-store lifecycle rule deleting the bytes while the registry still points at them.
  */
 
-// NOTE the shape: `active:2026-08-01` is legal now, but the NAMESPACE/segment split is still what this suite
-// uses, because it is strictly more useful — `registry.list(namespace)` then enumerates exactly the buckets a
+// NOTE the shape: `active:2026-08-01` is a legal segment name, but this suite uses the NAMESPACE/segment split,
+// because it is strictly more useful — `registry.list(namespace)` then enumerates exactly the buckets a
 // retention sweep should consider, which a flat name cannot do without string-matching.
 const SEG: SegmentRef = { namespace: 'active-daily', segment: '2026-08-01' };
 const CONFIRM = { confirmSegment: SEG.segment };
@@ -58,7 +58,7 @@ type World = Awaited<ReturnType<typeof world>>;
 const seed = (w: World, ids: number[]): Promise<unknown> => w.load(SEG, ids);
 
 /** The segment handle — namespace INCLUDED, because it is part of the identity and omitting it silently
- *  addresses a different segment in the default namespace. (Which it did, while writing these tests.) */
+ *  addresses a different segment in the default namespace. */
 const handle = (w: World) => w.store.segment(SEG.segment, { namespace: SEG.namespace });
 
 /** A reader that has cached nothing — sees the truth at once (see the "only eventually empty" test). */
@@ -107,10 +107,10 @@ describe('dropSegment', () => {
   });
 
   it('leaves NO torn pointer — the segment reads as empty, not as an error', async () => {
-    // THE load-bearing test. The workaround this replaces (a lifecycle rule deleting objects while the registry
-    // still points at them) produces `missing-storage-generation`: reads throw NotFoundError, intermittently,
-    // because the cache masks it until eviction. Ordering the tombstone BEFORE the delete is what converts
-    // that into a benign empty read, so assert the benign outcome rather than the ordering directly.
+    // THE load-bearing test. A lifecycle rule deleting objects while the registry still points at them
+    // produces `missing-storage-generation`: reads throw NotFoundError, intermittently, because the cache masks
+    // it until eviction. Ordering the tombstone BEFORE the delete is what converts that into a benign empty
+    // read, so assert the benign outcome rather than the ordering directly.
     const w = await world();
     await seed(w, [1, 2, 3]);
     await dropSegment(SEG, w.deps, CONFIRM);
@@ -124,10 +124,10 @@ describe('dropSegment', () => {
   });
 
   it('proves the inverse order is what breaks: delete Storage first and reads throw', async () => {
-    // A control for the test above — BUT NOTE ITS LIMIT, which mutation testing exposed: it never calls
-    // `dropSegment`. It hand-deletes Storage and asserts the engine throws, so it is a control on the ENGINE, and it
-    // cannot fail if `dropSegment`'s ordering regresses. The real ordering proof is the mid-drop observation in
-    // the `ordering` describe below; this one only establishes that the torn state is in fact observable.
+    // A control for the test above — BUT NOTE ITS LIMIT: it never calls `dropSegment`. It hand-deletes Storage
+    // and asserts the engine throws, so it is a control on the ENGINE, and it cannot fail if `dropSegment`'s
+    // ordering is inverted. The real ordering proof is the mid-drop observation in the `ordering` describe
+    // below; this one only establishes that the torn state is in fact observable.
     const w = await world();
     await seed(w, [1, 2, 3]);
     for (const generation of await generationsInStorage(w)) {
@@ -183,8 +183,7 @@ describe('dropSegment', () => {
 
   it('deletes every generation, not just the current one', async () => {
     // A segment that has been reloaded holds superseded generations too until something collects them. Disposal
-    // that left them behind would keep billing for the bytes it claimed to remove — the exact complaint that
-    // motivated this function.
+    // that left them behind would keep billing for the bytes it claimed to remove.
     const w = await world();
     await seed(w, [1, 2]);
     await seed(w, [3, 4]);
@@ -212,11 +211,10 @@ describe('dropSegment', () => {
   });
 
   it('does NOT emit `segment.erase` for a cleartext drop — that event means crypto-shred', async () => {
-    // Caught by an adversarial docs review, and it was a real bug: the first version fired on
-    // `cryptoShredded || generationsDeleted.length > 0`, so a cleartext drop emitted the event that four
-    // documents — dashboards.md calls it the compliance *receipt* — define as proof of irreversible destruction.
-    // Deleting an object is weaker than discarding a key: a noncurrent version, a replica or a PITR snapshot
-    // still holds the cleartext. A dashboard built on our own docs would have over-attested.
+    // An emit condition of `cryptoShredded || generationsDeleted.length > 0` would make a cleartext drop emit the
+    // event that four documents — dashboards.md calls it the compliance *receipt* — define as proof of
+    // irreversible destruction. Deleting an object is weaker than discarding a key: a noncurrent version, a
+    // replica or a PITR snapshot still holds the cleartext. A dashboard built on our own docs would over-attest.
     const w = await world();
     await seed(w, [1, 2]);
     const events: unknown[] = [];
@@ -227,8 +225,6 @@ describe('dropSegment', () => {
     expect(result.generationsDeleted).toHaveLength(1); // bytes really went
     expect(result.cryptoShredded).toBe(false);
     // It attests the DISPOSAL and nothing stronger. `segment.erase` must not appear — that is the whole point.
-    // (Originally this asserted `[]`, because silence was the honest interim state before `segment.dispose`
-    // existed. The gap it documented is now closed; the prohibition it enforces is not relaxed.)
     expect((events as Array<{ kind: string }>).map((e) => e.kind)).toEqual(['segment.dispose']);
     expect((events as Array<{ kind: string }>).some((e) => e.kind === 'segment.erase')).toBe(false);
   });
@@ -248,10 +244,10 @@ describe('dropSegment', () => {
   });
 
   it('is only eventually empty to a reader that had already cached the segment', async () => {
-    // The docs said "afterwards the segment reads as empty", full stop. False for up to `cache.genTtlMs`
-    // (default 2s): a resolved generation is cached and decoded chunks sit in the cache, so a store that
-    // touched the segment BEFORE the drop keeps answering from cache. The original tests all passed only because
-    // none of them read first — the blind spot was in the fixture, not the assertion.
+    // "Afterwards the segment reads as empty", full stop, is false for up to `cache.genTtlMs` (default 2s): a
+    // resolved generation is cached and decoded chunks sit in the cache, so a store that touched the segment
+    // BEFORE the drop keeps answering from cache. A test that never reads first passes either way — that blind
+    // spot is in the fixture, not the assertion.
     //
     // Asserted as a bound rather than a timing: a FRESH store over the same drivers must see empty at once,
     // which pins the cause on caching rather than on the drop having failed. (The fixture passes no clock, so
@@ -265,8 +261,8 @@ describe('dropSegment', () => {
 
     // Same store: still answers from cache. Asserted as an exact value, not `toBeTypeOf('boolean')` — that
     // matcher's domain IS the declared return type of `has`, so it could only fail by rejecting, and the test's
-    // own title ("only EVENTUALLY empty") went unasserted. If caching ever stopped masking this, the weak version
-    // would have passed identically.
+    // own title ("only EVENTUALLY empty") would go unasserted. If caching stopped masking this, the weak version
+    // would pass identically.
     await expect(handle(w).has(1)).resolves.toBe(true);
 
     // A reader that never cached it sees the truth immediately — so the data really is gone.
@@ -293,12 +289,12 @@ function hook<T extends object>(target: T, prop: string, impl: (...args: never[]
 }
 
 /**
- * ORDERING — the tests that were missing, and whose absence let ordering inversions through.
+ * ORDERING — the tests that see an ordering inversion, which no post-hoc assertion can.
  *
  * Every test in the suite above asserts the POST-HOC steady state, and the steady state is identical whichever
- * order the two steps run in: the tombstone lands either way, so reads end up empty either way. Mutation
- * testing confirmed it — deleting the Storage objects BEFORE the tombstone (the exact `missing-storage-generation`
- * failure this function exists to prevent) passed every test here and every test in the repo.
+ * order the two steps run in: the tombstone lands either way, so reads end up empty either way. Deleting the
+ * Storage objects BEFORE the tombstone (the exact `missing-storage-generation` failure this function exists to
+ * prevent) ends in that same steady state, so no read after the drop can tell it apart.
  *
  * The torn state is only observable *during* the window. So these observe mid-drop.
  */
@@ -349,7 +345,7 @@ describe('dropSegment vs a concurrent writer', () => {
     // A load that was mid-write when the tombstone landed still finishes its object. Its publish is then refused
     // (the tombstone is the fence) — but the object survives, and it holds the COMPLETE set. For a cleartext
     // segment those bytes are readable, and nothing else reclaims them promptly: `gcOrphanGenerations` only runs
-    // from the retention sweep and `checkConsistency` skips destroyed segments. A single list-then-delete missed
+    // from the retention sweep and `checkConsistency` skips destroyed segments. A single list-then-delete misses
     // it entirely.
     //
     // Simulated at the driver, not by racing a real load: a `put` that lands during the sweep is exactly what a
@@ -375,8 +371,8 @@ describe('dropSegment vs a concurrent writer', () => {
   });
 
   it('reports what it could not reclaim instead of implying a clean drop', async () => {
-    // The residual has to be visible. `dropped: true` with a populated generationsDeleted and no reason used to
-    // be returned while an object holding the full set sat in the bucket.
+    // The residual has to be visible. A bare `dropped: true` with no reason, and nothing naming what is left,
+    // reads as a clean drop while an object holding the full set still sits in the bucket.
     const w = await world();
     await seed(w, [1, 2, 3]);
     const storage = hook(w.storage, 'delete', async () => {
@@ -500,10 +496,10 @@ describe('dropSegment on a segment with no registry row', () => {
 
   it('claims the identity before deleting orphaned objects, so a racing writer is fenced', async () => {
     // Objects in Storage with no registry row is a real state: `bulkLoadCrbmGeneration` writes the object, THEN
-    // publishes, and those are minutes apart on a large load. This used to delete every generation while writing
-    // no tombstone at all — skipping the one step that makes the ordering safe while still running the
-    // destructive one. Two measured outcomes: a dangling `currentGen: 0, status: 'active'` pointer at no object
-    // (the forbidden `missing-storage-generation` state), or a full resurrection when the racing writer published.
+    // publishes, and those are minutes apart on a large load. Deleting every generation while writing no
+    // tombstone at all would skip the one step that makes the ordering safe while still running the destructive
+    // one, with two outcomes: a dangling `currentGen: 0, status: 'active'` pointer at no object (the forbidden
+    // `missing-storage-generation` state), or a full resurrection when the racing writer publishes.
     const w = await world();
     await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [1, 2, 3], {}); // no registry → no row
     expect(await w.registry.get(SEG)).toBeNull();
@@ -533,10 +529,10 @@ describe('dropSegment on a segment with no registry row', () => {
 
 describe('dropSegment result fields', () => {
   it('reports generations ascending even when Storage lists them out of order', async () => {
-    // Every other assertion in this file is `toHaveLength` — a count, never the contents or the order. So the
-    // documented "ascending" was unproven, and the sort was unreachable by test because the fixture seeded in
-    // order anyway. Written with explicit generation numbers: the pointer lands on 2 and the later 0/1 publishes
-    // are forward-only no-ops, so the bucket holds three objects listed in write order 2, 0, 1.
+    // A `toHaveLength` assertion is a count, never the contents or the order, and a fixture that seeds in order
+    // cannot reach the sort — so neither proves the documented "ascending". Written with explicit generation
+    // numbers: the pointer lands on 2 and the later 0/1 publishes are forward-only no-ops, so the bucket holds
+    // three objects listed in write order 2, 0, 1.
     const w = await world();
     for (const generation of [2, 0, 1]) {
       await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation }, [generation + 1], {
@@ -552,8 +548,7 @@ describe('dropSegment result fields', () => {
   });
 
   it('tombstones the registry row and discards the DEK wrappings', async () => {
-    // Nothing in this file used to inspect the row itself — everything was asserted through read outcomes, which
-    // is exactly why the ordering inversions hid.
+    // Asserted on the row itself, not through read outcomes: read outcomes are what hide an ordering inversion.
     const keystore = new InProcessKeystore({
       keys: { k1: randomBytes(32) },
       activeKeyId: 'k1',
@@ -570,8 +565,8 @@ describe('dropSegment result fields', () => {
   });
 
   it('dryRun distinguishes absent from already, and previews the irreversible half', async () => {
-    // `reason` on a dry run was entirely uncovered — both branches. A retention sweep dry-running yesterday's
-    // already-collected bucket is the primary use case, and `reason` is how it tells "will delete" from "gone".
+    // `reason` on a dry run, both branches. A retention sweep dry-running yesterday's already-collected bucket
+    // is the primary use case, and `reason` is how it tells "will delete" from "gone".
     const keystore = new InProcessKeystore({
       keys: { k1: randomBytes(32) },
       activeKeyId: 'k1',
@@ -600,7 +595,7 @@ describe('dropSegment result fields', () => {
   it('propagates a Storage driver that cannot list — but still records a crypto-shred that happened', async () => {
     // The throw is right: a caller must re-run. But the shred is ALREADY irreversible by then, so emitting the
     // receipt after the sweep would mean no record of a destruction that really occurred — the exact mirror of
-    // the over-attestation the audit condition was tightened to prevent.
+    // the over-attestation the audit condition prevents.
     const keystore = new InProcessKeystore({
       keys: { k1: randomBytes(32) },
       activeKeyId: 'k1',
@@ -644,8 +639,8 @@ describe('store.dropSegment (facade)', () => {
 
   it('forwards the audit sink — an encrypted drop still emits the receipt', async () => {
     // Every audit assertion above uses the FREE function. `store.dropSegment` is the path users call, and
-    // `segment.erase` is the documented compliance receipt, so a facade that silently dropped the sink would have
-    // passed the whole suite.
+    // `segment.erase` is the documented compliance receipt, so a facade that silently dropped the sink would pass
+    // every other test here.
     const keystore = new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
     const w = await world(keystore);
     await seed(w, [1, 2]);
@@ -661,7 +656,7 @@ describe('store.dropSegment (facade)', () => {
   });
 
   it('throws UnsupportedError when the store has no raw storage driver', async () => {
-    // The docstring promises this, and nothing asserted it.
+    // The docstring promises this, so it is asserted here.
     const backend = new MemoryStorage();
     const { storage, registry } = backend;
     const store = new CloudRoaring({
@@ -708,7 +703,7 @@ describe('gcOrphanGenerations on a destroyed segment', () => {
   });
 
   it('still honours the grace window on a live segment', async () => {
-    // The negative control: the destroyed branch must not have widened the live one.
+    // The negative control: the destroyed branch must not widen the live one.
     const w = await world();
     await seed(w, [1]);
     await seed(w, [2]);
@@ -721,10 +716,9 @@ describe('gcOrphanGenerations on a destroyed segment', () => {
 
 describe('segment.dispose audit event', () => {
   it('a cleartext drop emits segment.dispose and NOT segment.erase', async () => {
-    // Before this kind existed, a cleartext disposal was invisible to the audit sink entirely — because
-    // `segment.erase` is defined by four documents as proof of an irreversible crypto-shred, and reusing it for an
-    // object delete would make a compliance dashboard over-attest. Silence was the honest interim state; a
-    // separate kind is the actual fix.
+    // A cleartext disposal needs a kind of its own: `segment.erase` is defined by four documents as proof of an
+    // irreversible crypto-shred, so reusing it for an object delete would make a compliance dashboard
+    // over-attest, and emitting nothing would leave the disposal invisible to the audit sink.
     const w = await world();
     await seed(w, [1, 2, 3]);
     const events: Array<{ kind: string; generationsDeleted?: number }> = [];

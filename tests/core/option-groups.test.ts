@@ -85,7 +85,7 @@ describe('grouped options reach the thing they configure', () => {
     const metrics = new CountingMetricsSink();
     // Two chunks, room for one: alternating reads evict each other, so NOTHING is ever served from cache.
     // Assert on hits rather than misses — with the ceiling dropped, the two cold reads are still misses, so a
-    // `misses > 1` assertion passes under the default ceiling too and the mutant survives (it did).
+    // `misses > 1` assertion passes under the default ceiling too and the mutant survives.
     const store = new CloudRoaring({ storage: backend, cache: { maxChunks: 1 }, metrics });
     const seg = store.segment('s');
     for (let i = 0; i < 3; i++) {
@@ -97,15 +97,15 @@ describe('grouped options reach the thing they configure', () => {
   });
 
   // `reader-cache.test.ts` covers these bounds thoroughly — but it constructs `CrbmStorageChunkSource`
-  // DIRECTLY, so it cannot see whether the facade passes the caller's value through. Both mutants survived
-  // the whole suite. That matters more than it looks: a dropped `readerMaxBytes` restores a 64 MiB ceiling
-  // someone had deliberately lowered for a small heap, and nothing else would notice.
+  // DIRECTLY, so it cannot see whether the facade passes the caller's value through: a facade that dropped
+  // either one would pass it. That matters more than it looks: a dropped `readerMaxBytes` restores a 64 MiB
+  // ceiling someone had deliberately lowered for a small heap, and nothing else would notice.
   //
   // The effect: one reader, two segments, read alternately. At a ceiling of 1 each read evicts the other's
   // reader and must re-open it with a fresh tail GET; at the default both stay open.
   // Re-opening an evicted reader costs a TAIL read, not a chunk GET, so count at the driver rather than
-  // through the metrics sink (which counts chunk gets and is identical either way — my first version of this
-  // test asserted on that and could not tell the two ceilings apart).
+  // through the metrics sink (which counts chunk gets and is identical either way, so an assertion on it
+  // cannot tell the two ceilings apart).
   const alternatingTailReads = async (cache: Record<string, number>): Promise<number> => {
     const backend = new MemoryStorage();
     for (const seg of ['a', 'b']) {
@@ -237,16 +237,16 @@ describe('a key the store does not take is refused, not ignored', () => {
 });
 
 /**
- * A partial policy is the whole point of the `retry` group — and it is also what put this hazard in reach.
+ * A partial policy is the whole point of the `retry` group — and it is also what puts this hazard in reach.
  *
  * `{ ...DEFAULT_RETRY_POLICY, ...overrides }` lets a key that is PRESENT WITH VALUE `undefined` overwrite the
  * default instead of falling back to it. `exactOptionalPropertyTypes` is off in this repo, so
  * `retry: { baseDelayMs: cfg.baseDelayMs }` typechecks clean when `cfg.baseDelayMs` is absent — the ordinary
- * shape for a value read from env or JSON. The delays became `NaN`; `SystemClock.sleep` then takes the
- * `setTimeout(resolve, NaN)` path, which Node coerces to 1 ms. Bounded jittered backoff silently becomes a
- * ~1 ms hot retry loop: the read still succeeds, the retry metric still emits, and the thundering-herd and
- * denial-of-wallet protection is gone with nothing to see. Every one of these was a compile error before the
- * policy became a `Partial`.
+ * shape for a value read from env or JSON. Under a plain spread the delays become `NaN`; `SystemClock.sleep`
+ * then takes the `setTimeout(resolve, NaN)` path, which Node coerces to 1 ms. Bounded jittered backoff
+ * silently becomes a ~1 ms hot retry loop: the read still succeeds, the retry metric still emits, and the
+ * thundering-herd and denial-of-wallet protection is gone with nothing to see. A policy typed as a full record
+ * would make every one of these a compile error; a `Partial` does not.
  */
 describe('a partial retry policy fills from the default, even for an explicit undefined', () => {
   const recordingClock = (): Clock & { sleeps: number[] } => {
@@ -301,10 +301,10 @@ describe('a partial retry policy fills from the default, even for an explicit un
     expect(await sleepsFor({ baseDelayMs: 7 })).toEqual([7, 14]);
   });
 
-  // Each of the next two exists because the assertion above CANNOT see the field it names. `[7, 14]` is
-  // 7 × 2, and 2 is the default `backoffFactor` — so a store that ignored the caller's factor produces the
-  // same schedule. Likewise no test here ever reached the `maxDelayMs` cap, so the cap was never
-  // load-bearing. Both overrides survived being forced back to their defaults until these landed.
+  // Each of the next two exists because the assertion above CANNOT see the field it names. `[7, 14]` is 7 × 2,
+  // and 2 is the default `backoffFactor` — so a store that ignored the caller's factor produces the same
+  // schedule. Likewise none of the schedules above reaches the `maxDelayMs` cap, so the cap is not
+  // load-bearing in them. Without these two, either override forced back to its default passes them all.
   it('a non-default `backoffFactor` actually shapes the curve', async () => {
     // Default factor 2 would give [10, 20]; only a factor of 3 gives 30.
     expect(await sleepsFor({ baseDelayMs: 10, backoffFactor: 3 })).toEqual([10, 30]);
@@ -334,7 +334,7 @@ describe('a partial retry policy fills from the default, even for an explicit un
     expect(await sleepsFor({ baseDelayMs: 100, maxDelayMs: 150 })).toEqual([100, 150]);
   });
 
-  // The regression. Each of these produced NaN delays — a ~1 ms hot loop — under a plain spread.
+  // The hazard itself. Under a plain spread, each of these produces NaN delays — a ~1 ms hot loop.
   it.each(['baseDelayMs', 'maxDelayMs', 'backoffFactor', 'maxAttempts', 'jitter'])(
     'an explicitly-undefined `%s` falls back to the default rather than erasing it',
     async (field) => {
@@ -345,7 +345,7 @@ describe('a partial retry policy fills from the default, even for an explicit un
 
 describe('a nullish options bag is a typed error, not a TypeError', () => {
   // The constructor reads `options.seams?.clock` before anything validates the bag, so without this guard
-  // `new CloudRoaring(null)` threw a raw `TypeError: Cannot read properties of null (reading 'seams')`.
+  // `new CloudRoaring(null)` throws a raw `TypeError: Cannot read properties of null (reading 'seams')`.
   it.each([null, undefined, 42, 'storage'])('rejects %p with a ValidationError', (bad) => {
     expect(() => new CloudRoaring(bad as unknown as { storage: MemoryStorage })).toThrow(
       ValidationError,

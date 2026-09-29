@@ -22,8 +22,8 @@ import { CountingObjectStore, counting } from '../helpers/counting';
 import { seededStore } from '../helpers/loaded';
 
 /**
- * The cost model of a loaded store. There is no per-id write term any more — data arrives only as a
- * generation, so the write side is `loads` (object PUTs) and the only crossover that exists is the read one.
+ * The cost model of a loaded store. There is no per-id write term — data arrives only as a generation, so the
+ * write side is `loads` (object PUTs) and the only crossover that exists is the read one.
  */
 
 const GIB = 1024 ** 3;
@@ -33,15 +33,14 @@ const FLAT: PricingProfile = { ...P, redis: ONE_REDIS_HA_CLUSTER };
 const SECONDS_PER_MONTH = 730 * 3600; // 2,628,000 — the research's convention
 
 describe('DEFAULT_PRICING', () => {
-  // It survived the export curation on the argument that a caller clones and tweaks it for their own
-  // region — and it was the one kept export with no test at all.
+  // It is exported so a caller can clone and tweak it for their own region.
   //
-  // The first version of this block mostly restated JavaScript: that an alias equals its target, that `??`
-  // falls back, that a spread copies. Those cannot fail for the reason the block exists. Every number below
-  // is HAND-MAINTAINED from published cloud pricing, and a stale or fat-fingered edit to any of them changes
-  // every estimate this library produces while every other test stays green — so the profile is pinned
-  // WHOLE. That is also the assertion that fails loudest when a price is deliberately updated, which is when
-  // someone should be looking at it.
+  // A block that restates JavaScript — that an alias equals its target, that `??` falls back, that a spread
+  // copies — cannot fail for the reason this block exists. Every number below is HAND-MAINTAINED from
+  // published cloud pricing, and a stale or fat-fingered edit to any of them changes every estimate this
+  // library produces while every other test stays green — so the profile is pinned WHOLE. That is also the
+  // assertion that fails loudest when a price is deliberately updated, which is when someone should be looking
+  // at it.
   it('is the exact published rate card, every field pinned', () => {
     // The identity matters as much as the values: `AWS_US_EAST_1_ONDEMAND` is `const P`, which the ~40
     // assertions in the rest of this file compute against. Re-point `DEFAULT_PRICING` at a fresh literal with
@@ -77,10 +76,10 @@ const ONE_CHUNK_IDS = [1, 2, 3, 9, 77];
 const ONE_CHUNK_BYTES = SafeBitmap.fromValues(ONE_CHUNK_IDS).serialize().length;
 
 // ---------------------------------------------------------------------------------------------------
-// Redis sized to the data. The verdict used to compare every workload with one $346 cluster, which is the wrong
-// size in both directions: 200 MB fits a node a tenth of its price, and 2 TB does not fit it at all. The default now
-// prices the cheapest ElastiCache cluster that holds the stored bytes, from AWS's price list. The expected figures
-// below are worked by hand from that price list, not by the code under test.
+// Redis sized to the data. One $346 cluster is the wrong baseline for every workload, in both directions: 200 MB
+// fits a node a tenth of its price, and 2 TB does not fit it at all. So the default prices the cheapest ElastiCache
+// cluster that holds the stored bytes, from AWS's price list. The expected figures below are worked by hand from
+// that price list, not by the code under test.
 // ---------------------------------------------------------------------------------------------------
 describe('Redis sized to the data', () => {
   const HOURS = 730;
@@ -278,7 +277,7 @@ describe('Redis sized to the data', () => {
       },
     });
     expect(r.redisBaseline.monthlyUSD).toBeCloseTo(MONTH(3, 0.411), 9);
-    expect(r.verdict).toBe('win'); // $281 against $900, where one $346 cluster made it 81%
+    expect(r.verdict).toBe('win'); // $281 against $900, where one $346 cluster would make it 81%
     expect(r.rationale).toContain(
       'under the $900.09/mo Redis that would hold 18.63 GiB (1 shard of 3 cache.r6g.xlarge nodes)',
     );
@@ -430,7 +429,7 @@ describe('Redis sized to the data', () => {
     expect(redisNote(report(1024 ** 5))).toContain('holds the 1.00 PiB stored');
   });
 
-  it('keeps a fixed baseline as given, whatever the data size, in the words it always had', () => {
+  it('keeps a fixed baseline as given, whatever the data size, and words it as a baseline', () => {
     for (const bytes of [0, 20e9, 2e12]) {
       expect(baselineFor(bytes, FLAT)).toStrictEqual({ basis: 'fixed', monthlyUSD: 346 });
     }
@@ -803,7 +802,7 @@ describe('costReport (grounded)', () => {
   });
 });
 
-describe('cost model — additional coverage (5b review)', () => {
+describe('cost model — additional coverage', () => {
   it('byOp partitions the total — every dollar is attributed to exactly one op', () => {
     const r = estimateCost({
       segments: [{ sizeBytes: 5e8 }],
@@ -1214,8 +1213,8 @@ describe('requests per sized read', () => {
 // What the model counts is what the engine does. Each figure the estimator adds — two reads an operand for a cold
 // intersect, what `store.load()` adds to a load, one pointer read per hot segment per TTL — is held here to the
 // requests the real engine makes over the real single-bucket registry protocol, on S3's request shape (one request
-// a read). The estimator once priced a load as the object's PUT alone and an intersect as its chunks alone, and a
-// real-cloud run is what showed it; a count taken here moves with the engine instead.
+// a read). An estimator that priced a load as the object's PUT alone and an intersect as its chunks alone would
+// undercount both; a count taken here moves with the engine, where a hand-worked figure does not.
 //
 // The prices are chosen so a dollar figure decodes to request counts: a GET costs $1 and a PUT-class request
 // $1,000, so `1000 × PUTs + GETs` has one reading while there are fewer than a thousand GETs.

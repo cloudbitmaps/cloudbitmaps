@@ -36,8 +36,8 @@ describe('collectWithinBudget', () => {
     await expect(collectWithinBudget(source, budget, 'probe')).rejects.toBeInstanceOf(
       BudgetExceededError,
     );
-    // 3, not 10,000: two admitted, the third trips the ceiling and stops. This is the whole point — the old
-    // code yielded all 10,000 first. Resident memory is now O(budget), not O(source).
+    // 3, not 10,000: two admitted, the third trips the ceiling and stops. This is the whole point — a full
+    // drain would yield all 10,000 first. Resident memory is O(budget), not O(source).
     expect(yielded()).toBe(3);
   });
 

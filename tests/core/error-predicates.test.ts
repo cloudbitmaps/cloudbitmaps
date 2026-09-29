@@ -20,13 +20,13 @@ import {
  */
 
 describe('the error brands are GLOBALLY REGISTERED symbols', () => {
-  // `Symbol.for` vs `Symbol` is the entire mechanism, and nothing tested it.
+  // `Symbol.for` vs `Symbol` is the entire mechanism, and this is the test that pins it.
   //
-  // `scripts/smoke.cjs` looks like it does — its comment claims "switching a `Symbol.for(…)` to a plain
-  // `Symbol(…)` in the built chunk must turn this red". It does not, and cannot: now that every package
-  // leaves `@cloudbitmaps/core` external there is ONE copy of core, so the brand is a single module-level
-  // constant shared by the class that sets it and the predicate that reads it. Symbol identity is then
-  // trivially satisfied whether or not the symbol is registered, and every smoke assertion stays green.
+  // `scripts/smoke.cjs` looks as if it could, since it classifies errors across the built packages. It
+  // cannot: every package leaves `@cloudbitmaps/core` external, so there is ONE copy of core, and the brand
+  // is a single module-level constant shared by the class that sets it and the predicate that reads it.
+  // Symbol identity is then trivially satisfied whether or not the symbol is registered, and every smoke
+  // assertion stays green.
   //
   // What registration actually buys is the cases a build cannot reproduce — a consumer's bundler inlining
   // core twice, two majors resolved side by side, an error crossing a worker or vm realm. In all three the

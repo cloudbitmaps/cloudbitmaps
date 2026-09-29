@@ -24,8 +24,8 @@ const bm = (...vals: number[]): SafeBitmap => SafeBitmap.fromValues(vals);
 describe('CrbmStorageChunkSource + writeCrbmGeneration', () => {
   it('run-encodes a storage generation: far smaller on disk, byte-identical set on the way back', async () => {
     // `writeCrbmGeneration` calls `bitmap.optimize?.()` before serializing. Roaring's third container type is a
-    // RUN, and no implementation selects it on its own — it takes an explicit pass, and nothing was making it.
-    // So run-shaped ids were stored at array or bitset prices: measured at 570x for a contiguous range.
+    // RUN, and no implementation selects it on its own — it takes an explicit pass. Without it, run-shaped ids
+    // are stored at array or bitset prices.
     //
     // This asserts BOTH halves, because size alone is not the property that matters. A re-encoding that lost or
     // gained a single id would also be "smaller".

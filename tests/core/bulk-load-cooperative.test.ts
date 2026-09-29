@@ -9,18 +9,18 @@ import { joinId } from '@/core/bit-route';
 // Bulk-load must not hold Node's only thread for the duration of the load.
 //
 // It is the one operation in this library that legitimately occupies the CPU for hundreds of milliseconds — a
-// 1M-id load touches ~62,000 chunks, and every one of them is serialized, CRC'd and framed. Measured before this
-// fix: **442 ms wall, 450 ms during which the event loop did not turn once**. Wired to a request handler, that
-// stalls every other request on the instance, health checks included, for the whole load. It is the difference
-// between a slow endpoint and an instance that looks dead to its load balancer.
+// 1M-id load touches ~62,000 chunks, and every one of them is serialized, CRC'd and framed. With no yield point,
+// **the event loop does not turn once for the whole load**. Wired to a request handler, that stalls every other
+// request on the instance, health checks included, for the whole load. It is the difference between a slow
+// endpoint and an instance that looks dead to its load balancer.
 //
 // WHAT THESE TESTS ASSERT is how many times the event loop actually turned during the load. That is deliberate
-// and it is the whole design of the file. The two natural implementations of this fix — `await Promise.resolve()`
-// and `await clock.sleep(0)` — both look right, both return promises, both get awaited in a loop, and both do
+// and it is the whole design of the file. The two natural ways to yield — `await Promise.resolve()` and
+// `await clock.sleep(0)` — both look right, both return promises, both get awaited in a loop, and both do
 // **nothing**: they resolve on microtasks, and the microtask queue drains to empty before the loop advances a
-// single phase. Measured, `sleep(0)` gave 555 ms of starvation against a 568 ms unyielded baseline. So a test
-// that asserts "a clock was passed" or "a promise was awaited" passes against a fix that does not work, and only
-// counting real loop turns can tell the two apart.
+// single phase. On the synthetic benchmark `SystemClock.yieldNow` documents, `sleep(0)` leaves 555 ms of
+// starvation against a 568 ms unyielded baseline. So a test that asserts "a clock was passed" or "a promise was
+// awaited" passes against a yield that does not work, and only counting real loop turns can tell the two apart.
 const KEY = { segment: 'coop', namespace: 'ns', generation: 1 } as const;
 
 /**
@@ -34,12 +34,12 @@ const ids = Array.from({ length: CHUNKS }, (_, i) => joinId(i % 61_035, i % 65_5
 /**
  * A clock that records **where** each yield came from, so a test can require the specific loop it names.
  *
- * Counting loop turns alone was not enough. A load has several independent yield sites — the id ingest, the
- * per-chunk flush, the cardinality tally, and the serialize/CRC writer — and with a bound of `> 20` against
- * ~119 actual turns, **any one surviving site satisfied every test in this file.** Disabling the yields in the
- * ~62,000-chunk insert loop (the one the module comment quantifies) left it fully green, and the case titled
- * "yields on an async source too" passed with the async ingest path's yields removed, because its turns came
- * from the writer. Per-site counting is what makes each assertion about the loop it claims to be about.
+ * Counting loop turns against a loose bound is not enough. A load has several independent yield sites — the id
+ * ingest, the per-chunk flush, the cardinality tally, and the serialize/CRC writer — and against a bound such as
+ * `> 20`, **any one surviving site would satisfy a turn-count test.** Disabling the yields in the per-chunk
+ * insert loop would leave it green, and the case titled "yields on an async source too" would pass with the
+ * async ingest path's yields removed, because its turns come from the writer. Per-site counting is what makes
+ * each assertion about the loop it claims to be about.
  */
 class SpyClock extends SystemClock {
   yields = 0;
@@ -67,7 +67,7 @@ async function loopTurnsDuring<T>(load: () => Promise<T>): Promise<{ turns: numb
 }
 
 describe('bulk-load is cooperative', () => {
-  it('lets the event loop turn hundreds of times during a load that used to block it entirely', async () => {
+  it('lets the event loop turn hundreds of times during a load that would otherwise block it entirely', async () => {
     const { turns, result } = await loopTurnsDuring(() =>
       bulkLoadCrbmGeneration(new MemoryStorageDriver() as never, KEY as never, ids),
     );
@@ -82,10 +82,10 @@ describe('bulk-load is cooperative', () => {
   });
 
   it('blocks the loop when no clock is injected — the behaviour the clock opts out of', async () => {
-    // Calling core directly, with a codec but no clock, is the pre-existing path. It must still work, and it must
-    // still block: this fix is purely additive, and a core-only caller who never asked for yielding gets exactly
-    // what they got before. This case is also the control for the one above — without it, a test asserting "many
-    // turns" could be passing because the load is slow for some unrelated reason.
+    // Calling core directly, with a codec but no clock, is the unyielded path. It must work, and it must block:
+    // yielding is purely opt-in, and a core-only caller who never asked for it gets a load whose loops run
+    // unbroken. This case is also the control for the one above — without it, a test asserting "many turns" could
+    // be passing because the load is slow for some unrelated reason.
     const { turns } = await loopTurnsDuring(() =>
       coreBulkLoad(new MemoryStorageDriver() as never, KEY as never, ids, { codec: roaringCodec }),
     );

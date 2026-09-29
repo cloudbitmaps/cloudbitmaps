@@ -7,11 +7,11 @@ import {
 import type { IStorageDriver } from '@/index';
 
 /**
- * Bounded storage-reader cache. `CrbmStorageChunkSource` used to hold an
- * unbounded `Map` of opened readers (each carrying a fully-parsed `.crbm` index), so a long-running server's
- * footprint grew with every distinct segment ever read → OOM at 100K+ segments. The cache is now a `BoundedLru`
- * capped by `maxOpenSegments`: past the ceiling the least-recently-used segment's reader is evicted, and the
- * next read of it re-opens (one cheap tail GET, since generations are immutable).
+ * Bounded storage-reader cache. `CrbmStorageChunkSource` keeps its opened readers (each carrying a fully-parsed
+ * `.crbm` index) in a `BoundedLru` capped by `maxOpenSegments`: past the ceiling the least-recently-used segment's
+ * reader is evicted, and the next read of it re-opens (one cheap tail GET, since generations are immutable). An
+ * unbounded `Map` of readers would grow a long-running server's footprint with every distinct segment ever read
+ * → OOM at 100K+ segments.
  */
 
 /** Wrap a storage driver to count reader opens — `CrbmReader.open` issues exactly one `getTail` per open. */
@@ -68,7 +68,7 @@ describe('CrbmStorageChunkSource — bounded reader cache', () => {
     // The memory gate for the bounded-memory pillar, enforced STRUCTURALLY (deterministic,
     // no flaky RSS sampling): read a fleet FAR larger than the cache cap TWICE. Pass 1 opens each once (N opens).
     // With the cap ≪ N, every segment is evicted before we loop back, so pass 2 re-opens all N (2N total). An
-    // unbounded cache (the regression this cap fixed) would keep all N readers resident → pass 2 is 0 re-opens
+    // unbounded cache (the failure this cap prevents) would keep all N readers resident → pass 2 is 0 re-opens
     // (total N) → this assertion fails. That's the catch: reader memory is bounded by the cap, not the fleet.
     const N = 200;
     const CAP = 20;
@@ -104,8 +104,8 @@ describe('CrbmStorageChunkSource — bounded reader cache', () => {
 describe('CrbmStorageChunkSource — byte-bounded reader cache (second half of the bound)', () => {
   // Each seeded segment carries [1,2] → one chunk → one parsed index entry (160 B retained, the reader's
   // RETAINED_BYTES_PER_INDEX_ENTRY). The COUNT bound (`maxOpenSegments`) is set generously so the BYTE bound
-  // (`maxOpenIndexBytes`) is the one doing the work: this is what a count-only cache missed (1024 wide indices
-  // at several MB each could pin ~GBs, blowing a small heap, while the count was nominally "in bounds"). Two
+  // (`maxOpenIndexBytes`) is the one doing the work: this is what a count-only cache misses (1024 wide indices
+  // at several MB each can pin ~GBs, blowing a small heap, while the count is nominally "in bounds"). Two
   // index entries = 320 B.
   it('evicts the LRU reader when the parsed-index byte budget binds before the count budget', async () => {
     const registry = new MemoryRegistryDriver({ now: () => 0 });

@@ -4,11 +4,10 @@ import type { RegistryRecord } from '@/core/ports';
 
 // The DR consistency check bounds its registry scan, like every other enumeration in the library.
 //
-// It was the last one left. The function's own comment said "fail fast before the (possibly huge) registry
-// scan" — and then drained that scan into an array regardless, so memory scaled with total fleet size and the
-// caller had no way to cap it. It is operator-invoked rather than request-reachable, which is why it was fixed
-// after the GDPR paths, but "an operator runs it" is not a bound: a DR drill against a large fleet from a
-// modest box is exactly the case that hurts.
+// Failing fast before the (possibly huge) registry scan is not enough if the scan is then drained into an array
+// regardless: memory would scale with total fleet size and the caller would have no way to cap it. The check is
+// operator-invoked rather than request-reachable, but "an operator runs it" is not a bound: a DR drill against a
+// large fleet from a modest box is exactly the case that hurts.
 //
 // As with the other bound tests, the assertion is how far the registry was CONSUMED — not merely that it threw.
 function registryOf(count: number): {
@@ -61,7 +60,7 @@ describe('consistency check bounds its registry scan', () => {
   });
 
   it('rejects a nonsensical ceiling before scanning anything', async () => {
-    // Fail fast, like the existing concurrency validation immediately above it.
+    // Fail fast, like the concurrency validation immediately above it.
     const reg = registryOf(100);
     await expect(runConsistencyCheck(depsWith(reg), { maxScanSegments: 0 })).rejects.toThrow(
       /maxScanSegments/,
