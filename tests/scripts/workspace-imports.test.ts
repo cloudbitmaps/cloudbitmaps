@@ -8,22 +8,20 @@ import { fileURLToPath } from 'node:url';
  * exported by it.
  *
  * WHY THIS FILE EXISTS. `packages/roaring` re-exports core with `export *`, so a name core keeps internal —
- * `drainRegistry`, `DEFAULT_MAX_SCAN_SEGMENTS`, `CrbmWriter`, `BufferSink` — is absent from the flavor too, and
- * a script that destructures one from there fails only at runtime. Two committed scripts did:
+ * `drainRegistry`, `DEFAULT_MAX_SCAN_SEGMENTS`, `CrbmWriter`, `BufferSink` — is absent from the flavor too. A
+ * script that destructures one from there gets `undefined`, which throws only when the script uses it:
  *
- *   bench/scale.cjs   → TypeError: drainRegistry is not a function
- *   fuzz/seed-corpus.cjs → TypeError: BufferSink is not a constructor
+ *   const { drainRegistry } = require('@cloudbitmaps/roaring') → TypeError: drainRegistry is not a function
+ *   const { BufferSink } = require('@cloudbitmaps/roaring')    → TypeError: BufferSink is not a constructor
  *
- * Both shipped on `main` through a full green gate and fourteen CI checks, because nothing in this repo
- * compares these three directories against the published surface. They are plain `.cjs`/`.mjs`, so
- * `tsc` never sees them; they are not imported by any test, so `vitest` never loads them; and the workflows
- * that run them are nightly or manual, so no PR check executes them. The failure is a *runtime* one in files
- * the type system has no opinion about.
+ * Nothing else in this repo compares these three directories against the published surface. They are plain
+ * `.cjs`/`.mjs`, so `tsc` never sees them; a check that loads one without running the path that uses the name
+ * sees nothing wrong, since destructuring a missing name does not throw; and much of what they run runs
+ * nightly, by hand or on a tag, so no PR check executes it. The failure is a *runtime* one in files the type
+ * system has no opinion about.
  *
- * What made it worth a gate rather than more care is that this is the THIRD time. `harness-options.test.ts`
- * exists because `bench/scale.cjs` shipped broken once before — but it compares *store-option keys*, has no
- * notion of imported symbol names, and does not glob `fuzz/` at all. So the sibling gate was in place and
- * still could not see this.
+ * `harness-options.test.ts` reads the same `scripts/` and `bench/` files, but for *store-option keys*: it has
+ * no notion of imported symbol names, and does not glob `fuzz/` at all, so it cannot see this.
  *
  * Resolution is against the SOURCE barrels, not `dist/`, so this runs in a clean checkout without a build.
  *
@@ -37,8 +35,8 @@ import { fileURLToPath } from 'node:url';
  * from `fuzz/build/fuzz-core.js`, a bundled artifact rather than a workspace specifier, so those three files
  * are scanned and matched by nothing.
  *
- * That is a deliberate floor, not an aspiration: it catches the destructured form, which is the one that has
- * broken three times, and under-coverage is the safe direction for a guard whose false positives would teach
+ * That is a deliberate floor, not an aspiration: it catches the destructured form, which is the form most of
+ * these files use, and under-coverage is the safe direction for a guard whose false positives would teach
  * people to route around it.
  */
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -123,8 +121,8 @@ const files = execFileSync('git', ['ls-files', 'scripts/*', 'bench/*', 'fuzz/*']
   .filter((f) => /\.(cjs|mjs|js)$/.test(f));
 
 describe('scripts/, bench/ and fuzz/ import only names the workspace actually exports', () => {
-  it('is reaching all three directories, and the two files that broke', () => {
-    // A guard that stopped globbing one of these would pass silently, which is how this got through twice.
+  it('is reaching all three directories, and a bench and a fuzz file by name', () => {
+    // A guard that stopped globbing one of these would pass silently.
     expect(files).toContain('bench/scale.cjs');
     expect(files).toContain('fuzz/seed-corpus.cjs');
     expect(files.some((f) => f.startsWith('scripts/'))).toBe(true);

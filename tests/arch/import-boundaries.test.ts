@@ -2,11 +2,10 @@ import path from 'node:path';
 import { ESLint } from 'eslint';
 
 /*
- * Architectural lint, part 2: the import-boundary rules that used to be dependency-cruiser's are eslint
- * `no-restricted-imports` rules in eslint.config.js. This test lints planted violations at the paths the rules
- * are scoped to and asserts each one fires — and that the legitimate shapes do not. It exists because a rule
- * mistranslated during the move would be a silent gap: `pnpm lint` passing proves nothing about a rule that
- * never matched.
+ * Architectural lint, part 2: the import-boundary rules are eslint `no-restricted-imports` rules in
+ * eslint.config.js. This test lints planted violations at the paths the rules are scoped to and asserts each
+ * one fires — and that the legitimate shapes do not. It exists because a rule written wrong would be a silent
+ * gap: `pnpm lint` passing proves nothing about a rule that never matched.
  */
 const ROOT = path.resolve(__dirname, '..', '..');
 const eslint = new ESLint({ cwd: ROOT });
@@ -23,9 +22,9 @@ const CORE_ROOT = 'packages/core/src/some-barrel.ts';
 const ROARING_ROOT = 'packages/roaring/src/some-file.ts';
 const S3_PKG = 'packages/s3/src/storage.ts';
 // A service package that does NOT exist yet. The generic driver block is scoped `packages/*/src/**` for
-// exactly this reason — its comment records that naming the three meant `packages/r2/src/**` matched no
-// block at all and silently had no boundary rules — but every planted case sat inside one of the three
-// per-package blocks that override it, so reverting the glob left the arch suite green.
+// exactly this reason: a block naming the three packages matches nothing under `packages/r2/src/**`, which
+// then has no boundary rules at all. A case planted inside one of the three per-package blocks that override
+// it cannot tell the glob from the three names, and narrowing the glob would leave such a suite green.
 const FUTURE_PKG = 'packages/r2/src/storage.ts';
 
 describe('architecture: import boundaries (eslint no-restricted-imports)', () => {
@@ -165,8 +164,8 @@ describe('architecture: import boundaries (eslint no-restricted-imports)', () =>
       await boundaryErrors(S3_PKG, "import { GcsStorage } from '@cloudbitmaps/gcs';\nGcsStorage;"),
     ).toHaveLength(1);
     // The LEGACY v2 SDK, which is nobody's dependency — including this package's, which takes v3. The s3
-    // block alone had dropped it from its group, so this import linted clean and would have been
-    // ERR_MODULE_NOT_FOUND for every published consumer.
+    // block restates its group with its own SDK removed, and a restated group that drops `aws-sdk` too lets
+    // this import lint clean, though it is ERR_MODULE_NOT_FOUND for every published consumer.
     expect(await boundaryErrors(S3_PKG, "import AWS from 'aws-sdk';\nAWS;")).toHaveLength(1);
     // And core is reached by package name, never by climbing out of the package.
     expect(

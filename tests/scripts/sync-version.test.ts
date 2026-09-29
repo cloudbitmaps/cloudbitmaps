@@ -29,9 +29,9 @@ describe('sync-version', () => {
       expect(() => resolveVersion(skewed)).toThrow(/disagree.*newthing@0\.10\.0/s);
     });
 
-    // The vacuous-green case: a comparison over an empty or short list passes having checked nothing. This
-    // repo has shipped that shape more than once — a lockstep check covering 2 of 5 packages, a guard whose
-    // glob matched zero files and looped zero times.
+    // The vacuous-green case: a comparison over an empty or short list passes having checked nothing. The
+    // shape is easy to write — a lockstep check covering 2 of 5 packages, a guard whose glob matches zero
+    // files and loops zero times.
     it('refuses a list too short to be the family', () => {
       expect(() => resolveVersion([])).toThrow(/at least 5 packages/);
       expect(() => resolveVersion(five('0.11.0').slice(0, 4))).toThrow(/found 4/);

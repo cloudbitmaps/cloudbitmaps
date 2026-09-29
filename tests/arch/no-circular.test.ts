@@ -4,20 +4,20 @@ import path from 'node:path';
 /*
  * Architectural lint, part 1: no circular imports anywhere under packages/*\/src.
  *
- * This used to be dependency-cruiser's `no-circular` rule. It is a plain test now: the graph is the set of
- * static `import`/`export … from`/`import()` specifiers in every .ts source file, resolved the way the
- * bundler resolves them (relative paths, the `@/…` core self-alias, and `@cloudbitmaps/core[/…]`), type-only
- * imports included — a type cycle is still a cycle for the declaration emitter.
+ * The check is a plain test: the graph is the set of static `import`/`export … from`/`import()` specifiers in
+ * every .ts source file, resolved the way the bundler resolves them (relative paths, the `@/…` core
+ * self-alias, and `@cloudbitmaps/core[/…]`), type-only imports included — a type cycle is still a cycle for
+ * the declaration emitter.
  *
- * The detector is a pure function so the test can prove it fires on a planted cycle (rule 31: a check whose
- * expected value is the same with the detector broken is not a check).
+ * The detector is a pure function so the test can prove it fires on a planted cycle (a check whose expected
+ * value is the same with the detector broken is not a check).
  */
 const ROOT = path.resolve(__dirname, '..', '..');
 const CORE = path.join(ROOT, 'packages', 'core', 'src');
 /**
- * Every package's `src`, derived — the gate named two while the workspace had five, so 18 files in the
- * driver packages were unchecked and its own `describe` ("no circular imports under packages/*\/src") was
- * describing more than it did. Deriving is also how adding a package costs no edit here.
+ * Every package's `src`, derived: a gate that names its packages checks no file in a package it leaves out,
+ * while its own `describe` ("no circular imports under packages/*\/src") claims them all. Deriving is also
+ * how adding a package costs no edit here.
  */
 const PACKAGE_SRCS = readdirSync(path.join(ROOT, 'packages'), { withFileTypes: true })
   .filter((e) => e.isDirectory())
@@ -83,10 +83,9 @@ export function resolveSpecifier(fromFile: string, spec: string): string | null 
   if (spec.startsWith('@cloudbitmaps/core/'))
     return asFile(path.join(CORE, spec.slice('@cloudbitmaps/core/'.length)));
   // Every OTHER workspace package, so a cross-package edge into one is part of the graph rather than
-  // invisible. This was a hardcoded ['s3', 'gcs', 'azure-blob'] directly under a comment warning that
-  // "a cycle running flavor → driver → core → flavor would simply not be seen" — with `roaring`, the flavor
-  // in that very sentence, missing from the list. Deriving the names from the manifests is what makes the
-  // comment true, and a sixth package is covered the day it is added.
+  // invisible. A hardcoded list of the drivers leaves out `roaring`, and a cycle running flavor → driver →
+  // core → flavor, through that very flavor, would simply not be seen. Deriving the names from the manifests
+  // covers every package, and a sixth is covered the day it is added.
   const src = WORKSPACE_SRCS.get(spec.split('/').slice(0, 2).join('/'));
   if (src === undefined) return null; // a third-party package or a builtin — not part of the graph
   const rest = spec.split('/').slice(2).join('/');

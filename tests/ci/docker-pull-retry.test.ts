@@ -11,14 +11,11 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { ROOT, compositeActionFiles, jobs, readYaml, type Job } from '../helpers/workflows';
 
-// Every place that runs a container must absorb a registry throttle. This test exists because the rule was
-// implemented in exactly one of the three places that needed it.
+// Every place that runs a container must absorb a registry throttle, and each does it through one shared helper.
 //
-// The CI integration job learned the lesson first — nine simultaneous pulls against a shared GitHub-runner IP
-// provoked Docker Hub's quota, the registry was swapped to AWS's mirror, and that mirror then answered with a
-// per-second rate limit — so it grew a serial-pull-with-backoff loop, inlined in the workflow. The two scripts
-// that `docker run` an ECR image directly never got it, and the RSS gate consequently died on `main` twice in
-// one day with `toomanyrequests: Rate exceeded`, 36 seconds in, having tested nothing.
+// Registries throttle: nine simultaneous pulls from a shared GitHub-runner IP provoke Docker Hub's quota, and
+// AWS's mirror answers with a per-second rate limit. The helper pulls with backoff; a script that `docker run`s an
+// ECR image without it can die on `toomanyrequests: Rate exceeded` seconds in, having tested nothing.
 //
 // The trap is that `docker run` pulls IMPLICITLY on a cache miss. There is no pull step to notice missing, so
 // "we don't pull here" is never true — the pull happens either way, and only an explicit one can be retried.
@@ -253,7 +250,7 @@ function problems(sh: string): string[] {
     } else if (kind === 'build' || sub === 'build') {
       found.push(`builds, and pulls the base image with nothing to retry it: ${c}`);
     } else if (kind === 'pull' || kind === 'run' || (sub === 'config' && /\s--images\b/.test(c))) {
-      // `config --images` fed the pull loop CI once had inline.
+      // `config --images` lists a compose file's images for a pull loop to pull, so it counts as a pull.
       if (!usesHelper) found.push(`pulls without the shared helper: ${c}`);
       else if (kind === 'run' && !byRunName(c)) {
         found.push(`runs an image by a name docker_image_run_name did not give: ${c}`);
@@ -474,21 +471,19 @@ describe('registry throttling is absorbed everywhere a container is started', ()
   );
 
   it('every workflow uses the same one implementation, not a fourth copy', () => {
-    // FOUR corrections to what this used to check. The first two each let a real defect through.
+    // Four things this reads, each because a check without it passes a pull nothing retries.
     //
-    // 1. It matched `docker pull` and `docker compose config --images` — EXPLICIT pulls, which is the
-    //    opposite of this file's own stated rationale. The trap named at the top is that `docker run` pulls
-    //    IMPLICITLY on a cache miss, and that was the one verb not looked for. A `docker run` step added to
-    //    ci.yml's integration job passed.
-    // 2. It read `ci.yml` alone. `release.yml` and `fuzz-nightly.yml` could pull unprotected, and an
-    //    explicit unguarded `docker pull` in fuzz-nightly passed the whole suite. `runtime-version-policy.test.ts`
-    //    had to be widened to "EVERY workflow" for the same reason. Composite actions are read here too, since
-    //    their steps run in the jobs that use them.
-    // 3. It passed `docker compose up` unread, and compose pulls a missing image implicitly: the same trap in
-    //    compose's form. A step that starts compose runs on images a step before it made local through the
-    //    helper, so it has to say `--pull never`, which makes an image that is not local a failure rather than a
-    //    pull that nothing retries.
-    // 4. It read `run:` text only. A job's `services:` or `container:`, a `uses: docker://` step and a composite
+    // 1. Every verb that pulls, the IMPLICIT pulls included. The trap named at the top is that `docker run` pulls
+    //    on a cache miss: a check that matches only `docker pull` and `docker compose config --images`, the
+    //    EXPLICIT pulls, passes a `docker run` step added to ci.yml's integration job.
+    // 2. Every workflow, not `ci.yml` alone. Read alone, it leaves `release.yml` and `fuzz-nightly.yml` free to
+    //    pull unprotected, and an explicit unguarded `docker pull` in fuzz-nightly would pass the whole suite;
+    //    `runtime-version-policy.test.ts` reads "EVERY workflow" for the same reason. Composite actions are read
+    //    here too, since their steps run in the jobs that use them.
+    // 3. `docker compose up`, which pulls a missing image implicitly: the same trap in compose's form. A step that
+    //    starts compose runs on images a step before it made local through the helper, so it has to say
+    //    `--pull never`, which makes an image that is not local a failure rather than a pull that nothing retries.
+    // 4. More than `run:` text. A job's `services:` or `container:`, a `uses: docker://` step and a composite
     //    action that runs in a container are pulled by the runner itself, where no helper and no cache can reach.
     const offenders = [
       ...jobs().flatMap(({ where, job }) => jobProblems(where, job)),

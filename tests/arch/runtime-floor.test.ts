@@ -3,13 +3,13 @@ import { createRequire } from 'node:module';
 /**
  * The runtime-floor detectors, fired at planted inputs in BOTH directions.
  *
- * The policy gate they serve had both patterns inlined in its own test file with nothing firing them at
- * planted inputs — the exact shape `import-boundaries.test.ts` warns about ("a rule that never matched"),
- * and `sdk-specifiers.cjs` / `dts-specifiers.cjs` already fixed twice. An adversarial review found what that
- * costs: `node-version: 22.11` — below the declared floor, and a defect class the floor's own move to a
- * minor CREATED — passed green, as did a quoted pin, a pin with a trailing comment, and nine realistic
- * phrasings of a prose floor. `Node.js >= 20`, the single most likely thing a contributor writes, was
- * invisible because of the `.js`.
+ * The policy gate they serve, `tests/ci/runtime-version-policy.test.ts`, calls them on the repo as it is and
+ * fires nothing at planted inputs — the shape `import-boundaries.test.ts` warns about ("a rule that never
+ * matched"), and the reason `sdk-specifiers.cjs` / `dts-specifiers.cjs` are fired at planted inputs too. So
+ * each form is planted here. Patterns written for the common shapes alone let through `node-version: 22.11` —
+ * below the declared floor, a defect class a floor on a minor makes possible — as well as a quoted pin, a pin
+ * with a trailing comment, and phrasings of a prose floor other than the README's. `Node.js >= 20`, the
+ * single most likely thing a contributor writes, is invisible to a pattern that does not allow the `.js`.
  */
 const { findNodeFloorClaims, findPinnedNodeVersions, satisfiesFloor, compareVersions } =
   createRequire(import.meta.url)('../../scripts/runtime-floor.cjs') as {
@@ -25,7 +25,7 @@ describe('a prose Node floor is detected however it is phrased', () => {
     ['ascii operator', 'Requires Node >= 22.12.'],
     ['no space', 'Requires Node ≥22.12.'],
     ['greater-than', 'Requires Node >22.12.'],
-    ['the `.js` spelling — the one the first draft missed', 'Requires Node.js >= 22.12.'],
+    ['the `.js` spelling — the one most likely written', 'Requires Node.js >= 22.12.'],
     ['dotless js', 'Requires Nodejs >= 22.12.'],
     ['lowercase', 'requires node >= 22.12.'],
     ['a v prefix', 'Requires Node v22.12+.'],
@@ -59,7 +59,7 @@ describe('a prose scan stays silent on things that name a version without declar
 describe('a CI node-version pin is found however it is written', () => {
   it.each([
     ['plain', 'node-version: 22', '22'],
-    ['sub-major — the class the floor move created', 'node-version: 22.11', '22.11'],
+    ['sub-major — the class a floor on a minor makes possible', 'node-version: 22.11', '22.11'],
     ['double-quoted', 'node-version: "20"', '20'],
     ['single-quoted', "node-version: '20'", '20'],
     ['with a trailing comment', 'node-version: 20 # pinned for a repro', '20'],
