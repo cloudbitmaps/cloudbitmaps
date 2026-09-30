@@ -420,9 +420,9 @@
             <span class="rl-what">All tier bytes are untrusted</span>
             <span class="rl-fig">safe decode + cap</span>
             <span class="rl-note">
-              Payloads pass the safe deserialiser behind a hard size cap before they reach the native addon,
-              and every chunk key and value coming back from storage is range-checked. A corrupt or hostile
-              chunk is a typed error, not a crash.
+              Payloads pass a hard size cap and a structural check before the native addon's safe deserialiser
+              sees them, and every chunk key and value coming back from storage is range-checked. A corrupt or
+              hostile chunk is a typed error, not a crash.
             </span>
           </li>
         </ul>

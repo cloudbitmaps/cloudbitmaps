@@ -351,7 +351,7 @@ chunk payload bytes differ. A future `@cloudbitmaps/bitset` writes the same form
 | `CrbmStorageChunkSource` / `CrbmStorageChunkSourceOptions` | the `.crbm` storage reader over an `IStorageDriver` (the store builds this from a raw driver for you); options add `registry`, `keystore`, `requireEncryption`, `clock`, `currentGenTtlMs`, `maxOpenSegments`, `maxOpenIndexBytes` |
 | `writeCrbmGeneration` · `publishGeneration` | lower-level load: write a generation from `SafeBitmap`s / advance the pointer |
 | `BufferReader` · `BlobSink` · `BlobReader` | the in-memory `BlobReader` you hand to `CrbmReader.open`, plus the two interfaces themselves: `BlobSink` takes bytes (one method, `write`), `BlobReader` serves them (`getRange`, `getTail`) |
-| `SafeBitmap` | size-capped wrapper over `RoaringBitmap32` (the roaring codec's `CodecBitmap`) |
+| `SafeBitmap` | size-capped, structure-checked wrapper over `RoaringBitmap32` (the roaring codec's `CodecBitmap`): `safeDeserialize` refuses malformed bytes with `IntegrityError` before the native addon sees them |
 
 ### Bitmap-codec seam
 

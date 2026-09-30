@@ -12,6 +12,8 @@ import { eraseIdFromSegment } from '@/core/erase-id';
 import { SafeBitmap, roaringCodec } from '@/roaring-codec';
 import { joinId, MAX_REMAINDER } from '@/core/bit-route';
 import { collect } from '../helpers/loaded';
+import { craftPortable, type CraftedContainer } from '../helpers/portable-bytes';
+import type { CodecBitmap } from '@/core/codec';
 
 // A chunk payload holds REMAINDERS — 16-bit offsets within one chunk. Nothing upstream enforces that: the
 // byte/length caps bound size, and CRC/AEAD only prove the bytes are the bytes that were written, which anyone
@@ -123,5 +125,74 @@ describe('chunk payload value range', () => {
     // id belonging to a different chunk.
     expect(joinId(3, 70_000)).toBe(joinId(3, 70_000 & MAX_REMAINDER));
     expect(joinId(3, 70_000)).not.toBe(70_000);
+  });
+});
+
+// The range check above reads `maximum()`, which roaring answers from the LAST container. That is only the
+// largest value while the containers are in key order and each one is well formed, and the native deserializer
+// checks neither. Unchecked, a payload listing container 1 before container 0 passes the range check with the
+// value from container 0, and a read then yields container 1's values masked into this chunk: ids the chunk does
+// not hold, which `has()` denies. These tests hold every read path to refusing that payload.
+describe('chunk payload structure', () => {
+  const OUT_OF_ORDER: readonly CraftedContainer[] = [
+    { key: 1, kind: 'array', values: [5] },
+    { key: 0, kind: 'array', values: [7] },
+  ];
+
+  /** A store whose segments each hold one seeded chunk, at `chunkKey`, of exactly `bytes`. */
+  function storeWith(chunks: Record<string, Uint8Array>, chunkKey: number): CloudRoaring {
+    const storage = new MemoryStorageChunkSource();
+    for (const [segment, bytes] of Object.entries(chunks)) {
+      storage.seed({ segment, chunkKey }, bytes);
+    }
+    return new CloudRoaring({ storage });
+  }
+
+  it('refuses a chunk whose containers are out of order, on every read path', async () => {
+    const store = storeWith({ bad: craftPortable(OUT_OF_ORDER), ok: forgeChunk([5, 7]) }, 9);
+    const bad = store.segment('bad');
+    const ok = store.segment('ok');
+    // Unchecked, `iterate` yields joinId(9, 5) — container 1's value 65541, masked — and `has` of that id says
+    // false, so the read and the membership test disagree about the same segment.
+    await expect(bad.has(joinId(9, 7))).rejects.toBeInstanceOf(IntegrityError);
+    await expect(bad.count()).rejects.toBeInstanceOf(IntegrityError);
+    await expect(collect(bad.iterate())).rejects.toBeInstanceOf(IntegrityError);
+    await expect(
+      collect(bad.iterate({ after: joinId(9, 0), through: joinId(9, 6) })),
+    ).rejects.toBeInstanceOf(IntegrityError);
+    await expect(collect(bad.intersect([ok]))).rejects.toBeInstanceOf(IntegrityError);
+    await expect(collect(ok.union([bad]))).rejects.toBeInstanceOf(IntegrityError);
+  });
+
+  it('refuses a chunk whose run container has no runs before anything iterates it', async () => {
+    // Unchecked, iterating this one, or intersecting with it, crashes the process. `has` is the one verb that
+    // does not, and it is refused too: the refusal is at the decode, which every verb shares.
+    const bytes = craftPortable([{ key: 0, kind: 'run', runs: [], cardinality: 1 }]);
+    await expect(storeWith({ s: bytes }, 0).segment('s').has(0)).rejects.toBeInstanceOf(
+      IntegrityError,
+    );
+  });
+
+  it('refuses to carry an out-of-order chunk into a new generation during an erasure', async () => {
+    // Unchecked, the rewrite decodes the chunk, re-encodes it as it is, and `verifyGeneration` passes it: chunk
+    // keys and cardinality both match. The call reports `erased: true` over a new generation that carries the
+    // corruption forward.
+    const storage = new MemoryStorageDriver();
+    const registry = new MemoryRegistryDriver();
+    const SEG = { segment: 's' };
+    const crafted = craftPortable(OUT_OF_ORDER);
+    // A bitmap that serializes to the crafted bytes, which is how the bytes reach a real `.crbm` past every
+    // writer guard, the way a hostile or corrupt object would.
+    const forged = { isEmpty: false, size: 2, serialize: () => crafted } as unknown as CodecBitmap;
+    await writeCrbmGeneration(storage, { ...SEG, generation: 0 }, [
+      { chunkKey: 0, bitmap: SafeBitmap.fromValues([1, 2]) },
+      { chunkKey: 1, bitmap: forged },
+    ]);
+    await publishGeneration(registry, { ...SEG, generation: 0 });
+
+    await expect(
+      eraseIdFromSegment(SEG, joinId(0, 1), { storage, registry, codec: roaringCodec }),
+    ).rejects.toBeInstanceOf(IntegrityError);
+    expect((await registry.get(SEG))!.currentGen).toBe(0);
   });
 });

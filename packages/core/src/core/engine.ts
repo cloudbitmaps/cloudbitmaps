@@ -586,6 +586,11 @@ export class SegmentEngine {
    *
    * Costs one `maximum()` per chunk, not per id — `maximum` is optional on the codec seam precisely so a codec
    * that cannot answer in O(1) opts out instead of making the read path walk every value.
+   *
+   * One value stands for all of them only because the decode is structurally checked. Roaring answers `maximum()`
+   * from its last container, so a payload listing its containers out of order would report the wrong one's
+   * largest value and pass here while holding values above 65,535. The codec's `safeDeserialize` refuses that
+   * payload, and every other shape that would make this answer wrong, before it reaches this check.
    */
   private assertChunkPayloadInRange(bitmap: CodecBitmap, chunkKey: number): void {
     const max = bitmap.maximum?.();
