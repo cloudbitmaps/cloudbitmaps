@@ -7,7 +7,8 @@ import { InProcessKeystore } from '@/drivers/crypto';
 import { randomBytes } from 'node:crypto';
 import { MemoryStorage, CloudRoaring, RecordingAuditSink } from '@/index';
 import { WriteConflictError } from '@/core/errors';
-import type { SegmentRef } from '@/index';
+import { openGenerationReader } from '@/core/crbm-storage-source';
+import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
@@ -288,7 +289,187 @@ describe('rollback and erasure — a rollback must not resurrect an erased id', 
     });
     expect(await store.segment('s', { namespace: 'ns' }).has(999)).toBe(false);
   });
+
+  it('reaches EVERY holder above the pointer, not only the newest one', async () => {
+    // Two rolled-back generations both hold the subject. An erasure that takes the first holder it finds and
+    // reports `erased: true` leaves the other one a single `rollback` away from being served again, under a
+    // ledger entry that says the id is gone. Driven through the facade, because the ledger is the receipt.
+    const w = world();
+    await loadSegment(SEG, [111, 222], w.load, { keep: 9 }); // gen 0
+    await loadSegment(SEG, [111, 222, 999], w.load, { keep: 9 }); // gen 1 — holds the subject
+    await loadSegment(SEG, [111, 222, 999], w.load, { keep: 9 }); // gen 2 — holds the subject
+    await rollbackSegment(SEG, 0, w.deps); // gens 1 and 2 are now ABOVE the pointer
+
+    const store = new CloudRoaring({ storage: w.backend, retry: false });
+    const ledger = await store.eraseSubject(999, { namespace: 'ns' });
+    expect(ledger.erasedFrom).toEqual([
+      { segment: 's', namespace: 'ns', erased: true, fromGeneration: 2, generation: undefined },
+    ]);
+
+    // The receipt is true: no generation in the bucket holds the id, and neither rollback can bring it back.
+    expect(await holdersOf(w.storage, 999)).toEqual([]);
+    expect(await generationsOf(w.deps)).toEqual([0]);
+    for (const g of [1, 2]) {
+      await expect(rollbackSegment(SEG, g, w.deps, { allowForward: true })).rejects.toBeInstanceOf(
+        NotFoundError,
+      );
+    }
+    expect(await store.segment('s', { namespace: 'ns' }).has(999)).toBe(false);
+  });
+
+  it('takes a holder above AND below the pointer, and keeps the rollback targets that never held it', async () => {
+    // Only the generations that hold the id are owed a delete above the pointer; the others are an operator's
+    // rollback targets and stay. Below the pointer, `keep: 0` takes the whole grace window, as it always has.
+    const w = world();
+    await loadSegment(SEG, [111, 999], w.load, { keep: 9 }); // gen 0 — holds it (below, after the rollback)
+    await loadSegment(SEG, [111], w.load, { keep: 9 }); // gen 1 — the rollback target
+    await loadSegment(SEG, [111, 999], w.load, { keep: 9 }); // gen 2 — holds it (above)
+    await loadSegment(SEG, [111, 333], w.load, { keep: 9 }); // gen 3 — does NOT hold it (above)
+    await loadSegment(SEG, [111, 999], w.load, { keep: 9 }); // gen 4 — holds it (above)
+    await rollbackSegment(SEG, 1, w.deps);
+
+    const res = await eraseIdFromSegment(SEG, 999, w.load);
+    expect(res).toMatchObject({ erased: true, fromGeneration: 4 });
+    expect(res.generation).toBeUndefined(); // nothing to rewrite: the current generation never held it
+    expect([...res.collected].sort((a, b) => a - b)).toEqual([0, 2, 4]);
+    expect(await holdersOf(w.storage, 999)).toEqual([]);
+    expect(await generationsOf(w.deps)).toEqual([1, 3]); // the current one, and the clean rollback target
+    expect((await w.registry.get(SEG))!.currentGen).toBe(1);
+  });
+
+  it('a rollback onto a holder mid-scan is reported, and the now-current holder is not deleted', async () => {
+    // The race the above-pointer deletes have to survive. Each one is re-proved against the row first, as
+    // generation collection re-proves before every delete: once an operator has rolled the pointer onto a
+    // generation this call queued for deletion, deleting it would leave the pointer naming a missing object.
+    const w = world();
+    await loadSegment(SEG, [111], w.load, { keep: 9 }); // gen 0
+    await loadSegment(SEG, [111, 999], w.load, { keep: 9 }); // gen 1
+    await loadSegment(SEG, [111, 999], w.load, { keep: 9 }); // gen 2
+    await rollbackSegment(SEG, 0, w.deps);
+
+    const storage = onFirstOpenOf(
+      w.storage,
+      (g) => g > 0,
+      () => rollbackSegment(SEG, 1, w.deps, { allowForward: true }),
+    );
+    const res = await eraseIdFromSegment(SEG, 999, { ...w.load, storage: storage.driver });
+    expect(storage.fired()).toBe(true);
+    expect(res).toMatchObject({ erased: false, reason: 'superseded' });
+
+    const row = (await w.registry.get(SEG))!;
+    expect(row.currentGen).toBe(1);
+    expect(await generationsOf(w.deps)).toContain(1); // the pointer names an object that exists
+
+    // Superseded means "re-run", and the re-run settles it: gen 1 is current now, so it is rewritten.
+    const rerun = await eraseIdFromSegment(SEG, 999, w.load);
+    expect(rerun).toMatchObject({ erased: true, fromGeneration: 1 });
+    expect(await holdersOf(w.storage, 999)).toEqual([]);
+  });
+
+  it('a load that publishes mid-scan stops the above-pointer deletes, and the bucket decides the receipt', async () => {
+    // The pointer moving is a reason to stop deleting above it, not by itself a reason to refuse: a forward
+    // publish puts every holder BELOW the new pointer, where the `keep: 0` collection takes them. What is left in
+    // the bucket decides, exactly as it does when nothing raced.
+    const w = world();
+    await loadSegment(SEG, [111], w.load, { keep: 9 }); // gen 0
+    await loadSegment(SEG, [111, 999], w.load, { keep: 9 }); // gen 1
+    await loadSegment(SEG, [111, 999], w.load, { keep: 9 }); // gen 2
+    await rollbackSegment(SEG, 0, w.deps);
+
+    const storage = onFirstOpenOf(
+      w.storage,
+      (g) => g > 0,
+      async () => {
+        await loadSegment(SEG, [111, 222], w.load, { keep: 9 }); // gen 3, published forward-only
+      },
+    );
+    const res = await eraseIdFromSegment(SEG, 999, { ...w.load, storage: storage.driver });
+    expect(storage.fired()).toBe(true);
+    expect(res).toMatchObject({ erased: true, fromGeneration: 2 });
+    expect(await holdersOf(w.storage, 999)).toEqual([]);
+    expect(await generationsOf(w.deps)).toEqual([3]);
+  });
+
+  it('a rollback onto a holder between the rewrite’s publish and its collect is not attested', async () => {
+    // The rewrite path: the current generation holds the id, and so does a generation a rollback left above
+    // it. The rewrite publishes, and before its collection runs an operator rolls back onto that holder —
+    // backwards, because the rewrite numbered above everything. Collection takes the lower pointer as its
+    // bound, so it takes the old current generation and stops; checking only that one would call this erased
+    // while the segment serves the id.
+    const w = world();
+    await loadSegment(SEG, [111, 999], w.load, { keep: 9 }); // gen 0
+    await loadSegment(SEG, [111, 999], w.load, { keep: 9 }); // gen 1
+    await rollbackSegment(SEG, 0, w.deps);
+
+    let fired = false;
+    const registry = new Proxy(w.registry, {
+      get(t, p, rx) {
+        if (p !== 'compareAndSwap') return Reflect.get(t, p, rx) as unknown;
+        const inner = Reflect.get(t, p, rx) as (...a: never[]) => Promise<unknown>;
+        return async (...args: never[]) => {
+          const out = await inner.apply(w.registry, args);
+          if (!fired) {
+            fired = true; // the rewrite's own publish has just landed
+            await rollbackSegment(SEG, 1, w.deps);
+          }
+          return out;
+        };
+      },
+    }) as typeof w.registry;
+
+    await expect(eraseIdFromSegment(SEG, 999, { ...w.load, registry })).rejects.toBeInstanceOf(
+      WriteConflictError,
+    );
+    expect(fired).toBe(true);
+    expect((await w.registry.get(SEG))!.currentGen).toBe(1);
+    expect(await holdersOf(w.storage, 999)).toEqual([1]); // exactly why it could not say `erased: true`
+
+    const rerun = await eraseIdFromSegment(SEG, 999, w.load);
+    expect(rerun.erased).toBe(true);
+    expect(await holdersOf(w.storage, 999)).toEqual([]);
+  });
 });
+
+/** Every generation in the bucket, ascending. */
+async function generationsOf(deps: { storage: IStorageDriver; registry: IRegistryDriver }) {
+  return (await listGenerations(SEG, deps)).map((g) => g.generation);
+}
+
+/** The generations still in the bucket whose chunk 0 holds `id` — the ground truth a receipt is checked against. */
+async function holdersOf(storage: IStorageDriver, id: number): Promise<number[]> {
+  const out: number[] = [];
+  for await (const key of storage.list(SEG)) {
+    const bytes = await (await openGenerationReader(storage, key, undefined)).getChunk(0);
+    if (bytes !== null && roaringCodec.safeDeserialize(bytes, 1 << 20).has(id)) {
+      out.push(key.generation);
+    }
+  }
+  return out.sort((a, b) => a - b);
+}
+
+/** A storage driver that runs `hook` once, just before the first object open of a generation `match` selects. */
+function onFirstOpenOf(
+  base: IStorageDriver,
+  match: (generation: number) => boolean,
+  hook: () => Promise<unknown>,
+): { driver: IStorageDriver; fired: () => boolean } {
+  let fired = false;
+  const driver: IStorageDriver = {
+    capabilities: () => base.capabilities(),
+    getRange: (k, o, l) => base.getRange(k, o, l),
+    delete: (k) => base.delete(k),
+    list: (r) => base.list(r),
+    putImmutable: (k, fn) => base.putImmutable(k, fn),
+    getTail: async (k, m) => {
+      if (!fired && match(k.generation)) {
+        fired = true;
+        await hook();
+      }
+      return base.getTail(k, m);
+    },
+  };
+  return { driver, fired: () => fired };
+}
 
 describe('rollback — the facade, and the validation the core owes', () => {
   it('store.rollback drops this store’s cached view, so the same instance reads the older generation', async () => {

@@ -4,7 +4,7 @@ import { publishGeneration } from '@/core/crbm-storage-source';
 import { IntegrityError, ValidationError, WriteConflictError } from '@/core/errors';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { createBackend, CloudRoaring, MemoryStorageChunkSource } from '@/index';
-import type { ChunkRef, IStorageDriver, IKeystore, SegmentRef } from '@/index';
+import type { ChunkRef, IRegistryDriver, IStorageDriver, IKeystore, SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { collect, loadedStore, seedSegment } from '../helpers/loaded';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
@@ -88,6 +88,28 @@ function afterFirstChunkRead(base: IStorageDriver, hook: () => Promise<void>): I
   };
 }
 
+/** Wrap a registry so `hook` runs once, right after the compare-and-swap that makes `generation` current. */
+function afterPublishOf(
+  base: IRegistryDriver,
+  generation: number,
+  hook: () => Promise<unknown>,
+): IRegistryDriver {
+  let fired = false;
+  return new Proxy(base, {
+    get(t, p, rx) {
+      if (p !== 'compareAndSwap') return Reflect.get(t, p, rx) as unknown;
+      return async (...args: Parameters<IRegistryDriver['compareAndSwap']>) => {
+        const out = await t.compareAndSwap(...args);
+        if (!fired && args[2].currentGen === generation) {
+          fired = true;
+          await hook();
+        }
+        return out;
+      };
+    },
+  });
+}
+
 describe('a publish derived from one generation lands only on that generation', () => {
   it('a load that publishes mid-rewrite is not clobbered: the erasure reports superseded', async () => {
     // `nextGeneration` picks a number above everything in the bucket, so an unfenced rewrite's publish out-ranks
@@ -131,6 +153,53 @@ describe('a publish derived from one generation lands only on that generation', 
     expect(outer).toMatchObject({ erased: false, reason: 'superseded', fromGeneration: 0 });
     // Exactly one erasure is attested, and the id it erased is really gone.
     expect(await collect(w.reader().segment('s').iterate())).toEqual([2, 3]);
+  });
+
+  it('the loser deletes the rewrite it wrote — which still holds the winner’s id', async () => {
+    // The loser numbered its rewrite AFTER the winner's object was in the bucket, so it sits ABOVE the winner's
+    // pointer, where no collection ever looks. And it was derived from generation 0, so it still holds the id
+    // the winner has just attested gone. Left behind, it is one `rollback({ allowForward: true })` from being
+    // served, and a later load's grace window keeps it as the newest superseded generation.
+    const w = await world();
+    await w.load(SEG, [1, 2, 3]);
+
+    let inner: Awaited<ReturnType<typeof eraseIdFromSegment>> | undefined;
+    const storage = afterFirstChunkRead(w.storage, async () => {
+      inner = await eraseIdFromSegment(SEG, 1, w.deps); // wins, as generation 1
+    });
+    const outer = await eraseIdFromSegment(SEG, 2, { ...w.deps, storage });
+
+    expect(inner).toMatchObject({ erased: true, generation: 1 });
+    expect(outer).toMatchObject({ erased: false, reason: 'superseded', generation: 2 });
+    expect(await generations(w.storage, SEG)).toEqual([1]); // the loser's generation 2 is gone
+    expect(await collect(w.reader().segment('s').iterate())).toEqual([2, 3]);
+  });
+
+  it('the receipt looks at every generation in the bucket, not only the one this call replaced', async () => {
+    // A generation holding the id that appears ABOVE the new pointer while the rewrite is collecting — what a
+    // concurrent writer that derived its content from the pre-erasure generation leaves — is still a generation
+    // of the segment holding the id, and `erased: true` may not be said over it.
+    const w = await world();
+    await w.load(SEG, [1, 2, 3]);
+    const registry = afterPublishOf(w.registry, 1, () =>
+      bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 7 }, [1, 2, 3]),
+    );
+    await expect(eraseIdFromSegment(SEG, 2, { ...w.deps, registry })).rejects.toBeInstanceOf(
+      WriteConflictError,
+    );
+    expect((await w.registry.get(SEG))!.currentGen).toBe(1); // the rewrite itself did land
+  });
+
+  it('…and a generation that appears without the id does not trip it', async () => {
+    // The other direction. A concurrent load's object that does not hold the id is no reason to refuse.
+    const w = await world();
+    await w.load(SEG, [1, 2, 3]);
+    const registry = afterPublishOf(w.registry, 1, () =>
+      bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 7 }, [1, 3]),
+    );
+    const res = await eraseIdFromSegment(SEG, 2, { ...w.deps, registry });
+    expect(res).toMatchObject({ erased: true, fromGeneration: 0, generation: 1 });
+    expect(await generations(w.storage, SEG)).toEqual([1, 7]);
   });
 
   it('a publish that lands DURING the verification read is still fenced out', async () => {

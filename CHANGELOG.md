@@ -326,6 +326,28 @@ These two change what `estimateCost()` reports:
 
 ### Fixed
 
+- **A subject erasure could report `erased: true` while another generation of the segment still held the id.**
+  `PRIVACY.md` promises that an `erased: true` entry means the id is physically gone from every generation that
+  held it. Three cases broke that promise:
+  - **Several holders above the pointer, after a `rollback`.** The erasure searched the other generations newest
+    first, deleted the first one holding the id and stopped, so an older one stayed in the bucket, one
+    `rollback({ allowForward: true })` from being served again. It now reads every generation above the pointer
+    and deletes each one that holds the id, re-reading the row before each delete and stopping if the pointer has
+    moved. The generations up there that never held the id stay as rollback targets.
+  - **A `rollback` onto a holder between a rewrite's publish and its collection.** Collection stopped at the lower
+    pointer, so the entry said `erased: true` while the segment served the id from the generation rolled back
+    onto. The call now throws `WriteConflictError`, which `eraseSubject` records as an `error: …` entry, and a
+    re-run erases the id.
+  - **Two erasures of different ids racing on one segment.** When the loser took its generation number after the
+    winner's object was in the bucket, its refused rewrite sat above the winner's pointer, still holding the
+    winner's id, because it was derived from the generation the winner replaced. The loser now deletes it before
+    it returns `superseded`.
+
+  An entry says `erased: true` only after the call has listed the bucket and read every generation it has not
+  already seen without the id. That adds one `list` to each erasure that succeeds, on the erasure path only;
+  reads are unchanged. A `rollback` that lands while the call deletes generations above the pointer is reported as
+  `reason: 'superseded'` (`note: 'superseded'` in the ledger). `EraseIdResult.collected` then lists every holder
+  the call deleted, and `fromGeneration` names the newest of them.
 - **`PRIVACY.md` said subject erasure is physical on return for more segments than it is.** Its table row, and
   the copy npm ships in `@cloudbitmaps/roaring`, said "on return" holds for every segment whose ledger entry is not
   `error: …`. An entry can also say `erased: false, note: 'superseded'`, when a racing writer overtook the rewrite:

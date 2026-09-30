@@ -523,6 +523,25 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
     claim: new RegExp(g(String.raw`(?:does not|doesn't) add (?:this )?for you yet`), 'i'),
     why: "estimateCost() adds the pointer, the tail reads and store.load()'s requests itself",
   },
+  {
+    // A rollback leaves every generation it rolled back from above the pointer, and several can hold the id.
+    claim: new RegExp(
+      g(String.raw`deletes the (?:one |single )?holder (?:there|above (?:the|its) pointer)`),
+      'i',
+    ),
+    why: 'an erasure deletes every generation above the pointer that holds the id, and keeps the ones that do not — say "each holder"',
+  },
+  {
+    claim: new RegExp(
+      g(String.raw`the winner(?:'|’)s generation is (?:necessarily|always) higher`),
+      'i',
+    ),
+    why: "a refused rewrite that took its number after the winner's object was in the bucket sits above the winner's pointer, and deletes its own object before returning — say that",
+  },
+  {
+    claim: new RegExp(g('no orphan is left behind by a refused rewrite'), 'i'),
+    why: "a refused rewrite deletes its object only when it sits above the winner's pointer; elsewhere it stays, as a refused load's does",
+  },
 ];
 
 /**
@@ -971,6 +990,12 @@ describe('no document claims behaviour this library does not have', () => {
     "it('a store with no clock can\\'t see a new generation', () => {});",
     "description: 'A store with no clock can''t see a new generation.'",
     '{ "description": "the source \\"pins\\" the generation forever" }',
+    // What an erasure deletes above the pointer, and what a refused rewrite leaves behind.
+    'an erasure performed *after* a rollback also reaches above the pointer and deletes the holder there',
+    '> performed *after* a rollback also reaches above the pointer and deletes the\n> holder there.',
+    ' * if the write did complete, the winner’s generation is necessarily\n * higher, which puts ours below its pointer',
+    "the winner's generation is always higher",
+    ' * **No orphan is left behind by a\n * refused rewrite**, and it is worth saying why',
   ])('catches the refused form %j', (text) => {
     expect(hitsIn('x.md', text)).not.toEqual([]);
   });
@@ -1079,6 +1104,10 @@ describe('no document claims behaviour this library does not have', () => {
     // An apostrophe in a quoted string, escaped or doubled, is the possessive it prints: it opens no quotation.
     "description: 'Two incarnations'' pins stay apart on a store with no registry.'",
     "it('keeps two incarnations\\' pins apart on a store with no registry', () => {});",
+    'An erasure after a rollback deletes each holder above the pointer and keeps the rest as rollback targets.',
+    'The erasure deletes that holder itself, since it is above the pointer.',
+    "A refused rewrite deletes its own object when it sits above the winner's pointer.",
+    'A refused load leaves its object behind once the row has changed.',
   ])('leaves %j alone', (text) => {
     expect(hitsIn('x.md', text)).toEqual([]);
   });

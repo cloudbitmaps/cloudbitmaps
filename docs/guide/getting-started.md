@@ -670,7 +670,7 @@ Who calls it today:
 |---|---|
 | `store.load` | **it does** — collection is part of the call, keeping `keep` generations (default 1) |
 | an `*Into` | **you** — pass `keep` to collect on the way through, or call `gcOrphanGenerations` on your own cadence (right after the call, or a nightly pass). This is the step `store.load` exists to stop you forgetting |
-| `eraseSubject` / `eraseIdFromSegment` | **yes**, with `keep: 0` — the whole point is that the generation holding the bit does not survive the call |
+| `eraseSubject` / `eraseIdFromSegment` | **yes**, with `keep: 0` — the whole point is that the generation holding the bit does not survive the call. A holder *above* the pointer, which a `rollback` leaves there, is outside collection's range, so the erasure deletes it itself |
 | `retireExpired` | **yes**, for tombstoned segments only — it collects a straggler generation before purging the tombstone row |
 | `dropSegment` | deletes every generation of the segment it drops (and reports any it could not in `generationsRemaining`) |
 
@@ -1156,6 +1156,15 @@ re-encoded with that bit cleared — verifies the new object, publishes it **fen
 generation that held the bit** (`gcOrphanGenerations` with `keep: 0`). The bit is physically gone from the
 bucket when the call returns, constant memory, one chunk in flight. Segments the id is not in are not listed.
 
+**Every generation that holds the id goes, not only the current one.** A re-seed that drops someone leaves their
+bit in the generation `keep` retains, and a `store.rollback` leaves the generations it rolled back from *above*
+the pointer, where a later rollback can make them current again. So the call searches every generation in the
+segment's bucket: a holder below the pointer goes with the `keep: 0` collection, each holder above it is deleted
+one by one, and a generation up there that never held the id stays as a rollback target. An entry says
+`erased: true` only once the call has listed the bucket and read what is left: **no generation of the segment
+holds the id**, above the pointer or below it. When the current generation does not hold the id, nothing is
+rewritten, so the entry carries no `generation` and no `segment.rewrite` event is emitted.
+
 Both helpers **reuse the store's own drivers** — no `registry`/deps to re-pass. `eraseSubject` needs the store
 built with a **backend** (it writes generations); `subjectReport` needs only the backend's registry (it
 just enumerates + `has()`). A store missing what a helper needs throws `UnsupportedError` — a
@@ -1170,7 +1179,10 @@ is also emitted per rewrite when you pass `audit`).
 - `'superseded'` — another writer moved the pointer off the generation the rewrite was derived from, so the
   rewrite is not a valid successor to what is now current. That writer is usually a load; it can also be
   **another erasure**, which collects with `keep: 0` and so can delete the generation this rewrite was still
-  streaming, or the object it had just written. Re-run against the new generation: it erases the id if the id
+  streaming, or the object it had just written — or an operator's `rollback`, landing while the call was deleting
+  generations above the pointer. Two erasures of different ids racing on one segment are safe: the loser's
+  rewrite still holds the winner's id, and when it sits above the winner's pointer the loser deletes it before
+  returning. Re-run against the new generation: it erases the id if the id
   is still present, and lists nothing for the segment if the racing writer was an erasure of the same id that
   already removed it. The reason is read off the registry row, so a row tombstoned mid-rewrite reports
   `'destroyed'` and one purged by the retention sweep reports `'absent'` — the same answers a fresh call gives,
@@ -1179,9 +1191,10 @@ is also emitted per rewrite when you pass `audit`).
   fault (re-run), a missing keystore for an encrypted segment (wire it), an `IntegrityError` naming a chunk
   whose values are out of range — that segment is **corrupt**, the rewrite refused to copy the corruption into a
   new generation, and no erasure happened on it, so it needs investigating rather than re-running — and a
-  `WriteConflictError`, which means the erasure could not remove the generation holding the id and refused to
-  claim it had. Usually that follows a rewrite that already **published**, so part of the work landed — but it
-  also fires on the collect-only path, where an ex-member's bit is taken out of a *superseded* generation and
+  `WriteConflictError`, which means the erasure could not remove a generation holding the id and refused to
+  claim it had. Usually that follows a rewrite that already **published**, so part of the work landed — a
+  rollback onto a generation that still holds the id, landing while the rewrite collects, is one way — but it
+  also fires on the collect-only path, where the bit is taken out of generations other than the current one and
   nothing is published at all. Either way, see what a re-run reports rather than assuming it finished the job.
 
 Re-running is safe and idempotent: a segment the id is no longer in is simply not listed — but "not listed" is

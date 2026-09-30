@@ -174,11 +174,12 @@ off the shelf.
 **Erasure is a rewrite, and it is physical.** `eraseSubject(id, { namespace })` finds every segment of that
 namespace the id is in (`{ allNamespaces: true }` sweeps every namespace), streams each one's current generation
 through a fresh one with the single bit cleared, publishes it fenced on the generation it streamed, and then
-deletes the generation that held the bit, with every other generation below the new one — so when the call
-returns, every segment its ledger reports
-`erased: true` has the id **gone from the bucket's objects**, not merely masked. Storage the bucket keeps on its
-own is outside that: with versioning on, the deleted generation stays as a noncurrent version until a lifecycle
-rule expires it, and replicas and backups keep their copies ([`PRIVACY.md`](PRIVACY.md) has the details).
+deletes the generation that held the bit, every other generation below the new one, and every generation above
+the pointer that held the bit, including one a `rollback` left there — so when the call returns, every segment its
+ledger reports `erased: true` has the id **gone from the bucket's objects**, not merely masked. Storage the bucket
+keeps on its own is outside that: with versioning on, the deleted generation stays as a noncurrent version until a
+lifecycle rule expires it, and replicas and backups keep their copies ([`PRIVACY.md`](PRIVACY.md) has the
+details).
 Constant memory (one chunk in flight), and the audit sink gets a `segment.rewrite` receipt naming both
 generations. `dropSegment` retires a whole segment (tombstone, then sweep the objects); `retireExpired` does the
 same for everything whose retention policy has passed. Superseded generations are collected by

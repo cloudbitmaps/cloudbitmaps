@@ -349,24 +349,30 @@ export interface SubjectErasureEntry {
   readonly segment: string;
   readonly namespace?: string;
   /**
-   * True iff the id **was** a member and a generation without it is now current — and the generation that held
-   * the bit has been deleted from the bucket. The physical half is inherent: an erasure is a rewrite, and the
-   * rewrite's predecessor is collected before this entry is returned (see {@link CloudRoaring.eraseSubject}).
+   * True iff the id **was** in the segment and **no generation of it holds the id now** — not the current one, not
+   * one below the pointer, and not one above it, where a rollback leaves the generations it rolled back from. The
+   * current generation is one without it, every generation that held it has been deleted from the bucket, and the
+   * call listed the bucket and read what was left before this entry was returned (see
+   * {@link CloudRoaring.eraseSubject}).
    */
   readonly erased: boolean;
-  /** The generation the id was found in (present whenever the segment was read). */
+  /**
+   * The generation the id was found in (present whenever the segment was read) — the newest of them, when the
+   * current generation did not hold it and several others did.
+   */
   readonly fromGeneration?: number;
   /** The generation written without the id (present whenever one was written). */
   readonly generation?: number;
   /**
-   * Why the id was NOT erased from this segment, when `erased` is false. `'superseded'` — a newer generation
-   * was published while the rewrite was in flight, by a load or by another erasure, so **this call** did not
-   * erase the id; re-run against the new generation, which erases it if it is still there and reports nothing
-   * for the segment if the racing writer already removed it. `` `error: <message>` `` — an isolated per-segment
-   * fault (per-segment faults are recorded so one segment can't discard the whole ledger); re-run after fixing
-   * the fault. A fault that landed once part of the work was already done — a Storage `delete` fault, or a collect
-   * that could not prove the segment was still the same one, whether or not a rewrite was published first —
-   * also re-runs, but **read what the re-run says**: it usually reports `erased: true` against the superseded generation it found the id in, it reports
+   * Why the id was NOT erased from this segment, when `erased` is false. `'superseded'` — the pointer moved while
+   * the call was in flight, by a load, another erasure or a rollback, so **this call** did not erase the id;
+   * re-run against the new generation, which erases it if it is still there and reports nothing for the segment
+   * if the racing writer already removed it. `` `error: <message>` `` — an isolated per-segment fault
+   * (per-segment faults are recorded so one segment can't discard the whole ledger); re-run after fixing the
+   * fault. A fault that landed once part of the work was already done — a Storage `delete` fault, a collect that
+   * could not prove the segment was still the same one, or a generation still holding the id when the bucket was
+   * listed at the end, whether or not a rewrite was published first — also re-runs, but **read what the re-run
+   * says**: it usually reports `erased: true` against the generation it found the id in, it reports
    * nothing at all if a racing collector took that generation first (the bit is gone, but no run holds a
    * receipt for it), and if the segment's row has since been purged it is no longer scanned at all — anything
    * left in its bucket is an orphan for `checkConsistency` / `gcOrphanGenerations`. **Segments the id is not in
@@ -1009,8 +1015,13 @@ export class CloudRoaring {
    *
    * For each **registered** segment the id is a member of, `eraseIdFromSegment` rewrites the current generation
    * without the id — every chunk streamed through, one bit cleared — publishes the rewrite **fenced on the
-   * generation it was derived from**, and
-   * collects the generation that held the bit. The returned per-segment record is your **erasure ledger** —
+   * generation it was derived from**, and collects the generation that held the bit. A segment whose current
+   * generation does not hold the id is searched anyway, every generation in its bucket: a retained superseded one
+   * can still hold it, and so can one above the pointer after a {@link CloudRoaring.rollback}, which the rollback
+   * could make current again. Each holder is deleted — below the pointer by a `keep: 0` collection, above it one
+   * by one, re-proved against the row first — and the generations above the pointer that never held the id stay
+   * as rollback targets. An entry says `erased: true` only once the call has listed the bucket and read what is
+   * left: **no generation of the segment holds the id**. The returned per-segment record is your **erasure ledger** —
    * persist it / route it to your audit sink as the proof of deletion (a `segment.rewrite` audit event is also
    * emitted per rewrite when you pass `audit`).
    *
@@ -1035,16 +1046,18 @@ export class CloudRoaring {
    * a retention sweep that purged the row `'absent'`. Re-running is the fix in every case.
    *
    * **Read `note` on any `erased: false` entry — the two reasons mean different things.** `'superseded'` means
-   * another writer (a load, or another erasure) moved the pointer mid-rewrite, so **this call** did not erase
-   * the id. Re-run: it erases the id if it is still there, and lists nothing for the segment if a racing
+   * another writer (a load, another erasure, or a rollback) moved the pointer mid-call, so **this call** did not
+   * erase the id. Re-run: it erases the id if it is still there, and lists nothing for the segment if a racing
    * erasure of the same id already removed it. Do not read `'superseded'` as "the id is still present" —
    * read it as "not done by this call, and the re-run settles it".
    * `` `error: …` `` is a per-segment fault (caught so one segment can't discard the whole ledger) and it can land
    * on either side of the publish: if the rewrite had not published, the id is still there and a re-run erases
    * it; if the publish succeeded and only the **collection** of the old generation failed, the id is already
-   * absent from every read and what remains is an object in the bucket that still contains the bit. A re-run
-   * searches the superseded generations too, so it collects that object and usually reports `erased: true`
-   * against it; {@link SubjectErasureEntry.note} says what else a re-run can report. Re-running is otherwise safe
+   * absent from every read and what remains is an object in the bucket that still contains the bit. The same
+   * note, after a publish, can mean a rollback moved the pointer back onto a generation that still holds the id
+   * while the collection ran — then the id is served again, and the entry says so rather than `erased: true`. A
+   * re-run searches every generation in the bucket, so it rewrites or collects what is left and usually reports
+   * `erased: true`; {@link SubjectErasureEntry.note} says what else a re-run can report. Re-running is otherwise safe
    * and idempotent: a segment the id is no longer in is not listed. Admin-only path;
    * `O(registered segments)`, no hot-path cost. Per-subject crypto-shred is infeasible (a subject's bit is
    * co-mingled in a shared container), so this is the single-subject erasure route; whole-segment/tenant erasure
@@ -1226,7 +1239,8 @@ export class CloudRoaring {
    * It deletes nothing. The generations above the new pointer stay put — which is what makes this reversible —
    * and are then *above* `currentGen`, where collection never looks, so they remain until a later load raises the
    * pointer past them. An operator who has just undone a bad load should not have the evidence collected out from
-   * under them.
+   * under them. The one call that deletes one of them is {@link CloudRoaring.eraseSubject}, and only one that
+   * holds the id it erases: a rollback target that still holds erased data would make the erasure undoable.
    *
    * Needs a backend.
    */

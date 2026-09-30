@@ -120,10 +120,11 @@ decides whether it gets built.
 ## Compliance is built in, not bolted on
 
 - `subjectReport(id)` — which segments an id is in (GDPR Art. 15).
-- `eraseSubject(id)` — rewrites every segment holding the id without it and deletes the generation that held the
-  bit, so it is **physically gone from the bucket when the call returns**; you get an erasure ledger back and a
-  `segment.rewrite` audit event per segment it had to rewrite (Art. 17; an id erased out of a retained
-  superseded generation is collected rather than rewritten, so that one is attested by the ledger entry alone).
+- `eraseSubject(id)` — rewrites every segment holding the id without it and deletes every generation that held
+  the bit, including one a `rollback` left above the pointer, so it is **physically gone from the bucket when the
+  call returns**; you get an erasure ledger back and a `segment.rewrite` audit event per segment it had to
+  rewrite (Art. 17; an id found only outside the current generation is collected rather than rewritten, so that
+  one is attested by the ledger entry alone).
 - `destroySegment` / `eraseNamespace` — **crypto-shred**: drop the segment's wrapped data key so its encrypted
   bytes are unreadable *everywhere, including backups*.
 - `dropSegment(ref, { confirmSegment, dryRun })` — retire a segment and reclaim its storage.
