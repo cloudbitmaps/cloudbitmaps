@@ -3,11 +3,15 @@
  * superseded generations may be collected.
  *
  * Storage generations are write-once, generation-keyed objects (`<segment>.<gen>.crbm`) behind one registry pointer
- * (`currentGen`). Every write path in the library — a bulk load, an `*Into` materialisation, a subject-erasure
- * rewrite — writes a **new** object and then advances the pointer, forward-only for a load and fenced on its
- * source generation for the rewrite (see invariant 1). That leaves the superseded object
- * in the bucket, still billed, so something has to collect it: {@link gcOrphanGenerations}. Pure orchestration
- * over the driver ports — no I/O, time or randomness of its own.
+ * (`currentGen`). Every write path in the library — a load, an `*Into` materialisation, a subject-erasure rewrite —
+ * writes a **new** object and then advances the pointer. Every load that finds a row fences its publish on the
+ * row's token; a guarded load (the default, since the empty refusal reads the current generation) also fences on
+ * the pointer it judged (`expectFrom`), and one that found no row fences on that absence instead. Only an unguarded
+ * load (`allowEmpty: true` and no `guard.minRetained`) onto a segment with no row publishes bare forward-only. An
+ * `*Into` materialisation is a load, and publishes the same way. The rewrite is fenced on its source generation and
+ * the row's token (see invariant 1). That leaves the superseded object in the bucket, still billed, so something has
+ * to collect it: {@link gcOrphanGenerations}. Pure orchestration over the driver ports — no I/O, time or randomness
+ * of its own.
  */
 import { WriteConflictError } from './errors';
 import type { IStorageDriver, IRegistryDriver, SegmentRef } from './ports';
@@ -52,11 +56,14 @@ export async function nextGeneration(ref: SegmentRef, deps: GenerationDeps): Pro
  * a pin taken while it was still active re-checks the status on every open — and nothing else in the library
  * would ever collect them, so without this those objects are billed forever.
  *
- * **Throws {@link WriteConflictError} if the segment changed underneath the pass** — not to be confused with
- * the empty array it still returns when there was genuinely nothing to collect (no row at all, or no pointer
- * yet), which is why an empty array is not a receipt. The row is read before the listing and acted on after it, so a name that was purged and
+ * **Throws {@link WriteConflictError} when it cannot act on the row it read**: the row is gone when it is re-read,
+ * after the listing or before a delete; on an active segment, the pointer has fallen below the cutoff before a
+ * delete; on a `destroyed` segment, the row's token has changed. Not to be confused with the empty array it still
+ * returns when there was genuinely nothing to collect (no row at all, or no pointer yet), which is why an empty
+ * array is not a receipt. The row is read before the listing and acted on after it, so a name that was purged and
  * re-created in that window is a *different* segment wearing the same name, and its live object must not be
- * collected on the strength of the old row. Refusing is safe — the objects are not going anywhere and the next
+ * collected on the strength of the old row: on an active segment the lower of the two pointers is what keeps it
+ * safe, and on a `destroyed` one the token. Refusing is safe — the objects are not going anywhere and the next
  * pass reads a consistent row — but it has to be **distinguishable** from "there was nothing to collect", which
  * an empty array is not: `eraseIdFromSegment` reads the returned list as the physical half of its erasure
  * receipt, and would otherwise report `erased: true` over bytes still in the bucket. Re-run it.

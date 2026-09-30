@@ -10,9 +10,10 @@ and both would be regressions if switched on:
   and `scripts/changelog-section.cjs` extracts a single version's section from it for the GitHub Release
   notes — so the release body and the changelog cannot drift, because the tag just quotes the file. Letting
   changesets generate five per-package changelogs would leave the root file unmanaged, split the source of
-  truth in two, and point the release notes at the half that is no longer written by hand. The curated split
-  also exists for a measured reason: the `0.10.0` release body came to 119,450 characters against GitHub's
-  120,000 limit, which is only checked *after* the tag is pushed.
+  truth in two, and point the release notes at a half nobody writes by hand. One curated section is also what
+  the size check can hold: GitHub refuses a release body over 125,000 characters, and only when the release is
+  created, after the packages are published, so `scripts/changelog-section.cjs` refuses a section over 120,000
+  before the publish step.
 
   **So a changeset's body is not published anywhere.** Write the user-facing entry under `[Unreleased]` in
   the root `CHANGELOG.md`, in the same change. The changeset file exists to carry the *bump type*.
@@ -20,8 +21,8 @@ and both would be regressions if switched on:
 - **`changeset publish` is not used.** Publishing goes through `.github/workflows/release.yml`, which is
   tokenless (OIDC against a Trusted Publisher), provenance-signed, gated on a human approval, and carries
   pre-flight probes that refuse an unbootstrapped name or a version already on the registry — because
-  `pnpm publish` *silently skips* a version that is already there and exits 0. Those guards are the reason
-  a partial release has not happened; `changeset publish` has none of them.
+  `pnpm publish` *silently skips* a version that is already there and exits 0. Those guards are what stop a
+  partial release; `changeset publish` has none of them.
 
 ## `"fixed"` is a glob on purpose
 

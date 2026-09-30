@@ -55,6 +55,18 @@ export default tseslint.config(
           name: 'queueMicrotask',
           message: 'core/ must stay free of ambient scheduling.',
         },
+        // I/O and randomness that need no import: both are globals in Node and in a V8 isolate alike, so the
+        // node-builtin import ban below cannot see them. A local binding named `crypto` (the `CrbmCrypto` the
+        // writers take) is not the global, and is untouched.
+        {
+          name: 'fetch',
+          message: 'core/ does no I/O of its own — it reaches storage through a driver port.',
+        },
+        {
+          name: 'crypto',
+          message:
+            'core/ must take randomness via an injected Rng, and encryption via an injected Aead.',
+        },
       ],
       'no-restricted-properties': [
         'error',

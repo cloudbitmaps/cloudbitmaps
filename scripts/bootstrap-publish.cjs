@@ -217,8 +217,8 @@ if (repoProbe.ok) {
     const repo = JSON.parse(repoProbe.out);
     if (repo.visibility !== 'PUBLIC') {
       fail(
-        `${repo.nameWithOwner} is ${repo.visibility} — RELEASING.md step 1 is "repo public first", so the ` +
-          `package links resolve and the real release can be attested.`,
+        `${repo.nameWithOwner} is ${repo.visibility} — RELEASING.md "Bootstrapping a name" needs the repo ` +
+          `public, so the package links resolve and the real release can be attested.`,
       );
     } else notes.push(`repo: ${repo.nameWithOwner} (public)`);
   } catch {
