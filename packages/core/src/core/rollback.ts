@@ -41,8 +41,9 @@ export interface GenerationEntry {
  * objects, so the list is the grace window plus whatever has not been collected yet. It is the set a
  * {@link rollbackSegment} can choose from, which is the reason to look at it.
  *
- * One `list` call. It does not open the objects, so it costs nothing per generation and tells you nothing about
- * their contents — read the sizes through the store's own report if you need them.
+ * One registry read and one `list` call, whether or not the segment has a registry row, so it also finds the
+ * objects a purged row left behind. It does not open the objects, so it costs nothing per generation and tells you
+ * nothing about their contents — read the sizes through the store's own report if you need them.
  */
 export async function listGenerations(
   ref: SegmentRef,

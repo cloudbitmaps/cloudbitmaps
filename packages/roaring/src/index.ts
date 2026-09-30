@@ -1149,7 +1149,7 @@ export class CloudRoaring {
    *
    * What the bucket holds, not what the segment has ever been — collection deletes superseded objects, so this is
    * the grace window plus whatever has not been collected yet. It is the set {@link CloudRoaring.rollback} can
-   * choose from, which is the reason to look at it. One `list` call; it does not open the objects.
+   * choose from, which is the reason to look at it. One registry read and one listing; it does not open the objects.
    *
    * Needs a backend.
    */

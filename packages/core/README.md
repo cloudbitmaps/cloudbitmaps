@@ -41,4 +41,4 @@ Depend on `@cloudbitmaps/core` directly only to **author a flavor or a driver**.
 dependencies** of its own.
 
 Full docs and guides live in the [repository](https://github.com/cloudbitmaps/cloudbitmaps), and each module
-there opens with the decision it encodes. Licensed Apache-2.0.
+there opens with a comment on what it is for and why. Licensed Apache-2.0.
