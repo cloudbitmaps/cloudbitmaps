@@ -121,6 +121,20 @@ const freshDriver = (): GcsStorageDriver =>
 // The same IStorageDriver contract memory and LocalFs pass: write-once, typed errors, true tail size, idempotent
 // delete, read-after-delete listing.
 storageDriverConformance('GcsStorageDriver (fake-gcs-server)', freshDriver);
+// The same cases with a 100-byte threshold, so every object takes the resumable upload. fake-gcs-server does not
+// enforce `ifGenerationMatch` on a resumable upload (a second write to the key succeeds and overwrites), so the
+// collision is skipped here: a real GCS answers it with 412, and the driver maps that the same way as the simple path.
+storageDriverConformance(
+  'GcsStorageDriver, resumable (fake-gcs-server)',
+  () =>
+    new GcsStorageDriver({
+      storage,
+      bucket: BUCKET,
+      prefix: `${RUN}/conf-resumable/${n++}`,
+      simpleUploadThresholdBytes: 100,
+    }),
+  { skip: ['collision'] },
+);
 
 storageChunkSourceConformance('GcsStorageDriver (fake-gcs-server)', async (chunks) => {
   const driver = freshDriver();

@@ -86,7 +86,8 @@ const freshDriver = (): S3StorageDriver =>
 // The S3 driver must pass the SAME storage-source contract as in-memory + LocalFs.
 // The same IStorageDriver contract memory and LocalFs pass: write-once, typed errors, true tail size, idempotent
 // delete, read-after-delete listing.
-storageDriverConformance('S3StorageDriver (MinIO)', freshDriver);
+// `largeBytes` is past one 5 MiB part, so the collision is raised by the conditional CompleteMultipartUpload.
+storageDriverConformance('S3StorageDriver (MinIO)', freshDriver, { largeBytes: 6 * 1024 * 1024 });
 
 storageChunkSourceConformance('S3StorageDriver (MinIO)', async (chunks) => {
   const driver = freshDriver();

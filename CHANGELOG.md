@@ -543,7 +543,7 @@ This one changes what an erasure charges its budget for:
   whatever was under the name, so a segment purged and re-created in that window, which is live data, was tombstoned
   and its name fenced. The purge now deletes with the scanned row's token and reports the entry as
   `failed: contended` when the row has changed. The removal of the row of a segment that held nothing now reads the
-  row it tombstoned and deletes it only while it is still that `destroyed` row, at that token.
+  row it tombstoned and deletes it only while it is still that `destroyed` row, at that token. A delete the row refuses leaves it, and the entry stays `retired`.
 - **A failed pointer refresh served the old generation, and the key it unwrapped, for as long as the registry
   stayed unreadable.** A reader that could not re-read a segment's pointer kept its reader and stamped it fresh,
   so during a registry outage, or after an access denial, a crypto-shredded or dropped segment could keep

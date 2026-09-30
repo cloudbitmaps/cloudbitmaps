@@ -103,6 +103,17 @@ const freshDriver = (): AzureBlobStorageDriver =>
 // The same IStorageDriver contract memory and LocalFs pass: write-once, typed errors, true tail size, idempotent
 // delete, read-after-delete listing.
 storageDriverConformance('AzureBlobStorageDriver (Azurite)', freshDriver);
+// The same cases with 64-byte blocks, so every object is staged blocks and a conditional commit.
+storageDriverConformance(
+  'AzureBlobStorageDriver, blocks (Azurite)',
+  () =>
+    new AzureBlobStorageDriver({
+      containerClient: container,
+      prefix: `${RUN}/conf-blocks/${n++}`,
+      blockBytes: 64,
+    }),
+  { largeBytes: 4096 },
+);
 
 storageChunkSourceConformance('AzureBlobStorageDriver (Azurite)', async (chunks) => {
   const driver = freshDriver();

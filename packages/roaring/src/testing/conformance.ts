@@ -155,6 +155,7 @@ export function storageChunkSourceConformance(
 export type StorageDriverCase =
   | 'write-once round trip'
   | 'collision'
+  | 'collision on a large upload'
   | 'missing object'
   | 'out-of-range read'
   | 'tail size'
@@ -197,7 +198,15 @@ async function generationsOf(d: IStorageDriver, ref: SegmentRef): Promise<number
 export function storageDriverConformance(
   label: string,
   makeDriver: () => IStorageDriver,
-  options: { readonly skip?: readonly StorageDriverCase[] } = {},
+  options: {
+    readonly skip?: readonly StorageDriverCase[];
+    /**
+     * Size of the object the `collision on a large upload` case writes. Pass one above the driver's single-request
+     * upload threshold to exercise its multipart or resumable path, where the write-once precondition is
+     * sent on a different request than a small object's. Omitted, the case does not run.
+     */
+    readonly largeBytes?: number;
+  } = {},
 ): void {
   const skipped = new Set<StorageDriverCase>(options.skip ?? []);
   const test = (name: StorageDriverCase, fn: () => Promise<void>): void => {
@@ -227,6 +236,22 @@ export function storageDriverConformance(
       expect(await d.getRange(key(0), 0, 300)).toEqual(first);
       expect((await d.getTail(key(0), 10)).size).toBe(300);
     });
+
+    if (options.largeBytes !== undefined) {
+      const large = options.largeBytes;
+      test('collision on a large upload', async () => {
+        const d = makeDriver();
+        const first = patterned(large);
+        await putBytes(d, key(0), first);
+        await expect(putBytes(d, key(0), patterned(large + 1))).rejects.toBeInstanceOf(
+          WriteConflictError,
+        );
+        // The loser changed nothing: the stored object is still the first, byte for byte.
+        expect((await d.getTail(key(0), 10)).size).toBe(large);
+        expect(await d.getRange(key(0), 0, large)).toEqual(first);
+        expect(await generationsOf(d, SEG)).toEqual([0]);
+      });
+    }
 
     test('missing object', async () => {
       const d = makeDriver();
@@ -261,6 +286,11 @@ export function storageDriverConformance(
       const none = await d.getTail(key(0), 0);
       expect(none.size).toBe(1000);
       expect(none.bytes.length).toBe(0);
+      // An empty object is an object: its tail is empty and its size is 0, not a refused range.
+      await putBytes(d, key(1), new Uint8Array(0));
+      const empty = await d.getTail(key(1), 10);
+      expect(empty.size).toBe(0);
+      expect(empty.bytes.length).toBe(0);
     });
 
     test('idempotent delete', async () => {

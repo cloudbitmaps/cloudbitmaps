@@ -549,7 +549,9 @@ describe('retireExpired — faults, races and malformed input', () => {
       },
     };
 
-    await retireExpired({ ...w.dropDeps, registry }, { now: T0 });
+    const res = await retireExpired({ ...w.dropDeps, registry }, { now: T0 });
+    // The drop did tombstone the segment, so the entry is a retirement; the refused delete leaves the new row alone.
+    expect(res.retired).toBe(1);
     expect(await w.registry.get({ segment: 'typo' })).toMatchObject({ status: 'active' });
   });
 

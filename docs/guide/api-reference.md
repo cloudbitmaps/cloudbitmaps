@@ -541,7 +541,7 @@ driver to them (`IStorageDriver`'s doc comment states the same list):
   race for the generation number (`superseded`).
 - A missing object makes `getRange` and `getTail` throw `NotFoundError`, never an empty or short result. Heal-forward,
   the erasure's holder probe and verify, and a pin's replaced-object check branch on it. A zero-length `getRange` may answer empty without
-  reaching the backend.
+  reaching the backend, so it proves neither that the object exists nor that the offset is inside it.
 - An out-of-range read, meaning a range past the end or a negative or non-integer offset or length, throws
   `ValidationError`, never a clamped or short read. `getTail` reports the object's true total size.
 - `delete` is idempotent: deleting an absent key is a no-op.

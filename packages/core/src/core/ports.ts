@@ -151,8 +151,9 @@ export interface StorageCaps {
  * - **A missing object makes `getRange` and `getTail` throw {@link NotFoundError}** — never an empty or short
  *   result. Heal-forward (a read whose generation a sweep collected re-resolves), the erasure's holder probe and
  *   its verify of the rewrite, and a pin's replaced-object check all branch on that one error. (A zero-length
- *   `getRange` may answer empty without reaching the backend; the engine never asks for one of an object it has
- *   not found.)
+ *   `getRange` may answer empty without reaching the backend, so it proves neither that the object exists nor
+ *   that the offset lies inside it: the cloud drivers answer it empty, the memory and local-filesystem drivers
+ *   throw for a missing object or an offset past the end.)
  * - **An out-of-range read throws {@link ValidationError}**: a range that runs past the end of the object, or a
  *   negative or non-integer offset or length. Never a clamped, short or adjacent read. A pin whose object
  *   was purged and loaded again as a smaller one asks for a range past its end, and this error is what sends it
