@@ -78,6 +78,8 @@ function fakeStorageWith(rec: Recorder, stream: () => Writable = () => fakeStrea
       rec.streamOpts.push(opts);
       return stream();
     },
+    // The read-back a 412 on a resumable commit makes: an object that carries no write id, so the conflict stands.
+    getMetadata: async () => [{}],
   };
   return { bucket: () => ({ file: () => f }) } as unknown as Storage;
 }

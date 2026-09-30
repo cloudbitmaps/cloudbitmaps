@@ -397,9 +397,23 @@ These two change what `estimateCost()` reports:
   `maxAttempts`, is otherwise unchanged. The GCS driver uploads the registry's rows, and objects up to
   `simpleUploadThresholdBytes`, as one request with no retry loop around it, where `file.save()` wrapped the same
   request in one. Tests drive both drivers through the real SDK, over a stub transport that applies a write and then
-  drops its response; each failed before the fix. Two paths are unchanged: Azure Blob, whose SDK takes its retry
-  policy from the client and has no per-request switch, and a GCS object above the threshold, which uploads as a
-  resumable session that the SDK retries within.
+  drops its response; each failed before the fix. Azure Blob and a GCS object above the threshold have no per-request
+  switch, and the next entry says how they tell a replay from a lost race.
+- **On Azure Blob, and on GCS for an object above `simpleUploadThresholdBytes`, a conditional write that landed and lost
+  its response was reported as a conflict.** The Azure SDK takes its retry policy from the client, and a GCS
+  object above the threshold uploads as a resumable session that the SDK retries within, so neither has a
+  per-request switch to turn the retry off. The write sent again met the one that landed, and the answer, a 409
+  or 412, reached the same wrong outcomes as on S3: a load reporting `superseded` for a generation it had made
+  current, an `*Into` verb or `rollback` throwing `WriteConflictError` after the write, a crypto-shred reporting
+  `already`. Each such write now tags its blob or object with a random id in its metadata, outside the `.crbm` bytes and
+  outside the registry row's body, so neither format changes. When the write reports a conflict, the driver reads
+  the stored copy back, one metadata read, and reports success when it carries the write's own id and
+  `WriteConflictError` otherwise. The read is made only on a conflict, and it works with a client you pass. A
+  generation's `.crbm` object is never overwritten, so its read-back is definitive. A registry row is
+  overwritten by compare-and-swap, so a writer that swaps in over a write that landed, before the read-back, makes
+  that write report `WriteConflictError`. The callers re-read or report it, and none deletes a generation on it: a load's cleanup
+  removes its generation only while the row's token is still the one it started from, which the write it landed has advanced. A read-back that fails transiently throws `TransientError`, neither a success nor a
+  conflict.
 - **`PRIVACY.md` said subject erasure is physical on return for more segments than it is.** Its table row, and
   the copy npm ships in `@cloudbitmaps/roaring`, said "on return" holds for every segment whose ledger entry is not
   `error: …`. An entry can also say `erased: false, note: 'superseded'`, when a racing writer overtook the rewrite:

@@ -61,10 +61,17 @@ of client at once. Need the halves apart? This package also exports the two driv
 
 Every request goes through the client's retry policy, which sends a request again after a network error or a 500
 or 503, and that includes the conditional writes: a generation's write-once upload and commit, and the registry's
-create, compare-and-swap and delete, which writes a tombstone. A conditional write that lands and loses its response is therefore sent again, meets
-itself and fails its precondition, so it can be reported as `WriteConflictError` for a write that landed. Before
-treating such a write as lost, check: `store.generations(ref)` lists what the container holds, with the current
-generation marked. See [the getting-started guide](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#6-reliability-retries-backoff--timeouts).
+create, compare-and-swap and delete, which writes a tombstone. A conditional write that lands and loses its response
+is therefore sent again, meets itself and fails its precondition. Each of these writes carries a random id in the
+blob's metadata (`cbwid`), outside the `.crbm` bytes and outside the registry row's body, and on a conflict the
+driver reads the stored blob back: its own id is a success, and any other, or none, is a `WriteConflictError`. The
+read is made only on a conflict, works with the client you pass, and adds no option. If it fails transiently the
+call throws `TransientError`, and the write may or may not have landed: `store.generations(ref)` lists what the
+container holds, with the current generation marked.
+
+A registry row is overwritten by compare-and-swap, so a writer that swaps in over a write that landed, before the
+read-back, makes that write report `WriteConflictError`. The callers re-read the row on it, and none deletes a
+generation because of it. A generation's `.crbm` blob is never overwritten, so its read-back is definitive. See [the getting-started guide](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#6-reliability-retries-backoff--timeouts).
 
 ## What this package is
 

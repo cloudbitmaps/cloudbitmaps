@@ -33,6 +33,7 @@ import {
 import type { ObjectRegistryStore, ObjectRow } from '@cloudbitmaps/core/driver-kit';
 import type { ContainerClient } from '@azure/storage-blob';
 import { isConditionalConflict, isNotFound, isTransient } from './azure-errors';
+import { newWriteId, storedWriteId, writeIdMetadata } from './write-id';
 
 export interface AzureBlobRegistryDriverOptions {
   /** A constructed `@azure/storage-blob` `ContainerClient`, scoped to an existing container. */
@@ -89,16 +90,26 @@ class AzureBlobStore implements ObjectRegistryStore {
     expect: 'absent' | { version: string },
   ): Promise<void> {
     const blob = this.container.getBlockBlobClient(key);
+    const writeId = newWriteId();
     try {
       await blob.upload(body, body.length, {
         blobHTTPHeaders: { blobContentType: 'application/json' },
         conditions: expect === 'absent' ? { ifNoneMatch: '*' } : { ifMatch: expect.version },
+        metadata: writeIdMetadata(writeId),
       });
     } catch (err) {
-      if (isConditionalConflict(err)) {
-        throw new WriteConflictError(`registry OCC conflict for ${key}`);
+      if (!isConditionalConflict(err)) throw mapError(err);
+      // The client's retry policy may have sent this write again after a lost response, and the replay meets the
+      // row it just wrote. The row carries this write's id when that is what happened. The read-back is not
+      // definitive: a writer that swapped in over ours before it shows its own id, and ours reports a conflict.
+      let stored: string | undefined;
+      try {
+        stored = await storedWriteId(blob);
+      } catch (readErr) {
+        throw mapError(readErr);
       }
-      throw mapError(err);
+      if (stored === writeId) return;
+      throw new WriteConflictError(`registry OCC conflict for ${key}`);
     }
   }
 
