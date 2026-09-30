@@ -705,6 +705,49 @@ only the timed re-check, so it is no way to get one instant. That is what a snap
 `seg.pin()` holds a segment at the generation current when you call it, for the life of the handle it returns
 ([API reference](api-reference.md#the-segment-verbs-the-90-of-daily-use)), so a long export or reconciliation describes one instant.
 
+### Page through a segment
+
+`iterate` and every combine take a range: `after` and `through` yield only the ids in `(after, through]`, and fetch
+only the chunks the range overlaps. That is keyset paging: each page asks for the ids after the last one the page
+before it ended on, so no page walks from the first id. Give each page both bounds. The per-op budget is charged once,
+before the first fetch, for every chunk in the range, so a page with `after` alone is charged to the end of the
+segment however early it stops. A combine also fetches ahead: it starts `concurrency` chunk keys at once (8 by
+default) and one more each time it yields a key's ids, on every segment it reads, so a page that stops early has
+already fetched up to `concurrency` keys past the one holding its last id; those chunks land in the chunk cache, where the next
+page usually finds them. `iterate` fetches one chunk at a time and nothing ahead.
+
+```ts
+// The audience is held at one generation for the whole send; the zone and the opt-out list are read live, page by
+// page, so an opt-out that lands mid-send applies to the pages after it.
+const audience = await store.segment('active-30d').pin();
+const zone = store.segment('zone-eu');
+const optOut = store.segment('global-opt-out', { namespace: 'suppression' });
+
+// One streamed pass finds the window ends: every 1,000th id, then the end of the id space.
+const ends: number[] = [];
+let n = 0;
+for await (const id of audience.iterate()) if (++n % 1_000 === 0) ends.push(id);
+ends.push(4_294_967_295);
+
+// Each window is an independent page, so workers can take them in any order. The first leaves `after` out, which
+// is the only way to include id 0.
+let after: number | undefined;
+for (const through of ends) {
+  const page: number[] = [];
+  for await (const id of audience.intersect([zone], { after, through, exclude: [optOut] })) page.push(id);
+  await send(page);
+  after = through;
+}
+```
+
+The range applies to every operand and every `exclude`, and a pinned operand is read at its pin. Each bound is an
+integer in `0..4294967295`, or the stream throws `ValidationError` when first read. `after >= through` reads nothing,
+so a cursor that reaches the end of its window needs no special case. A pinned read fails with `NotFoundError`, rather
+than reading a newer generation, for any chunk it must fetch from a generation that has since been collected; chunks it
+already cached still answer. A pin is never re-resolved, so the TTL rule below does not size `keep` for it: keep more
+generations than the loads that can land on the segment while the job runs (`store.load` keeps 1 by default). An
+erasure collects the generation it rewrote whatever `keep` says.
+
 ### Sizing `keep`
 
 `keep` is a **grace window**: a read fetches from the generation its snapshot names, and `keep` decides how
@@ -1672,10 +1715,10 @@ guidance, and why the registry must be point-in-time-recoverable alongside the o
 |---|---|---|
 | `has(id)` | `Promise<boolean>` | `ValidationError` if `id ∉ [0, 2³²)`. The cache, else **one** ranged GET of that id's chunk — never budgeted |
 | `count()` | `Promise<number>` | exact cardinality, summed from the `.crbm` index with **zero payload reads** on a loaded segment; `budget`-guarded on a source without an index ([§15](#15-cost-ceiling-the-per-op-fan-out-budget)) |
-| `iterate()` | `AsyncIterable<number>` | ascending, one chunk at a time; `budget`-guarded |
-| `intersect(others, { exclude?, concurrency?, budget? })` | `AsyncIterable<number>` | ascending; chunk-skipping. `exclude` subtracts suppression segments **in the same pass** |
-| `union(others, { exclude?, concurrency?, budget? })` | `AsyncIterable<number>` | ascending. The one composite with **no** chunk-skipping — every chunk of every operand is read |
-| `andNot(excludes, { concurrency?, budget? })` | `AsyncIterable<number>` | ascending. Reads all of `this`; each suppression list **only where it overlaps** |
+| `iterate({ after?, through? }?)` | `AsyncIterable<number>` | ascending, one chunk at a time; `budget`-guarded. With a range, only the ids in `(after, through]` and the chunks it overlaps ([Page through a segment](#page-through-a-segment)) |
+| `intersect(others, { after?, through?, exclude?, concurrency?, budget? })` | `AsyncIterable<number>` | ascending; chunk-skipping. `exclude` subtracts suppression segments **in the same pass** |
+| `union(others, { after?, through?, exclude?, concurrency?, budget? })` | `AsyncIterable<number>` | ascending. The one composite with **no** chunk-skipping — every chunk of every operand is read |
+| `andNot(excludes, { after?, through?, concurrency?, budget? })` | `AsyncIterable<number>` | ascending. Reads all of `this`; each suppression list **only where it overlaps** |
 | `intersectInto` / `unionInto` / `andNotInto` `(dest, …)` | `Promise<MaterializeResult>` | write the result as a **new generation of `dest`** (superseding it) — `{ generation, cardinality, chunkCount, size }`. Needs a backend |
 | `costReport({ workload?, pricing? })` | `Promise<CostReport>` | grounded $ report from this segment's real `.crbm` size ([§11](#11-cost-estimate-it-then-ground-it)) |
 

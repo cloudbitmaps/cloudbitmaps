@@ -17,8 +17,9 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ### Breaking
 
-Each of these makes a call throw where it used to return, and each fixes a wrong answer: the entries under
-**Fixed** say what the call returned before.
+Each of these makes a call throw where it used to return. The first four each fix a wrong answer, and the entries
+under **Fixed** say what the call returned before. The last two hold a call to a rule the rest of the library
+already kept.
 
 - **A pinned read of a segment whose row is gone or destroyed throws `NotFoundError`**, where it read empty,
   part-way through a call included. Catch it where a pin can outlive its segment: across a `dropSegment`, a
@@ -33,8 +34,28 @@ Each of these makes a call throw where it used to return, and each fixes a wrong
   included, so a default load onto a segment whose current generation is misfiled fails its guard. To move past it,
   roll the segment back to an earlier generation that opens, or load with `allowEmpty: true` and no
   `guard.minRetained`, which then does not read the current generation.
+- **A combine whose other operands have all expired checks its own segment as every combine does.**
+  `seg.union([expired])` and `seg.andNot([expired])` read `seg` alone, and now refuse a `seg` that names no segment
+  with `ValidationError`, as `seg.union([live])` already did, where they returned no ids; `allowAbsentOperands: true`
+  still reads it as empty. They also now take the call's `concurrency` and `budget`, so `concurrency: 0` throws and a
+  per-op budget too small for `seg` refuses the read. The error, the budget refusal and the `intersect` metrics event
+  of such an `andNot` name the verb `union`.
+- **A custom `StorageChunkSource` that lists one chunk key twice is refused with `IntegrityError`** by every read
+  that lists a segment's chunks: `iterate`, every combine, and a `count` with no index to sum. A combine used to drop
+  the duplicate. The sources the library ships never list a key twice.
 
 ### Added
+
+- **An id-range read: `iterate({ after, through })`, and the same two options on `intersect`, `union`, `andNot` and
+  the `*Into` verbs.** A read yields only the ids in `(after, through]`, ascending, and fetches only the chunks the
+  range overlaps, on every operand and every `exclude` of a combine, so a keyset page bounded by `through` costs the
+  chunks of its window rather than a walk from the first id. The per-op budget is charged once, before the first
+  fetch, for every chunk in the range, so with `after` alone it is charged to the end of the segment. Each bound is
+  optional and an integer in `0..4294967295`, or the read throws `ValidationError` when first read; `after >= through`
+  is an empty read, which fetches nothing. A pinned read fails with `NotFoundError` for any chunk it must fetch from a
+  generation that has since been collected, as a full pinned read does. `IdRange` (`{ after?, through? }`) is
+  exported, and `BaseCombineOptions` extends it. The `intersect` metrics event, which every combine emits, counts in
+  `fetchedChunks` and `skippedChunks` only the chunk keys inside the range.
 
 - **`PinnedAt` names the object a pin holds.** It gains an optional `fingerprint`: the pinned object's size and
   footer checksum, which `seg.pin()` records. `PinnedObject` (`{ version, fingerprint? }`) is exported beside it.

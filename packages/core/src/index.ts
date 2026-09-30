@@ -21,7 +21,7 @@
 // which is precisely core's audience.
 // ---------------------------------------------------------------------------------------------------
 export { SegmentEngine } from './core/engine';
-export type { EngineDeps, CombineOptions as EngineCombineOptions } from './core/engine';
+export type { EngineDeps, CombineOptions as EngineCombineOptions, IdRange } from './core/engine';
 export { BoundedLru } from './core/lru';
 export { safeMetrics } from './core/metrics';
 export { groundedReport } from './core/cost';

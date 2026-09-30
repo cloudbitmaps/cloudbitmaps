@@ -324,6 +324,10 @@ await seg.count(); // → 4     (summed from the object's index — no payload r
 for await (const id of seg.iterate()) {
   /* ascending IDs */
 }
+// A range, (after, through]: only the chunks it overlaps are read, and the budget is charged for those alone.
+for await (const id of seg.iterate({ after: 99_999, through: 2_000_000_000 })) {
+  /* 1_234_567_890, then 2_000_000_000 */
+}
 
 // Chunk-skipping intersection: only the chunks present in both are ever fetched.
 const optedOut = store.segment('opted-out');
@@ -455,9 +459,9 @@ new CloudRoaring({
 
 | Method | Does |
 |---|---|
-| `has` · `count` · `iterate` | read one chunk / the index / the whole set. `count` is **0 payload reads** — it sums the `.crbm` index |
-| `intersect(others, { exclude? })` | chunk-skipping set intersection, streamed. `exclude` subtracts suppression segments **in the same pass** — no intermediate segment |
-| `union(others, { exclude? })` | set union, streamed. The one composite with **no** chunk-skipping — every chunk of every operand is read |
+| `has` · `count` · `iterate` | read one chunk / the index / the whole set, or with `iterate({ after, through })` only the chunks the range overlaps. `count` is **0 payload reads** — it sums the `.crbm` index |
+| `intersect(others, { exclude?, after?, through? })` | chunk-skipping set intersection, streamed. `exclude` subtracts suppression segments **in the same pass** — no intermediate segment |
+| `union(others, { exclude?, after?, through? })` | set union, streamed. The one composite with **no** chunk-skipping — every chunk of every operand is read |
 | `andNot(excludes)` | set difference. Reads all of `this`, but each suppression list **only where it overlaps** |
 | `intersectInto(dest, …)` · `unionInto(dest, …)` · `andNotInto(dest, …)` | materialise the result as a **new generation of `dest`** (write-once, published forward-only) and report what was written |
 | `costReport({ workload, pricing })` | grounded cost from the segment's real `.crbm` size |

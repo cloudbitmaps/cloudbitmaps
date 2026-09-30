@@ -8,7 +8,7 @@
  * one generation. Storage-agnostic and time/random-free (the determinism seam): all I/O is via the injected
  * source; the cache carries its own `Clock`.
  */
-import { splitId, joinId, CHUNK_COUNT, MAX_REMAINDER } from './bit-route';
+import { splitId, joinId, CHUNK_COUNT, MAX_REMAINDER, U32_MAX } from './bit-route';
 import type { CodecBitmap, CodecInterface } from './codec';
 import { checkBudget, DEFAULT_BUDGET, resolvePerOpBudget } from './budget';
 import type { Budget, BudgetOption } from './budget';
@@ -50,8 +50,28 @@ export interface EngineDeps {
   readonly budget?: Budget | null;
 }
 
+/**
+ * A range of ids for a read to yield: those greater than `after` and no greater than `through`, `(after, through]`.
+ *
+ * Built for keyset paging: `after` is the last id the caller already has, `through` the end of its window. Each is
+ * optional: left out, the read starts at the first id or runs to the last. Each is an integer in `0..4294967295`, or
+ * the read throws {@link ValidationError} when it is first read. `after >= through` is an empty range, not an error,
+ * because a cursor that has reached the end of its window is normal; an empty range reads nothing, not even whether
+ * a combine's operands exist.
+ *
+ * A read with a range fetches only the chunks the range overlaps, on a combine for every operand and every
+ * `exclude`. The per-op budget is charged once, before the first fetch, for every chunk in the range, so with
+ * `after` alone it is charged to the end of the segment however early the caller stops; pass `through` to bound it.
+ */
+export interface IdRange {
+  /** Exclusive lower bound: the read yields only ids greater than this. */
+  readonly after?: number | undefined;
+  /** Inclusive upper bound: the read yields only ids up to and including this. */
+  readonly through?: number | undefined;
+}
+
 /** Options common to the chunk-aligned combines. */
-export interface CombineOptions {
+export interface CombineOptions extends IdRange {
   /** Max chunk keys resolved concurrently — bounds the Storage footprint. A positive integer. */
   readonly concurrency?: number;
   /** Override the store's per-op budget for this call (`false` lifts it). */
@@ -69,9 +89,88 @@ export interface CombineOptions {
 /** One resolved operand of a chunk-aligned combine: its chunk-key set + pinned generation. */
 interface Operand {
   readonly seg: SegmentRef;
+  /** The operand's chunk keys, inside the read's range when it has one. */
   readonly keys: Set<number>;
+  /** Whether the segment has no chunks at all, whatever the range: what the absent-operand check judges. */
+  readonly chunkless: boolean;
   /** The cache-key component — a `currentVersion` string, a generation number, or absent. */
   readonly gen: string | number | null | undefined;
+}
+
+/** A validated {@link IdRange}: inclusive id bounds, and the chunk key and remainder at each end. */
+interface IdWindow {
+  readonly loKey: number;
+  readonly loRem: number;
+  readonly hiKey: number;
+  readonly hiRem: number;
+}
+
+/**
+ * Validate a read's range. `null` when none was asked for, so the read does no extra work; `'empty'` when no id can
+ * be in it.
+ */
+function windowOf(range: IdRange | undefined): IdWindow | 'empty' | null {
+  const after = range?.after;
+  const through = range?.through;
+  if (after === undefined && through === undefined) return null;
+  for (const [name, bound] of [
+    ['after', after],
+    ['through', through],
+  ] as const) {
+    if (bound !== undefined && (!Number.isInteger(bound) || bound < 0 || bound > U32_MAX)) {
+      const got = typeof bound === 'number' ? String(bound) : `a ${typeof bound}`;
+      throw new ValidationError(`${name} must be an integer in 0..${U32_MAX}; got ${got}`);
+    }
+  }
+  const lo = after === undefined ? 0 : after + 1;
+  const hi = through ?? U32_MAX;
+  if (lo > hi) return 'empty';
+  return {
+    loKey: Math.floor(lo / CHUNK_COUNT),
+    loRem: lo % CHUNK_COUNT,
+    hiKey: Math.floor(hi / CHUNK_COUNT),
+    hiRem: hi % CHUNK_COUNT,
+  };
+}
+
+/** The window a range with neither bound set describes: every id. */
+const WHOLE_ID_SPACE: IdWindow = {
+  loKey: 0,
+  loRem: 0,
+  hiKey: CHUNK_COUNT - 1,
+  hiRem: MAX_REMAINDER,
+};
+
+/**
+ * Whether the range cuts inside `chunkKey`: one of its two edge chunks, and only where the bound falls inside the
+ * chunk rather than on its boundary. A chunk the range covers whole is yielded by the plain loop.
+ */
+const isEdge = (chunkKey: number, w: IdWindow): boolean =>
+  (chunkKey === w.loKey && w.loRem > 0) || (chunkKey === w.hiKey && w.hiRem < MAX_REMAINDER);
+
+/** The ids of an edge chunk that lie inside the window. The chunk iterates ascending, so it stops at the top. */
+function* edgeIds(chunk: CodecBitmap, chunkKey: number, w: IdWindow): Generator<number> {
+  const from = chunkKey === w.loKey ? w.loRem : 0;
+  const to = chunkKey === w.hiKey ? w.hiRem : MAX_REMAINDER;
+  for (const remainder of chunk) {
+    if (remainder > to) return;
+    if (remainder >= from) yield joinId(chunkKey, remainder);
+  }
+}
+
+/** The ascending `keys` inside the window's chunk span: two binary searches, no scan. */
+function keysWithin(keys: readonly number[], w: IdWindow): number[] {
+  const firstAtLeast = (key: number): number => {
+    let lo = 0;
+    let hi = keys.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (keys[mid]! < key) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  };
+  return keys.slice(firstAtLeast(w.loKey), firstAtLeast(w.hiKey + 1));
 }
 
 export class SegmentEngine {
@@ -146,8 +245,19 @@ export class SegmentEngine {
     return this.storage.sizeOf ? this.storage.sizeOf(seg) : Promise.resolve(null);
   }
 
-  /** Every id, ascending, one chunk at a time. */
-  async *iterate(seg: SegmentRef): AsyncGenerator<number> {
+  /**
+   * Every id, ascending, one chunk at a time; with `range`, only the ids in `(after, through]`, fetching only the
+   * chunks the range overlaps (see {@link IdRange}).
+   *
+   * Two generators, not one with a branch: a second `yield` site in the full read's generator grows its frame, and
+   * every id of a read that asked for no range paid for it (measured at about 5% per id). The full read keeps the
+   * loop it always had.
+   */
+  iterate(seg: SegmentRef, range?: IdRange): AsyncGenerator<number> {
+    return range === undefined ? this.iterateAll(seg) : this.iterateRange(seg, range);
+  }
+
+  private async *iterateAll(seg: SegmentRef): AsyncGenerator<number> {
     const chunkKeys = await this.chunkKeys(seg);
     checkBudget(this.budget, chunkKeys.length, 'iterate'); // one storage fetch per chunk (before fan-out)
     const gen = await this.cacheVersion(seg); // after the shape read — see `combine`
@@ -156,6 +266,23 @@ export class SegmentEngine {
       if (chunk === null) continue;
       // Read straight off the (possibly cached) instance: iteration does not mutate it.
       for (const remainder of chunk) yield joinId(chunkKey, remainder);
+    }
+  }
+
+  private async *iterateRange(seg: SegmentRef, range: IdRange): AsyncGenerator<number> {
+    const w = windowOf(range) ?? WHOLE_ID_SPACE;
+    if (w === 'empty') return;
+    const chunkKeys = keysWithin(await this.chunkKeys(seg), w);
+    checkBudget(this.budget, chunkKeys.length, 'iterate'); // one storage fetch per chunk (before fan-out)
+    const gen = await this.cacheVersion(seg); // after the shape read — see `combine`
+    for (const chunkKey of chunkKeys) {
+      const chunk = await this.storageChunk({ ...seg, chunkKey }, gen);
+      if (chunk === null) continue;
+      if (isEdge(chunkKey, w)) {
+        for (const id of edgeIds(chunk, chunkKey, w)) yield id;
+      } else {
+        for (const remainder of chunk) yield joinId(chunkKey, remainder);
+      }
     }
   }
 
@@ -248,6 +375,10 @@ export class SegmentEngine {
     // Per-op budget override (else the store budget); resolved before any I/O so a bad value fails fast. A
     // partial override inherits the store's tightening (not the generous default) — see resolvePerOpBudget.
     const budget = resolvePerOpBudget(options?.budget, this.budget);
+    // The range, if any, cuts every operand's keys once, here, so what follows — alignment, the budget, the
+    // metrics, the fan-out — sees only chunks inside it. Only the two edge chunks are cut again, where ids leave.
+    const w = windowOf(options);
+    if (w === 'empty') return;
 
     // ① Index-map extraction: each operand's chunk-key set + its current generation, resolved ONCE here (not
     // per chunk) so the fan-out below adds no per-chunk generation re-resolve. Only metadata so far.
@@ -267,9 +398,10 @@ export class SegmentEngine {
     // Within a call shorter than `cache.genTtlMs` the two share one snapshot, so the read is
     // generation-consistent — absent cache-pressure eviction (see `intersect`).
     const extract = async (seg: SegmentRef): Promise<Operand> => {
-      const keys = await this.chunkKeys(seg);
+      const all = await this.chunkKeys(seg);
       const gen = await this.cacheVersion(seg);
-      return { seg, keys: new Set(keys), gen };
+      const keys = w === null ? all : keysWithin(all, w);
+      return { seg, keys: new Set(keys), chunkless: all.length === 0, gen };
     };
     const [operands, excludes] = await Promise.all([
       Promise.all(segs.map(extract)),
@@ -353,7 +485,11 @@ export class SegmentEngine {
       if (next < common.length) inFlight.push(startAt(common[next++]!));
       if (slot.error !== undefined) throw slot.error;
       if (slot.result && !slot.result.isEmpty) {
-        for (const remainder of slot.result) yield joinId(slot.key, remainder);
+        if (w !== null && isEdge(slot.key, w)) {
+          for (const id of edgeIds(slot.result, slot.key, w)) yield id;
+        } else {
+          for (const remainder of slot.result) yield joinId(slot.key, remainder);
+        }
       }
     }
   }
@@ -418,7 +554,14 @@ export class SegmentEngine {
   private async chunkKeys(seg: SegmentRef): Promise<number[]> {
     const keys = [...(await this.storage.listChunkKeys(seg))];
     for (const k of keys) this.assertChunkKeyInRange(k);
-    return keys.sort((a, b) => a - b);
+    keys.sort((a, b) => a - b);
+    // A key listed twice would be read and yielded twice; the `.crbm` reader refuses one, a custom source may not.
+    for (let i = 1; i < keys.length; i++) {
+      if (keys[i] === keys[i - 1]) {
+        throw new IntegrityError(`chunk key from a tier is listed twice: ${keys[i]}`);
+      }
+    }
+    return keys;
   }
 
   /**
@@ -471,7 +614,8 @@ export class SegmentEngine {
    * **Costs nothing on a normal combine.** `exists` is consulted only for an operand that resolved to zero
    * chunks — a segment with data is self-evidently registered — so the check is a registry read exactly when
    * a combine was about to do something suspicious, and no reads at all otherwise. A source that cannot answer
-   * `exists` (it has no notion of registration) skips the check rather than guessing.
+   * `exists` (it has no notion of registration) skips the check rather than guessing. An operand is judged by
+   * all its chunks, not those inside a range: one with nothing in range but data elsewhere is not suspicious.
    */
   private async refuseAbsentOperands(
     resolved: readonly Operand[],
@@ -479,7 +623,7 @@ export class SegmentEngine {
     op: string,
   ): Promise<void> {
     if (allow === true || this.storage.exists === undefined) return;
-    const empty = resolved.filter((o) => o.keys.size === 0);
+    const empty = resolved.filter((o) => o.chunkless);
     if (empty.length === 0) return;
     const checked = await Promise.all(
       empty.map(async (o) => ({ seg: o.seg, exists: await this.storage.exists!(o.seg) })),
