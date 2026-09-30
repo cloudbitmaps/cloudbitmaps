@@ -5,10 +5,9 @@ import { collect, loadedStore } from '../helpers/loaded';
  * **An expired exclusion excludes nothing, in every shape of combine.**
  *
  * Expiry is a read rule: past its deadline a handle reads as gone. As an *exclusion*, gone means it subtracts
- * nothing. The rule used to hold for `andNot` and for a `union` whose operands had all expired, and not for
- * `intersect` or an ordinary `union`, which handed the expired handle to the engine and subtracted its ids. This
- * table holds every shape to the one rule, live and pinned, whole and range-read, against a model that knows
- * nothing about the shortcuts: a plain set algebra over the ids each case says are live.
+ * nothing, whichever way the combine is spelled. This table holds every shape (`andNot`, `intersect`, `union`, a
+ * union whose operands have expired) to the one rule, live and pinned, whole and range-read, against a model that
+ * knows nothing about the shortcuts: a plain set algebra over the ids each case says are live.
  *
  * Every other rule is held where it was: an expired `self` or include operand is empty, and an absent operand is
  * refused unless `allowAbsentOperands` is set. The `*Into` verbs still throw on any expired handle, an exclusion
@@ -196,6 +195,45 @@ describe('an expired exclusion beside an absent include operand', () => {
       expect(await collect(run(c, absent, true))).toEqual(want);
     },
   );
+});
+
+describe('an expired exclusion is left out of the pin-consistency check', () => {
+  /** The only pinned handle is the exclusion, and it names the segment `self` reads live. */
+  const run = async (expiresAt: number | undefined, after: number) => {
+    const w = await world(false);
+    const a = w.store.segment('a');
+    const b = w.store.segment('b');
+    const pinnedA = await w.store.segment('a', expiresAt === undefined ? {} : { expiresAt }).pin();
+    w.clock.set(after);
+    return { a, b, pinnedA };
+  };
+
+  it.each(['intersect', 'union'] as const)(
+    '%s: a live pin of the same segment is still refused',
+    async (verb) => {
+      const { a, b, pinnedA } = await run(undefined, DEADLINE + 1);
+      await expect(collect(a[verb]([b], { exclude: [pinnedA] }))).rejects.toThrow(ValidationError);
+    },
+  );
+
+  it.each(['intersect', 'union'] as const)(
+    '%s: an expired one is skipped, not refused',
+    async (verb) => {
+      const { a, b, pinnedA } = await run(DEADLINE, DEADLINE + 1);
+      const want = verb === 'intersect' ? [2, 3, 70_000] : [1, 2, 3, 4, 70_000];
+      expect(await collect(a[verb]([b], { exclude: [pinnedA] }))).toEqual(want);
+    },
+  );
+
+  it('a pinned self reads its pin when the only exclusion expires after the pin', async () => {
+    const w = await world(false);
+    const pinnedA = await w.store.segment('a').pin();
+    const stale = w.store.segment('x1', { expiresAt: DEADLINE });
+    w.clock.set(DEADLINE + 1);
+    expect(await collect(pinnedA.intersect([w.store.segment('b')], { exclude: [stale] }))).toEqual([
+      2, 3, 70_000,
+    ]);
+  });
 });
 
 describe('the *Into verbs refuse an expired exclusion and leave the destination alone', () => {
