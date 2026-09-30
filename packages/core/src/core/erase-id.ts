@@ -4,8 +4,8 @@
  *
  * There is no per-id delete on an immutable object, and there is no mutable tier to hold a tombstone, so erasure
  * is what every other write in this library is: a new generation. The current generation is streamed chunk by
- * chunk through the ascending writer — every chunk copied through, the one chunk holding the id re-encoded with
- * that bit cleared — then published fenced on the generation it streamed, and that generation is collected immediately
+ * chunk through the ascending writer — every chunk decoded, range-checked and re-encoded, the one holding the id
+ * with that bit cleared — then published fenced on the generation it streamed, and that generation is collected immediately
  * (`keep: 0`), so the bit is **physically gone from the bucket when this returns**. Constant memory: one chunk in
  * flight, never the whole segment.
  *
