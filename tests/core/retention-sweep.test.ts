@@ -454,17 +454,44 @@ describe('retireExpired — faults, races and malformed input', () => {
       expect(await w.store().segment('typo').count()).toBe(1);
     });
 
-    it('a dry run previews the retirement and leaves no row either way', async () => {
+    it('a dry run writes nothing with purging on or off: the row stays active and unstamped', async () => {
+      // A dry run never reaches the branch under test, so this guards only that the preview stays a preview.
       const w = world();
       await w.store().setRetention({ segment: 'typo' }, { expiresAt: EXPIRED });
-      const res = await retireExpired(w.dropDeps, {
-        now: T0,
-        purgeTombstones: false,
-        dryRun: true,
-      });
-      expect(res.wouldRetire).toBe(1);
-      expect((await w.registry.get({ segment: 'typo' }))!.status).toBe('active');
+      const before = await w.registry.get({ segment: 'typo' });
+      for (const purgeTombstones of [false, true]) {
+        const res = await retireExpired(w.dropDeps, { now: T0, purgeTombstones, dryRun: true });
+        expect(res.wouldRetire).toBe(1);
+        expect(res.retired).toBe(0);
+        expect(await w.registry.get({ segment: 'typo' })).toEqual(before);
+      }
+      expect(before!.status).toBe('active');
     });
+  });
+
+  it('an empty segment whose row delete fails keeps a stamped tombstone, which a later sweep purges', async () => {
+    // Unstamped, that row would read as a crypto-shred's tombstone, which no sweep ever deletes, so one
+    // transient registry fault would keep the name fenced for good.
+    const w = world();
+    await w.store().setRetention({ segment: 'typo' }, { expiresAt: EXPIRED });
+    const flaky: IRegistryDriver = {
+      capabilities: () => w.registry.capabilities(),
+      get: (ref) => w.registry.get(ref),
+      create: (ref, rec) => w.registry.create(ref, rec),
+      compareAndSwap: (ref, expected, patch) => w.registry.compareAndSwap(ref, expected, patch),
+      list: (ns) => w.registry.list(ns),
+      delete: () => Promise.reject(new Error('registry unavailable')),
+    };
+
+    const res = await retireExpired({ ...w.dropDeps, registry: flaky }, { now: T0 });
+    expect(res.retired).toBe(1);
+    const row = await w.registry.get({ segment: 'typo' });
+    expect(row!.status).toBe('destroyed');
+    expect(row!.retention).toHaveProperty('retiredBySweepAt', T0);
+
+    const later = await retireExpired(w.dropDeps, { now: T0 + 2 * DAY });
+    expect(later.tombstonesPurged).toBe(1);
+    expect(await w.registry.get({ segment: 'typo' })).toBeNull();
   });
 
   it('survives a malformed retention blob without abandoning the sweep', async () => {

@@ -514,8 +514,15 @@ export async function retireExpired(
         // keeps its tombstone, so reads stay refused, and the tombstone-purge pass above re-sweeps it with
         // `gcOrphanGenerations` (which takes every generation of a destroyed row) and purges the row once it is
         // genuinely empty. The residual is visible in this entry's `result.generationsRemaining` meanwhile.
-        await deps.registry.delete(ref).catch(() => undefined);
-        continue;
+        //
+        // **A delete that fails falls through to the stamp as well.** Left unstamped, the row is indistinguishable
+        // from a crypto-shred's tombstone, which no sweep may ever delete, so one transient registry fault would
+        // keep a fenced name for good. Stamped, it is this sweep's own tombstone, and a later sweep purges it.
+        const deleted = await deps.registry.delete(ref).then(
+          () => true,
+          () => false,
+        );
+        if (deleted) continue;
       }
       // Stamp the tombstone as OURS, so a later sweep may purge the row (see the attribution note above). A
       // failure here only means the row is never auto-purged — never data loss — so it is best-effort.

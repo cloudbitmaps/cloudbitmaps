@@ -487,6 +487,8 @@ These two change what `estimateCost()` reports:
   skips the row without re-processing it. The default, `purgeTombstones: true`, deletes the row as before. A
   caller that passes `false` and relied on an empty segment's name being free again after the sweep must pass
   `true` for the sweep that should free it.
+  With the default, an empty segment's row that the sweep could not delete (a registry fault) is stamped and kept
+  too, where it stayed unstamped, which no sweep would ever purge; a later sweep now deletes it after the grace period.
 - **A subject erasure could report `erased: true` while another generation of the segment still held the id.**
   `PRIVACY.md` promises that an `erased: true` entry means the id is physically gone from every generation that
   held it. Three cases broke that promise:
