@@ -1242,12 +1242,16 @@ export class CloudRoaring {
    * under them. The one call that deletes one of them is {@link CloudRoaring.eraseSubject}, and only one that
    * holds the id it erases: a rollback target that still holds erased data would make the erasure undoable.
    *
+   * A target **above** the pointer needs `{ allowForward: true }`, and is refused with {@link ValidationError}
+   * without it: that is also where objects live that were never published, such as a load that wrote its object
+   * and died before the publish. Undoing an earlier rollback is what the opt-in is for.
+   *
    * Needs a backend.
    */
   async rollback(
     ref: SegmentRef,
     toGeneration: number,
-    options: { audit?: IAuditSink } = {},
+    options: { audit?: IAuditSink; allowForward?: boolean } = {},
   ): Promise<RollbackResult> {
     validateSegmentRef(ref);
     const deps = this.lifecycleDeps('rollback');

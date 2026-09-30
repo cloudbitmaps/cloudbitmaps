@@ -560,6 +560,39 @@ describe('rollback — the facade, and the validation the core owes', () => {
     expect(await store.segment('s', { namespace: 'ns' }).count()).toBe(3); // same instance
   });
 
+  it('store.rollback takes the same options as rollbackSegment, allowForward included', () => {
+    // Type-level: the store's wired form must not narrow the free function's options. A narrower type makes a
+    // documented call — undoing a rollback — a compile error for every TypeScript caller of the store.
+    expectTypeOf<NonNullable<Parameters<CloudRoaring['rollback']>[2]>>().toEqualTypeOf<
+      NonNullable<Parameters<typeof rollbackSegment>[3]>
+    >();
+  });
+
+  it('store.rollback rolls forward with allowForward, and refuses it without', async () => {
+    // Undoing a rollback through the store: the target sits above the pointer, which is refused unless the call
+    // opts in, and with the opt-in the same store instance reads the newer generation and audits the move.
+    const w = world();
+    await loadSegment(SEG, [1, 2, 3], w.load, { keep: 9 }); // gen 0
+    await loadSegment(SEG, [9], w.load, { keep: 9 }); // gen 1
+    const store = new CloudRoaring({
+      storage: w.backend,
+      retry: false,
+    });
+    await store.rollback(SEG, 0);
+    expect(await store.segment('s', { namespace: 'ns' }).count()).toBe(3);
+
+    await expect(store.rollback(SEG, 1)).rejects.toBeInstanceOf(ValidationError);
+    expect((await w.registry.get(SEG))!.currentGen).toBe(0);
+
+    const audit = new RecordingAuditSink();
+    const r = await store.rollback(SEG, 1, { allowForward: true, audit });
+    expect(r).toEqual({ fromGeneration: 0, generation: 1 });
+    expect(await store.segment('s', { namespace: 'ns' }).count()).toBe(1); // same instance
+    expect(audit.snapshot()).toEqual([
+      { kind: 'segment.rollback', namespace: 'ns', segment: 's', fromGeneration: 0, generation: 1 },
+    ]);
+  });
+
   it('store.generations reports what the bucket holds', async () => {
     const w = world();
     for (const ids of [[1], [2]]) await loadSegment(SEG, ids, w.load, { keep: 9 });
