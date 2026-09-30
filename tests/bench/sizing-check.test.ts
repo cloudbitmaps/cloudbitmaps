@@ -37,7 +37,10 @@ const priced = new Map<string, ReturnType<typeof core.estimateCost>>();
 const cachedCore: typeof core = {
   ...core,
   estimateCost: (input) => {
-    const key = JSON.stringify(input);
+    // A non-finite number would otherwise print as `null`, the same key as an input that has a `null` there.
+    const key = JSON.stringify(input, (_k, v: unknown) =>
+      typeof v === 'number' && !Number.isFinite(v) ? { nonFinite: String(v) } : v,
+    );
     let report = priced.get(key);
     if (report === undefined) {
       report = deepFreeze(core.estimateCost(input));

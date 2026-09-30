@@ -12,8 +12,9 @@
  * {@link StorageChunkSource} for advanced reader options you configure yourself.
  *
  * **Data gets in by loading a generation**, never by mutating one: `store.load()` streams a set of ids into one
- * immutable object and advances the segment's pointer to it. The pointer moves forward, and a load that finds the
- * row changed since it read it reports `superseded` instead of landing. Every other write in the library is a load in
+ * immutable object and advances the segment's pointer to it. The pointer only moves forward, so a load out-raced by
+ * a newer generation reports `superseded` instead of landing, and so does one that read the row when the row has
+ * changed since. Every other write in the library is a load in
  * disguise — `intersectInto`/`unionInto`/`andNotInto` write a new generation of their destination, and
  * `eraseSubject` rewrites a generation without one id. Reads (`has`/`count`/`iterate`/`intersect`/`union`/`andNot`)
  * see whole, checksum-verified generations and nothing else.

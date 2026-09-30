@@ -463,3 +463,64 @@ describe('loadSegment — validation', () => {
     expect(await generations(w.storage)).toEqual([]);
   });
 });
+
+describe('two loads onto a segment with no row, under allowEmpty and no guard', () => {
+  // The guide's load-ordering passage: neither load reads anything to fence on, so each publish is a plain
+  // forward-only advance. Both loads write their object before either publishes (the gate holds each one right after
+  // its put), so they hold different numbers: the first takes 0, the second sees that object and takes 1.
+  async function raced(firstToPublish: 'lower' | 'higher') {
+    const w = world();
+    const held: { release: () => void; arrived: Promise<void> }[] = [];
+    const storage: IStorageDriver = {
+      capabilities: () => w.storage.capabilities(),
+      getRange: (k, o, l) => w.storage.getRange(k, o, l),
+      getTail: (k, m) => w.storage.getTail(k, m),
+      list: (ref) => w.storage.list(ref),
+      delete: (k) => w.storage.delete(k),
+      putImmutable: async (k, fn) => {
+        const out = await w.storage.putImmutable(k, fn);
+        let arrive!: () => void;
+        let release!: () => void;
+        const arrived = new Promise<void>((r) => (arrive = r));
+        const gate = new Promise<void>((r) => (release = r));
+        held.push({ release, arrived });
+        arrive();
+        await gate;
+        return out;
+      },
+    };
+    const deps = { ...w.deps, storage };
+    const opts = { allowEmpty: true } as const;
+    const lower = loadSegment(SEG, [1], deps, opts);
+    await until(() => held.length === 1);
+    const higher = loadSegment(SEG, [2], deps, opts);
+    await until(() => held.length === 2);
+
+    const [a, b] = firstToPublish === 'lower' ? [0, 1] : [1, 0];
+    held[a]!.release();
+    const first = await (a === 0 ? lower : higher);
+    held[b]!.release();
+    const second = await (b === 0 ? lower : higher);
+    return { w, lower: a === 0 ? first : second, higher: a === 0 ? second : first };
+  }
+  const until = async (cond: () => boolean): Promise<void> => {
+    for (let i = 0; i < 1000 && !cond(); i++) await new Promise((r) => setImmediate(r));
+    expect(cond()).toBe(true);
+  };
+
+  it('both land when the lower generation publishes first, and the higher stays current', async () => {
+    const { w, lower, higher } = await raced('lower');
+    expect([lower.generation, higher.generation]).toEqual([0, 1]);
+    expect(lower.published).toBe(true);
+    expect(higher.published).toBe(true);
+    expect((await w.registry.get(SEG))!.currentGen).toBe(1);
+  });
+
+  it('the lower one is superseded when the higher publishes first', async () => {
+    const { w, lower, higher } = await raced('higher');
+    expect([lower.generation, higher.generation]).toEqual([0, 1]);
+    expect(higher.published).toBe(true);
+    expect(lower).toMatchObject({ published: false, reason: 'superseded' });
+    expect((await w.registry.get(SEG))!.currentGen).toBe(1);
+  });
+});
