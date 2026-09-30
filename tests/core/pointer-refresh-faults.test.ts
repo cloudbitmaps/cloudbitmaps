@@ -170,4 +170,50 @@ describe('a pointer refresh that fails', () => {
     await Promise.all(Array.from({ length: 20 }, () => source.currentGeneration(REF)));
     expect(registry.gets).toBe(before + 1);
   });
+
+  it('throws a plain Error from a custom registry: only a TransientError is ridden out', async () => {
+    const { registry, clock, source } = await setup();
+    await source.currentGeneration(REF);
+    registry.fault = new Error('ECONNRESET, unclassified');
+    clock.advance(TTL);
+    await expect(source.currentGeneration(REF)).rejects.toBe(registry.fault);
+  });
+
+  it('backs off for a TTL shorter than the retry interval, never longer than the TTL', async () => {
+    const backend = new MemoryStorage();
+    await bulkLoadCrbmGeneration(backend.storage, { ...REF, generation: 0 }, [1], {
+      registry: backend.registry,
+    });
+    const registry = faultyRegistry(backend.registry);
+    const clock = fakeClock();
+    const source = new CrbmStorageChunkSource(backend.storage, {
+      registry,
+      clock,
+      currentGenTtlMs: 100,
+    });
+    await source.currentGeneration(REF);
+    registry.fault = new TransientError('registry unavailable');
+    clock.advance(100);
+    expect(await source.currentGeneration(REF)).toBe(0);
+    const gets = registry.gets;
+    clock.advance(99);
+    await source.currentGeneration(REF);
+    expect(registry.gets).toBe(gets);
+    clock.advance(1);
+    await source.currentGeneration(REF);
+    expect(registry.gets).toBe(gets + 1);
+  });
+
+  it('invalidate() after a transient ride-out resolves afresh at once', async () => {
+    const { registry, clock, source } = await setup();
+    await source.currentGeneration(REF);
+    registry.fault = new TransientError('registry unavailable');
+    clock.advance(TTL);
+    await source.currentGeneration(REF);
+    source.invalidate(REF);
+    registry.fault = undefined;
+    const gets = registry.gets;
+    expect(await source.currentGeneration(REF)).toBe(0);
+    expect(registry.gets).toBe(gets + 1);
+  });
 });

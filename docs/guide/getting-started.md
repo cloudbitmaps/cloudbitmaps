@@ -642,7 +642,7 @@ object that landed unpublished; while another writer is active on the segment, t
 is. `generations` is not retried either, so a fault there means asking again.
 
 > Writing your own driver? Throw `TransientError` for your backend's retryable faults: the store's read retry
-> rides them out, and a write's caller can tell them from a deterministic failure. The store wraps the source it
+> rides them out, and a write's caller can tell them from a deterministic failure. A registry's `get` is held to it too: a pointer refresh rides out only a `TransientError`, so a custom registry that throws a plain `Error` for an outage makes the read that meets it fail. The store wraps the source it
 > reads through, a `StorageChunkSource` you pass as `storage` included, so do not wrap one before handing it over:
 > that multiplies each read's attempts. A call of your own is yours to retry: loop over it, and back off before the
 > next attempt when `isTransientError(err)` is true. The retry primitives a flavor or driver author builds on are on
