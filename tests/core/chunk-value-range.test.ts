@@ -1,13 +1,12 @@
+import { publishGeneration, writeCrbmGeneration } from '@/core/crbm-storage-source';
+import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { RoaringBitmap32, SerializationFormat } from 'roaring';
 import {
   CloudRoaring,
   createBackend,
   IntegrityError,
-  MemoryStorageChunkSource,
   MemoryStorageDriver,
   MemoryRegistryDriver,
-  publishGeneration,
-  writeCrbmGeneration,
 } from '@/index';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { SafeBitmap, roaringCodec } from '@/roaring-codec';

@@ -1,4 +1,5 @@
-import { CloudRoaring, MemoryStorageChunkSource } from '@/index';
+import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
+import { CloudRoaring } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
 import type { ChunkRef, StorageChunkSource, SegmentRef } from '@/core/ports';
 

@@ -1,19 +1,14 @@
+import { MemoryStorageChunkSource } from './helpers/memory-chunk-source';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { CloudRoaring, MemoryStorageChunkSource, ValidationError, VERSION } from '@/index';
+import { CloudRoaring, ValidationError } from '@/index';
 
 function store(): CloudRoaring {
   return new CloudRoaring({ storage: new MemoryStorageChunkSource() });
 }
 
 describe('public API', () => {
-  it('exposes a VERSION string', () => {
-    expect(typeof VERSION).toBe('string');
-    expect(VERSION).toMatch(/^\d+\.\d+\.\d+/);
-  });
-
-  // The exported marker is what a consumer reads to report "which CloudRoaring am I running". A hand-edited
-  // constant drifts silently at the next release, so the manifests are the source of truth and this fails the
-  // build the moment a version bump forgets one of them.
+  // The five packages ship in lockstep, and each manifest is the one place its version is written. This fails
+  // the build the moment a version bump forgets one of them.
   //
   // EVERY package is asserted, derived from the workspace rather than listed here.
   //
@@ -35,12 +30,15 @@ describe('public API', () => {
     expect(PACKAGES).toContain('s3');
   });
 
-  it.each(PACKAGES)('keeps VERSION in sync with @cloudbitmaps/%s', (pkg) => {
-    const manifest: unknown = JSON.parse(
-      readFileSync(new URL(`../packages/${pkg}/package.json`, import.meta.url), 'utf8'),
-    );
-    const version = (manifest as { version?: unknown }).version;
-    expect(version).toBe(VERSION);
+  it('keeps every package at one version', () => {
+    const versions = PACKAGES.map((pkg) => {
+      const manifest: unknown = JSON.parse(
+        readFileSync(new URL(`../packages/${pkg}/package.json`, import.meta.url), 'utf8'),
+      );
+      return (manifest as { version?: unknown }).version;
+    });
+    expect(new Set(versions).size, `versions by package: ${versions.join(', ')}`).toBe(1);
+    expect(versions[0]).toMatch(/^\d+\.\d+\.\d+/);
   });
 
   it('accepts valid segment / namespace names', () => {

@@ -3,7 +3,7 @@
  *
  * Kept SDK-free and side-effect-free (they only read structural shapes — `err.name`,
  * `$metadata.httpStatusCode`, a `Content-Range` string) so the subtle S3-specific translation logic is
- * unit-testable without a live MinIO/S3 or even the AWS SDK. Shared AWS shapes come from `_shared/aws-errors`.
+ * unit-testable without a live MinIO/S3 or even the AWS SDK. The AWS error shapes come from `./aws-errors`.
  */
 
 import {
@@ -12,7 +12,7 @@ import {
   isNetworkOrTimeout,
   isSdkRetryable,
   isServerSide,
-} from '@cloudbitmaps/core/driver-kit';
+} from './aws-errors';
 
 /** A conditional `If-None-Match: *` PUT lost the write-once race (the object already existed). */
 export function isPreconditionFailed(err: unknown): boolean {

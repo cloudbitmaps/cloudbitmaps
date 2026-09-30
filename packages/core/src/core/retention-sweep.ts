@@ -60,7 +60,7 @@ export const DEFAULT_RETIRE_LIMIT = 100;
 /**
  * Default delay before a retirement's own tombstone row is purged: 24 h.
  *
- * The row is a fence — while it exists, `publishGeneration` and the load refuse the segment, so
+ * The row is a fence — while it exists, a load refuses the segment, so
  * a load that was mid-write when the drop landed cannot resurrect it. That window is
  * seconds to minutes in practice; a day of margin costs one tiny row and removes any need to reason about it.
  */

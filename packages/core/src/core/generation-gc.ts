@@ -13,7 +13,7 @@
  * to collect it: {@link gcOrphanGenerations}. Pure orchestration over the driver ports — no I/O, time or randomness
  * of its own.
  */
-import { WriteConflictError } from './errors';
+import { ValidationError, WriteConflictError } from './errors';
 import type { IStorageDriver, IRegistryDriver, SegmentRef } from './ports';
 
 /** The two ports generation bookkeeping needs: the objects, and the pointer that says which one is current. */
@@ -82,7 +82,12 @@ export async function gcOrphanGenerations(
   deps: GenerationDeps,
   options: { keep?: number } = {},
 ): Promise<number[]> {
-  const keep = Math.max(0, options.keep ?? 1);
+  const keep = options.keep ?? 1;
+  // Refused, not clamped: `NaN` slices nothing off the end and would collect the whole grace window, and a
+  // negative count that clamps to 0 collects it too, for a caller who wrote a typo.
+  if (!Number.isInteger(keep) || keep < 0) {
+    throw new ValidationError(`keep must be a non-negative integer; got ${String(keep)}`);
+  }
   const record = await deps.registry.get(ref);
   if (record === null) return []; // no authoritative pointer → don't delete anything
   const current = record.currentGen;

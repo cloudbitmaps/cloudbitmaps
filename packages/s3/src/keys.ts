@@ -42,17 +42,6 @@ export function storageObjectKey(prefix: string | undefined, key: GenKey): strin
   return `${segmentObjectPrefix(prefix, key)}${key.generation}${SUFFIX}`;
 }
 
-// ─── Registry keys ─────────────────────────────────────────────────────────────────────────────────────
-// The registry layout is identical across S3, GCS and Azure Blob — all three encode names the same way and
-// build byte-identical keys — so it lives in `_shared/object-registry-keys` and is re-exported here for the
-// callers (and tests) that already name it through this module.
-export {
-  registryPrefix,
-  registryObjectKey,
-  registryListPrefix,
-  parseRegistryKey,
-} from '@cloudbitmaps/core/driver-kit';
-
 /**
  * Parse a generation number out of a full object key, given its segment prefix, or `null` if it doesn't
  * match. Canonical decimal only — no leading zeros (so `…s.07.crbm` can't alias `…s.7.crbm`) and within

@@ -6,6 +6,7 @@
  * The property under test throughout is **reversibility**: an index row's name is the only place the original
  * ref is recorded, so if `decode(encode(ref))` is ever not `ref`, the sweep retires the wrong segment or none.
  */
+import { validateSegmentRef } from '@/core/validate';
 import { describe, expect, it } from 'vitest';
 import {
   DUE_BUCKET_MS,
@@ -21,7 +22,6 @@ import {
   isDueIndexRow,
 } from '@/core/due-index';
 import { ValidationError } from '@/core/errors';
-import { validateSegmentRef } from '@/index';
 
 describe('due index — encoding round-trips', () => {
   const refs = [

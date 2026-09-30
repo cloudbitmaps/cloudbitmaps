@@ -1,4 +1,5 @@
-import { MemoryStorageDriver, MemoryRegistryDriver, gcOrphanGenerations } from '@/index';
+import { gcOrphanGenerations } from '@/core/generation-gc';
+import { MemoryStorageDriver, MemoryRegistryDriver } from '@/index';
 import { openGenerationReader } from '@/core/crbm-storage-source';
 import { setSegmentRetention } from '@/core/retention';
 import { retireExpired } from '@/core/retention-sweep';

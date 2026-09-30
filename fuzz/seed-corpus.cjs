@@ -9,21 +9,23 @@
  *   node fuzz/seed-corpus.cjs            # seed every target
  *   node fuzz/seed-corpus.cjs crbm-reader   # seed one target
  *
- * Needs a build first (`pnpm build`) — it drives the public writer/serializer from dist/.
+ * Needs a build first (`pnpm build`) — it drives the public `CloudRoaring.load` from dist/.
  *
- * It builds each archive through `writeCrbmGeneration` into an in-memory driver and reads the object back,
- * rather than driving the `.crbm` writer class directly. That class is not public — and this is the better
- * seed anyway, because the bytes then come off exactly the code path that writes a real generation, so a
- * corpus entry cannot drift from the format the library actually emits.
+ * It builds each archive with `store.load()` into an in-memory backend and reads the object back, rather than
+ * driving the `.crbm` writer class directly. That class is not public — and this is the better seed anyway,
+ * because the bytes then come off exactly the code path that writes a real generation, so a corpus entry
+ * cannot drift from the format the library actually emits. The bitmaps for the `safe-deserialize` target come
+ * from the native `roaring` addon's portable serializer, which is what the library's codec calls.
  *
- * ONE CONSEQUENCE WORTH KNOWING: that path calls `optimize()` before serializing, which the writer class did
+ * ONE CONSEQUENCE WORTH KNOWING: a load calls `runOptimize()` before serializing, which the writer class did
  * not. Run-encodable payloads therefore serialize much smaller here, and the layouts below are chosen so the
  * corpus still covers both container shapes — a strided `dense-chunk` that stays an array container and keeps
  * a multi-KB payload in the corpus, alongside the small run-encoded ones.
  */
 const fs = require('node:fs');
 const path = require('node:path');
-const { SafeBitmap, writeCrbmGeneration, MemoryStorageDriver } = require('@cloudbitmaps/roaring');
+const { CloudRoaring, MemoryStorage } = require('@cloudbitmaps/roaring');
+const { RoaringBitmap32, SerializationFormat } = require('roaring');
 
 const CORPUS = path.join(__dirname, 'corpus');
 
@@ -58,7 +60,7 @@ function valueSets() {
 function seedSafeDeserialize() {
   const sets = valueSets();
   for (const [name, vals] of Object.entries(sets)) {
-    const ser = SafeBitmap.fromValues(vals).serialize();
+    const ser = new RoaringBitmap32(vals).serialize(SerializationFormat.portable);
     writeSeed('safe-deserialize', `valid-${name}.bin`, ser);
     // A couple of near-miss mutants of each valid seed — great libFuzzer springboards toward the error paths.
     if (ser.length > 4) {
@@ -70,18 +72,25 @@ function seedSafeDeserialize() {
   }
 }
 
+/**
+ * The bytes of generation `generation` of a segment holding `chunks`, as `store.load()` writes them. A load takes
+ * the next generation number itself, so generation `n` is the `n + 1`th load of the segment.
+ */
 async function validCrbm(chunks, generation) {
-  const driver = new MemoryStorageDriver();
+  const backend = new MemoryStorage({ now: () => 0 });
+  const store = new CloudRoaring({ storage: backend });
+  const ref = { segment: 'seed' };
+  // A chunk key is an id's high 16 bits and `vals` are the low 16 bits under it.
+  const ids = chunks.flatMap(({ key, vals }) => vals.map((v) => key * 65536 + v));
+  for (let n = 0; n <= generation; n++) {
+    const result = await store.load(ref, ids);
+    if (!result.published || result.generation !== n) {
+      throw new Error(`seed load ${n} did not publish generation ${n}: ${JSON.stringify(result)}`);
+    }
+  }
   const key = { segment: 'seed', generation };
-  const { size } = await writeCrbmGeneration(
-    driver,
-    key,
-    chunks.map(({ key: chunkKey, vals }) => ({
-      chunkKey,
-      bitmap: SafeBitmap.fromValues(vals),
-    })),
-  );
-  return driver.getRange(key, 0, size);
+  const { size } = await backend.storage.getTail(key, 1);
+  return backend.storage.getRange(key, 0, size);
 }
 
 async function seedCrbmReader() {

@@ -7,11 +7,11 @@
  * separate package reaches them without reaching into core's source.
  *
  * WHY A SUBPATH AND NOT THE MAIN ENTRY. Two reasons pull the same way. The main entry is what every
- * application imports, and none of them needs `ObjectStoreRegistry` or the SDK-retry classifiers — shrinking
+ * application imports, and none of them needs `ObjectStoreRegistry` — shrinking
  * that entry to the documented surface is its own piece of work, and widening it here would move in the
  * opposite direction. And a driver's contract deserves to be a deliberate list rather than whatever core
- * happens to export: everything below is imported by at least one driver today, so the surface is the real
- * dependency and not a guess. A third-party driver builds against exactly this.
+ * happens to export: everything below is imported by at least one driver or the flavor's export CLI today, so
+ * the surface is the real dependency and not a guess. A third-party driver builds against exactly this.
  *
  * It is versioned public API. Anything added here is something we support; anything removed is a breaking
  * change for a driver package — including ours, which is the point of making it explicit.
@@ -65,27 +65,14 @@ export {
 } from './drivers/_shared/object-registry';
 export type { ObjectRegistryStore, ObjectRow } from './drivers/_shared/object-registry';
 
-// Key construction: how a segment name and namespace become an object key, how a prefix is normalized, and
-// where a registry row lives. The layout has exactly one definition here — two drivers disagreeing about a
-// row's key would be a silent cross-driver incompatibility on the same bucket — and all three reach it
-// through `ObjectStoreRegistry`. `@cloudbitmaps/s3` also re-exports the four `registry*` helpers from its
-// own internal key module, for the call sites and tests that already name them there; that re-export is not
-// on its public surface, so this stays one definition rather than becoming a second one.
-export { encodeNameForKey, namespaceKeyPart } from './drivers/_shared/keys';
+// Key construction: how a segment name and namespace become an object key (or a filesystem path), and how a
+// prefix is normalized. The layout has exactly one definition here — two drivers disagreeing about a row's key
+// would be a silent cross-driver incompatibility on the same bucket — and where a registry row lives is part of
+// `ObjectStoreRegistry`, which all three cloud drivers reach it through.
 export {
-  normalizeObjectPrefix,
-  parseRegistryKey,
-  prefixPart,
-  registryListPrefix,
-  registryObjectKey,
-  registryPrefix,
-} from './drivers/_shared/object-registry-keys';
-
-// Retry classification shared by the SDK-backed drivers — which failures are transient, and which are ours.
-export {
-  errorName,
-  httpStatus,
-  isNetworkOrTimeout,
-  isSdkRetryable,
-  isServerSide,
-} from './drivers/_shared/aws-errors';
+  encodeNameForKey,
+  encodeNameForPath,
+  namespaceKeyPart,
+  namespacePathPart,
+} from './drivers/_shared/keys';
+export { normalizeObjectPrefix, prefixPart } from './drivers/_shared/object-registry-keys';

@@ -49,7 +49,7 @@
     "release:bootstrap": "node scripts/bootstrap-publish.cjs",
     "calibrate:aws": "pnpm run build && node bench/calibrate-aws.cjs",
     "changeset": "changeset",
-    "version:packages": "changeset version && node scripts/sync-version.cjs && pnpm install --lockfile-only",
+    "version:packages": "changeset version && pnpm install --lockfile-only",
     "audit": "node scripts/audit.cjs",
     "leak-scan": "node scripts/leak-scan.cjs",
     "leak-scan:snapshot": "node scripts/leak-scan.cjs --snapshot --history",
@@ -58,7 +58,7 @@
     "format:check": "prettier --check .",
     "prepare": "husky",
     "typecheck:pkgs": "tsc -p packages/core --noEmit && tsc -p packages/roaring --noEmit && tsc -p packages/s3 --noEmit && tsc -p packages/gcs --noEmit && tsc -p packages/azure-blob --noEmit",
-    "bench:encoding": "pnpm run build && node bench/encoding.cjs",
+    "bench:encoding": "node bench/encoding.cjs",
     "fuzz:install": "pnpm -C fuzz install --ignore-workspace --frozen-lockfile"
   },
   "lint-staged": {

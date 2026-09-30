@@ -79,7 +79,9 @@ export interface LoadOptions {
   readonly allowEmpty?: boolean;
   readonly guard?: LoadGuard;
   /**
-   * Generations to keep below the new pointer as a grace window (default 1). Keep at least one: a read that is
+   * Generations to keep below the new pointer as a grace window (default 1). A non-negative integer: anything
+   * else (negative, fractional, `NaN`, infinite) throws `ValidationError` before anything is written. Keep at
+   * least one: a read that is
    * still fetching chunks from the just-superseded generation would otherwise have it deleted out from under it
    * and pay a re-resolve. A wider window costs storage, and it is what a pinned handle needs: a pin is never
    * re-resolved, so a chunk a pinned read has not fetched fails with `NotFoundError` once its generation is

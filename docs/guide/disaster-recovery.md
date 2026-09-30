@@ -281,8 +281,8 @@ in each, as part of the procedure. One on a bare `IStorageDriver`, with **no reg
 the bucket and serves the newest generation there, whatever the restored pointer says, so while generations above
 the pointer remain, neither a restart nor an invalidation moves it back. Read through a backend, whose reads follow
 the pointer, or, once you are sure the generations above the restored pointer are not wanted, delete those objects
-through the storage driver (`storage.delete({ namespace, segment, generation })` for each; `gcOrphanGenerations`
-never collects a generation at or above the pointer), and then restart those readers or invalidate the segments in
+through the storage driver (`storage.delete({ namespace, segment, generation })` for each; a load's collection never
+reaches a generation at or above the pointer), and then restart those readers or invalidate the segments in
 each. A live read on a generation that has since been **deleted** (an `eraseSubject` collects its predecessor on
 return) re-resolves on its next read; that is the documented cost of physical deletion on return, not a fault. A
 `seg.pin()` handle is the exception on both counts: a restore does not move it, so it keeps reading its own
@@ -334,8 +334,8 @@ segments by design. **The symptom you will actually notice is downstream**, and 
 
 | | What you see |
 |---|---|
-| **The name is fenced, permanently** | `publishGeneration` and a load **throw** on a `destroyed` row, and `eraseSubject` skips it. Re-loading that segment name never produces a readable generation — the load's object may land in the bucket, but nothing will ever point at it. |
-| **The row and its objects are billed forever** | the sweep will not purge an unstamped tombstone, and nothing else in the library calls `gcOrphanGenerations` for a tombstone the sweep does not own — so any generations left behind (and any object a late load wrote) stay. |
+| **The name is fenced, permanently** | A load **throws** on a `destroyed` row, and `eraseSubject` skips it. Re-loading that segment name never produces a readable generation — the load's object may land in the bucket, but nothing will ever point at it. |
+| **The row and its objects are billed forever** | the sweep will not purge an unstamped tombstone, and nothing else in the library runs the collection for a tombstone the sweep does not own — so any generations left behind (and any object a late load wrote) stay. |
 
 ### Detect
 
@@ -411,7 +411,7 @@ controls when the grace window elapses.
 
 **(b) Return the name to service now.** Delete the row — but **only** after confirming storage holds nothing for
 it. That precondition is not bureaucracy: deleting the row while storage objects remain strands them permanently
-(`gcOrphanGenerations` reads the row to decide what to collect, and returns nothing when there is none).
+(the collection reads the row to decide what to collect, and collects nothing when there is none).
 
 ```ts
 for await (const k of storage.list(ref)) throw new Error(`storage not empty: generation ${k.generation}`);
@@ -683,7 +683,7 @@ keystore, and the wrapped per-segment DEKs live in the segment's registry row. S
 - **Loads published after the registry's restore point are not recovered.** Their objects may still exist in
   storage, *above* the restored pointer. Reads through a backend never see them (the pointer is authoritative; a
   store on a bare `IStorageDriver` does, see [readers still on an old generation](#readers-still-on-an-old-generation)),
-  `nextGeneration` skips past them, and `gcOrphanGenerations` never touches a generation at or above `currentGen`
+  a load numbers its generation above them, and its collection never touches a generation at or above `currentGen`
   — so they sit there, billed, until you act. The safe recovery is to **re-run the load from your source**: it
   writes a generation above them, which puts them below the pointer, where collection counts them within `keep`
   like any other generation: it takes all but the newest `keep` of them, and each later load takes one more. Under
@@ -693,8 +693,8 @@ keystore, and the wrapped per-segment DEKs live in the segment's registry row. S
   above the pointer is a whole object — every backend commits an object atomically, so a crash never leaves a
   partial one — but the bucket cannot tell you whether it was ever current. After a restore it is usually a load
   published after `T`; otherwise it can be a load whose process died between writing and publishing, a load refused
-  or superseded after the row changed, or a load whose publish threw. `publishGeneration`, or a rollback with
-  `allowForward: true`, will point at it if asked.
+  or superseded after the row changed, or a load whose publish threw. A rollback with
+  `allowForward: true` will point at it if asked.
 
 ## Not shipped: rebuilding the registry from storage
 

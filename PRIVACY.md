@@ -107,8 +107,8 @@ generation it found the id in, which is the receipt the failed call could not gi
 that generation first it reports nothing for the segment: the bit is gone, but no run holds a receipt for it, so
 keep the failed call's error alongside your ledger. And if the segment's registry row has since been purged, it is
 not a segment any more and `eraseSubject` does not scan it at all — anything left in its bucket is an **orphan**,
-which neither `store.checkConsistency()` (it visits registry rows only) nor `gcOrphanGenerations` (it collects
-nothing without a row) reaches. List those objects with `store.generations(ref)` and delete them with
+which neither `store.checkConsistency()` (it visits registry rows only) nor the collection a load and the retention
+sweep run (it collects nothing without a row) reaches. List those objects with `store.generations(ref)` and delete them with
 `store.dropSegment(ref, { confirmSegment: ref.segment })`, which leaves a tombstone row fencing the name. An empty
 ledger is not by itself proof the id is gone.
 
@@ -228,8 +228,9 @@ to run, and the deletion is ours to perform correctly.** Practical patterns:
   remain in your bucket** and you keep paying for them, and it **requires encryption at rest** (a cleartext
   segment has no key to discard; `allowCleartext` writes the tombstone while leaving the Storage bytes readable — and
   still in the bucket).
-- **`gcOrphanGenerations`** deletes only *superseded* generations, never the current one (on a tombstoned segment,
-  every generation) — with `keep: 0` it is how a subject erasure removes the generations below the pointer that held the bit. A holder *above* the pointer
+- **The collection a `load` runs** (its `keep` window; an `*Into` runs it when given `keep`) deletes only
+  *superseded* generations, never the current one — with `keep: 0` it is what a subject erasure runs to remove the
+  generations below the pointer that held the bit. A holder *above* the pointer
   is outside its range, so the erasure deletes that one itself.
 
 So the two are complements, not alternatives: **`dropSegment` for "stop paying for it", `destroySegment` for

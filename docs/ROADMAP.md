@@ -105,8 +105,8 @@ is a dependency of both and is never installed directly. The storage drivers are
   (`subjectReport`, `eraseSubject`) refuse past the request budget, `budget.maxRequests`. `budget: false`, on the
   call or on the store, lifts that ceiling, and a subject scan then holds every row it lists.
 - **Immutable, generation-keyed objects.** `segment.<gen>.crbm` + one registry pointer, never overwritten in
-  place. `nextGeneration` picks the next number past both the pointer and whatever is in the bucket, so a crashed
-  load's orphan cannot block a retry; `gcOrphanGenerations` collects superseded generations behind a grace window
+  place. A load takes the next number past both the pointer and whatever is in the bucket, so a crashed
+  load's orphan cannot block a retry, and collects superseded generations behind a grace window (`keep`)
   for in-flight readers.
 - **A co-operative bulk-load.** Node has one thread, and building a generation is the one operation here that
   genuinely occupies it for a while. It hands the event loop back periodically, so a co-resident server keeps

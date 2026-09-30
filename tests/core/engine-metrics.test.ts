@@ -1,10 +1,5 @@
-import {
-  CloudRoaring,
-  CountingMetricsSink,
-  MemoryStorageChunkSource,
-  TransientError,
-  ValidationError,
-} from '@/index';
+import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
+import { CloudRoaring, CountingMetricsSink, TransientError, ValidationError } from '@/index';
 import type { ChunkRef, Clock, StorageChunkSource, Rng, SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { SegmentEngine } from '@/core/engine';

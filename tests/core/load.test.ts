@@ -449,6 +449,10 @@ describe('loadSegment — validation', () => {
     await expect(loadSegment(SEG, [1], w.deps, { keep: -1 })).rejects.toBeInstanceOf(
       ValidationError,
     );
+    // Not a number, not whole, not finite: each would otherwise reach the collection and collect, or keep, the wrong set.
+    for (const keep of [Number.NaN, 1.5, Number.POSITIVE_INFINITY]) {
+      await expect(loadSegment(SEG, [1], w.deps, { keep })).rejects.toBeInstanceOf(ValidationError);
+    }
     await expect(
       loadSegment(SEG, [1], w.deps, { guard: { minRetained: 1.5 } }),
     ).rejects.toBeInstanceOf(ValidationError);

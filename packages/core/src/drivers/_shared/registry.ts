@@ -56,7 +56,7 @@ function validateGeneration(gen: number | null): void {
  * `{ currentGen: undefined }` is refused rather than coerced. `{ currentGen: maybeUndefined }` is what `strict`
  * alone permits, since `exactOptionalPropertyTypes` is off, and a caller writing it means to leave the pointer
  * alone. Under presence-based merging the same call would silently *un-publish* a live segment: every Storage
- * generation goes invisible, and `gcOrphanGenerations` then refuses to collect the objects (no pointer ⇒ nothing
+ * generation goes invisible, and the collection then refuses to collect the objects (no pointer ⇒ nothing
  * to compare against), so they are stranded and billed forever. Fail fast at the boundary instead.
  */
 function validatePatchGeneration(patch: RegistryPatch): void {

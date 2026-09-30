@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as core from '@cloudbitmaps/core';
+import * as driverKit from '@cloudbitmaps/core/driver-kit';
 import * as roaring from '@/index';
 
 /**
@@ -26,6 +27,14 @@ const RETRY_INSTEAD =
   'and compare `store.generations(ref)` with what it listed before to learn whether a failed one landed, rather ' +
   'than replaying it';
 
+/** What a reader who wanted the generation write and collection primitives uses instead. */
+const GENERATION_INSTEAD =
+  '`store.load()` (or `loadSegment()` with your own drivers), which numbers, writes, publishes and collects; ' +
+  '`keep` on it and on the `*Into` verbs for the collection; `store.dropSegment()` or the retention sweep to retire a segment';
+
+/** What a reader who wanted a driver's internal helper uses instead: there is none, the drivers own them. */
+const DRIVER_INTERNAL_INSTEAD = 'nothing: it is internal to the driver packages';
+
 /** Each removed name, what a reader uses instead, and whether any code may still name it. */
 const RETIRED: ReadonlyArray<{ name: string; instead: string; code?: true }> = [
   {
@@ -36,6 +45,49 @@ const RETIRED: ReadonlyArray<{ name: string; instead: string; code?: true }> = [
   { name: 'becameCurrent', instead: "`LoadResult`'s `published`" },
   { name: 'RetryingStorageDriver', instead: RETRY_INSTEAD, code: true },
   { name: 'RetryingRegistryDriver', instead: RETRY_INSTEAD, code: true },
+  { name: 'TimeoutError', instead: '`TransientError`' },
+  { name: 'AuditEventKind', instead: "`AuditEvent['kind']`", code: true },
+  { name: 'DEFAULT_PRICING', instead: '`AWS_US_EAST_1_ONDEMAND`', code: true },
+  { name: 'MemoryStorageChunkSource', instead: '`MemoryStorage`' },
+  { name: 'writeCrbmGeneration', instead: GENERATION_INSTEAD },
+  { name: 'publishGeneration', instead: GENERATION_INSTEAD },
+  { name: 'nextGeneration', instead: GENERATION_INSTEAD },
+  { name: 'gcOrphanGenerations', instead: GENERATION_INSTEAD },
+  { name: 'GenerationDeps', instead: GENERATION_INSTEAD },
+  { name: 'SafeBitmap', instead: 'nothing: the flavor binds its codec for you' },
+  { name: 'roaringCodec', instead: 'nothing: the flavor binds its codec for you' },
+  { name: 'registryPrefix', instead: DRIVER_INTERNAL_INSTEAD },
+  { name: 'registryObjectKey', instead: DRIVER_INTERNAL_INSTEAD },
+  { name: 'registryListPrefix', instead: DRIVER_INTERNAL_INSTEAD },
+  { name: 'parseRegistryKey', instead: DRIVER_INTERNAL_INSTEAD },
+  { name: 'isSdkRetryable', instead: DRIVER_INTERNAL_INSTEAD },
+  { name: 'isNetworkOrTimeout', instead: DRIVER_INTERNAL_INSTEAD },
+  { name: 'isServerSide', instead: DRIVER_INTERNAL_INSTEAD },
+];
+
+/**
+ * Names that left a public entry but are still what a page or a sample legitimately names: `VERSION` is a word
+ * the release docs use for other things, and these three live on the `driver-kit` subpath now, where the API
+ * reference lists them. They are held to the runtime surface only: off both main entries.
+ */
+const OFF_THE_MAIN_ENTRIES = [
+  'VERSION',
+  'validateSegmentRef',
+  'encodeNameForPath',
+  'namespacePathPart',
+];
+
+/** Names that left the `driver-kit` subpath. The five error helpers live in `@cloudbitmaps/s3` now. */
+const OFF_THE_DRIVER_KIT = [
+  'registryPrefix',
+  'registryObjectKey',
+  'registryListPrefix',
+  'parseRegistryKey',
+  'errorName',
+  'httpStatus',
+  'isNetworkOrTimeout',
+  'isSdkRetryable',
+  'isServerSide',
 ];
 
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'coverage', '.git', '.worktrees', '.changeset']);
@@ -93,11 +145,24 @@ describe('a removed export is named nowhere a reader looks', () => {
       expect(name in core, `@cloudbitmaps/core exports ${name}`).toBe(false);
       expect(name in roaring, `@cloudbitmaps/roaring exports ${name}`).toBe(false);
     }
+    for (const name of OFF_THE_MAIN_ENTRIES) {
+      expect(name in core, `@cloudbitmaps/core exports ${name}`).toBe(false);
+      expect(name in roaring, `@cloudbitmaps/roaring exports ${name}`).toBe(false);
+    }
     // What replaces them is there, so the check above cannot pass on a barrel that failed to load.
     expect(typeof core.loadSegment).toBe('function');
     expect(typeof roaring.loadSegment).toBe('function');
     expect(typeof core.RetryingStorageChunkSource).toBe('function');
     expect(typeof roaring.RetryingStorageChunkSource).toBe('function');
+  });
+
+  it('the driver-kit subpath exports none of the names that left it, and still exports the ones that moved onto it', () => {
+    for (const name of OFF_THE_DRIVER_KIT) {
+      expect(name in driverKit, `@cloudbitmaps/core/driver-kit exports ${name}`).toBe(false);
+    }
+    for (const name of ['validateSegmentRef', 'encodeNameForPath', 'namespacePathPart']) {
+      expect(typeof (driverKit as Record<string, unknown>)[name], name).toBe('function');
+    }
   });
 
   it('reads the pages, so the check below cannot pass vacuously', () => {
@@ -152,5 +217,10 @@ describe('a removed export is named nowhere a reader looks', () => {
     // The read wrapper the store builds shares their prefix and stays, and so do longer names containing one.
     expect(retiredNames('new RetryingStorageChunkSource(source, opts)')).toEqual([]);
     expect(retiredNames('MyRetryingRegistryDriver or RetryingStorageDriverOptions')).toEqual([]);
+    expect(retiredNames('throw new TimeoutError(msg)')).toHaveLength(1);
+    expect(retiredNames('await gcOrphanGenerations(ref, deps, { keep: 1 })')).toHaveLength(1);
+    expect(retiredNames('SafeBitmap.fromValues(ids) and roaringCodec')).toHaveLength(2);
+    // A longer name that contains one, and the SDK error a driver reads by name, are not the removed exports.
+    expect(retiredNames('nextGenerationNumber and MyDEFAULT_PRICING_TABLE')).toEqual([]);
   });
 });

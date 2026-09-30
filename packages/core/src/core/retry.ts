@@ -11,7 +11,7 @@
  * It deliberately does **not** retry deterministic failures ({@link WriteConflictError},
  * {@link ValidationError}, {@link IntegrityError}, {@link NotFoundError}, …): retrying those either can't
  * help or would be incorrect. A pointer conflict is retried by a *separate* loop inside
- * `publishGeneration`, because each attempt must re-read the row and re-decide — a blind replay of the same
+ * the publish, because each attempt must re-read the row and re-decide — a blind replay of the same
  * compare-and-swap would either fail again on a stale token or, worse, advance a pointer whose state has
  * changed underneath it. A write-once object collision is never replayed at all: the generation number is
  * taken, so the caller has to pick a new one.
@@ -52,7 +52,7 @@ export const DEFAULT_RETRY_POLICY: RetryPolicy = {
 export interface RetryDeps {
   readonly clock: Clock;
   readonly rng: Rng;
-  /** Override which errors are retryable. Default: any {@link TransientError} (incl. `TimeoutError`). */
+  /** Override which errors are retryable. Default: any {@link TransientError}. */
   readonly isRetryable?: (err: unknown) => boolean;
   /** Optional hook (observability) fired before each backoff wait. `attempt` is 1-based (the one that failed). */
   readonly onRetry?: (info: { attempt: number; delayMs: number; err: unknown }) => void;

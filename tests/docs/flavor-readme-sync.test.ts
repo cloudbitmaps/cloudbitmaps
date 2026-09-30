@@ -1,6 +1,7 @@
+import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { CloudRoaring, MemoryStorageChunkSource } from '@/index';
+import { CloudRoaring } from '@/index';
 
 /**
  * The **published** README of the flavor package must not lag the API it ships.

@@ -13,12 +13,48 @@ so, and so do the module headers in the code.
 
 ### Breaking
 
-The first two remove exports. The next eight make a call throw where it used to return: six of them fix a wrong
-answer, and the entries under **Fixed** say what the call returned before; two hold a call to a rule the rest of
-the library already kept. The five after them hold the store, the backends and the registry to what the library
-itself takes and writes, stop checking for a local store's older directory layout, and give its errors the
-library's own brand. The last two change what `estimateCost()` compares with and what a `CostReport` carries.
+The first four remove exports: the first deletes names nothing in the library would still call, the second takes
+names off the public entries or moves them to the package that uses them, and the third and fourth remove the
+retrying driver wrappers and the bulk loader. The fifth makes the collection refuse a `keep` it used to accept. The
+next eight make a call throw where it used to return: six of them fix a wrong answer, and the entries under
+**Fixed** say what the call returned before; two hold a call to a rule the rest of the library already kept. The
+five after them hold the store, the backends and the registry to what the library itself takes and writes, stop
+checking for a local store's older directory layout, and give its errors the library's own brand. The last two
+change what `estimateCost()` compares with and what a `CostReport` carries.
 
+- **`TimeoutError`, `AuditEventKind`, `VERSION` and `MemoryStorageChunkSource` are deleted.** Nothing in the
+  library would still call them.
+  - `TimeoutError` was never constructed or thrown by any package: a request timeout a shipped driver recognises
+    already reached you as a plain `TransientError`, which is what to catch, and a driver of your own throws that too,
+    with the cause attached.
+  - `AuditEventKind` was `AuditEvent['kind']`; write that.
+  - `VERSION`, which `@cloudbitmaps/roaring` exported, is gone: your lockfile and the installed package's
+    `package.json` say which version you run.
+  - `MemoryStorageChunkSource` was a test double that skipped `.crbm`, seeded chunk by chunk. Use a `MemoryStorage`
+    backend and fill it with `store.load()`; to hand a store a `StorageChunkSource` of your own, implement that
+    interface.
+- **Names are off the public entries, and `@cloudbitmaps/core/driver-kit` sheds the helpers nothing outside core
+  uses.** Each was a lower-level step that `store.load()` or the driver packages already take, a second spelling of
+  a name that stays, or a helper one package uses.
+  - `writeCrbmGeneration`, `publishGeneration`, `nextGeneration`, `gcOrphanGenerations` and `GenerationDeps` are no
+    longer exported, from `@cloudbitmaps/core` or `@cloudbitmaps/roaring`. `writeCrbmGeneration` was kept on purpose
+    until now. Load with `store.load(ref, ids, options)`, or `loadSegment()` where you wire the drivers yourself: it
+    takes the generation number, writes the object, publishes and collects. Collect with `keep` on `load` and on
+    the `*Into` verbs, or retire a segment with `store.dropSegment()` or the retention sweep.
+  - `SafeBitmap` and `roaringCodec` are no longer exported from `@cloudbitmaps/roaring`. Every call that takes a
+    `codec` has it bound for you, so nothing needs them. An author of another flavor implements `CodecInterface`.
+  - `DEFAULT_PRICING` is no longer exported. It was another name for `AWS_US_EAST_1_ONDEMAND`, which stays: clone
+    and adjust that one.
+  - `registryPrefix`, `registryObjectKey`, `registryListPrefix` and `parseRegistryKey` are no longer exported from
+    `@cloudbitmaps/core/driver-kit`. No driver package calls them: `ObjectStoreRegistry` builds every registry key,
+    and a driver built on it needs nothing else.
+  - `errorName`, `httpStatus`, `isNetworkOrTimeout`, `isSdkRetryable` and `isServerSide` moved out of
+    `@cloudbitmaps/core/driver-kit` into `@cloudbitmaps/s3`, the only package that uses them, and are not exported
+    from it. A driver of your own classifies its SDK's errors itself.
+  - `encodeNameForPath` and `namespacePathPart` moved from `@cloudbitmaps/core` and `@cloudbitmaps/roaring` to
+    `@cloudbitmaps/core/driver-kit`, beside `encodeNameForKey` and `namespaceKeyPart`. Import them from there.
+  - `validateSegmentRef` is exported from `@cloudbitmaps/core/driver-kit` only. It was also on `@cloudbitmaps/core`
+    and `@cloudbitmaps/roaring`.
 - **`RetryingStorageDriver` and `RetryingRegistryDriver` are no longer exported**, from `@cloudbitmaps/core` or
   `@cloudbitmaps/roaring`. Nothing in the library used them. The store's read retry is unchanged: every read of
   segment data goes through `RetryingStorageChunkSource`, which stays exported, with `RetryingOptions`, `withRetry`
@@ -48,7 +84,13 @@ library's own brand. The last two change what `estimateCost()` compares with and
   - **A load reads the current generation's size to guard it**, so a current object that will not open throws
     `IntegrityError`. A load with `allowEmpty: true` and no `guard.minRetained` does not read it.
   - **Neither can be told to write a generation without publishing it, to write one with no registry, or to take its
-    generation number from the caller.** `writeCrbmGeneration` and `publishGeneration` still do each of those, from bitmaps.
+    generation number from the caller.** Nothing exported can: `writeCrbmGeneration` and `publishGeneration`, which
+    could, are no longer exported either (see above).
+- **The collection refuses a `keep` that is not a non-negative integer**, with `ValidationError`. `load` and the
+  `*Into` verbs already refused one before writing anything. The collection itself, which `gcOrphanGenerations`
+  exposed, read `NaN` as a window that keeps nothing, so it collected the whole grace window, and a negative
+  `keep` as `0`. A `keep` that is negative, fractional, `NaN` or infinite now throws on every path that takes one,
+  and deletes nothing. Pass a whole number of generations, `0` to keep none below the new pointer.
 - **On S3, and on GCS for the registry and for objects up to `simpleUploadThresholdBytes`, a conditional write that
   fails transiently throws `TransientError`**, where the SDK used to send it again and the call could return: a
   dropped connection, a timeout, a 5xx, throttling, and on S3 a signature refused for a clock minutes out, which the

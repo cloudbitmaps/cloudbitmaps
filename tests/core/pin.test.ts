@@ -1,12 +1,12 @@
+import { gcOrphanGenerations } from '@/core/generation-gc';
+import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import {
   createBackend,
   MemoryStorage,
   CloudRoaring,
   InProcessKeystore,
-  MemoryStorageChunkSource,
   MemoryStorageDriver,
   MemoryRegistryDriver,
-  gcOrphanGenerations,
 } from '@/index';
 import { destroySegment } from '@/core/erasure';
 import { NotFoundError, UnsupportedError } from '@/core/errors';

@@ -1,3 +1,4 @@
+import { ValidationError } from '@/index';
 import { collect, loadedStore } from '../helpers/loaded';
 
 /**
@@ -152,6 +153,31 @@ describe('the *Into verbs refuse an implausible result instead of publishing it'
     for await (const k of storage.list(dest)) left.push(k.generation);
     expect(left).toEqual([res.generation]); // keep: 0 leaves only the new current generation
   });
+
+  it.each([-1, Number.NaN, 1.5, Number.POSITIVE_INFINITY])(
+    'refuses keep: %s with a ValidationError, for every *Into verb, and writes nothing',
+    async (keep) => {
+      const { store, storage } = await loadedStore({ a: [1, 2, 3], b: [2, 3], dest: [9] });
+      const dest = store.segment('dest');
+      const gens = async (): Promise<number[]> => {
+        const out: number[] = [];
+        for await (const k of storage.list({ segment: 'dest' })) out.push(k.generation);
+        return out.sort((x, y) => x - y);
+      };
+      const before = await gens();
+      const a = store.segment('a');
+      const b = store.segment('b');
+      for (const run of [
+        () => a.intersectInto(dest, [b], { keep }),
+        () => a.unionInto(dest, [b], { keep }),
+        () => a.andNotInto(dest, [b], { keep }),
+      ]) {
+        await expect(run()).rejects.toBeInstanceOf(ValidationError);
+      }
+      expect(await gens()).toEqual(before);
+      expect(await collect(dest.iterate())).toEqual([9]);
+    },
+  );
 
   it('still REPAIRS a destination whose current object is missing', async () => {
     // `missing-storage-generation`: the row names a generation whose object is gone — a partial drop, a

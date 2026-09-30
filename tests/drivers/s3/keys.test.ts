@@ -1,11 +1,9 @@
+import { storageObjectKey, parseGenerationFromKey, segmentObjectPrefix } from '@/s3/keys';
 import {
-  storageObjectKey,
-  parseGenerationFromKey,
   parseRegistryKey,
   registryListPrefix,
   registryObjectKey,
-  segmentObjectPrefix,
-} from '@/s3/keys';
+} from '@/drivers/_shared/object-registry-keys';
 import { ValidationError } from '@/core/errors';
 
 describe('S3 object-key grammar', () => {

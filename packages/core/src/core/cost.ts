@@ -167,8 +167,6 @@ export const AWS_US_EAST_1_ONDEMAND: PricingProfile = deepFreeze({
   redis: { sizedToData: ELASTICACHE_REDIS_US_EAST_1_ONDEMAND },
 });
 
-export const DEFAULT_PRICING: PricingProfile = AWS_US_EAST_1_ONDEMAND;
-
 /** Sustained access pattern. All rates default to 0; unspecified ⇒ that op contributes nothing. */
 export interface Workload {
   /**
@@ -787,7 +785,7 @@ function buildReport(input: {
  * exact, real sizes. See {@link CostReport}.
  */
 export function estimateCost(input: EstimateInput): CostReport {
-  const pricing = input.pricing ?? DEFAULT_PRICING;
+  const pricing = input.pricing ?? AWS_US_EAST_1_ONDEMAND;
   const workload = input.workload ?? {};
   let storageBytes = 0;
   let sizesFromCardinality = false;
@@ -820,7 +818,7 @@ export function groundedReport(input: {
   return buildReport({
     storageBytes: input.storageBytes,
     workload: input.workload ?? {},
-    pricing: input.pricing ?? DEFAULT_PRICING,
+    pricing: input.pricing ?? AWS_US_EAST_1_ONDEMAND,
     grounded: input.grounded ?? true,
     extraNotes: input.extraNotes,
   });

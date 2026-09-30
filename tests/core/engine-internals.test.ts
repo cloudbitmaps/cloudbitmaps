@@ -1,6 +1,6 @@
+import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import {
   CloudRoaring,
-  MemoryStorageChunkSource,
   TransientError,
   type ChunkRef,
   type Clock,

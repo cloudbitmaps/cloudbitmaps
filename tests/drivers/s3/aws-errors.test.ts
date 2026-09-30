@@ -5,7 +5,7 @@ import {
   isNetworkOrTimeout,
   isSdkRetryable,
   isServerSide,
-} from '@/drivers/_shared/aws-errors';
+} from '@/s3/aws-errors';
 
 // Shared structural AWS-error readers, used by the S3 transient classifier.
 describe('shared AWS error helpers', () => {

@@ -1,15 +1,14 @@
+import { writeCrbmGeneration } from '@/core/crbm-storage-source';
+import { SafeBitmap } from '@/roaring-codec';
 import {
   CloudRoaring,
   estimateCost,
   AWS_US_EAST_1_ONDEMAND,
-  DEFAULT_PRICING,
   ELASTICACHE_REDIS_US_EAST_1_ONDEMAND,
   ONE_REDIS_HA_CLUSTER,
   MemoryStorageDriver,
   CrbmStorageChunkSource,
   createBackend,
-  writeCrbmGeneration,
-  SafeBitmap,
   ValidationError,
   type CostReport,
   type PricingProfile,
@@ -32,21 +31,16 @@ const P = AWS_US_EAST_1_ONDEMAND;
 const FLAT: PricingProfile = { ...P, redis: ONE_REDIS_HA_CLUSTER };
 const SECONDS_PER_MONTH = 730 * 3600; // 2,628,000: a 730-hour month, as the cloud price lists bill
 
-describe('DEFAULT_PRICING', () => {
+describe('AWS_US_EAST_1_ONDEMAND', () => {
   // It is exported so a caller can clone and tweak it for their own region.
   //
-  // A block that restates JavaScript — that an alias equals its target, that `??` falls back, that a spread
-  // copies — cannot fail for the reason this block exists. Every number below is HAND-MAINTAINED from
-  // published cloud pricing, and a stale or fat-fingered edit to any of them changes every estimate this
-  // library produces while every other test stays green — so the profile is pinned WHOLE. That is also the
-  // assertion that fails loudest when a price is deliberately updated, which is when someone should be looking
-  // at it.
+  // A block that restates JavaScript — that `??` falls back, that a spread copies — cannot fail for the
+  // reason this block exists. Every number below is HAND-MAINTAINED from published cloud pricing, and a stale
+  // or fat-fingered edit to any of them changes every estimate this library produces while every other test
+  // stays green — so the profile is pinned WHOLE. That is also the assertion that fails loudest when a price
+  // is deliberately updated, which is when someone should be looking at it.
   it('is the exact published rate card, every field pinned', () => {
-    // The identity matters as much as the values: `AWS_US_EAST_1_ONDEMAND` is `const P`, which the ~40
-    // assertions in the rest of this file compute against. Re-point `DEFAULT_PRICING` at a fresh literal with
-    // the same numbers and every other test here would still pass while the two silently diverged.
-    expect(DEFAULT_PRICING).toBe(AWS_US_EAST_1_ONDEMAND);
-    expect(DEFAULT_PRICING).toEqual({
+    expect(AWS_US_EAST_1_ONDEMAND).toEqual({
       name: 'aws-us-east-1-ondemand',
       storage: { getPerMillion: 0.4, putPerMillion: 5.0, storagePerGiBMonth: 0.023 },
       redis: { sizedToData: ELASTICACHE_REDIS_US_EAST_1_ONDEMAND },
@@ -58,13 +52,15 @@ describe('DEFAULT_PRICING', () => {
 
   it('is the profile `estimateCost` falls back to, and the fallback is not vacuous', () => {
     const input = { segments: [{ sizeBytes: 1.2e9 }], workload: { readsPerSec: 10 } };
-    expect(estimateCost(input)).toEqual(estimateCost({ ...input, pricing: DEFAULT_PRICING }));
+    expect(estimateCost(input)).toEqual(
+      estimateCost({ ...input, pricing: AWS_US_EAST_1_ONDEMAND }),
+    );
     // `??` would satisfy the line above against ANY profile, so prove the default actually reaches the
     // arithmetic: a profile with different rates must produce a different answer.
     const dearer: PricingProfile = {
-      ...DEFAULT_PRICING,
+      ...AWS_US_EAST_1_ONDEMAND,
       name: 'dearer',
-      storage: { ...DEFAULT_PRICING.storage, getPerMillion: 40 },
+      storage: { ...AWS_US_EAST_1_ONDEMAND.storage, getPerMillion: 40 },
     };
     expect(estimateCost({ ...input, pricing: dearer })).not.toEqual(estimateCost(input));
   });

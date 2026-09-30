@@ -31,16 +31,8 @@ export { runExport } from './export';
 export { splitId } from './core/bit-route';
 export { mapWithConcurrency } from './core/concurrency';
 export { resolveBudget, resolvePerOpBudget, checkBudget, collectWithinBudget } from './core/budget';
-// Also in `driver-kit` (a driver validates at its own boundary); here because the flavor calls it on every
-// ref an application hands in.
-export { validateSegmentRef } from './core/validate';
 export { segmentExists, listSegments } from './core/discover';
 export type { SegmentInfo } from './core/discover';
-// The PATH half only — `export-segments` builds filesystem paths with it. The KEY half
-// (`encodeNameForKey`, `namespaceKeyPart`) is a driver concern and lives in `@cloudbitmaps/core/driver-kit`;
-// the two decoders have no caller in or out of this repo.
-export { encodeNameForPath } from './core/name-codec';
-export { namespacePathPart } from './drivers/_shared/keys';
 // Driver-kit: the token shape a registry driver needs, and the key helpers the conformance fakes use.
 export type { Token } from './core/ports';
 export { segmentKey } from './core/keys';
@@ -50,11 +42,7 @@ export { segmentKey } from './core/keys';
 // `createBackend` is how a caller supplies a half of its own; `isStorageBackend` tests the brand.
 export { createBackend, isStorageBackend } from './core/ports';
 // ---------------------------------------------------------------------------------------------------
-export {
-  MemoryStorageChunkSource,
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
-} from './drivers/memory';
+export { MemoryStorageDriver, MemoryRegistryDriver } from './drivers/memory';
 export type { MemoryRegistryDriverOptions } from './drivers/memory';
 export { LocalFsStorageDriver } from './drivers/localfs/storage';
 export { LocalFsRegistryDriver } from './drivers/localfs/registry';
@@ -63,22 +51,12 @@ export { LocalFsRegistryDriver } from './drivers/localfs/registry';
 export { LocalFsStorage, MemoryStorage } from './drivers/backends';
 export type { LocalFsStorageOptions, MemoryStorageOptions } from './drivers/backends';
 export type { LocalFsRegistryDriverOptions } from './drivers/localfs/registry';
-// The write primitives under the loaded store's write path, which is `load()`: build one immutable generation from
-// pre-grouped bitmaps, then make it current (publish).
-export {
-  CrbmStorageChunkSource,
-  writeCrbmGeneration,
-  publishGeneration,
-} from './core/crbm-storage-source';
+// A storage source over the `.crbm` generations in an `IStorageDriver`.
+export { CrbmStorageChunkSource } from './core/crbm-storage-source';
 export type { CrbmStorageChunkSourceOptions, PinnedObject } from './core/crbm-storage-source';
 // A pinned view of one segment at one generation — everything else passes through to the live source.
 export { PinnedStorageChunkSource } from './core/pinned-storage-source';
 export type { PinnedAt } from './core/pinned-storage-source';
-// Generation bookkeeping: the next generation number for a segment, and collection of superseded generations.
-// Nothing here schedules itself — the retention sweep and the erasure rewrite call `gcOrphanGenerations`; a
-// caller writing generations by hand collects on its own cadence.
-export { gcOrphanGenerations, nextGeneration } from './core/generation-gc';
-export type { GenerationDeps } from './core/generation-gc';
 // Subject erasure on a loaded segment: rewrite the current generation without one id, publish fenced on it,
 // collect the superseded generation. `store.eraseSubject` runs it over every registered segment.
 // The loaded store's primary write path: replace a segment's contents with one immutable generation, guarded.
@@ -121,7 +99,6 @@ export {
   UnsupportedError,
   CapabilityError,
   TransientError,
-  TimeoutError,
   KeyUnavailableError,
   BudgetExceededError,
   // Copy-safe predicates. On an ordinary install `instanceof` holds everywhere — every package in the family
@@ -144,11 +121,9 @@ export {
 // `IKeystore`. See the getting-started "Encryption" section for key-management guidance.
 export type { Aead, AeadSealed, IKeystore, WrappedDek, CrbmCrypto } from './core/crypto';
 // The AAD builder. NOT for an `Aead` implementor — they are handed the associated data. This is for the
-// other seam: `CrbmCrypto` requires an `aadFor` member, and `CrbmReader.open` and `writeCrbmGeneration`
-// both take one, so tooling that reads or writes an ENCRYPTED archive has to construct it. Without this
-// the only way to do that is to re-derive an undocumented byte layout, where a mistake on the read side
-// is an `IntegrityError` indistinguishable from real corruption, and on the write side is an archive this
-// library can never read back.
+// other seam: `CrbmCrypto` requires an `aadFor` member, and `CrbmReader.open` takes one, so tooling that reads an
+// ENCRYPTED archive has to construct it. Without this the only way to do that is to re-derive an undocumented
+// byte layout, where a mistake is an `IntegrityError` indistinguishable from real corruption.
 export { aadFor } from './core/crypto';
 export { NodeAead, InProcessKeystore } from './drivers/crypto';
 export type { InProcessKeystoreOptions } from './drivers/crypto';
@@ -256,7 +231,6 @@ export type { IMetricsSink, MetricEvent, MetricOpName, MetricsSnapshot } from '.
 // profile + the honest `CostReport` verdict (never hides the lose-zone).
 export {
   estimateCost,
-  DEFAULT_PRICING,
   AWS_US_EAST_1_ONDEMAND,
   ELASTICACHE_REDIS_US_EAST_1_ONDEMAND,
   ONE_REDIS_HA_CLUSTER,
@@ -275,4 +249,4 @@ export type {
 // distinct from metrics. Pass `audit` to the load and erasure APIs; see the dashboards guide. Exception-safe; the
 // default records nothing.
 export { RecordingAuditSink } from './core/audit';
-export type { IAuditSink, AuditEvent, AuditEventKind } from './core/audit';
+export type { IAuditSink, AuditEvent } from './core/audit';

@@ -116,9 +116,6 @@ export type AuditEvent =
       readonly segmentsShredded: number;
     };
 
-/** The `kind` discriminant of an {@link AuditEvent}. */
-export type AuditEventKind = AuditEvent['kind'];
-
 /** Sink for {@link AuditEvent}s. Injected via the lifecycle options; omit it and nothing is recorded. */
 export interface IAuditSink {
   onEvent(event: AuditEvent): void;

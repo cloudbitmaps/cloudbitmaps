@@ -1,4 +1,5 @@
-import { CloudRoaring, MemoryStorageChunkSource, TransientError } from '@/index';
+import { MemoryStorageChunkSource } from './helpers/memory-chunk-source';
+import { CloudRoaring, TransientError } from '@/index';
 import type { ChunkRef, StorageChunkSource, SegmentRef } from '@/core/ports';
 import { seedSegment } from './helpers/loaded';
 

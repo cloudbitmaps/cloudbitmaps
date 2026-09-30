@@ -15,7 +15,7 @@ surfaces **directly**, ungated, and keep a third target for the validation front
 
 | Target | Entry point | Coverage | Runs |
 | --- | --- | --- | --- |
-| `targets/safe-deserialize.mjs` | `SafeBitmap.safeDeserialize` → its structural check → **native** CRoaring portable deserializer | **coverage-guided** over the structural check; black-box beyond it (native C++ isn't instrumentable from JS) | `pnpm fuzz:deser` |
+| `targets/safe-deserialize.mjs` | the codec's safe deserialize → its structural check → **native** CRoaring portable deserializer | **coverage-guided** over the structural check; black-box beyond it (native C++ isn't instrumentable from JS) | `pnpm fuzz:deser` |
 | `targets/crbm-index.mjs` | `parseIndex` **directly** on raw index bytes | **coverage-guided** (pure, branch-dense TS) | `pnpm fuzz:index` |
 | `targets/crbm-reader.mjs` | `CrbmReader.open` validation front (+ full chain on valid seeds) | **coverage-guided** | `pnpm fuzz:crbm` |
 

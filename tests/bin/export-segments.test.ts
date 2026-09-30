@@ -1,8 +1,9 @@
+import { SafeBitmap } from '@/roaring-codec';
 import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fsSink, main, parseConfig } from '@/bin/export-segments';
-import { LocalFsStorageDriver, LocalFsRegistryDriver, SafeBitmap } from '@/index';
+import { LocalFsStorageDriver, LocalFsRegistryDriver } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 const roaringIds = (bytes: Uint8Array): number[] =>

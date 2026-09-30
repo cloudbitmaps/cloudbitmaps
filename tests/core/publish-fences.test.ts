@@ -1,10 +1,11 @@
+import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { randomBytes } from 'node:crypto';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { publishGeneration } from '@/core/crbm-storage-source';
 import { rollbackSegment } from '@/core/rollback';
 import { IntegrityError, ValidationError, WriteConflictError } from '@/core/errors';
 import { InProcessKeystore } from '@/drivers/crypto';
-import { createBackend, CloudRoaring, MemoryStorageChunkSource } from '@/index';
+import { createBackend, CloudRoaring } from '@/index';
 import type { ChunkRef, IRegistryDriver, IStorageDriver, IKeystore, SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { collect, loadedStore, seedSegment } from '../helpers/loaded';

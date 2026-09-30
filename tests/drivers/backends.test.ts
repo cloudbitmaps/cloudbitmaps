@@ -1,4 +1,5 @@
-import { CloudRoaring, LocalFsStorage, MemoryStorage, nextGeneration } from '@/index';
+import { nextGeneration } from '@/core/generation-gc';
+import { CloudRoaring, LocalFsStorage, MemoryStorage } from '@/index';
 import { S3Storage } from '@cloudbitmaps/s3';
 import { GcsStorage } from '@cloudbitmaps/gcs';
 import { GCS_STORAGE_OPTION_KEYS } from '@/gcs/backend';

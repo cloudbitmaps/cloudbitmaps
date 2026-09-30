@@ -54,8 +54,8 @@ import {
   getSegmentRetention,
   safeMetrics,
   splitId,
-  validateSegmentRef,
 } from '@cloudbitmaps/core';
+import { validateSegmentRef } from '@cloudbitmaps/core/driver-kit';
 import type {
   Budget,
   BudgetOption,
@@ -376,7 +376,7 @@ export interface SubjectErasureEntry {
    * nothing at all if a racing collector took that generation first (the bit is gone, but no run holds a
    * receipt for it), and if the segment's row has since been purged it is no longer scanned at all — anything
    * left in its bucket is an orphan, which `store.generations(ref)` lists and `store.dropSegment(ref, {
-   * confirmSegment })` deletes; `checkConsistency` and `gcOrphanGenerations` read rows, so neither reaches it.
+   * confirmSegment })` deletes; `checkConsistency` and the collection a load runs read rows, so neither reaches it.
    * **Segments the id is not in
    * are not listed, and neither are segments that no longer have a registry row** — an empty ledger is not by
    * itself proof the id is gone.
@@ -865,8 +865,8 @@ export class CloudRoaring {
    * deleting it after a purge-and-recreate would put a live row over a missing generation).
    *
    * That last check narrows the window rather than closing it: the row read and the delete are two round
-   * trips, and `IStorageDriver` has no conditional delete to make them one. `gcOrphanGenerations` carries
-   * the same residual and says so. The failure it leaves is an orphan object, which costs storage until
+   * trips, and `IStorageDriver` has no conditional delete to make them one. the collection a load runs carries
+   * the same residual. The failure it leaves is an orphan object, which costs storage until
    * something collects it — deliberately the cheaper side of the trade.
    *
    * Written and published in one step, with no guard, an empty combine — a typo'd operand, an `exclude` that
@@ -930,7 +930,7 @@ export class CloudRoaring {
       // own.
       // `size > 0` distinguishes the two ways a materialisation loses the race, and the operator needs them
       // apart: the object either exists as an orphan above the pointer (collected by the first load that collects
-      // once a generation above it is current, or by `gcOrphanGenerations`) or was
+      // once a generation above it is current) or was
       // never written at all, because the write-once PUT itself collided. Telling someone to look for an
       // orphan that does not exist is a wasted investigation.
       // Deliberately does NOT assert which of the four causes it was. "A newer generation was published first"
@@ -1036,9 +1036,9 @@ export class CloudRoaring {
    * while erasing from it.** A load that lands after the rewrite carries whatever its source held, and the
    * library cannot know that source was meant to exclude the id. Quiesce loads of the affected segments for the
    * duration, or fix the source first and load after. A writer that lands *during* the rewrite is caught: the
-   * rewrite's publish is refused **by the fence** — `publishGeneration`'s `expectFrom`, which lands the CAS only
+   * rewrite's publish is refused **by the fence** — the publish lands its compare-and-swap only
    * while the pointer is still on the generation the rewrite streamed — and the entry says `note: 'superseded'`,
-   * so re-run. Forward-only alone would NOT refuse it: `nextGeneration` numbers above everything in the bucket,
+   * so re-run. Forward-only alone would NOT refuse it: the rewrite's number goes above everything in the bucket,
    * so the rewrite would out-rank the newer generation and then collect it.
    *
    * A racing **erasure** is caught before that, and reported the same way. It collects with `keep: 0`, taking
@@ -1788,7 +1788,8 @@ export interface MaterializeOptions extends CombineOptions {
   /** Refuse an implausible result rather than publish it. Same bounds, and same meaning, as on `load()`. */
   readonly guard?: LoadGuard;
   /**
-   * Generations to keep below the new pointer — see {@link LoadOptions.keep}.
+   * Generations to keep below the new pointer — see {@link LoadOptions.keep}. A value that is not a non-negative
+   * integer throws `ValidationError`.
    *
    * **Defaults to keeping everything**, unlike `load()`, which keeps 1 and collects the rest. An operator's
    * recovery story can depend on a materialisation collecting nothing: `rollbackSegment` refuses a target that
@@ -1861,7 +1862,7 @@ export type AndNotIntoOptions = Omit<MaterializeOptions, 'exclude'>;
 /**
  * The `keep` a materialisation passes when the caller does not: a grace window wide enough to collect nothing.
  *
- * `gcOrphanGenerations` keeps the newest `keep` generations below the pointer and deletes the rest, so an
+ * The collection keeps the newest `keep` generations below the pointer and deletes the rest, so an
  * integer at the top of the range keeps all of them. It has to be an integer — `loadSegment` validates that,
  * and `Infinity` is rejected — which is why this is `MAX_SAFE_INTEGER` and not the value that reads more
  * naturally.
@@ -1944,7 +1945,7 @@ export class Segment {
    * 0, so a pin of the old segment never reads the new one: what it has already read still answers, as the
    * instant it pinned, and anything it would have to fetch fails with `NotFoundError`, as a swept pin's does.
    *
-   * **It is a hold, not a lease.** Nothing here stops `gcOrphanGenerations` deleting the generation underneath
+   * **It is a hold, not a lease.** Nothing here stops a collection deleting the generation underneath
    * you: a pinned read deliberately does **not** heal forward, because silently serving a different generation
    * is the one thing a pin exists to prevent, so it fails instead. Size `keep` to cover your longest pinned
    * job — see [Sizing `keep`](../../docs/guide/getting-started.md#sizing-keep) — or take the pin on a segment
@@ -2306,10 +2307,3 @@ export * from '@cloudbitmaps/core';
 // core cannot default (it is codec-agnostic). Re-exporting them EXPLICITLY here shadows the same names from the
 // `export *` above, so an application calls each with no codec at all.
 export { eraseIdFromSegment, loadSegment, runExport } from './codec-bound';
-
-// The roaring codec itself. `SafeBitmap` is public surface (`writeCrbmGeneration` takes them); `roaringCodec` is the `CodecInterface` this facade injects, exported so an advanced caller
-// can construct a `SegmentEngine` by hand.
-export { SafeBitmap, roaringCodec } from './roaring-codec';
-
-/** Package version marker. Kept in sync with package.json at release. */
-export const VERSION = '0.10.0';

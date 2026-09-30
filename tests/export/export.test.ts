@@ -1,12 +1,12 @@
+import { SafeBitmap } from '@/roaring-codec';
+import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { randomBytes } from 'node:crypto';
 import {
   createBackend,
   MemoryStorage,
   CloudRoaring,
-  MemoryStorageChunkSource,
   MemoryStorageDriver,
   MemoryRegistryDriver,
-  SafeBitmap,
 } from '@/index';
 import type { ExportSink, ExportWriter, IKeystore, SegmentRef } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
