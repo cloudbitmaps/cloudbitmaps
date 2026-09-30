@@ -51,7 +51,8 @@ export {
   WriteConflictError,
 } from './core/errors';
 
-// Validation a driver applies at its own boundary, and the sink a range read writes into.
+// Validation a driver applies at its own boundary, and the sink `putImmutable` hands the writer: the object's
+// bytes arrive through its `write`, and the driver commits them once the writer returns.
 export { validateSegmentRef } from './core/validate';
 export type { BlobSink } from './core/blob';
 

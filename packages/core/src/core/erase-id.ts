@@ -180,8 +180,10 @@ export interface EraseIdResult {
    *  - `'not-member'` — a racing collector took that generation first. The bit is gone, but **no run reports a
    *    receipt for it**, so keep the failed call's error alongside your ledger if you need the audit trail;
    *  - `'absent'` — the segment's registry row is gone, so it is no longer a segment at all and
-   *    `store.eraseSubject` will not even scan it. Anything left in the bucket is an **orphan**: find it with
-   *    `checkConsistency()` and collect it with `gcOrphanGenerations`.
+   *    `store.eraseSubject` will not even scan it. Anything left in the bucket is an **orphan**: list it with
+   *    `listGenerations` (`store.generations`) and delete it with `dropSegment` (`store.dropSegment`), which both
+   *    read the bucket as well as the row. `checkConsistency()` and `gcOrphanGenerations` start from the row, so
+   *    neither reaches a segment that has none.
    */
   readonly collected: readonly number[];
 }

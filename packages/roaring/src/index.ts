@@ -375,7 +375,9 @@ export interface SubjectErasureEntry {
    * says**: it usually reports `erased: true` against the generation it found the id in, it reports
    * nothing at all if a racing collector took that generation first (the bit is gone, but no run holds a
    * receipt for it), and if the segment's row has since been purged it is no longer scanned at all — anything
-   * left in its bucket is an orphan for `checkConsistency` / `gcOrphanGenerations`. **Segments the id is not in
+   * left in its bucket is an orphan, which `store.generations(ref)` lists and `store.dropSegment(ref, {
+   * confirmSegment })` deletes; `checkConsistency` and `gcOrphanGenerations` read rows, so neither reaches it.
+   * **Segments the id is not in
    * are not listed, and neither are segments that no longer have a registry row** — an empty ledger is not by
    * itself proof the id is gone.
    */
@@ -413,9 +415,9 @@ export interface MaterializeResult {
   /**
    * Whether this generation is now the destination's current one.
    *
-   * Before the guard existed this was always true, because a materialisation always published. Branch on it:
-   * a refusal is reported, not thrown, so a caller that ignores it sees a successful-looking result for a
-   * write that deliberately did not happen.
+   * `false` when the guard refused the result: an empty one over a non-empty destination, or one outside
+   * `guard`'s bounds. Branch on it: a refusal is reported, not thrown, so a caller that ignores it sees a
+   * successful-looking result for a write that deliberately did not happen.
    */
   readonly published: boolean;
   /** Set only when `published` is false. A lost race throws {@link WriteConflictError} rather than appearing here. */
@@ -1041,9 +1043,10 @@ export class CloudRoaring {
    *
    * A racing **erasure** is caught before that, and reported the same way. It collects with `keep: 0`, taking
    * every generation below its new pointer — the one this rewrite is streaming, and the object this rewrite
-   * just wrote — so the loser can find its own inputs deleted mid-flight. That surfaces as a reason rather than
-   * an error, read off the row: a moved pointer is `'superseded'`, a concurrent `dropSegment` `'destroyed'`,
-   * a retention sweep that purged the row `'absent'`. Re-running is the fix in every case.
+   * just wrote — so the loser can find its own inputs deleted mid-flight. That surfaces as an outcome rather than
+   * an error, read off the row: a moved pointer is a `'superseded'` entry, which a re-run settles, and a segment
+   * that a concurrent `dropSegment` tombstoned or a retention sweep purged is left out of the ledger, as a fresh
+   * call would leave it out.
    *
    * **Read `note` on any `erased: false` entry — the two reasons mean different things.** `'superseded'` means
    * another writer (a load, another erasure, or a rollback) moved the pointer mid-call, so **this call** did not
@@ -1527,7 +1530,7 @@ export class CloudRoaring {
    * Synchronous, best-effort, and safe to call for a segment this store has never read.
    *
    * ```ts
-   * await destroySegment(ref, { storage, registry, keystore }, { confirmSegment: ref.segment });
+   * await destroySegment(ref, { registry: backend.registry }, { confirmSegment: ref.segment });
    * store.invalidate(ref);                       // this process
    * await bus.publish('cloudbitmaps.invalidate', ref); // and every other one
    * ```

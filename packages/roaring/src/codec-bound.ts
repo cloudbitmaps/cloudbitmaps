@@ -41,10 +41,10 @@ export const runExport: RunExport = (reader, registry, sink, options = {}) =>
  * {@link coreLoadSegment} with the roaring codec **and a real clock** pre-bound.
  *
  * The clock is what makes a large load **cooperative**: the load yields the event loop periodically instead of
- * stalling the process for its whole duration (a 1M-id load spread across the id space runs ~405 ms on an M3 Pro,
- * and its longest stall measured ~21 ms). `core/` cannot default it — it is timer-free by lint, which is precisely why
- * waiting goes through the `Clock` seam — so the flavor package supplies it, exactly as it supplies the codec. A
- * caller who passes their own clock (a virtual one in a simulation, say) keeps it.
+ * stalling the process for its whole duration (the getting-started guide's "What blocks the event loop" section
+ * gives the measured cost and longest stall of a 1M-id load). `core/` cannot default it — it is timer-free by
+ * lint, which is precisely why waiting goes through the `Clock` seam — so the flavor package supplies it, exactly
+ * as it supplies the codec. A caller who passes their own clock (a virtual one in a simulation, say) keeps it.
  */
 export const loadSegment: LoadSegment = (ref, ids, deps, options = {}) =>
   coreLoadSegment(
