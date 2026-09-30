@@ -6,16 +6,22 @@ import { ESLint } from 'eslint';
  * eslint.config.js. This test lints planted violations at the paths the rules are scoped to and asserts each
  * one fires — and that the legitimate shapes do not. It exists because a rule written wrong would be a silent
  * gap: `pnpm lint` passing proves nothing about a rule that never matched.
+ *
+ * The same holds for the `no-restricted-globals` entries that keep `core/` free of ambient I/O and randomness
+ * which needs no import at all, so the last block below plants those too.
  */
 const ROOT = path.resolve(__dirname, '..', '..');
 const eslint = new ESLint({ cwd: ROOT });
 
-async function boundaryErrors(relPath: string, code: string): Promise<string[]> {
+async function ruleErrors(ruleId: string, relPath: string, code: string): Promise<string[]> {
   const [result] = await eslint.lintText(code, { filePath: path.join(ROOT, relPath) });
-  return (result?.messages ?? [])
-    .filter((m) => m.ruleId === 'no-restricted-imports')
-    .map((m) => m.message);
+  return (result?.messages ?? []).filter((m) => m.ruleId === ruleId).map((m) => m.message);
 }
+
+const boundaryErrors = (relPath: string, code: string): Promise<string[]> =>
+  ruleErrors('no-restricted-imports', relPath, code);
+const globalErrors = (relPath: string, code: string): Promise<string[]> =>
+  ruleErrors('no-restricted-globals', relPath, code);
 
 const CORE = 'packages/core/src/core/some-module.ts';
 const CORE_ROOT = 'packages/core/src/some-barrel.ts';
@@ -61,6 +67,17 @@ describe('architecture: import boundaries (eslint no-restricted-imports)', () =>
         CORE,
         "import { MemoryStorageDriver } from '@/drivers/memory';\nMemoryStorageDriver;",
       ),
+    ).toHaveLength(1);
+    // Nor the driver-kit barrel, which re-exports the drivers' shared implementations: through it, `core/`
+    // would reach every driver impl, and a `node:*` builtin behind them, with a lint-clean import.
+    expect(
+      await boundaryErrors(
+        CORE,
+        "import { brandAsBackend } from '../driver-kit';\nbrandAsBackend;",
+      ),
+    ).toHaveLength(1);
+    expect(
+      await boundaryErrors(CORE, "import { brandAsBackend } from '@/driver-kit';\nbrandAsBackend;"),
     ).toHaveLength(1);
   });
 
@@ -173,6 +190,53 @@ describe('architecture: import boundaries (eslint no-restricted-imports)', () =>
     ).toHaveLength(1);
   });
 
+  // The gcs and azure-blob blocks each restate the whole list with their own SDK removed, as the s3 block does,
+  // and eslint REPLACES a rule's options rather than merging them — so the generic block's patterns do not reach
+  // these files, and each restated copy needs a planted violation of its own. Empty either block's patterns and
+  // only these go red: the own-SDK case below still passes.
+  it.each([
+    {
+      pkg: 'gcs',
+      sibling: "import { S3Storage } from '@cloudbitmaps/s3';\nS3Storage;",
+      sdks: [
+        "import { S3Client } from '@aws-sdk/client-s3';\nS3Client;",
+        "import AWS from 'aws-sdk';\nAWS;",
+        "import { BlobServiceClient } from '@azure/storage-blob';\nBlobServiceClient;",
+      ],
+    },
+    {
+      pkg: 'azure-blob',
+      sibling: "import { GcsStorage } from '@cloudbitmaps/gcs';\nGcsStorage;",
+      sdks: [
+        "import { S3Client } from '@aws-sdk/client-s3';\nS3Client;",
+        "import AWS from 'aws-sdk';\nAWS;",
+        "import { Storage } from '@google-cloud/storage';\nStorage;",
+      ],
+    },
+  ])(
+    'the $pkg package takes no flavor, no sibling and no other SDK',
+    async ({ pkg, sibling, sdks }) => {
+      const file = `packages/${pkg}/src/storage.ts`;
+      expect(
+        await boundaryErrors(
+          file,
+          "import { CloudRoaring } from '@cloudbitmaps/roaring';\nCloudRoaring;",
+        ),
+      ).toHaveLength(1);
+      expect(await boundaryErrors(file, sibling)).toHaveLength(1);
+      for (const sdk of sdks) expect(await boundaryErrors(file, sdk), sdk).toHaveLength(1);
+      expect(
+        await boundaryErrors(file, "import { x } from '../../core/src/core/ports';\nx;"),
+      ).toHaveLength(1);
+      expect(
+        await boundaryErrors(
+          file,
+          "import { IStorageDriver } from '@cloudbitmaps/core/driver-kit';",
+        ),
+      ).toEqual([]);
+    },
+  );
+
   it('the driver packages are where an SDK belongs', async () => {
     expect(
       await boundaryErrors(
@@ -205,6 +269,55 @@ describe('architecture: import boundaries (eslint no-restricted-imports)', () =>
       await boundaryErrors(
         CORE_ROOT,
         "export { LocalFsStorageDriver } from './drivers/localfs/storage';",
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe('architecture: core/ reaches no ambient I/O or randomness (eslint no-restricted-globals)', () => {
+  // `fetch` and `crypto` are globals in Node and in a V8 isolate alike, so neither needs an import, and the
+  // node-builtin ban above cannot see them. Each would give `core/` I/O or randomness of its own, around the
+  // driver ports and the injected `Rng` the determinism seam routes them through.
+  it('core/ calls no global fetch', async () => {
+    expect(
+      await globalErrors(
+        CORE,
+        "export function probe(): Promise<unknown> {\n  return fetch('https://example.com/');\n}",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('core/ reads no global crypto', async () => {
+    expect(
+      await globalErrors(CORE, 'export const nonce = crypto.getRandomValues(new Uint8Array(12));'),
+    ).toHaveLength(1);
+    expect(await globalErrors(CORE, 'export const id = crypto.randomUUID();')).toHaveLength(1);
+  });
+
+  it('the look-alikes core/ really writes are untouched', async () => {
+    // The writers take a `CrbmCrypto` and bind it to a local named `crypto`: a local is not the global.
+    expect(
+      await globalErrors(
+        CORE,
+        "import type { CrbmCrypto } from './crypto';\n" +
+          'export function aeadOf(crypto: CrbmCrypto): unknown {\n  return crypto.aead;\n}',
+      ),
+    ).toEqual([]);
+    // A property or a method that shares the name is not the global either.
+    expect(await globalErrors(CORE, 'export const deps = { crypto: 1, fetch: 2 };')).toEqual([]);
+    expect(
+      await globalErrors(
+        CORE,
+        'export function pull(source: { fetch(): void }): void {\n  source.fetch();\n}',
+      ),
+    ).toEqual([]);
+  });
+
+  it('outside core/ the globals are allowed — a driver is where a builtin belongs', async () => {
+    expect(
+      await globalErrors(
+        'packages/core/src/drivers/some-driver.ts',
+        'export const nonce = crypto.getRandomValues(new Uint8Array(12));',
       ),
     ).toEqual([]);
   });
