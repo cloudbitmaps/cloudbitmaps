@@ -41,15 +41,20 @@ Where each piece sits today:
 | | Status |
 | --- | --- |
 | Loads, reads, chunk-skipping combines, `*Into` materialisation, subject erasure as a rewrite, crypto-shred, disposal, retention, the DR check, export | **shipped** — [below](#shipped-today) |
-| Loaded-store benchmarks — load throughput, intersect latency | **owed**. Their **bill** is measured: the September 2026 calibration run (`2026-09-23-94416`) put the single-bucket topology on real S3 — the median cold intersect of two 500,000-id segments sharing 100 of 1,999 chunks made 206 GETs as measured, $82.40 per million, and inside the region it is expected at 204 GETs, $81.60; writing and publishing a segment is $11.20 per million, pointer included, and `store.load()` is expected at about twice that — and the [benchmarks page](benchmarks.md#the-single-bucket-bill--run-2026-09-23-94416) publishes it. Their **latency and throughput** are not: that run was driven from a laptop outside the region, so its timings measured the connection. The **RSS ceiling** is measured and published — it needs no cloud account, because a cgroup limit is enforceable locally. The harness is built and has run twice against a real account, once publishably; its in-region run is still owed |
+| Loaded-store benchmarks — load throughput, intersect latency | **owed**. Their **bill** is measured: the September 2026 calibration run (`2026-09-23-94416`) put the single-bucket topology on real S3 — the median cold intersect of two 500,000-id segments sharing 100 of 1,999 chunks made 206 GETs as measured, $82.40 per million, and inside the region it is expected at 204 GETs, $81.60; writing and publishing a segment is $11.20 per million, pointer included, and `store.load()` is expected at about twice that — and the [benchmarks page](benchmarks.md#the-single-bucket-bill--run-2026-09-23-94416) publishes it. Their **latency and throughput** are not: that run was driven from a laptop outside the region, so its timings measured the connection. The **RSS ceiling** is measured and published — it needs no cloud account, because a cgroup limit is enforceable locally. The harness is built and has one published run against a real account; its in-region run is **next**, and still owed |
 | `load()` with the empty guard and `guard: { minCardinality, minRetained }` | **shipped** — `store.load(ref, ids)` is the write path in one call: next generation → write → guard → publish → collect. A refusal is reported (`published: false` + `reason`), not thrown, and deletes the object it wrote unless the segment's row changed meanwhile, which leaves it for collection |
 | `generations()` + `rollback()` | **shipped** — see what a segment has been and put the pointer back, the one write that is not forward-only. Refuses a collected target, a crypto-shredded segment, and an above-pointer target without an explicit opt-in |
-| No restrictions on names | **shipped** — a name is any non-empty string; each storage layer escapes what it cannot take literally rather than the library rejecting it, Windows device names like `con` and names ending in a dot included on the local filesystem. Size is the one limit |
+| No character rules on names | **shipped** — a name is any non-empty string; each storage layer escapes what it cannot take literally rather than the library rejecting it, Windows device names like `con` and names ending in a dot included on the local filesystem. Two limits remain: 256 characters once encoded for a storage key, where anything outside `[A-Za-z0-9._-]` takes more than one, and well-formed UTF-16, since an unpaired surrogate has no UTF-8 encoding |
 | `exists()` + `segments()` | **shipped** — `exists()` is one point read of the registry, and `segments()` streams the registry's own enumeration, namespace-scoped, admin-path. Neither is inferred from `count()`, which cannot tell *never loaded* from *loaded and empty*, and neither needs a list of names kept beside the store |
 | Extending the load guard to the `*Into` verbs | **shipped** — a materialisation routes through the same guarded write path as `load()`, so an empty or implausible combine is refused (`published: false` + `reason`) instead of replacing `dest`. `allowEmpty: true` publishes an empty result where emptying the destination is the intent; `guard: { minCardinality, minRetained }` adds the plausibility bounds, judged against what `dest` held |
 | A snapshot handle, so a long job reads one instant | **shipped** — `segment.pin()` resolves the generation once and holds it, so an export or a reconciliation describes a single instant. Only that segment is pinned; an ordinary handle still re-resolves on `cache.genTtlMs` |
-| A public docs + site pass leading with the loaded store's strengths | **next** |
+| Id-range reads for keyset paging — `iterate({ after, through })` and the same bounds on every combine | **in the next release after `0.10.0`** — built and tested, and in no published version yet. Yields only the ids in `(after, through]` and fetches only the chunks the range overlaps |
+| A public docs + site pass leading with the loaded store's strengths | **shipped** |
 | WASM CRoaring research | **after** the loaded store |
+
+**What is next:** the in-region calibration run, which measures load throughput, intersect latency and what
+`store.load()` costs on S3 from inside the region, and the next release after `0.10.0`, which carries the id-range
+read. [On the way to 1.0](#on-the-way-to-10) lists everything that stands before `1.0`.
 
 Current install and publish status lives in the [README](../README.md) — this page deliberately doesn't
 restate it, so the two can't drift. You install **one codec flavor plus the one storage package you need**,
@@ -70,13 +75,16 @@ is a dependency of both and is never installed directly. The storage drivers are
 
 - **One write path: the load.** `store.load` builds a generation from an unsorted sync **or async**
   ID stream without holding the *input* in memory (memory is bounded by the distinct result set, not the input
-  length), writes it as one write-once object, verifies it, and publishes it **forward-only** — a CAS on the
-  registry pointer that never moves backwards. A segment larger than RAM wants the external-merge bulk load
-  listed under [Planned](#planned--exploring).
+  length), writes it as one write-once object, judges it against the guard, and publishes it with a
+  compare-and-swap on the registry row. A load that finds a row fences on the row's token; a default load also
+  fences on the pointer it judged; only an unguarded load (`allowEmpty: true` and no `guard.minRetained`) onto a
+  segment with no row is bare forward-only; and a duplicate publish is an idempotent no-op. A segment larger than
+  RAM wants the external-merge bulk load listed under [Planned](#planned--exploring).
 - **Chunk-skipping intersection** — `intersect` aligns on chunk keys and fetches only the chunks present in
   *every* operand, with bounded read concurrency and a bounded streaming window.
-- **Id-range reads for keyset paging** — `iterate`, and every combine, take `after` / `through` and yield only the ids
-  in `(after, through]`, fetching only the chunks the range overlaps, on a live or a pinned handle.
+- **Id-range reads for keyset paging**, in the next release after `0.10.0` and in no published version yet —
+  `iterate`, and every combine, take `after` / `through` and yield only the ids in `(after, through]`, fetching
+  only the chunks the range overlaps, on a live or a pinned handle.
 - **Composable set reads** — `union`, `andNot`, and an `exclude` option on `intersect` that folds suppression
   into the same chunk-aligned pass, so `(a ∩ b) \ suppression` needs no intermediate segment. Each operation is
   honest about what it can skip: `intersect` prunes any key missing from an operand, `andNot` reads the
@@ -91,16 +99,19 @@ is a dependency of both and is never installed directly. The storage drivers are
   with **zero payload reads**.
 - **Bounded memory, always.** A hard LRU ceiling on cached chunks, a byte-aware storage-reader cache, bounded fan-out
   on every admin path, and a default-on per-operation **request budget** that fails with `BudgetExceededError`
-  rather than quietly running up a bill. Every registry scan — the DR consistency check, the retention sweep,
-  the subject scans — refuses at its ceiling (`maxScanSegments`) instead of materialising the fleet.
+  rather than quietly running up a bill. No registry scan materialises an unbounded fleet: the DR consistency
+  check and the retention sweep refuse past `maxScanSegments` (250,000 rows by default), and the subject scans
+  (`subjectReport`, `eraseSubject`) refuse past the call's request budget, `budget.maxRequests`, unless the call
+  lifts the budget with `budget: false`.
 - **Immutable, generation-keyed objects.** `segment.<gen>.crbm` + one registry pointer, never overwritten in
   place. `nextGeneration` picks the next number past both the pointer and whatever is in the bucket, so a crashed
   load's orphan cannot block a retry; `gcOrphanGenerations` collects superseded generations behind a grace window
   for in-flight readers.
 - **A co-operative bulk-load.** Node has one thread, and building a generation is the one operation here that
-  genuinely occupies it for a while. It hands the event loop back periodically, so a 1M-id load runs in ~19 ms
-  slices instead of blocking everything on the instance for 450 ms straight — a co-resident server keeps
-  answering. On by default; see "what blocks the event loop" in [getting started](guide/getting-started.md).
+  genuinely occupies it for a while. It hands the event loop back periodically, so a 1M-id `store.load()` runs
+  in slices of ~22 ms (26 ms at worst) instead of holding the loop for ~408 ms straight — a co-resident server
+  keeps answering. Measured on an M3 Pro with in-memory storage, the median of seven runs; on by default. See
+  [what blocks the event loop](guide/getting-started.md#what-blocks-the-event-loop-and-where-to-run-it).
 
 ### Security & data protection
 
@@ -183,8 +194,8 @@ envelope**:
 | | Inside the envelope | Outside it (use with your own testing) |
 | --- | --- | --- |
 | **Workload** | read-mostly over loaded generations; loads as a batch job (a cron, a pipeline step, a Lambda on a schedule) | anything that needs per-call mutation — there is no write verb; micro-batch into a load |
-| **Scale** | up to ~100K segments; tens of millions of IDs per segment | billions of IDs in one segment (wants the reserved 64-bit format + external-merge bulk load) |
-| **Backends** | S3 storage — the validated tier | the GCS and Azure Blob registries and storage: conformance-passing and correctness-clean, but not envelope-validated. The S3 registry has been through one publishable real-cloud run, for cost only: the September 2026 calibration run kept its pointer in the same bucket as the data |
+| **Scale** | up to ~100K segments; segments up to the 12,582,912 ids the calibration run loaded, the largest with published evidence | larger segments, up to billions of IDs in one (wants the reserved 64-bit format + external-merge bulk load) |
+| **Backends** | S3 storage — the validated tier | the GCS and Azure Blob registries and storage: conformance-passing and correctness-clean, but not envelope-validated. The S3 registry has one published real-cloud run, for cost only: the September 2026 calibration run kept its pointer in the same bucket as the data |
 | **Tenancy / region** | single-tenant, single-region | multi-tenant isolation; multi-region active/active |
 | **Cost figures** | the **single-bucket bill of the September 2026 calibration run** (`us-east-1`, 2026-09-23: a cold intersect and a load, pointer included) — published prices applied to wire-metered requests — plus the estimator, all with published methodology | the invoice itself; **in-region latency**, which no run has measured — the calibration run was driven from outside the region and calibrates cost only; what `store.load()` costs on S3; and every loaded-store figure listed as owed below |
 
@@ -195,8 +206,9 @@ ships, with the pointer in the same bucket as the data: what a cold intersect an
 measured internet transit, and in-region latency is [owed](benchmarks.md#what-is-still-owed) rather than published. What is **not** yet measured is the
 rest of the loaded store's own shape — load throughput, `intersect` and `*Into` latency — and those are owed
 before `1.0`; until they exist this page quotes no number for them. RSS under a soak is measured and published
-as a ceiling. Benchmark numbers come with their methodology — we never publish a
-figure we haven't measured, and laptop/emulator numbers are labeled as such.
+as a ceiling. Benchmark numbers come with their methodology, and every figure is labelled as what it is:
+measured, derived from measured requests, modelled, or expected; laptop and emulator numbers are labelled as
+such.
 
 ## On the way to 1.0
 
@@ -224,11 +236,12 @@ between here and there:
    the measured ceiling — a sustained read + combine + re-load workload over 400 segments inside a hard
    384 MiB cgroup limit with swap off, no OOM — is published on the
    [benchmarks page](benchmarks.md#what-rss-is-and-why-it-is-the-number-we-bound). Until they exist, the only cloud measurements on the
-   benchmarks page are the two calibration runs' costs, and this page says so wherever it quotes one.
+   benchmarks page are the one published calibration run's costs, and this page says so wherever it quotes one.
 3. **The empty-load guard and `load()` — ✅ Shipped.** `load()` on the store with `allowEmpty` (an empty
-   result is refused unless you say so), a `guard` over the result before it is published, and rollback of a
-   refused load. It covers the `*Into` verbs too: a combine that comes out empty over a non-empty destination
-   is refused rather than published.
+   result over a non-empty segment is refused unless you say so), a `guard` over the result before it is
+   published, and a refused load that deletes the object it wrote, unless the segment's row changed meanwhile,
+   which leaves it for collection. It covers the `*Into` verbs too: a combine that comes out empty over a
+   non-empty destination is refused rather than published.
 4. **A snapshot handle — one instant for a long job. ✅ Shipped.** `segment.pin()` resolves the current
    generation once and reads from it for as long as the handle lives, so an export, a reconciliation or a send
    describes a single instant rather than whichever generations happened to be current as it went. Generation
@@ -245,12 +258,9 @@ between here and there:
    `readRetentionPolicy` are exported, and that is the test worth applying to any surface reduction. The API
    reference guard runs in both directions.
 6. **A public docs + site pass leading with the loaded store's strengths — ✅ Shipped.** The README, the guide,
-   the API reference and the site lead with what this is: one bucket, immutable
-   generations, cheap chunk-skipping reads from anywhere. The framing turned out to be in better shape than
-   this item assumed — "two tiers" and the driver count were already correct and derived from the code. What
-   was actually wrong was a supply-chain badge that counted the whole project's third-party dependencies as one,
-   in eight places, while the gate watching it derived that number from `@cloudbitmaps/roaring`'s manifest
-   alone.
+   the API reference and the site lead with what this is: one bucket, immutable generations, cheap
+   chunk-skipping reads from anywhere. A gate derives the site's driver counts from the driver classes in the
+   code, and another refuses a count of third-party dependencies that does not name the package it counts.
 7. **`.crbm` format freeze** — the format already reserves space for 64-bit IDs and stamps a schema version on
    the registry row; freezing it is what makes cross-language ports and long-lived data safe.
 8. **Adoption feedback** — real deployments finding the sharp edges that our own tests don't.
@@ -274,16 +284,6 @@ move it up.
   would also answer what the native Roaring addon is buying you on your particular ids &mdash; which is a real
   question, since the answer ranges from 543x to nothing.
 - **Multi-region active/active** — region-local by design for the `1.0` line; not ruled out beyond it.
-- ~~**A generic `bitset` flavor** (`@cloudbitmaps/bitset`)~~ — **decided against, 2026-07-31.** It was the most
-  likely item on this list for months. Then we measured the thing it was for: above roughly **6% density a
-  Roaring chunk already *is* an uncompressed bitset**, so a plain codec has no size to win — on the workload
-  built to favour it, a flat bitset comes out **2%** ahead, while Roaring wins the other shapes by 543×, 63× and
-  1.88×. The genuine advantage a flat bitset has is random access — one shift-and-mask against a container
-  lookup, worth 7–77× in CRoaring's own benchmarks — but that is roughly **20 nanoseconds** inside an operation
-  that waits on object storage, where AWS puts the median small read in the
-  [tens of milliseconds](https://docs.aws.amazon.com/AmazonS3/latest/userguide/optimizing-performance-design-patterns.html). It would have been a plausible wrong turn: chosen for dense
-  ids, which is exactly where Roaring has already become the same bitset. The codec seam stays; nothing is queued
-  to fill it.
 - **The billions-of-IDs axis** — 64-bit IDs (space is already reserved in the format) plus an external-merge
   bulk load that never buffers the distinct set.
 - **Language ports** — Go, Python, Rust reading and writing the same `.crbm` objects. Strictly *after* the
@@ -324,12 +324,12 @@ move it up.
   which is the access pattern this format was designed for. What stops it is not the engine: `core/` imports no
   `node:*` builtin and has zero runtime dependencies, so the seam already loads in a V8 isolate. It is the
   **codec** — `roaring` is a native C++ addon, and no isolate can load one under any compatibility flag. So the
-  first piece is a dependency-free JavaScript **reader** for the standard portable Roaring format, which now
-  exists in the tree, is checked against the native library on 200 randomly-shaped bitmaps plus every container
+  first piece is a dependency-free JavaScript **reader** for the standard portable Roaring format, which is in
+  the tree, is checked against the native library on 200 randomly-shaped bitmaps plus every container
   encoding, and is **not exported, not wired into anything, and not something you can use yet**. Read-only by
   design: loads stay in Node, where the native codec is the right tool. **We will not claim this works on any
-  runtime until CI runs the conformance suite inside that runtime** — the project has been wrong about
-  edge-runtime capabilities three times, and a claim is not a test.
+  runtime until CI runs the conformance suite inside that runtime**: what a runtime can load is easy to get
+  wrong, and a claim is not a test.
 - **Incremental writes, if there is demand** — immutable delta generations on the same bucket, read as base ∪ deltas at
   chunk granularity; never a mutable row store. Nothing is queued; an issue describing a workload that genuinely
   cannot micro-batch into a load is what would move it.
@@ -363,6 +363,13 @@ Saying no is part of the design:
 - **An `id → segments` reverse index.** It would cost a second inverted copy of all your data, rebuilt on every
   load, to speed up a rare subject-access request. `subjectReport` scans instead. It could return as an opt-in
   add-on if a real deployment needs sub-second lookups at billion scale.
+- **A generic `bitset` flavor** (`@cloudbitmaps/bitset`). Above about **6% density** a Roaring chunk is already
+  stored as an uncompressed bitset, or as runs where those are smaller, so a plain codec has no size to win. In the
+  encoded sizes [`bench/encoding.cjs`](../bench/encoding.cjs) measures on four shapes of ids, a flat bitset is
+  about **2%** smaller on the one built to favour it, a half-dense block, and Roaring is 543×, 63× and 1.88×
+  smaller on the other three. What a flat bitset keeps is faster random access, one shift-and-mask against a
+  container lookup: CPU time inside an operation that waits on an object-storage request. The codec seam stays;
+  nothing is queued to fill it.
 - **Reimplementing the bit math.** CloudBitmaps wraps `roaring-node`/CRoaring. The object-store layout and the
   chunk-skipping reads are the contribution; the container algorithms are not ours to re-invent.
 - **Any feature that taxes the hot path** (`has` / `count` / `intersect` / `union` / `andNot`) to speed up a
