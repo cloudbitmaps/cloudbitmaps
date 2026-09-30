@@ -97,7 +97,7 @@ export class GcsStorage implements StorageBackend {
       GCS_STORAGE_OPTION_KEYS,
       'a @google-cloud/storage client goes in `client`',
     );
-    if (options.client !== undefined) {
+    if (options.client !== undefined && options.client !== null) {
       // A supplied client already carries its project and endpoint, so a setting beside it is ignored, and
       // ignoring it leaves the store talking to somewhere the caller did not mean: an `apiEndpoint` meant for an
       // emulator, silently dropped, is production traffic from a client that was built for the public endpoint.

@@ -300,6 +300,19 @@ describe('a backend configures both halves from one place', () => {
       expect(new GcsStorage({ bucket: 'b', client: gcsClient }).client).toBe(gcsClient);
     });
 
+    it('a `client` of null is no client, as it was before: the store builds one from the settings', () => {
+      // `S3Client | undefined` is the declared type, but a plain-JS caller can pass null, which `??` treated as absent.
+      expect(s3({ client: null, ...s3Settings })).not.toThrow();
+      expect(gcs({ client: null, ...gcsSettings })).not.toThrow();
+      expect(new S3Storage({ bucket: 'b', client: null as never }).client).toBeTruthy();
+      expect(new GcsStorage({ bucket: 'b', client: null as never }).client).toBeTruthy();
+    });
+
+    it('an unknown key is reported before a setting beside a client', () => {
+      expect(s3({ client: s3Client, region: 'x', bogus: 1 })).toThrow(/does not take `bogus`/);
+      expect(gcs({ client: gcsClient, projectId: 'x', bogus: 1 })).toThrow(/does not take `bogus`/);
+    });
+
     it('a built client takes every setting without a client', () => {
       expect(s3({ ...s3Settings })).not.toThrow();
       expect(gcs({ ...gcsSettings })).not.toThrow();

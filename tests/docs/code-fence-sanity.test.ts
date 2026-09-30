@@ -212,7 +212,7 @@ describe('documentation code samples', () => {
   it('reads a backend sample the way the backend does, and not a driver class', () => {
     const keys = (code: string): string[] =>
       unknownConstructorKeys(code, 'S3Storage', S3_STORAGE_OPTION_KEYS).map((k) => k.key);
-    expect(keys("new S3Storage({ bucket: 'b', prefix: 'p', client, region: 'r' })")).toEqual([]);
+    expect(keys("new S3Storage({ bucket: 'b', prefix: 'p', client, now })")).toEqual([]);
     expect(keys("new S3Storage({ bucket: 'b', partBytes: 1 << 26 })")).toEqual([]);
     expect(keys("new S3Storage({ bucket: 'b', forcePathStyle: true })")).toEqual([
       'forcePathStyle',

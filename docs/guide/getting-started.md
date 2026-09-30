@@ -343,8 +343,8 @@ import { CloudRoaring } from '@cloudbitmaps/roaring';
 import { S3Storage } from '@cloudbitmaps/s3';
 
 // Bucket and prefix stated ONCE, for both halves. It builds its own client from the ambient credential
-// chain; pass `client` for one the SDK cannot infer, or `endpoint` + `pathStyle` + `credentials` for MinIO/R2 (a `client` carries
-// its own, so giving both is refused).
+// chain; pass `client` for one the SDK cannot infer, or `endpoint` + `pathStyle` + `credentials` for MinIO/R2
+// (a `client` carries its own, so giving both is refused).
 const backend = new S3Storage({ bucket: 'my-bitmaps', prefix: 'cloudbitmaps', region: 'us-east-1' });
 
 const store = new CloudRoaring({ storage: backend });
@@ -486,8 +486,8 @@ not take, by name, and the error lists the keys it does take.
 import { CloudRoaring } from '@cloudbitmaps/roaring';
 import { GcsStorage } from '@cloudbitmaps/gcs';
 
-// Builds its own client from ADC; pass `apiEndpoint` to point at fake-gcs-server locally, or `client` for your own (which carries its own, so
-// giving both is refused).
+// Builds its own client from ADC; pass `apiEndpoint` to point at fake-gcs-server locally, or `client` for your own
+// (which carries its own, so giving both is refused).
 const backend = new GcsStorage({ bucket: 'my-bitmaps', prefix: 'cloudbitmaps' });
 const store = new CloudRoaring({ storage: backend }); // one bucket is the whole deployment
 ```
