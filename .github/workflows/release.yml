@@ -26,9 +26,9 @@
 #   1. npmjs.com → each published package (`@cloudbitmaps/core`, `@cloudbitmaps/roaring`, `@cloudbitmaps/s3`,
 #      `@cloudbitmaps/gcs`, `@cloudbitmaps/azure-blob`) → Trusted Publisher:
 #      GitHub Actions, repo `cloudbitmaps/cloudbitmaps`, workflow `release.yml`, environment `release`.
-#      A publisher can only be bound to a package that ALREADY EXISTS on the registry, so the very first
-#      version is published manually with interactive 2FA to create the names (see RELEASING.md "First
-#      publish"). Every release after that runs through here, tokenless.
+#      A publisher can only be bound to a package that ALREADY EXISTS on the registry, so each new name is
+#      created first, by hand with interactive 2FA, at a throwaway prerelease (`pnpm release:bootstrap`; see
+#      RELEASING.md "Bootstrapping a name"). Every release after that runs through here, tokenless.
 #   2. GitHub → Settings → Environments → `release`, with the maintainer as a **required reviewer**.
 #      That reviewer IS the gate; without it the publish job would run unpaused.
 

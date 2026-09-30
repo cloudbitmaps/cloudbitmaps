@@ -7,24 +7,25 @@ human-gated** pipeline — you never run `npm publish` by hand. This is the map 
 
 All five packages release **in lockstep**: one version number, one tag, everything published together —
 `core`, the `roaring` flavor, and the `s3` / `gcs` / `azure-blob` driver packages. Each of the four depends on
-`core`, and `pnpm -r publish` walks the workspace in topological order so `core` lands first. Nothing in the
-workflow names a package: it globs `packages/*/package.json` and filters `./packages/**`, and the one count
-it does carry (`EXPECTED_PACKAGES`) is asserted against the real number of manifests by
+`core`, and `pnpm -r publish` walks the workspace in topological order so `core` lands first. None of the
+workflow's steps names a package: they glob `packages/*/package.json` and filter `./packages/**`, and the one
+count the workflow carries (`EXPECTED_PACKAGES`) is asserted against the real number of manifests by
 [`tests/ci/release-workflow.test.ts`](tests/ci/release-workflow.test.ts).
 
-**Adding a package is still not free**, and most of the cost is not in this file. Its **name must be
+**Adding a package is not free**, and most of the cost is not in this file. Its **name must be
 bootstrapped** before the tokenless pipeline can publish it at all (see
 [Bootstrapping a name](#bootstrapping-a-name)); the rest is a checklist of the places that enumerate the
 driver packages by hand, which lives in
-[CONTRIBUTING → Adding a storage driver package](CONTRIBUTING.md#adding-a-storage-driver-package). Every one
-of them fails loudly in `pnpm lint`, `pnpm typecheck` or `pnpm smoke` long before a publish step, which is
-the right direction for it to fail in — but it is an edit, not nothing.
+[CONTRIBUTING → Adding a storage driver package](CONTRIBUTING.md#adding-a-storage-driver-package). The checklist
+says what fails when each place is missed: most fail a local gate long before a publish step, and a few fail
+nothing at all, so those are an edit to remember rather than one a gate will ask for.
 
 ## Table of contents
 
 - [TL;DR — cutting a release](#tldr--cutting-a-release)
 - [The version bump](#the-version-bump)
 - [What the automation does](#what-the-automation-does)
+- [A manual run](#a-manual-run)
 - [Why tokenless](#why-tokenless)
 - [One-time setup](#one-time-setup)
 - [Bootstrapping a name](#bootstrapping-a-name)
@@ -33,19 +34,35 @@ the right direction for it to fail in — but it is an edit, not nothing.
 
 ## TL;DR — cutting a release
 
-1. **Land everything on `main`** with the gate green, `CHANGELOG.md` updated, and a
-   [changeset](#the-version-bump) per change that needs one.
-2. **Bump every version with one command** — `pnpm version:packages`. It runs `changeset version`, which
-   moves all five `packages/*/package.json` together, then syncs the `VERSION` constant and refreshes the
-   lockfile. They must all match the tag exactly; the workflow globs `packages/*/package.json` and refuses
-   the release if any one disagrees, so a missed package costs a failed run rather than a partial publish.
-3. **Tag and push:** `git tag v<version> && git push origin v<version>`, the version the manifests carry.
-4. **Approve the deployment** — the run pauses on the `release` environment. Open the run → _Review
-   deployments_ → approve `release`.
-5. It publishes all five packages, tokenlessly, with a signed provenance attestation. `pnpm -r publish`
-   walks the workspace in topological order, so `core` lands before the four that depend on it.
+`main` is protected and squash-merged, so the version bump reaches it through a pull request like any other
+change, and the tag goes on the commit that pull request makes on `main`.
 
-The approval prompt is the last point at which a release can be stopped. Nothing reaches npm before it.
+1. **Land everything on `main`** with the gate green, each change's entry under `## [Unreleased]` in
+   `CHANGELOG.md`, and a [changeset](#the-version-bump) per change that needs one.
+2. **On a release branch, bump every version with one command** — `pnpm version:packages`. It runs
+   `changeset version`, which moves all five `packages/*/package.json` together and deletes the changesets it
+   consumed, then syncs the `VERSION` constant and refreshes the lockfile. They must all match the tag exactly;
+   the workflow globs `packages/*/package.json` and refuses the release if any one disagrees, so a missed
+   package costs a failed run rather than a partial publish.
+3. **Cut the changelog section.** Rename `## [Unreleased]` to `## [<version>] — <YYYY-MM-DD>`, the version the
+   manifests now carry, and open a new, empty `## [Unreleased]` above it. The release notes are that section:
+   `scripts/changelog-section.cjs` quotes it, and refuses a tag with no `## [<version>]` heading, or an empty
+   one, before anything is published. Then update every version the site, the READMEs and `docs/` state:
+   `tests/docs/version-claims.test.ts` names each one that still disagrees with the manifests.
+4. **Open the pull request, and squash-merge it** once the gate is green and it is approved.
+5. **Tag the merge commit and push the tag**, once its CI run on `main` is green:
+   `git switch main && git pull && git tag v<version> && git push origin v<version>`.
+6. **Approve the deployment** — the run waits on the `release` environment before its job starts. Open the
+   run → _Review deployments_ → approve `release`.
+7. The job re-runs the gate and the audit, checks the tag and that no package is private, probes the registry,
+   checks the notes and leak-scans the tarballs, and only then publishes all five packages, tokenlessly, with a
+   signed provenance attestation. `pnpm -r publish` walks the workspace in topological order, so `core` lands
+   before the four that depend on it. A second job then creates the GitHub Release, with that changelog section
+   as its notes.
+
+The approval comes first: nothing in the job runs until it is given, and nothing reaches npm before it.
+After it, every check in [What the automation does](#what-the-automation-does) can still refuse the run; the
+publish step is the one that cannot be taken back.
 
 ## The version bump
 
@@ -86,22 +103,27 @@ Pre-`1.0`, a breaking change is a **minor** bump. Choose the bump for the family
 
 ## What the automation does
 
-A pushed `v*.*.*` tag (or a manual dispatch) starts one gated job that, in order:
+A pushed `v*.*.*` tag starts one job in the `release` environment. It waits for the approval before any step
+runs, and then, in order (a run started by hand skips some of these; see [A manual run](#a-manual-run)):
 
 - **Re-runs the gate that governs the artifact** against the exact commit being published — `lint ·
   lint:arch · format:check · typecheck · test · audit · build · smoke`. A green `main` is necessary but not
   sufficient; the tagged commit is re-verified from scratch on a clean runner with `--frozen-lockfile`.
-  It is not literally every job CI runs: the site checks (`site:replay:check`, `site:figures`,
-  `site-classes.py`, `site-links.py`), the tracked-tree `leak-scan` and the fuzz lockfile check stay in CI,
-  because they guard what Pages serves from `main` rather than what goes in the tarball — and `main` has
-  already passed them by the time a tag points at it. The tarball's own `leak-scan` DOES run here. The **dependency audit** is repeated
+  It is not literally every check CI runs. The `build & test` job's checks of the site and the benchmark pages
+  against their sources (`site:replay:check`, `bench:scale:check`, `site:figures`, `site-classes.py`,
+  `site-links.py`, `bench:sizing:check`, `bench:check`), its tracked-tree `leak-scan` and its fuzz lockfile check
+  stay in CI, because they guard the site, the docs and the tracked tree rather than what goes in the tarball.
+  CI's other jobs do guard the artifact — integration against the emulators, the smoke test on the Node floor,
+  the Lambda smoke, the RSS ceiling and the native addon on three operating systems — and they are not re-run
+  here either: the tag goes on a `main` commit whose CI run is green, which is why the TL;DR tags the merge
+  commit and waits for that run. The tarball's own `leak-scan` DOES run here. The **dependency audit** is repeated
   here rather than trusted from CI because it is the one gate whose verdict changes with *no commit at all*: an
   advisory published after `main` went green makes the same tree newly vulnerable.
 - **Refuses a mistagged release** — every publishable package's `version` must equal the tag, or the run fails.
 - **Refuses a still-private package.** `pnpm publish` *silently skips* a package with `"private": true` and
   exits 0, so a real publish attempt would otherwise produce a fully green run that published nothing. No
-  package carries `private` today — only the workspace ROOT manifest does, and that is never published — so
-  this guards against it being re-introduced rather than being a launch step still to clear.
+  package carries `private` — only the workspace ROOT manifest does, and that is never published — so this
+  guards against one being added.
 - **Refuses a name the registry does not have, and a version it already does.** Both produce a *partial*
   release of a family that ships in lockstep, and neither is visible in the log. A brand-new package name has
   no Trusted Publisher and this pipeline is tokenless, so `pnpm -r publish` would publish the packages that
@@ -127,6 +149,10 @@ runs before the one step that cannot be undone. (Creating the GitHub Release bef
 announce a version that never reached npm;
 [`tests/ci/release-workflow.test.ts`](tests/ci/release-workflow.test.ts) asserts this ordering.)
 
+A second job, `github-release`, runs only after a tag push whose publish job succeeded, and creates the GitHub
+Release with the same changelog section as its notes. It holds the one write permission in the file, which the
+publish job does not have.
+
 The workflow also declares `concurrency: cancel-in-progress: false` — the opposite of CI. Cancelling a build is
 free; cancelling a release part-way through leaves npm holding a half-published family — some of the five
 packages up, the rest not — that cannot be taken back.
@@ -135,6 +161,23 @@ Every `uses:` is pinned to a full commit SHA, so a moved tag can't inject code. 
 the human-readable version comment together, monthly. The npm upgrade the OIDC publish needs is pinned to a
 **floor** (`npm@^11.5.1`), not `@latest`, so a regression in a same-morning npm release can't break a release
 with nothing in our diff to point at.
+
+## A manual run
+
+_Actions → Release → Run workflow_ starts the same job by hand, on the ref you pick, with one input, `dryRun`,
+which defaults to `true`. It waits for the same approval as a tag push.
+
+- **A dry run** (the default) re-runs the gate and the tarball leak scan, then ends with
+  `pnpm -r publish --dry-run`, which packs every package and uploads nothing. It is how to exercise the pipeline
+  without cutting a version. It skips the still-private check and the registry probes.
+- **`dryRun: false` publishes for real.** It runs the gate, the still-private check, the registry probes and the
+  tarball leak scan, then publishes whatever version the manifests carry.
+- **On a branch ref, either one skips the tag check and the release-notes check**, because both key on a tag
+  ref, so a real run there publishes with no notes checked. Dispatched on a tag ref (`refs/tags/v…`), both run.
+- **No run started by hand creates a GitHub Release**: that job runs only on a tag push. After a real manual
+  publish, create it yourself, as the [break-glass](#manual--break-glass-release) steps do.
+
+So `dryRun: false` is for a deliberate manual release, and a tag push is the release path.
 
 ## Why tokenless
 
@@ -151,8 +194,6 @@ That matters for three reasons:
   disallow tokens"*, which **rejects an automation-token publish outright**. Token auth and that setting are
   mutually exclusive; Trusted Publishing isn't a token, so it passes. Choosing the token model would have meant
   silently dropping the hardening — the trap this pipeline is built to avoid.
-
-This mirrors the sibling projects (`onadiet`, `babystack`), which use the same tokenless + gated model.
 
 ## One-time setup
 
@@ -193,8 +234,8 @@ a family whose other packages are already on npm**, and publishes only the names
 > workspace topologically and stops at the first failure, so tagging with an unbootstrapped name in the tree
 > publishes `@cloudbitmaps/core` at the new version — immutably, outside a 72-hour window — and then dies
 > before the flagship. The family ships in lockstep; that leaves one package of five on the registry with no
-> way back. `release.yml` refuses the tag rather than starting, but the refusal is a backstop for this
-> procedure, not a replacement for it.
+> way back. `release.yml`'s registry probe refuses such a run before its publish step, once the run is approved
+> and the gate has passed, but the refusal is a backstop for this procedure, not a replacement for it.
 
 A manual publish carries **no provenance attestation** — provenance attests to a *workflow* identity, and a
 laptop has none. So the bootstrap creates the name at a **throwaway prerelease** and the real version still
@@ -218,13 +259,15 @@ package on the real tag and report a green release having published nothing for 
 > real version claims `latest` and the window closes. `pnpm release:bootstrap` reports which of the two
 > happened rather than guessing.
 
+Two things the sequence relies on are repo-wide and in place for every name: the GitHub repo is public, so the
+packages' `repository`/`homepage` links resolve and provenance has a public source to attest to; and the
+`release` environment has its required reviewer, from the [one-time setup](#one-time-setup).
+
 **The sequence** (each step gates the next — this order is not incidental):
 
-1. **Repo public first.** The GitHub repo must exist and be public before publishing, so the packages'
-   `repository`/`homepage` links resolve and provenance has a public source to attest to. (Done, at launch.)
-2. **Land the new package on `main`**, with its version matching the rest of the family. Nothing to clear:
+1. **Land the new package on `main`**, with its version matching the rest of the family. Nothing to clear:
    packages carry no `private` flag.
-3. **Create the names**, with interactive 2FA. The helper publishes **only the names the registry lacks** and
+2. **Create the names**, with interactive 2FA. The helper publishes **only the names the registry lacks** and
    skips the ones it has, so it is safe to run against a family that is already published:
 
    ```sh
@@ -236,12 +279,11 @@ package on the real tag and report a green release having published nothing for 
    It reports each name it created, and verifies the dist-tag landed. Confirm with
    `npm access get status <name>` rather than `npm view` — `npm view` reads a replica that lags for minutes
    after a first publish (see the troubleshooting table), so a 404 there proves nothing either way.
-4. **Bind a Trusted Publisher to each new name** and set its publishing access to *require 2FA and disallow
+3. **Bind a Trusted Publisher to each new name** and set its publishing access to *require 2FA and disallow
    tokens* — the [one-time setup](#one-time-setup), per package. **Until this is done the tokenless pipeline
-   still cannot publish that name**, so creating the name is only half the job.
-5. **Create the GitHub `release` environment** with yourself as required reviewer. (Done, at launch.)
-6. **Ship the real release** by tag — the normal [TL;DR](#tldr--cutting-a-release) flow. The workflow runs the
-   full gate, re-probes the registry, pauses for your approval, and publishes **tokenlessly with provenance**.
+   cannot publish that name**, so creating the name is only half the job.
+4. **Ship the real release** by tag — the normal [TL;DR](#tldr--cutting-a-release) flow. The run waits for your
+   approval, then runs the full gate, re-probes the registry, and publishes **tokenlessly with provenance**.
 
 Outside this procedure the manual path is never used, except as
 [break-glass](#manual--break-glass-release).
@@ -251,12 +293,27 @@ Outside this procedure the manual path is never used, except as
 Only if the pipeline is down and a release genuinely cannot wait. Requires npm ≥ 11.5.1 and your **interactive
 npm 2FA** — automation tokens are disallowed by design, so there is no unattended fallback, deliberately.
 
+Run it on the `main` commit the version bump made — the [TL;DR](#tldr--cutting-a-release)'s steps 1–4 still
+apply. This path runs only what you type, so it types the checks the workflow runs around the publish: the
+audit, the release-notes check and the tarball leak scan, as well as the gate. Set `LEAK_SCAN_EXTRA` to the
+needle list, as the workflow's secret does, for the scan's strict mode.
+
 ```sh
 pnpm install --frozen-lockfile
 pnpm lint && pnpm lint:arch && pnpm format:check && pnpm typecheck && pnpm test && pnpm build && pnpm smoke
+node scripts/audit.cjs                                      # the dependency audit
+node scripts/changelog-section.cjs v<version> > /dev/null   # the release notes exist
+pnpm leak-scan:tarballs                                     # packs each package and scans the tarball
 pnpm -r --filter './packages/**' publish --access public
-git push --follow-tags
+git tag v<version> && git push origin v<version>
+node scripts/changelog-section.cjs v<version> > notes.md
+gh release create v<version> --title v<version> --notes-file notes.md --verify-tag
 ```
+
+It has **none of the registry probes**. `pnpm publish` skips a version already on the registry and exits 0, so
+check first that no package is on the registry at `<version>` (`npm view <name>@<version> version` fails with a
+404 for each). Pushing the tag starts `release.yml`, which waits for approval: reject that deployment, since
+every package is on the registry by then and the run's probe would refuse it anyway.
 
 Note this path publishes **without provenance** (there is no workflow identity to attest to), so prefer the
 automated flow. This exists so a broken pipeline never blocks a critical security fix.
@@ -265,13 +322,13 @@ automated flow. This exists so a broken pipeline never blocks a critical securit
 
 | Symptom | Cause |
 | --- | --- |
-| `tag vX.Y.Z does not match <pkg> version …` | A package version and the tag disagree. Every package releases in lockstep, so all five must equal the tag. Fix the manifests, delete and re-push the tag. |
+| `tag vX.Y.Z does not match <pkg> version …` | A package version and the tag disagree. Every package releases in lockstep, so all five must equal the tag. Fix the manifests through a pull request, delete the tag (`git push origin --delete vX.Y.Z && git tag -d vX.Y.Z`), and tag the merge commit. |
 | `… still has "private": true` | Someone added `private` to a package manifest. Only the workspace root is private; every package under `packages/` publishes. |
 | Publish rejected: token not permitted | Something re-introduced token auth. The packages disallow tokens; the workflow must authenticate via OIDC. |
 | `npm error unable to authenticate` on a fresh package | The Trusted Publisher binding is missing or its repo/workflow/environment don't match exactly. |
 | The run never pauses for approval | The `release` environment has no required reviewer — the gate is the reviewer, not the environment. |
 | Provenance missing on the published package | `id-token: write` was dropped, or the job ran on a self-hosted runner. Provenance needs a GitHub-hosted runner's OIDC identity. |
-| A publish failed PART-WAY through the family | Some packages are on the registry at this version, immutably, and the rest are not. **Do not re-run the workflow** — it refuses, correctly, because the first package's version now exists. Recovery is a **patch bump for the stragglers**: `workspace:^` rewrites to `^0.10.0`, and caret on a `0.x` with a non-zero minor means `>=0.10.0 <0.11.0`, so a straggler published at `0.10.1` still satisfies what the already-published packages declare. Bump only the packages that did not land, tag `v0.10.1`, and ship. Expensive and untidy; not fatal. |
+| A publish failed PART-WAY through the family | Some packages are on the registry at this version, immutably, and the rest are not. **Do not re-run the workflow** — it refuses, correctly, because those packages' version now exists. Nor can the stragglers ship alone at the next patch: the workflow refuses a tag any manifest disagrees with, and the `fixed` group moves all five together. Recovery is a **patch release of the whole family**: a patch changeset, then the [TL;DR](#tldr--cutting-a-release) at `X.Y.Z+1`, with a changelog section that says why. Every package publishes at the new version, and the partial one stays on the registry beside it. Expensive and untidy; not fatal. |
 | `gh release create` failed after a successful publish | Use GitHub's **"Re-run failed jobs"**, which skips the already-green publish job. A full re-run cannot work: it stops at the already-on-the-registry guard, by design. |
 | `npm i @cloudbitmaps/s3` fails to resolve `@cloudbitmaps/core@^0.10.0` | **Expected, and it is why the bootstrap window is time-sensitive.** The bootstrap rewrites only the MISSING packages' versions to `-rc.0`; `packages/core/package.json` keeps the real version, so pnpm rewrites the rc tarballs' `workspace:^` dependency to `^0.10.0` — a version the registry will not have until the real release. The rc tarballs exist to create the NAME so a Trusted Publisher can bind to it; they are not installable and are not meant to be. Ship the real version promptly. |
 | `npm i @cloudbitmaps/roaring` serves a prerelease | `latest` landed on the bootstrap version — either because `--tag` was omitted (`npm publish` defaults to `latest` and is not semver-aware) or because the registry assigned it to the package's first version anyway. **Do not chase `npm dist-tag rm … latest`** — npm refuses to remove `latest`. Ship the real release; it claims `latest` and closes the window. |
