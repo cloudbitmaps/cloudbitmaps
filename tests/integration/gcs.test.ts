@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { createRequire } from 'node:module';
+import http from 'node:http';
 // Runs against fake-gcs-server from docker-compose (see docker-compose.yml): `docker compose up -d` then
 // `pnpm test:integration`. No real GCP needed. Passing `apiEndpoint` (with any `projectId`) targets the
 // emulator and skips auth — do NOT also set `STORAGE_EMULATOR_HOST` (empirically it makes the JSON-API calls
@@ -40,6 +42,20 @@ const RUN =
 const ENDPOINT = process.env.GCS_ENDPOINT ?? 'http://127.0.0.1:4443';
 const BUCKET = 'cloudbitmaps-it';
 const storage = new Storage({ projectId: 'test', apiEndpoint: ENDPOINT });
+// fake-gcs-server closes the connection after it answers a 416 (a range starting past EOF) without saying so, and
+// the SDK keeps that socket in its keep-alive pool. The next request on it, whatever it is, fails with ECONNRESET
+// before the server reads a byte. The driver sends a conditional write once, so it reports that reset as a
+// `TransientError` where an SDK retry would have hidden it.
+//
+// The SDK exposes no client option for its HTTP agent: its transport (`teeny-request`) takes the agent from a
+// module-level pool keyed by scheme, and only creates the keep-alive one when the key is absent. Seeding the key
+// with an agent that does not keep sockets makes every request open a fresh connection, so the emulator's quirk
+// cannot reach a test. It applies to this test file only (vitest gives each file its own worker); the driver is untouched.
+const sdkRequire = createRequire(createRequire(import.meta.url).resolve('@google-cloud/storage'));
+(sdkRequire('teeny-request/build/src/agents') as { pool: Map<string, http.Agent> }).pool.set(
+  'http:forever',
+  new http.Agent({ keepAlive: false, maxSockets: Infinity }),
+);
 
 beforeAll(async () => {
   // `docker compose up --wait` returns when the container is *running*, not necessarily accepting HTTP — poll
