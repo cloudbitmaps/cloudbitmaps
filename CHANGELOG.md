@@ -17,8 +17,9 @@ The first two narrow what an application sees: `@cloudbitmaps/roaring` exports a
 core's, and a `Segment` can no longer be constructed. The four after them remove exports: the first deletes names
 nothing in the library would still call, the second takes names off the public entries or moves them to the package
 that uses them, and the third and fourth remove the retrying driver wrappers and the bulk loader. The seventh makes
-the collection refuse a `keep` it used to accept. The next eight make a call throw where it used to return: six of them fix a wrong answer, and the entries under
-**Fixed** say what the call returned before; two hold a call to a rule the rest of the library already kept. The
+the collection refuse a `keep` it used to accept. The next eight make a call throw where it used to return: six of
+them fix a wrong answer, and the entries under **Fixed** say what the call returned before; two hold a call to a
+rule the rest of the library already kept. The
 five after them hold the store, the backends and the registry to what the library itself takes and writes, stop
 checking for a local store's older directory layout, and give its errors the library's own brand. The last two
 change what `estimateCost()` compares with and what a `CostReport` carries.
@@ -44,8 +45,10 @@ change what `estimateCost()` compares with and what a `CostReport` carries.
     `retireExpired` (`store.retireExpired`), `estimateCost` (`CloudRoaring.estimateCost`), `loadSegment`
     (`store.load`), and the types `GenerationListDeps`, `RetentionDeps`, `DropDeps` and `LoadDeps`. The flavor's own
     `loadSegment` and `runExport`, which bound the roaring codec, are deleted: core's versions take a `codec`, and the
-    flavor no longer exports one. To write through drivers of your own, build the store on
-    `createBackend({ storage, registry })` and call its methods. Every result type these produce stays exported,
+    flavor no longer exports one. An application writes through the store's methods, on a store built on a backend
+    class (`MemoryStorage`, `LocalFsStorage`, `S3Storage`, `GcsStorage` or `AzureBlobStorage`); composing a backend
+    from drivers of your own is a driver author's job, done with `brandAsBackend` from
+    `@cloudbitmaps/core/driver-kit`. Every result type these produce stays exported,
     because a store method returns it.
   - **Erasure:** `eraseIdFromSegment`, `EraseIdDeps` and `EraseIdResult`. `store.eraseSubject` is the one erasure
     verb.

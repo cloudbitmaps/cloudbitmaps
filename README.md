@@ -509,10 +509,10 @@ cron, a Lambda on a timer, or a `CronJob`.
 **Building a store is free** — no I/O, no connection — so a scheduled job has no reason to compose a write path by
 hand, and composing is where steps get dropped: `store.load` runs the empty guard *and* collects the generations
 below the one it published (keeping the newest by default), which a write composed from the primitives does not.
-A store built on a pre-built `StorageChunkSource` is read-only, so the lifecycle methods throw by design; to write
-through drivers of your own, build the store on `createBackend({ storage, registry })`. The standalone forms of the
-store's methods (`loadSegment`, `dropSegment`, `retireExpired` and the rest) are on `@cloudbitmaps/core`, for
-someone writing a flavor or a driver.
+A store built on a pre-built `StorageChunkSource` is read-only, so the lifecycle methods throw by design; to write,
+build the store on a backend class (`MemoryStorage`, `LocalFsStorage`, `S3Storage`, `GcsStorage` or
+`AzureBlobStorage`) and call its methods. The standalone forms of the store's methods (`loadSegment`, `dropSegment`,
+`retireExpired` and the rest) are on `@cloudbitmaps/core`, for someone writing a flavor or a driver.
 
 ### What this is not
 

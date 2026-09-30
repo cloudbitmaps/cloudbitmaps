@@ -128,8 +128,8 @@ export function requireCodec(codec: CodecInterface | undefined, api: string): Co
   if (codec === undefined) {
     throw new ValidationError(
       `${api} needs a bitmap codec: pass \`codec\`. ` +
-        `@cloudbitmaps/core is codec-agnostic and has no default — install a flavor package, whose ` +
-        `equivalents bind the codec for you.`,
+        `@cloudbitmaps/core is codec-agnostic and has no default. A flavor's store passes its own codec, ` +
+        `so an application calls the store's method instead of this function.`,
     );
   }
   return codec;

@@ -1,6 +1,12 @@
 import { vi } from 'vitest';
 import * as core from '@cloudbitmaps/core';
-import { CloudRoaring, MemoryStorage, ValidationError } from '@/index';
+import {
+  CloudRoaring,
+  CrbmStorageChunkSource,
+  MemoryStorage,
+  UnsupportedError,
+  ValidationError,
+} from '@/index';
 import type { Clock, IRegistryDriver, IStorageDriver, SegmentRef } from '@/index';
 import { SystemClock } from '@/system-clock';
 import { joinId } from '@/core/bit-route';
@@ -68,6 +74,23 @@ describe("the store's load", () => {
     const r = await store.load(REF, [1, 2, 70_000]);
     expect(r).toMatchObject({ published: true, cardinality: 3 });
     expect(await store.segment(REF.segment).count()).toBe(3);
+  });
+});
+
+describe('a store built on a pre-built source', () => {
+  it('refuses a write by naming the backend classes an application builds on', async () => {
+    const backend = new MemoryStorage();
+    const store = new CloudRoaring({
+      storage: new CrbmStorageChunkSource(backend.storage, { registry: backend.registry }),
+    });
+    const err = await store.load(REF, [1]).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(UnsupportedError);
+    const message = (err as Error).message;
+    expect(message).toMatch(
+      /S3Storage.*GcsStorage.*AzureBlobStorage.*LocalFsStorage.*MemoryStorage/,
+    );
+    // createBackend is leaving the public entries; nothing points an application at it.
+    expect(message).not.toMatch(/createBackend/);
   });
 });
 

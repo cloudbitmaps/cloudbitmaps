@@ -4,9 +4,8 @@
  * It lives outside `core/`, so `Date.now()`, `setTimeout` and `setImmediate` are allowed here; that separation is
  * the whole point of the seam, and it is lint-enforced on the other side.
  *
- * It sits in its own module rather than in `index.ts` because two places need it — the facade, and
- * `codec-bound.ts`, which pre-binds it into `loadSegment`. Importing it from `index.ts` would put a
- * cycle between the barrel and a module the barrel re-exports.
+ * It sits in its own module rather than in `index.ts` so the facade, the tests and anything else that needs a real
+ * clock can import it without importing the whole barrel.
  */
 import type { Clock } from '@cloudbitmaps/core';
 

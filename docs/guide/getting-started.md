@@ -1308,8 +1308,8 @@ rewritten, so the entry carries no `generation` and no `segment.rewrite` event i
 Both helpers **reuse the store's own drivers** — no `registry`/deps to re-pass. `eraseSubject` needs the store
 built with a **backend** (it writes generations); `subjectReport` needs one too, for the registry it
 enumerates before it calls `has()`. A store missing what a helper needs throws `UnsupportedError` — a
-pre-built-`StorageChunkSource` store can't run `eraseSubject`; build the store on a backend instead
-(`createBackend({ storage, registry })` wraps drivers of your own). The returned `erasedFrom` list is your **erasure ledger**
+pre-built-`StorageChunkSource` store can't run `eraseSubject`; build the store on a backend class instead
+(`MemoryStorage`, `LocalFsStorage`, `S3Storage`, `GcsStorage` or `AzureBlobStorage`). The returned `erasedFrom` list is your **erasure ledger**
 (proof of deletion) — a return value only, so persist it or route it to your audit sink (a `segment.rewrite` event
 is also emitted per rewrite when you pass `audit`).
 

@@ -794,8 +794,8 @@ export class CloudRoaring {
       throw new UnsupportedError(
         `${op} needs the store built with a storage backend — S3Storage, GcsStorage, AzureBlobStorage, ` +
           `LocalFsStorage or MemoryStorage. A pre-built StorageChunkSource is read-only: it has no ` +
-          `IStorageDriver underneath to write generations through. To write through drivers of your own, ` +
-          `build the store on createBackend({ storage, registry }).`,
+          `IStorageDriver underneath to write generations through. Build the store on one of those backend ` +
+          `classes to write.`,
       );
     }
     if (this.registry === undefined) {
