@@ -1,6 +1,7 @@
 import { CloudRoaring, createBackend } from '@/index';
 import type { SegmentRef } from '@/index';
 import { counting } from '../helpers/counting';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { loadedStore } from '../helpers/loaded';
 
 /**
@@ -72,5 +73,25 @@ describe('subjectReport does not re-resolve a segment whose row has not moved', 
     expect(counts.getTail ?? 0).toBe(0); // no generation reopened
     expect(counts.getRange ?? 0).toBe(0); // no chunk re-read: served from the cache
     expect(counts.list).toBe(1); // the one registry scan the report starts from
+  });
+});
+
+describe('subjectReport tells a re-created name from the old one at the same generation number', () => {
+  it('a segment retired, purged and loaded again from generation 0 is re-read, not served from the snapshot', async () => {
+    const w = await loadedStore();
+    await w.load(REF, [1, 2, 77]); // generation 0
+    const reader = new CloudRoaring({ storage: w.backend, cache: { genTtlMs: 0 } });
+    expect((await reader.subjectReport(77, ONLY_ME)).segments).toEqual([REF]); // warms generation 0 of incarnation 1
+
+    // Another process retires the name completely and loads it again: the new row restarts at generation 0.
+    for await (const k of w.storage.list(REF)) await w.storage.delete(k);
+    await w.registry.delete(REF);
+    await bulkLoadCrbmGeneration(w.storage, { ...REF, generation: 0 }, [1, 2], {
+      registry: w.registry,
+    });
+    const row = await w.registry.get(REF);
+    expect(row?.currentGen).toBe(0); // same number as the snapshot this store holds
+
+    expect((await reader.subjectReport(77, ONLY_ME)).segments).toEqual([]);
   });
 });

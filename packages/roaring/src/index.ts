@@ -991,8 +991,8 @@ export class CloudRoaring {
    * **Current as of the registry row, not as of the reader's cache.** Each segment's resolved generation is
    * compared with the row the scan listed, and a segment whose cached generation differs is re-resolved before the
    * read, so a load or an erasure from another process shows at once — whatever `cache.genTtlMs` is, `0` included.
-   * The comparison is on the generation number: a segment retired, purged and loaded again from generation 0 while
-   * this store held its old generation 0 is not told apart — {@link CloudRoaring.invalidate} does that.
+   * The comparison is on the generation **and** the row's token, so a segment retired, purged and loaded again from
+   * generation 0 while this store held its old generation 0 is told apart too.
    */
   async subjectReport(
     id: number,
@@ -1029,11 +1029,14 @@ export class CloudRoaring {
         const ref: SegmentRef = { segment: rec.segment, namespace: rec.namespace };
         // The row this scan just listed is authoritative; the reader's snapshot may be up to `cache.genTtlMs` behind
         // it, or have no timed refresh (`genTtlMs: 0`). An access report must not lag another process's load or
-        // erasure, so a segment whose snapshot is on a different generation than its row is forgotten before the
-        // read. Only that segment: one whose pointer has not moved keeps its snapshot and costs no extra read.
+        // erasure, so a segment whose snapshot is not the listed row's is forgotten before the read. The snapshot's
+        // version is `<generation>:<row token>` (invariant 1: the row's OCC token is the identity, the number
+        // restarts at 0 once a row is purged), so a retired name loaded again is told apart too. Only a segment
+        // that differs is re-resolved: one whose row has not moved keeps its snapshot and costs no extra read.
         if (this.crbmSource !== undefined) {
-          const held = await this.crbmSource.currentGeneration(ref);
-          if (held !== rec.currentGen) this.engine.invalidate(ref);
+          const held = await this.crbmSource.currentVersion(ref);
+          const listed = rec.currentGen === null ? null : `${rec.currentGen}:${String(rec.token)}`;
+          if (held !== listed) this.engine.invalidate(ref);
         }
         return (await this.engine.has(ref, id))
           ? { segment: rec.segment, namespace: rec.namespace }

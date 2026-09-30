@@ -548,10 +548,10 @@ This one changes what an erasure charges its budget for:
   documents.
 - **`subjectReport` could miss a load or an erasure made by another process.** The access report read through the
   store's cached generation, which can be up to `cache.genTtlMs` behind the registry, and never catches up with
-  `genTtlMs: 0`. It now compares each listed segment's row with the generation the store holds, and re-resolves
-  only a segment that differs, so a report sees another process's change at once and costs no extra read when
-  nothing moved. A segment retired, purged and loaded again from generation 0 is not told apart by the number;
-  `store.invalidate(ref)` covers that.
+  `genTtlMs: 0`. It now compares each listed segment's row (its generation and its token) with the version the
+  store holds, and re-resolves only a segment that differs, so a report sees another process's change at once,
+  including a segment retired, purged and loaded again from generation 0, and costs no extra read when nothing
+  moved.
 - **The retention sweep's row deletes could tombstone a row created after the sweep decided to delete.** The
   tombstone purge decided from the row it scanned, which can be minutes old on a large fleet, and then deleted
   whatever was under the name, so a segment purged and re-created in that window, which is live data, was tombstoned
