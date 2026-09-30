@@ -197,10 +197,19 @@ docker_image_save() {
     docker_image_cache_used "$2"
 }
 
+# The copy is accepted only as this image's own: it must hold an image whose local name ends in this reference's id.
+# The prefix may differ, so an entry an older helper saved, which the cache offers when no entry matches the current
+# one, still loads under the name that helper chose and is given the current local name. The id may not: a copy holding
+# another reference's image, as a mixed or corrupted cache could, is refused, and the caller pulls again.
 docker_image_load() {
-  local name
+  local name loaded
   name="$(docker_image_local_name "$1")"
-  docker load -q -i "$2" >/dev/null 2>&1 && docker image inspect "$name" >/dev/null 2>&1 || return 1
+  loaded="$(docker load -q -i "$2" 2>/dev/null)" || return 1
+  if ! docker image inspect "$name" >/dev/null 2>&1; then
+    loaded="$(printf '%s\n' "$loaded" | sed -n 's/^Loaded image: //p' | tail -n 1)"
+    [[ "$loaded" == *.invalid/cache:"$(docker_image_cache_id "$1")" ]] &&
+      docker tag "$loaded" "$name" >/dev/null 2>&1 || return 1
+  fi
   docker_image_cache_used "$2"
   # A tag is given back, so `docker run <image>` finds it; a digest cannot be.
   [[ "$1" == *@sha256:* ]] || docker tag "$name" "$1"
