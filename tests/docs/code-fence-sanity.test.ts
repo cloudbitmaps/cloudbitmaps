@@ -2,19 +2,23 @@ import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 
-import { codeOnly, unknownStoreKeys } from '../helpers/option-literals';
+import { AZURE_BLOB_STORAGE_OPTION_KEYS } from '@/azure-blob/backend';
+import { GCS_STORAGE_OPTION_KEYS } from '@/gcs/backend';
+import { S3_STORAGE_OPTION_KEYS } from '@/s3/backend';
+
+import { codeOnly, unknownConstructorKeys, unknownStoreKeys } from '../helpers/option-literals';
 
 /**
  * The TypeScript samples in the docs must not make the mistakes that stop a copied sample running: a name declared
- * twice, an option key the store does not take, and a sample that declares one half of its wiring and uses a name
- * it never declared. Nothing here runs a sample.
+ * twice, an option key the store or a cloud backend does not take, and a sample that declares one half of its wiring
+ * and uses a name it never declared. Nothing here runs a sample.
  *
  * WHY THIS EXISTS. Doc samples are copy-pasted; a sample that cannot run is worse than no sample, because the
  * reader assumes their own environment is at fault. Two of them are easy to write:
  *
  *   - A GCS sample that names its backend `storage`, below the `storage` it made for the client
  *     `@google-cloud/storage` exports: `Identifier 'storage' has already been declared`.
- *   - A sample that wires an option key the store refuses.
+ *   - A sample that wires an option key the store, or the backend it builds, refuses.
  *
  * Both render fine, lint fine, and are invisible to the link and export-sync checks, which look at prose and
  * symbol names rather than at whether the code would run.
@@ -181,6 +185,40 @@ describe('documentation code samples', () => {
       }
     }
     expect(offenders).toEqual([]);
+  });
+
+  // The three cloud backends refuse a key they do not take, as the store does, so a sample that passes one throws
+  // on its first line. The keys come from each backend's own table, which its constructor checks against. The
+  // driver classes take other keys (`S3StorageDriver`'s `partBytes`), and `new S3StorageDriver(` is not read here.
+  const BACKEND_KEYS = {
+    S3Storage: S3_STORAGE_OPTION_KEYS,
+    GcsStorage: GCS_STORAGE_OPTION_KEYS,
+    AzureBlobStorage: AZURE_BLOB_STORAGE_OPTION_KEYS,
+  } as const;
+
+  it('passes each cloud backend only the option keys it takes', () => {
+    const offenders: string[] = [];
+    for (const fence of allFences) {
+      for (const [name, keys] of Object.entries(BACKEND_KEYS)) {
+        for (const { line, key } of unknownConstructorKeys(fence.code, name, keys)) {
+          offenders.push(
+            `${fence.file}:${fence.line + line - 1} — passes \`${key}\` to ${name}, which does not take it`,
+          );
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('reads a backend sample the way the backend does, and not a driver class', () => {
+    const keys = (code: string): string[] =>
+      unknownConstructorKeys(code, 'S3Storage', S3_STORAGE_OPTION_KEYS).map((k) => k.key);
+    expect(keys("new S3Storage({ bucket: 'b', prefix: 'p', client, region: 'r' })")).toEqual([]);
+    expect(keys("new S3Storage({ bucket: 'b', partBytes: 1 << 26 })")).toEqual(['partBytes']);
+    expect(keys("new S3StorageDriver({ client, bucket: 'b', partBytes: 1 << 26 })")).toEqual([]);
+    expect(keys("new S3Storage({ ...where, bucket: 'b' }) // a comment naming storage: x")).toEqual(
+      [],
+    );
   });
 
   it("reports the line of the file that each sample's code starts on", () => {
