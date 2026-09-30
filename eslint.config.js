@@ -91,6 +91,23 @@ export default tseslint.config(
             'core/ reaches no ambient global through the global object — take time, randomness and I/O through injected seams and driver ports.',
         },
       ],
+      // The global object also has routes that name nothing: `(0, eval)('this')` and `Function('return this')()`
+      // both return it, so the code-from-string constructors are refused, direct and indirect.
+      'no-eval': ['error', { allowIndirect: false }],
+      'no-new-func': 'error',
+      'no-implied-eval': 'error',
+      'no-restricted-syntax': [
+        'error',
+        // A dynamic `import()` is an import the `no-restricted-imports` patterns below never see, so
+        // `import('node:fs')` would pass them. core/ has no legitimate one: it does no I/O and loads no module
+        // at run time, so every form is refused, a literal source and a computed one alike, rather than
+        // copying the pattern lists into a second rule that could drift from them.
+        {
+          selector: 'ImportExpression',
+          message:
+            'core/ has no dynamic import() — it loads nothing at run time, and the no-restricted-imports patterns cannot see one. Import statically, or take the dependency through an injected seam.',
+        },
+      ],
       'no-restricted-properties': [
         'error',
         {

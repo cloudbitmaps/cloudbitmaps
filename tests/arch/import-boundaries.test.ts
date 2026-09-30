@@ -309,6 +309,59 @@ describe('architecture: core/ reaches no ambient I/O or randomness (eslint no-re
     expect(await globalErrors(CORE, 'export const p = global.fetch;')).toHaveLength(1);
   });
 
+  // `(0, eval)('this')` and `Function('return this')()` return the global object without naming it, so the ban
+  // on its names alone leaves them open. Each rule is asserted on its own, so removing one fails its case.
+  it('core/ builds no code from a string: eval, direct or indirect', async () => {
+    const evals = (code: string) => ruleErrors('no-eval', CORE, code);
+    expect(await evals("export const a = eval('1');")).toHaveLength(1);
+    expect(await evals("export const a = (0, eval)('this');")).toHaveLength(1);
+  });
+
+  it('core/ builds no code from a string: the Function constructor', async () => {
+    const funcs = (code: string) => ruleErrors('no-new-func', CORE, code);
+    expect(await funcs("export const a = Function('return this')();")).toHaveLength(1);
+    expect(await funcs("export const a = new Function('return this')();")).toHaveLength(1);
+  });
+
+  it('core/ passes no string to a timer-like function to be run as code', async () => {
+    const implied = (code: string) => ruleErrors('no-implied-eval', CORE, code);
+    expect(
+      await implied("export const a = Reflect.apply(Function, null, ['return this']);"),
+    ).toEqual([]);
+    expect(await implied("export const a = globalThis.setTimeout('x', 1);")).toHaveLength(1);
+  });
+
+  it('core/ has no dynamic import(), whatever its source', async () => {
+    const dyn = (code: string) => ruleErrors('no-restricted-syntax', CORE, code);
+    expect(await dyn("export const a = import('node:fs');")).toHaveLength(1);
+    expect(await dyn("export const a = import('@aws-sdk/client-s3');")).toHaveLength(1);
+    expect(await dyn("export const a = import('../drivers/local-fs');")).toHaveLength(1);
+    expect(await dyn('export const a = (m: string) => import(m);')).toHaveLength(1);
+  });
+
+  it('the code-from-string and dynamic-import rules leave their look-alikes and other places alone', async () => {
+    const all = async (relPath: string, code: string) => [
+      ...(await ruleErrors('no-eval', relPath, code)),
+      ...(await ruleErrors('no-new-func', relPath, code)),
+      ...(await ruleErrors('no-implied-eval', relPath, code)),
+      ...(await ruleErrors('no-restricted-syntax', relPath, code)),
+    ];
+    // A method named `eval`, a `Function` type, a static import and a type-only `import()` are not the thing.
+    expect(
+      await all(
+        CORE,
+        "import type { Clock } from './clock';\nexport const o = { eval: (s: string) => s };\nexport const a = o.eval('x');\nexport type F = Function;\nexport type C = typeof import('./clock');\nexport type K = Clock;",
+      ),
+    ).toEqual([]);
+    // Outside core/ the rules do not apply.
+    expect(
+      await all(
+        'packages/core/src/drivers/some-driver.ts',
+        "export const a = import('node:fs');\nexport const b = Function('return this')();",
+      ),
+    ).toEqual([]);
+  });
+
   it('the look-alikes core/ really writes are untouched', async () => {
     // The writers take a `CrbmCrypto` and bind it to a local named `crypto`: a local is not the global.
     expect(

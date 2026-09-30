@@ -24,7 +24,8 @@ Every change must pass these locally, and CI runs each of them on every pull req
 - `pnpm lint:arch` runs `tests/arch`: the import graph is acyclic; every import-boundary rule in
   `eslint.config.js` (the storage-agnostic-core rule and its siblings, the **runtime**-agnostic
   `core-no-node-builtins` among them) is proven to fire on a planted violation, and so is `core/`'s ban on the
-  `fetch` and `crypto` globals and on the global object (`globalThis`, `self`, `window`, `global`); and the
+  `fetch` and `crypto` globals, on the global object (`globalThis`, `self`, `window`, `global`), on `eval` and the
+  `Function` constructor, and on dynamic `import()`; and the
   detectors the build, `pnpm smoke` and the Node-floor gate rely on are fired at planted inputs in both
   directions.
 - `pnpm smoke` loads **every** built package through its own `exports` map under both ESM and `require()` —
@@ -70,9 +71,10 @@ core or the flavor names a cloud SDK, or if `core/` reaches a driver impl, and `
 entry outside a driver package names an SDK or a driver package. `pnpm lint:arch` proves each of those lint rules
 fires.
 
-`core/` is also **runtime**-agnostic: `pnpm lint` fails on any `node:*` import under `packages/core/src/core`, and
+`core/` is also **runtime**-agnostic: `pnpm lint` fails on any `node:*` import under `packages/core/src/core` (a dynamic `import()` is refused there
+whatever its source), and
 on the `fetch` and `crypto` globals there, and on the global object that would reach them (`globalThis`, `self`,
-`window`, `global`), so the seam stays loadable where no node builtin exists (a V8 isolate — Workers, Deno Deploy). Randomness, time and I/O reach it through injected seams — `Clock`, `Rng`, `BlobReader`, the
+`window`, `global`) and on `eval` and the `Function` constructor, so the seam stays loadable where no node builtin exists (a V8 isolate — Workers, Deno Deploy). Randomness, time and I/O reach it through injected seams — `Clock`, `Rng`, `BlobReader`, the
 driver ports — which is what makes that enforceable rather than aspirational. **Anything needing a builtin belongs
 in a driver** — either one of the driver packages, or `packages/core/src/drivers/` where the SDK-free memory and local-filesystem drivers live.
 
