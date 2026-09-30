@@ -4,7 +4,7 @@ import {
   ValidationError,
   eraseNamespace,
 } from '@/index';
-import { DEFAULT_MAX_SCAN_SEGMENTS } from '@/core/registry-scan';
+import { DEFAULT_MAX_SCAN_SEGMENTS, drainRegistry } from '@/core/registry-scan';
 import type { IRegistryDriver, RegistryRecord } from '@/core/ports';
 
 // `eraseNamespace` lists its namespace resident and then destroys each segment, irreversibly. Its listing is held
@@ -84,7 +84,7 @@ describe('eraseNamespace bounds its registry scan', () => {
     expect(reg.touched()).toBe(0);
   });
 
-  it('words the refusal like the other scans', async () => {
+  it('words the refusal like the other scans, minus the advice to narrow', async () => {
     const err = (await eraseNamespace(
       NS,
       { registry: await seeded(3) },
@@ -92,7 +92,19 @@ describe('eraseNamespace bounds its registry scan', () => {
     ).catch((e: unknown) => e)) as Error;
     expect(err).toBeInstanceOf(BudgetExceededError);
     expect(err.message).toContain('eraseNamespace would enumerate more than 2 segments');
-    expect(err.message).toContain('raise `maxScanSegments`');
+    expect(err.message).toContain('Raise `maxScanSegments` if the namespace really is that large');
+    // It is already one namespace, so the refusal must not tell the caller to narrow it.
+    expect(err.message).not.toMatch(/narrow/i);
+  });
+
+  it('keeps the advice to narrow on the scans that can', async () => {
+    const err = (await drainRegistry(await seeded(3), { maxScanSegments: 2, op: 'scan' }).catch(
+      (e: unknown) => e,
+    )) as Error;
+    expect(err).toBeInstanceOf(BudgetExceededError);
+    expect(err.message).toContain(
+      'Narrow it with `namespace`, or raise `maxScanSegments` if the fleet',
+    );
   });
 
   it('erases a namespace exactly at the ceiling, and a raised ceiling admits what a lower one refused', async () => {

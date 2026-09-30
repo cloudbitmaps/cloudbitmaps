@@ -130,6 +130,7 @@ export async function eraseNamespace(
     namespace,
     maxScanSegments: options.maxScanSegments ?? DEFAULT_MAX_SCAN_SEGMENTS,
     op: 'eraseNamespace',
+    narrowable: false, // already one namespace: the only remedy is a higher ceiling
   });
   const refs: SegmentRef[] = rows.map((rec) => ({
     namespace: rec.namespace,

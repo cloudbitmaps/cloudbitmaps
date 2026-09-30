@@ -202,9 +202,9 @@ change what `estimateCost()` compares with and what a `CostReport` carries.
   each key once.
 - **`eraseNamespace` throws `BudgetExceededError` for a namespace of more than 250,000 segments**, where it erased
   it. It listed the whole namespace with no bound, holding every row resident, when every other fleet scan stops at
-  a ceiling. It now holds its listing to `DEFAULT_MAX_SCAN_SEGMENTS` (250,000), and the error reads as the other
-  scans' does: raise the new `maxScanSegments` option on the call when the namespace really is that large and the
-  memory is there. The call lists the whole namespace before it destroys anything, so the refusal comes first and
+  a ceiling. It now holds its listing to `DEFAULT_MAX_SCAN_SEGMENTS` (250,000), and the error tells you to raise
+  the new `maxScanSegments` option on the call when the namespace really is that large and the memory is there,
+  without the other scans' advice to narrow with a `namespace`, since the call already is one. The call lists the whole namespace before it destroys anything, so the refusal comes first and
   nothing is erased. A `maxScanSegments` that is not a finite number of at least 1 throws `ValidationError`, also
   before anything is destroyed. `eraseNamespace` is a free function over a registry, so no store method forwards
   the option.
