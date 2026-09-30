@@ -39,7 +39,7 @@ change, and the tag goes on the commit that pull request makes on `main`.
 
 1. **Land everything on `main`** with the gate green, each change's entry under `## [Unreleased]` in
    `CHANGELOG.md`, and a [changeset](#the-version-bump) per change that needs one.
-2. **On a release branch, bump every version with one command** — `pnpm version:packages`. It runs
+2. **On a `chore/release-<version>` branch, bump every version with one command** — `pnpm version:packages`. It runs
    `changeset version`, which moves all five `packages/*/package.json` together and deletes the changesets it
    consumed, then syncs the `VERSION` constant and refreshes the lockfile. They must all match the tag exactly;
    the workflow globs `packages/*/package.json` and refuses the release if any one disagrees, so a missed
@@ -50,8 +50,10 @@ change, and the tag goes on the commit that pull request makes on `main`.
    one, before anything is published. Then update every version the site, the READMEs and `docs/` state:
    `tests/docs/version-claims.test.ts` names each one that still disagrees with the manifests.
 4. **Open the pull request, and squash-merge it** once the gate is green and it is approved.
-5. **Tag the merge commit and push the tag**, once its CI run on `main` is green:
-   `git switch main && git pull && git tag v<version> && git push origin v<version>`.
+5. **Tag the merge commit and push the tag**, once its CI run on `main` is green. Tag it by SHA, so a pull
+   request that lands after it cannot take the tag instead: `gh pr view <number> --json mergeCommit -q
+   .mergeCommit.oid` prints it, then `git fetch origin && git tag v<version> <sha> && git push origin
+   v<version>`.
 6. **Approve the deployment** — the run waits on the `release` environment before its job starts. Open the
    run → _Review deployments_ → approve `release`.
 7. The job re-runs the gate and the audit, checks the tag and that no package is private, probes the registry,
@@ -150,7 +152,7 @@ announce a version that never reached npm;
 [`tests/ci/release-workflow.test.ts`](tests/ci/release-workflow.test.ts) asserts this ordering.)
 
 A second job, `github-release`, runs only after a tag push whose publish job succeeded, and creates the GitHub
-Release with the same changelog section as its notes. It holds the one write permission in the file, which the
+Release with the same changelog section as its notes. It holds the file's one `contents: write`, which the
 publish job does not have.
 
 The workflow also declares `concurrency: cancel-in-progress: false` — the opposite of CI. Cancelling a build is
@@ -168,8 +170,10 @@ _Actions → Release → Run workflow_ starts the same job by hand, on the ref y
 which defaults to `true`. It waits for the same approval as a tag push.
 
 - **A dry run** (the default) re-runs the gate and the tarball leak scan, then ends with
-  `pnpm -r publish --dry-run`, which packs every package and uploads nothing. It is how to exercise the pipeline
-  without cutting a version. It skips the still-private check and the registry probes.
+  `pnpm -r publish --dry-run`, which uploads nothing. Like a real publish, it leaves out every package whose
+  version is already on the registry, so on a ref whose manifests carry the released version it packs nothing and
+  still exits 0: it exercises the publish step only on a version not yet released, such as `main` after the
+  version-bump pull request merges and before the tag. It skips the still-private check and the registry probes.
 - **`dryRun: false` publishes for real.** It runs the gate, the still-private check, the registry probes and the
   tarball leak scan, then publishes whatever version the manifests carry.
 - **On a branch ref, either one skips the tag check and the release-notes check**, because both key on a tag
@@ -218,7 +222,9 @@ so the hardening below is part of first-publishing one, not an afterthought:
 **GitHub:**
 
 - A **`release` environment** with the maintainer as a **required reviewer** — that reviewer is the approval
-  gate; without it the publish job runs unpaused. Restrict deployments to protected branches and tags.
+  gate; without it the publish job runs unpaused. Limit its deployment branches and tags to `main` and the
+  `v*.*.*` tags (_Selected branches and tags_), so a tag push can deploy and a manual run can start from `main` or
+  a tag, and from nothing else.
 - `main` **branch-protected**: PRs required, force-pushes and deletions blocked.
 - Account 2FA.
 
@@ -232,9 +238,9 @@ a family whose other packages are already on npm**, and publishes only the names
 > **Do this before tagging, not after.** The release pipeline is tokenless: it authenticates by OIDC against
 > a per-package Trusted Publisher, which a brand-new name does not have. `pnpm -r publish` walks the
 > workspace topologically and stops at the first failure, so tagging with an unbootstrapped name in the tree
-> publishes `@cloudbitmaps/core` at the new version — immutably, outside a 72-hour window — and then dies
-> before the flagship. The family ships in lockstep; that leaves one package of five on the registry with no
-> way back. `release.yml`'s registry probe refuses such a run before its publish step, once the run is approved
+> publishes `@cloudbitmaps/core` at the new version, and any package pnpm reaches before the new one — immutably,
+> outside a 72-hour window — and then dies there. The family ships in lockstep; that leaves part of it on the
+> registry with no way back. `release.yml`'s registry probe refuses such a run before its publish step, once the run is approved
 > and the gate has passed, but the refusal is a backstop for this procedure, not a replacement for it.
 
 A manual publish carries **no provenance attestation** — provenance attests to a *workflow* identity, and a
@@ -242,9 +248,10 @@ laptop has none. So the bootstrap creates the name at a **throwaway prerelease**
 ships through the gated, attested pipeline. `pnpm release:bootstrap` derives that prerelease from the family
 version (`0.10.0` → `0.10.0-rc.0`), publishes under `--tag rc`, and puts the manifests back afterwards.
 
-That indirection is not fastidiousness. Publishing the real version by hand would burn it: `pnpm publish`
-**silently skips** a version already on the registry and exits 0, so the pipeline would then skip that
-package on the real tag and report a green release having published nothing for it.
+That indirection is not fastidiousness. Publishing the real version by hand would burn it: the pipeline's
+registry probe then refuses the real tag, because that version is already on the registry — which it checks
+because `pnpm publish` would otherwise **silently skip** the package and exit 0 — so the family has to move to the
+next version.
 
 > [!IMPORTANT]
 > **`--tag rc` is not optional, and it is also not sufficient.** `npm publish` defaults `--tag` to `latest`
@@ -295,13 +302,16 @@ npm 2FA** — automation tokens are disallowed by design, so there is no unatten
 
 Run it on the `main` commit the version bump made — the [TL;DR](#tldr--cutting-a-release)'s steps 1–4 still
 apply. This path runs only what you type, so it types the checks the workflow runs around the publish: the
-audit, the release-notes check and the tarball leak scan, as well as the gate. Set `LEAK_SCAN_EXTRA` to the
+gate, the audit, the check that every manifest carries `<version>` and none is private, the release-notes check
+and the tarball leak scan. Set `LEAK_SCAN_EXTRA` to the
 needle list, as the workflow's secret does, for the scan's strict mode.
 
 ```sh
 pnpm install --frozen-lockfile
 pnpm lint && pnpm lint:arch && pnpm format:check && pnpm typecheck && pnpm test && pnpm build && pnpm smoke
 node scripts/audit.cjs                                      # the dependency audit
+node -e 'for (const d of require("fs").readdirSync("packages")) { const m = require(`./packages/${d}/package.json`);
+  if (m.version !== process.argv[1] || m.private) throw new Error(`${m.name}@${m.version}`); }' <version>
 node scripts/changelog-section.cjs v<version> > /dev/null   # the release notes exist
 pnpm leak-scan:tarballs                                     # packs each package and scans the tarball
 pnpm -r --filter './packages/**' publish --access public
@@ -310,7 +320,7 @@ node scripts/changelog-section.cjs v<version> > notes.md
 gh release create v<version> --title v<version> --notes-file notes.md --verify-tag
 ```
 
-It has **none of the registry probes**. `pnpm publish` skips a version already on the registry and exits 0, so
+It has **none of the registry probes**, the one refusal left out. `pnpm publish` skips a version already on the registry and exits 0, so
 check first that no package is on the registry at `<version>` (`npm view <name>@<version> version` fails with a
 404 for each). Pushing the tag starts `release.yml`, which waits for approval: reject that deployment, since
 every package is on the registry by then and the run's probe would refuse it anyway.
@@ -328,11 +338,11 @@ automated flow. This exists so a broken pipeline never blocks a critical securit
 | `npm error unable to authenticate` on a fresh package | The Trusted Publisher binding is missing or its repo/workflow/environment don't match exactly. |
 | The run never pauses for approval | The `release` environment has no required reviewer — the gate is the reviewer, not the environment. |
 | Provenance missing on the published package | `id-token: write` was dropped, or the job ran on a self-hosted runner. Provenance needs a GitHub-hosted runner's OIDC identity. |
-| A publish failed PART-WAY through the family | Some packages are on the registry at this version, immutably, and the rest are not. **Do not re-run the workflow** — it refuses, correctly, because those packages' version now exists. Nor can the stragglers ship alone at the next patch: the workflow refuses a tag any manifest disagrees with, and the `fixed` group moves all five together. Recovery is a **patch release of the whole family**: a patch changeset, then the [TL;DR](#tldr--cutting-a-release) at `X.Y.Z+1`, with a changelog section that says why. Every package publishes at the new version, and the partial one stays on the registry beside it. Expensive and untidy; not fatal. |
+| A publish failed PART-WAY through the family | Some packages are on the registry at this version, immutably, and the rest are not. **Do not re-run the workflow** — it refuses, correctly, because those packages' version now exists. Nor can the stragglers ship alone at the next patch: the workflow refuses a tag any manifest disagrees with, and the `fixed` group moves all five together. Recovery is a **patch release of the whole family**: fix what failed first (the log names the package), then a patch changeset and the [TL;DR](#tldr--cutting-a-release) at `X.Y.Z+1`, with a changelog section that says why. Every package publishes at the new version, and the partial one stays on the registry beside it. Expensive and untidy; not fatal. |
 | `gh release create` failed after a successful publish | Use GitHub's **"Re-run failed jobs"**, which skips the already-green publish job. A full re-run cannot work: it stops at the already-on-the-registry guard, by design. |
-| `npm i @cloudbitmaps/s3` fails to resolve `@cloudbitmaps/core@^0.10.0` | **Expected, and it is why the bootstrap window is time-sensitive.** The bootstrap rewrites only the MISSING packages' versions to `-rc.0`; `packages/core/package.json` keeps the real version, so pnpm rewrites the rc tarballs' `workspace:^` dependency to `^0.10.0` — a version the registry will not have until the real release. The rc tarballs exist to create the NAME so a Trusted Publisher can bind to it; they are not installable and are not meant to be. Ship the real version promptly. |
+| `npm i @cloudbitmaps/s3` fails to resolve `@cloudbitmaps/core@^0.10.0` | **Expected, and it is why the bootstrap window is time-sensitive.** The bootstrap rewrites only the MISSING packages' versions to `-rc.0`; `packages/core/package.json` keeps the real version, so pnpm rewrites the rc tarballs' `workspace:^` dependency to `^0.10.0` — a version the registry does not have until the real release, when the bootstrap runs after the version bump. (When core's version is already on the registry, the rc tarballs resolve.) The rc tarballs exist to create the NAME so a Trusted Publisher can bind to it; they are not installable and are not meant to be. Ship the real version promptly. |
 | `npm i @cloudbitmaps/roaring` serves a prerelease | `latest` landed on the bootstrap version — either because `--tag` was omitted (`npm publish` defaults to `latest` and is not semver-aware) or because the registry assigned it to the package's first version anyway. **Do not chase `npm dist-tag rm … latest`** — npm refuses to remove `latest`. Ship the real release; it claims `latest` and closes the window. |
-| `EUSAGE: Automatic provenance generation not supported for provider: null` | Something is asking for provenance outside CI. Provenance needs a workflow's OIDC identity, so it is opt-in at the call site (`--provenance`, in `release.yml` only) and deliberately **not** set via `publishConfig.provenance`, which cannot be overridden from the CLI or the environment and made every manual publish impossible. |
+| `EUSAGE: Automatic provenance generation not supported for provider: null` | Something is asking for provenance outside CI. Provenance needs a workflow's OIDC identity, so it is opt-in at the call site (`--provenance`, in `release.yml` only) and deliberately **not** set via `publishConfig.provenance`, which cannot be overridden from the CLI or the environment and would make every manual publish impossible. |
 | `bootstrap-publish: every package already exists on the registry` | Working as intended — there is nothing to create. Ship the version by tag through the pipeline instead. |
 | `<pkg> does not exist on the registry` during a release | A package was added to the workspace without bootstrapping its name. The tokenless pipeline cannot create a name. Run `pnpm release:bootstrap`, bind the Trusted Publisher, then re-tag. The guard fired *before* anything was published, which is the point. |
 | `<pkg>@<version> is already on the registry` during a release | That version was published before — most likely by hand. pnpm would skip it silently and the run would go green having published nothing for it. Bump the version. |

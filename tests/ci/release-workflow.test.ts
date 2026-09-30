@@ -85,7 +85,7 @@ describe('release workflow shape', () => {
 
   it('keeps the human approval gate wired to the publish job', () => {
     // `environment: release` is the single line that makes a publish require a reviewer, and RELEASING.md
-    // calls it "the last point at which a release can be stopped". Deleting it fails SILENTLY: every other
+    // says of that approval that "nothing reaches npm before it". Deleting it fails SILENTLY: every other
     // test stays green, CI is green, and the next tag publishes with no prompt — and a run that never
     // pauses is indistinguishable from one whose reviewer approved quickly. Worse than a red job.
     expect(job('publish').environment).toBe('release');
