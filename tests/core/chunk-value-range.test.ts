@@ -1,6 +1,7 @@
 import { RoaringBitmap32, SerializationFormat } from 'roaring';
 import {
   CloudRoaring,
+  createBackend,
   IntegrityError,
   MemoryStorageChunkSource,
   MemoryStorageDriver,
@@ -194,5 +195,63 @@ describe('chunk payload structure', () => {
       eraseIdFromSegment(SEG, joinId(0, 1), { storage, registry, codec: roaringCodec }),
     ).rejects.toBeInstanceOf(IntegrityError);
     expect((await registry.get(SEG))!.currentGen).toBe(0);
+  });
+  /** A real `.crbm` generation, published, whose chunk 1 holds `crafted` under valid checksums. */
+  async function storeWithForgedGeneration(crafted: Uint8Array): Promise<CloudRoaring> {
+    const storage = new MemoryStorageDriver();
+    const registry = new MemoryRegistryDriver();
+    const SEG = { segment: 's' };
+    const forged = { isEmpty: false, size: 2, serialize: () => crafted } as unknown as CodecBitmap;
+    await writeCrbmGeneration(storage, { ...SEG, generation: 0 }, [
+      { chunkKey: 0, bitmap: SafeBitmap.fromValues([1, 2]) },
+      { chunkKey: 1, bitmap: forged },
+    ]);
+    await publishGeneration(registry, { ...SEG, generation: 0 });
+    return new CloudRoaring({ storage: createBackend({ storage, registry }), retry: false });
+  }
+
+  it('refuses it on a pinned read and in an export, the two paths that do not go through a plain read', async () => {
+    const store = await storeWithForgedGeneration(craftPortable(OUT_OF_ORDER));
+    const pinned = await store.segment('s').pin();
+    await expect(pinned.has(joinId(1, 7))).rejects.toBeInstanceOf(IntegrityError);
+    await expect(collect(pinned.iterate())).rejects.toBeInstanceOf(IntegrityError);
+
+    for (const format of ['roaring', 'ndjson'] as const) {
+      const opened: string[] = [];
+      const aborted: string[] = [];
+      const manifest = await store.exportSegments(
+        {
+          open: (ref) => {
+            opened.push(ref.segment);
+            return {
+              write: () => undefined,
+              close: () => undefined,
+              abort: () => void aborted.push(ref.segment),
+            };
+          },
+        },
+        { format },
+      );
+      // The segment is recorded as failed, and no file is left standing for it.
+      expect(manifest.failed.map((f) => f.segment)).toEqual(['s']);
+      expect(manifest.segments).toEqual([]);
+      expect(aborted).toEqual(opened);
+    }
+  });
+
+  it('checks a chunk once per fetch: not per id, and not again on a cache hit', async () => {
+    const storage = new MemoryStorageChunkSource();
+    storage.seed({ segment: 's', chunkKey: 0 }, forgeChunk([1, 2, 3, 4]));
+    const store = new CloudRoaring({ storage });
+    const seg = store.segment('s');
+    const spy = vi.spyOn(SafeBitmap, 'safeDeserialize');
+    try {
+      for (const id of [1, 2, 3, 4, 5]) await seg.has(id);
+      await seg.count();
+      await collect(seg.iterate());
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

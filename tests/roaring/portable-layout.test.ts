@@ -57,6 +57,11 @@ const HOSTILE: readonly Hostile[] = [
     containers: [{ key: 0, kind: 'array', values: [9, 3] }],
   },
   {
+    name: 'an array whose odd last value repeats the one before it',
+    consequence: 'size says 3 for 2 values, and iteration yields 2 twice',
+    containers: [{ key: 0, kind: 'array', values: [1, 2, 2] }],
+  },
+  {
     name: 'array values out of order from one pair of values to the next',
     consequence: 'iteration yields 1, 5, 3, 7, and has(3) answers false',
     containers: [{ key: 0, kind: 'array', values: [1, 5, 3, 7] }],
@@ -120,6 +125,12 @@ const HOSTILE: readonly Hostile[] = [
     containers: [{ key: 0, kind: 'run', runs: [[0xfff0, 0x20]] }],
   },
   {
+    name: 'a run that ends one value past the end of its container',
+    consequence:
+      'maximum() wraps to 0, so the 16-bit range check passes, and iteration yields 65535 and then 65536',
+    containers: [{ key: 0, kind: 'run', runs: [[0xffff, 1]] }],
+  },
+  {
     name: 'a run container with no runs',
     consequence: 'iterating it, or intersecting or unioning with it, crashes the process (SIGSEGV)',
     containers: [{ key: 0, kind: 'run', runs: [], cardinality: 1 }],
@@ -153,6 +164,16 @@ const HOSTILE: readonly Hostile[] = [
     // 4-byte descriptive entries and two 4-byte offsets.
     offsets: [24, 24],
   },
+  {
+    name: 'an offset header that points past where its container starts',
+    consequence:
+      'the native library ignores offsets and reads 65538; the reader follows them off the end of the buffer',
+    containers: [
+      { key: 0, kind: 'array', values: [1] },
+      { key: 1, kind: 'array', values: [2] },
+    ],
+    offsets: [1_000, 1_000],
+  },
 ];
 
 describe('the portable-roaring structural check', () => {
@@ -167,6 +188,34 @@ describe('the portable-roaring structural check', () => {
     });
 
     it('in the pure-JS reader too, so the two cannot disagree', () => {
+      expect(() => decodePortableRoaring(bytes)).toThrow(IntegrityError);
+    });
+  });
+
+  describe.each([
+    [
+      'a run container whose run count is cut off',
+      // The header ends where the container starts, so there is no run count to read.
+      craftPortable([{ key: 0, kind: 'run', runs: [[1, 1]] }]).slice(0, 4 + 1 + 4),
+    ],
+    [
+      'a run-cookie header cut off inside its first descriptive entry',
+      craftPortable([
+        { key: 0, kind: 'run', runs: [[1, 1]] },
+        { key: 1, kind: 'array', values: [2] },
+        { key: 2, kind: 'array', values: [3] },
+      ]).slice(0, 4 + 1 + 3),
+    ],
+    [
+      'a bitset cut off one byte short',
+      craftPortable([{ key: 0, kind: 'bitset', bits: allBits }]).slice(0, -1),
+    ],
+  ])('refuses %s with a typed error, never a RangeError', (_name, bytes) => {
+    it('on the native path', () => {
+      expect(() => SafeBitmap.safeDeserialize(bytes, CAP)).toThrow(IntegrityError);
+    });
+
+    it('in the pure-JS reader', () => {
       expect(() => decodePortableRoaring(bytes)).toThrow(IntegrityError);
     });
   });

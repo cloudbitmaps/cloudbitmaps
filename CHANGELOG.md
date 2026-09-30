@@ -357,8 +357,8 @@ These two change what `estimateCost()` reports:
 - **A chunk payload listing its roaring containers out of order read as ids the segment does not hold.** The 16-bit
   range check on a chunk reads `maximum()`, which roaring answers from the last container, and the native deserializer
   accepts containers in any order. So a payload with container 1 before container 0 passed the check, and `iterate`
-  and every combine yielded container 1's values masked into the chunk: ids `has()` denied, counted by `count()`, and
-  missing from a range read over the same ids. The native deserializer bounds its reads and checks nothing else —
+  and every combine yielded container 1's values masked into the chunk: ids `has()` denied, and missing
+  from a range read over the same ids. The native deserializer bounds its reads and checks nothing else —
   CRoaring leaves the rest to its caller, and `roaring` never does it — so the same gap took more shapes: values or
   runs out of order, listed twice or overlapping, which `has()` denied and `size` counted twice; a run past the end of
   its container, which wrapped `maximum()` past the range check the same way; a run container with no runs, which
