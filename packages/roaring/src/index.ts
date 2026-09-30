@@ -38,6 +38,7 @@ import {
   ValidationError,
   WriteConflictError,
   MIN_EXPIRES_AT_MS,
+  checkBudget,
   collectWithinBudget,
   excludingReservedRows,
   dropSegment,
@@ -99,6 +100,7 @@ import type {
   SegmentRef,
   Workload,
 } from '@cloudbitmaps/core';
+import { OpenChargingStorage } from './open-charging-storage';
 // This package's reason to exist: the roaring codec the facade injects into the codec-agnostic engine.
 import { listGenerations, rollbackSegment } from '@cloudbitmaps/core';
 import { listSegments, segmentExists } from '@cloudbitmaps/core';
@@ -210,7 +212,8 @@ export interface CloudRoaringOptions {
   /**
    * Per-op **denial-of-wallet** budget: the max backend requests a single
    * `count`/`iterate`/`intersect`/`union`/`andNot`/`subjectReport`/`eraseSubject` may fan out into before it's
-   * refused with {@link BudgetExceededError} — so one runaway op can't drive unbounded GET cost on a shared
+   * refused with {@link BudgetExceededError} (`eraseSubject` reports an over-budget segment in its ledger instead,
+   * see {@link CloudRoaring.eraseSubject}) — so one runaway op can't drive unbounded GET cost on a shared
    * backend. **On by default, generous** ({@link DEFAULT_BUDGET}: 1,000,000 requests — a normal op never hits it).
    * Tune with `{ maxRequests }`, override per op (on the combines / `subjectReport` / `eraseSubject`), or set
    * `false` to disable. The check is O(1) (before fan-out), so the hot path is untouched; per-request bytes are
@@ -1074,7 +1077,13 @@ export class CloudRoaring {
    * re-run searches every generation in the bucket, so it rewrites or collects what is left and usually reports
    * `erased: true`; {@link SubjectErasureEntry.note} says what else a re-run can report. Re-running is otherwise safe
    * and idempotent: a segment the id is no longer in is not listed. Admin-only path;
-   * `O(registered segments)`, no hot-path cost. Per-subject crypto-shred is infeasible (a subject's bit is
+   * `O(registered segments + superseded generations)`, no hot-path cost: a segment whose current generation lacks
+   * the id is searched generation by generation, one open for each other generation in its bucket, and with the
+   * keep-everything default of the `*Into` verbs that is one per generation the segment ever had. The per-op
+   * `budget` is charged one unit for each segment and one for each generation opened beyond the one its row names,
+   * so a fleet with long histories can exhaust it where the segment count alone would not. A segment that does is
+   * reported `erased: false` with an `error:` note, before it deletes anything, and the
+   * rest of the scan continues: the call itself does not throw for it. Per-subject crypto-shred is infeasible (a subject's bit is
    * co-mingled in a shared container), so this is the single-subject erasure route; whole-segment/tenant erasure
    * is `dropSegment` / the `destroySegment`/`eraseNamespace` free functions.
    */
@@ -1100,6 +1109,14 @@ export class CloudRoaring {
       budget,
       'eraseSubject',
     );
+    // The scan charged one unit a segment. A segment whose current generation lacks the id is searched generation by
+    // generation, and each open past the current one is charged too, to the same call-wide count. With no budget
+    // there is nothing to charge and the drivers are used as they are.
+    let opens = 0;
+    const charge = (): void => {
+      opens += 1;
+      checkBudget(budget, recs.length + opens, 'eraseSubject');
+    };
     // Bounded fan-out. Each segment is an independent generation, so rewriting distinct segments concurrently is
     // safe. Per-segment faults stay isolated INSIDE each task — one failure never aborts the ledger — and the
     // pool preserves input order, so the ledger stays deterministic.
@@ -1113,7 +1130,14 @@ export class CloudRoaring {
           // The rewrite does its own membership check against the CURRENT registry generation — not the
           // engine's cached view, which may lag a load by up to `cache.genTtlMs`. An Art. 17 erasure must never
           // skip a segment because a read cache hasn't caught up yet.
-          const result = await eraseIdFromSegment(ref, id, deps, { audit: options.audit });
+          const result = await eraseIdFromSegment(
+            ref,
+            id,
+            budget === null
+              ? deps
+              : { ...deps, storage: new OpenChargingStorage(deps.storage, rec.currentGen, charge) },
+            { audit: options.audit },
+          );
           if (result.reason === 'not-member' || result.reason === 'absent') return null;
           if (result.reason === 'no-generation') return null; // a row with no data yet holds no id
           if (result.reason === 'destroyed') return null;

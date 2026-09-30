@@ -9,9 +9,11 @@
  *
  * **What the count is.** For the read ops it is the number of Storage **chunk fetches** (`count`/`iterate`: one per
  * effective chunk; `intersect`: surviving keys × operands). For the admin scans it is the number of **segments
- * fanned out to** (`subjectReport`: one `has()` each; `eraseSubject`: one generation rewrite each) — i.e. it
- * bounds the *breadth* of the fan-out, not the request total of each segment's own rewrite. That's
- * the right lever for a runaway (a million-segment sweep); it is not a byte/request meter.
+ * fanned out to** (`subjectReport`: one `has()` each; `eraseSubject`: one per segment) — i.e. it bounds the
+ * *breadth* of the fan-out, not the request total of each segment's own rewrite. That's the right lever for a
+ * runaway (a million-segment sweep); it is not a byte/request meter. One addition: a segment `eraseSubject` has to
+ * search generation by generation is also charged one unit for each generation it opens beyond the current one,
+ * since that is O(generations) work the segment count alone does not show.
  */
 
 import { BudgetExceededError, ValidationError } from './errors';

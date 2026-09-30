@@ -1287,7 +1287,10 @@ For a worked example that routes metrics, cost, and audit to real dashboards, se
 Two admin helpers answer "what do you hold about this person?" and "forget this person everywhere." Both scan
 the **registered** segments (no reverse index — nothing taxes the hot path), so they're complete over what's
 registered — every loaded segment has a row, so build the store on the backend the loads used — and cost
-`O(registered segments)` per call. The scan fans out at a **bounded `concurrency`** (default 8; pass `{ concurrency }`) —
+`O(registered segments)` per call for `subjectReport`. `eraseSubject` costs more: a segment whose current
+generation lacks the id is searched generation by generation, one open for each other generation in its bucket, so
+it is `O(registered segments + superseded generations)`, and a fleet that keeps long histories pays for every one
+(the budget, §15, is charged for them). The scan fans out at a **bounded `concurrency`** (default 8; pass `{ concurrency }`) —
 parallel enough to stay quick over a large fleet, bounded so it can't stampede your backend; `eraseSubject`
 isolates a per-segment fault so one bad segment never aborts the ledger.
 
@@ -1853,7 +1856,8 @@ yours".
 On a shared/serverless backend, one pathological call — an `intersect` over two enormous barely-overlapping
 segments, a wide `union`, or a fleet-wide `eraseSubject` — can quietly run up a large bill (a "denial-of-wallet").
 CloudBitmaps caps the **number of backend calls a single operation may fan out to** (Storage chunk fetches, or
-segments scanned) and refuses (throws `BudgetExceededError`) rather than running away:
+segments scanned, and for `eraseSubject` the generations it opens as well) and refuses (throws
+`BudgetExceededError`) rather than running away:
 
 ```ts
 import { CloudRoaring, BudgetExceededError } from '@cloudbitmaps/roaring';
@@ -1875,7 +1879,15 @@ try {
 ```
 
 The store-level `budget` guards `count` / `iterate` / `intersect` / `union` / `andNot` / `subjectReport` /
-`eraseSubject` — the operations whose cost scales with data size. The ops that take options — the combines,
+`eraseSubject` — the operations whose cost scales with data size. `eraseSubject` charges one unit per registered
+segment and one for each generation it opens beyond the one the segment's row names: a segment whose current
+generation lacks the id is searched in every generation still in its bucket, which with the keep-everything default
+of the `*Into` verbs is one per generation it ever had. Its own rewrite of a segment that holds the id is not
+charged beyond the segment's unit. Only the enumeration can refuse the whole call: a segment that runs the budget
+out during the scan is listed in the ledger with `erased: false` and an `error:` note, before it deletes
+anything (the one refusal that can come after a rewrite is the last check for a generation a concurrent writer left
+behind, and it carries the same note), and the scan carries on (a member segment still erases, since it opens nothing more), so the
+ledger of the erasures that did happen is never lost. Re-run it with a higher `budget` to finish those segments. The ops that take options — the combines,
 `subjectReport`, `eraseSubject` — also accept a **per-op override** (a partial override inherits the store ceiling;
 it never resets it to the generous default):
 

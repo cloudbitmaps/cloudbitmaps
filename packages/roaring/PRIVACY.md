@@ -177,7 +177,12 @@ objects — once no copy of the segment's registry row still holds its wrapped k
 is destroyed (below). And a
 **materialised segment** (`intersectInto` / `unionInto` / `andNotInto`) is a point-in-time snapshot of its
 inputs: erasing a subject from a source does not touch a destination computed earlier — which is exactly why
-`eraseSubject` scans *every* registered segment, destinations included, rather than erasing per source.
+`eraseSubject` scans *every* registered segment, destinations included, rather than erasing per source. What that
+costs is one unit of the per-op `budget` for each segment, and one more for each generation it opens in a segment
+whose current generation lacks the id (it searches every generation left in the bucket, since a retained one can
+still hold the bit). A segment that runs the budget out is listed `erased: false` with an `error:` note, with
+nothing of it deleted before the refusal (a segment that holds the id is rewritten first, and the last check
+after it can be the one refused, which the same note reports); re-run with a higher `budget`.
 
 **Erasure vs. backups / WORM (the trap).** If you enable S3 versioning, Object Lock, or registry PITR for
 durability, a subject-erasure rewrite *does not* reach the retained copies — the deleted bit survives in

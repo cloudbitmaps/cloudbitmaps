@@ -23,8 +23,9 @@ the collection refuse a `keep` it used to accept. The next eleven make a call th
 them fix a wrong answer, and the entries under **Fixed** say what the call returned before; one changes when a pin fails;
 three hold a call to a rule the rest of the library already kept; the last of the eleven refuses a namespace the library keeps for its own
 rows, and says in its own entry what the call returned before. The six after them hold the store, the backends and the registry to what the library itself takes and writes, stop
-checking for a local store's older directory layout, and give its errors the library's own brand. The last two
-change what `estimateCost()` compares with and what a `CostReport` carries.
+checking for a local store's older directory layout, and give its errors the library's own brand. The two after them
+change what `estimateCost()` compares with and what a `CostReport` carries. The last holds `eraseSubject` to its
+budget for the generations it opens.
 
 - **`@cloudbitmaps/roaring` exports an explicit list of names, not everything `@cloudbitmaps/core` exports.** An
   application installs the flavor and sees the store, the errors, the types its signatures name, the backends'
@@ -319,6 +320,20 @@ These two change what `estimateCost()` reports:
   hot set larger than the reader cache, and its loads line is reworded, so a check that matches either's text needs
   its new wording. The entry
   under **Fixed** says what the estimator counts now.
+This one changes what an erasure charges its budget for:
+
+- **`eraseSubject` charges its budget for the generations it opens, and reports a segment that runs it out.** A
+  segment whose current generation lacks the id is searched in every generation still in its bucket, which is one
+  open each and, with the keep-everything default of the `*Into` verbs, one for every generation the segment ever
+  had. The budget counted one unit for the segment, and the guide and the API reference said the call was
+  `O(registered segments)`. It now charges one unit per segment and one for each generation opened beyond the one
+  the segment's row names, so the call is `O(registered segments + superseded generations)`; a rewrite of a segment
+  that holds the id, and the read that verifies it, are not charged beyond the segment's unit. The default,
+  1,000,000, still covers a normal fleet. A segment that runs the budget out is listed with `erased: false` and
+  an `error:` note carrying the budget refusal's message, before it deletes anything, and the
+  scan goes on: the call does not throw for it, so the ledger of the erasures that did happen is not lost. A call
+  that listed nothing for such a segment, because the id was in none of its generations, therefore now lists an
+  error entry for it. Re-run with a higher `budget`, per call or per store, or `budget: false`.
 
 ### Added
 
