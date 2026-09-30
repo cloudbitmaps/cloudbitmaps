@@ -675,8 +675,8 @@ superseded version of a row is that many days old it is deleted, so a shred is d
 made. The cost is the restore window: you can restore the registry only that far back, because a point older than
 the rule's days no longer has its row versions.
 
-On S3 that is a rule on the `registry/` prefix with a `NoncurrentVersionExpiration` of `NoncurrentDays: 30`, for
-example, which leaves the current version of every row and every tombstone alone. GCS and Azure Blob have an
+On S3 that is a rule filtered on the `registry/` prefix (`<prefix>registry/` on a backend built with a `prefix`) with
+a `NoncurrentVersionExpiration` of `NoncurrentDays: 30`, for example, which leaves the current version of every row and every tombstone alone. GCS and Azure Blob have an
 equivalent (a lifecycle condition on noncurrent versions of the prefix); take its exact syntax from your provider's
 documentation. Set the days at or above the restore window your [RPO](#rpo--rto) needs, and never apply the rule to
 current versions.
