@@ -56,11 +56,14 @@ export async function nextGeneration(ref: SegmentRef, deps: GenerationDeps): Pro
  * a pin taken while it was still active re-checks the status on every open — and nothing else in the library
  * would ever collect them, so without this those objects are billed forever.
  *
- * **Throws {@link WriteConflictError} if the segment changed underneath the pass** — not to be confused with
- * the empty array it still returns when there was genuinely nothing to collect (no row at all, or no pointer
- * yet), which is why an empty array is not a receipt. The row is read before the listing and acted on after it, so a name that was purged and
+ * **Throws {@link WriteConflictError} when it cannot act on the row it read**: the row is gone when it is re-read,
+ * after the listing or before a delete; on an active segment, the pointer has fallen below the cutoff before a
+ * delete; on a `destroyed` segment, the row's token has changed. Not to be confused with the empty array it still
+ * returns when there was genuinely nothing to collect (no row at all, or no pointer yet), which is why an empty
+ * array is not a receipt. The row is read before the listing and acted on after it, so a name that was purged and
  * re-created in that window is a *different* segment wearing the same name, and its live object must not be
- * collected on the strength of the old row. Refusing is safe — the objects are not going anywhere and the next
+ * collected on the strength of the old row: on an active segment the lower of the two pointers is what keeps it
+ * safe, and on a `destroyed` one the token. Refusing is safe — the objects are not going anywhere and the next
  * pass reads a consistent row — but it has to be **distinguishable** from "there was nothing to collect", which
  * an empty array is not: `eraseIdFromSegment` reads the returned list as the physical half of its erasure
  * receipt, and would otherwise report `erased: true` over bytes still in the bucket. Re-run it.

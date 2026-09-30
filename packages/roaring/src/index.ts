@@ -848,7 +848,7 @@ export class CloudRoaring {
    * of it. A materialisation is a load whose ids happen to come from a combine instead of from upstream, so
    * everything `load()` learned the hard way applies unchanged: the generation is written UNPUBLISHED, the
    * guard runs while the old generation is still authoritative, the publish is fenced as above, and a refused
-   * object is reclaimed only after re-reading the row and finding the same incarnation (hard invariant 1:
+   * object is reclaimed only when a re-read finds the row unchanged (the same token) or gone (hard invariant 1:
    * deleting it after a purge-and-recreate would put a live row over a missing generation).
    *
    * That last check narrows the window rather than closing it: the row read and the delete are two round
@@ -866,10 +866,10 @@ export class CloudRoaring {
    * translated into the throw, and `MaterializeResult.reason` never carries it.
    *
    * **A `WriteConflictError` does not by itself mean nothing was published**, and that is worth knowing
-   * before you write the retry. `'superseded'` covers four different causes — the write-once PUT collided,
-   * the pointer moved, the row's token changed, the row was purged — and only the first two are the
-   * "somebody beat us" the name suggests. A token can also change on a write that is not a supersession at
-   * all, such as a `setRetention` on the destination. On top of that, the collection pass that runs AFTER a
+   * before you write the retry. `'superseded'` covers five different causes — the write-once PUT collided,
+   * the pointer moved, a row appeared where the load found none, the row's token changed, the row was purged —
+   * and only the first three are the "somebody beat us" the name suggests. A token can also change on a write
+   * that is not a supersession at all, such as a `setRetention` on the destination. On top of that, the collection pass that runs AFTER a
    * successful publish can raise the same error. So: treat it as "re-read the destination and decide",
    * never as "the write did not happen".
    *
