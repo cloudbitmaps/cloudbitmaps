@@ -478,6 +478,16 @@ These two change what `estimateCost()` reports:
 
 ### Fixed
 
+- **Two local-filesystem backends on one root in one process could both advance a registry row from the same
+  token.** The row's compare-and-swap was serialized by a lock each `LocalFsStorage` (or
+  `LocalFsRegistryDriver`) kept for itself, so two instances on one root, or a store and a CLI call in one
+  process, could both read token T, both pass the check and both return T+1 for different writes.
+  That broke the token's promise never to be reused and the erasure's `expectFrom` fence: an erasure's
+  collection with `keep: 0` could delete a generation whose load had reported `published: true`. The lock is
+  now one per row for the whole process, keyed by the row's resolved path, so a root reached through a symlink
+  or a relative path takes the same lock, and an entry lives only while an operation on its row is in flight.
+  A root is for one process: two processes on one root are still not fenced, and the guide and the API
+  reference now say so.
 - **`purgeTombstones: false` kept every tombstone but one.** The option's contract is that the sweep deletes no row
   of a retirement it made, yet a retired segment that held nothing (a `setRetention` on a name that was never
   loaded, or a mistyped one) had its row deleted in the same pass whatever the option said. With `false` that row

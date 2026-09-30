@@ -51,6 +51,10 @@ export interface LocalFsStorageOptions {
  * The layout is stated here rather than by the caller, which is the point — two paths a caller wrote out
  * separately could name different roots, and nothing would stop them. It is also the layout
  * the `export-segments` CLI expects, so a store built this way can be ejected without being told where to look.
+ *
+ * A root is for **one process**. Every instance in a process that names the same root shares one lock per
+ * registry row, however the root is spelled (relative path, symlink), so they cannot both advance a row from
+ * one token. Two processes on one root are **not** fenced from each other.
  */
 export class LocalFsStorage implements StorageBackend {
   /** Cross-bundle brand, stamped non-enumerably in the constructor so a spread cannot carry it. */
