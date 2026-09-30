@@ -19,7 +19,8 @@ Every change must pass these locally, and CI runs each of them on every pull req
 - `pnpm lint` · `pnpm lint:arch` · `pnpm format:check` · `pnpm typecheck` · `pnpm test` · `pnpm build` ·
   `pnpm smoke`
 - `pnpm test:integration` — against the docker-compose backends (MinIO, fake-gcs-server,
-  Azurite) — no real cloud account needed. Locally it needs Docker, and a change that touches a driver runs it
+  Azurite) — no real cloud account needed. Locally it needs Docker with the backends started first
+  (`docker compose up -d`, as [`tests/README.md`](tests/README.md) says), and a change that touches a driver runs it
 - `pnpm lint:arch` runs `tests/arch`: the import graph is acyclic; every import-boundary rule in
   `eslint.config.js` (the storage-agnostic-core rule and its siblings, the **runtime**-agnostic
   `core-no-node-builtins` among them) is proven to fire on a planted violation, and so is `core/`'s ban on the
@@ -43,8 +44,9 @@ RSS ceiling and the native addon on Linux, Windows and macOS. [`.github/workflow
 says why each one is there.
 
 A fresh clone must pass `install → lint → lint:arch → format:check → typecheck → test → build → smoke` with
-**no manual setup** (Node ≥22.12, which the manifests enforce — `.nvmrc` pins the major, 22 — and pnpm 9; Docker only for
-`test:integration`).
+**no manual setup** (Node ≥22.12, the floor the packages declare — `.nvmrc` pins the major, 22, and the dev tools
+want a current 22: lint-staged, which the pre-commit hook runs, declares 22.22.1 or later — and pnpm 9; Docker only
+for `test:integration`).
 Every command runs from the **repo root** — it is a pnpm workspace, and the root scripts cover all five packages.
 
 ## Repo layout (a pnpm workspace of five packages)
@@ -76,8 +78,8 @@ in a driver** — either one of the driver packages, or `packages/core/src/drive
 ## Adding a storage driver package
 
 Most of the topology is **derived** — `scripts/build.mjs` reads each package's own `exports`, the release
-workflow globs `packages/*/package.json`, and the `no-circular`, `api-reference-sync`, `issue-template-sync`
-and `sdk-floor-claims` gates all read the manifests. Those need no edit.
+workflow globs `packages/*/package.json`, and the `no-circular`, `api-reference-sync` and `sdk-floor-claims` gates
+all read the manifests. Those need no edit.
 
 These do. The last column says what fails when one is missing: most fail a local gate long before a publish, and
 the ones marked **nothing** fail no gate at all, so this table is the only thing that remembers them.
@@ -88,14 +90,16 @@ the ones marked **nothing** fail no gate at all, so this table is the only thing
 | `tsconfig.json` | the two `paths` entries | `pnpm typecheck`, once a test imports the package through them |
 | `vitest.config.ts` · `vitest.integration.config.ts` | the two aliases in **each**, above the `@/*` catch-all | `pnpm test` or `pnpm test:integration`, once a test imports the package through them |
 | `eslint.config.js` | a per-package block re-stating the full SDK list **minus** this package's own — eslint replaces a rule's options rather than merging them | `pnpm lint`, at the package's first import of its own SDK, which the generic driver block refuses |
-| `tests/arch/import-boundaries.test.ts` | planted violations for that block, as the gcs and azure-blob blocks have | **nothing** — and without them, a later edit that empties the block fails nothing either |
+| `eslint.config.js` | the new name in the flavor block's driver-package pattern (`^@cloudbitmaps/(s3\|gcs\|azure-blob)(/\|$)`) | **nothing** — the flavor can then import or re-export the new driver, lint-clean |
+| `tests/arch/import-boundaries.test.ts` | planted violations for that block and the flavor pattern, as the s3, gcs and azure-blob blocks have | **nothing** — and without them, a later edit that empties the block fails nothing either. (A package named `r2` is the exception: the file plants its generic-block cases at `packages/r2`, which a real `r2` block then fails until they move.) |
 | `scripts/sdk-specifiers.cjs` | the driver-name pattern | **nothing** — `pnpm smoke` then misses a main entry that names the new package |
 | `.github/workflows/release.yml` | `EXPECTED_PACKAGES`, the number of manifests the release must find | `pnpm test`: `tests/ci/release-workflow.test.ts` compares it with the workspace |
-| `.github/ISSUE_TEMPLATE/bug_report.yml` | the two dropdown options | `pnpm test`: `tests/docs/issue-template-sync.test.ts` derives the *expectation* from the packages |
+| `.github/ISSUE_TEMPLATE/bug_report.yml` · `tests/docs/issue-template-sync.test.ts` | the two dropdown options, and the backend's label in the test's `LABELS` map | `pnpm test`: the test derives which drivers exist from the packages, and spells each one's options from `LABELS` |
 | `docker-compose.yml` | the backend's emulator, as a service on a pinned image | a floating tag: `pnpm test` (`tests/ci/compose-images.test.ts`). The service: `pnpm test:integration`, once a test needs it. The CI image pull reads the file, so it needs no edit |
 | `tests/integration/` | a test that runs the conformance suite against that emulator, as `s3.test.ts`, `gcs.test.ts` and `azure.test.ts` do | **nothing** — the package is then never run against a backend |
 | the package's `README.md` · `site/usage.html` | the SDK range the manifest declares, verbatim, in both: the README's statement of it and the site's driver table | `pnpm test`: `tests/docs/sdk-floor-claims.test.ts` compares all three |
 | docs and site | the README install + driver tables, `docs/guide/getting-started.md` wiring, the API reference entry points and export index, the guide index, and every site page that lists the drivers (`grep -rl '@cloudbitmaps/gcs' site` finds them) | the API reference: `pnpm test` (`tests/docs/api-reference-sync.test.ts`). The rest: **nothing** |
+| every place that names the SDK roots, if the new SDK is not under `@aws-sdk/`, `aws-sdk`, `@google-cloud/` or `@azure/` | the new root in each eslint `group` list, `SDK_ROOTS` in `scripts/sdk-specifiers.cjs`, `CLOUD_SDK` in `scripts/smoke.cjs`, and the SDK patterns in `tests/docs/issue-template-sync.test.ts` and `tests/docs/sdk-floor-claims.test.ts` | **nothing** — those gates then do not see the package as a driver, so the eslint, issue-template and SDK-range rows above fail nothing either |
 | npm | **bootstrap the package name** before any release can include it — see [`RELEASING.md`](RELEASING.md#bootstrapping-a-name) | the release workflow's registry probe, which refuses the run before its publish step |
 
 One thing to copy rather than invent: the package declares its SDK as a **real dependency**, never an optional
@@ -235,7 +239,9 @@ root-level project files. What each one is, and when it must be updated:
    headline capability lands.
 2. **API reference** — a new export **cannot** merge undocumented; CI enforces it.
 3. **README** — refresh the status line / "what works today" / quick taste if the surface moved.
-4. **CHANGELOG** — add a bullet at the **top** of `[Unreleased]` (newest first). This is the prose, and it
+4. **CHANGELOG** — add a bullet at the **top** of its subsection of `[Unreleased]` (newest first): **Breaking**
+   (with what a caller does about it, and the section's opening count kept in step), **Added**, **Changed** or
+   **Fixed**. This is the prose, and it
    is hand-written: `.changeset/` does **not** generate it, deliberately
    ([why](.changeset/README.md)).
 5. **Changeset** — `pnpm changeset`, if the change should move the version. It records the **bump type**
