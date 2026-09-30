@@ -44,8 +44,11 @@ async function bodyOf(req: IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-/** The object bytes out of a `multipart/related` upload: its second part, after the JSON metadata. */
-function uploadedBytes(req: IncomingMessage, body: Buffer): Buffer {
+/** The two parts of a `multipart/related` upload: the JSON metadata, then the object bytes. */
+function uploadParts(
+  req: IncomingMessage,
+  body: Buffer,
+): { metadata: Record<string, unknown>; bytes: Buffer } {
   const boundary = /boundary="?([^";]+)"?/.exec(String(req.headers['content-type']))?.[1];
   if (boundary === undefined) throw new Error('the stub expects a multipart upload');
   const delimiter = Buffer.from(`--${boundary}`);
@@ -57,16 +60,32 @@ function uploadedBytes(req: IncomingMessage, body: Buffer): Buffer {
     parts.push(body.subarray(at + delimiter.length, next));
     at = next;
   }
-  const content = parts[1];
-  if (content === undefined) throw new Error('the stub expects a metadata part and a content part');
-  const start = content.indexOf('\r\n\r\n') + 4;
-  return content.subarray(start, content.length - 2); // drop the CRLF before the next delimiter
+  const [metadata, content] = parts;
+  if (metadata === undefined || content === undefined) {
+    throw new Error('the stub expects a metadata part and a content part');
+  }
+  const contentOf = (part: Buffer): Buffer =>
+    part.subarray(part.indexOf('\r\n\r\n') + 4, part.length - 2); // drop the CRLF before the next delimiter
+  return {
+    metadata: JSON.parse(contentOf(metadata).toString('utf8')) as Record<string, unknown>,
+    bytes: contentOf(content),
+  };
+}
+
+interface UploadRecord {
+  readonly name: string;
+  readonly query: Record<string, string>;
+  readonly metadata: Record<string, unknown>;
 }
 
 /** A stub of the slice of the GCS JSON API the drivers use, on 127.0.0.1, with one armed fault at a time. */
 class StubGcs {
   readonly objects = new Map<string, StoredObject>();
   private readonly sent: Operation[] = [];
+  /** Every upload the stub received: its object name, its query string and its JSON metadata part. */
+  readonly uploads: UploadRecord[] = [];
+  /** When set, an upload's answer names a checksum the stored bytes do not have. */
+  corruptChecksums = false;
   private seq = 1_000;
   private fault: { op: Operation; land: boolean } | undefined;
   private readonly server: Server = createServer((req, res) => {
@@ -162,13 +181,14 @@ class StubGcs {
       generation: String(object.generation),
       metageneration: '1',
       size: String(object.body.length),
-      crc32c: crc32c(object.body),
+      crc32c: crc32c(this.corruptChecksums ? Buffer.from('other') : object.body),
       md5Hash: md5(object.body),
     });
     const current = this.objects.get(name);
     switch (op) {
       case 'upload': {
-        const bytes = uploadedBytes(req, body);
+        const { metadata, bytes } = uploadParts(req, body);
+        this.uploads.push({ name, query: Object.fromEntries(query), metadata });
         const match = query.get('ifGenerationMatch');
         if (match !== null) {
           const expected = Number(match);
@@ -308,6 +328,41 @@ describe('GCS: a conditional write is sent once, whatever the SDK retry would do
     await expect(put(driver, new Uint8Array([1]))).rejects.toBeInstanceOf(TransientError);
     expect(stub.count('upload')).toBe(1);
     expect(client.retryOptions).toEqual(before);
+  });
+});
+
+describe('GCS: the single request carries what file.save() would have sent', () => {
+  it("a registry write is one JSON upload under `ifGenerationMatch: 0`, then one under the row's generation", async () => {
+    const backend = new GcsStorage({ bucket: BUCKET, client: stub.client() });
+    const { token } = await backend.registry.create(REF, { currentGen: 0 });
+    const created = stub.objects.get('registry/_default/s.reg')?.generation;
+    await backend.registry.compareAndSwap(REF, token, { currentGen: 1 });
+
+    expect(created).toBeDefined();
+    expect(stub.uploads).toHaveLength(2);
+    expect(stub.uploads[0]?.query.ifGenerationMatch).toBe('0');
+    expect(stub.uploads[1]?.query.ifGenerationMatch).toBe(String(created));
+    for (const upload of stub.uploads) {
+      expect(upload.query.uploadType).toBe('multipart');
+      expect(upload.metadata.contentType).toBe('application/json');
+    }
+  });
+
+  it('a write-once upload is one octet-stream upload under `ifGenerationMatch: 0`', async () => {
+    const driver = new GcsStorageDriver({ storage: stub.client(), bucket: BUCKET });
+    await put(driver, new Uint8Array([1, 2, 3]));
+
+    expect(stub.uploads).toHaveLength(1);
+    expect(stub.uploads[0]?.query.ifGenerationMatch).toBe('0');
+    expect(stub.uploads[0]?.metadata.contentType).toBe('application/octet-stream');
+  });
+
+  it('an upload whose stored checksum does not match the bytes sent is refused, and not sent again', async () => {
+    const driver = new GcsStorageDriver({ storage: stub.client(), bucket: BUCKET });
+    stub.corruptChecksums = true;
+
+    await expect(put(driver, new Uint8Array([1, 2, 3]))).rejects.toThrow();
+    expect(stub.count('upload')).toBe(1);
   });
 });
 

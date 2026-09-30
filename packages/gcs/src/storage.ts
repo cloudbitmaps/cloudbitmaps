@@ -228,7 +228,7 @@ function concatBytes(parts: readonly Uint8Array[], total: number): Uint8Array {
 
 /**
  * {@link BlobSink} that uploads one GCS object write-once. It **buffers up to a threshold**: an object that
- * finishes at/under it is committed in a **single simple (non-resumable) request** (`file.save`) — the write-once
+ * finishes at/under it is committed in a **single simple (non-resumable) request** ({@link saveOnce}) — the write-once
  * path both real GCS and `fake-gcs-server` enforce; a larger one switches to a **resumable stream**, flushing the
  * buffer then piping the rest in constant memory (peak ≈ one threshold). SHA-256 is hashed incrementally. Both
  * paths carry `ifGenerationMatch: 0` (create-only-if-absent) → a conflict is a 412, mapped by the driver to

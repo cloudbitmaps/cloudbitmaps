@@ -132,14 +132,16 @@ class StubBucket {
   };
 
   /** A real `S3Client` over this bucket: the SDK's default retry, signing and checksums, and this transport. */
-  client(extra: { cacheMiddleware?: boolean; maxAttempts?: number } = {}): S3Client {
+  client(
+    extra: { cacheMiddleware?: boolean; maxAttempts?: number; retryStrategy?: unknown } = {},
+  ): S3Client {
     return new S3Client({
       region: 'us-east-1',
       endpoint: 'http://s3.stub.test',
       forcePathStyle: true,
       credentials: { accessKeyId: 'stub', secretAccessKey: 'stub' },
       requestHandler: this.handler as never,
-      ...extra,
+      ...(extra as object),
     });
   }
 
@@ -355,6 +357,55 @@ describe('S3: a conditional write is sent once, whatever the SDK retry would do'
   });
 });
 
+describe('S3: a caller-supplied retry strategy does not reach a conditional write', () => {
+  /** A strategy that grants the first retry at once and counts how often it is asked; a second ask is refused. */
+  function eagerStrategy(): { strategy: unknown; asked: () => number } {
+    let asked = 0;
+    const token = { getRetryCount: () => asked, getRetryDelay: () => 0 };
+    return {
+      asked: () => asked,
+      strategy: {
+        acquireInitialRetryToken: async () => token,
+        refreshRetryTokenForRetry: async () => {
+          asked += 1;
+          if (asked > 1) throw new Error('retry budget spent');
+          return token;
+        },
+        recordSuccess: () => {},
+      },
+    };
+  }
+
+  it('sends the write once, and never asks the strategy', async () => {
+    const bucket = new StubBucket();
+    const { strategy, asked } = eagerStrategy();
+    const driver = new S3StorageDriver({
+      client: bucket.client({ retryStrategy: strategy }),
+      bucket: BUCKET,
+    });
+    bucket.loseResponseOf('PutObject');
+
+    await expect(put(driver, new Uint8Array([1]))).rejects.toBeInstanceOf(TransientError);
+    expect(bucket.count('PutObject')).toBe(1);
+    expect(asked()).toBe(0);
+  });
+
+  it('still lets that strategy retry a read', async () => {
+    const bucket = new StubBucket();
+    const { strategy, asked } = eagerStrategy();
+    const driver = new S3StorageDriver({
+      client: bucket.client({ retryStrategy: strategy }),
+      bucket: BUCKET,
+    });
+    await put(driver, new Uint8Array([1, 2, 3, 4]));
+    bucket.failBeforeApplying('GetObject');
+
+    await expect(driver.getRange(GEN, 1, 2)).resolves.toEqual(new Uint8Array([2, 3]));
+    expect(bucket.count('GetObject')).toBe(2);
+    expect(asked()).toBe(1);
+  });
+});
+
 describe('S3: everything else keeps the SDK retry', () => {
   it('a read retries a dropped connection', async () => {
     const bucket = new StubBucket();
@@ -375,6 +426,21 @@ describe('S3: everything else keeps the SDK retry', () => {
     await driver.delete(GEN);
     expect(bucket.count('DeleteObject')).toBe(2);
     expect(bucket.objects.size).toBe(0);
+  });
+
+  it('a multipart upload’s part upload retries a dropped connection, and the upload still completes', async () => {
+    const bucket = new StubBucket();
+    const driver = new S3StorageDriver({
+      client: bucket.client(),
+      bucket: BUCKET,
+      partBytes: FIVE_MIB,
+    });
+    bucket.failBeforeApplying('UploadPart');
+
+    await put(driver, new Uint8Array(FIVE_MIB + 1));
+    expect(bucket.count('UploadPart')).toBe(2); // the part, sent again after the drop
+    expect(bucket.count('CompleteMultipartUpload')).toBe(1);
+    expect(bucket.objects.size).toBe(1);
   });
 
   it('the caller’s own PutObject through the same client still retries after the driver wrote', async () => {

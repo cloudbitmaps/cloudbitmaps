@@ -60,6 +60,17 @@ describe('S3 error classification', () => {
       ).toBe(true);
       expect(isTransient(skewed)).toBe(false);
     });
+    // The SDK sets the flag on any refusal it read a server clock from, a lost race included, so the conflict check
+    // has to win: a 412 or 409 from a client whose clock is minutes out is still the caller's lost race.
+    it('keeps a lost race a conflict when the SDK also flagged the clock', () => {
+      const flagged = { clockSkewCorrected: true };
+      const lost = { name: 'PreconditionFailed', $metadata: { httpStatusCode: 412, ...flagged } };
+      const busy = { $metadata: { httpStatusCode: 409, ...flagged } };
+      expect(isTransient(lost)).toBe(false);
+      expect(isTransient(busy)).toBe(false);
+      expect(isConditionalConflict(lost)).toBe(true);
+      expect(isConditionalConflict(busy)).toBe(true);
+    });
     it('never reclassifies the deterministic outcomes (412/404/416)', () => {
       expect(isTransient({ name: 'PreconditionFailed' })).toBe(false);
       expect(isTransient({ $metadata: { httpStatusCode: 404 } })).toBe(false);
