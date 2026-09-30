@@ -179,9 +179,9 @@ _Measured on Apple M3 Pro (arm64, node v24.18.1). **The bound is the retained he
   shared chunks and skips the rest by key alignment (the crown jewel, on the ids-per-segment axis). The
   load-bearing figure there is the chunk **count** — 100 fetched of 2,000 — because key alignment does not depend
   on how the ids inside a chunk are distributed. The accompanying **bytes** figure does: this fixture seeds each
-  chunk with a contiguous run of ids, which Roaring stores as a single run, so the 3,000 bytes read over 200 chunk
-  reads, 100 from each segment, come to 15 bytes a read: a **best case for the encoding** rather than a typical
-  segment. Real ids at that density are scattered and land in an array container nearer 2 KB per chunk. Read the byte count as "the window is
+  chunk with a contiguous run of ids, which Roaring stores as a single run, so the 3,000 bytes read (measured) over
+  200 chunk reads (derived: each of the 100 shared keys is read from both segments) come to 15 bytes a read: a
+  **best case for the encoding** rather than a typical segment. Real ids at that density are scattered and land in an array container nearer 2 KB per chunk. Read the byte count as "the window is
   small and bounded", not as a size to plan a bill around — for that, price the requests.
 
 ## What RSS is, and why it is the number we bound
