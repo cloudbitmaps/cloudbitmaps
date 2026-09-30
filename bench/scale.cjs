@@ -218,7 +218,8 @@ async function measureIntersect() {
   await writer.load({ segment: 'B' }, idsB);
 
   const metrics = new CountingMetricsSink();
-  // The two halves ARE a StorageBackend — the port is structural, so an object literal satisfies it.
+  // A second store over the same backend: a fresh reader with its own cold cache, so the intersect below starts
+  // with nothing cached.
   const client = new CloudRoaring({ storage: backend, metrics });
   metrics.reset();
   let resultCount = 0;
@@ -309,10 +310,11 @@ function render(r) {
     .map((f) => `${f.heapRetainedMiB} MiB @ ${f.n.toLocaleString('en-US')}`)
     .join(' · ');
 
-  // The claim the table cannot make about itself, computed rather than asserted: how far the heap moved while
-  // the fleet grew by a factor of N. Restating the heap column under the table (which is what `memFlat` does)
-  // is fine in markdown, where the table and the note read as separate blocks; directly under a bordered panel
-  // it is the same three numbers twice. This is the derived line the panel gets instead.
+  // The claim the table cannot make about itself, computed rather than asserted: the band the heap stayed in
+  // (highest minus lowest) while the fleet grew by a factor of N. Restating the heap column under the table
+  // (which is what `memFlat` does) is fine in markdown, where the table and the note read as separate blocks;
+  // directly under a bordered panel it is the same three numbers twice. This is the derived line the panel
+  // gets instead.
   const heaps = r.fleets.map((f) => f.heapRetainedMiB);
   const fleetLo = Math.min(...r.fleets.map((f) => f.n));
   const fleetHi = Math.max(...r.fleets.map((f) => f.n));
@@ -381,11 +383,12 @@ function render(r) {
     `<div class="tscroll"><table><thead><tr>` +
     header.map((h, i) => `<th${i > 0 ? ' class="num"' : ''}>${esc(h)}</th>`).join('') +
     `</tr></thead><tbody>${htmlRows}</tbody></table></div>` +
-    `<p class="tpanel-foot">A <strong>${fleetFactor}&times;</strong> larger fleet moved retained heap by ` +
-    `<strong>${heapSpread} MiB</strong>. Intersection of two ` +
+    `<p class="tpanel-foot">Across a <strong>${fleetFactor}&times;</strong> larger fleet, retained heap stayed ` +
+    `inside a <strong>${heapSpread} MiB</strong> band. Intersection of two ` +
     `${r.intersect.idsPerSegment.toLocaleString('en-US')}-id segments ` +
     `(${r.intersect.chunksPerSegment.toLocaleString('en-US')} chunks each, ${r.intersect.sharedChunks} shared) ` +
-    `<strong>${perSeg}</strong>, in ${r.intersect.intersectMs} ms. Fleet seeded ${seededByHtml} at ~${seedLo}&ndash;${seedHi} ` +
+    `<strong>${perSeg}</strong>, in ${r.intersect.intersectMs} ms against the in-memory drivers. Fleet seeded ` +
+    `${seededByHtml} at ~${seedLo}&ndash;${seedHi} ` +
     `durable segments/s (fsync-bound). Measured on ${esc(r.env.cpu)} (${r.env.arch}, node ` +
     `${r.env.node}) &mdash; discovery is filesystem-bound here, so the ` +
     `<strong>shape</strong> is the claim, not the absolute milliseconds.</p>` +

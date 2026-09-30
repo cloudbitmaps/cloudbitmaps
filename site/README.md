@@ -20,8 +20,8 @@ README included: it is reachable on the site, though nothing links to it.
 
 | page | what it is |
 |---|---|
-| `index.html` | The front door: what the library is, what it costs against an always-on Redis node, and where that comparison stops favouring it. |
-| `demo.html` | A step-through replay of a **measured** intersection of two 2,000,000-id segments — every number on it comes from a recorded benchmark run, not from code running in your browser. |
+| `index.html` | The front door: what the library is, what it costs against an always-on Redis cluster, and where that comparison stops favouring it. |
+| `demo.html` | A step-through replay of a **measured** intersection of two 2,000,000-id segments — every measured number on it comes from a recorded benchmark run, and the rest is arithmetic on that run, not code running in your browser. |
 | `demo.js` | The replay's stepper. The only substantial script on the site. |
 | `flavors.html` | The hub for codec **flavors**: what a flavor is, and how to choose one. |
 | `flavors/roaring.html` | The roaring flavor, including what carries over from Redis bitmaps and what does not. |
@@ -45,7 +45,8 @@ README included: it is reachable on the site, though nothing links to it.
 Hand edits here are overwritten by the next run. How much of a stale copy CI catches differs, so each says:
 
 - **The crossover chart** on `benchmarks.html`, between the `BENCH:CHART` markers — written by `bench/run.cjs`
-  (`pnpm bench`). CI checks its crossover and baseline labels against `bench/results.json`, not the drawing.
+  (`pnpm bench`). `pnpm bench:check` fails in CI unless this copy is, byte for byte, what the shipped estimator
+  draws now, so regenerate it with `pnpm bench` rather than editing it.
 - **The at-scale table** on `benchmarks.html`, between the `BENCH:SCALE` markers — written by `bench/scale.cjs`.
   `pnpm bench:scale:check` fails in CI if this copy, or the one in `docs/benchmarks.md`, is not what
   `bench/scale-results.json` renders, so regenerate both with `pnpm bench:scale:render` rather than editing either.
@@ -60,7 +61,8 @@ against the files that produced them, and the pages against each other — with 
 | `scripts/site-figures.cjs` | Checks the site's money figures and its crossover rate against `bench/results.json`, `docs/benchmarks.md`, the latest calibration run's evidence in `bench/calibration/` and the pricing profile: every one must appear on `benchmarks.html`, which owns them, and a dollar amount that none of them accounts for fails on any of six site pages, `llms.txt`, the root and npm READMEs, the roadmap or `docs/benchmarks.md` — so no price can drift or improve without a run behind it. A run's figures pass at any honest precision, through the matcher its report is checked with, bindings included: wherever a paragraph, list item or table row states one of the run's figures or a request shape, every figure in it must also stand beside the words for the claim it makes. Inside `benchmarks.html`'s panel on the latest run, every unit and every count is checked, and each row against the run's derivation. The rate is required on `benchmarks.html` and its chart, and is checked wherever it stands in a block that quotes the run; stated anywhere else, it is not checked. Also: the measured values two pages quote — the RSS ceiling and soak figures on `benchmarks.html`, the encoding sizes on `flavors/roaring.html` — and any count of storage drivers on the pages or in `llms.txt`, against the drivers that ship, whether it says "drivers" or "backends". |
 | `scripts/site-links.py` | Links resolve; the crawler files exist; every page declares a canonical URL, and the sitemap and those URLs agree in both directions; external links open in a new tab, with `rel="noopener"` and an `aria-label`; a link to `page.html#id` names an id that page has; and nothing a page loads — a script, a stylesheet, an image, a font, a preconnect, a `<base>`, a `url()` in any CSS — comes from another origin, and no script, the pages' inline ones included, holds an absolute URL. |
 | `scripts/site-classes.py` | Every class in a page's markup, nested pages included, and every class a script applies, in a `.js` file or a page's inline script, is defined in the stylesheet. |
-| `scripts/site-replay.cjs --check` | `demo.html`'s figures still match the benchmark it replays. |
+| `scripts/site-replay.cjs --check` | `demo.html`'s figures still match the benchmark it replays, and every figure it writes with thousands separators is one the benchmark accounts for. |
+| `pnpm bench:check` | The crossover chart here, `bench/crossover.svg`, `bench/results.json` and the BENCH regions of `docs/benchmarks.md` are what the shipped estimator renders now. |
 | `pnpm bench:scale:check` | The at-scale table here and in `docs/benchmarks.md` is what `bench/scale-results.json` renders. |
 | `tests/docs/version-claims.test.ts` | The version the site states is the version that ships. |
 | `tests/docs/links.test.ts` | Relative links across the site and the docs resolve — and a link into a markdown file, its heading anchor too. |

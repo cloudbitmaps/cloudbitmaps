@@ -7,7 +7,7 @@
  * information, which is why the controls are `hidden` in the markup and revealed here: a Play button that
  * cannot play is worse than no button.
  *
- * Written as plain ES5-compatible script (no modules, no build step) to match `site/` and `site/`.
+ * Written as plain ES5-compatible script (no modules, no build step), like the rest of `site/`.
  *
  * Two rules it has to honour, both from the site's animation contract:
  *   · Only `opacity` and `transform` are animated. The playhead is a transform-translated element, never a
@@ -54,9 +54,6 @@
   }
 
   // ── the inset: keys 80-119, one cell each ───────────────────────────────────────────────────────────────
-  // Built here rather than written out as forty elements of markup, because the boundary it demonstrates is
-  // derived from the same data attributes the rest of the figure reads. Hand-writing the cells would let the
-  // inset disagree with the axis above it.
   // The cells live in the markup so the figure is complete with no JavaScript; this only adopts them.
   // `scripts/site-replay.cjs --check` verifies their shared/A-only split against the benchmark, so the
   // markup cannot drift from the axis above it.
@@ -80,7 +77,7 @@
   // Each entry is the figure's RESTING state for that beat: where the playhead sits, what the counters read,
   // and whether the keys have been compared, which is what turns the shared band into the answer. `sweep` marks
   // the one beat whose transition is worth animating. The fetch and result beats change the counters, not the
-  // stage: two further stage classes were set here once, and no rule in the stylesheet ever styled them.
+  // stage, so they set no stage class of their own.
   var STATES = [
     { head: 0, tally: [0, 0, 0, 0], compared: false, sweep: false },
     { head: 1, tally: [AXIS, SHARED, 0, 0], compared: true, sweep: true },
@@ -107,11 +104,11 @@
   }
 
   /**
-   * Beat 02, in two phases — and the reason is a pacing bug worth recording.
+   * Beat 02, in two phases, because of pacing.
    *
-   * A single linear sweep across all 4,000 keys put the aligned counter at 100 within a quarter of a second,
-   * because the 100 shared keys are the first 2.5% of the axis. The moment the whole page is about was over
-   * before a reader could see it, followed by seven seconds of a playhead travelling past a static number.
+   * A single linear sweep across all 4,000 keys would put the aligned counter at 100 within a quarter of a
+   * second, because the 100 shared keys are the first 2.5% of the axis. The moment the whole page is about would
+   * be over before a reader could see it, followed by seconds of a playhead travelling past a static number.
    *
    * So the comparison is shown twice, at two scales, each timed to its own:
    *
@@ -188,8 +185,8 @@
       b.classList.toggle('is-on', n === i);
     });
 
-    // classList, not `className =`: assigning the whole attribute wiped `is-interactive` (added just before
-    // the first show()) and silently reverted the figure to its no-JS presentation.
+    // classList, not `className =`: assigning the whole attribute would wipe `is-interactive` (added just
+    // before the first show()) and silently revert the figure to its no-JS presentation.
     root.classList.toggle('is-compared', s.compared);
     cells.forEach(function (c) {
       c.el.classList.toggle('is-seen', i >= 1);

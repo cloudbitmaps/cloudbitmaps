@@ -1,19 +1,14 @@
 /*
  * CloudBitmaps — the stylesheet.
  *
- * Every value here is lifted from the delivered design's computed styles, verified by an element-by-element
- * Playwright diff rather than by eye. Note the type scale is the NEW delivery's, which is a step larger than
- * the first handoff's specimen (h1 56 not 52, labels 10 not 9.5, h2 30 not 28, body ledes 15/17 not 16) —
- * `tokens.css` is byte-identical between the two deliveries, so the scale lives only in the pages.
+ * Components are named once and declared once, and nothing is redeclared later in the sheet. A second rule for
+ * the same selector further down wins the cascade silently, which is how a second `a { color }` could put every
+ * link on the site under AA without any one rule looking wrong.
  *
- * A fresh sheet, not an edit of the old one: that one carried a legacy-name mapping layer, and all three
- * cascade collisions hid in it — including a second `a { color }` rule that made every link fail AA.
- * Components are named once and declared once. Nothing is redeclared later.
+ * `--cb-faint` is a text colour — the mono caps labels default to it — so it is held to AA. In light it is
+ * #666E7B, 4.84:1 on the light ground; a lighter grey such as #7A8393 measures 3.60:1 and fails AA.
  *
- * Tokens are the Design Language specimen's. `--cb-faint` in light is #666E7B (4.84:1), NOT tokens.css's
- * #7A8393, which measures 3.60:1 and fails AA on the token the design holds to AA by name.
- *
- * Animation rule, enforced by the QA script: only `opacity` and `transform`.
+ * Animation rule: only `opacity` and `transform`, the two properties that animate without layout or paint.
  */
 
 :root {
@@ -46,9 +41,8 @@
 
   /* Consumed only by the crossover chart that `bench/run.cjs` inlines into benchmarks.html, as the fill of
      the "cheaper than Redis" zone. It is NOT referenced by any rule in this file, so grepping the stylesheet
-     alone makes it look dead — the generator is the consumer. Its `--cb-no` counterpart really was dead and
-     is gone; run.cjs only mentions that one in a comment explaining why the chart does not use it (4.30:1 on
-     the dark ground, under AA). */
+     alone makes it look dead — the generator is the consumer. It has no `--cb-no` counterpart; run.cjs says
+     in a comment why the chart does not use one (4.30:1 on the dark ground, under AA). */
   --cb-ok: #4fb477;
 
   --cb-mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
@@ -64,7 +58,7 @@
   --cb-rule-soft: #e9ecf1;
   --cb-ink: #12151a;
   --cb-muted: #4b5361;
-  --cb-faint: #666e7b; /* 4.84:1 — tokens.css's #7A8393 is 3.60:1 and fails AA */
+  --cb-faint: #666e7b; /* 4.84:1 on --cb-bg; #7A8393 would be 3.60:1 and fail AA */
   --cb-signal: #0b4fcc;
   --cb-signal-fill: #0b4fcc;
   --cb-cyan: #0a6c90;
@@ -119,14 +113,14 @@ body {
   color: var(--cb-ink);
   font-family: var(--cb-sans);
   font-size: 16px;
-  /* `normal`, matching the delivery: 1.62 here leaked into every container that sets no
-     line-height of its own (tier cards, the button row, the brand) and padded their line boxes. Each
+  /* `normal`: a prose leading such as 1.62 set here would leak into every container that sets no
+     line-height of its own (tier cards, the button row, the brand) and pad their line boxes. Each
      type component below declares the leading it wants. */
   line-height: normal;
-  /* Deliberately NOT `-webkit-font-smoothing: antialiased`. On macOS that thins every stroke on the page,
-     which reads as washed-out against the delivered design — the delivery leaves it at `auto`. This is the
-     single largest visual difference between the two, and it is invisible to any per-property colour or
-     weight check, because neither colour nor weight changes: only stroke rendering does. */
+  /* Deliberately NOT `-webkit-font-smoothing: antialiased`, so smoothing stays at `auto`. On macOS
+     `antialiased` thins every stroke on the page and the type reads as washed-out. The difference is
+     invisible to any per-property colour or weight check, because neither colour nor weight changes: only
+     stroke rendering does. */
 }
 
 .wrap {
@@ -161,10 +155,9 @@ section:last-of-type {
 /* Every in-page anchor target has to clear the sticky bar above, or following a #link parks the section's own
    heading behind it and the reader lands mid-sentence with no idea what they jumped to.
 
-   This was already broken for all five existing anchors — the two hero CTAs on /benchmarks ("The cost anchors →",
-   "What they do not establish") and the three on /usage — and it stayed invisible because nothing about the
-   layout looks wrong until you actually click one. A sticky header and a fragment link are each individually
-   fine; the defect only exists in their interaction, which is why no static check would find it.
+   Nothing about the layout looks wrong until a reader actually follows one of those links. A sticky header and
+   a fragment link are each individually fine; the fault exists only in their interaction, which is why no
+   static check would find it.
 
    57px is the bar (56px inner + its 1px rule); the rest is breathing room so the heading is not flush against
    it. Scoped to `main` so it cannot reach the header's own toggle inputs. */
@@ -310,8 +303,8 @@ p {
 }
 
 /* Scaled to the lede it sits in, not to a fixed step: 15.5px inside the 17px hero lede, 13.5px inside the
-   15px section ledes. Keyed on `.hero-lede`, which does NOT carry `.lede` — an earlier `.lede .m` rule here
-   matched nothing at all and left the hero's mono a step too small. */
+   15px section ledes. Keyed on `.hero-lede`, which does NOT carry `.lede` — a `.lede .m` selector matches
+   nothing in the hero and would leave its mono a step too small. */
 .hero-lede .m {
   font-size: 15.5px;
 }
@@ -329,8 +322,8 @@ em {
   color: var(--cb-ink);
 }
 
-/* Mono caps labels. `line-height: normal` deliberately — inheriting the body's 1.62 pads every label and
-   figure by ~6px and the whole vertical rhythm drifts. */
+/* Mono caps labels. `line-height: normal` deliberately — a label that inherited a prose leading of 1.62
+   would be padded by ~6px, and the whole vertical rhythm would drift. */
 .label {
   font-family: var(--cb-mono);
   font-size: 10px;
@@ -521,8 +514,8 @@ em {
 }
 
 /* A row that holds only a link. Deliberately carries no font-size: the row's strut stays at the body's 16px
-   the way the delivery's does, and the link itself is the 11.5px mono. Setting the type on the row instead
-   collapses the line box by 4px and drags every rule below it up with it. */
+   and the link itself is the 11.5px mono. Setting the type on the row instead collapses the line box by 4px
+   and drags every rule below it up with it. */
 .link-row {
   border-top: 1px solid var(--cb-rule);
   padding: 14px 16px;
@@ -561,7 +554,7 @@ em {
 /* ── the trade: two halves, deliberately identical ───────────────────────────
    Same bezel, same 26px padding, same weight. The ONLY difference is that the left label is cyan and the
    right is muted. If a future change makes the right half a warning colour, or smaller, or moves it below the
-   fold, the design has been misunderstood — publishing where this loses IS the credibility argument. */
+   fold, the point of the pair has been missed — publishing where this loses IS the credibility argument. */
 .trade {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -632,10 +625,9 @@ em {
 
 /* Three quarters, and only for a lede in full-width context.
    ────────────────────────────────────────────────────────────────────────────────────────────────────────
-   The history is worth keeping, because the same wrong answer got tried three times: 68ch, then 70ch, then
-   70ch at 18px to buy pixels without buying characters. Each held the block near 580-700px and each still
-   left a full-width section obviously empty on the right. Removing the cap entirely then went too far the
-   other way — full bleed, 167-170 characters a line.
+   A `ch` cap is the wrong tool here. 68ch or 70ch — even 70ch at 18px, to buy pixels without buying
+   characters — holds the block near 580-700px and leaves a full-width section obviously empty on the right,
+   while no cap at all goes too far the other way: full bleed, 167-170 characters a line.
 
    `75%` rather than a `ch` figure on purpose. It is the composition being specified, not the measure: the
    lede reads as three quarters of the panel below it at any viewport, where a fixed `ch` cap drifts from
@@ -643,9 +635,9 @@ em {
    ~85 where line-tracking is most reliable, and a deliberate trade, softened by the fact that a lede is two
    or three lines and so carries only one or two line-returns to lose your place on.
 
-   The child selector is doing real work. 32 of the 39 ledes are direct children of `<section>`; the other 7
-   already sit in narrow columns (660px in `.close-copy`, 578px in `.moat`), and a percentage applied to
-   those would SHRINK them to three quarters of an already-half column. They inherit `none` above instead. */
+   The child selector is doing real work. Most ledes are direct children of `<section>`; the rest already sit
+   in narrow columns (660px in `.close-copy`, 578px in `.moat`), and a percentage applied to those would
+   SHRINK them to three quarters of an already-half column. They inherit `none` above instead. */
 section > .lede {
   max-width: 75%;
 }
@@ -666,8 +658,8 @@ section > .lede {
 .tier-chip {
   font-family: var(--cb-mono);
   font-size: 10.5px;
-  /* A two-word chip (`GEN · REGISTRY`) broke across two lines inside the tier table and the bezel came
-     apart with it. */
+  /* One line, always: a two-word chip (`GEN · REGISTRY`) would otherwise break across two lines inside the
+     tier table and take the bezel apart with it. */
   white-space: nowrap;
   letter-spacing: 0.1em;
   line-height: normal;
@@ -702,9 +694,8 @@ section > .lede {
   align-items: start;
 }
 
-/* Only the tighter bottom margin now. This also carried `max-width: none`, to opt a lede inside a half-column
-   out of the measure cap — redundant since `.lede` itself is uncapped, so it went rather than sitting here
-   restating the base rule. */
+/* Only the tighter bottom margin. No `max-width` override is needed: `.lede` itself is uncapped, and the
+   three-quarter cap reaches only a lede that is a direct child of `<section>`. */
 .moat .lede {
   margin: 0 0 20px;
 }
@@ -842,8 +833,8 @@ section > .lede {
   font: inherit;
 }
 
-/* Numeric literals. Same colour as the block's own text by design — the token exists so the runs match the
-   delivery's and so the intent is legible in the markup, not to introduce a new colour. */
+/* Numeric literals. Same colour as the block's own text, deliberately — the class exists so the intent is
+   legible in the markup, not to introduce a new colour. */
 .code .n {
   color: var(--cb-ink);
 }
@@ -948,8 +939,7 @@ section > .lede {
 
 /* ══════════════════════════════════════════════════════════════════════════════
    THE FLOW FIGURE — one write, followed the whole way across, and the read coming
-   back out. Ported from site/cloudbitmaps.css unchanged apart from the token
-   rename; it was reviewed and approved as a figure before it was placed here.
+   back out.
 
    Two rules it exists to honour:
      · the pipes are drawn PERMANENTLY, arrowheads included, so direction never has
@@ -1047,11 +1037,11 @@ section > .lede {
 
 /* ── the payload markers ───────────────────────────────────────────────────────
    Three markers, and the reader is meant to follow WHICH id went where — so this
-   is identity, not semantics, and the cyan-vs-neutral pairing that fixed /demo's
-   axis does not apply: all three are equally "the payload".
+   is identity, not semantics, and the cyan-vs-neutral pairing of /demo's axis
+   does not apply: all three are equally "the payload".
 
-   They were distinguished by hue alone, three stops of a blue-to-cyan ramp that
-   measured 31 apart in dark and 33 in light against a floor of 60. The whole ramp
+   Hue alone cannot separate them. Three stops of the blue-to-cyan bit ramp
+   measure 31 apart in dark and 33 in light against a floor of 60. The whole ramp
    only spans ~87, so no choice of three stops from it helps, and widening the ramp
    would be a brand change to solve a legibility problem.
 
@@ -1267,8 +1257,8 @@ section > .lede {
   background: var(--cb-rule);
 }
 
-/* Full strength, deliberately: at `opacity: .55` — tuned for the graphite ground — the cache fill measured
-   2.84:1 in dark and all three fills 2.21-2.43:1 in light, under the 3:1 a meaningful graphic needs. */
+/* Full strength, deliberately: at `opacity: .55` the cache fill measures 2.84:1 in dark and all three fills
+   2.21-2.43:1 in light, under the 3:1 a meaningful graphic needs. */
 .tfill i.f {
   background: var(--cb-cyan);
 }
@@ -1437,11 +1427,10 @@ section > .lede {
    argument, not a sales panel, and inflating the right-hand column would undercut
    it.
 
-   This carried red ✕ and green ✓ glyphs per row until the copy rewrite. They went
-   because two columns scored in red and green read as a vendor comparison chart no
-   matter what the rows say — and the left column is no longer "the bad option", it
-   is the problem statement. Nothing here encodes meaning in colour, so there is
-   also nothing left for 1.4.1 to be at risk from.
+   No red ✕ against a green ✓ per row: two columns scored in red and green read as
+   a vendor comparison chart no matter what the rows say — and the left column is
+   not "the bad option", it is the problem statement. Nothing here encodes meaning
+   in colour alone, so there is also nothing for WCAG 1.4.1 to be at risk from.
    ══════════════════════════════════════════════════════════════════════════════ */
 .ba {
   display: grid;
@@ -1465,8 +1454,8 @@ section > .lede {
   margin: 0;
 }
 
-/* Marker column plus text, which is what gives each row its hanging indent — without it the rows sat flush
-   against the cell edge and the panel read as two paragraphs rather than two lists. */
+/* Marker column plus text, which is what gives each row its hanging indent — without it the rows sit flush
+   against the cell edge and the panel reads as two paragraphs rather than two lists. */
 .ba-pairs dt,
 .ba-pairs dd {
   display: grid;
@@ -1486,7 +1475,7 @@ section > .lede {
   line-height: 1.5;
 }
 
-/* The tick keeps its green. The left marker does NOT get the matching red: this column is the problem
+/* The tick is green. The left marker does NOT get the matching red: this column is the problem
    statement, not a list of your mistakes, and a red cross is a verdict on the reader. `!` is plain ASCII, so
    unlike a warning triangle there is no glyph-coverage question, and it reads as "here is the catch" rather
    than "wrong". Both are GLYPHS, so the columns stay distinguishable without colour — 1.4.1 is not in play. */
@@ -1617,7 +1606,7 @@ section > .lede {
   /* The three-quarter cap comes off at the same breakpoint these panels stack at, and for the same reason:
      `75%` expresses "three quarters of the panel below me", and below 1000px there is no multi-column panel
      left to be three quarters of. Keeping it would just donate a quarter of a phone's width to the margin —
-     it measured 251px of an available 335px at 375px, which is the opposite of the problem being solved. */
+     251px of an available 335px at 375px, which is the opposite of the problem being solved. */
   section > .lede {
     max-width: none;
   }
@@ -2031,7 +2020,7 @@ section > .lede {
 
 /* ── controls ──────────────────────────────────────────────────────────────── */
 /* `[hidden]` first: a bare `display: flex` below silently beats the UA's `[hidden] { display: none }`, which
-   left the Play button on screen for readers with no JavaScript to drive it. */
+   would leave the Play button on screen for readers with no JavaScript to drive it. */
 .replay-controls[hidden] {
   display: none;
 }
@@ -2131,11 +2120,9 @@ section > .lede {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════
-   TABLES — lifted from the delivery's own treatment, which is a bordered PANEL
-   with a mono head strip rather than a bare `<table>`. The panel is what makes a
-   table read as a figure instead of as leftover markup; without it the rows float
-   in the page with nothing holding them, which is exactly how /demo's provenance
-   section shipped when this component did not exist.
+   TABLES — a bordered PANEL with a mono head strip rather than a bare `<table>`.
+   The panel is what makes a table read as a figure instead of as leftover markup;
+   without it the rows float in the page with nothing holding them.
 
    Figures go in the right-hand column: mono, tabular, cyan, right-aligned, so a
    reader scans the values down a single edge instead of hunting across ragged
@@ -2146,8 +2133,8 @@ section > .lede {
   background: var(--cb-surface);
 }
 
-/* Two panels in a row sat flush, two hairlines touching and reading as one frame — the fault `.matters` below
-   already had. The same 28px block rhythm separates them. */
+/* Two panels in a row would otherwise sit flush, two hairlines touching and reading as one frame — the same
+   fault `.matters` below guards against. The same 28px block rhythm separates them. */
 .tpanel + .tpanel {
   margin-top: 28px;
 }
@@ -2579,9 +2566,9 @@ section > .lede {
   gap: 20px;
 }
 
-/* `gap` spaces the cards from EACH OTHER and nothing spaces the grid from what follows it, so the calibration
-   panel added after this grid sat flush against the cards' bottom border — two hairlines touching, reading as
-   one broken frame. 28px is the sheet's existing block rhythm (.lede's margin-bottom).
+/* `gap` spaces the cards from EACH OTHER and nothing spaces the grid from what follows it, so without this a
+   panel placed after the grid would sit flush against the cards' bottom border — two hairlines touching,
+   reading as one broken frame. 28px is the sheet's block rhythm (.lede's margin-bottom).
 
    Scoped with :not(:last-child) so the common case, where .matters ends its section, gains no trailing space. */
 .matters:not(:last-child) {
@@ -2601,11 +2588,11 @@ section > .lede {
    what makes a second flavor cheap — it drops its own version of this figure into
    this slot and changes nothing else on the site.
 
-   ALL FOUR STAGES STAY FULLY LEGIBLE. The delivery dims the inactive ones to .34
-   to cycle attention; full opacity is strictly better, for two reasons. Dimmed
-   body text stops clearing AA, and a figure whose job is to explain has no
-   business hiding information in order to direct the eye. Attention is directed by
-   a marker instead — one rule, on one stage, moving.
+   ALL FOUR STAGES STAY FULLY LEGIBLE. None is dimmed to cycle attention; full
+   opacity is strictly better, for two reasons. Body text dimmed to .34 opacity
+   drops below AA contrast, and a figure whose job is to explain has no business
+   hiding information in order to direct the eye. Attention is directed by a
+   marker instead — one rule, on one stage, moving.
 
    The only substantive motion is stage 03's three cost bars growing from zero.
    That is `transform: scaleX`, composited, and it makes the ranking visible before
@@ -2936,8 +2923,8 @@ section > .lede {
 /* Lit = present in both. Cyan means "this is the answer" here exactly as it does on
    /demo's axis and in the moat figure — one meaning, three figures. */
 /* Each shared key ignites AT THE MOMENT THE CURSOR REACHES IT. That is the whole difference between a figure
-   that decorates and one that explains: before this the cells were on fixed 0.5s delays while the cursor swept
-   independently, so nothing the cursor did appeared to cause anything.
+   that decorates and one that explains: cells on fixed delays of their own, with the cursor sweeping
+   independently, would make nothing the cursor does appear to cause anything.
 
    The cursor crosses the row over the first 40% of the loop, so a key at fraction `p` along it is reached at
    40 x p percent. Keys 0, 3, 6, 10 and 15 of 18 land at 0%, 6.7%, 13.3%, 22.2% and 33.3%.
@@ -3053,7 +3040,7 @@ section > .lede {
   background: var(--cb-ink);
 }
 
-/* 14s, not 7s: at 7s the sweep read as a transition rather than a pass over a list. It crosses in the first
+/* 14s, not 7s: at 7s the sweep reads as a transition rather than a pass over a list. It crosses in the first
    40% (about 5.6s, ~310ms per key) and then stays off-stage, so what a reader mostly sees is the RESULT. */
 @keyframes cb-cursor {
   0% {
@@ -3118,10 +3105,10 @@ section > .lede {
 /* ══════════════════════════════════════════════════════════════════════════════
    ROW LIST — marked rows, each with a statement, a figure, and a note.
 
-   Used three times on /architecture: the four-step trace, the invariants, and the
-   costs. It replaced a two-column card grid in the last two, which was the wrong
-   shape for three items — 2 + 1 always leaves an orphan and a hole beside it, and a
-   card gives a one-line claim the same weight as its explanation.
+   Used for the marked lists on /architecture, the four-step trace, the invariants
+   and the costs among them. A two-column card grid is the wrong shape for a list of
+   three — 2 + 1 always leaves an orphan and a hole beside it — and a card gives a
+   one-line claim the same weight as its explanation.
 
    The right-hand figure column is the reason this reads faster than cards: the
    numbers line up down a single edge, so a costs section can be scanned for what it
@@ -3215,7 +3202,7 @@ section > .lede {
 /* ══════════════════════════════════════════════════════════════════════════════
    TWO ARCHITECTURE DIAGRAMS — an erasure, and a publish.
 
-   These replace table rows. "the rewrite carries every other chunk through
+   Diagrams, not table rows. "the rewrite carries every other chunk through
    byte-for-byte and clears one bit" is a sentence a reader has to parse; three rows
    of cells where the marked id visibly stops being set in the next generation is a
    thing they can just see. Same for a generation flip: "storage objects are never
@@ -3224,12 +3211,6 @@ section > .lede {
 
    The left figure illustrates a whole-generation rewrite: one marked id, and a later
    row where it is absent.
-
-   Both are built here rather than ported, because the old site's versions were
-   never styled: `site/architecture.html` references .merge, .bits, .add, .gen,
-   .gen-bar, .gen-obj, .delta and .g7, and `site/cloudbitmaps.css` declares none of
-   them. 29 undefined class references on that page, which is how a diagram ships as
-   bare markup and nobody notices.
    ══════════════════════════════════════════════════════════════════════════════ */
 .dgm {
   margin: 0;
@@ -3307,7 +3288,7 @@ section > .lede {
   border: 2px solid var(--cb-cache);
 }
 
-/* That bit in the NEXT generation: cleared, where every neighbour was carried
+/* That bit in the NEXT generation: cleared, where every neighbour is carried
    through. Appears after the marked cell does, which is the causal order and the
    only reason the figure is worth having. */
 .dgm-cells i.gone {
@@ -3513,17 +3494,17 @@ section > .lede {
 }
 
 /* ── an API call named in a table cell ─────────────────────────────────────────
-   The delivery boxes these, and the box is what makes the "you call" column scan as API rather than
-   as prose. `.is-key` marks the one operation the tiering exists for.
+   Boxed, because the box is what makes the "you call" column scan as API rather than as prose.
+   `.is-key` marks the one operation the tiering exists for.
 
    That highlight is EXPLAINED in the panel's own footnote. Two chips in one column looking different
-   with nothing to say why is the legend-vs-figure fault that has already shipped three times on this
-   site; a colour that carries meaning needs a legend, or it needs to not carry meaning. */
+   with nothing to say why is a legend-vs-figure fault: a colour that carries meaning needs a legend, or
+   it needs to not carry meaning. */
 /* One rule for both variants: the chip's border is its own text colour. --cb-rule (#232830 on the dark
-   ground) is a HAIRLINE token meant for dividing panels, and at roughly 1.3:1 against --cb-surface it was
-   invisible as a box — so `has` and `add` read as bare words beside a clearly drawn cyan `intersect`,
-   which made the difference look like a rendering fault rather than emphasis. Using the text colour for
-   the border makes the two variants differ only in hue, which is what was intended. */
+   ground) is a HAIRLINE token meant for dividing panels, and at about 1.2:1 against --cb-surface it is
+   invisible as a box — `has` and `add` would read as bare words beside a clearly drawn cyan `intersect`,
+   and the difference would look like a rendering fault rather than emphasis. Using the text colour for
+   the border makes the two variants differ only in hue, which is the intent. */
 .call {
   font-family: var(--cb-mono);
   font-size: 12px;
@@ -3538,8 +3519,8 @@ section > .lede {
 }
 
 /* Inline in a footnote, a .call is a REFERENCE to a name in the table above, not a cell of its own —
-   so it keeps the colour and drops the box. Boxed, four of them mid-sentence made the paragraph look
-   like a broken table row. */
+   so it keeps the colour and drops the box. Boxed, calls mid-sentence make the paragraph look like a
+   broken table row. */
 .tpanel-foot .call {
   border: 0;
   padding: 0;
