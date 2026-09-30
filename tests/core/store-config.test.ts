@@ -1,7 +1,6 @@
 import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { randomBytes } from 'node:crypto';
 import {
-  isStorageBackend,
   createBackend,
   MemoryStorage,
   CloudRoaring,
@@ -14,6 +13,7 @@ import { CapabilityError, KeyUnavailableError, ValidationError } from '@/core/er
 import type { IStorageDriver, SegmentRef } from '@/index';
 import { seededStore } from '../helpers/loaded';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { isStorageBackend } from '@cloudbitmaps/core';
 
 // The store takes ONE config shape: `storage` is a backend (a driver and its registry, wrapped into the .crbm
 // storage source here, so drivers are wired once), a raw IStorageDriver (no registry, so a list-scan), OR an

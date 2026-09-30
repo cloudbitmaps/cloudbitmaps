@@ -769,9 +769,9 @@ function render() {
   const medium = byId('medium');
   const sample = [
     '```ts',
-    "import { estimateCost } from '@cloudbitmaps/roaring';",
+    "import { CloudRoaring } from '@cloudbitmaps/roaring';",
     '',
-    'const report = estimateCost({',
+    'const report = CloudRoaring.estimateCost({',
     `  segments: [{ sizeBytes: ${medium.segmentBytes.toLocaleString('en-US').replace(/,/g, '_')}, count: ${medium.segments.toLocaleString('en-US').replace(/,/g, '_')} }],`,
     '  workload: {',
     `    intersectsPerSec: ${medium.intersectsPerMonth / SECONDS_PER_MONTH}, // priced cold`,

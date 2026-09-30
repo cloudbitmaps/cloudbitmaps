@@ -173,9 +173,9 @@ the long tail: the segments that are too many or too large to keep in RAM, and t
 
 <!-- SIZING:SAMPLE:START -->
 ```ts
-import { estimateCost } from '@cloudbitmaps/roaring';
+import { CloudRoaring } from '@cloudbitmaps/roaring';
 
-const report = estimateCost({
+const report = CloudRoaring.estimateCost({
   segments: [{ sizeBytes: 4_000_000, count: 5_000 }],
   workload: {
     intersectsPerSec: 1, // priced cold

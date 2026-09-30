@@ -1,11 +1,11 @@
 import {
   CountingMetricsSink,
-  NOOP_METRICS,
   type IMetricsSink,
   type MetricEvent,
   type MetricOpName,
 } from '@/index';
 import { safeMetrics } from '@/core/metrics';
+import { NOOP_METRICS } from '@cloudbitmaps/core';
 
 describe('CountingMetricsSink', () => {
   it('tallies each event kind into the snapshot', () => {

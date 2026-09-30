@@ -13,15 +13,50 @@ so, and so do the module headers in the code.
 
 ### Breaking
 
-The first four remove exports: the first deletes names nothing in the library would still call, the second takes
-names off the public entries or moves them to the package that uses them, and the third and fourth remove the
-retrying driver wrappers and the bulk loader. The fifth makes the collection refuse a `keep` it used to accept. The
-next eight make a call throw where it used to return: six of them fix a wrong answer, and the entries under
+The first two narrow what an application sees: `@cloudbitmaps/roaring` exports a list of names in place of all of
+core's, and a `Segment` can no longer be constructed. The four after them remove exports: the first deletes names
+nothing in the library would still call, the second takes names off the public entries or moves them to the package
+that uses them, and the third and fourth remove the retrying driver wrappers and the bulk loader. The seventh makes
+the collection refuse a `keep` it used to accept. The next eight make a call throw where it used to return: six of them fix a wrong answer, and the entries under
 **Fixed** say what the call returned before; two hold a call to a rule the rest of the library already kept. The
 five after them hold the store, the backends and the registry to what the library itself takes and writes, stop
 checking for a local store's older directory layout, and give its errors the library's own brand. The last two
 change what `estimateCost()` compares with and what a `CostReport` carries.
 
+- **`@cloudbitmaps/roaring` exports an explicit list of names, not everything `@cloudbitmaps/core` exports.** An
+  application installs the flavor and sees the store, the errors, the types its signatures name, the backends'
+  shared types, and the constants and helpers a user calls. Every name below stays on `@cloudbitmaps/core`, which
+  flavor and driver authors still import, and core's main entry and `@cloudbitmaps/core/driver-kit` are unchanged.
+  - **Engine internals:** `SegmentEngine`, `EngineDeps`, `EngineCombineOptions` and `BoundedLru`. The engine was
+    reachable from the flavor only to build a `Segment`, which can no longer be built (next entry).
+  - **Metrics, budget and retry internals:** `safeMetrics`, `NOOP_METRICS`, `resolveBudget`, `resolvePerOpBudget`,
+    `collectWithinBudget`, `DEFAULT_BUDGET`, `checkBudget`, `withRetry`, `RetryDeps`, `RetryingStorageChunkSource`
+    and `RetryingOptions`. Omit `metrics` for the no-op sink, set `budget` and `retry` on the store, and retry a call
+    of your own with a loop that backs off while `isTransientError(err)` holds. `Budget` and `DEFAULT_RETRY_POLICY`
+    stay on the flavor.
+  - **Other internals:** `groundedReport` (use `seg.costReport()`), `splitId`, `mapWithConcurrency`, `segmentKey`
+    (use `seg.key()`), `isStorageBackend` and `PinnedStorageChunkSource` (use `seg.pin()`).
+  - **The standalone forms of store methods:** `listGenerations` (use `store.generations`), `rollbackSegment`
+    (`store.rollback`, which takes `allowForward`), `segmentExists` (`store.exists`), `listSegments`
+    (`store.segments`), `setSegmentRetention`, `getSegmentRetention` and `clearSegmentRetention`
+    (`store.setRetention`, `store.getRetention`, `store.clearRetention`), `runConsistencyCheck`
+    (`store.checkConsistency`), `runExport` (`store.exportSegments`), `dropSegment` (`store.dropSegment`),
+    `retireExpired` (`store.retireExpired`), `estimateCost` (`CloudRoaring.estimateCost`), `loadSegment`
+    (`store.load`), and the types `GenerationListDeps`, `RetentionDeps`, `DropDeps` and `LoadDeps`. The flavor's own
+    `loadSegment` and `runExport`, which bound the roaring codec, are deleted: core's versions take a `codec`, and the
+    flavor no longer exports one. To write through drivers of your own, build the store on
+    `createBackend({ storage, registry })` and call its methods. Every result type these produce stays exported,
+    because a store method returns it.
+  - **Erasure:** `eraseIdFromSegment`, `EraseIdDeps` and `EraseIdResult`. `store.eraseSubject` is the one erasure
+    verb.
+  - **Still on the flavor:** `destroySegment` and `eraseNamespace`, which take only a registry and have no store
+    method, and every other name in `@cloudbitmaps/roaring`'s export index.
+- **A `Segment` has no public constructor.** It took the store's internals (a `SegmentEngine`, a metrics sink, and
+  the functions that wire it to the store's write path), so `new Segment(…)` could not build a working handle
+  outside the store. Get one from `store.segment(name, options)`, or from `seg.pin()`. `Segment` stays exported for
+  `instanceof` and to annotate a variable, and `new Segment(…)` from JavaScript throws `ValidationError`.
+  `seg.key()`, an opaque string naming the handle's segment that is equal across a live handle and its pins, is
+  documented in the API reference.
 - **`TimeoutError`, `AuditEventKind`, `VERSION` and `MemoryStorageChunkSource` are deleted.** Nothing in the
   library would still call them.
   - `TimeoutError` was never constructed or thrown by any package: a request timeout a shipped driver recognises
@@ -38,9 +73,9 @@ change what `estimateCost()` compares with and what a `CostReport` carries.
   a name that stays, or a helper one package uses.
   - `writeCrbmGeneration`, `publishGeneration`, `nextGeneration`, `gcOrphanGenerations` and `GenerationDeps` are no
     longer exported, from `@cloudbitmaps/core` or `@cloudbitmaps/roaring`. `writeCrbmGeneration` was kept on purpose
-    until now. Load with `store.load(ref, ids, options)`, or `loadSegment()` where you wire the drivers yourself: it
-    takes the generation number, writes the object, publishes and collects. Collect with `keep` on `load` and on
-    the `*Into` verbs, or retire a segment with `store.dropSegment()` or the retention sweep.
+    until now. Load with `store.load(ref, ids, options)`, which takes the
+    generation number, writes the object, publishes and collects. Collect with `keep` on `load` and on the `*Into`
+    verbs, or retire a segment with `store.dropSegment()` or the retention sweep.
   - `SafeBitmap` and `roaringCodec` are no longer exported from `@cloudbitmaps/roaring`. Every call that takes a
     `codec` has it bound for you, so nothing needs them. An author of another flavor implements `CodecInterface`.
   - `DEFAULT_PRICING` is no longer exported. It was another name for `AWS_US_EAST_1_ONDEMAND`, which stays: clone
@@ -57,8 +92,8 @@ change what `estimateCost()` compares with and what a `CostReport` carries.
     and `@cloudbitmaps/roaring`.
 - **`RetryingStorageDriver` and `RetryingRegistryDriver` are no longer exported**, from `@cloudbitmaps/core` or
   `@cloudbitmaps/roaring`. Nothing in the library used them. The store's read retry is unchanged: every read of
-  segment data goes through `RetryingStorageChunkSource`, which stays exported, with `RetryingOptions`, `withRetry`
-  and `DEFAULT_RETRY_POLICY`, and the store's `retry` option is unchanged. The two removed wrappers retried every call of the driver they
+  segment data goes through `RetryingStorageChunkSource`, which stays on `@cloudbitmaps/core`, with `RetryingOptions`
+  and `withRetry`, and the store's `retry` option and `DEFAULT_RETRY_POLICY` are unchanged. The two removed wrappers retried every call of the driver they
   wrapped, writes included, and a retried conditional write can report a write that landed as a conflict: when a
   write-once put or a compare-and-swap lands and its response is lost, the replay finds that write already there,
   so the put throws `WriteConflictError` and a load reports `superseded`, for the caller's own write; a load whose
@@ -70,9 +105,8 @@ change what `estimateCost()` compares with and what a `CostReport` carries.
   load; pass a `keep` one above the number of attempts that landed to keep it. To learn whether an attempt landed,
   compare `store.generations(ref)` with what it listed before the call rather than replaying the request.
 - **`bulkLoadCrbmGeneration` and `BulkLoadResult` are no longer exported**, from `@cloudbitmaps/core` or
-  `@cloudbitmaps/roaring`. Load with `store.load(ref, ids, options)`, or `loadSegment(ref, ids, deps, options)` where
-  you wire the drivers yourself. Either takes the next generation number itself and publishes, and returns a
-  `LoadResult` whose `published` says whether the load took effect, where the removed result said `becameCurrent`.
+  `@cloudbitmaps/roaring`. Load with `store.load(ref, ids, options)`, which
+  takes the next generation number itself and publishes, and returns a `LoadResult` whose `published` says whether the load took effect, where the removed result said `becameCurrent`.
   Five more differences can change what a job does:
   - **A load collects.** Once it publishes, it deletes the generations the publish superseded, keeping the newest
     `keep` below the new pointer (default `1`). The removed loader deleted nothing, so a job that keeps older

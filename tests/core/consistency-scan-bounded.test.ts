@@ -1,14 +1,13 @@
 import {
-  runConsistencyCheck,
   BudgetExceededError,
   CloudRoaring,
   MemoryStorage,
   MIN_EXPIRES_AT_MS,
   createBackend,
-  retireExpired,
 } from '@/index';
 import { DEFAULT_MAX_SCAN_SEGMENTS } from '@/core/registry-scan';
 import type { RegistryRecord } from '@/core/ports';
+import { runConsistencyCheck, retireExpired } from '@cloudbitmaps/core';
 
 // The DR consistency check bounds its registry scan, like every other enumeration in the library.
 //

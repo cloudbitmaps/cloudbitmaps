@@ -37,8 +37,11 @@ pnpm add @cloudbitmaps/roaring @cloudbitmaps/s3   # the roaring flavor (flagship
 >
 > pnpm 9 and npm run it already. [Full symptoms and fixes](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#cannot-find-module-buildreleaseroaringnode-after-a-successful-install).
 
-Depend on `@cloudbitmaps/core` directly only to **author a flavor or a driver**. It has **zero runtime
-dependencies** of its own.
+Depend on `@cloudbitmaps/core` directly only to **author a flavor or a driver**. Its main entry is the
+flavor-author kit: the read engine, the standalone forms of the store's methods (`loadSegment`, `dropSegment`,
+`retireExpired` and the rest), and the retry and budget internals. `@cloudbitmaps/roaring` re-exports, by name, only
+what an application uses: the store's types, the errors, the backends' shared types, and the constants and helpers
+a user calls. It has **zero runtime dependencies** of its own.
 
 Full docs and guides live in the [repository](https://github.com/cloudbitmaps/cloudbitmaps), and each module
 there opens with a comment on what it is for and why. Licensed Apache-2.0.

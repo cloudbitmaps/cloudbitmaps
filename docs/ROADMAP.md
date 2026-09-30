@@ -156,7 +156,7 @@ is a dependency of both and is never installed directly. The storage drivers are
 
 - **Observability without telemetry** — an injected metrics sink and a separate, off-by-default audit sink
   emitting compliance state changes. Nothing is sent anywhere by default; there is no phone-home.
-- **Honest cost tooling** — `estimateCost` for planning and a grounded per-segment `costReport` from the
+- **Honest cost tooling** — `CloudRoaring.estimateCost` for planning and a grounded per-segment `costReport` from the
   segment's measured size, with a pluggable pricing profile that will tell you when CloudBitmaps *loses* to flat
   Redis. The crossover is a **read rate** at a given cache-hit rate, net of storage and the pointer refresh a
   long-lived reader pays, with a loads term that counts what `store.load()` sends. Each request count is held to

@@ -73,7 +73,7 @@ for await (const id of store.segment('vips').intersect([store.segment('engaged')
 ```
 
 **A store, a backend and the verbs above are the whole everyday surface.** The registry, the drivers and generation
-numbers exist and are exported; the few free functions that take drivers (a crypto-shred, a collection pass) take
+numbers exist and are exported; the few free functions that take drivers (a crypto-shred) take
 them from the backend, as `backend.registry` and `backend.storage`, so nothing is configured twice. Everything below
 here is detail.
 
@@ -637,9 +637,9 @@ is. `generations` is not retried either, so a fault there means asking again.
 > Writing your own driver? Throw `TransientError` for your backend's retryable faults: the store's read retry
 > rides them out, and a write's caller can tell them from a deterministic failure. The store wraps the source it
 > reads through, a `StorageChunkSource` you pass as `storage` included, so do not wrap one before handing it over:
-> that multiplies each read's attempts. `RetryingStorageChunkSource` is for a source you read outside a store, such
-> as under a `SegmentEngine` you build; the low-level `withRetry(op, policy, { clock, rng })` primitive is exported
-> too.
+> that multiplies each read's attempts. A call of your own is yours to retry: loop over it, and back off before the
+> next attempt when `isTransientError(err)` is true. The retry primitives a flavor or driver author builds on are on
+> `@cloudbitmaps/core`.
 
 ## 7. Materializing: the `*Into` verbs
 
@@ -758,7 +758,7 @@ Who runs it today:
 |---|---|
 | `store.load` | **it does** — collection is part of the call, keeping `keep` generations (default 1) |
 | an `*Into` | **you** — pass `keep` to collect on the way through; without it nothing is collected, and the next `store.load` of the destination collects everything below its own pointer beyond its `keep`. This is the step `store.load` exists to stop you forgetting |
-| `eraseSubject` / `eraseIdFromSegment` | **yes**, with `keep: 0` — the whole point is that the generation holding the bit does not survive the call. A holder *above* the pointer, which a `rollback` leaves there, is outside collection's range, so the erasure deletes it itself |
+| `eraseSubject` | **yes**, with `keep: 0` — the whole point is that the generation holding the bit does not survive the call. A holder *above* the pointer, which a `rollback` leaves there, is outside collection's range, so the erasure deletes it itself |
 | `retireExpired` | **yes**, for the tombstones it wrote itself — it collects a straggler generation before purging the row. A tombstone a hand-run `dropSegment` or a crypto-shred left is never touched |
 | `dropSegment` | deletes every generation of the segment it drops (and reports any it could not in `generationsRemaining`) |
 
@@ -933,8 +933,7 @@ Every later write to that segment reuses its DEK: a reload through `store.load` 
 keystore —
 loading a cleartext generation onto an encrypted segment is refused with `KeyUnavailableError`, because that
 would let a later crypto-shred over-attest), an `*Into` verb on a store wired with the keystore, and the erasure
-rewrite. To enforce encryption everywhere, set `encryption: { required: true }` on the store (or `requireEncryption: true`
-on the lower-level free functions' deps) — any cleartext write/read then throws.
+rewrite. To enforce encryption everywhere, set `encryption: { required: true }` on the store — any cleartext write/read then throws.
 
 **A segment's encryption is decided at its first generation, and cannot be switched later.** Wiring a keystore
 does not retroactively encrypt a segment that already has a cleartext generation: that load stays cleartext, and
@@ -1134,7 +1133,7 @@ It is the cheapest cluster of one kind, not the least Redis could cost, and its 
 <!-- SIZING:GUIDE_LEANINGS:END -->
 
 A report on one segment sizes its Redis to that segment alone, so the baselines of a store's segments do not add up
-to the store's. To judge a store, price all its segments in one `estimateCost()`. To alarm on one, sum the
+to the store's. To judge a store, price all its segments in one `CloudRoaring.estimateCost()`. To alarm on one, sum the
 segments' `monthlyUSD.total` and compare the sum with the Redis you would run for the store, as
 [the cost gauge](dashboards.md#2-cost-gauge-costreport--a-scheduled-sample) does: a per-segment verdict against that
 whole price fires only when one segment alone costs more than all of it. Two ways to compare differently:
@@ -1202,7 +1201,7 @@ on real S3.
 with this function, term by term, and says where a standing cache still wins.
 
 **See it plotted.** The [benchmarks page](../benchmarks.md) charts exactly where pay-per-use beats one Redis-HA
-cluster, `ONE_REDIS_HA_CLUSTER`, whatever the data size — drawn from this same `estimateCost()` and turned into
+cluster, `ONE_REDIS_HA_CLUSTER`, whatever the data size — drawn from this same `CloudRoaring.estimateCost()` and turned into
 build-breaking CI assertions, so the numbers can never drift ahead of reality.
 
 ## 12. Audit trail: security & compliance events
@@ -1215,10 +1214,9 @@ GDPR Art. 30 "record of processing" for the erasure path. Like metrics, it's an 
 **off by default** (a no-op), and a throwing sink can never break the operation it observes.
 
 Unlike metrics, audit isn't a store-constructor option — the events fire from the **operations that write**,
-which are separate entry points, so you pass `audit` to each: a load (`store.load`, `loadSegment`), an `*Into`
-materialisation, a rollback (`store.rollback`, `rollbackSegment`), an erasure (`store.eraseSubject`,
-`eraseIdFromSegment`), a drop (`store.dropSegment`, `dropSegment`), a crypto-shred (`destroySegment`,
-`eraseNamespace`) and the retention sweep (`store.retireExpired`, `retireExpired`):
+which are separate entry points, so you pass `audit` to each: a load (`store.load`), an `*Into`
+materialisation, a rollback (`store.rollback`), an erasure (`store.eraseSubject`), a drop (`store.dropSegment`), a
+crypto-shred (`destroySegment`, `eraseNamespace`) and the retention sweep (`store.retireExpired`):
 
 ```ts
 import { RecordingAuditSink, destroySegment } from '@cloudbitmaps/roaring';
@@ -1244,10 +1242,10 @@ The events are **vendor-neutral** — seven kinds, each carrying the segment's n
 
 | Event | Fired when | Extra fields |
 | --- | --- | --- |
-| `segment.publish` | a load — `store.load`, `loadSegment` or an `*Into` verb — makes a generation the current one | `generation` |
+| `segment.publish` | a load — `store.load` or an `*Into` verb — makes a generation the current one | `generation` |
 | `segment.load-refused` | a load did not publish: a guard refused its result, the segment's row changed while it wrote, or another load took its generation number first, in which case it wrote nothing and `cardinality` is `0` | `generation`, `reason`, `cardinality` |
-| `segment.rollback` | `store.rollback` or `rollbackSegment` moved the pointer to a generation it names, still in the bucket: **backwards**, or forward with `allowForward` — the one pointer move no automatic path makes | `fromGeneration`, `generation` |
-| `segment.rewrite` | a generation derived from the segment itself became current in place of `fromGeneration` — today, an erasure rewrite (`eraseSubject` / `eraseIdFromSegment`), emitted at the publish, before the superseded generation is collected | `fromGeneration`, `generation` |
+| `segment.rollback` | `store.rollback` moved the pointer to a generation it names, still in the bucket: **backwards**, or forward with `allowForward` — the one pointer move no automatic path makes | `fromGeneration`, `generation` |
+| `segment.rewrite` | a generation derived from the segment itself became current in place of `fromGeneration` — today, an erasure rewrite (`eraseSubject`), emitted at the publish, before the superseded generation is collected | `fromGeneration`, `generation` |
 | `segment.erase` | a **genuine crypto-shred** — not the idempotent re-run, and not a cleartext tombstone (bytes stay readable) | — |
 | `segment.dispose` | `dropSegment` tombstoned a segment and swept its storage — the weaker, storage-reclamation attestation; an encrypted drop emits **both** this and `segment.erase` | `generationsDeleted` |
 | `namespace.erase` | `eraseNamespace` runs; also one `segment.erase` per segment actually shredded | `segmentsShredded` |
@@ -1310,8 +1308,8 @@ rewritten, so the entry carries no `generation` and no `segment.rewrite` event i
 Both helpers **reuse the store's own drivers** — no `registry`/deps to re-pass. `eraseSubject` needs the store
 built with a **backend** (it writes generations); `subjectReport` needs one too, for the registry it
 enumerates before it calls `has()`. A store missing what a helper needs throws `UnsupportedError` — a
-pre-built-`StorageChunkSource` store can't run `eraseSubject`; use the `eraseIdFromSegment(ref, id, { storage, registry,
-keystore? })` free function out-of-process instead. The returned `erasedFrom` list is your **erasure ledger**
+pre-built-`StorageChunkSource` store can't run `eraseSubject`; build the store on a backend instead
+(`createBackend({ storage, registry })` wraps drivers of your own). The returned `erasedFrom` list is your **erasure ledger**
 (proof of deletion) — a return value only, so persist it or route it to your audit sink (a `segment.rewrite` event
 is also emitted per rewrite when you pass `audit`).
 
@@ -1328,7 +1326,7 @@ is also emitted per rewrite when you pass `audit`).
   is still present, and lists nothing for the segment if the racing writer was an erasure of the same id that
   already removed it. The outcome is read off the registry row, so a segment whose row is tombstoned or purged
   mid-rewrite is left out of the ledger, as a fresh call would leave it out — you never have to care at which
-  point it was discovered. (`eraseIdFromSegment` reports those two as `'destroyed'` and `'absent'`.)
+  point it was discovered.
 - `` `error: <message>` `` — an isolated per-segment fault. Causes worth telling apart: a transient storage
   fault (re-run), a missing keystore for an encrypted segment (wire it), an `IntegrityError` naming a chunk
   whose values are out of range — that segment is **corrupt**, the rewrite refused to copy the corruption into a
@@ -1878,8 +1876,7 @@ Run it **after any restore** and as a periodic health check. It needs a **backen
 requirement as the other lifecycle helpers; throws `UnsupportedError` otherwise) and fans out at a bounded
 `concurrency` (default 8). It holds the registry rows it enumerates resident, at most **250,000**, and past that
 throws `BudgetExceededError` rather than report a partial scan as a whole one. `store.checkConsistency` takes no
-ceiling of its own: narrow the scan with `namespace`, or run the free function over the backend's two halves,
-`runConsistencyCheck({ storage: backend.storage, registry: backend.registry }, { maxScanSegments })`. It visits
+ceiling of its own: narrow the scan with `namespace`, and check a larger fleet one namespace at a time. It visits
 registry rows, so objects whose row is gone are not in its report; `store.generations(ref)` lists those. A single unreadable segment never aborts the scan — it lands in `errored` so you still
 get the full picture; and each segment is checked against its authoritative **live** pointer (a strong read), not
 the enumeration snapshot, so a concurrent load that advanced the generation during the scan isn't misreported as
@@ -2131,8 +2128,8 @@ bytes as well as by count — lower `cache.readerMaxBytes` for a memory-tight de
 reads across many wide segments.
 
 **Neither limits how many ids a segment can hold.** A segment holds up to the full 32-bit id space — ~4.29
-billion members — and no ceiling here changes that. `maxScanSegments` — an option of `retireExpired` and
-`runConsistencyCheck`, while `store.checkConsistency` holds the default of 250,000 — counts **segments**, distinct
+billion members — and no ceiling here changes that. `maxScanSegments` — an option of `store.retireExpired`,
+while `store.checkConsistency` holds the default of 250,000 — counts **segments**, distinct
 named bitmaps in the registry, not members: 500 audience segments count as 500, whatever their size.
 
 ## What blocks the event loop, and where to run it
@@ -2145,7 +2142,7 @@ on an M3 Pro:
 | path | cost | longest single stall | where it belongs |
 | --- | --- | --- | --- |
 | a load, `store.load()` (1M ids spread across the id space, in-memory storage) | ~405 ms | **~22 ms** (26 ms at worst) | a batch job or worker; survivable off the request path |
-| `eraseSubject` / `eraseIdFromSegment` | decodes and re-encodes every chunk of the segment — same order of work as a load | yields on the same cadence | an admin job, never a request handler |
+| `eraseSubject` | decodes and re-encodes every chunk of the segment — same order of work as a load | yields on the same cadence | an admin job, never a request handler |
 | `has` / `count` / `intersect` / `union` / `andNot` | microseconds of CPU; dominated by network | — | anywhere |
 
 The **stall** column is the number that decides whether co-resident work survives, and it is not the same as
@@ -2157,7 +2154,7 @@ enough for a health check to time out and the instance to be pulled from its loa
 median of seven runs, measured on the same machine.
 
 Yielding is on by default for `@cloudbitmaps/roaring` users; there is nothing to configure. It needs a `Clock`,
-which the flavor package passes to `store.load()`, `loadSegment` and `eraseIdFromSegment`. If you call
+which the store passes to its loads and its erasures. If you call
 `@cloudbitmaps/core` directly, pass one (`clock`) or the work runs uninterrupted.
 
 **The rule:** anything that touches a whole generation belongs out of the request path. Yielding makes a load a

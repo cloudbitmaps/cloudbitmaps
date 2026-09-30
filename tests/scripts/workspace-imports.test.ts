@@ -7,9 +7,10 @@ import { fileURLToPath } from 'node:url';
  * Every name our own `scripts/`, `bench/` and `fuzz/` code imports from a workspace package must actually be
  * exported by it.
  *
- * WHY THIS FILE EXISTS. `packages/roaring` re-exports core with `export *`, so a name core keeps internal —
- * `drainRegistry`, `DEFAULT_MAX_SCAN_SEGMENTS`, `CrbmWriter`, `BufferSink` — is absent from the flavor too. A
- * script that destructures one from there gets `undefined`, which throws only when the script uses it:
+ * WHY THIS FILE EXISTS. `packages/roaring` re-exports from core by name, so a name core keeps internal —
+ * `drainRegistry`, `DEFAULT_MAX_SCAN_SEGMENTS`, `CrbmWriter`, `BufferSink` — and a name core exports but the
+ * flavor leaves on core — `collectWithinBudget`, `estimateCost` — are absent from the flavor. A script that
+ * destructures one from there gets `undefined`, which throws only when the script uses it:
  *
  *   const { drainRegistry } = require('@cloudbitmaps/roaring') → TypeError: drainRegistry is not a function
  *   const { BufferSink } = require('@cloudbitmaps/roaring')    → TypeError: BufferSink is not a constructor
@@ -53,10 +54,8 @@ function barrelFor(spec: string): string | null {
   return existsSync(abs) ? abs : null;
 }
 
-/** Names a barrel exports, following the one `export *` form the repo permits (the flavor re-exporting core). */
-function exportedNames(barrel: string, seen = new Set<string>()): Set<string> {
-  if (seen.has(barrel)) return new Set();
-  seen.add(barrel);
+/** Names a barrel exports. No barrel uses `export *`, so its own text names every one. */
+function exportedNames(barrel: string): Set<string> {
   const code = readFileSync(barrel, 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/\/\/.*$/gm, '');
@@ -74,12 +73,6 @@ function exportedNames(barrel: string, seen = new Set<string>()): Set<string> {
     /export\s+(?:abstract\s+)?(?:interface|class|type|function|const)\s+([A-Za-z0-9_$]+)/g,
   ))
     if (decl[1]) names.add(decl[1]);
-  // `export * from '@cloudbitmaps/core'` — the flavor's wholesale re-export. Follow it, or every name a
-  // script legitimately reaches through the flavor would look unexported.
-  for (const star of code.matchAll(/export\s+\*\s+from\s+'([^']+)'/g)) {
-    const target = barrelFor(star[1] ?? '');
-    if (target !== null) for (const n of exportedNames(target, seen)) names.add(n);
-  }
   return names;
 }
 

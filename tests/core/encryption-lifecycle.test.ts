@@ -7,13 +7,15 @@ import {
   MemoryStorageDriver,
   MemoryRegistryDriver,
   destroySegment,
-  eraseIdFromSegment,
   eraseNamespace,
 } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
+import { roaringCodec } from '@/roaring-codec';
 import { KeyUnavailableError, ValidationError, WriteConflictError } from '@/core/errors';
-import type { EraseIdDeps, IKeystore, SegmentRef } from '@/index';
+import type { IKeystore, SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { eraseIdFromSegment } from '@cloudbitmaps/core';
+import type { EraseIdDeps } from '@cloudbitmaps/core';
 
 const SEG: SegmentRef = { segment: 's' };
 const k = (): Uint8Array => randomBytes(32);
@@ -29,7 +31,7 @@ const k = (): Uint8Array => randomBytes(32);
 function world(keystore?: IKeystore) {
   const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver();
-  const deps: EraseIdDeps = { storage, registry, keystore };
+  const deps: EraseIdDeps = { storage, registry, keystore, codec: roaringCodec };
   const store = (ks = keystore): CloudRoaring =>
     new CloudRoaring({
       storage: new CrbmStorageChunkSource(storage, { registry, keystore: ks }),

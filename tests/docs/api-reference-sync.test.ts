@@ -78,6 +78,13 @@ function exportedNames(src: string): string[] {
   return [...names];
 }
 
+/** The entry a barrel file is, as the index's headings name it: `@cloudbitmaps/roaring`, `@cloudbitmaps/core/driver-kit`. */
+function entryOf(barrel: string): string {
+  const [, pkg, file] = /packages\/([^/]+)\/src\/(.+)\.ts$/.exec(barrel) ?? [];
+  if (pkg === undefined || file === undefined) throw new Error(`not a package barrel: ${barrel}`);
+  return file === 'index' ? `@cloudbitmaps/${pkg}` : `@cloudbitmaps/${pkg}/${file}`;
+}
+
 describe('API reference (docs/guide/api-reference.md) is in sync with the exported surface', () => {
   const doc = read(DOC_PATH);
   // The check is scoped to the "Complete export index" section, which the page itself calls the completeness
@@ -89,33 +96,61 @@ describe('API reference (docs/guide/api-reference.md) is in sync with the export
   if (indexStart === -1) throw new Error(`api-reference.md is missing "${INDEX_HEADING}"`);
   const exportIndex = doc.slice(indexStart);
 
+  /** The index's text under every `### \`<entry>\`` heading, so a name is held to the entry it is exported from. */
+  const sectionsOf = (entry: string): string => {
+    const heading = new RegExp(`^### \`${entry.replace(/[/@-]/g, '\\$&')}\`(?: .*)?$`, 'm');
+    const chunks: string[] = [];
+    let rest = exportIndex;
+    for (let m = heading.exec(rest); m !== null; m = heading.exec(rest)) {
+      const after = rest.slice(m.index + m[0].length);
+      const next = after.search(/^##/m);
+      chunks.push(next === -1 ? after : after.slice(0, next));
+      rest = next === -1 ? '' : after.slice(next);
+    }
+    return chunks.join('\n');
+  };
+
+  /**
+   * What each entry's section must list. The flavor lists everything it exports; core's main entry lists only
+   * what the flavor does not re-export, so a name sits under the one heading an application would look under.
+   */
+  const exportedBy = (() => {
+    const byEntry = new Map(BARRELS.map((b) => [entryOf(b), new Set(exportedNames(read(b)))]));
+    const flavor = byEntry.get('@cloudbitmaps/roaring');
+    const coreMain = byEntry.get('@cloudbitmaps/core');
+    if (flavor === undefined || coreMain === undefined) throw new Error('missing a barrel');
+    byEntry.set('@cloudbitmaps/core', new Set([...coreMain].filter((n) => !flavor.has(n))));
+    return byEntry;
+  })();
+
   for (const barrel of BARRELS) {
     const label = barrel.replace('../../', '');
+    const entry = entryOf(barrel);
     it(`documents every export from ${label}`, () => {
       const src = read(barrel);
-      // `export *` would let names slip past this guard, so it is only allowed when it re-exports a barrel that
-      // this test ALSO parses. The roaring facade legitimately does `export * from '@cloudbitmaps/core'` (so
-      // the flavor package is the one name to know), and core's own barrel is in BARRELS above — so every name
-      // is still checked. Any OTHER star-export is rejected.
-      const ALLOWED_STAR = /^export \* from '@cloudbitmaps\/core';$/;
+      // `export *` would let names slip past this guard, and it would make an entry's surface whatever another
+      // package exports. Every entry names what it exports, so adding a name is a change to this file's barrel
+      // and to the index, on purpose.
       // Scan COMMENT-STRIPPED source (as `exportedNames` does) so prose mentioning `export *` isn't a hit.
       const codeOnly = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
       const stars = codeOnly.match(/export\s+\*[^\n]*/g) ?? [];
       expect(
-        stars.filter((line) => !ALLOWED_STAR.test(line.trim())),
-        `${label}: use explicit named exports (no \`export *\`) so the sync guard sees every name — ` +
-          `the only exception is re-exporting a barrel this test also parses`,
+        stars,
+        `${label}: use explicit named exports (no \`export *\`) so the sync guard sees every name`,
       ).toEqual([]);
-      const missing = exportedNames(src).filter((name) => !exportIndex.includes(`\`${name}\``));
+      const section = sectionsOf(entry);
+      expect(section, `the index has no "### \`${entry}\`" section`).not.toBe('');
+      const missing = [...(exportedBy.get(entry) ?? [])].filter(
+        (name) => !section.includes(`\`${name}\``),
+      );
       expect(
         missing,
-        `export(s) missing from the "Complete export index" section of docs/guide/api-reference.md: ${missing.join(', ')}`,
+        `export(s) missing from the \`${entry}\` section of the "Complete export index" in docs/guide/api-reference.md: ${missing.join(', ')}`,
       ).toEqual([]);
     });
   }
 
-  it('lists no export that no longer exists (the reverse direction)', () => {
-    const exported = new Set(BARRELS.flatMap((b) => exportedNames(read(b))));
+  it('lists no export that no longer exists, or under an entry that does not export it (the reverse direction)', () => {
     // Only names in a `·`-joined RUN count as index entries. That is how every list on this page is written,
     // and it is what separates an entry from a prose mention: the driver sections describe options in
     // sentences (`containerClient`, `connectionString`, a GCS client called `storage`) that are backticked
@@ -123,14 +158,16 @@ describe('API reference (docs/guide/api-reference.md) is in sync with the export
     // separator reads the page's own structure instead. Under-coverage is the safe direction here — a lone
     // entry outside a run would go unchecked, whereas over-firing would teach people to route around this.
     const RUN = /`[A-Za-z_$][A-Za-z0-9_$]*`(?:\s*·\s*`[A-Za-z_$][A-Za-z0-9_$]*`)+/g;
-    const cited = (exportIndex.match(RUN) ?? []).flatMap((run) =>
-      [...run.matchAll(/`([^`]+)`/g)].map((m) => m[1] ?? ''),
-    );
-    const stale = [...new Set(cited)].filter((name) => !exported.has(name));
-    expect(
-      stale,
-      `the "Complete export index" lists name(s) nothing exports any more — prune them: ${stale.join(', ')}`,
-    ).toEqual([]);
+    for (const [entry, names] of exportedBy) {
+      const cited = (sectionsOf(entry).match(RUN) ?? []).flatMap((run) =>
+        [...run.matchAll(/`([^`]+)`/g)].map((m) => m[1] ?? ''),
+      );
+      const stale = [...new Set(cited)].filter((name) => !names.has(name));
+      expect(
+        stale,
+        `the \`${entry}\` section of the "Complete export index" lists name(s) that entry does not export (or, for core, that the flavor re-exports too) — prune them: ${stale.join(', ')}`,
+      ).toEqual([]);
+    }
   });
 
   it('extracts a sane number of exports (guards against the parser silently matching nothing)', () => {

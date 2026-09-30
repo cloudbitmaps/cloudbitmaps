@@ -14,7 +14,10 @@ always-on cache, with the familiar bitmap API: `has`, `count`, `iterate`, `inter
 This is the **flagship flavor** of the [CloudBitmaps](https://github.com/cloudbitmaps/cloudbitmaps) family: the
 roaring codec (CRoaring, via `roaring`) plus the `CloudRoaring` facade, on top of the codec-agnostic
 [`@cloudbitmaps/core`](https://www.npmjs.com/package/@cloudbitmaps/core) engine, which is a dependency of
-this package and of the storage package you pair it with — so you never install or name core yourself.
+this package and of the storage package you pair it with — so you never install or name core yourself. This
+package exports what an application uses: the store, the errors, the types its signatures name, and the constants
+and helpers a user calls. The engine and the standalone forms of the store's methods are on core, for someone
+writing a flavor or a driver.
 
 ```bash
 pnpm add @cloudbitmaps/roaring @cloudbitmaps/s3   # the codec, and the storage you have

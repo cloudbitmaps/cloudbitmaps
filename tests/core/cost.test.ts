@@ -2,7 +2,6 @@ import { writeCrbmGeneration } from '@/core/crbm-storage-source';
 import { SafeBitmap } from '@/roaring-codec';
 import {
   CloudRoaring,
-  estimateCost,
   AWS_US_EAST_1_ONDEMAND,
   ELASTICACHE_REDIS_US_EAST_1_ONDEMAND,
   ONE_REDIS_HA_CLUSTER,
@@ -19,6 +18,7 @@ import {
 import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
 import { CountingObjectStore, counting } from '../helpers/counting';
 import { seededStore } from '../helpers/loaded';
+import { estimateCost } from '@cloudbitmaps/core';
 
 /**
  * The cost model of a loaded store. There is no per-id write term — data arrives only as a generation, so the

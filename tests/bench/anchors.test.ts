@@ -5,7 +5,6 @@ import {
   CountingMetricsSink,
   MemoryStorageDriver,
   CrbmStorageChunkSource,
-  estimateCost,
   AWS_US_EAST_1_ONDEMAND,
   ONE_REDIS_HA_CLUSTER,
   type MetricsSnapshot,
@@ -13,6 +12,7 @@ import {
 } from '@/index';
 import { joinId } from '@/core/bit-route';
 import { collect, loadedStore, seededStore } from '../helpers/loaded';
+import { estimateCost } from '@cloudbitmaps/core';
 
 /**
  * Benchmark-as-test anchors. These are the **defensible-floor** cost/perf claims turned into CI

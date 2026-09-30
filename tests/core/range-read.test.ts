@@ -13,10 +13,10 @@ import { describe, expect, it } from 'vitest';
 import { CloudRoaring, CountingMetricsSink, MemoryStorage, createBackend } from '@/index';
 import type { CloudRoaringOptions, IdRange, Segment } from '@/index';
 import { BudgetExceededError, IntegrityError, NotFoundError, ValidationError } from '@/core/errors';
-import { SegmentEngine } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { collect, seedSegment } from '../helpers/loaded';
 import { SafeBitmap } from '@/roaring-codec';
+import { SegmentEngine } from '@cloudbitmaps/core';
 
 const K = 65_536;
 const U32_MAX = 0xffff_ffff;

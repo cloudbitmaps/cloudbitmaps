@@ -202,13 +202,14 @@ function entriesOf(pkgDir) {
 async function exerciseCore(label, m) {
   for (const name of [
     'CloudRoaring',
-    'estimateCost',
     'MemoryStorageDriver',
     'MemoryRegistryDriver',
     'MemoryStorage',
   ]) {
     if (m[name] == null) throw new Error(`${label}: missing export ${name}`);
   }
+  if (typeof m.CloudRoaring.estimateCost !== 'function')
+    throw new Error(`${label}: CloudRoaring.estimateCost is missing`);
   // A BACKEND, which is what the docs tell users to build, so the round-trip goes through the pointer. A raw
   // driver with no registry would leave the pointer path silently dead: a store with one generation
   // list-scans to the same answer, so the round-trip would keep passing. This file is plain CJS, so no

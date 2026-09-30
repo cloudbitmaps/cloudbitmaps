@@ -1,7 +1,7 @@
 import { gcOrphanGenerations } from '@/core/generation-gc';
 import { publishGeneration } from '@/core/crbm-storage-source';
 import { randomBytes } from 'node:crypto';
-import { MemoryStorage, CloudRoaring, CrbmStorageChunkSource, dropSegment } from '@/index';
+import { MemoryStorage, CloudRoaring, CrbmStorageChunkSource } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
 import {
   NotFoundError,
@@ -9,9 +9,11 @@ import {
   ValidationError,
   WriteConflictError,
 } from '@/core/errors';
-import type { DropDeps, IKeystore, SegmentRef } from '@/index';
+import type { IKeystore, SegmentRef } from '@/index';
 import { loadedStore } from '../helpers/loaded';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { dropSegment } from '@cloudbitmaps/core';
+import type { DropDeps } from '@cloudbitmaps/core';
 
 /**
  * `dropSegment` — the operational sibling of crypto-shred: it deletes the objects.

@@ -240,7 +240,7 @@ produces one.
 - **Default rates, one cluster** (`aws-us-east-1-ondemand` against `ONE_REDIS_HA_CLUSTER`, cache off). Your
   region, cloud, committed term and cache-hit rate all move the crossover, and so does your data's size: the
   estimator's default prices the Redis that would hold it, which [what it costs at your size](guide/sizing.md)
-  works through. Feed your own `PricingProfile` and workload to `estimateCost()`.
+  works through. Feed your own `PricingProfile` and workload to `CloudRoaring.estimateCost()`.
 - **Model, not a cloud bill** — the dollars in the crossover chart come from the cost formulas + published
   rates. Measured AWS dollars live in [Real-cloud calibration](#real-cloud-calibration--aws).
 - **Three kinds of number here.** The crossover chart is _modeled money_ (estimator, deterministic, CI-gated);
@@ -252,7 +252,7 @@ produces one.
   default `aws-us-east-1-ondemand` rates, dated where it was measured; the crossover is drawn against
   `ONE_REDIS_HA_CLUSTER`, and the stats table's last row against the Redis the default profile sizes for the
   reference set. Treat the _ratios_ as the durable
-  finding and re-derive any absolute figure from your own region and contract — `estimateCost()` takes a
+  finding and re-derive any absolute figure from your own region and contract — `CloudRoaring.estimateCost()` takes a
   `PricingProfile` so you can plug your real rates in rather than trusting ours.
 
 ## What is still owed

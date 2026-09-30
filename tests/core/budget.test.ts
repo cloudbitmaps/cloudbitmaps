@@ -1,7 +1,8 @@
-import { BudgetExceededError, DEFAULT_BUDGET } from '@/index';
+import { BudgetExceededError } from '@/index';
 import { resolveBudget, resolvePerOpBudget, checkBudget } from '@/core/budget';
 import { ValidationError } from '@/core/errors';
 import { collect, loadedStore, seededStore } from '../helpers/loaded';
+import { DEFAULT_BUDGET } from '@cloudbitmaps/core';
 
 /**
  * The denial-of-wallet budget, in the units the loaded store actually bills: **storage chunk fetches**. `count` /

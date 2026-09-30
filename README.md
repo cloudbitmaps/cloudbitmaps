@@ -35,7 +35,7 @@
 > retention policies and a `retireExpired` sweep you schedule · **encryption-at-rest** (opt-in AES-256-GCM,
 > bring-your-own-key, **no required cloud dependency**) with **crypto-shred** erasure · an optional
 > **observability metrics sink** (`IMetricsSink` — storage/cache/retry/intersect/op events, no-op by default, no
-> telemetry dependency) · a **cost estimator** (`estimateCost` planning + grounded `costReport` from real
+> telemetry dependency) · a **cost estimator** (`CloudRoaring.estimateCost` planning + grounded `costReport` from real
 > segment sizes, with a pluggable pricing profile and an honest win/lose verdict) · and an optional **audit
 > sink** (`IAuditSink` — publish / rewrite / dispose / crypto-shred events for an append-only audit log or SIEM,
 > a truthful GDPR Art. 30 erasure trail).
@@ -502,17 +502,17 @@ suppress nobody. Pass `allowAbsentOperands: true` when an operand may legitimate
 | `store.exportSegments(sink, { format })` | eject every segment to `roaring`/`ndjson` via an injected sink (your exit path) |
 | `CloudRoaring.estimateCost(input)` | planning estimate (static, no data) |
 
-**Lower-level free functions.** Most of the above is also exported as a standalone function taking explicit
-deps — `loadSegment` (the load), `eraseIdFromSegment`, `destroySegment` / `eraseNamespace`, `dropSegment`,
-`setSegmentRetention` / `getSegmentRetention` / `clearSegmentRetention`, and `retireExpired` (the sweep).
-Nothing here schedules itself — run the sweep from a cron, a Lambda on a timer, or a `CronJob`.
+**Free functions.** `destroySegment` and `eraseNamespace` (crypto-shred) are standalone functions over a registry,
+because they need no store. Every other verb is a store method. Nothing here schedules itself — run the sweep from a
+cron, a Lambda on a timer, or a `CronJob`.
 
-**Prefer the store's own methods.** Building a store is free — no I/O, no connection — so a scheduled job has
-no reason to compose a write path by hand, and composing is where steps get dropped: `store.load` runs the
-empty guard *and* collects the generations below the one it published (keeping the newest by default), which a
-write composed from the primitives does not.
-Reach for these only when you have no store to hold — most often a read-only store built on a pre-built
-`StorageChunkSource`, where the lifecycle helpers throw by design.
+**Building a store is free** — no I/O, no connection — so a scheduled job has no reason to compose a write path by
+hand, and composing is where steps get dropped: `store.load` runs the empty guard *and* collects the generations
+below the one it published (keeping the newest by default), which a write composed from the primitives does not.
+A store built on a pre-built `StorageChunkSource` is read-only, so the lifecycle methods throw by design; to write
+through drivers of your own, build the store on `createBackend({ storage, registry })`. The standalone forms of the
+store's methods (`loadSegment`, `dropSegment`, `retireExpired` and the rest) are on `@cloudbitmaps/core`, for
+someone writing a flavor or a driver.
 
 ### What this is not
 

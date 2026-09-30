@@ -352,7 +352,7 @@ npm audit signatures</code></pre>
                   <td class="num">storage</td>
                 </tr>
                 <tr>
-                  <td><span class="m">estimateCost(input)</span></td>
+                  <td><span class="m">CloudRoaring.estimateCost(input)</span></td>
                   <td class="from">
                     Your region and rates in, projected bill out. The
                     <a href="benchmarks.html">benchmarks page</a> is generated from this same function.
@@ -617,10 +617,10 @@ npm audit signatures</code></pre>
             <div class="tpanel-head">
               <span class="label">estimate.ts</span><span class="label">Pure — touches nothing</span>
             </div>
-            <pre class="code-plain"><code><span class="k">import</span> { estimateCost, AWS_US_EAST_1_ONDEMAND }
+            <pre class="code-plain"><code><span class="k">import</span> { CloudRoaring, AWS_US_EAST_1_ONDEMAND }
   <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
 
-<span class="k">const</span> bill = estimateCost({
+<span class="k">const</span> bill = CloudRoaring.estimateCost({
   segments: [{ sizeBytes: <span class="n">60_000_000</span>, count: <span class="n">20</span> }],
   workload: { readsPerSec: <span class="n">800</span>, loadsPerMonth: <span class="n">900</span>, hotSegments: <span class="n">20</span> },
   pricing: AWS_US_EAST_1_ONDEMAND,  <span class="c">// or your own profile</span>

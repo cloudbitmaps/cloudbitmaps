@@ -8,10 +8,10 @@ import {
   LocalFsStorageDriver,
   LocalFsRegistryDriver,
   NotFoundError,
-  runConsistencyCheck,
 } from '@/index';
 import type { AuditEvent, Segment, SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from './helpers/bulk-load';
+import { runConsistencyCheck } from '@cloudbitmaps/core';
 
 /**
  * Executable DR drill — the [disaster-recovery runbook](docs/guide/disaster-recovery.md)
