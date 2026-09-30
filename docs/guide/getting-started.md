@@ -442,13 +442,14 @@ const store = new CloudRoaring({ storage: backend });
 
 > **S3 registry requirements:** the bucket backend must honor `If-Match` conditional writes (AWS S3; recent
 > MinIO), the IAM principal needs **`s3:ListBucket`** (else a missing key returns `403` not `404`, and
-> discovery can't list), and **don't put a lifecycle-expiration rule on the `registry/` prefix** (deleted rows are
-> tombstoned for the pointer's ABA-safety).
+> discovery can't list), and **don't put a rule on the `registry/` prefix that expires a current version** (deleted rows are
+> tombstoned for the pointer's ABA-safety; a rule on noncurrent versions only is safe, and is the optional recipe in the
+> [disaster-recovery guide](disaster-recovery.md#optional-make-a-shred-durable-with-a-registry-expiry-rule)).
 
 **GCS and Azure Blob work exactly the same way**, each using its own cloud's conditional write —
 `ifGenerationMatch` on GCS, `If-None-Match` / `If-Match` on Azure — so the compare-and-swap is enforced by the
-service rather than by the client. The same "no lifecycle rule on the `registry/` prefix" caveat applies to all
-three.
+service rather than by the client. The same caveat applies to all three: no lifecycle rule on the `registry/` prefix that deletes a current
+version.
 
 > **One lifecycle rule you should add:** **`AbortIncompleteMultipartUpload`**, on the bucket holding storage
 > objects (a few days is plenty). A large generation is written as a multipart upload; the library aborts it on
@@ -1352,11 +1353,15 @@ loads of the affected segments for the duration, or fix the source first and loa
 racing erasure).
 
 **Do not roll the segment back while erasing from it.** A rollback that lands mid-erasure can move the pointer onto
-a generation the erasure did not rewrite. One that lands before the publish, or while the call deletes generations
-above the pointer, is reported as `'superseded'`; one that lands while it collects can put the pointer on a
-generation that still holds the id, which the call reports as an `error: …` note instead of `erased: true`. Re-run
-either, once the pointer is where you want it. Roll back before the erasure
-starts or after it returns.
+a generation the erasure did not rewrite. What the call reports depends on where it lands. Before the publish, the
+entry says `'superseded'`. After it, while the call collects, the generation it replaced can be left above the
+lowered pointer, or be the one the pointer now names: a generation that still holds the id stays in the bucket, and
+the call reports an `error: …` note instead of `erased: true`. When the id was not in the current generation and
+nothing was published, a rollback while the call deletes generations above the pointer is reported as
+`'superseded'` if a holder is left, and one while it collects is an `error: …` note. In the last instant before a
+delete, a rollback onto the generation being deleted leaves the pointer on a missing object, which
+`checkConsistency()` reports. Re-run any of these once the pointer is where you want it. Roll back before the
+erasure starts or after it returns.
 
 **Who stops seeing the id, and when.** The erasure is immediate in storage and immediate in the store that
 performed it — that store drops what it had cached about the segment before returning, so it cannot keep

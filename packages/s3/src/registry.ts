@@ -21,7 +21,8 @@
  * - The IAM principal needs **`s3:ListBucket`** on the bucket. Without it, `GetObject` on a missing key
  *   returns `403` (not `404`), so the "absent segment → `null`" contract (and `create`'s bootstrap read)
  *   breaks — and `list()` needs it regardless.
- * - **Do not apply an S3 lifecycle-expiration rule to the `registry/` prefix.** See {@link ObjectStoreRegistry}.
+ * - **Do not apply an S3 lifecycle-expiration rule to the `registry/` prefix that expires a current version**
+ *   (`NoncurrentVersionExpiration` is safe). See {@link ObjectStoreRegistry}.
  */
 import {
   IntegrityError,

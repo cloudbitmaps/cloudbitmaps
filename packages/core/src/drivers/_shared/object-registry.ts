@@ -27,8 +27,8 @@
  *   degrades compare-and-swap to last-write-wins → lost `currentGen` swaps.
  * - Reads must be **strongly consistent** — true of S3 (since 2020), GCS and Azure Blob — since the registry
  *   advertises `strongRead` and generation resolution depends on it.
- * - **Do not apply a lifecycle-expiration rule to the `registry/` prefix.** `delete` tombstones (keeps the
- *   object with an advanced counter) for ABA-safety; expiring a tombstone would let a recreate reset the
+ * - **Do not apply a lifecycle-expiration rule to the `registry/` prefix that expires a current version.**
+ *   `delete` tombstones (keeps the object with an advanced counter) for ABA-safety; expiring a tombstone would let a recreate reset the
  *   token to 0 and re-issue a stale one.
  *
  * **`list()` is fail-closed, and one bad object stops it for everyone.** An object under the `registry/`

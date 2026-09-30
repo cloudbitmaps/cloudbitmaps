@@ -1251,7 +1251,7 @@ export class CloudRoaring {
    * It deletes nothing. The generations above the new pointer stay put — which is what makes this reversible —
    * and are then *above* `currentGen`, where collection never looks. They remain until a load numbers above them
    * (collection then keeps the newest `keep` of what is below its pointer), {@link CloudRoaring.dropSegment}
-   * deletes them, or {@link CloudRoaring.eraseSubject} does: all of them when it rewrites, and only those holding
+   * deletes them, or {@link CloudRoaring.eraseSubject} does: all of those present when it rewrites, and only those holding
    * the id when the current generation does not. An operator who has just undone a bad load should not have the
    * evidence collected out from under them, while a rollback target that still holds erased data would make the
    * erasure undoable.
