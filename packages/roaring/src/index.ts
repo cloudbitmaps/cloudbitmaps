@@ -1662,11 +1662,16 @@ export class CloudRoaring {
    * **Cross-tier DR consistency check.** After a restore/failover, verify every registered segment's `currentGen`
    * actually has its `.crbm` present in Storage — catching a **torn restore** where the registry (`currentGen`) came
    * back ahead of the object store, so a pointer references a generation that isn't there (reads would then
-   * throw). Read-only, bounded fan-out; run it at startup after a restore. Returns `{ checked, inconsistent }` —
-   * `inconsistent` empty ⇒ coherent; otherwise it names the segments to recover (restore the object store, or
-   * roll the registry back to a coherent point). Needs the store built with a **backend**
+   * throw). Read-only, bounded fan-out; run it at startup after a restore. Returns `{ checked, inconsistent,
+   * errored }` — `inconsistent` empty ⇒ coherent; otherwise it names the segments to recover (restore the object
+   * store, or roll the registry back to a coherent point). Needs the store built with a **backend**
    * (throws {@link UnsupportedError} otherwise). `destroyed` (crypto-shredded) segments are skipped. Pair it with
    * the DR runbook (docs/guide/disaster-recovery.md).
+   *
+   * It holds the registry rows it enumerates resident, at most 250,000 of them, and throws
+   * `BudgetExceededError` past that rather than report a partial scan as a whole one. This method takes no
+   * ceiling of its own: narrow the scan with `namespace`, or call `runConsistencyCheck` over the backend's
+   * `storage` and `registry` with a higher `maxScanSegments`.
    */
   async checkConsistency(
     options: { namespace?: string; concurrency?: number } = {},

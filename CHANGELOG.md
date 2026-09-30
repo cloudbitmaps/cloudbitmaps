@@ -369,6 +369,10 @@ These two change what `estimateCost()` reports:
   chunk fetched, never per id or on a cache hit, and costs a third to a half of the CRC32C the `.crbm` reader already
   computes over the same payload: about 0.7 µs for a 2 KB chunk and 2.5 to 3.2 µs for an 8 KB one, measured on an M3
   Pro.
+- **`store.checkConsistency` told a caller to raise an option it does not take.** Past its ceiling of 250,000
+  registry rows its `BudgetExceededError` said to raise `maxScanSegments`, which only `runConsistencyCheck` takes. It
+  now names `runConsistencyCheck`, over the backend's `storage` and `registry`, as the call that raises it, beside
+  narrowing the scan with `namespace`.
 - **`store.rollback(ref, generation, { allowForward: true })` did not compile.** Its options type took `audit`
   alone, though the call passed `allowForward` through to `rollbackSegment` and the docs showed it for undoing a
   rollback. The type now takes `allowForward`, as `rollbackSegment`'s does.

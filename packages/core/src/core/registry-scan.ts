@@ -37,10 +37,20 @@ export function validateMaxScanSegments(value: number, op: string): void {
  */
 export async function drainRegistry(
   registry: IRegistryDriver,
-  options: { namespace?: string; maxScanSegments: number; op: string },
+  options: {
+    namespace?: string;
+    maxScanSegments: number;
+    op: string;
+    /**
+     * How a caller of `op` raises the ceiling, completing "Narrow it with `namespace`, or …" in the refusal.
+     * Defaults to raising `maxScanSegments`, which is right wherever `op` takes that option itself.
+     */
+    raise?: string;
+  },
 ): Promise<RegistryRecord[]> {
   const { maxScanSegments, op } = options;
   validateMaxScanSegments(maxScanSegments, op);
+  const raise = options.raise ?? 'raise `maxScanSegments`';
   const rows: RegistryRecord[] = [];
   for await (const rec of registry.list(options.namespace)) {
     // A due-index pointer is bookkeeping, not a segment. It lives in a reserved namespace, so an unscoped fleet
@@ -51,8 +61,8 @@ export async function drainRegistry(
     if (rows.length >= maxScanSegments) {
       throw new BudgetExceededError(
         `${op} would enumerate more than ${maxScanSegments} segments — the scan was abandoned there rather than ` +
-          `completed. Narrow it with \`namespace\`, or raise \`maxScanSegments\` if the fleet really is that large ` +
-          `and the memory is available (a record is a few hundred bytes resident).`,
+          `completed. Narrow it with \`namespace\`, or ${raise} if the fleet really is that large and the memory ` +
+          `is available (a record is a few hundred bytes resident).`,
       );
     }
     rows.push(rec);
