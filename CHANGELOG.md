@@ -127,15 +127,17 @@ change what `estimateCost()` compares with and what a `CostReport` carries.
     could, are no longer exported either (see above).
 - **The size settings are options of the backend classes, where they were options of the separate storage halves.**
   Set each one on the backend; a backend refuses the settings of another backend by name, as it refuses any key it
-  does not take, and a setting keeps the name, default and validation it had.
-  - `S3Storage` takes `partBytes`, the multipart part size (default 8 MiB, raised to S3's 5 MiB minimum), and
-    `maxObjectBytes`, the largest object it writes and advertises (default `partBytes` × 10,000, about 80 GiB).
-    They were options of `S3StorageDriver`.
+  does not take, and a setting keeps the name and default it had. Each must be a positive safe integer, and a value
+  that is not throws `ValidationError` naming the option, from the backend's constructor. `S3Storage` and
+  `GcsStorage` used to accept `NaN`, zero, a negative or a fraction for these and size their writes from it.
+  - `S3Storage` takes `partBytes`, the multipart part size (default 8 MiB; a smaller value is raised to S3's 5 MiB
+    minimum, and the part size grows so 10,000 parts cover `maxObjectBytes`), and `maxObjectBytes`, the largest
+    object it writes and advertises (default `partBytes` × 10,000, about 80 GiB). They were options of
+    `S3StorageDriver`.
   - `GcsStorage` takes `simpleUploadThresholdBytes`, the size up to which an object is one simple request (default
     8 MiB), and `maxObjectBytes` (default 5 TiB, GCS's maximum). They were options of `GcsStorageDriver`.
   - `AzureBlobStorage` takes `blockBytes`, the staged block size (default 8 MiB), and `maxObjectBytes` (default
-    `blockBytes` × 50,000, about 400 GiB). Each must be a positive safe integer, and a value that is not throws
-    `ValidationError` from the backend's constructor. They were options of `AzureBlobStorageDriver`.
+    `blockBytes` × 50,000, about 400 GiB). They were options of `AzureBlobStorageDriver`.
   - `MemoryStorage` and `LocalFsStorage` had no size settings, and take none.
 - **The separate storage and registry halves, their options types and `createBackend` are no longer exported.** An
   application gets both halves from one backend class and never names one. Removed from `@cloudbitmaps/core` and

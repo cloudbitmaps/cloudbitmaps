@@ -161,6 +161,52 @@ describe('a backend configures both halves from one place', () => {
     }
   });
 
+  it('a size setting that is not a positive safe integer is refused by name, on every backend', () => {
+    const bads = [
+      0,
+      -1,
+      1.5,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      2 ** 53,
+      '8' as unknown as number,
+    ];
+    const s3 = { bucket: 'b' };
+    const gcs = { bucket: 'b', apiEndpoint: 'http://127.0.0.1:4443' };
+    const azure = { connectionString: AZURITE_CONN, container: 'c' };
+    for (const bad of bads) {
+      expect(() => new S3Storage({ ...s3, partBytes: bad })).toThrow(/partBytes must be/);
+      expect(() => new S3Storage({ ...s3, maxObjectBytes: bad })).toThrow(/maxObjectBytes must be/);
+      expect(() => new GcsStorage({ ...gcs, maxObjectBytes: bad })).toThrow(
+        /maxObjectBytes must be/,
+      );
+      expect(() => new GcsStorage({ ...gcs, simpleUploadThresholdBytes: bad })).toThrow(
+        /simpleUploadThresholdBytes must be/,
+      );
+      expect(() => new AzureBlobStorage({ ...azure, blockBytes: bad })).toThrow(
+        /blockBytes must be/,
+      );
+      expect(() => new AzureBlobStorage({ ...azure, maxObjectBytes: bad })).toThrow(
+        /maxObjectBytes must be/,
+      );
+    }
+    for (const fn of [
+      () => new S3Storage({ ...s3, partBytes: Number.NaN }),
+      () => new GcsStorage({ ...gcs, simpleUploadThresholdBytes: 0 }),
+    ]) {
+      expect(fn).toThrow(ValidationError);
+    }
+  });
+
+  it('S3Storage raises a small partBytes to the 5 MiB floor and grows it to cover maxObjectBytes in 10,000 parts', () => {
+    const MIB = 1024 * 1024;
+    const part = (o: object) =>
+      (new S3Storage({ bucket: 'b', ...o }).storage as unknown as { partBytes: number }).partBytes;
+    expect(part({ partBytes: 1 })).toBe(5 * MIB);
+    expect(part({ partBytes: 1, maxObjectBytes: 1 })).toBe(5 * MIB);
+    expect(part({ partBytes: 5 * MIB, maxObjectBytes: 100 * MIB * 10_000 })).toBe(100 * MIB);
+  });
+
   it('a size setting that belongs to another backend is still refused by name', () => {
     const s3 = (options: object) => () => new S3Storage(options as { bucket: string });
     expect(s3({ bucket: 'b', blockBytes: 1 })).toThrow(/does not take `blockBytes`/);

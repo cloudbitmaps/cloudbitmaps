@@ -38,8 +38,8 @@ superseded, keeping one generation below the new pointer. It takes an array, a S
 bare driver, which has no registry, so the store is read-only and cleartext; or an already-built
 StorageChunkSource for advanced reader wiring, which is read-only too and reads with whatever registry and
 keystore it was built with. A driver author who wants halves of their own — an instrumented driver, a registry
-elsewhere — pairs them with `brandAsBackend({ storage, registry })` from `@cloudbitmaps/core/driver-kit`. Nothing mutates a stored bitmap, so a crash before the publish leaves
-the previous generation authoritative, a rerun is idempotent, and there is no partially-visible write. There is
+elsewhere — pairs them with `brandAsBackend({ storage, registry })` from `@cloudbitmaps/core/driver-kit`.
+Nothing mutates a stored bitmap, so a crash before the publish leaves the previous generation authoritative, a rerun is idempotent, and there is no partially-visible write. There is
 no per-id write. `intersectInto`/`unionInto`/`andNotInto` use the same protocol, publishing their result as a
 new generation of the destination segment — and check the result is plausible the same way `load` does: an empty
 or implausible combine over a non-empty destination is refused (`published: false` + `reason`) rather than

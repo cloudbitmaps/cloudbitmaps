@@ -84,7 +84,8 @@ export interface S3StorageDriverOptions {
    * auto-grows so 10,000 parts still cover it (raising peak write memory to ~one part); up to the 5 TiB S3 max.
    */
   readonly maxObjectBytes?: number;
-  /** Multipart part size in bytes (default 8 MiB; clamped to the S3 5 MiB minimum). Tunes peak write memory. */
+  /** Multipart part size in bytes (default 8 MiB; a smaller value is raised to the S3 5 MiB minimum). Must be a
+   * positive safe integer. Tunes peak write memory. */
   readonly partBytes?: number;
 }
 
@@ -99,6 +100,16 @@ export class S3StorageDriver implements IStorageDriver {
     this.client = options.client;
     this.bucket = options.bucket;
     this.prefix = normalizeS3Prefix(options.prefix);
+    // Fail fast at the boundary: `??` only guards `undefined`, so NaN, 0, a negative or a fraction would otherwise
+    // reach the arithmetic below and size every part (and the advertised cap) from garbage.
+    for (const [name, value] of [
+      ['partBytes', options.partBytes],
+      ['maxObjectBytes', options.maxObjectBytes],
+    ] as const) {
+      if (value !== undefined && (!Number.isSafeInteger(value) || value < 1)) {
+        throw new ValidationError(`${name} must be a positive safe integer; got ${value}`);
+      }
+    }
     const requestedPart = Math.max(options.partBytes ?? S3_PART_BYTES, 5 * 1024 * 1024);
     // Default the object cap to what the requested part size can actually cover within S3's 10,000-part limit;
     // if a larger cap is requested, grow the part size to keep it reachable (so the advertised cap is honest).

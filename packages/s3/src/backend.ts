@@ -56,9 +56,11 @@ export interface S3StorageOptions {
    * Largest object the backend will write and advertise. Default = `partBytes × 10,000` (≈ 80 GiB at the default
    * 8 MiB part) — the honest ceiling reachable within S3's 10,000-part limit. Set it higher and `partBytes`
    * auto-grows so 10,000 parts still cover it (raising peak write memory to ~one part); up to the 5 TiB S3 max.
+   * Must be a positive safe integer.
    */
   readonly maxObjectBytes?: number;
-  /** Multipart part size in bytes (default 8 MiB; clamped to the S3 5 MiB minimum). Tunes peak write memory. */
+  /** Multipart part size in bytes (default 8 MiB; a smaller value is raised to the S3 5 MiB minimum). Must be a
+   * positive safe integer. Tunes peak write memory. */
   readonly partBytes?: number;
   /** Injected clock for the registry's `createdAt`/`updatedAt`; defaults to `Date.now`. */
   readonly now?: () => number;

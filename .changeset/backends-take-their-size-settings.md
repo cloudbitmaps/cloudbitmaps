@@ -8,8 +8,10 @@
 
 The size settings are options of the backend classes: `S3Storage` takes `partBytes` and `maxObjectBytes`,
 `GcsStorage` takes `simpleUploadThresholdBytes` and `maxObjectBytes`, and `AzureBlobStorage` takes `blockBytes` and
-`maxObjectBytes`, each with the name, default and validation it had on the separate storage half. The separate
-storage and registry halves (`S3StorageDriver`, `S3RegistryDriver`, `GcsStorageDriver`, `GcsRegistryDriver`,
+`maxObjectBytes`, each with the name and default it had on the separate storage half. Each must be a positive safe
+integer, and a value that is not throws `ValidationError` naming the option; `S3Storage` and `GcsStorage` used to
+accept `NaN`, zero, a negative or a fraction. `brandAsBackend` also throws `ValidationError` for a frozen object.
+The separate storage and registry halves (`S3StorageDriver`, `S3RegistryDriver`, `GcsStorageDriver`, `GcsRegistryDriver`,
 `AzureBlobStorageDriver`, `AzureBlobRegistryDriver`, `MemoryStorageDriver`, `MemoryRegistryDriver`,
 `LocalFsStorageDriver`, `LocalFsRegistryDriver`), their options types and `createBackend` are no longer exported.
 Build a backend from a backend class; to pair halves of your own, use `brandAsBackend({ storage, registry })` from

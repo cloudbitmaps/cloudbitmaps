@@ -383,6 +383,15 @@ describe('CloudRoaring constructor — one config shape (storage: a backend, a r
       }
     });
 
+    it('`brandAsBackend` refuses a frozen or non-extensible object with a ValidationError, not a raw TypeError', () => {
+      const a = new MemoryStorage();
+      for (const lock of [Object.freeze, Object.seal, Object.preventExtensions]) {
+        const halves = lock({ storage: a.storage, registry: a.registry });
+        expect(() => brandAsBackend(halves)).toThrow(ValidationError);
+        expect(() => brandAsBackend(halves)).toThrow(/frozen or non-extensible/);
+      }
+    });
+
     it('rejects an ambiguous `storage` exposing both getChunk and putImmutable', () => {
       const hybrid = {
         getChunk: () => null,

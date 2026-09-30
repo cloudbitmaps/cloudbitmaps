@@ -33,9 +33,10 @@ export interface GcsStorageOptions {
   readonly projectId?: string;
   /** Endpoint override — point it at fake-gcs-server locally. Ignored when `client` is supplied. */
   readonly apiEndpoint?: string;
-  /** Largest object the backend will write and advertise (default = GCS's 5 TiB max). */
+  /** Largest object the backend will write and advertise (default = GCS's 5 TiB max). Must be a positive safe integer. */
   readonly maxObjectBytes?: number;
-  /** Bytes at/under which a single non-resumable upload is used instead of a resumable stream (default 8 MiB). */
+  /** Bytes at/under which a single non-resumable upload is used instead of a resumable stream (default 8 MiB).
+   * Must be a positive safe integer. */
   readonly simpleUploadThresholdBytes?: number;
   /** Injected clock for the registry's `createdAt`/`updatedAt`; defaults to `Date.now`. */
   readonly now?: () => number;
@@ -43,7 +44,7 @@ export interface GcsStorageOptions {
 
 /**
  * The keys `new GcsStorage(options)` takes. Any other is refused by name rather than ignored: an ignored client key
- * — `storage`, as `GcsStorageDriver` calls it — falls back to ambient credentials and the **public** endpoint, and
+ * — `storage`, as the lower-level storage driver calls it — falls back to ambient credentials and the **public** endpoint, and
  * for a client pointed at an emulator that is production traffic from a wiring typo.
  */
 export const GCS_STORAGE_OPTION_KEYS = [

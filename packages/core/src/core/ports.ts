@@ -296,7 +296,8 @@ export const STORAGE_BACKEND: typeof STORAGE_BACKEND_BRAND = STORAGE_BACKEND_BRA
  * from one backend class, which derives them from one bucket and one prefix so they cannot disagree.
  *
  * It throws {@link ValidationError} when `storage` has no `putImmutable` or `registry` has no `compareAndSwap`,
- * so a half that is not a driver is refused here rather than at its first write.
+ * so a half that is not a driver is refused here rather than at its first write, and when `target` is frozen or
+ * non-extensible, since the brand is stamped on it in place.
  *
  * It cannot check that the halves agree: `IStorageDriver` and `IRegistryDriver` do not expose a location, so
  * nothing here can compare one. Branding two unrelated halves is you taking that on — the plain
@@ -335,12 +336,19 @@ export function brandAsBackend<T extends { storage: IStorageDriver; registry: IR
       'brandAsBackend: `registry` must be an IRegistryDriver (it has no `compareAndSwap`)',
     );
   }
-  Object.defineProperty(target, STORAGE_BACKEND_BRAND, {
-    value: true,
-    enumerable: false,
-    writable: false,
-    configurable: false,
-  });
+  try {
+    Object.defineProperty(target, STORAGE_BACKEND_BRAND, {
+      value: true,
+      enumerable: false,
+      writable: false,
+      configurable: false,
+    });
+  } catch {
+    // A frozen, sealed or non-extensible object cannot take the brand, and the brand is stamped in place.
+    throw new ValidationError(
+      'brandAsBackend: cannot brand a frozen or non-extensible object — pass a plain object or a class instance',
+    );
+  }
   return target as T & StorageBackend;
 }
 
