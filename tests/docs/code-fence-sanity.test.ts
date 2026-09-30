@@ -188,8 +188,7 @@ describe('documentation code samples', () => {
   });
 
   // The three cloud backends refuse a key they do not take, as the store does, so a sample that passes one throws
-  // on its first line. The keys come from each backend's own table, which its constructor checks against. The
-  // driver classes take other keys (`S3StorageDriver`'s `partBytes`), and `new S3StorageDriver(` is not read here.
+  // on its first line. The keys come from each backend's own table, which its constructor checks against.
   const BACKEND_KEYS = {
     S3Storage: S3_STORAGE_OPTION_KEYS,
     GcsStorage: GCS_STORAGE_OPTION_KEYS,
@@ -214,8 +213,11 @@ describe('documentation code samples', () => {
     const keys = (code: string): string[] =>
       unknownConstructorKeys(code, 'S3Storage', S3_STORAGE_OPTION_KEYS).map((k) => k.key);
     expect(keys("new S3Storage({ bucket: 'b', prefix: 'p', client, region: 'r' })")).toEqual([]);
-    expect(keys("new S3Storage({ bucket: 'b', partBytes: 1 << 26 })")).toEqual(['partBytes']);
-    expect(keys("new S3StorageDriver({ client, bucket: 'b', partBytes: 1 << 26 })")).toEqual([]);
+    expect(keys("new S3Storage({ bucket: 'b', partBytes: 1 << 26 })")).toEqual([]);
+    expect(keys("new S3Storage({ bucket: 'b', forcePathStyle: true })")).toEqual([
+      'forcePathStyle',
+    ]);
+    expect(keys("new S3Driver({ client, bucket: 'b', forcePathStyle: true })")).toEqual([]);
     expect(keys("new S3Storage({ ...where, bucket: 'b' }) // a comment naming storage: x")).toEqual(
       [],
     );

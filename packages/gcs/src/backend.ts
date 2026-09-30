@@ -33,6 +33,10 @@ export interface GcsStorageOptions {
   readonly projectId?: string;
   /** Endpoint override — point it at fake-gcs-server locally. Ignored when `client` is supplied. */
   readonly apiEndpoint?: string;
+  /** Largest object the backend will write and advertise (default = GCS's 5 TiB max). */
+  readonly maxObjectBytes?: number;
+  /** Bytes at/under which a single non-resumable upload is used instead of a resumable stream (default 8 MiB). */
+  readonly simpleUploadThresholdBytes?: number;
   /** Injected clock for the registry's `createdAt`/`updatedAt`; defaults to `Date.now`. */
   readonly now?: () => number;
 }
@@ -48,6 +52,8 @@ export const GCS_STORAGE_OPTION_KEYS = [
   'client',
   'projectId',
   'apiEndpoint',
+  'maxObjectBytes',
+  'simpleUploadThresholdBytes',
   'now',
 ] as const;
 
@@ -98,7 +104,13 @@ export class GcsStorage implements StorageBackend {
       bucket: options.bucket,
       ...(options.prefix === undefined ? {} : { prefix: options.prefix }),
     };
-    this.storage = new GcsStorageDriver(shared);
+    this.storage = new GcsStorageDriver({
+      ...shared,
+      ...(options.maxObjectBytes === undefined ? {} : { maxObjectBytes: options.maxObjectBytes }),
+      ...(options.simpleUploadThresholdBytes === undefined
+        ? {}
+        : { simpleUploadThresholdBytes: options.simpleUploadThresholdBytes }),
+    });
     this.registry = new GcsRegistryDriver({
       ...shared,
       ...(options.now === undefined ? {} : { now: options.now }),

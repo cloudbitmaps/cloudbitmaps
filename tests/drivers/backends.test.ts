@@ -123,6 +123,58 @@ describe('a backend configures both halves from one place', () => {
     }
   });
 
+  // The size settings are options of the backend, and the backend hands them to the storage half, which is the
+  // one that writes the objects. Each is read back off the half's advertised ceiling or its write threshold.
+  it('S3Storage takes maxObjectBytes and partBytes and gives them to its storage half', () => {
+    const MIB = 1024 * 1024;
+    expect(new S3Storage({ bucket: 'b' }).storage.capabilities().maxObjectBytes).toBe(
+      8 * MIB * 10_000,
+    );
+    const sized = new S3Storage({ bucket: 'b', partBytes: 5 * MIB, maxObjectBytes: 1234 });
+    expect(sized.storage.capabilities().maxObjectBytes).toBe(1234);
+    expect((sized.storage as unknown as { partBytes: number }).partBytes).toBe(5 * MIB);
+    // The default ceiling follows the part size it is given.
+    expect(
+      new S3Storage({ bucket: 'b', partBytes: 5 * MIB }).storage.capabilities().maxObjectBytes,
+    ).toBe(5 * MIB * 10_000);
+  });
+
+  it('GcsStorage takes maxObjectBytes and simpleUploadThresholdBytes and gives them to its storage half', () => {
+    const opts = { bucket: 'b', apiEndpoint: 'http://127.0.0.1:4443' };
+    expect(new GcsStorage(opts).storage.capabilities().maxObjectBytes).toBe(5 * 1024 ** 4);
+    const sized = new GcsStorage({ ...opts, maxObjectBytes: 1234, simpleUploadThresholdBytes: 7 });
+    expect(sized.storage.capabilities().maxObjectBytes).toBe(1234);
+    expect((sized.storage as unknown as { threshold: number }).threshold).toBe(7);
+  });
+
+  it('AzureBlobStorage takes maxObjectBytes and blockBytes, gives them to its storage half, and refuses a bad one', () => {
+    const opts = { connectionString: AZURITE_CONN, container: 'c' };
+    expect(new AzureBlobStorage(opts).storage.capabilities().maxObjectBytes).toBe(
+      8 * 1024 * 1024 * 50_000,
+    );
+    const sized = new AzureBlobStorage({ ...opts, blockBytes: 4, maxObjectBytes: 1234 });
+    expect(sized.storage.capabilities().maxObjectBytes).toBe(1234);
+    expect((sized.storage as unknown as { blockBytes: number }).blockBytes).toBe(4);
+    for (const bad of [0, -1, 1.5, Number.NaN]) {
+      expect(() => new AzureBlobStorage({ ...opts, blockBytes: bad })).toThrow(ValidationError);
+      expect(() => new AzureBlobStorage({ ...opts, maxObjectBytes: bad })).toThrow(ValidationError);
+    }
+  });
+
+  it('a size setting that belongs to another backend is still refused by name', () => {
+    const s3 = (options: object) => () => new S3Storage(options as { bucket: string });
+    expect(s3({ bucket: 'b', blockBytes: 1 })).toThrow(/does not take `blockBytes`/);
+    expect(s3({ bucket: 'b', simpleUploadThresholdBytes: 1 })).toThrow(
+      /`simpleUploadThresholdBytes`/,
+    );
+    const gcs = (options: object) => () => new GcsStorage(options as { bucket: string });
+    expect(gcs({ bucket: 'b', partBytes: 1 })).toThrow(/does not take `partBytes`/);
+    const azure = (options: object) => () => new AzureBlobStorage(options);
+    expect(
+      azure({ connectionString: AZURITE_CONN, container: 'c', simpleUploadThresholdBytes: 1 }),
+    ).toThrow(/does not take `simpleUploadThresholdBytes`/);
+  });
+
   it('each cloud backend takes exactly the keys its options interface declares (checked by the compiler)', () => {
     const agree: {
       readonly s3: SameKeys<

@@ -10,7 +10,8 @@
  * ambient credential chain and region exactly as the SDK would. Pass `client` instead when you need a
  * credential chain the SDK cannot infer (SSO, an assumed role, a custom retry strategy); pass `endpoint` +
  * `pathStyle` + `credentials` for an S3-compatible store (MinIO, Ceph, R2). Both halves stay reachable as `.storage` and
- * `.registry` for anyone wiring something the facade does not cover.
+ * `.registry` for anyone wiring something the facade does not cover. `maxObjectBytes` and `partBytes` size the
+ * multipart upload.
  */
 import { STORAGE_BACKEND, ValidationError, brandAsBackend } from '@cloudbitmaps/core/driver-kit';
 import type {
@@ -51,6 +52,14 @@ export interface S3StorageOptions {
     readonly secretAccessKey: string;
     readonly sessionToken?: string;
   };
+  /**
+   * Largest object the backend will write and advertise. Default = `partBytes × 10,000` (≈ 80 GiB at the default
+   * 8 MiB part) — the honest ceiling reachable within S3's 10,000-part limit. Set it higher and `partBytes`
+   * auto-grows so 10,000 parts still cover it (raising peak write memory to ~one part); up to the 5 TiB S3 max.
+   */
+  readonly maxObjectBytes?: number;
+  /** Multipart part size in bytes (default 8 MiB; clamped to the S3 5 MiB minimum). Tunes peak write memory. */
+  readonly partBytes?: number;
   /** Injected clock for the registry's `createdAt`/`updatedAt`; defaults to `Date.now`. */
   readonly now?: () => number;
 }
@@ -68,6 +77,8 @@ export const S3_STORAGE_OPTION_KEYS = [
   'endpoint',
   'pathStyle',
   'credentials',
+  'maxObjectBytes',
+  'partBytes',
   'now',
 ] as const;
 
@@ -115,7 +126,11 @@ export class S3Storage implements StorageBackend {
       bucket: options.bucket,
       ...(options.prefix === undefined ? {} : { prefix: options.prefix }),
     };
-    this.storage = new S3StorageDriver(shared);
+    this.storage = new S3StorageDriver({
+      ...shared,
+      ...(options.maxObjectBytes === undefined ? {} : { maxObjectBytes: options.maxObjectBytes }),
+      ...(options.partBytes === undefined ? {} : { partBytes: options.partBytes }),
+    });
     this.registry = new S3RegistryDriver({
       ...shared,
       ...(options.now === undefined ? {} : { now: options.now }),

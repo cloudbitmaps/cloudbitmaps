@@ -26,6 +26,15 @@ export interface AzureBlobStorageOptions {
   readonly container?: string;
   /** Optional blob-name prefix under which everything lives — generations and the registry alike. */
   readonly prefix?: string;
+  /**
+   * Largest blob the backend will write and advertise. Default = `blockBytes × 50,000` (≈ 400 GiB at the default
+   * 8 MiB block) — the honest ceiling reachable within Azure's 50,000-block limit. Set it higher and
+   * `blockBytes` auto-grows so 50,000 blocks still cover it (raising peak write memory to ~one block).
+   * Must be a positive safe integer.
+   */
+  readonly maxObjectBytes?: number;
+  /** Staged block size in bytes (default 8 MiB). Tunes peak write memory. Must be a positive safe integer. */
+  readonly blockBytes?: number;
   /** Injected clock for the registry's `createdAt`/`updatedAt`; defaults to `Date.now`. */
   readonly now?: () => number;
 }
@@ -39,6 +48,8 @@ export const AZURE_BLOB_STORAGE_OPTION_KEYS = [
   'connectionString',
   'container',
   'prefix',
+  'maxObjectBytes',
+  'blockBytes',
   'now',
 ] as const;
 
@@ -104,7 +115,11 @@ export class AzureBlobStorage implements StorageBackend {
       containerClient: this.containerClient,
       ...(options.prefix === undefined ? {} : { prefix: options.prefix }),
     };
-    this.storage = new AzureBlobStorageDriver(shared);
+    this.storage = new AzureBlobStorageDriver({
+      ...shared,
+      ...(options.maxObjectBytes === undefined ? {} : { maxObjectBytes: options.maxObjectBytes }),
+      ...(options.blockBytes === undefined ? {} : { blockBytes: options.blockBytes }),
+    });
     this.registry = new AzureBlobRegistryDriver({
       ...shared,
       ...(options.now === undefined ? {} : { now: options.now }),
