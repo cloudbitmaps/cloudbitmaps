@@ -208,7 +208,7 @@ to run, and the deletion is ours to perform correctly.** Practical patterns:
   out *within* a segment is a matter of loading the next generation from a source that no longer includes them.
   The registry row's `retention` is untouched by a load, an `*Into` materialisation or an erasure rewrite, so the
   `expiresAt` you set stays put across all of them.
-- Surface segment age and size so unbounded growth is visible, not silent. The **metrics sink** carries neither.
+- Surface segment age and size so unbounded growth is visible, not silent. The **metrics sink** carries neither (its `storage.get` events count the bytes of each read, not a segment's size).
   `seg.count()` gives a segment's cardinality; `seg.costReport()` prices its current generation's measured size
   (`monthlyUSD.byOp.storage`, $0 when the storage source cannot measure it), and does not count superseded
   generations still in the bucket, which `store.generations(ref)` lists; and its registry row carries `createdAt`

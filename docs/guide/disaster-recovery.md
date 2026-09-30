@@ -71,7 +71,7 @@ difference can tear. The obvious case is a **registry that is ahead of the objec
 
 This is the exact failure `checkConsistency()` detects (issue `missing-storage-generation`). The reverse — storage
 restored to a *later* point than the registry — tears the same way. Storage generations are immutable, but they
-are not kept: every load collects the generations below its new pointer except
+are not kept: a `load` collects, by default, the generations below its new pointer except
 the newest one (`keep: 1`), a subject erasure collects every one below its rewrite (`keep: 0`), and `dropSegment`
 deletes them all. Two loads after the registry's point are enough to delete the generation the restored registry
 names.
@@ -93,7 +93,8 @@ marker over it). A key can also have been **written again**: once a segment's ro
 emptied, generation numbers restart at 0, so a name loaded anew after `T` re-writes keys that existed at `T` with
 another incarnation's bytes. Put the `T` version back there too; `checkConsistency()` checks presence only, so it
 would not notice the wrong bytes. Keys that did not exist at `T` can stay: they belong to loads after `T`, which sit
-above the restored pointers, or to segments with no row at `T`, which step 4 of the procedure deals with. Reads
+above the restored pointers (a name purged and loaded anew after `T` can also leave some below one, where the next
+`load`'s collection takes them), or to segments with no row at `T`, which step 4 of the procedure deals with. Reads
 through a backend never see either (a store on a bare `IStorageDriver` is the exception; see
 [readers still on an old generation](#readers-still-on-an-old-generation)).
 
