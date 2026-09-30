@@ -6,11 +6,10 @@
  * The property under test throughout is **reversibility**: an index row's name is the only place the original
  * ref is recorded, so if `decode(encode(ref))` is ever not `ref`, the sweep retires the wrong segment or none.
  */
-import { validateSegmentRef } from '@/core/validate';
+import { RESERVED_NAMESPACE_PREFIX, validateSegmentRef } from '@/core/validate';
 import { describe, expect, it } from 'vitest';
 import {
   DUE_BUCKET_MS,
-  DUE_NAMESPACE_PREFIX,
   MAX_NAME_LENGTH,
   canIndex,
   decodeDueName,
@@ -107,7 +106,7 @@ describe('due index — buckets', () => {
       const ns = dueNamespace(dueBucket(at));
       expect(() => validateSegmentRef({ segment: 'x', namespace: ns })).not.toThrow();
       expect(ns).not.toContain('..');
-      expect(ns.startsWith(DUE_NAMESPACE_PREFIX)).toBe(true);
+      expect(ns.startsWith(RESERVED_NAMESPACE_PREFIX)).toBe(true);
     }
   });
 

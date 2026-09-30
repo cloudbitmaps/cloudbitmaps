@@ -1420,12 +1420,20 @@ for await (const id of head.union(rest, { allowAbsentOperands: true })) { /* …
 
 > **A name is any non-empty string.** `dedup:2026-08-01`, `orders/2026`, `user@example.com`, `日本語`, `100%` —
 > all legal. There is no character allowlist, because each storage layer escapes what *it* cannot take
-> literally, which is the library's problem rather than yours. The only two refusals are an **empty** name and
-> one too long: the limit is **256 characters once encoded**, measured on the longer of the object-key form and the
+> literally, which is the library's problem rather than yours. The refusals are an **empty** name, one too long,
+> and a **namespace that starts with `cbm.due.`**, which the library keeps its own bookkeeping rows in (below). The
+> length limit is **256 characters once encoded**, measured on the longer of the object-key form and the
 > filesystem-path form. Letters, digits, `.`, `_` and `-` are kept as they are (a leading `_` excepted), so a name of
 > those gets all 256; every other character, ASCII included — a space, `/`, `@`, `%` — is escaped to three characters
 > per byte, and so is `:`, which a filesystem path escapes though an object key does not. Such names reach the limit
 > sooner (one emoji is twelve encoded characters).
+>
+> **The prefix `cbm.due.` is reserved for the namespace.** The retention index stores one pointer row per expiring
+> segment in `cbm.due.<day>`, and every fleet-wide scan skips the rows of that namespace as bookkeeping, so a segment
+> of yours there would be invisible to an erasure, a consistency check, an export, `segments()` and a retention
+> sweep. Every call that takes a namespace, in a ref or as an option, throws `ValidationError` for one starting with
+> `cbm.due.`. Only that exact prefix is reserved: `cbm.dueX`, `cbm.due` and `cbmdue.eu` are ordinary namespaces, and so
+> is any segment *name*, `cbm.due.x` included.
 >
 > The namespace split is still the better shape for a *family*: `store.segments({ namespace: 'active-daily' })`
 > enumerates exactly that family's buckets, and `eraseNamespace` can retire the whole family at once. With one

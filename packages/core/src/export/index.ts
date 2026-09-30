@@ -30,7 +30,7 @@ import { isReservedRow } from '../core/registry-scan';
 import type { CodecInterface } from '../core/codec';
 import { requireCodec } from '../core/codec';
 import type { IRegistryDriver, SegmentRef } from '../core/ports';
-import { validateSegmentRef } from '../core/validate';
+import { validateUserNamespace, validateSegmentRef } from '../core/validate';
 
 /** Output format for {@link runExport} / `CloudRoaring.exportSegments`. */
 export type ExportFormat = 'roaring' | 'ndjson';
@@ -136,6 +136,7 @@ export async function runExport(
   sink: ExportSink,
   options: ExportOptions = {},
 ): Promise<ExportManifest> {
+  if (options.namespace !== undefined) validateUserNamespace(options.namespace);
   const format = options.format ?? 'roaring';
   const ext = format === 'roaring' ? '.roaring' : '.ndjson';
   const batchCap = options.ndjsonBatchBytes ?? DEFAULT_NDJSON_BATCH_BYTES;

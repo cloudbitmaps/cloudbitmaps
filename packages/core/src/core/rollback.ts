@@ -19,7 +19,7 @@
 import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
 import { NotFoundError, ValidationError } from './errors';
 import type { IStorageDriver, IRegistryDriver, SegmentRef } from './ports';
-import { validateSegmentRef } from './validate';
+import { validateUserRef } from './validate';
 
 /** What the generation helpers need: the objects, and the pointer that says which one is current. */
 export interface GenerationListDeps {
@@ -49,7 +49,7 @@ export async function listGenerations(
   ref: SegmentRef,
   deps: GenerationListDeps,
 ): Promise<GenerationEntry[]> {
-  validateSegmentRef(ref);
+  validateUserRef(ref);
   const record = await deps.registry.get(ref);
   const current = record?.currentGen ?? null;
   const seen = new Set<number>();
@@ -93,7 +93,7 @@ export async function rollbackSegment(
   deps: GenerationListDeps,
   options: { audit?: IAuditSink; allowForward?: boolean } = {},
 ): Promise<RollbackResult> {
-  validateSegmentRef(ref);
+  validateUserRef(ref);
   if (!Number.isInteger(toGeneration) || toGeneration < 0) {
     throw new ValidationError(
       `rollback: generation must be a non-negative integer; got ${String(toGeneration)}`,

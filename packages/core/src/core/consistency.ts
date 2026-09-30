@@ -21,6 +21,7 @@ import { mapWithConcurrency } from './concurrency';
 import { ValidationError } from './errors';
 import { DEFAULT_MAX_SCAN_SEGMENTS, drainRegistry } from './registry-scan';
 import type { IStorageDriver, IRegistryDriver, SegmentRef } from './ports';
+import { validateUserNamespace } from './validate';
 
 /** Default in-flight fan-out for the consistency scan — bounded, no thundering herd. */
 /**
@@ -93,6 +94,7 @@ export async function runConsistencyCheck(
   deps: { readonly storage: IStorageDriver; readonly registry: IRegistryDriver },
   options: { namespace?: string; concurrency?: number; maxScanSegments?: number } = {},
 ): Promise<ConsistencyReport> {
+  if (options.namespace !== undefined) validateUserNamespace(options.namespace);
   const concurrency = options.concurrency ?? DEFAULT_CHECK_CONCURRENCY;
   if (!Number.isInteger(concurrency) || concurrency < 1) {
     // Fail fast before the (possibly huge) registry scan, not after.

@@ -99,7 +99,50 @@ export function validateSegmentRef(ref: SegmentRef): void {
   if (ref.namespace !== undefined) validatePart(ref.namespace, 'namespace');
 }
 
-/** Validate a chunk ref: the segment/namespace rules plus `chunkKey` ∈ `[0, 65535]` (a u16). */
+/**
+ * The namespace prefix the library keeps for its own bookkeeping: the due index stores one pointer row per
+ * expiring segment in `cbm.due.<bucket>` (see `due-index.ts`). **One constant, read by both sides** — the
+ * application-facing checks below refuse it in a name an application passes in, and the due index writes and
+ * recognises its rows by it — so the two cannot drift.
+ *
+ * Only this exact prefix is reserved, not `cbm.` as a whole: `cbm.dueX`, `cbm.due` and `cbmdue.eu` are ordinary
+ * namespaces. Every fleet-wide enumeration skips the rows of a reserved namespace as bookkeeping, so a segment
+ * there would be invisible to an erasure, a consistency check, an export and a retention sweep.
+ *
+ * Internal: not exported from any entry. The flavor keeps a copy for its own facade checks, and a test pins the
+ * two together.
+ */
+export const RESERVED_NAMESPACE_PREFIX = 'cbm.due.';
+
+/** Does this namespace start with {@link RESERVED_NAMESPACE_PREFIX}? `undefined` (no namespace) never does. */
+export function isReservedNamespace(namespace: string | undefined): boolean {
+  return namespace !== undefined && namespace.startsWith(RESERVED_NAMESPACE_PREFIX);
+}
+
+/**
+ * Validate a namespace an application names, as a segment ref's namespace or as a `namespace` option that scopes
+ * a scan: the name rules, and **not** in the reserved namespace. Internal; the public `validateSegmentRef` of
+ * `@cloudbitmaps/core/driver-kit` is the name rules only, which is what a driver needs, since the due index's own
+ * rows live in the reserved namespace and go through the drivers.
+ */
+export function validateUserNamespace(namespace: string): void {
+  validatePart(namespace, 'namespace');
+  if (isReservedNamespace(namespace)) {
+    throw new ValidationError(
+      `namespace "${namespace}" is reserved: names starting with "${RESERVED_NAMESPACE_PREFIX}" hold the ` +
+        `library's own bookkeeping rows, which every fleet-wide scan skips, so a segment there would be ` +
+        `invisible to an erasure, a consistency check, an export and a retention sweep. Choose another namespace.`,
+    );
+  }
+}
+
+/** Validate a segment ref an application hands in: the name rules, and a namespace outside the reserved prefix. */
+export function validateUserRef(ref: SegmentRef): void {
+  validatePart(ref.segment, 'segment');
+  if (ref.namespace !== undefined) validateUserNamespace(ref.namespace);
+}
+
+/** Validate a chunk ref: the segment/namespace rules plus `chunkKey` ∈ `[0, 65535]` (a u16). A driver-boundary check. */
 export function validateChunkRef(ref: ChunkRef): void {
   validateSegmentRef(ref);
   if (!Number.isInteger(ref.chunkKey) || ref.chunkKey < 0 || ref.chunkKey > CHUNK_KEY_MAX) {

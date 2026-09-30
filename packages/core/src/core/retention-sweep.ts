@@ -53,6 +53,7 @@ import {
 import { segmentKey, shardOf } from './keys';
 import type { IRegistryDriver, RegistryRecord } from './ports';
 import type { GovernanceMeta, IStorageDriver, SegmentRef } from './ports';
+import { isReservedNamespace, validateUserNamespace } from './validate';
 
 /** Default cap on retirements per sweep — a bounded batch, so a policy mistake costs one batch, not the fleet. */
 export const DEFAULT_RETIRE_LIMIT = 100;
@@ -243,6 +244,9 @@ async function rowsFromDueIndex(
     for await (const pointer of registry.list(dueNamespace(bucket))) {
       const ref = decodeDueName(pointer.segment);
       if (ref === null) continue; // a foreign row in the reserved namespace — ignored, never acted on
+      // A pointer to a segment in the reserved namespace itself: one written before that namespace was refused.
+      // The fleet scan skips such a row as bookkeeping, so this scan does too, rather than fail on it each cycle.
+      if (isReservedNamespace(ref.namespace)) continue;
       if (options.namespace !== undefined && ref.namespace !== options.namespace) continue;
       // A segment can appear in two buckets at once: `reindex` writes the new pointer before deleting the old,
       // so an interruption leaves both. De-duplicate here rather than retiring twice and reporting a phantom.
@@ -286,6 +290,7 @@ export async function retireExpired(
   deps: DropDeps,
   options: RetireExpiredOptions,
 ): Promise<RetireExpiredResult> {
+  if (options.namespace !== undefined) validateUserNamespace(options.namespace);
   const now = options.now;
   if (!Number.isFinite(now)) {
     throw new ValidationError(

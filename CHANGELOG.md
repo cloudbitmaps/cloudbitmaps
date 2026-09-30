@@ -19,10 +19,10 @@ nothing in the library would still call, the second takes names off the public e
 that uses them, and the third and fourth remove the retrying driver wrappers and the bulk loader. The two after those
 make a backend class the one way an application builds its storage: the size settings move onto the backend options,
 and the separate storage and registry halves and `createBackend` are no longer exported. The ninth makes
-the collection refuse a `keep` it used to accept. The next eight make a call throw where it used to return: six of
+the collection refuse a `keep` it used to accept. The next nine make a call throw where it used to return: six of
 them fix a wrong answer, and the entries under **Fixed** say what the call returned before; two hold a call to a
-rule the rest of the library already kept. The
-five after them hold the store, the backends and the registry to what the library itself takes and writes, stop
+rule the rest of the library already kept; the last of the nine refuses a namespace the library keeps for its own
+rows, and says in its own entry what the call returned before. The five after them hold the store, the backends and the registry to what the library itself takes and writes, stop
 checking for a local store's older directory layout, and give its errors the library's own brand. The last two
 change what `estimateCost()` compares with and what a `CostReport` carries.
 
@@ -200,6 +200,21 @@ change what `estimateCost()` compares with and what a `CostReport` carries.
   that lists a segment's chunks: `iterate`, every combine, and a `count` with no index to sum. A combine used to drop
   the duplicate. The sources the library ships never list a key twice; make a custom one's `listChunkKeys` return
   each key once.
+- **A namespace starting with `cbm.due.` is refused with `ValidationError`**, in every segment ref and in every
+  `namespace` option: `store.segment`, `load`, `exists`, `generations`, `rollback`, `dropSegment`, `setRetention`,
+  `getRetention`, `clearRetention`, `invalidate`, `segments`, `retireExpired`, `checkConsistency`, `exportSegments`,
+  `subjectReport` and `eraseSubject`, and the free function `eraseNamespace`. The library
+  keeps its due index in `cbm.due.<day>`, and every fleet-wide scan skips a row there as bookkeeping, so a segment
+  of yours in a namespace such as `cbm.due.eu` was invisible to the calls that scan: `eraseSubject` and
+  `subjectReport` returned an empty ledger with `scannedSegments: 0` even with that namespace named, so an erasure
+  reported nothing to erase while the id was still in the segment; the unscoped `retireExpired` and
+  `checkConsistency` never saw it; `exportSegments` left it out and `segments()` did not list it. Only that exact
+  prefix is reserved: `cbm.dueX`, `cbm.due` and `cbmdue.eu` are ordinary namespaces, and a segment name is not
+  restricted. The library's own writes to the reserved namespace go through the drivers and are unchanged: a
+  driver takes the prefix, since `validateSegmentRef` on `@cloudbitmaps/core/driver-kit` checks the name rules
+  only. A segment that already sits in such a namespace stays where it is, but no call names it after the upgrade:
+  before upgrading, copy each into another namespace (`iterate()` its ids and `load` them there) and `dropSegment`
+  the old one.
 
 The first three of these make the library refuse what it used to ignore or accept, so that a wrong input fails
 where it is written. The fourth drops the check for a local store's older directory layout, and the fifth renames

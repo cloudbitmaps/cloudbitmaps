@@ -55,8 +55,8 @@ export async function drainRegistry(
   for await (const rec of registry.list(options.namespace)) {
     // A due-index pointer is bookkeeping, not a segment. It lives in a reserved namespace, so an unscoped fleet
     // scan would otherwise pay a strong `get` per pointer row in `checkConsistency`, hand it to a retention
-    // sweep, and inflate every fleet-wide count. A caller that explicitly scopes to the reserved namespace
-    // still sees them.
+    // sweep, and inflate every fleet-wide count. A scope that names the reserved namespace never gets here: the
+    // callers refuse it before they scan.
     if (options.namespace === undefined && isReservedRow(rec)) continue;
     if (rows.length >= maxScanSegments) {
       throw new BudgetExceededError(
