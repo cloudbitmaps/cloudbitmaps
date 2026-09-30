@@ -10,7 +10,7 @@ import {
   NotFoundError,
   runConsistencyCheck,
 } from '@/index';
-import type { Segment, SegmentRef } from '@/index';
+import type { AuditEvent, Segment, SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from './helpers/bulk-load';
 
 /**
@@ -115,9 +115,19 @@ describe('DR drill — backup → corrupt → restore → verify', () => {
     // A read of the torn segment fails closed — its currentGen points at an absent generation.
     await expect(members(store, 'beta')).rejects.toBeInstanceOf(NotFoundError);
 
-    // Resolve per the runbook: roll currentGen back to the generation storage actually has (0).
-    const now = (await registry.get(ref))!;
-    await registry.compareAndSwap(ref, now.token, { currentGen: 0 });
+    // Resolve per the runbook: roll currentGen back to the generation storage actually has (0), with the call it
+    // names and the audit sink it passes, so the move is on the record.
+    const events: AuditEvent[] = [];
+    await store.rollback(ref, 0, { audit: { onEvent: (e) => events.push(e) } });
+    expect(events).toEqual([
+      {
+        kind: 'segment.rollback',
+        segment: 'beta',
+        namespace: undefined,
+        fromGeneration: 1,
+        generation: 0,
+      },
+    ]);
 
     const healed = await runConsistencyCheck({ storage, registry });
     expect(healed).toEqual({ checked: 3, inconsistent: [], errored: [] });
