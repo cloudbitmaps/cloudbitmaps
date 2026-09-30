@@ -79,8 +79,7 @@ describe('the two refusals no encoding can fix', () => {
   it('refuses a lone surrogate — there is no UTF-8 for it, so it cannot be a key', () => {
     // Not a taste. TextEncoder maps every unpaired surrogate to U+FFFD, so `a\uD800b`, `a\uDC00b` and
     // `a\uFFFDb` would all encode to the same bytes — four distinct names claiming one key, which is the
-    // property everything else rests on. Proven end to end before this check existed: two segments shared a
-    // registry row.
+    // property everything else rests on. Without this check, two such segments share a registry row.
     for (const bad of ['\uD800', '\uDC00', 'a\uD800b', 'tenant-\uDBFF'])
       expect(() => ok(bad), JSON.stringify(bad)).toThrow(ValidationError);
     // A PROPER pair is a perfectly good name — the check must not reject real astral characters.
@@ -89,8 +88,8 @@ describe('the two refusals no encoding can fix', () => {
   });
 
   it('measures the LONGER encoding, because a path escapes more than a key', () => {
-    // `:` is key-safe (1 char) and path-escaped (3). Measuring the key form alone let this pass the boundary
-    // and then fail inside the driver with a raw ENAMETOOLONG instead of a typed error at the edge.
+    // `:` is key-safe (1 char) and path-escaped (3). Measuring the key form alone lets this pass the
+    // boundary and then fail inside the driver with a raw ENAMETOOLONG instead of a typed error at the edge.
     const colons = `a${':'.repeat(200)}`; // key-encoded 201, path-encoded 601
     expect(() => ok(colons)).toThrow(ValidationError);
     expect(() => ok(`a${':'.repeat(80)}`)).not.toThrow(); // path-encoded 241, still inside
@@ -98,9 +97,9 @@ describe('the two refusals no encoding can fix', () => {
 
   it('property: any non-empty string of modest length is a legal name', () => {
     fc.assert(
-      // `unit: 'binary'` and a length that can actually reach the cap: the previous version drew printable
-      // ASCII of at most 50 characters, so the encoded form never exceeded 150 against a limit of 256 — the
-      // assertion could not fail whatever the implementation did.
+      // `unit: 'binary'` and a length that can actually reach the cap: printable ASCII of at most 50
+      // characters never encodes past 150 against a limit of 256, so a property drawn from it cannot fail
+      // whatever the implementation does.
       fc.property(fc.string({ minLength: 1, maxLength: 80, unit: 'binary' }), (n) => {
         const tooLong = Math.max(encodeNameForKey(n).length, encodeNameForPath(n).length) > 256;
         if (tooLong) expect(() => ok(n)).toThrow(ValidationError);

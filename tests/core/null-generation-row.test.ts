@@ -126,11 +126,11 @@ describe('a registry row with no Storage generation (currentGen: null)', () => {
       expect(await collect(pending.andNot([loaded]))).toEqual([]);
     });
 
-    it('a `currentGen: 0` row with no object is the state this replaces — and it still fails loudly', async () => {
+    it('a `currentGen: 0` row with no object is the state `null` avoids — and it fails loudly', async () => {
       // The control for the tests above: if `null` were "the same as 0" the two would behave alike. They do not —
-      // this is the `missing-storage-generation` breakage that made a naive row worse than no row. Note that it now
-      // fails the SAME way on every read verb: with no per-op delta in front of the generation, there is no verb
-      // that can keep answering off a second source while its neighbour throws.
+      // this is the `missing-storage-generation` breakage that makes a naive row worse than no row. It fails the
+      // SAME way on every read verb: each reads the one Storage generation and nothing else, so no verb can keep
+      // answering while its neighbour throws.
       const w = await world();
       await w.registry.create(SEG, { currentGen: 0 });
       const s = w.reader().segment('s');

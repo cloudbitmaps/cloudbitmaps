@@ -2,14 +2,14 @@
 # Pull a container image, absorbing a registry RATE limit, and putting the registry's own error in the log when an
 # image cannot be had.
 #
-# Why this exists as a shared function rather than three copies. Every public registry throttles the shared
+# Why this exists as a shared function rather than a copy per script. Every public registry throttles the shared
 # GitHub-runner IP pool, and the two shapes need opposite responses: Docker Hub answers with a **6-hour quota**
 # (`pull rate limit`), which cannot be waited out and needs a different registry; public.ecr.aws answers with a
 # **per-second rate** (`toomanyrequests: Rate exceeded`), which clears in moments and only needs backoff. The CI
-# integration job learned that the hard way and grew a serial-pull-with-backoff loop. The two scripts that
-# `docker run` an ECR image directly — rss-gate.sh and lambda-smoke.sh — did not, so they kept failing on a
-# throttle that a 10-second retry would have absorbed. `docker run` pulls implicitly on a cache miss, which is
-# exactly the trap: the pull happens whether or not anyone wrote a pull step, so the retry has to be explicit.
+# integration job pulls its images serially through it, and so do the scripts that `docker run` an ECR image
+# directly — rss-gate.sh, lambda-smoke.sh and build-lambda-layer.sh — which without it fail on a throttle that a
+# 10-second retry absorbs. `docker run` pulls implicitly on a cache miss, which is exactly the trap: the pull
+# happens whether or not anyone wrote a pull step, so the retry has to be explicit.
 #
 # Failing loudly still matters. Throttling is transient; a typo'd tag or a deleted image is not, and a retry
 # loop that swallows both is worse than no retry at all. So on the final attempt this re-runs the pull WITHOUT
@@ -17,8 +17,8 @@
 # not, it returns non-zero, unless CI's cache (below) holds a copy of the image: then the copy stands in, and the run
 # is warned.
 #
-# THE CACHE. Backoff absorbs a rate, not a refusal, and registries refuse too: quay.io began refusing anonymous
-# pulls of MinIO in September 2026, public.ecr.aws answers `Data limit exceeded` once the runners' shared IPs pass
+# THE CACHE. Backoff absorbs a rate, not a refusal, and registries refuse too: quay.io refuses anonymous
+# pulls of MinIO, public.ecr.aws answers `Data limit exceeded` once the runners' shared IPs pass
 # its anonymous quota of 500 GB a month, and Chainguard's free tier publishes only `latest` and `latest-dev`: it
 # lets anyone pull by digest, but does not say for how long, so a digest pinned today could stop resolving.
 # With DOCKER_IMAGE_CACHE set to a directory, which CI keeps in the Actions cache, each image pulled is also saved

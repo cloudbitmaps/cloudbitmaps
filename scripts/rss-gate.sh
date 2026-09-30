@@ -48,15 +48,15 @@ ROARING_VER="$(node -p "require('./node_modules/roaring/package.json').version")
 STAGE="$ROOT/.rss-stage"
 
 # Not `node:22` from Docker Hub: GitHub-hosted runners share an IP pool that is routinely over Docker Hub's
-# anonymous pull limit, and the gate died on HTTP 429 before running anything. `public.ecr.aws/docker/library`
+# anonymous pull limit, where the gate would die on HTTP 429 before running anything. `public.ecr.aws/docker/library`
 # is AWS's official mirror of the same Docker Official Images — same digests, no auth. It limits anonymous pulls
 # too: one a second in a region, and 500 GB a month from each IP, which the backoff below and CI's image cache absorb.
 # Overridable so a local run can point at a warm Docker Hub cache instead.
 STAGE_IMAGE="${RSS_GATE_IMAGE:-public.ecr.aws/docker/library/node:22}"
 
-# Even AWS's mirror throttles: `toomanyrequests: Rate exceeded` killed this gate on `main` twice in one day.
-# That is a per-second RATE, not a quota, so it clears in moments — but `docker run` pulls implicitly on a cache
-# miss and gives the pull no retry, so the gate died 36s in having tested nothing. Pull explicitly first.
+# Even AWS's mirror throttles, with `toomanyrequests: Rate exceeded`. That is a per-second RATE, not a quota, so
+# it clears in moments — but `docker run` pulls implicitly on a cache miss and gives the pull no retry, so the
+# gate would die having tested nothing. Pull explicitly first.
 # shellcheck source=scripts/lib/docker-pull.sh
 . "$ROOT/scripts/lib/docker-pull.sh"
 docker_pull_with_backoff "$STAGE_IMAGE"
@@ -64,10 +64,10 @@ STAGE_RUN="$(docker_image_run_name "$STAGE_IMAGE")" # a copy loaded from the cac
 
 # The stage is populated by a container running as root. On a Linux bind mount those files really are owned by
 # root, so the host user cannot delete them and a plain `rm -rf` fails with "Permission denied" on every path —
-# which failed the whole gate AFTER the soak had already passed. Docker Desktop on macOS remaps bind-mount
-# ownership to the calling user, so this was invisible locally and only appeared once CI moved off the
-# self-hosted macOS runner. Deleting from inside a container sidesteps it: root in the container can remove
-# what root in the container created. Reuses the stage image, already pulled, so cleanup costs no extra pull.
+# which would fail the whole gate AFTER the soak has passed. Docker Desktop on macOS remaps bind-mount
+# ownership to the calling user, so this does not show on a Mac, only on a Linux runner such as CI's. Deleting
+# from inside a container sidesteps it: root in the container can remove what root in the container created.
+# Reuses the stage image, already pulled, so cleanup costs no extra pull.
 clean_stage() {
   [ -e "$STAGE" ] || return 0
   rm -rf "$STAGE" 2>/dev/null && return 0
@@ -89,14 +89,14 @@ docker run --rm -e ROARING_VER="$ROARING_VER" -v "$ROOT:/w:ro" -v "$STAGE:/stage
   cd /stage
   npm init -y >/dev/null 2>&1
   # npm has its own retry; this raises it from the default of 2. It covers the REGISTRY legs of the install
-# (a 5xx or a throttle is retried; a bad version still fails on the first attempt). node-gyp downloads
-# its headers separately and retries those on its own schedule, which this setting does not reach. Each
-  # registry leg comes from the shared GitHub-runner IP pool - the same throttling surface that made the image
-  # pull above grow docker_pull_with_backoff. Two attempts with a 10s floor is thin for that; five costs
+  # (a 5xx or a throttle is retried; a bad version still fails on the first attempt). node-gyp downloads
+  # its headers separately and retries those on its own schedule, which this setting does not reach. Each
+  # registry leg comes from the shared GitHub-runner IP pool - the same throttling surface the image pull
+  # above meets with docker_pull_with_backoff. Two attempts with a 10s floor is thin for that; five costs
   # nothing on the happy path and absorbs a blip that would otherwise red a gate having tested nothing.
   export npm_config_fetch_retries=5
   npm_config_build_from_source=true npm install "roaring@${ROARING_VER}" --no-audit --no-fund
-  # soak.cjs now requires the packages BY NAME (`@cloudbitmaps/roaring`), so lay out a minimal node_modules with
+  # soak.cjs requires the packages BY NAME (`@cloudbitmaps/roaring`), so lay out a minimal node_modules with
   # both built packages. Placing them directly (rather than `npm install`-ing tarballs) keeps the stage
   # registry-free: the flavor package depends on `@cloudbitmaps/core@workspace:^`, which no registry can resolve
   # pre-publish. Node needs only package.json + dist to resolve through the `exports` map, which is what we want
@@ -122,8 +122,8 @@ docker run --rm \
     # verdict, not by the child. Adequate here (big margin); the isolated child footprint is not separately gated.
     # SOAK_INJECT makes the soak write its verdict to /stage/bench/soak-results.json, which the host copies
     # out below. Without it the numbers exist only in the stdout of this container, and the stage is deleted
-    # on exit — which is why the RSS envelope was listed as owed while the gate that measures it ran green on
-    # every PR. (No apostrophes in here: this whole block is a single-quoted argument to `bash -lc`, so one
+    # on exit, so the gate that measures the RSS envelope would run green on every PR and record none of it.
+    # (No apostrophes in here: this whole block is a single-quoted argument to `bash -lc`, so one
     # would close the quote. `bash -n` still passes, because what is left is valid — just not this script.)
     SOAK_INJECT=1 node --expose-gc bench/soak.cjs
   ' || {

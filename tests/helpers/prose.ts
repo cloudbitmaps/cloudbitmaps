@@ -7,20 +7,27 @@
 /** Two string literals joined by `+` across a line break. */
 const JOIN = String.raw`['"\x60][ \t]*\+[ \t]*\n[ \t]*['"\x60]`;
 /**
- * A line break with the comment or quote marker (`//`, `*`, `>`) that starts the next line. A line holding only a
- * marker, like a blank line, ends a paragraph and is not a seam. A Markdown heading is read onto the line before it,
- * but its `#` stays, so no phrase runs across it.
+ * A line break with the comment or quote marker that starts the next line: `//`, `*` and `>`, and `#` in a language
+ * whose comments it starts. A line holding only a marker, like a blank line, ends a paragraph and is not a seam. In
+ * Markdown a heading is read onto the line before it, but its `#` stays, so no phrase runs across it.
  */
-const WRAP = String.raw`\n(?![ \t]*(?:\/\/+|\*(?!\/)|>)?[ \t]*\n)[ \t]*(?:\/\/+|\*(?!\/)|>)?[ \t]*`;
-const SEAMS = new RegExp(`${JOIN}|${WRAP}`, 'g');
+const wrap = (marker: string): string =>
+  String.raw`\n(?![ \t]*(?:${marker})?[ \t]*\n)[ \t]*(?:${marker})?[ \t]*`;
+const MARKERS = String.raw`\/\/+|\*(?!\/)|>`;
+const SEAMS = new RegExp(`${JOIN}|${wrap(MARKERS)}`, 'g');
+const HASH_SEAMS = new RegExp(`${JOIN}|${wrap(`${MARKERS}|#+`)}`, 'g');
 const JOINS = new RegExp(JOIN, 'g');
 
 /**
  * `text` with every seam read through (a wrap as one space, a string join as nothing), and for each character of
  * the result, where it was in `text`, so a match can be reported at the line it starts on. With `joinsOnly`, only
- * joined strings are read through, and every line break stays.
+ * joined strings are read through, and every line break stays. With `hashComments`, a `#` that starts a line starts
+ * a comment, as in YAML, shell and Python, and a wrap reads through it.
  */
-export function unwrap(text: string, { joinsOnly = false } = {}): { flat: string; at: number[] } {
+export function unwrap(
+  text: string,
+  { joinsOnly = false, hashComments = false } = {},
+): { flat: string; at: number[] } {
   let flat = '';
   const at: number[] = [];
   let from = 0;
@@ -30,7 +37,7 @@ export function unwrap(text: string, { joinsOnly = false } = {}): { flat: string
       at.push(k);
     }
   };
-  for (const m of text.matchAll(joinsOnly ? JOINS : SEAMS)) {
+  for (const m of text.matchAll(joinsOnly ? JOINS : hashComments ? HASH_SEAMS : SEAMS)) {
     const i = m.index ?? 0;
     keep(i);
     if (!m[0].includes('+')) {

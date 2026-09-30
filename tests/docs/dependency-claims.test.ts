@@ -7,20 +7,19 @@ import { join } from 'node:path';
  *
  * WHY THIS EXISTS. "1 third-party dependency" is true of the codec package and false of the family:
  * `@cloudbitmaps/s3`, `/gcs` and `/azure-blob` each depend on a real cloud SDK. Printed as a claim about the
- * project, it was false in eight places on the public site, in `README.md` six lines below its own table
- * listing four separate pulls, and in `SECURITY.md`, where it was the stated reason for a conclusion about
- * what reaches consumers.
+ * project, it is false, and it reads as true wherever it lands: a badge on the site, a line in `README.md`
+ * beside the install command for two packages, a sentence in `SECURITY.md` giving the reason for a conclusion
+ * about what reaches consumers.
  *
- * Every one of those passed CI. The site's own figure gate even *checked* the number — against
- * `packages/roaring/package.json` alone, which answers "how many does the codec have?" while the badge made
- * a claim about the project. A derivation narrower than the claim it checks cannot fail when the claim goes
- * wrong.
+ * A check of the number against `packages/roaring/package.json` alone passes it: that answers "how many does
+ * the codec have?" while the sentence makes a claim about the project. A derivation narrower than the claim
+ * it checks cannot fail when the claim goes wrong.
  *
- * WHY REPO-WIDE RATHER THAN site/. The first version of this rule lived in `scripts/site-figures.cjs` and
- * walked `site/**\/*.html`, because that is where the defect was noticed. The two worst instances were in
- * `README.md` and `SECURITY.md` and it could not see either — a detector written to the boundary of the
- * sighting rather than the boundary of the claim. Doc comments are in the corpus too: they ship in the
- * published `.d.ts` and show on hover in a user's editor.
+ * WHY REPO-WIDE RATHER THAN site/. The claim can be made anywhere the project is described. A rule that walks
+ * only `site/**\/*.html` cannot see `README.md` or `SECURITY.md`, which are where a reader decides what they
+ * are installing: a detector drawn to the boundary of one sighting rather than the boundary of the claim.
+ * Doc comments are in the corpus too: they ship in the published `.d.ts` and show on hover in a user's
+ * editor.
  *
  * THE RULE. A count of third-party dependencies is legal only where the surrounding text names the package
  * it applies to. `CONTRIBUTING.md`'s per-package table is the source everything else is derived from.
@@ -33,9 +32,10 @@ const ROOT = join(__dirname, '..', '..');
  * was true when written, and rewriting them to match today would make it a worse record.
  */
 /**
- * Files that must spell the retired sentence out, because narrating the defect is their job: this gate, and
- * the site figure script whose comments record what the badge used to say and why it was wrong. Both are
- * scripts rather than reader-facing prose, so exempting them costs nothing a reader can see.
+ * Files that must spell the unscoped count out, because explaining why it is refused is their job: this
+ * gate, and the site figure script, whose comments quote it to show why a derivation narrower than the claim
+ * cannot check it. Both are scripts rather than reader-facing prose, so exempting them costs nothing a reader
+ * can see.
  */
 const EXPLAINS_THE_RULE = new Set([
   'tests/docs/dependency-claims.test.ts',
@@ -84,11 +84,12 @@ const SCOPED_STRONG = /@cloudbitmaps\/\w|CRoaring|roaring-node/i;
  * A common noun that can scope a count — "the codec's one third-party dependency" — but only when it is
  * attached to the claim.
  *
- * WHY THE DISTINCTION. Accepting these anywhere in the ±160 window is what let the retired badge come back.
- * Every hero and footer strip on the site reads `Apache-2.0 · v0.10.0 · zero-dependency core · 4 storage
- * drivers`; drop `· 1 third-party dependency ·` into the middle of one and the bare `core` thirty characters
- * to its left excused it. The claim said "the project", the scoping word belonged to a different item in the
- * same list, and the gate written to kill that exact string passed over it on the landing page.
+ * WHY THE DISTINCTION. Accepted anywhere in the ±160 window, these would excuse the very badge this gate
+ * refuses. Every hero and footer strip on the site reads `Apache-2.0 · v0.10.0 · zero-dependency core · 4
+ * storage drivers`; drop `· 1 third-party dependency ·` into the middle of one and the bare `core` thirty
+ * characters to its left would excuse it. The claim says "the project", the scoping word belongs to a
+ * different item in the same list, and a gate that accepts the word anywhere passes over that exact string
+ * on the landing page.
  *
  * Both real claims in this repo are scoped the STRONG way — `npm i @cloudbitmaps/roaring · 1 third-party
  * dependency` and `@cloudbitmaps/core has no third-party dependencies` — so requiring attachment for the
@@ -134,7 +135,7 @@ describe('a dependency count says which package it counts', () => {
 
   it('CONTRIBUTING.md still carries the per-package table everything derives from', () => {
     // Named explicitly: this is the upstream copy. If it is deleted or reworded away, the other surfaces
-    // have nothing to be re-derived from and drift silently, which is how they drifted the first time.
+    // have nothing to be re-derived from and drift silently.
     const contributing = readFileSync(join(ROOT, 'CONTRIBUTING.md'), 'utf8');
     expect(contributing).toContain('Third-party runtime dependencies are counted **per package**');
     for (const pkg of deps.keys())

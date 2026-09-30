@@ -569,7 +569,7 @@ describe('a pin across incarnations, a segment held twice, and a transient fault
     const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, GEN0, { registry });
     const crbm = new CrbmStorageChunkSource(storage, { registry });
-    // Typed without a `fingerprint`: if the field became required again, this file would stop compiling.
+    // Typed without a `fingerprint`: if the field became required, this file would stop compiling.
     const pin: PinnedAt = { generation: 0, version: await crbm.currentVersion(REF), ...extra };
     const engine = new SegmentEngine({
       storage: new PinnedStorageChunkSource(crbm, new Map([[segmentKey(REF), pin]])),
@@ -763,8 +763,8 @@ describe('what a pin says when its object changes under it, and what pinning cos
       faults -= 1;
       return Promise.reject(new TransientError('tail blip'));
     };
-    // The fault is the check's, and is retried as a store's read is. Reported as the chunk's checksum, it was taken
-    // for damage and never retried.
+    // The fault is the check's, and is retried as a store's read is. Reported as the chunk's checksum error, it
+    // would be taken for damage and never retried.
     await expect(snap.has(C + 1)).rejects.toThrow(/no longer the object this handle pinned/);
     expect(faults).toBe(0);
   });

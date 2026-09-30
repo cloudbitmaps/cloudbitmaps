@@ -15,20 +15,19 @@ const CONFIRM_PHRASE = 'yes-spend-money';
  * Attempts `publishGeneration` makes to advance a segment pointer, from the loop in
  * `packages/core/src/core/crbm-storage-source.ts`.
  *
- * This was `4`, with a comment calling it "1 attempt + DEFAULT_MAX_RETRIES". No such constant exists; the loop
- * runs FIVE attempts. So every load was projected one attempt short — the exact "a projection the run can
- * exceed is not a ceiling" bug `projectOps` is documented to prevent, sitting in its own input, under a comment
- * asserting a derivation nobody had made. `tests/bench/calibrate-guards.test.ts` now reads the bound out of the
- * source and fails if the two ever disagree again.
+ * The loop runs FIVE attempts, and nothing in core names that count (there is no `DEFAULT_MAX_RETRIES`), so it is
+ * easy to retype wrong. A bound of 4 projects every load one attempt short — the exact "a projection the run can
+ * exceed is not a ceiling" bug `projectOps` is documented to prevent, sitting in its own input.
+ * `tests/bench/calibrate-guards.test.ts` reads the bound out of the source and fails if the two disagree.
  */
 const RETRY_BOUND = 5;
 
 /**
  * Parse the spend ceiling.
  *
- * THE BUG THIS EXISTS FOR: the ceiling used to be `Number(process.env.CR_CALIBRATE_MAX_USD)` compared with
- * `total > max`. `Number('abc')` is `NaN`, and **every comparison against NaN is false** — so a malformed
- * ceiling did not fail loudly, it silently deleted the bound on a script whose whole job is spending money.
+ * THE BUG THIS EXISTS FOR: a ceiling read as `Number(process.env.CR_CALIBRATE_MAX_USD)` and compared with
+ * `total > max`. `Number('abc')` is `NaN`, and **every comparison against NaN is false** — so a malformed ceiling
+ * read that way does not fail loudly, it silently deletes the bound on a script whose whole job is spending money.
  * Zero and negative are rejected too: both are almost certainly a mistake, and "spend nothing" is what the
  * default dry run is for.
  */
@@ -52,9 +51,9 @@ function parseCeiling(raw) {
 /**
  * Resolve a workload size from the environment.
  *
- * THE BUG THIS EXISTS FOR: the old helper mapped a falsy value to the default, so `CR_CALIBRATE_WRITES=0` —
- * what someone shrinking a run to almost nothing would set — handed back the FULL default instead of zero.
- * Explicit zero must mean zero.
+ * THE BUG THIS EXISTS FOR: a helper that maps a falsy value to the default hands `CR_CALIBRATE_READS=0` — what
+ * someone shrinking a run to almost nothing would set — the FULL default instead of zero. Explicit zero must mean
+ * zero.
  */
 function resolveSize(raw, fallback, label) {
   if (raw === undefined || String(raw).trim() === '') return fallback;
@@ -88,16 +87,15 @@ function probeMeansAbsent(err) {
 /**
  * Project the worst-case op count for a run, as a real upper bound.
  *
- * THE BUG THIS EXISTS FOR: two earlier projections were not bounds. One multiplied writes by 2, leaving the
- * measured count within a single request of the projection; the other gave READS a smaller multiplier than
- * writes, so the read slot always breached first — and it was triggered by setting concurrency above the
- * segment count, which is exactly what someone does to make a run *cheaper*.
+ * THE BUG THIS EXISTS FOR: a projection that is not a bound. One that doubles the loads counts only the two PUTs an
+ * unraced load makes, with no room for a lost race or for the run's own bucket and teardown requests; one that gives
+ * READS a smaller multiplier than writes has the read slot breach first — and a run with far more reads than loads,
+ * such as one shrunk to a few segments to make it *cheaper*, triggers it.
  *
- * AND ONE MORE, found by this harness's first real run: it counted a single operand per read. An intersect has two, and
- * each resolves its own pointer, reads its own index and fetches its own chunks — so the read term was half of
- * what the workload issues. `operandsPerRead` is now explicit, and the harness checks the measured counts
- * against this projection at the end of every run, so "it is an upper bound" is a checked property rather than
- * a claim.
+ * AND ONE MORE: a projection that counts a single operand per read. An intersect has two, and each resolves its own
+ * pointer, reads its own index and fetches its own chunks — so a one-operand read term is half of what the workload
+ * issues. `operandsPerRead` is explicit, and the harness checks the measured counts against this projection at the
+ * end of every run, so "it is an upper bound" is a checked property rather than a claim.
  *
  * Reads are projected at least as high as writes because every write path in this engine reads before it
  * writes.
@@ -120,11 +118,11 @@ function projectOps({
     throw new Error(`operandsPerRead must be a positive integer, got ${operandsPerRead}`);
   }
   // A load: the generation PUT, then the pointer advance — a conditional PUT, each attempt of which can lose the
-  // compare-and-swap and go round again. Its reads are more than one per attempt, and this once said one: the
-  // loader reads the row before it writes, each attempt reads it again and the registry reads it once more before
-  // its conditional write, and a publish that loses every attempt reads it a last time. So a load of a new segment
-  // makes three GETs even with nothing racing it — run 2026-09-23-94416 measured 36 across 12 loads — and twelve
-  // at worst. The harness is the only writer, so its loads never race; the bound still has to hold if one did.
+  // compare-and-swap and go round again. Its reads are more than one per attempt: the loader reads the row before
+  // it writes, each attempt reads it again and the registry reads it once more before its conditional write, and a
+  // publish that loses every attempt reads it a last time. So a load of a new segment makes three GETs even with
+  // nothing racing it — run 2026-09-23-94416 measured 36 across 12 loads — and twelve at worst. The harness is the
+  // only writer, so its loads never race; the bound still has to hold if one did.
   const putPerLoad = 1 + retryBound;
   const getPerLoad = 2 + 2 * retryBound;
   // A multipart load: create + parts + complete for the object, then the same pointer advance.
@@ -174,9 +172,9 @@ function breached(spentUSD, ceilingUSD) {
 /**
  * The harness's workload shape, here rather than in the harness so a test can pin it.
  *
- * The stride-7 bug was the HARNESS choosing a bad value, not `planLayout` computing one wrongly — so a test
- * that passes its own stride to `planLayout` proves nothing about what a run actually does. At these values a
- * 500,000-id segment spans ~2,000 chunks with 100 shared, the shape behind the published figure.
+ * A bad stride is the HARNESS choosing a bad value, not `planLayout` computing one wrongly — so a test that passes
+ * its own stride to `planLayout` proves nothing about what a run actually does. At these values a 500,000-id
+ * segment spans ~2,000 chunks with 100 shared, the shape behind the published figure.
  */
 const DEFAULT_LAYOUT = Object.freeze({ overlap: 0.05, stride: 262 });
 
@@ -190,15 +188,15 @@ const ID_SPACE_CHUNKS = 65_536;
  *
  * THE BUG THIS EXISTS FOR, twice over.
  *
- * The first layout gave each segment its own id range, so adjacent segments shared NOTHING and the intersect
- * phase timed the empty intersection: chunk-skipping's best case, fetching no payload at all. It would have
- * published a confident p50 over zero work.
+ * A layout that gives each segment its own id range shares NOTHING between adjacent segments, so the intersect
+ * phase times the empty intersection: chunk-skipping's best case, fetching no payload at all. It would publish a
+ * confident p50 over zero work.
  *
- * The second shared a 5% core but packed it at a stride of 7, so 25,000 shared ids fitted in about THREE
- * chunks. This harness's first real run showed it: 107 GETs across 40 intersects. The headline claim this measurement is
- * meant to back is "100 of 2,000 chunks fetched", and a three-chunk workload is not evidence about it.
+ * One that shares a 5% core but packs it at a stride of 7 fits 25,000 shared ids in about THREE chunks. The
+ * headline claim this measurement is meant to back is "100 of 2,000 chunks fetched", and a three-chunk workload is
+ * not evidence about it.
  *
- * So the layout is now derived from the shape it must reproduce. Every segment is `sharedChunks` chunks of a
+ * So the layout is derived from the shape it must reproduce. Every segment is `sharedChunks` chunks of a
  * common core plus a private band of its own; bands are separated by an empty chunk so no two can touch; and
  * the expected intersection of ANY pair — its count and its sum — is known exactly, which lets the harness
  * assert that a read against a real object store returned precisely the right ids, not merely some.
@@ -259,9 +257,8 @@ function* layoutIds(layout, i, idsPerSegment) {
 /**
  * The last four digits of an account id, and nothing more.
  *
- * Enough to eyeball that this is the intended account; not enough to be worth pasting anywhere. The earlier
- * in-region script did exactly this, and this harness printed the whole id — which then sits in a terminal
- * scrollback, a CI log, or a message asking for help.
+ * Enough to eyeball that this is the intended account; not enough to be worth pasting anywhere. The whole id would
+ * sit in a terminal scrollback, a CI log, or a message asking for help.
  */
 function maskAccount(account) {
   const s = String(account ?? '');
@@ -272,8 +269,8 @@ function maskAccount(account) {
  * Error text with its ARNs removed and its account ids masked, for a terminal or a file.
  *
  * AWS puts the caller's ARN, account id and all, in an AccessDenied message ("User: <the caller's ARN> is not
- * authorized to perform …"). The harness printed error text as it came in four places and stored it in the partial
- * results, so the one id it masks everywhere else reached a scrollback, a log, or a message asking for help.
+ * authorized to perform …"). The harness prints error text and stores it in the partial results, so unredacted it
+ * would carry the one id the harness masks everywhere else into a scrollback, a log, or a message asking for help.
  */
 function redact(text) {
   return String(text ?? '')
@@ -286,17 +283,17 @@ function redact(text) {
  *
  * The WORKLOAD's client makes one. The projection has no term for its retries, and a retry's backoff would sit
  * inside a latency sample unseen — so a transient failure there fails the run instead. TEARDOWN's keeps the SDK's
- * usual three: the one-attempt pin once reached it too, and a single 503 on `ListObjectVersions` then left the
- * bucket, and everything in it, behind. The projection allows for every one of teardown's attempts.
+ * usual three: with one attempt, a single 503 on `ListObjectVersions` would leave the bucket, and everything in it,
+ * behind. The projection allows for every one of teardown's attempts.
  */
 const WORK_ATTEMPTS = 1;
 const ADMIN_ATTEMPTS = 3;
 
 /**
- * How long each of teardown's attempts may take. The SDK's HTTP handler waits for ever by default, and a teardown
- * whose listing stopped answering once hung until it was killed, leaving the bucket and writing no results. A request
- * timeout alone only logs a warning in this SDK; `throwOnRequestTimeout` makes it fail the attempt, which the client
- * then retries.
+ * How long each of teardown's attempts may take. The SDK's HTTP handler waits for ever by default, so a teardown
+ * whose listing stops answering would hang until it is killed, leaving the bucket and writing no results. A request
+ * timeout alone only logs a warning in this SDK; `throwOnRequestTimeout` makes it fail the attempt, which the
+ * client then retries.
  */
 const ADMIN_TIMEOUTS = Object.freeze({
   connectionTimeout: 5_000,
@@ -307,11 +304,10 @@ const ADMIN_TIMEOUTS = Object.freeze({
 /**
  * Does a teardown error mean "the bucket is already gone"?
  *
- * Narrower than `probeMeansAbsent`, on purpose. Teardown once used that, which reads ANY 404 as absent — and
- * `AbortMultipartUpload` answers 404 `NoSuchUpload` for an upload already aborted or completed, which is exactly
- * what a retried abort gets back when its first attempt landed but the answer was lost. Read as "the bucket is
- * gone", it skipped deleting the objects and the bucket, and reported nothing. Only S3's own `NoSuchBucket`
- * means the bucket is gone.
+ * Narrower than `probeMeansAbsent`, on purpose: that reads ANY 404 as absent — and `AbortMultipartUpload` answers
+ * 404 `NoSuchUpload` for an upload already aborted or completed, which is exactly what a retried abort gets back
+ * when its first attempt landed but the answer was lost. Read as "the bucket is gone", that answer would skip
+ * deleting the objects and the bucket, and report nothing. Only S3's own `NoSuchBucket` means the bucket is gone.
  */
 function bucketIsGone(err) {
   return (err?.name ?? err?.Code) === 'NoSuchBucket';
@@ -326,9 +322,9 @@ function uploadIsGone(err) {
  * The most delete passes teardown makes before it reports what is left instead of trying again.
  *
  * `DeleteObjects` reports a key it could not delete INSIDE a 200, where the SDK's retries never see it, and each
- * listing starts again from the first page — so a key that can never be deleted (a policy that forbids it) kept
- * the loop listing, and billing, for as long as it ran: 794 listings in five seconds, under no ceiling and in no
- * projection. Now bounded, and projected.
+ * listing starts again from the first page — so a key that can never be deleted (a policy that forbids it) would
+ * keep an unbounded loop listing, and billing, for as long as it runs, under no ceiling and in no projection. So
+ * the passes are bounded, and projected.
  */
 const TEARDOWN_PASSES = 3;
 
@@ -356,14 +352,14 @@ function clientConfigs(base, { adminTimeouts = ADMIN_TIMEOUTS } = {}) {
  * `retry: false` — the store has a transient-read retry of its own, above the client, and it would re-run a
  * failed read INSIDE the timed window: a second retry layer the client's one-attempt pin does not reach.
  *
- * `cache.genTtlMs: 0` — no timed pointer refresh. A store re-reads a segment's pointer once `genTtlMs`
- * (2 s by default) has passed since it last read it, in the middle of an intersect too. Run 2026-09-23-94416 was
- * 83 ms from the region, its cold intersects took about 3 s, and the median one read both pointers twice: 206
- * GETs where the same intersect inside the region would make 204. A request count that moves with the network describes the network,
- * and the projection had no term for it. Every timed intersect has a store of its own, so turning the refresh off
- * costs nothing in coldness: each pointer is still read, exactly once. What the default refresh costs a long-lived reader is a
- * separate figure — at most one pointer read per segment per `genTtlMs` while it is read — and the run report
- * states it rather than this harness measuring it by accident.
+ * `cache.genTtlMs: 0` — no timed pointer refresh. A store re-reads a segment's pointer once `genTtlMs` (2 s by
+ * default) has passed since it last read it, in the middle of an intersect too. Run 2026-09-23-94416 was 83 ms from
+ * the region, its cold intersects took about 3 s, and the median one read both pointers twice: 206 GETs where the
+ * same intersect inside the region would make 204. A request count that moves with the network describes the
+ * network, and the projection has no term for it. Every timed intersect has a store of its own, so turning the
+ * refresh off costs nothing in coldness: each pointer is still read, exactly once. What the default refresh costs a
+ * long-lived reader is a separate figure — at most one pointer read per segment per `genTtlMs` while it is read —
+ * and the run report states it rather than this harness measuring it by accident.
  */
 const TIMED_STORE = Object.freeze({ retry: false, cache: Object.freeze({ genTtlMs: 0 }) });
 
@@ -420,9 +416,9 @@ function checkRunId(runId) {
 /**
  * The id `--cleanup` accepts: anything that makes a legal bucket name, because it writes no file.
  *
- * Narrower rules would strand buckets. Harnesses before the date prefix accepted any `CR_CALIBRATE_RUN_ID` and
- * printed `--cleanup <id>` for their leftovers, and S3 allowed dots and a hyphen straight after the prefix, so an
- * id like `v0.10.0-inregion` made a real bucket that `checkRunId` would now refuse to remove.
+ * Narrower rules would strand buckets. A harness checked out at another commit may name its bucket by other rules,
+ * and `--cleanup` must still remove it: S3 allows dots and a hyphen straight after the prefix, so `v0.10.0-inregion`
+ * is a legal bucket name that `checkRunId` refuses.
  */
 const CLEANUP_ID = /^[a-z0-9.-]{0,43}[a-z0-9]$/;
 
@@ -445,9 +441,9 @@ function checkCleanupId(runId) {
  * Where a run's results are written, relative to the repository root.
  *
  * A real run that finished writes its evidence under {@link EVIDENCE_DIR}. One that did not — interrupted, failed
- * part-way — writes `<id>.partial.json` beside it, which git ignores and the figures gates skip: it once went to the
- * evidence name, where a single aborted run made both gates fail until someone deleted it. A rehearsal gets a file
- * of its own, which git also ignores: it writes the same shape as a real run, and under the real run's name it sat
+ * part-way — writes `<id>.partial.json` beside it, which git ignores and the figures gates skip: under the evidence
+ * name, a single aborted run would make both gates fail until someone deleted it. A rehearsal gets a file of its
+ * own, which git also ignores: it writes the same shape as a real run, and under the real run's name it would sit
  * one `git add` away from being committed as the evidence behind a published figure.
  */
 function resultsFile(rehearse, runId, { partial = false, stamp } = {}) {
@@ -486,9 +482,9 @@ function evidenceConflict({ rehearse, file, exists }) {
  * The most segments a run may load: what one teardown listing can hold.
  *
  * `ListObjectVersions` returns at most 1,000 versions a page, and teardown lists one page a pass. Each segment leaves
- * two versions, its generation and its pointer. A rehearsal of 1,510 segments passed every guard and left 20
- * versions behind after teardown's three passes. At 500 segments the whole bucket fits in the first listing, and the other
- * passes are left for what a concurrent write or a refused delete leaves behind.
+ * two versions, its generation and its pointer, so a workload of 1,510 segments leaves 3,020 versions: 20 past what
+ * teardown's three passes list. At 500 segments the whole bucket fits in the first listing, and the other passes
+ * are left for what a concurrent write or a refused delete leaves behind.
  */
 const MAX_SEGMENTS = 1000 / 2;
 
@@ -496,9 +492,9 @@ const MAX_SEGMENTS = 1000 / 2;
  * Refuse a workload that cannot measure what it claims to, or that teardown could not remove.
  *
  * Every intersect pairs segment i with segment i + 1, wrapping round. With one segment that is a segment with
- * itself: every chunk is shared, so a run shrunk to one segment — what someone does to make it cheaper — fetched
- * all 1,999 chunks an intersect, failed its exactness check and overspent its projection before the ceiling
- * check could see it.
+ * itself: every chunk is shared, so a run shrunk to one segment — what someone does to make it cheaper — would fetch
+ * all 1,999 chunks an intersect, fail its exactness check and overspend its projection before the ceiling check
+ * could see it.
  */
 function checkWorkload({ segments, largeSegments = 0, reads }) {
   if (reads > 0 && segments < 2) {

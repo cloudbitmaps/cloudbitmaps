@@ -253,8 +253,8 @@ function panel(top, title, xLabel, costFn, crossover, xTicks, xMax) {
     `<line x1="${crX.toFixed(1)}" y1="${plotT}" x2="${crX.toFixed(1)}" y2="${plotB}" stroke="${COL.muted}" stroke-width="1" stroke-dasharray="3 3"/>`,
     `<circle cx="${crX.toFixed(1)}" cy="${redisY.toFixed(1)}" r="4.5" fill="${COL.cr}"/>`,
     // BELOW the baseline, not above it. The curve crosses the flat Redis line exactly here by definition, so
-    // a label at `redisY - 10` is guaranteed to be printed over the curve's own stroke — which it was, most
-    // illegibly. Below-right of the crossing is the one quadrant the curve has just left.
+    // a label at `redisY - 10` is guaranteed to be printed over the curve's own stroke, most illegibly.
+    // Below-right of the crossing is the one quadrant the curve has just left.
     `<text x="${(crX + 8).toFixed(1)}" y="${(redisY + 20).toFixed(1)}" font-size="12" font-weight="700" fill="${COL.cr}">crossover ≈ ${crossover.toFixed(crossover < 100 ? 1 : 0)} /s</text>`,
   );
   out.push(`</g>`);
@@ -323,8 +323,8 @@ function replaceRegion(s, name, body, rel) {
   const i = s.indexOf(start);
   const j = s.indexOf(end);
   // Throwing rather than warning is deliberate: a silently-skipped region publishes a page with a stale or
-  // empty figure, which is worse than a failed run. This is exactly how the site rebuild broke `pnpm bench` —
-  // the markers were dropped with the old markup and nothing noticed until the next run.
+  // empty figure, which is worse than a failed run. Were this a warning, a page rebuilt without its markers
+  // would go stale with every run passing.
   if (i === -1 || j === -1) throw new Error(`missing BENCH:${name} markers in ${rel}`);
   return s.slice(0, i + start.length) + '\n' + body + '\n' + s.slice(j);
 }

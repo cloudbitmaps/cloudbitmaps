@@ -1,10 +1,9 @@
 /**
  * The one bounded drain of `registry.list()`.
  *
- * Three call sites wanted this — `runConsistencyCheck`, `retireExpired`, and (still unbounded) `eraseNamespace` —
- * and before this module there were two verbatim copies of the loop, two exported ceiling constants with the same
- * value and the same meaning, and two copies of the option validation. A fleet-wide enumeration is exactly the
- * place where "it drifted between callers" costs memory rather than tidiness, so it lives once.
+ * `runConsistencyCheck` and `retireExpired` drain through it; `eraseNamespace` enumerates the registry unbounded.
+ * One copy of the loop, the ceiling constant and the option validation keeps them from drifting apart, and a
+ * fleet-wide enumeration is exactly the place where drift between callers costs memory rather than tidiness.
  *
  * **Why drain at all rather than stream.** Every caller mutates rows as it goes (a CAS, a delete), and iterating a
  * live listing while doing so is driver-dependent — a paged LIST may or may not observe its own writes. A

@@ -1,11 +1,11 @@
 """What the site gates read out of a page: its tags and their attributes, its scripts, and its styles.
 
-Shared by `site-classes.py` and `site-links.py`, because both used to read markup with patterns that saw only one
-spelling of it. A review planted each of these and watched a gate pass: an attribute in single quotes, or none; a
-`>` inside a quoted value, which ended the tag early; a `rel` the pattern could not parse, read as "not a load";
-and the inline `<script>` every page carries, which neither gate read at all — so a tracker loaded from there went
-through the check written to keep third-party loads off the site. The site's own pages use double quotes and no
-inline loads today; the point of reading every spelling is that nothing has to stay that way by luck.
+Shared by `site-classes.py` and `site-links.py`, so neither reads markup with a pattern that sees only one
+spelling of it. A gate reading that way passes each of these: an attribute in single quotes, or none; a `>` inside
+a quoted value, which ends the tag early; a `rel` the pattern cannot parse, read as "not a load"; and the inline
+`<script>` every page carries, left unread — so a tracker loaded from there goes through the check written to keep
+third-party loads off the site. The site's own pages use double quotes and no inline loads today; the point of
+reading every spelling is that nothing has to stay that way by luck.
 """
 from __future__ import annotations
 

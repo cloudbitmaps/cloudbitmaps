@@ -235,9 +235,8 @@ export interface DropResult {
  * - `dropSegment` **removes the storage**. It works on a cleartext segment, and on an encrypted one it *also*
  *   drops the DEKs, so it is a strict superset there.
  *
- * Before this existed there was no supported way to delete a segment and stop paying for it, and the obvious
- * workaround — an object-store lifecycle rule on the key prefix — deletes the bytes while the registry still
- * points at them. That is exactly the `missing-storage-generation` state the DR runbook says not to serve traffic
+ * It is the supported way to delete a segment and stop paying for it. The obvious workaround — an object-store
+ * lifecycle rule on the key prefix — deletes the bytes while the registry still points at them. That is exactly the `missing-storage-generation` state the DR runbook says not to serve traffic
  * on, and it surfaces *intermittently*, because a read consults the cache before Storage: cached chunks answer
  * correctly and evicted ones throw. The whole value of this function is that the ordering below cannot be got
  * wrong by a caller.

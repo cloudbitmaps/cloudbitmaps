@@ -18,7 +18,7 @@ import type { GenKey } from '@/core/ports';
 // STREAM on a file called `dedup` — the write can succeed while `readdir` never lists the result, which is
 // worse than an error because nothing reports it. So the driver percent-encodes on the way to a path.
 //
-// These run on POSIX in CI too, where the literal colon would have been *accepted*. That is exactly why the
+// These run on POSIX in CI too, where a literal colon is *accepted*. That is exactly why the
 // encoding is unconditional and why these assert the encoding itself, not merely that a round-trip works:
 // on a POSIX runner a driver that skipped encoding would pass every round-trip test and still lose data on
 // a user's Windows box.
@@ -102,7 +102,7 @@ describe('localfs: colons never reach the filesystem', () => {
     expect(parseRegistryRow('sent%3Adaily%3A2026-08-01.reg')).toBe('sent:daily:2026-08-01');
     // The escape is case-sensitive; `%3a` is not one the driver ever writes.
     expect(parseRegistryRow('a%3ab.reg')).toBeNull();
-    // A stem that is not a legal name after decoding is skipped, as before.
+    // A stem that is not a legal name after decoding is skipped too.
     expect(parseRegistryRow('a%41b.reg')).toBeNull();
     expect(parseRegistryRow('_default.reg')).toBeNull();
   });
@@ -120,7 +120,7 @@ describe('localfs: colons never reach the filesystem', () => {
   it('a planted literal-colon DIRECTORY is skipped, so one namespace is never reported twice', async () => {
     // The sibling of the `.reg` round-trip check, on `parseNamespaceDir`. Its doc says getting this wrong does
     // not fail one segment — it aborts the whole enumeration, taking the consistency check, the retention
-    // sweep and subject erasure with it. Nothing tested it.
+    // sweep and subject erasure with it.
     const registry = new LocalFsRegistryDriver(root);
     await registry.create({ segment: 's', namespace: 'tenant:acme' }, { currentGen: 0 });
     await mkdir(join(root, 'tenant:acme', 'registry'), { recursive: true });
@@ -133,9 +133,8 @@ describe('localfs: colons never reach the filesystem', () => {
 
   it('property: the encoding round-trips, and near-identical names never share a path', () => {
     // Derive the pair from ONE base by inserting colons, so a COLLIDING pair is the common draw rather than
-    // a once-in-a-blue-moon one. Two independently generated names essentially never collide, which is how a
-    // mutation that simply STRIPPED colons (making `a:b` and `ab` the same path) slipped past an earlier
-    // version of this property.
+    // a once-in-a-blue-moon one. Two independently generated names essentially never collide, so a property
+    // over them passes a mutation that simply STRIPS colons (making `a:b` and `ab` the same path).
     const BASE = fc.stringMatching(/^[A-Za-z0-9][A-Za-z0-9.-]{0,16}$/);
     const POSITIONS = fc.array(fc.nat({ max: 16 }), { maxLength: 3 });
     const withColons = (base: string, at: number[]): string =>
@@ -153,8 +152,8 @@ describe('localfs: colons never reach the filesystem', () => {
         const fa = storageObjectFilename(a, 0);
         expect(fa.includes(':')).toBe(false);
         expect(parseGeneration(a, fa)).toBe(0);
-        // A real decode, through the parser that reads a name back off disk — the earlier version of this
-        // property only ever re-ENCODED, so a broken decoder satisfied it.
+        // A real decode, through the parser that reads a name back off disk — a broken decoder satisfies a
+        // property that only re-ENCODES.
         expect(parseRegistryRow(basename(registryRowPath(root, { segment: a })))).toBe(a);
         if (a !== b) expect(fa).not.toBe(storageObjectFilename(b, 0));
       }),

@@ -2,7 +2,7 @@
  * Internal surface for the coverage-guided fuzz harness, CORE half.
  *
  * Exposes the untrusted-bytes entry points the fuzz targets drive — including `parseIndex`, which is
- * deliberately **NOT public API**. Built by a dedicated `tsup` entry to the git-ignored repo-root `fuzz/build/`,
+ * deliberately **NOT public API**. Bundled by its own esbuild entry in `scripts/build.mjs` to the git-ignored repo-root `fuzz/build/`,
  * so it never enters `dist/` or the published package. Keeping it here (rather than widening
  * `packages/core/src/index.ts`) is the point: a test harness must not expand the published surface.
  * The codec half lives in the flavor package (`packages/roaring/src/testing/fuzz-codec.ts`), because a concrete

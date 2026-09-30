@@ -191,14 +191,14 @@ describe('crafted (hostile) index — reader-side guards', () => {
     await expect(open(wellFormed({ payloadCodecId: 2 }))).rejects.toBeInstanceOf(UnsupportedError);
   });
 
-  // The next three exist because the generalization from "equals one constant" to "is in a registry" is the
-  // kind of change that can be equality with extra steps. Each one would still pass against the old
-  // single-constant reader EXCEPT where noted, so read them together rather than individually.
+  // The next three exist because an "is in a registry" check can be "equals one constant" with extra steps.
+  // Each one would also pass against a reader that compares with a single constant, so read them together rather
+  // than individually.
 
   it.each([...KNOWN_PAYLOAD_CODEC_IDS])('accepts registered payload_codec_id %i', async (id) => {
     // Written as a loop over the registry rather than against the literal `1`, so that registering a second
     // codec extends this test with no edit. A hand-written `expect(open(id=1))` would silently stop covering
-    // the new id on the day it matters — the same depth-one blindness that has bitten the site gates twice.
+    // the new id on the day it matters.
     const reader = await open(wellFormed({ payloadCodecId: id }));
     expect(reader.chunkKeys()).toEqual([0]);
   });
@@ -214,8 +214,8 @@ describe('crafted (hostile) index — reader-side guards', () => {
 
   it('registers roaring-portable as id 1, and that id is frozen by the golden corpus', () => {
     // Two assertions that look trivial and are not. The first is the compatibility statement: every generation
-    // ever written by this project carries id 1, so 1 can never be reassigned. The second guards the direction
-    // of the generalization — the registry must CONTAIN the historical id, not replace it.
+    // ever written by this project carries id 1, so 1 can never be reassigned. The second guards the registry
+    // itself — it must CONTAIN that id, not replace it.
     expect(PAYLOAD_CODEC_ROARING_PORTABLE).toBe(1);
     expect(KNOWN_PAYLOAD_CODEC_IDS.has(PAYLOAD_CODEC_ROARING_PORTABLE)).toBe(true);
   });

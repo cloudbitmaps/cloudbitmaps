@@ -13,17 +13,18 @@ import { SafeBitmap, roaringCodec } from '@/roaring-codec';
 import { joinId, MAX_REMAINDER } from '@/core/bit-route';
 import { collect } from '../helpers/loaded';
 
-// A chunk payload holds REMAINDERS — 16-bit offsets within one chunk. Nothing enforced that: the byte/length
-// caps bound size, and CRC/AEAD only prove the bytes are the bytes that were written, which anyone able to
-// write the bucket satisfies by construction. A value >= 65536 then reached `joinId`, which masks it and
-// emitted a FABRICATED id in a different chunk's id space — indistinguishable from real data, inflating
+// A chunk payload holds REMAINDERS — 16-bit offsets within one chunk. Nothing upstream enforces that: the
+// byte/length caps bound size, and CRC/AEAD only prove the bytes are the bytes that were written, which anyone
+// able to write the bucket satisfies by construction. Unchecked, a value >= 65536 reaches `joinId`, which masks
+// it and emits a FABRICATED id in a different chunk's id space — indistinguishable from real data, inflating
 // count() and creating spurious intersect matches. Invariant 5 says every byte read back from storage is
-// untrusted; this was the one place "well-formed" was assumed rather than checked.
+// untrusted, so the chunk decode checks "well-formed" rather than assuming it.
 //
-// NOTE ON PLACEMENT. The first attempt put this check inside `SafeBitmap.safeDeserialize` and broke two tests
-// immediately: that is the codec's GENERAL entry point, also used for full-segment exports where u32 values
-// are entirely legitimate. The 16-bit rule belongs where a payload is interpreted AS A CHUNK, which is exactly
-// one place: `SegmentEngine`'s storage-chunk decode (`assertChunkPayloadInRange`).
+// NOTE ON PLACEMENT. The check does not belong in `SafeBitmap.safeDeserialize`: that is the codec's GENERAL
+// entry point, also used for full-segment exports where u32 values are entirely legitimate. The 16-bit rule
+// belongs where a payload is interpreted AS A CHUNK: `SegmentEngine`'s storage-chunk decode
+// (`assertChunkPayloadInRange`), and the erasure rewrite's decode of each chunk it carries into a new generation
+// (`assertRemaindersInRange` in `erase-id.ts`).
 const CAP = 1 << 20;
 
 /** A chunk payload carrying an illegal (>16-bit) value, bypassing every writer guard the way corrupt bytes do. */
@@ -42,7 +43,7 @@ describe('chunk payload value range', () => {
   it('rejects a storage chunk holding a value past the remainder range, on every read path', async () => {
     const seg = storeWithChunk(3, [1, 2, 70_000]).segment('s');
     // Every verb that decodes a chunk must refuse it — a read that answered from one path and threw from
-    // another is how a fabricated id used to reach a caller intermittently.
+    // another would let a fabricated id reach a caller intermittently.
     await expect(seg.has(joinId(3, 1))).rejects.toBeInstanceOf(IntegrityError);
     await expect(seg.has(joinId(3, 1))).rejects.toThrow(/70000/);
     await expect(seg.count()).rejects.toBeInstanceOf(IntegrityError);
@@ -109,7 +110,7 @@ describe('chunk payload value range', () => {
 
   it('leaves the general codec entry point free to hold u32 values', () => {
     // Exports serialize a whole segment's ids, which legitimately exceed 16 bits. The check must NOT live here
-    // — this assertion is what caught the first, wrong placement.
+    // — this assertion fails if it does.
     const big = new RoaringBitmap32([100_000, 4_000_000_000]).serialize(
       SerializationFormat.portable,
     );
@@ -117,9 +118,9 @@ describe('chunk payload value range', () => {
     expect(roaringCodec.safeDeserialize(big, CAP).toArray()).toEqual([100_000, 4_000_000_000]);
   });
 
-  it('documents the fabrication that used to result', () => {
-    // Why it mattered, concretely: the bad value did not error downstream — it became a real-looking id
-    // belonging to a different chunk.
+  it('documents the fabrication an unchecked value produces', () => {
+    // Why it matters, concretely: unchecked, the bad value does not error downstream — it becomes a real-looking
+    // id belonging to a different chunk.
     expect(joinId(3, 70_000)).toBe(joinId(3, 70_000 & MAX_REMAINDER));
     expect(joinId(3, 70_000)).not.toBe(70_000);
   });

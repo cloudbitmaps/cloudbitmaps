@@ -28,16 +28,16 @@ const AZURITE_CONN =
 /**
  * A backend exists to state a location ONCE.
  *
- * The bug it removes is not hypothetical and not loud: wire the objects at one prefix and the registry at
- * another and the store constructs fine, reads fine, and answers **empty** — because the pointer it consults
+ * The failure it prevents is quiet: wire the objects at one prefix and the registry at another and the
+ * store constructs fine, reads fine, and answers **empty** — because the pointer it consults
  * lives somewhere nothing was ever written. "Empty" is indistinguishable from "new", so the misconfiguration
  * presents as an absence of data rather than as an error. These tests pin the property that makes it
  * unexpressible: both halves are built from one set of inputs, and you cannot hand them different ones.
  */
 describe('a backend configures both halves from one place', () => {
-  // The prefix is the half that actually causes the silent-empty bug, so assert it on BOTH halves rather
-  // than assuming one config object means one answer — an earlier version of this test checked only the
-  // shared client, and a mutant that handed the registry a different prefix sailed straight through it.
+  // The prefix is the half that actually causes the silent-empty failure, so assert it on BOTH halves rather
+  // than assuming one config object means one answer — a test that checks only the shared client passes a
+  // mutant that hands the registry a different prefix.
   it('S3Storage gives both halves the same client, bucket and prefix', () => {
     const backend = new S3Storage({ bucket: 'bitmaps', prefix: 'cr', region: 'us-east-1' });
     // The client is built once and shared — not one per half, which would also double the connection pool.
@@ -62,10 +62,10 @@ describe('a backend configures both halves from one place', () => {
     for (const [label, backend] of [
       ['S3', new S3Storage({ bucket: 'b', prefix: 'p' })],
       ['GCS', new GcsStorage({ bucket: 'b', prefix: 'p', apiEndpoint: 'http://127.0.0.1:4443' })],
-      // Azure was missing here, and only here. A mutant pointing its registry at a different prefix survived
-      // BOTH the unit suite and the Azurite integration run — the integration test writes and reads through
-      // the same mismatched registry, so a uniform prefix error is invisible to it. This is the single failure
-      // mode the backend shape exists to make unexpressible, so it is asserted on every cloud, not most.
+      // Azure is checked here because the Azurite integration run cannot catch a mutant pointing its registry
+      // at a different prefix: that test writes and reads through the same mismatched registry, so a uniform
+      // prefix error is invisible to it. This is the single failure mode the backend shape exists to make
+      // unexpressible, so it is asserted on every cloud, not most.
       [
         'Azure',
         new AzureBlobStorage({ connectionString: AZURITE_CONN, container: 'c', prefix: 'p' }),
@@ -152,9 +152,9 @@ describe('a backend configures both halves from one place', () => {
   });
 
   // `now` exists so tests and replayable jobs can pin the clock. It is threaded to the REGISTRY half (the
-  // half that stamps rows), and a backend that quietly dropped it would pass every suite today and produce
-  // unreproducible timestamps later — the defect that only shows up as flake. Every backend, no exceptions:
-  // all five drop-`now` mutants survived the suite before this existed.
+  // half that stamps rows), and a backend that quietly drops it passes every other suite and produces
+  // unreproducible timestamps later — the defect that only shows up as flake. So every backend is checked, no
+  // exceptions.
   it('threads an injected `now` to the registry half of every backend', async () => {
     const now = (): number => 1_700_000_000_000;
     const dir = await mkdtemp(join(tmpdir(), 'cbm-now-'));

@@ -4,10 +4,10 @@ import { fileURLToPath } from 'node:url';
 import { ELASTICACHE_REDIS_US_EAST_1_ONDEMAND } from '@cloudbitmaps/core';
 
 /**
- * The price list was read wrongly twice, on a join that looked unique and was not: the instance type and the engine.
- * A node type has several products, and the fixture below holds the ones that fooled it — an extended-support
- * surcharge, a sync-durability rate, a Memcached twin — around the one real node. The reader must find that one, and
- * refuse a list where the full key matches none or more than one.
+ * A join on the instance type and the engine looks unique and is not. A node type has several products, and the
+ * fixture below holds, around each engine's one real node, the products that share its type: an extended-support
+ * surcharge, a sync-durability rate and a Memcached twin. The reader must find that one, and refuse a list where
+ * the full key matches none or more than one.
  */
 const ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const require_ = createRequire(join(ROOT, 'bench', 'sizing.cjs'));
@@ -100,7 +100,7 @@ describe('the ElastiCache price reader reads each node on its full key', () => {
   it('finds the one real node among the products that share its type and engine', () => {
     expect(nodeProduct(offer(), TYPE, 'Redis')).toBe('node');
     expect(nodeProduct(offer(), TYPE, 'Valkey')).toBe('valkey');
-    // The join the bug made: type and engine alone match two Redis products here.
+    // The loose join, on type and engine alone, matches two Redis products here.
     const loose = Object.values(offer().products).filter(
       (p) => p.attributes.instanceType === TYPE && p.attributes.cacheEngine === 'Redis',
     );

@@ -188,7 +188,7 @@ export interface RetireExpiredResult {
   readonly eligible: number;
   /**
    * Segments **actually retired**. Zero under `dryRun` — see `wouldRetire`. Kept honest because this is the field
-   * most likely to end up on a dashboard, and the CLI emits it: a counter that means "deleted" in one mode and
+   * most likely to end up on a dashboard: a counter that means "deleted" in one mode and
    * "would delete" in another produces phantom deletions on any graph that does not also join on `dryRun`.
    */
   readonly retired: number;
@@ -350,9 +350,9 @@ export async function retireExpired(
   let limited = false;
   // The budget is charged on ATTEMPT, not on success, and that distinction is the whole guard. `dropSegment`
   // writes the tombstone BEFORE sweeping Storage, so a fault in the Storage phase is a segment that is
-  // already retired — counting only successes meant a partial storage outage marched through the entire fleet with
-  // the cap never engaging, reporting `retired: 0, limited: false` (a "completed sweep that retired nothing") while
-  // every segment in the namespace was tombstoned. Reproduced by two independent reviews.
+  // already retired. Counting only successes would let a partial storage outage march through the entire fleet
+  // with the cap never engaging, reporting `retired: 0, limited: false` (a "completed sweep that retired nothing")
+  // while every segment in the namespace is tombstoned.
   let attempted = 0;
 
   for (const rec of mine) {
@@ -363,11 +363,11 @@ export async function retireExpired(
     if (rec.status === 'destroyed') {
       if (!purgeTombstones) continue;
       // Attribution is a POSITIVE MARKER the sweep writes on its own retirements, never an inference from
-      // "destroyed + an expired policy". That inference was wrong and the consequence was serious: `shredSegment`
+      // "destroyed + an expired policy". That inference would be wrong, and the consequence serious: `shredSegment`
       // never touches `retention`, so the ordinary ordering — set a 30-day policy, then a GDPR request arrives
       // mid-window and you `destroySegment` — leaves a **crypto-shred** tombstone carrying an expired policy.
       // Deleting that row destroys the local attestation for a right-to-erasure execution and un-fences the name
-      // for every writer. Two reviews reproduced it. A marker cannot be forged by that ordering.
+      // for every writer. A marker cannot be forged by that ordering.
       const retiredAt = retirementStamp(rec.retention);
       if (retiredAt === null) continue; // not ours — a GDPR tombstone, or one from a manual drop
       if (now - retiredAt < grace) continue; // inside the fence window; not ledger noise
@@ -408,10 +408,10 @@ export async function retireExpired(
     if (policy.expiresAt > now) continue; // not yet
     eligible += 1;
     if (attempted >= limit) {
-      // Stop SCANNING, not just stop acting. Pushing a `limit` entry per deferred row made the ledger scale with
-      // the fleet rather than with the batch — 250,000 rows behind a bad backfill is ~15 MB of entries the caller
-      // did not ask for, and the CLI then serialised all of them into one stdout line. They are not information:
-      // the next run picks them up, which is what `limited` says.
+      // Stop SCANNING, not just stop acting. A `limit` entry per deferred row would make the ledger scale with the
+      // fleet rather than with the batch — 250,000 rows behind a bad backfill is ~15 MB of entries the caller did
+      // not ask for, all in one result object. They are not information: the next run picks them up, which is
+      // what `limited` says.
       limited = true;
       break;
     }

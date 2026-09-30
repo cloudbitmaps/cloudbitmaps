@@ -19,10 +19,11 @@ import type { GenKey } from '@/core/ports';
 /**
  * A keyspace unique to THIS run.
  *
- * Every prefix below is numbered from a counter that restarts at 0, so a second run against the same LIVE
- * container replays the same write-once keys and fails with `WriteConflictError: generation already exists`
- * — 78 failures that read exactly like a real write-once regression rather than like a dirty container. CI
- * never saw it because each job gets fresh containers; every local re-run did.
+ * Every prefix below is numbered from a counter that restarts at 0. Under a fixed root, a second run against
+ * the same LIVE container would replay the same write-once keys and fail with
+ * `WriteConflictError: generation already exists` — failures that read exactly like a real write-once
+ * regression rather than like a dirty container. CI would never see them, because each job gets fresh
+ * containers; every local re-run would.
  *
  * `GITHUB_RUN_ID` plus `GITHUB_RUN_ATTEMPT` in CI, a random token locally. The attempt matters: re-running
  * a failed job keeps the same run id, so the id alone would replay the very keys that just failed.
@@ -48,11 +49,11 @@ beforeAll(async () => {
   // `docker compose up --wait` returns when the container is *running*, not necessarily accepting HTTP — poll
   // until MinIO answers so a cold-start ECONNREFUSED can't red the suite (deterministic readiness).
   //
-  // /gcs and /azure have carried this since they were written; S3 was the one that did not, and it passed on
-  // an accident of timing rather than a margin: MinIO accepts connections a few tens of milliseconds after
-  // `--wait` returns, the AWS SDK gives up on ECONNREFUSED in about the same, and the only thing covering the
-  // gap was vitest's own startup. A `beforeAll` failure here reds all 38 tests at once, which reads like a
-  // driver regression rather than a cold container.
+  // The GCS and Azure suites poll the same way. Without the poll this suite passes on an accident of timing
+  // rather than a margin: MinIO accepts connections a few tens of milliseconds after `--wait` returns, the AWS
+  // SDK gives up on ECONNREFUSED in about the same, and the only thing covering the gap is vitest's own
+  // startup. A `beforeAll` failure here reds every test in the file at once, which reads like a driver
+  // regression rather than a cold container.
   for (let attempt = 0; ; attempt++) {
     try {
       await client.send(new ListBucketsCommand({}));

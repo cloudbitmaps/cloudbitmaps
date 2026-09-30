@@ -40,10 +40,10 @@ for (const dir of dirs) {
     if (strict) failed = true;
   } else if (expected !== sha256) {
     // A mismatch here has one overwhelmingly likely cause, and it is not a changed upstream artifact: the
-    // prebuilt DOWNLOAD failed and node-pre-gyp fell back to compiling from source. That happened on a
-    // Windows runner when GitHub returned 500 for the release asset — the install log said so plainly
-    // ("Pre-built binaries not installable … falling back to source compile with node-gyp") and the locally
-    // compiled binary naturally hashed differently. The directory key is identical either way, so this
+    // prebuilt DOWNLOAD failed and node-pre-gyp fell back to compiling from source. A GitHub 500 for the
+    // release asset does exactly that — the install log says so plainly ("Pre-built binaries not installable
+    // … falling back to source compile with node-gyp") and the locally compiled binary naturally hashes
+    // differently. The directory key is identical either way, so this
     // script cannot tell the two apart from the file alone; the install log can, which is why the message
     // says where to look rather than guessing.
     //

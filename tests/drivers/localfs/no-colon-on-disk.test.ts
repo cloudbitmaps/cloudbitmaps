@@ -5,13 +5,13 @@ import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import type { BlobSink } from '@/core/blob';
 
-// The gate for the WHOLE class, rather than for the sites that happened to exist when it was written.
+// The gate for the WHOLE class, rather than for a list of the sites that build paths.
 //
 // A name may contain `:`; a filesystem path may not — on Windows it opens an NTFS alternate data stream, so
 // the write succeeds and `readdir` never lists the result. Every place that turns a name into a path has to
-// encode it, and "every place" is the hard part: the first pass at this encoded the LocalFs drivers and
-// missed the eject sink in another package entirely, and a reviewer demonstrated that adding a new temp-file
-// path inside the storage driver would pass the entire suite.
+// encode it, and "every place" is the hard part: such a site can sit in another package entirely (the export
+// sink encodes its own), and a new temp-file path inside the storage driver passes every test that checks only
+// the sites it names.
 //
 // So this asserts on the ARTIFACT, not the code: drive the driver surface with colon names, then walk the
 // whole tree and require that NO entry anywhere contains a colon — data files, registry rows, directories,

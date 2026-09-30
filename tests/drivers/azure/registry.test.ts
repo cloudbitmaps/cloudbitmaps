@@ -159,7 +159,7 @@ describe('AzureBlobRegistryDriver — construction + Azure specifics', () => {
   });
 
   // A read-only caller must never see a WRITE conflict, and one row being rewritten must not abort an
-  // enumeration over all the others. Both were true before the port pinned down what a lost pin means.
+  // enumeration over all the others. Reporting a lost pin as a conflict would do both, so a lost pin re-reads.
   it('re-reads rather than failing when a write lands mid-read', async () => {
     const container = new FakeContainer();
     const d = driverOver(container);

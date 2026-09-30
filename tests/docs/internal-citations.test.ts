@@ -6,12 +6,11 @@ import { fileURLToPath } from 'node:url';
 // bare citation either. An id like `Phase 4e`, `gap #1`, `finding S2` or `test-strategy T3` refers to a
 // private tracker. It is worse than saying less, because it implies checkable evidence and then withholds it.
 //
-// This exists because the surface drifted TWICE. One sweep removed internal-doc citations from shipped code
-// comments; a later one found 271 more across the tree, 71 of them in
-// `packages/*/src` — which reach users on hover in an editor and inside the published `.d.ts` and
-// sourcemaps. Nothing compared prose to the rule in between: `leak-scan` checks configured needles
-// (employer names and the like), the docs gates check that symbols and links resolve, and neither can see a
-// citation. The second drift is the one that earns a gate rather than more care.
+// A citation can land wherever prose is written, and a hand sweep finds some and leaves the rest, those in
+// `packages/*/src` among them — which reach users on hover in an editor and inside the published `.d.ts` and
+// sourcemaps. Nothing else compares prose to the rule: `leak-scan` checks configured needles (employer names
+// and the like), the docs gates check that symbols and links resolve, and neither can see a citation. A
+// defect that recurs earns a gate rather than more care.
 //
 // The fix for a hit is to state the SUBSTANCE inline, not to delete the sentence: `(gap #1)` becomes what
 // gap #1 actually said — "a wide segment's parsed index, not its payloads, dominates the reader's
@@ -68,13 +67,12 @@ const BARE_ID = '[A-Z]{1,2}\\d{1,2}';
 /**
  * Ids in that exact shape that a reader CAN resolve, because they name a product or a standard rather than
  * a document. Without these the frames below are unusable: `the S3 bucket`, `the R2 bucket`, `(V8)` and
- * `the B2 endpoint` are ordinary English about real things, and `S3` alone appears 337 times here. This is
- * the narrow, honest collision the rule says to exempt by NAME — widening the frames instead would let
- * every real citation through.
+ * `the B2 endpoint` are ordinary English about real things, and `S3` alone appears hundreds of times here.
+ * This is the narrow, honest collision the rule says to exempt by NAME — widening the frames instead would
+ * let every real citation through.
  *
- * Exempted by NAME, never by shape. An earlier draft wrote `V\d+` to cover the V8 engine and thereby
- * excused `V4`, `V5` and `V7`, which are private-corpus ids — the exemption silently swallowed three real
- * hits. Only `V8` is a product.
+ * Exempted by NAME, never by shape. A `V\d+` written to cover the V8 engine would excuse `V4`, `V5` and
+ * `V7`, which are private-corpus ids, and swallow their hits silently. Only `V8` is a product.
  */
 const PRODUCT_IDS = /^(?:S3|R2|B2|V8|EC2|H[23]|TS\d+|ES\d+|AL\d+|C[01]|P\d{1,2})$/;
 //                                                        ^^^^^  ^^^^^^^
@@ -95,8 +93,8 @@ const PRODUCT_IDS = /^(?:S3|R2|B2|V8|EC2|H[23]|TS\d+|ES\d+|AL\d+|C[01]|P\d{1,2})
 const CITATIONS: ReadonlyArray<readonly [string, RegExp]> = [
   // Case-insensitivity applies to the NUMBERED form only. `phase 4e` is a tracker citation however it is
   // capitalised, but a lone letter is usually a local identifier — `site/demo.js` says "the point of phase B"
-  // about its own `function phaseB` twelve lines up, which a reader resolves by scrolling. Lower-casing the
-  // letter form turned that into a hit.
+  // about its own `function phaseB` a few lines up, which a reader resolves by scrolling. Lower-casing the
+  // letter form would turn that into a hit.
   ['phase id', /\bphase[\s-]+\d+[a-z]?\b/i],
   ['phase id (letter)', /\bPhase[\s-]+[A-G]\d?\b/],
   ['audit gap', /\bgaps?\s*#\d+|\baudit gaps?\b/i],
@@ -104,14 +102,13 @@ const CITATIONS: ReadonlyArray<readonly [string, RegExp]> = [
   ['test-strategy id', /\btest-strategy\s+[A-Z]?\d+/i],
   ['threat-model id', /\bthreat[\s-]model\s+[A-Z]?\d+/i],
   ['audit round', /\baudit round\s+\d/i],
-  // `decision 6` — lowercase and with no `#` — shipped in a core `.d.ts` while this pattern required a
-  // capital D or a hash. The naming word is what makes it a citation; the punctuation around it is not.
+  // `decision 6`, lowercase and with no `#`, is a citation all the same. The naming word is what makes it
+  // one; the case and the punctuation around it are not.
   ['decision log', /\bdecisions?\s*#?\s*\d+|\bADR\s*#?\s*\d+|\bDECISIONS\s*#\d+/i],
   ['internal doc number', /\b\d\d-[A-Z][A-Z-]{3,}\b/],
-  // The BARE forms, which every pattern above missed because each of those requires a naming word
-  // ("finding", "Phase", "ADR") that a bare id by definition does not carry. They are the majority of what
-  // actually shipped: `(S2)`, `(C13)`, `— S2)`, `the T4 cache-row contention stress`, `case R8`. Three of
-  // them reached the published `.d.ts` of packages created by the very change that added this gate.
+  // The BARE forms, which every pattern above misses because each of those requires a naming word
+  // ("finding", "Phase", "ADR") that a bare id by definition does not carry. They are the commonest shape a
+  // citation takes: `(S2)`, `(C13)`, `— S2)`, `the T4 cache-row contention stress`, `case R8`.
   //
   // Matching a bare `[A-Z]\d+` anywhere is not an option — `S3`, `R2`, `B2`, `V8`, `T0` and friends occur
   // ~470 times in this repo and every one is legitimate. So these match the FRAME instead: an id standing
@@ -124,7 +121,7 @@ const CITATIONS: ReadonlyArray<readonly [string, RegExp]> = [
   ['id closing a parenthetical', new RegExp(`[—–-]\\s*${BARE_ID}\\)`)],
   [
     'id modifying a noun',
-    // The trailing context is punctuation OR a lowercase word. Requiring a word missed `removed in D2,` and
+    // The trailing context is punctuation OR a lowercase word. Requiring a word misses `removed in D2,` and
     // `see the T4.` — a citation that ends its clause is the commonest shape of all, and the one a sweep
     // leaves behind when it deletes the surrounding words.
     new RegExp(`\\b(?:the|The|in|In|case|per|from|by|and)\\s+${BARE_ID}(?:\\s+[a-z]|[,.;:)])`),
@@ -138,8 +135,7 @@ const CITATIONS: ReadonlyArray<readonly [string, RegExp]> = [
   ['id opening a parenthetical', new RegExp(`\\(${BARE_ID}\\s+[a-z]`)],
   // `S1: validate size, then deserialize…` — the id LABELS what follows instead of sitting inside a phrase,
   // so it carries no determiner, no parenthesis and no naming word. Every frame above needs one of those.
-  // This shipped in `@cloudbitmaps/roaring`'s published `.d.ts`, on the doc comment of a public static
-  // method, where it reaches users on hover.
+  // On the doc comment of a public method it ships in the published `.d.ts`, and reaches users on hover.
   ['id labelling a step', new RegExp(`(?:^|[\\s>])${BARE_ID}:\\s+[a-z]`, 'm')],
   // `…against a deterministic oracle: S1 a budgeted drain …; S2 hot-row contention…` — an inline enumeration
   // where each id heads its own clause, so there is no determiner in front and no bracket around it.
@@ -152,11 +148,11 @@ const CITATIONS: ReadonlyArray<readonly [string, RegExp]> = [
  * `id labelling a step` is the right check for a doc comment and the wrong one for prose, because the prose
  * that writes `M1 — local end-to-end:` is DEFINING M1 in the same breath — `README.md` and `bench/scale.cjs`
  * both enumerate their own milestone vocabulary in the file that uses it, which is precisely what makes those
- * ids resolvable. Applying the frame everywhere flagged all three, and a gate that fires on the honest cases
- * is one people learn to route around.
+ * ids resolvable. Applied everywhere, the frame flags them, and a gate that fires on the honest cases is one
+ * people learn to route around.
  *
  * Under `packages/*\/src` there is no such list, and the stakes are highest: these files become the published
- * `.d.ts` and sourcemaps, where `S1: validate size, then deserialize` sat on a public static method.
+ * `.d.ts` and sourcemaps, where an `S1: validate size, then deserialize` would sit on a public method.
  */
 const SOURCE_ONLY_KINDS = new Set(['id labelling a step']);
 const isPublishedSource = (rel: string): boolean => /^packages[/\\][^/\\]+[/\\]src[/\\]/.test(rel);
@@ -168,14 +164,14 @@ const isPublishedSource = (rel: string): boolean => /^packages[/\\][^/\\]+[/\\]s
  * bytes misses a citation that is plainly there in both.
  *
  * **Markdown emphasis.** `(**I5**)` is not `(I5)`; `case **R8**` is not `case R8`. Every frame below is
- * built around the punctuation that surrounds an id, and a `**` lands exactly there. This is not
- * hypothetical: the header of this very file names ``case R8`` as a form it catches, and `CHANGELOG.md`
- * carried `case **R8**` while this gate ran green over it — the gate failing on its own documented example.
+ * built around the punctuation that surrounds an id, and a `**` lands exactly there. Without this, the gate
+ * fails on its own documented example: this very file names ``case R8`` as a form it catches, and a
+ * `case **R8**` in `CHANGELOG.md` would pass it.
  *
  * **Hard wraps.** These files wrap at ~110 columns, so `in Phase\n4e` is one phrase in two lines. A per-line
  * scan cannot see it, and which half a citation lands in is decided by how long the preceding words happen
- * to be. `vocabulary-damage.test.ts` learned this and switched to `\s+`; the lesson was never carried here.
- * Joining also has to drop the continuation's comment prefix, or a JSDoc `*` sits where the id should be.
+ * to be; `vocabulary-damage.test.ts` reads across wraps for the same reason. Joining also has to drop the
+ * continuation's comment prefix, or a JSDoc `*` sits where the id should be.
  *
  * Positions are mapped rather than recomputed: `map[i]` is the original offset of normalized character `i`,
  * so a hit still reports the line a human would open.
@@ -230,14 +226,14 @@ function normalize(src: string): { text: string; map: number[] } {
 describe('no pointer the public cannot reach', () => {
   const files = publicFiles();
 
-  it('scans the surfaces that have actually leaked before', () => {
+  it('scans the surfaces a citation reaches readers through', () => {
     // A renamed or moved tree must fail loudly here rather than silently shrink the guard.
     expect(files).toContain('CHANGELOG.md');
     expect(files.some((f) => f.startsWith(join('packages', 'core', 'src')))).toBe(true);
     expect(files.some((f) => f.startsWith(join('packages', 'roaring', 'src')))).toBe(true);
-    // The three driver packages publish `.d.ts` exactly like the two above, and one carried a citation from
-    // its first commit — so they are named here rather than left to the walk. A guard that reaches
-    // a tree only by accident stops reaching it the day the walk changes.
+    // The three driver packages publish `.d.ts` exactly like the two above, so they are named here rather
+    // than left to the walk. A guard that reaches a tree only by accident stops reaching it the day the walk
+    // changes.
     for (const pkg of ['s3', 'gcs', 'azure-blob']) {
       expect(
         files.some((f) => f.startsWith(join('packages', pkg, 'src'))),
@@ -261,11 +257,11 @@ describe('no pointer the public cannot reach', () => {
         if (SOURCE_ONLY_KINDS.has(kind) && !isPublishedSource(rel)) continue;
         // EVERY match on the line, and the product exemption applied PER MATCHED ID.
         //
-        // The first version did `re.exec(line)` and `continue`d the whole pattern when that one match's id
-        // was a product name. So `the S3 bucket is read before the C13 cache row` passed: `S3` is exempt,
-        // `continue` abandoned the line, and `C13` was never looked at. Since `S3` alone appears ~337 times
-        // in this repo, "a line that mentions S3 AND carries a citation" is the common case, not a
-        // contrived one — the exemption was hiding exactly the hits the gate exists to find.
+        // A check that takes one match with `re.exec(line)` and `continue`s the whole pattern when that
+        // match's id is a product name passes `the S3 bucket is read before the C13 cache row`: `S3` is
+        // exempt, `continue` abandons the line, and `C13` is never looked at. Since `S3` alone appears hundreds
+        // of times in this repo, "a line that mentions S3 AND carries a citation" is the common case, not a
+        // contrived one — the exemption would hide exactly the hits the gate exists to find.
         for (const m of line.matchAll(new RegExp(re.source, `${re.flags.replace('g', '')}g`))) {
           // EVERY id in the match must be a product for the match to be excused. A match can carry more
           // than one — `(I2, V4, V5)` is a list, and so is `(S3, C13)`, where reading only the first id

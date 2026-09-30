@@ -5,10 +5,9 @@ import { collect, loadedStore, seedSegment } from '../helpers/loaded';
 
 // `union` / `andNot` / `intersect({ exclude })` — the composable set ops.
 //
-// The request was "lazy andNotInto / unionInto so suppression composes without materializing". Shipping only
-// those two names would NOT have delivered it: `andNotInto(dest, s)` applied after `intersectInto(tmp, [a, b])`
-// still writes `tmp` as a generation of its own. Suppression has to fold into the intersect pass, which is why
-// `exclude` exists.
+// Suppression has to compose without materializing, and `andNotInto` / `unionInto` alone cannot do that:
+// `andNotInto(dest, s)` applied after `intersectInto(tmp, [a, b])` still writes `tmp` as a generation of its own.
+// Suppression has to fold into the intersect pass, which is why `exclude` exists.
 //
 // Two properties carry this file, and neither is "the ids are right":
 //
@@ -110,10 +109,9 @@ describe('union / andNot / intersect(exclude)', () => {
   });
 
   it('never fetches a suppression chunk at a key that list does not hold — the cost argument', async () => {
-    // THE COST TEST, and getting it right took two attempts. The first version used a *wide* suppression list
-    // against a *narrow* audience and asserted "few fetches for s" — which passes no matter what the code
-    // does, because the loop only ever visits surviving keys anyway. It could not tell the implementations
-    // apart, and a mutation run proved it: removing the presence filter left it green.
+    // THE COST TEST. A *wide* suppression list against a *narrow* audience, asserting "few fetches for s",
+    // passes no matter what the code does, because the loop only ever visits surviving keys anyway: it cannot
+    // tell the implementations apart, and it passes with the presence filter removed.
     //
     // The property that actually belongs to the filter is the inverse shape: a **wide audience** against a
     // **narrow** suppression list. Every surviving key is visited, and at all but one of them `s` holds
@@ -152,8 +150,8 @@ describe('union / andNot / intersect(exclude)', () => {
   });
 
   it('applies exclude on the UNION path too — the mode with no chunk-skipping', async () => {
-    // `union` accepts `exclude` and nothing exercised it. It is also the mode where a wrongly-admitted exclude
-    // key WOULD change the result, since 'any' has no second guard to catch it.
+    // `union` accepts `exclude` too, and it is the mode where a wrongly-admitted exclude key WOULD change the
+    // result, since 'any' has no second guard to catch it.
     const { storage, store, seed } = harness();
     seed('a', spread([1, 2]));
     seed('b', spread([3]));
@@ -211,11 +209,11 @@ describe('union / andNot / intersect(exclude)', () => {
   });
 
   it('keeps every id inside its own chunk, and re-reads identically — operands are not consumed', async () => {
-    // REWRITTEN. The first version asserted `joinId(splitId(id)) === id` — an algebraic identity of
-    // `bit-route` that holds for every u32 no matter what the engine did — and then compared `union()` to
-    // `union()`. It had zero live assertions: replacing `union`'s body with an empty generator left it green.
+    // Asserting `joinId(splitId(id)) === id` — an algebraic identity of `bit-route` that holds for every u32 no
+    // matter what the engine does — and then comparing `union()` to `union()` makes zero live assertions: an
+    // empty generator in place of `union`'s body passes both.
     //
-    // What it should check is that the output IS the expected set, and that the chunk keys present are
+    // What this checks instead is that the output IS the expected set, and that the chunk keys present are
     // exactly the ones written — that is what a cross-chunk bleed would disturb.
     const { store, seed } = harness();
     const ids = spread([100, 200, 300], 5);

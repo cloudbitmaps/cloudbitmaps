@@ -12,9 +12,8 @@ import ts from 'typescript';
 // code is still correct, so the only symptom is a shipped verb that lost its hover text and its entry in the
 // published `.d.ts`.
 //
-// It has now happened twice in this repo: once to `dropSegment` when `load`'s doc was added above it, and once
-// to `generations` when `exists`/`segments` were added above it. The second time is the one that earns a check
-// instead of more care.
+// Adding a method above an existing one is an ordinary edit, so this is the likely accident rather than an
+// exotic one, and it earns a check instead of more care.
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const FACADE = join(ROOT, 'packages/roaring/src/index.ts');
 

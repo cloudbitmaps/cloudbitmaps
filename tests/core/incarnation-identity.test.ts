@@ -9,16 +9,16 @@ import type { SegmentRef } from '@/index';
 
 /**
  * A generation number is not an identity. `nextGeneration` returns `max(currentGen, highest object) + 1`, so it
- * **restarts at 0** once the registry row is purged and the bucket emptied — the same fact that refuted two
- * `minAgeMs` designs. A retired, re-created name then serves different data at the same `currentGen`, and a
- * long-lived store could not tell the two apart at either layer it caches:
+ * **restarts at 0** once the registry row is purged and the bucket emptied. A retired, re-created name then
+ * serves different data at the same `currentGen`, and a long-lived store that goes by the number cannot tell
+ * the two apart at either layer it caches:
  *
- *   - the resolved snapshot compared generation NUMBERS, so it was never refreshed; and
- *   - the decoded-chunk cache keyed on `(segment, chunk, generation)`, so it collided.
+ *   - a resolved snapshot compared by generation NUMBER is never refreshed; and
+ *   - a decoded-chunk cache keyed on `(segment, chunk, generation)` collides.
  *
- * Both had to be fixed: refreshing the reader alone left the chunk cache serving the dead incarnation. Note
- * this is also why putting the incarnation in the *object key* would not have been enough — the new incarnation
- * still starts at generation 0, so the cache key collides either way.
+ * Both layers need the incarnation: refreshing the reader alone leaves the chunk cache serving the dead
+ * incarnation. Note this is also why putting the incarnation in the *object key* would not be enough — the new
+ * incarnation still starts at generation 0, so the cache key collides either way.
  *
  * The workflow is one the guide teaches: dated or rotating segment names under a retention policy, swept and
  * re-loaded each cycle.
@@ -85,7 +85,7 @@ describe('a re-created name is a different segment, not the same one', () => {
     expect(await store.segment('s').count()).toBe(1);
   });
 
-  it('an ordinary publish still refreshes — the common case is unchanged', async () => {
+  it('an ordinary publish refreshes too — the common case', async () => {
     const backend = new MemoryStorage();
     const { storage, registry } = backend;
     let t = 0;
@@ -104,7 +104,7 @@ describe('a re-created name is a different segment, not the same one', () => {
     expect(await store.segment('s').count()).toBe(4);
   });
 
-  it('a fresh store was always right — this was purely stale state', async () => {
+  it('a fresh store reads the new incarnation — the hazard is purely stale state', async () => {
     const backend = new MemoryStorage();
     const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3], { registry });

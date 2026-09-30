@@ -90,9 +90,8 @@ describe('registry-aware CrbmStorageChunkSource', () => {
     // segment that difference is the whole cost of the refresh: N concurrent reads at the boundary become one
     // strong read, not N.
     //
-    // Its only test went with `live-invalidation.test.ts`, and nothing else in the suite counts registry reads —
-    // so a refactor that awaited before installing the promise would have been invisible. Counting them is the
-    // only way to see it; the observable answers are identical either way.
+    // The observable answers are identical either way, so a refactor that awaited before installing the promise
+    // is visible only to a count of registry reads, and this test is that count.
     const storage = freshStorage();
     const base = new MemoryRegistryDriver();
     let gets = 0;

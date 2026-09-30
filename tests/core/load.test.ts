@@ -147,7 +147,7 @@ describe('loadSegment — the guard, and what a refusal leaves behind', () => {
 
   it('pins minRetained ASYMMETRICALLY, so an inverted bound cannot pass', async () => {
     // 0.5 is the fixed point of `1 - x`, so a suite that only ever tests one-half cannot tell this bound from
-    // its own inverse — mutating the comparison to the mirrored form left every test green. These two use
+    // its own inverse — the comparison mutated to the mirrored form leaves such a suite green. These two use
     // fractions where the two readings disagree.
     const w = world();
     await loadSegment(SEG, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], w.deps); // 10 ids
@@ -310,8 +310,10 @@ describe('loadSegment — the guard is fenced on the row it judged', () => {
   it('refuses rather than wiping when another loader publishes between the read and the publish', async () => {
     // The guard reads the "before" cardinality, then writes, then publishes. Anything that lands in between
     // voids the premise the guard judged on — and an unfenced forward-only publish would report success anyway.
-    // Reproduced before the fence existed: two loaders on a fresh segment let an EMPTY generation land over a
-    // thousand ids, under DEFAULT options, because `before` had been read as "no row yet".
+    // Without the fence, two loaders on a fresh segment can land an EMPTY generation over a thousand ids, under
+    // DEFAULT options, because `before` reads as "no row yet". This case does not reach the fence: its racer fires
+    // from the object PUT, after `nextGeneration` has chosen, so both loaders take the same number and the
+    // write-once collision stops the loser first. The fence itself is pinned in `publish-absence-fence.test.ts`.
     const w = world();
     let raced = false;
     const racing = new Proxy(w.storage, {

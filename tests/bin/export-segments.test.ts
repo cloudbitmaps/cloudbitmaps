@@ -202,7 +202,7 @@ describe('export-segments CLI', () => {
       const writer = await sink.open({ segment: 's' }, '.roaring');
       await writer.write(Buffer.from('partial'));
       await writer.abort?.();
-      // The .part was deleted and nothing was renamed into place.
+      // Abort deletes the .part and renames nothing into place.
       expect(await readdir(join(out, '_default'))).toEqual([]);
     });
   });

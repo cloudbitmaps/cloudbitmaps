@@ -22,9 +22,9 @@
  * Every request count below is one the engine makes, and `tests/core/cost.test.ts` holds each to the engine by
  * counting what it sends: the model is only as honest as those counts, and they move when the engine does. They
  * are for a single-bucket store, where the pointer is an object beside the data, which is the topology that
- * ships. The estimator once priced a load as the object's PUT alone and an intersect as its chunk reads alone,
- * which a real-cloud run showed under-quoted a load by more than half and left out a pointer read and an index
- * read for every operand.
+ * ships. A load is more than the object's PUT, and an intersect more than its chunk reads: pricing either as the
+ * one alone under-quotes a load by more than half and leaves out a pointer read and an index read for every
+ * operand.
  *
  * The counts are S3's, and one reader process's. On GCS and Azure Blob a read that needs the object's size — a
  * pointer read, and a segment's tail read — is two requests, the metadata and then the bytes, which

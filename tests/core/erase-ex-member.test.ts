@@ -12,13 +12,13 @@ import { roaringCodec } from '@/roaring-codec';
 import type { IStorageDriver, SegmentRef } from '@/index';
 
 /**
- * "The bit is physically gone from the bucket when the call returns" held for *current members* and quietly
- * did not for **ex-members** — the one population most likely to be asking.
+ * "The bit is physically gone from the bucket when the call returns" has to hold for **ex-members** as well as
+ * for *current members* — ex-members are the one population most likely to be asking.
  *
- * The lifecycle that produces it is the documented one, with no race: a re-seed stops including someone, and
- * `gcOrphanGenerations`' default `keep: 1` retains exactly the generation they were dropped from as the reader
- * grace window. The rewrite checked `currentGen` only, said `'not-member'`, and `eraseSubject` filtered the
- * segment out of the ledger — a clean receipt over bytes still in the bucket.
+ * The documented lifecycle leaves an ex-member's bit in the bucket, with no race: a re-seed stops including
+ * someone, and `gcOrphanGenerations`' default `keep: 1` retains exactly the generation they were dropped from
+ * as the reader grace window. A rewrite that checks `currentGen` only says `'not-member'`, and `eraseSubject`
+ * then filters the segment out of the ledger — a clean receipt over bytes still in the bucket.
  */
 const REF: SegmentRef = { namespace: 'audiences', segment: 'active-30d' };
 
@@ -56,7 +56,7 @@ describe('erasure reaches an ex-member in a retained generation', () => {
     expect(await generations(storage)).toEqual([1]); // physically gone
   });
 
-  it('the ledger now lists the segment instead of filtering it out', async () => {
+  it('the ledger lists the segment rather than filtering it out', async () => {
     const backend = new MemoryStorage();
     const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [5, 6, 7], { registry });

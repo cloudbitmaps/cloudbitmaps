@@ -23,10 +23,11 @@ import type { GenKey } from '@/core/ports';
 /**
  * A keyspace unique to THIS run.
  *
- * Every prefix below is numbered from a counter that restarts at 0, so a second run against the same LIVE
- * container replays the same write-once keys and fails with `WriteConflictError: generation already exists`
- * — 78 failures that read exactly like a real write-once regression rather than like a dirty container. CI
- * never saw it because each job gets fresh containers; every local re-run did.
+ * Every prefix below is numbered from a counter that restarts at 0. Under a fixed root, a second run against
+ * the same LIVE container would replay the same write-once keys and fail with
+ * `WriteConflictError: generation already exists` — failures that read exactly like a real write-once
+ * regression rather than like a dirty container. CI would never see them, because each job gets fresh
+ * containers; every local re-run would.
  *
  * `GITHUB_RUN_ID` plus `GITHUB_RUN_ATTEMPT` in CI, a random token locally. The attempt matters: re-running
  * a failed job keeps the same run id, so the id alone would replay the very keys that just failed.
@@ -62,8 +63,9 @@ beforeAll(async () => {
 
 // The GCS registry must pass the SAME registry contract as memory / LocalFs / S3 — against real object
 // preconditions (`ifGenerationMatch: 0` for create-only, `ifGenerationMatch: <generation>` for CAS) via
-// fake-gcs-server. This is what makes a GCS-only topology viable: before it, a GCS user had to point the
-// registry at a separate AWS-hosted table and hold an AWS account purely to store which generation is current.
+// fake-gcs-server. This is what makes a GCS-only topology viable: the pointer to the current generation lives
+// in the same bucket as the objects, so a GCS user needs no second service, and no second cloud account, to
+// store it.
 let rn = 0;
 const ticking = (): (() => number) => {
   let t = 1_000;
@@ -122,7 +124,7 @@ describe('GcsStorageDriver specifics (fake-gcs-server)', () => {
   // The write-once test above stays under the 8 MiB threshold, so it exercises only the SIMPLE upload path.
   // Force the RESUMABLE (large-object, constant-memory) path with a tiny threshold and prove it round-trips
   // end-to-end against a real emulator — catching a broken resumable stream / backpressure / finalize / read
-  // path the simple path can't. This is the large-generation load path, previously exercised only
+  // path the simple path can't. This is the large-generation load path, which the unit suite exercises only
   // against an in-process mock.
   //
   // NOTE ON WRITE-ONCE ENFORCEMENT: this test does NOT assert the second write conflicts, because

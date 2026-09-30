@@ -16,6 +16,7 @@ import { InProcessKeystore } from '@/drivers/crypto';
 
 /**
  * The audit sink and every event the library emits: `segment.publish` (a load became current),
+ * `segment.rollback` (the pointer moved back), `segment.load-refused` (a load's guard refused it),
  * `segment.rewrite` (a subject erasure), `segment.erase` (a crypto-shred), `segment.dispose` (storage
  * reclaimed) and `namespace.erase`.
  *
@@ -363,8 +364,9 @@ describe('audit: segment.erase / namespace.erase', () => {
   });
 });
 
-// A real compile-time exhaustiveness guard over the AuditEvent union (replaces a hand-written literal list):
-// if a variant is added/removed without updating this switch, `tsc` fails on the `never` assignment.
+// A real compile-time exhaustiveness guard over the AuditEvent union, where a hand-written literal list of kinds
+// would drift silently: if a variant is added/removed without updating this switch, `tsc` fails on the `never`
+// assignment.
 describe('AuditEvent union', () => {
   it('is exhaustively handled', () => {
     const label = (e: AuditEvent): string => {

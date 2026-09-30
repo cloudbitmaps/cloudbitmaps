@@ -94,8 +94,8 @@ describe('rollbackSegment', () => {
   it('refuses an above-pointer target by default — that is where never-published objects live', async () => {
     // A load that wrote its object and died before publishing, and a guard-refused load whose cleanup was
     // skipped because the row had changed, both leave an object ABOVE the pointer. Rolling onto one makes
-    // current the very generation a guard refused. Before this refusal existed, `store.load`'s empty guard
-    // could be undone by a rollback that looked entirely routine.
+    // current the very generation a guard refused. Without this refusal, `store.load`'s empty guard could be
+    // undone by a rollback that looks entirely routine.
     const w = world();
     await loadSegment(SEG, [1, 2, 3], w.load);
     // An orphan above the pointer, never published — exactly what a crashed loader leaves behind.
@@ -113,8 +113,8 @@ describe('rollbackSegment', () => {
   it('puts the pointer back when the target is collected while the pointer is moving', async () => {
     // The target is by construction at or below the old pointer — which is exactly generation collection's
     // range — and a collector never writes the registry row, so the token fence cannot see it coming. A listing
-    // taken before the swap therefore proves nothing. Reproduced before the fix: the swap landed and the
-    // segment was left pointing at an object that had just been deleted.
+    // taken before the swap therefore proves nothing. Without the post-swap check, the swap lands and the
+    // segment is left pointing at an object that has just been deleted.
     const w = world();
     for (const ids of [[1], [2], [3]]) await loadSegment(SEG, ids, w.load, { keep: 9 });
 
@@ -262,11 +262,11 @@ describe('rollback and the forward-only rule', () => {
 
 describe('rollback and erasure — a rollback must not resurrect an erased id', () => {
   it('an erasure reaches a holder ABOVE the pointer, which a rollback made reachable', async () => {
-    // The hazard rollback introduces, and it needs no race. Before this was closed: roll back, then erase, and
-    // the erasure answered `'not-member'` — which `eraseSubject` uses to filter the segment out of the ledger
-    // entirely, i.e. a clean Art. 17 receipt — while the subject's bit sat in a generation one rollback away
-    // from being served again. The scan was bounded below the pointer because, under forward-only, nothing
-    // above it could ever come back. Rollback ended that premise.
+    // The hazard rollback introduces, and it needs no race: roll back, then erase, and an erasure that scans
+    // only below the pointer answers `'not-member'` — which `eraseSubject` uses to filter the segment out of the
+    // ledger entirely, i.e. a clean Art. 17 receipt — while the subject's bit sits in a generation one rollback
+    // away from being served again. Under forward-only alone, nothing above the pointer could ever come back;
+    // rollback removes that premise.
     const w = world();
     await loadSegment(SEG, [111, 222], w.load, { keep: 9 }); // gen 0
     await loadSegment(SEG, [111, 222, 999], w.load, { keep: 9 }); // gen 1 — holds the subject

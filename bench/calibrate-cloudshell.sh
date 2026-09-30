@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # In-region calibration: run this from AWS CloudShell, in the region being measured.
 #
-# WHY CLOUDSHELL. Latency measured from outside the region is internet transit, not the library. The first real
-# run of this harness went from a laptop and produced a p50 that described the network. CloudShell sits inside
-# the region, needs no instance to provision, and costs nothing.
+# WHY CLOUDSHELL. Latency measured from outside the region is internet transit, not the library: a run from a
+# laptop produces a p50 that describes the network. CloudShell sits inside the region, needs no instance to
+# provision, and costs nothing.
 #
 # WHY THE PUBLISHED PACKAGES. This installs @cloudbitmaps/roaring and @cloudbitmaps/s3 from npm into a scratch
 # directory and runs the harness against those, not against a build of this checkout. The figures then describe
@@ -124,11 +124,11 @@ finish() {
 trap finish EXIT
 
 # Runs the harness as a job of its own, passes on every signal that would stop this script, and returns only once
-# the harness has exited. Run in the foreground, a SIGTERM or a hang-up stopped the script at once: the exit trap
-# ran while the harness was still tearing down, copied nothing, and deleted the scratch directory under it. And a
-# SIGTERM to the script alone never reached the harness, which went on to run the whole paid workload. A process
-# group of its own (`set -m`) means a Ctrl-C reaches the harness once, from here, and not a second time from the
-# terminal.
+# the harness has exited. Were the harness run in the foreground, a SIGTERM or a hang-up would stop the script at
+# once, and the exit trap would run while the harness was still tearing down, copy nothing, and delete the scratch
+# directory under it. And a SIGTERM to the script alone would never reach the harness, which would go on to run the
+# whole paid workload. A process group of its own (`set -m`) means a Ctrl-C reaches the harness once, from here, and
+# not a second time from the terminal.
 run_harness() {
   # The traps come first: a signal in the moment before the harness has a pid is held, and passed on as soon as it
   # has one, rather than killing this script with the harness left running unwatched.

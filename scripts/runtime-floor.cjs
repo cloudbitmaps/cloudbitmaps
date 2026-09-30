@@ -5,11 +5,10 @@
  *
  * That separation is this repo's own convention — `scripts/sdk-specifiers.cjs`,
  * `scripts/dts-specifiers.cjs` and `tests/arch/no-circular.test.ts` all do it, because
- * "`pnpm lint` passing proves nothing about a rule that never matched". The floor policy skipped it, and an
- * adversarial review found exactly what that convention exists to prevent: with both patterns inlined in the
- * test and nothing firing them at planted inputs, `node-version: 22.11` (below the declared floor), a quoted
- * `node-version: "20"`, a pin with a trailing comment, and ten realistic phrasings of a prose floor
- * (`Node.js >= 20` foremost) all passed a green gate.
+ * "`pnpm lint` passing proves nothing about a rule that never matched". With both patterns inlined in the test
+ * and nothing firing them at planted inputs, a floor gate can pass `node-version: 22.11` (below the declared
+ * floor), a quoted `node-version: "20"`, a pin with a trailing comment, and realistic phrasings of a prose floor
+ * (`Node.js >= 20` foremost) while it stays green.
  */
 
 /** `'22.12'` → `[22, 12]`. */
@@ -79,8 +78,8 @@ function findNodeFloorClaims(text) {
 /**
  * Every literal `node-version:` pin in a workflow, as `{ raw, version }`.
  *
- * Accepts a quoted value and tolerates a trailing comment — both defeated the first draft's `\s*$` anchor,
- * which meant `node-version: 20 # pinned for repro` was simply not a pin as far as the gate was concerned.
+ * Accepts a quoted value and tolerates a trailing comment. A bare `\s*$` anchor is defeated by both, and then
+ * `node-version: 20 # pinned for repro` is simply not a pin as far as the gate is concerned.
  * An expression pin (`${{ matrix.node }}`) is intentionally skipped: it carries no literal to judge, and the
  * matrix itself is asserted separately.
  */

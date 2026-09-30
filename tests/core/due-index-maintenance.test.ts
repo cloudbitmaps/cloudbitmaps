@@ -72,7 +72,7 @@ describe('due index — maintained by the policy write path', () => {
     expect(await pointersIn(registry, bucket)).toHaveLength(1);
     // The pointer already existing must report `indexed: true` — it IS indexed. Reporting false there would
     // make the common case (a policy rewritten the same day) look like a degradation and train an operator to
-    // ignore the signal. Mutation testing caught this assertion missing.
+    // ignore the signal.
     expect(second.indexed).toBe(true);
   });
 
@@ -87,8 +87,8 @@ describe('due index — maintained by the policy write path', () => {
   });
 
   it('pointers are invisible to every unscoped fleet enumeration', async () => {
-    // The exact leak this caused when first wired: the retention sweep's own `scanned` count jumped from 4 to 7
-    // because the pointers were being counted as segments. A reserved family has to be declared in ONE place.
+    // An enumeration that saw them would count the pointers as segments, and the retention sweep's own `scanned`
+    // count would include every pointer. A reserved family has to be declared in ONE place.
     const { store, registry, load } = await harness();
     await load(SEG, [1, 2, 3]);
     await store.setRetention(SEG, { expiresAt: T0 + 10 * DAY });
@@ -129,7 +129,7 @@ describe('due index — the drift directions that make it safe', () => {
 
     const swept = await store.retireExpired({ now: expiresAt + 1 });
 
-    expect(swept.retired).toBe(1); // the repair path is the backstop, and it is the path in use today
+    expect(swept.retired).toBe(1); // the repair path is the backstop, and it is the default scan
     expect(await store.segment(SEG.segment, { namespace: SEG.namespace }).count()).toBe(0);
   });
 

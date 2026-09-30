@@ -17,11 +17,9 @@ describe('public API', () => {
   //
   // EVERY package is asserted, derived from the workspace rather than listed here.
   //
-  // This named `roaring` and `core` only, on the reasoning that those were the two published packages. The
-  // split made that list a subset: `s3`, `gcs` and `azure-blob` could sit at any version and the whole suite
-  // stayed green — 150 files, every gate — because nothing looked at them. The release workflow's tag check
-  // would have caught it, at tag-push time, after the approval, which is precisely the lateness this test
-  // exists to remove.
+  // A hand-kept list drifts into a subset: a package it leaves out can sit at any version while the whole suite
+  // stays green, because no other test reads its version. The release workflow's tag check would catch it only at
+  // tag-push time, after the approval, which is precisely the lateness this test exists to remove.
   //
   // The list is read off the filesystem so a sixth package is covered on the day it is created, rather than
   // on the day someone remembers to add it here.

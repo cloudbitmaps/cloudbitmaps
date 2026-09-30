@@ -6,15 +6,14 @@ import { parse } from 'yaml';
 /**
  * No integration service runs a floating image tag.
  *
- * WHY THIS EXISTS. Two of the three services carried an explicit "PINNED (not `:latest`) … bump deliberately"
- * note, each naming the behaviour the pin protects — fake-gcs because 1.52.2 is the version verified to
- * enforce `ifGenerationMatch: 0` on the upload path the driver uses, azurite for its own reasons. MinIO alone
- * floated on `:latest`, so every run pulled whatever shipped that morning.
- *
+ * WHY THIS EXISTS. A service on a floating tag pulls whatever its project shipped that morning, on every run.
  * That is the worst kind of red: the integration suite asserts write-once semantics, which is precisely what
- * an object-store release can change, and the failure arrives with nothing in our own diff to point at. The
- * rationale was already written down twice; what was missing was anything that noticed the third service did
- * not follow it.
+ * an object-store release can change, and the failure arrives with nothing in our own diff to point at.
+ *
+ * Each service in `docker-compose.yml` carries a "PINNED (not `:latest`) … bump deliberately" note naming the
+ * behaviour its pin protects — fake-gcs, for one, because 1.52.2 is the version verified to enforce
+ * `ifGenerationMatch: 0` on the upload path the driver uses. A note beside each service does not make the
+ * next one follow it; this test does.
  */
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');

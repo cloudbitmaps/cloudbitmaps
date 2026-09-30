@@ -8,8 +8,7 @@ a flat **[Complete export index](#complete-export-index)** at the end that names
 > derives the list of entry points from every package's own `exports` map — so each package in the workspace and
 > each subpath it declares is covered, with no list to keep up to date — extracts every exported name from each,
 > and fails the build if any is missing from this page. So a new export **cannot** merge without being documented
-> here. (The guard is one-way — it catches undocumented _additions_, not stale entries for a _removed_ export;
-> prune those in review.)
+> here, and a name the export index lists that no package exports fails it too.
 
 ---
 

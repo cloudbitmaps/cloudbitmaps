@@ -6,17 +6,15 @@ Two checks, from the same premise: a page nobody linked and a page nobody listed
    yet is indistinguishable from a typo unless something enumerates them. This prints outstanding targets rather
    than only failing, so the list doubles as the build queue.
 
-2. CRAWLER FILES. robots.txt, sitemap.xml and llms.txt were all three LOST in the site/ rename and nobody
-   noticed for two commits. llms.txt surfaced only because a docs test happened to read it for a version badge
-   (that test is now tests/docs/version-claims.test.ts) — robots.txt and sitemap.xml were gated by nothing at all, so the site would have
-   deployed with no crawler directives and no sitemap, and the only symptom would have been search traffic that
-   never arrived.
+2. CRAWLER FILES. robots.txt, sitemap.xml and llms.txt must all three exist, and a move of the site directory
+   can lose them silently: tests/docs/version-claims.test.ts fails without llms.txt, but nothing else notices
+   robots.txt or sitemap.xml missing, so without this the site would deploy with no crawler directives and no
+   sitemap, and the only symptom would be search traffic that never arrives.
 
-   The sitemap check is deliberately BIDIRECTIONAL: the set of <loc> entries must equal the set of canonical
-   URLs the pages declare. A one-way "every page is listed" check would have let the old sitemap pass while it
-   still advertised a deleted page, and a one-way "every listing exists" check would have let /demo stay
-   invisible. Rebuilding the sitemap from the canonicals is a one-liner; the point of the check is that the
-   rebuild cannot be forgotten.
+   The sitemap check is deliberately BIDIRECTIONAL: the set of <loc> entries must equal the set of canonical URLs
+   the pages declare. A one-way "every page is listed" check passes a sitemap that still advertises a deleted page,
+   and a one-way "every listing exists" check passes one that leaves a page out. Rebuilding the sitemap from the
+   canonicals is a one-liner; the point of the check is that the rebuild cannot be forgotten.
 """
 
 import re, sys, glob, os
@@ -26,9 +24,8 @@ sys.dont_write_bytecode = True
 import site_markup  # noqa: E402
 
 ROOT = 'site'
-# Recursive: the site is no longer flat. `site/flavors/roaring.html` exists so that the `/flavors/roaring` URL
-# the page has always declared as its canonical actually resolves, and a depth-one glob would have quietly
-# excluded it from every check in this file.
+# Recursive, because the site is not flat: `site/flavors/roaring.html` sits where its canonical `/flavors/roaring`
+# URL resolves, and a depth-one glob would quietly exclude it from every check in this file.
 pages = sorted(glob.glob(f'{ROOT}/**/*.html', recursive=True))
 failed = False
 
@@ -41,21 +38,19 @@ def rel(page):
 def resolve_ref(page, target):
     """Resolve a link/asset target the way a BROWSER would: relative to the page holding it, not to site/.
 
-    This used to be `os.path.join(ROOT, target)`, which is the same thing only while every page sits at the top
-    level. From `site/flavors/roaring.html`, `../cloudbitmaps.css` under the old rule resolved to
-    `site/../cloudbitmaps.css` — the repo root — and would have been reported as a broken asset on a page whose
-    stylesheet was perfectly fine. Anchoring on the page's own directory is what makes nesting checkable at all.
+    Joining onto site/ (`os.path.join(ROOT, target)`) is the same thing only while every page sits at the top
+    level. From `site/flavors/roaring.html`, `../cloudbitmaps.css` joined onto site/ resolves to
+    `site/../cloudbitmaps.css` — the repo root — and would be reported as a broken asset on a page whose
+    stylesheet is perfectly fine. Anchoring on the page's own directory is what makes nesting checkable at all.
     """
     return os.path.normpath(os.path.join(os.path.dirname(page), target))
 
 # ── 1 · internal references, and the fragments on them ────────────────────────────────────────────────────
-# The fragment half of this was missing, and it mattered. `refs.add(t.split('#')[0])` threw the fragment away
-# before checking anything, and pure `#foo` same-page links were skipped by the startswith() filter entirely.
-# So `usage.html#api` was verified as far as "usage.html exists" and no further.
-#
-# Confirmed by breaking it: pointing Home at `usage.html#nonexistent-anchor` still printed "all internal
-# references resolve". A broken fragment does not 404 — the browser silently lands the reader at the top of the
-# page — so this is precisely the class of defect that needs a gate, and the gate was passing it through.
+# The fragment half matters. A check that throws the fragment away before looking verifies `usage.html#api` as
+# far as "usage.html exists" and no further, and prints "all internal references resolve" for a link to
+# `usage.html#nonexistent-anchor`; one that skips pure `#foo` same-page links checks none of them. A broken
+# fragment does not 404 — the browser silently lands the reader at the top of the page — so this is precisely
+# the class of defect that needs a gate.
 # Keyed by path-relative-to-site, not basename: two pages in different directories may share a filename, and
 # collapsing them would check one page's fragments against the other's ids.
 ids_by_page = {rel(p): set(re.findall(r'\bid="([^"]+)"', open(p).read())) for p in pages}
@@ -196,10 +191,10 @@ else:
 
     # ── 4 · every advertised URL must actually SERVE the page that claims it ───────────────────────────────
     # The bidirectional check above compares two sets of strings we wrote ourselves. Both can agree perfectly on
-    # a URL that does not exist — and did. `/flavors/roaring` was the sitemap entry, the canonical AND the
-    # og:url of the roaring page while the file sat at `site/flavors-roaring.html`, so Cloudflare had nothing to
-    # serve at that path and fell back to the home page. Every string matched every other string; the flagship
-    # flavor page told Google to index it at a URL returning someone else's content, and nothing here objected.
+    # a URL that does not exist. If `/flavors/roaring` is the sitemap entry, the canonical AND the og:url of the
+    # roaring page while the file sits at `site/flavors-roaring.html`, Cloudflare has nothing to serve at that
+    # path and falls back to the home page. Every string matches every other string, and the flagship flavor
+    # page tells Google to index it at a URL returning someone else's content.
     #
     # Internal consistency is not resolution. This resolves each <loc> against the files that will actually be
     # deployed, using Pages' clean-URL rules:  /  → index.html ·  /x  → x.html, else x/index.html.
@@ -238,8 +233,8 @@ else:
 
 # ── 5 · nothing loads from another origin ─────────────────────────────────────────────────────────────────
 # The pages are self-contained: no CDN, no web fonts, no third-party scripts. That is a privacy property as much
-# as a performance one — a font from another origin tells that origin who read the page — and it was a rule in
-# the site README that nothing enforced. So every reference a browser FETCHES while rendering a page must be
+# as a performance one — a font from another origin tells that origin who read the page — and the site README
+# states it as a rule, which this enforces. So every reference a browser FETCHES while rendering a page must be
 # relative:
 #   - `src`, `srcset`, `poster` and `data` on any element;
 #   - `href` on a `<link>` that loads something (a stylesheet, an icon, a preload, a preconnect, a manifest), on

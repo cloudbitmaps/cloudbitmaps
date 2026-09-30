@@ -11,9 +11,9 @@ import { parse } from 'yaml';
  * the version — so a `roaring` version bump makes all six keys unknown at once, and all six `native addon`
  * jobs pass having verified nothing at all. Dependabot groups minor+patch monthly under `patterns: ['*']`,
  * which is precisely how that bump arrives: inside a routine PR that goes green while shipping an unverified
- * native binary. `--strict` existed for this and had zero callers anywhere in the repo.
+ * native binary.
  *
- * CI now passes `--strict`, which turns an unknown key into a failure. This test covers the other half, which
+ * CI passes `--strict`, which turns an unknown key into a failure. This test covers the other half, which
  * `--strict` cannot see from inside a single job: that the table has a row for every (OS, node ABI) pair the
  * matrix runs, at the version currently resolved. A row quietly deleted, or a platform added to the matrix
  * with no row recorded, is a gap that only shows up as six green jobs.
@@ -78,7 +78,7 @@ describe('the native-addon checksum table matches what CI verifies', () => {
     // the difference is a whole platform: rename `…win32-x64-unknown` to `…win64-x64-unknown` — a plausible
     // slip in a table transcribed by hand — and the count is unchanged while Windows/node-24 now has no row
     // at all. The two cases the header names (a row deleted, a platform added) do move the count, which is
-    // why this passed for as long as it did.
+    // what makes a count look like enough.
     //
     // The runner→platform and node-major→ABI maps are stated here because nothing in the repo derives them:
     // `NODE_MODULE_VERSION` is a property of the Node release, not of anything checked in. An unmapped entry

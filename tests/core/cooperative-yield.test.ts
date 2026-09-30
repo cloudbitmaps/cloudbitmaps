@@ -4,7 +4,7 @@ import { SystemClock } from '@/system-clock';
 
 // The yield primitive, and the one property that makes it worth having: it must be a MACROTASK.
 //
-// This is a fix whose plausible implementations measure as no change at all, so the tests are written against
+// This is a primitive whose plausible implementations measure as no change at all, so the tests are written against
 // what actually happens to the event loop rather than against the shape of the code. Two traps:
 //
 //   1. `await Promise.resolve()` and `Clock.sleep(0)` both resolve on a MICROTASK, and the microtask queue drains
@@ -32,8 +32,8 @@ describe('yieldEvery', () => {
   });
 
   it('never yields at all without a clock — opting out changes nothing', async () => {
-    // `core/` cannot default a clock (timer-free by lint), so a core-only caller gets exactly the pre-existing
-    // behaviour. Adding a yield point to a code path must never alter it for someone who did not opt in.
+    // `core/` cannot default a clock (timer-free by lint), so a core-only caller gets a loop that runs unbroken.
+    // Adding a yield point to a code path must never alter it for someone who did not opt in.
     const tick = yieldEvery(undefined, 1);
     for (let i = 0; i < 10; i++) expect(tick()).toBeNull();
   });
@@ -58,7 +58,7 @@ describe('yieldEvery', () => {
 
     // A Clock without `yieldNow` still satisfies the interface — the member is optional. It must
     // degrade to something that genuinely yields. `sleep(1)` is a real timer; `sleep(0)` is contractually a
-    // microtask and would silently reinstate the bug.
+    // microtask and would silently yield nothing.
     calls.length = 0;
     const withoutYield = yieldEvery(
       clockWith({
@@ -110,11 +110,10 @@ describe('SystemClock.yieldNow', () => {
     // `setTimeout(1)` also yields, and costs ~1 ms of dead wall-clock each time — measured at +10% over a 1M-id
     // load for no extra relief.
     //
-    // Compared against a timer rather than against an absolute budget. This assertion used to be
-    // "200 yields in under 100 ms", which is a wall-clock oracle: on a loaded box it measured 118 ms and
-    // failed, and because it fails for reasons unrelated to what it names, it produced a FALSE KILL during a
-    // mutation run — a mutant elsewhere was recorded as caught when this test was what broke. A relative
-    // comparison is robust to load, because load inflates both sides.
+    // Compared against a timer rather than against an absolute budget. A bound such as "200 yields in under
+    // 100 ms" is a wall-clock oracle: on a loaded box it fails for reasons unrelated to what it names, and in a
+    // mutation run that failure is a FALSE KILL — a mutant elsewhere is recorded as caught when this test is what
+    // broke. A relative comparison is robust to load, because load inflates both sides.
     const clock = new SystemClock();
     const N = 100;
 

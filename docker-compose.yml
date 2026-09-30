@@ -8,7 +8,7 @@ name: cloudbitmaps
 # Usage: `docker compose up -d` then `pnpm test:integration`.
 #
 # REGISTRIES: everything that can avoid Docker Hub does. GitHub-hosted runners share an IP pool that sits
-# permanently over Docker Hub's anonymous pull limit, and pulling nine images from there used to fail the
+# permanently over Docker Hub's anonymous pull limit, so pulling nine images from there would fail the
 # integration job with HTTP 429 on every run. Azurite comes from mcr, first-party, and MinIO from Chainguard's
 # build of it (below). `fake-gcs-server` is the lone exception — it has no non-Docker-Hub home — and one anonymous
 # pull is a far smaller target than a whole compose file's worth. If Docker Hub 429s return, that image is the one
@@ -22,9 +22,8 @@ services:
     # what a MinIO release could change — producing a red integration job with nothing in our diff to point
     # at. Bump deliberately, and re-run `pnpm test:integration` when you do.
     #
-    # FROM CHAINGUARD, because MinIO's own image can no longer be pulled without a login: quay.io/minio/minio
-    # began answering `unauthorized` to anonymous pulls in late September 2026 (this job passed on 2026-09-23 and
-    # failed on every run from 2026-09-25), and the tag pinned here was never on Docker Hub.
+    # FROM CHAINGUARD, because MinIO's own image cannot be pulled without a login: quay.io/minio/minio answers
+    # `unauthorized` to an anonymous pull, and the tag pinned here is not on Docker Hub.
     # cgr.dev/chainguard/minio is MinIO itself, built from source by Chainguard, and pulls without a login. Its
     # free tier publishes only `latest` and `latest-dev`, so this pins the multi-arch index DIGEST that
     # `latest` was on 2026-09-25 (MinIO RELEASE.2026-09-22T19-25-18Z). Chainguard lets anyone pull by digest but

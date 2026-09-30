@@ -19,7 +19,7 @@ import type { DropDeps, RetireEntry, SegmentRef } from '@/index';
 import type { IStorageDriver, IRegistryDriver } from '@/core/ports';
 
 /**
- * The retention **sweep** — the piece that acts on the policies. Part 3 of 3.
+ * The retention **sweep** — the piece that acts on the policies (`retention-policy.test.ts`).
  *
  * What these tests hold it to, in order of how much damage the alternative does:
  *
@@ -187,8 +187,8 @@ describe('retireExpired — the guards that make it safe to point at a fleet', (
 
     const res = await retireExpired(w.dropDeps, { now: T0, dryRun: true });
     // `retired` counts DELETIONS, so it is 0 here; `wouldRetire` is the preview count. A single counter meaning
-    // "deleted" in one mode and "would delete" in another puts phantom deletions on any dashboard that sums it —
-    // and the CLI emits exactly this, in the mode the docs tell you to start with.
+    // "deleted" in one mode and "would delete" in another puts phantom deletions on any dashboard that sums it,
+    // and a dry run is the mode the docs tell you to start with.
     expect(res).toMatchObject({ eligible: 1, retired: 0, wouldRetire: 1, dryRun: true });
     const entry = res.entries[0]!;
     expect(entry.action).toBe('would-retire');
@@ -202,7 +202,7 @@ describe('retireExpired — the guards that make it safe to point at a fleet', (
     expect(await w.store().segment('d').count()).toBe(2);
   });
 
-  it('caps a cycle at `limit`, says so, and names the deferred segments', async () => {
+  it('caps a cycle at `limit` and says so with `limited`, recording no entry per deferred segment', async () => {
     // The guard against a bad backfill or clock skew retiring the whole fleet in one pass.
     const w = world();
     for (const day of ['d1', 'd2', 'd3']) {
@@ -212,8 +212,8 @@ describe('retireExpired — the guards that make it safe to point at a fleet', (
     const res = await retireExpired(w.dropDeps, { now: T0, limit: 2 });
     expect(res).toMatchObject({ retired: 2, limited: true });
     // The sweep stops SCANNING at the cap rather than recording a deferral per remaining row: on a fleet behind a
-    // bad backfill those entries scale with the fleet instead of the batch (250k rows ≈ 15 MB of ledger the caller
-    // never asked for, which the CLI then tried to serialise into one log line). `limited` carries the signal.
+    // bad backfill those entries would scale with the fleet instead of the batch (250k rows ≈ 15 MB of ledger the
+    // caller never asked for, all of it in one result object). `limited` carries the signal.
     expect(res.entries.filter((e) => e.action === 'skipped')).toEqual([]);
     expect(res.entries).toHaveLength(2);
     // The ledger arithmetic an operator's re-run loop depends on for termination.
@@ -242,7 +242,7 @@ describe('retireExpired — the guards that make it safe to point at a fleet', (
     expect(res.retired).toBe(3); // all three ARE retired — see below
     const entries = bySegment(res.entries);
     // `boom` faulted, but AFTER `dropSegment` wrote the tombstone — so the segment really is retired and reads
-    // empty. Reporting it as `skipped` said the opposite of the truth, and the ledger's own contract calls a
+    // empty. Reporting it as `skipped` would say the opposite of the truth, and the ledger's own contract calls a
     // skipped entry "a segment that still holds data". It is a retirement carrying a `fault`.
     expect(entries.get('boom')).toMatchObject({
       action: 'retired',
@@ -298,14 +298,14 @@ describe('retireExpired — the guards that make it safe to point at a fleet', (
   });
 });
 
-describe('retireExpired — what the adversarial review found', () => {
+describe('retireExpired — faults, races and malformed input', () => {
   it('bounds destruction when every drop faults — the limit must charge ATTEMPTS', async () => {
-    // The finding two reviews reproduced independently, and the worst one in the set. `dropSegment` writes the
-    // tombstone BEFORE sweeping Storage, so a fault in the Storage phase is a segment that is already retired. Charging
-    // the cap on *success* meant a partial storage outage marched through the entire fleet with the limit never
-    // engaging, reporting `retired: 0, limited: false` — a "completed sweep that retired nothing" — while every
-    // segment in the namespace was tombstoned. For an encrypted fleet each of those is an irreversible
-    // crypto-shred, so a transient S3 5xx could have destroyed keys fleet-wide.
+    // The worst failure in the set. `dropSegment` writes the tombstone BEFORE sweeping Storage, so a fault in the
+    // Storage phase is a segment that is already retired. A cap charged on *success* lets a partial storage outage
+    // march through the entire fleet with the limit never engaging, reporting `retired: 0, limited: false` — a
+    // "completed sweep that retired nothing" — while every segment in the namespace is tombstoned. For an
+    // encrypted fleet each of those is an irreversible crypto-shred, so a transient S3 5xx could destroy keys
+    // fleet-wide.
     const w = world();
     for (const day of ['d1', 'd2', 'd3', 'd4', 'd5']) {
       await w.load(day, [1]);
@@ -323,11 +323,11 @@ describe('retireExpired — what the adversarial review found', () => {
   });
 
   it('never purges a GDPR crypto-shred tombstone, even one that carried a policy', async () => {
-    // Attribution used to be INFERRED from "destroyed + an expired policy", and that inference is false:
+    // Attribution cannot be INFERRED from "destroyed + an expired policy", because that inference is false:
     // `shredSegment` never touches `retention`, so the ordinary ordering — set a 30-day policy, then a
     // right-to-erasure request arrives mid-window and you `destroySegment` — leaves a crypto-shred tombstone
     // carrying an expired policy. Deleting that row destroys the local attestation for an Art. 17 execution and
-    // un-fences the name for every writer. The sweep now purges only rows it stamped itself.
+    // un-fences the name for every writer. The sweep purges only rows it stamped itself.
     const keystore = new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
     const w = world();
     const minted = await keystore.createDek();
@@ -346,7 +346,7 @@ describe('retireExpired — what the adversarial review found', () => {
   it('honours a clearRetention that lands mid-sweep', async () => {
     // The enumeration is a snapshot, and on a fleet the gap between drawing it and reaching a given segment is the
     // whole sweep — minutes. Cancelling an expiry is precisely the operator's recovery action for a bad backfill,
-    // and it did not work if a sweep was already running: the segment was retired from the stale copy.
+    // and it has to work while a sweep is already running, which retiring from the stale copy would not.
     const w = world();
     for (const day of ['a', 'b']) {
       await w.load(day, [1]);
@@ -394,12 +394,12 @@ describe('retireExpired — what the adversarial review found', () => {
   });
 
   it('survives a malformed retention blob without abandoning the sweep', async () => {
-    // A stored `retention: null` used to throw an untyped TypeError from `readRetentionPolicy` — called outside the
-    // per-segment try — so one bad row aborted the fleet sweep and the healthy expired segment beside it was never
-    // retired. Reproduced by two reviews.
+    // `readRetentionPolicy` is called outside the per-segment try, so a stored `retention: null` that threw an
+    // untyped TypeError there would abort the fleet sweep, and the healthy expired segment beside it would never
+    // be retired.
     const w = world();
     await w.registry.create({ segment: 'bad' }, { currentGen: null });
-    // Bypass the (now-strict) write boundary the way a hand-edit or an older writer would.
+    // Bypass the (strict) write boundary the way a hand-edit or a foreign writer would.
     const rec = (await w.registry.get({ segment: 'bad' }))!;
     (rec as { retention?: unknown }).retention = null;
     await w.load('good', [1]);
@@ -421,8 +421,8 @@ describe('retireExpired — what the adversarial review found', () => {
 
   it('forwards the audit sink, and an encrypted retirement is a real crypto-shred', async () => {
     // Retiring an encrypted segment discards its DEK wrappings, which is irreversible and must emit
-    // `segment.erase` — the receipt a compliance dashboard reads — on top of `segment.dispose`. Neither was
-    // asserted anywhere, and deleting the `audit:` forward passed the whole suite.
+    // `segment.erase` — the receipt a compliance dashboard reads — on top of `segment.dispose`. This asserts
+    // both, so deleting the `audit:` forward fails here.
     const keystore = new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
     const w = world();
     const events: Array<{ kind: string; segment?: string }> = [];
@@ -490,10 +490,10 @@ describe('retireExpired — tombstone purge', () => {
   });
 
   it('collects a straggler Storage generation itself instead of reporting it forever', async () => {
-    // Measured by the review: NOTHING else would ever collect it. No load publishes onto a tombstone and the
-    // erasure rewrite refuses one, so a generation staged after the tombstone landed — a load that was already
-    // writing its object when the drop happened — stayed billed forever while the sweep paid two list calls per
-    // cycle to report the same thing again. The sweep now collects it (the GC takes *every* generation of a
+    // NOTHING else would ever collect it. No load publishes onto a tombstone and the erasure rewrite refuses
+    // one, so a generation staged after the tombstone landed — a load that was already writing its object when
+    // the drop happened — would stay billed forever, and a sweep that only reported it would pay two list calls
+    // per cycle to report the same thing again. The sweep collects it (the GC takes *every* generation of a
     // destroyed row) and then purges the row, so the state converges.
     const w = world();
     await w.load('day', [1]);
@@ -545,9 +545,8 @@ describe('retireExpired — tombstone purge', () => {
   });
 
   it('charges tombstone purges against the same per-cycle limit', async () => {
-    // The purge branch used to sit outside the cap, so a sweep advertised as "one bounded batch" could delete
-    // thousands of rows and issue two list calls for each — measured at 500 purges and 1,501 driver calls under
-    // `limit: 1`.
+    // A purge branch outside the cap would let a sweep advertised as "one bounded batch" delete thousands of
+    // rows and issue two list calls for each.
     const w = world();
     for (const day of ['d1', 'd2', 'd3']) {
       await w.load(day, [1]);

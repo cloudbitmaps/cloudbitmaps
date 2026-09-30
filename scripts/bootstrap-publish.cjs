@@ -9,9 +9,9 @@
  *
  * It runs whenever a package is ADDED to the family: tagging a release that carries a new name without
  * bootstrapping it first would publish core, then fail on the first name with no Trusted Publisher — leaving
- * the registry holding part of a lockstep release, immutable. The earlier version of this script modelled only
- * "first publish of everything" and refused outright once ANY name existed, which made it useless for
- * exactly the case that needs it most.
+ * the registry holding part of a lockstep release, immutable. So it creates the names the registry lacks and
+ * skips the rest: a script that modelled only "first publish of everything", refusing outright once ANY name
+ * existed, would be useless for exactly the case that needs it most.
  *
  * It exists because the hand-typed form of that step has several ways to go quietly wrong, and the step is
  * irreversible: npm allows unpublish only within 72 hours, and a name+version is burned forever either way.
@@ -24,8 +24,8 @@
  * it to point at, so an untagged 0.10.0-rc.0 becomes `latest` and plain `npm i` serves the throwaway. The
  * dist-tag is therefore derived from the prerelease identifier (0.10.0-rc.0 -> `rc`) rather than left to default.
  *
- * That is necessary but NOT sufficient, which was established against a real registry rather than assumed: a
- * registry may point `latest` at a package's first version anyway, and `npm dist-tag rm … latest` is refused.
+ * That is necessary but NOT sufficient: a registry may point `latest` at a package's first version anyway, and
+ * `npm dist-tag rm … latest` is refused.
  * So the post-publish check REPORTS which happened instead of failing — the publish already succeeded and is
  * irreversible, and the condition resolves itself when the real release claims `latest`.
  *
@@ -73,9 +73,9 @@ function run(cmd, args, opts = {}) {
 /**
  * Run a command whose non-zero exit is a legitimate answer (a 404 probe, a dirty tree).
  *
- * Captures STDERR as well as stdout, which the first version discarded. That mattered: `npm view` exits
- * non-zero for a missing package AND for a 5xx, a rate limit, an ETIMEDOUT, a proxy failure and a bad
- * `.npmrc` — and only stderr says which. Without it the caller had to treat every failure alike.
+ * Captures STDERR as well as stdout: `npm view` exits non-zero for a missing package AND for a 5xx, a rate
+ * limit, an ETIMEDOUT, a proxy failure and a bad `.npmrc` — and only stderr says which. Without it the caller
+ * has to treat every failure alike.
  */
 function tryRun(cmd, args) {
   try {
@@ -265,11 +265,11 @@ console.log(`bootstrap-publish: publishing under --tag ${effectiveTag} (expect a
 //
 // No `--no-provenance` here, deliberately: pnpm does not forward that flag to npm, so it reads as a fix while
 // doing nothing. Provenance is opt-IN at the call site instead — the release workflow passes `--provenance`
-// explicitly — because `publishConfig.provenance: true` in the manifests made every manual publish impossible:
-// npm honoured it, looked for a CI provider to mint the attestation from, found none on a laptop, and aborted
+// explicitly — because `publishConfig.provenance: true` in a manifest makes every manual publish impossible:
+// npm honours it, looks for a CI provider to mint the attestation from, finds none on a laptop, and aborts
 // with `EUSAGE: Automatic provenance generation not supported for provider: null`. Neither the CLI flag nor
-// `NPM_CONFIG_PROVENANCE=false` could override the manifest. A bootstrap publish is unattested by design (see
-// RELEASING.md), and that is now expressible rather than blocked.
+// `NPM_CONFIG_PROVENANCE=false` overrides the manifest. A bootstrap publish is unattested by design (see
+// RELEASING.md), and keeping provenance out of the manifests is what lets it run.
 //
 // This stays `pnpm publish` rather than a per-package `npm publish`: every other package depends on core via
 // `workspace:^`, and pnpm is what rewrites that to a real version range on the way out. npm would publish the
@@ -304,19 +304,18 @@ function restoreManifests() {
     }
   }
 }
-// DELIBERATELY NO SIGINT/SIGTERM HANDLERS. An earlier version of this file registered them, reasoning that
-// `process.on('exit')` does not run when node is killed by a signal. Measured, that "fix" was strictly worse
-// than nothing on all three counts:
+// DELIBERATELY NO SIGINT/SIGTERM HANDLERS, although `process.on('exit')` does not run when node is killed by a
+// signal. Handlers here would be strictly worse than nothing on all three counts:
 //
-//   1. It never ran. This script is synchronous, so while `execFileSync` holds the thread libuv never polls
-//      the signal self-pipe and the queued callback is simply dropped.
-//   2. Registering a listener REPLACES node's default die-on-signal. So a `kill -TERM` mid-publish was
-//      swallowed: the publish ran to completion and the process exited 0. On a step whose whole point is
+//   1. They would never run. This script is synchronous, so while `execFileSync` holds the thread libuv never
+//      polls the signal self-pipe and the queued callback is simply dropped.
+//   2. Registering a listener REPLACES node's default die-on-signal. So a `kill -TERM` mid-publish would be
+//      swallowed: the publish runs to completion and the process exits 0. On a step whose whole point is
 //      that it cannot be undone, that turns "stop now" into "ignored" — an operator who realises mid-run
-//      that they are publishing the wrong thing could no longer stop it. Verified: 143 without the
-//      handlers, 0 with them.
-//   3. Had it ever fired, `process.kill(process.pid, sig)` re-enters the still-registered listener and
-//      spins at 100% CPU.
+//      that they are publishing the wrong thing could not stop it. Measured: exit 143 without the handlers,
+//      0 with them.
+//   3. A handler that restores the manifests and then re-raises with `process.kill(process.pid, sig)` would,
+//      were it ever to fire, re-enter itself, since it is still registered, and spin at 100% CPU.
 //
 // What actually restores the manifests is the `catch`/`finally` below, and it covers the case that matters:
 // a real terminal Ctrl-C is SIGINT to the whole process GROUP, so `pnpm` dies, `execFileSync` throws, and
@@ -377,10 +376,10 @@ try {
 console.log('\nbootstrap-publish: verifying the registry…');
 
 // npm ACKs a publish on the write path, but `npm view` reads a replica that lags — measured at ~7 minutes for
-// a brand-new package, with the write already returned `PUT 200`. Probing once and calling it a failure told
-// the operator the publish had failed when both packages were live and correct, which is the worst possible
-// wrong answer directly after an irreversible step. `--prefer-online` defeats npm's own cache (which has just
-// cached the pre-publish 404 from the precondition probe); the wait defeats the replica.
+// a brand-new package, with the write already returned `PUT 200`. Probing once and calling it a failure would
+// tell the operator the publish had failed while the packages are live and correct, which is the worst
+// possible wrong answer directly after an irreversible step. `--prefer-online` defeats npm's own cache (which
+// has just cached the pre-publish 404 from the precondition probe); the wait defeats the replica.
 const PROPAGATION_TRIES = 20;
 // Overridable so the regression test can exercise the retry without a 15s wall-clock cost per attempt. Not a
 // knob anyone running a release should touch.

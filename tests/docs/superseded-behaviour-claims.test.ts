@@ -4,20 +4,19 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
- * Claims about behaviour this library NO LONGER HAS, spelled out so they cannot come back.
+ * Claims about the library's behaviour that its code makes FALSE, spelled out so no page makes them.
  *
- * WHY THIS FILE EXISTS. "An empty result publishes an empty generation" was true, was documented as
- * deliberate, and lived in **four** places: the guide's `*Into` section, two entries in the roadmap, and a
- * doc-comment that ships in the published `.d.ts`. The change that made it false updated exactly one of them,
- * and the full gate stayed green — the docs gates check that exports are documented and that links resolve,
- * neither of which can see prose contradicting behaviour.
+ * WHY THIS FILE EXISTS. A sentence about behaviour is written in several places at once: "an empty result
+ * publishes an empty generation" would sit in the guide's `*Into` section, two entries in the roadmap, and a
+ * doc-comment that ships in the published `.d.ts`. A change to the behaviour that updates one of them leaves
+ * the full gate green — the docs gates check that exports are documented and that links resolve, neither of
+ * which can see prose contradicting behaviour — and a hand sweep of the others is careful work that misses a
+ * copy.
  *
- * That is the second time a single sentence has outlived the code in this repo, which is the point at which
- * being careful stops being the answer. Each entry below is a phrase that was TRUE and is now FALSE; a hit
- * means someone wrote it again, or a stale copy survived a sweep.
+ * Each entry below is a phrase the code makes FALSE; a hit means a page states it, in a copy or a paraphrase.
  *
- * Adding an entry is the cheap half of retiring a behaviour. Removing one is only correct if the behaviour
- * came back.
+ * Adding an entry is the cheap half of changing a behaviour. Removing one is only correct if the phrase is
+ * true of the code.
  *
  * WHAT IT IS NOT. It catches honest drift: a stale copy, a paraphrase of it, the same claim wrapped, split or marked
  * up differently. It is not built to stop someone writing the claim on purpose in words it has never seen, and no
@@ -47,10 +46,10 @@ const EXTS = [
  * These phrases are sentences, and sentences in this repo hard-wrap at about 110 columns — inside Markdown
  * blockquotes and JSDoc comments, whose continuation lines begin `> ` and `* `. So the gap between two words
  * is often a newline plus a marker, and neither a literal space nor `\s+` alone spans it. Scanning line by
- * line cannot see any of it: whether a retired claim is caught then depends on how long the preceding words
+ * line cannot see any of it: whether a refused claim is caught then depends on how long the preceding words
  * happen to be, which is not a property anyone controls.
  *
- * `vocabulary-damage.test.ts` learned this first, and it is carried here. Here it crosses
+ * `vocabulary-damage.test.ts` reads across a wrap the same way. Here it crosses
  * one line end at most: a sentence does not run on past a blank line, and a gap that did would join two copies of
  * a claim in two paragraphs into one hit.
  */
@@ -99,7 +98,7 @@ const BREAK_TAG = /^<\/?(?:tr|li|p|div|h[1-6]|dt|dd|blockquote|section)\b/i;
 const SHOWN_ATTRIBUTE = /\b(?:content|alt|title|aria-label)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
 
 /**
- * The text a reader is given, so markup cannot carry a retired claim past the patterns. Tags, link targets, code
+ * The text a reader is given, so markup cannot carry a refused claim past the patterns. Tags, link targets, code
  * spans, emphasis and doc-comment links go, as a renderer takes them away; entities are decoded, quotation marks go,
  * and a dash or a line break reads as the gap it is, which the patterns' word runs then cross. Each transform keeps
  * the line ends of the text it takes out, where they were, so a hit's line is still its own; `hitsIn` checks it.
@@ -240,7 +239,7 @@ const HOLDS = String.raw`(?:holds?|keeps?|reads?|serves?|sees?|answers? from|sta
 const IN_EFFECT = String.raw`(?:(?:effectively|essentially|basically|practically|in effect|just|really|always|then|now|thus),? )?`;
 /**
  * The same, as the verb a store is said to do, and strict on purpose: a true sentence this refuses is reworded, since
- * each exemption a sentence has earned so far has also let a retired claim through. Only these are not the claim:
+ * an exemption a true sentence earns lets a false claim through as well. Only these are not the claim:
  * "pins" after a possessive or a determiner, which is the noun ("two incarnations' pins"), or after `pin()`, its
  * subject; "pinned" after a determiner, the adjective ("the pinned object"); "pins nothing", with no "but", "except"
  * or "apart from" after it; "pin" after a determiner, the noun; and a "pinned handle", which is `seg.pin()`'s, unless
@@ -321,8 +320,8 @@ const FIXED = String.raw`(?:(?:never|does not|doesn't|will not|won't) (?:changes
 /** Said to stay on a generation, by any verb but "pins": "stays on its first generation", "freezes each segment". */
 const STAYS = String.raw`\b(?:(?:stays?|remains?|stuck|sticks?|freezes?|frozen|locks?|locked)(?<!\b(?:not|never|no) \w+)|(?<!\b(?:not|never|no)|n't) keeps? (?:serving|using|reading)) (?:(?:on|at|to|with|in) )?(?:(?:each|every|its|their|the|one|a) )?(?:(?!(?:newest|latest) )[\w'-]+ )?(?:segments?|generations?|snapshots?|pointers?)\b(?!${UNTIL_MOVED})`;
 
-/** Phrases that describe behaviour this library used to have, each with what to say instead. */
-const RETIRED: ReadonlyArray<{ readonly claim: RegExp; readonly why: string }> = [
+/** Phrases that describe the library's behaviour falsely, each with what to say instead. */
+const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: string }> = [
   {
     claim: new RegExp(g(String.raw`publish(?:es|ing)? an empty generation over \`?dest`), 'i'),
     why: 'the *Into verbs refuse an empty result over a non-empty destination — say that instead',
@@ -337,18 +336,18 @@ const RETIRED: ReadonlyArray<{ readonly claim: RegExp; readonly why: string }> =
   },
   {
     claim: new RegExp(g('does not yet cover these verbs'), 'i'), // read in plain text, its bold gone
-    why: 'the load guard covers the *Into verbs now',
+    why: 'the load guard covers the *Into verbs',
   },
-  // A store with no timed refresh was called a pin — "pin forever", "pins the generation for its lifetime" —
-  // across the guide, both privacy notes, shipped doc-comments and the tests. It stopped being true once such a
-  // store still moved on: its reader cache evicting the segment, a read finding the generation it holds swept, and
-  // an invalidation (its own `load`, `rollback`, `eraseSubject` and `*Into` writes, or `invalidate()`) each
-  // re-resolve it. `seg.pin()` is the one thing that holds a generation, and the copies taught readers to reach for
-  // `cache.genTtlMs: 0` instead. The patterns read prose, not syntax, so bold and entities are resolved first
-  // (`**pins**` is how one copy escaped a first sweep). When a true sentence trips one, reword the sentence: of a
-  // real pin, say "a pinned handle holds its generation for the life of the handle". A paraphrase can always escape a
-  // list of patterns, which is why each hit says what to write instead. The forms are the ones copies were found in
-  // and the ones a review wrote to get past them. What no pattern here reads is left to review: a claim whose subject
+  // No page (the guide, the privacy notes, a shipped doc-comment, a test) may call a store with no timed refresh a
+  // pin ("pin forever", "pins the generation for its lifetime"), because such a store still moves on: its reader
+  // cache evicting the segment, a read finding the generation it holds swept, and an invalidation (its own `load`,
+  // `rollback`, `eraseSubject` and `*Into` writes, or `invalidate()`) each re-resolve it. `seg.pin()` is the one thing
+  // that holds a generation, and a sentence calling the store a pin teaches readers to reach for `cache.genTtlMs: 0`
+  // instead. The patterns read prose, not syntax, so bold and entities are resolved first (`**pins**` would pass a
+  // pattern that reads the raw text). When a true sentence trips one, reword the sentence: of a real pin, say "a
+  // pinned handle holds its generation for the life of the handle". A paraphrase can always escape a list of
+  // patterns, which is why each hit says what to write instead. The forms are the ones the claim is written in and
+  // the paraphrases written to get past them. What no pattern here reads is left to review: a claim whose subject
   // is in another sentence ("It pins…") or in the heading above it, subject and claim further apart than the 60 or 80
   // characters each pattern allows, a table whose header, not its cell, says "Pinned" or names the setting, and a
   // sentence a program builds other than from string literals joined by `+`, as prettier wraps them.
@@ -405,7 +404,7 @@ const RETIRED: ReadonlyArray<{ readonly claim: RegExp; readonly why: string }> =
     why: NO_TIMED_REFRESH,
   },
   {
-    // A store with no timed refresh does move on, so "never" is the retired claim, in either order.
+    // A store with no timed refresh does move on, so "never" is the false claim, in either order.
     claim: new RegExp(
       g(
         String.raw`${NO_TIMED_REFRESH_SUBJECT}${within(80)}\b${NEVER_MOVES}|\b${NEVER_MOVES}${within(60)}${NO_TIMED_REFRESH_SUBJECT}`,
@@ -497,19 +496,20 @@ const RETIRED: ReadonlyArray<{ readonly claim: RegExp; readonly why: string }> =
       'a store re-resolves a segment on four things, and this names one of them as the only one: a timed refresh, ' +
       'an eviction, a read that finds its generation swept, and an invalidation each re-resolve it',
   },
-  // estimateCost() once priced a load as its object's PUT alone and an intersect as its chunk reads alone, and the
-  // docs told a reader to fold the pointer's requests into requestsPerLoad and chunksPerIntersect by hand.
+  // estimateCost() adds store.load()'s requests to a load and each operand's pointer and tail reads to an intersect,
+  // so a sentence telling a reader to fold the pointer's requests into requestsPerLoad and chunksPerIntersect by hand
+  // is false.
   {
     claim: new RegExp(g(String.raw`(?:does not|doesn't) count the pointer`), 'i'),
-    why: 'estimateCost() counts the pointer, the index and the pointer refresh now',
+    why: 'estimateCost() counts the pointer, the index and the pointer refresh',
   },
   {
     claim: new RegExp(g('has no term (?:yet )?for the pointer'), 'i'),
-    why: 'estimateCost() has a term for each of the pointer, the tail read and the refresh now',
+    why: 'estimateCost() has a term for each of the pointer, the tail read and the refresh',
   },
   {
     claim: /requestsPerLoad: (?:2\.24|4\.56|4\.64|4\.72)\b|`4\.(?:56|64|72)`/,
-    why: "requestsPerLoad is the object's own PUT-class requests again; the model adds what store.load() makes",
+    why: "requestsPerLoad is the object's own PUT-class requests; the model adds what store.load() makes",
   },
   {
     claim: /chunksPerIntersect: 204\b/,
@@ -517,16 +517,16 @@ const RETIRED: ReadonlyArray<{ readonly claim: RegExp; readonly why: string }> =
   },
   {
     claim: new RegExp(g('until it counts them itself'), 'i'),
-    why: 'estimateCost() counts the pointer, the index and the pointer refresh now',
+    why: 'estimateCost() counts the pointer, the index and the pointer refresh',
   },
   {
     claim: new RegExp(g(String.raw`(?:does not|doesn't) add (?:this )?for you yet`), 'i'),
-    why: "estimateCost() adds the pointer, the tail reads and store.load()'s requests itself now",
+    why: "estimateCost() adds the pointer, the tail reads and store.load()'s requests itself",
   },
 ];
 
 /**
- * Files that DEFINE the rule and so must spell the retired phrases out — this one, and nothing else.
+ * Files that DEFINE the rule and so must spell the refused phrases out — this one, and nothing else.
  *
  * History is not scanned: it says what was true when it was written, and would be a worse record rewritten to match
  * today. That is a released section of CHANGELOG.md, and a calibration run's dated report, which describes the
@@ -576,11 +576,12 @@ function textFiles(): string[] {
   return out.filter((f) => !DEFINES_THE_RULE.has(f) && !isHistory(f));
 }
 
-describe('no document claims behaviour this library has retired', () => {
+describe('no document claims behaviour this library does not have', () => {
   const files = textFiles();
 
-  it('is scanning the surfaces where the stale copies actually were', () => {
-    // Each of these held one of the four copies. A guard that stopped reaching them would pass silently.
+  it('is scanning the surfaces a behaviour claim is written on', () => {
+    // The guide, the roadmap, the facade's doc-comments and the site each state behaviour. A guard that stopped
+    // reaching them would pass silently.
     expect(files).toContain(join('docs', 'guide', 'getting-started.md'));
     expect(files).toContain(join('docs', 'ROADMAP.md'));
     expect(files).toContain(join('packages', 'roaring', 'src', 'index.ts'));
@@ -595,7 +596,7 @@ describe('no document claims behaviour this library has retired', () => {
     expect(files.length).toBeGreaterThan(150);
   });
 
-  // Both directions: each retired form is caught however it wraps, and the sentences that must stay legal are not.
+  // Both directions: each refused form is caught however it wraps, and the sentences that must stay legal are not.
   it.each([
     'with `cache: { genTtlMs: 0 }` ("pin forever"), holds',
     'instead of pinning one generation\n   * forever.',
@@ -644,7 +645,7 @@ describe('no document claims behaviour this library has retired', () => {
     'pins the generation for all time',
     'pins it permanently',
     "a store re-reads a segment's pointer only on a timed refresh",
-    // Copies the repo has carried, and the word orders it has used.
+    // Sentences in the repo's own phrasing and word orders.
     '`0` pins each pointer for as long as the reader keeps the segment open.',
     'A pinned pointer (`genTtlMs: 0`) is not refreshed.',
     'The exception is a source that never re-resolves — no clock injected, no registry, or `cache: { genTtlMs: 0 }`.',
@@ -658,7 +659,7 @@ describe('no document claims behaviour this library has retired', () => {
     'the store holds its generation for the life of the store',
     'a store with no clock does not re-resolve a segment',
     'A store with no clock never re-resolves a segment on its own: only `invalidate()` moves it.',
-    // And markup the first rules did not strip.
+    // And markup a narrower strip would leave.
     'the source pins every {@link Segment} forever',
     'the source pins the segment\u2019s generation forever',
     'the source pins the generation, forever',
@@ -672,7 +673,7 @@ describe('no document claims behaviour this library has retired', () => {
     'A pin, like a store with no clock, never re-resolves.',
     'Take a `seg.pin()` for one instant.\nA store with no clock never re-resolves a segment.',
     'the whole promise of a pin, and the memo is allowed to be up to `cache.genTtlMs` behind — or, on a store with\n * no clock, arbitrarily far behind, since it never refreshes at all.',
-    // The other things such a store was said never to do, and "on a timer" that no longer excuses it.
+    // The other things such a store is said never to do, and an "on a timer" that does not end the claim.
     'a store with no clock never sees a new generation',
     'with `cache.genTtlMs: 0` the store never sees a publish',
     'a store with no clock never re-reads a segment',
@@ -695,7 +696,7 @@ describe('no document claims behaviour this library has retired', () => {
     "Each timed intersect's store has its pointer pinned.",
     'the store keeps each pointer pinned',
     'as the library does when an intersect ends inside its pointer refresh, and which the harness now pins.',
-    // Word orders and words an exemption or a narrowing let through.
+    // Word orders and words an exemption or a narrowing would let through.
     '`cache.genTtlMs: 0` pins your segments at the generation they first resolved.',
     'A store with no clock pins segments to the generation it first read.',
     'Setting `genTtlMs: 0` amounts to pinning every segment.',
@@ -734,7 +735,7 @@ describe('no document claims behaviour this library has retired', () => {
     '<img src="a.svg" alt="With no clock, the store pins it forever" />',
     // A pipe inside code ends no table row, so the claim across the wrap is still one sentence.
     "/**\n * With `cache.genTtlMs: 0` the store\n * pins each segment's generation (a `number | null`) at the one it first resolved.\n */",
-    // "Until a restart", a TTL of zero, a quoted phrase, and more that such a store was said never to notice.
+    // "Until a restart", a TTL of zero, a quoted phrase, and more that such a store is said never to notice.
     'A store with `genTtlMs: 0` serves the same generation until a restart.',
     'With a TTL of zero, the store pins each segment at the generation it first resolved.',
     'the source "pins the generation" forever',
@@ -757,7 +758,7 @@ describe('no document claims behaviour this library has retired', () => {
     'A store on a raw `IStorageDriver` pins each segment.',
     'A store without the registry pins each segment.',
     'A clockless store pins each segment.',
-    // What an exemption let through: a pinned handle, "pins nothing but", the life of a handle.
+    // What an exemption would let through: a pinned handle, "pins nothing but", the life of a handle.
     'With `genTtlMs: 0`, every handle is a pinned handle.',
     '`store.segment()` returns a pinned handle when `genTtlMs` is 0.',
     '`genTtlMs: 0` pins nothing but the generation each segment first resolved.',
@@ -803,7 +804,7 @@ describe('no document claims behaviour this library has retired', () => {
     'A store with no clock never re-resolves on a timer &mdash; or on an eviction.',
     'With `genTtlMs: 0` the store never re-reads its pointer on a timer\n * or on an eviction.',
     'A store with no clock never re-resolves on a timer — and never on an eviction.',
-    // The claim before its subject, for each claim that was read only after it.
+    // The claim before its subject, for each claim a subject-first pattern would miss.
     'A long export describes one instant with `genTtlMs: 0`.',
     'Each segment stays on its first generation when `genTtlMs` is 0.',
     'Instead of `seg.pin()`, set `cache.genTtlMs: 0` for a long export.',
@@ -818,9 +819,9 @@ describe('no document claims behaviour this library has retired', () => {
     'A store on a plain `IStorageDriver` pins each segment.',
     'A store with no backend pins each segment.',
     '| cache.genTtlMs | 0 | pins each segment |',
-    // Never moving on, in the verbs that escaped: "cannot", the passive, a word between "never" and its verb, "only"
-    // one of the four things, the end of the process, another writer's drop, "a single instant", and "on a timer"
-    // followed by a second "never", a "nor" or a "neither", across a comma, a semicolon or a dash.
+    // Never moving on, in the verbs a narrower pattern misses: "cannot", the passive, a word between "never" and its
+    // verb, "only" one of the four things, the end of the process, another writer's drop, "a single instant", and "on a
+    // timer" followed by a second "never", a "nor" or a "neither", across a comma, a semicolon or a dash.
     'A store with no clock cannot re-resolve a segment.',
     'With no clock, a segment is never refreshed.',
     'With no clock, a segment is never re-read.',
@@ -970,7 +971,7 @@ describe('no document claims behaviour this library has retired', () => {
     "it('a store with no clock can\\'t see a new generation', () => {});",
     "description: 'A store with no clock can''t see a new generation.'",
     '{ "description": "the source \\"pins\\" the generation forever" }',
-  ])('catches the retired form %j', (text) => {
+  ])('catches the refused form %j', (text) => {
     expect(hitsIn('x.md', text)).not.toEqual([]);
   });
 
@@ -988,7 +989,7 @@ describe('no document claims behaviour this library has retired', () => {
     'a store with no registry reads the newest generation in the bucket, and never re-resolves on a timer',
     'the timed refresh re-reads the pointer once `cache.genTtlMs` lapses, and an eviction re-reads it too',
     'a `snake_case_name` and `a * b` are not emphasis',
-    // True sentences an earlier rule refused: the gate's own advice, negations, and facts about other things.
+    // True sentences a broader rule would refuse: the gate's own advice, negations, and facts about other things.
     '`cache.genTtlMs: 0` means no timed refresh, and for one instant you want a pinned handle, `seg.pin()`.',
     '`cache: { genTtlMs: 0 }` turns the timed refresh off, and a pinned handle is what holds one generation',
     '`cache.genTtlMs: 0` pins nothing: take a `seg.pin()`.',
@@ -1026,7 +1027,7 @@ describe('no document claims behaviour this library has retired', () => {
     'A store with no registry stays consistent with the bucket it lists.',
     '| `number | null` | a pinned handle holds one generation for the life of the handle |',
     'With `genTtlMs: 0` a long export does not describe one instant: take `seg.pin()`.',
-    // Look-alikes of the forms added since, each true: the claim before its subject, negated; a pin offered in the
+    // More look-alikes, each true: the claim before its subject, negated; a pin offered in the
     // setting's place; "each pin" as a noun; the gate's own advice with another verb; "on a timer" and then what does
     // move the segment; the timed refresh's own TTL; a label that is not one.
     'A long export does not describe one instant with `genTtlMs: 0`: take `seg.pin()`.',
@@ -1082,7 +1083,8 @@ describe('no document claims behaviour this library has retired', () => {
     expect(hitsIn('x.md', text)).toEqual([]);
   });
 
-  // Strict on purpose: these are true, and each reads as the retired claim. Each one reworded, as the gate asks, passes.
+  // Strict on purpose: these are true, and each reads as the refused claim. Each one reworded, as the gate asks,
+  // passes.
   it.each([
     [
       'A pinned handle never re-resolves, even on a store with no clock.',
@@ -1278,8 +1280,8 @@ describe('no document claims behaviour this library has retired', () => {
   });
 
   it('reads a 100 KB line with no full stop well inside 2 s, whatever it is made of', () => {
-    // A bracket, a run of stars and a doc-comment link that never close took 2.8 s, 23 s and 1.4 s on such a line before
-    // their transforms were made to scan it once. The last two work the quote pairing and the rules hardest.
+    // A bracket, a run of stars and a doc-comment link that never close: a transform that retries from each one scans
+    // such a line once per unit, so each must scan it once. The last two work the quote pairing and the rules hardest.
     for (const unit of [
       '[a ',
       '*',
@@ -1292,8 +1294,8 @@ describe('no document claims behaviour this library has retired', () => {
       hitsIn('x.md', line);
       expect(performance.now() - started, JSON.stringify(unit)).toBeLessThan(2000);
     }
-    // And a long run of blanks where a pattern could split it among its parts: each once took seconds, and grew
-    // faster than the run.
+    // And a long run of blanks where a pattern could split it among its parts, which costs seconds, growing faster
+    // than the run, when a pattern tries each split.
     for (const [what, line] of [
       ['a doc-comment link never closed', `{@link a${' '.repeat(100_000)}`],
       ['blanks before a label', `${'x'.repeat(50_000)}${' '.repeat(50_000)}Pinned: none`],
@@ -1331,7 +1333,7 @@ describe('no document claims behaviour this library has retired', () => {
 });
 
 /**
- * Every retired claim a file makes, with its line. Every hit, not the first of each: three copies say so at once. A
+ * Every refused claim a file makes, with its line. Every hit, not the first of each: three copies say so at once. A
  * claim that more than one reading of the file makes is one hit, and a reading that lost or gained a line end fails,
  * since every line number after it would be wrong.
  */
@@ -1343,13 +1345,13 @@ function hitsIn(rel: string, text: string): string[] {
     if (lineCount(reading) !== ends)
       throw new Error(`${rel}: plain() read ${ends} line ends as ${lineCount(reading)}`);
     const earlier = [...hits]; // what the readings before this one found, each to be found once more at most
-    for (const { claim, why } of RETIRED) {
+    for (const { claim, why } of REFUSED_CLAIMS) {
       let line = 1;
       let at = 0;
       for (const m of reading.matchAll(new RegExp(claim.source, `${claim.flags}g`))) {
         line += lineCount(reading.slice(at, m.index));
         at = m.index;
-        const hit = `${rel}:${line} — "${m[0].replace(/\s+/g, ' ')}" is no longer true. ${why}`;
+        const hit = `${rel}:${line} — "${m[0].replace(/\s+/g, ' ')}" is not true. ${why}`;
         const seen = earlier.indexOf(hit);
         if (seen < 0) hits.push(hit);
         else earlier.splice(seen, 1);

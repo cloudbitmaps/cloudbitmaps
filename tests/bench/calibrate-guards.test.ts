@@ -27,11 +27,11 @@ const require_ = createRequire(import.meta.url);
 /**
  * Runs the harness where no AWS credential can be found and no run can be authorised, whatever the harness does.
  *
- * A test of a refusal has to stay safe when the refusal is broken, as a mutation run breaks it on purpose. The region
- * test once spawned `--run` with the confirmation phrase set and no HOME, and the SDK then falls back to the real
- * home directory's credentials: with the region refusal removed, every later check would have passed. Here the home
- * is empty, the SDK's config and credentials files and the instance metadata service are out of reach, and no
- * confirmation phrase is ever passed, so a broken refusal stops at the next one. A child that runs on is killed.
+ * A test of a refusal has to stay safe when the refusal is broken, as a mutation run breaks it on purpose. A test
+ * that spawns `--run` with the confirmation phrase set and no HOME lets the SDK fall back to the real home
+ * directory's credentials: with the region refusal removed, every later check would pass. Here the home is empty,
+ * the SDK's config and credentials files and the instance metadata service are out of reach, and no confirmation
+ * phrase is ever passed, so a broken refusal stops at the next one. A child that runs on is killed.
  */
 const OFFLINE_HOME = mkdtempSync(join(tmpdir(), 'calib-no-aws-'));
 afterAll(() => rmSync(OFFLINE_HOME, { recursive: true, force: true }));
@@ -185,7 +185,7 @@ describe('calibrate guards', () => {
     });
 
     // THE one that matters. `Number('abc')` is NaN, and `total > NaN` is false for every total — so a
-    // malformed ceiling used to silently DELETE the bound rather than fail.
+    // malformed ceiling, compared as it comes, silently DELETES the bound rather than fail.
     it('refuses a non-numeric ceiling rather than producing NaN', () => {
       expect(() => guards.parseCeiling('abc')).toThrow(/not a finite number/);
       expect(() => guards.parseCeiling('0.1abc')).toThrow(/not a finite number/);
@@ -214,7 +214,7 @@ describe('calibrate guards', () => {
       expect(guards.resolveSize('', 2000, 'CR_CALIBRATE_WRITES')).toBe(2000);
     });
 
-    // An explicit 0 used to map to the DEFAULT, handing someone shrinking a run the full workload.
+    // An explicit 0 mapped to the DEFAULT would hand someone shrinking a run the full workload.
     it('treats an explicit zero as zero, not as the default', () => {
       expect(guards.resolveSize('0', 2000, 'CR_CALIBRATE_WRITES')).toBe(0);
     });
@@ -258,8 +258,8 @@ describe('calibrate guards', () => {
 
   describe('projectOps', () => {
     // A projection the run can exceed is not a ceiling. Reads must be projected at least as high as writes,
-    // because every write path here reads before it writes — an earlier version gave reads a SMALLER
-    // multiplier, so the read slot always breached first.
+    // because every write path here reads before it writes — give reads a SMALLER multiplier, and the read slot
+    // always breaches first.
     it('projects reads at least as high as writes', () => {
       for (const loads of [1, 20, 500]) {
         for (const reads of [0, 1, 2000]) {
@@ -269,8 +269,8 @@ describe('calibrate guards', () => {
       }
     });
 
-    // The specific trigger that broke it before: concurrency above segment count is what you set to make a
-    // run cheaper, and it inverted the ratio.
+    // The trigger that inverts the ratio under a smaller read multiplier: far more reads than loads, which is what a
+    // run shrunk to a few segments has.
     it('holds when there are far more reads than loads, and vice versa', () => {
       const readHeavy = guards.projectOps({
         loads: 1,
@@ -321,7 +321,7 @@ describe('aws-meter classification', () => {
   // enumerating workload by 12.5x, and nothing downstream would notice.
   it('bills LIST at the PUT rate, not the GET rate', () => {
     expect(meterLib.classify('ListObjectsV2Command')).toBe('put');
-    // The one teardown uses to empty a versioned bucket; it once fell through to the GET rate.
+    // The one teardown uses to empty a versioned bucket: missing from the PUT class, it falls through to the GET rate.
     expect(meterLib.classify('ListObjectVersionsCommand')).toBe('put');
     expect(meterLib.classify('ListMultipartUploadsCommand')).toBe('put');
   });
@@ -357,7 +357,7 @@ describe('aws-meter classification', () => {
     expect(meterLib.classify('SomeFutureCommand')).toBe('get');
   });
 
-  // One combined bytes-fetched figure hid a fixed 256 KiB tail read behind the chunk reads. The shape of the
+  // One combined bytes-fetched figure hides a fixed 256 KiB tail read behind the chunk reads. The shape of the
   // Range header is what separates the index read from the payload reads.
   it('tells a suffix (tail) read from an explicit range and a whole-object read', () => {
     expect(meterLib.rangeShape(undefined)).toBe('whole');
@@ -377,10 +377,10 @@ describe('aws-meter classification', () => {
   });
 });
 
-describe("calibrate guards — found by this harness's real runs", () => {
-  // The harness said RETRY_BOUND = 4 and called it "1 + DEFAULT_MAX_RETRIES". No such constant exists and the
-  // loop runs five attempts, so every load was projected one attempt short. Read the bound out of the source
-  // rather than retyping it, so the two cannot disagree silently again.
+describe('calibrate guards — what a real run is held to', () => {
+  // The loop runs five attempts, and no constant in core names the count, so a retyped bound can be one short and
+  // project every load one attempt short. Read the bound out of the source rather than retyping it, so the two
+  // cannot disagree silently.
   it('uses the same retry bound as publishGeneration actually loops', () => {
     const src = readFileSync(
       join(ROOT, 'packages', 'core', 'src', 'core', 'crbm-storage-source.ts'),
@@ -395,7 +395,7 @@ describe("calibrate guards — found by this harness's real runs", () => {
     expect(guards.RETRY_BOUND).toBe(Number(bound?.[1]));
   });
 
-  // An intersect has two operands and each opens its own generation. Counting one per read halved the term.
+  // An intersect has two operands and each opens its own generation. Counting one per read halves the term.
   it('projects every operand of a read, not one', () => {
     const base = { loads: 0, reads: 40, chunksPerRead: 100, retryBound: 5 };
     const one = guards.projectOps({ ...base, operandsPerRead: 1 });
@@ -411,11 +411,11 @@ describe("calibrate guards — found by this harness's real runs", () => {
     expect(big.put - small.put).toBe(2 * 3);
   });
 
-  // Run 2026-09-23-94416's GETs did not add up until the loads were counted: 36 pointer reads that each answered 404,
-  // three per load of a new segment. The loader reads the row, the publish reads it again, and the registry reads
-  // it once more before its conditional write — and a publish that loses its race goes round again, up to the
-  // retry bound, then reads the row one last time. The projection allowed one read per attempt. That held only
-  // because nothing races the harness's loads, and a bound that holds only by luck is not a bound.
+  // Run 2026-09-23-94416's GETs add up only with the loads counted: 36 pointer reads that each answered 404, three
+  // per load of a new segment. The loader reads the row, the publish reads it again, and the registry reads it once
+  // more before its conditional write — and a publish that loses its race goes round again, up to the retry bound,
+  // then reads the row one last time. A projection allowing one read per attempt holds only because nothing races
+  // the harness's loads, and a bound that holds only by luck is not a bound.
   it('projects every pointer read a load can make, even when each publish attempt loses its race', async () => {
     const load = async (lostRaces: number): Promise<{ reads: number; writes: number }> => {
       const store = new CountingObjectStore(lostRaces);
@@ -432,7 +432,7 @@ describe("calibrate guards — found by this harness's real runs", () => {
       }
       return { reads: store.reads, writes: store.writes };
     };
-    // Nothing racing: three reads and the one conditional write, as both real runs measured.
+    // Nothing racing: three reads and the one conditional write, as run 2026-09-23-94416 measured.
     expect(await load(0)).toEqual({ reads: 3, writes: 1 });
     const worst = await load(guards.RETRY_BOUND);
     expect(worst.writes).toBe(guards.RETRY_BOUND);
@@ -504,8 +504,8 @@ describe("calibrate guards — found by this harness's real runs", () => {
       expect(chunks.size).toBe(L.chunksPerSegment);
     });
 
-    // The published figure is "100 of 2,000 chunks". A layout that packed the shared ids into a handful of
-    // chunks — this harness's first real run did, at a stride of 7 — is not evidence about that figure.
+    // The published figure is "100 of 2,000 chunks". A layout that packs the shared ids into a handful of
+    // chunks — a stride of 7 does — is not evidence about that figure.
     it('reproduces the published 100-of-2,000 shape at the harness defaults', () => {
       const d = guards.planLayout({
         segments: 10,
@@ -533,8 +533,8 @@ describe("calibrate guards — found by this harness's real runs", () => {
     });
   });
 
-  // AWS puts the caller's ARN, account id and all, in an AccessDenied message, and the harness printed and stored
-  // error text as it came.
+  // AWS puts the caller's ARN, account id and all, in an AccessDenied message, and the harness prints and stores
+  // error text.
   describe('redact', () => {
     it('masks account ids and removes ARNs, and leaves everything else', () => {
       // Built from parts, so that this file holds no account id or ARN for the leak scan to find.
@@ -581,10 +581,10 @@ describe("calibrate guards — found by this harness's real runs", () => {
   });
 });
 
-// `.gitignore` and the harness each name the file a rehearsal writes, and they drifted: the ignore rule outlived
-// the harness that wrote that file, and its replacement wrote rehearsals under the real run's name — one
-// `git add` from committing a free run against MinIO as the evidence. Asked of git itself, so the rule and the
-// harness cannot drift apart again without one of these failing.
+// `.gitignore` and the harness each name the file a rehearsal writes, and the two can drift: a harness that writes
+// rehearsals under the real run's name, while the ignore rule names another file, is one `git add` from committing
+// a free run against MinIO as the evidence. Asked of git itself, so the rule and the harness cannot drift apart
+// without one of these failing.
 describe('a rehearsal cannot be committed as the evidence', () => {
   const ignored = (rel: string): boolean => {
     const { status } = spawnSync('git', ['check-ignore', '-q', rel], { cwd: ROOT });
@@ -606,7 +606,7 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     expect(ignored(file)).toBe(false);
   });
 
-  // A run that did not finish is not evidence. It once went to the evidence name, where one aborted run made both
+  // A run that did not finish is not evidence. Written to the evidence name, one aborted run would make both
   // figures gates fail until someone deleted it.
   it('writes a run that did not finish beside the evidence, under a name git ignores', () => {
     const file = guards.resultsFile(false, '2026-09-23-94416', { partial: true });
@@ -646,7 +646,8 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     expect(() => guards.resultsFile(false, '../x')).toThrow(/run id/);
   });
 
-  // The date orders runs and says when one was made, so it has to be a day that exists: `9999-99-99-zz` passed.
+  // The date orders runs and says when one was made, so it has to be a day that exists: a check of its shape alone
+  // passes `9999-99-99-zz`.
   it('refuses a run id whose date is not a day on the calendar', () => {
     for (const ok of ['2024-02-29-a', '2026-12-31-a']) expect(guards.checkRunId(ok)).toBe(ok);
     for (const bad of [
@@ -660,9 +661,9 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     }
   });
 
-  // `--cleanup` writes no file, so it takes any id that names a legal bucket. Older harnesses accepted any id and
-  // printed `--cleanup <id>` for their leftovers; the date rule would strand those buckets.
-  it('lets --cleanup remove any bucket an older harness could have made', () => {
+  // `--cleanup` writes no file, so it takes any id that names a legal bucket. A harness checked out at another
+  // commit may name its bucket by other rules, and the date rule would strand that bucket.
+  it('lets --cleanup remove a bucket under any legal name', () => {
     for (const ok of ['v0.10.0-inregion', '-x', '2026-09-22-bfee0', 'inregion-1', 'a']) {
       expect(guards.checkCleanupId(ok)).toBe(ok);
     }
@@ -682,7 +683,8 @@ describe('a rehearsal cannot be committed as the evidence', () => {
   });
 
   // A name ending in one of these may not be a bucket at all, but S3's name for someone else's — and `--cleanup`
-  // deletes every version of every key it finds. `--table-s3` was missing from the run ids' list too.
+  // deletes every version of every key it finds. Both kinds of id are held to the one list, so a run id refuses every
+  // suffix a cleanup does.
   it('refuses any id ending in a suffix S3 reserves, for a run and for a cleanup', () => {
     for (const suffix of ['-s3alias', '--ol-s3', '.mrap', '--x-s3', '--table-s3']) {
       expect(() => guards.checkCleanupId(`x${suffix}`), suffix).toThrow(/bucket/);
@@ -700,7 +702,7 @@ describe('a rehearsal cannot be committed as the evidence', () => {
   });
 
   // Teardown lists 1,000 object versions a pass, and each segment leaves two: its generation and its pointer. A
-  // workload of 1,510 segments left 20 versions behind after three passes. The bound keeps the whole bucket inside
+  // workload of 1,510 segments would leave 20 versions behind after three passes. The bound keeps the whole bucket inside
   // the first listing, so the other passes are spare.
   it('refuses a workload with more segments than one teardown listing reaches', () => {
     expect(guards.MAX_SEGMENTS).toBe(500);
@@ -745,7 +747,7 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     }
   });
 
-  // Run, not read: pointing the check at the partial file instead of the evidence passed every source-text test here.
+  // Run, not read: a check pointed at the partial file instead of the evidence passes every source-text test here.
   // The refusal comes before the harness imports the library, so it holds on a checkout that has not been built.
   it('refuses a committed run id in projection mode, before it imports anything', () => {
     const out = runHarness([], { CR_CALIBRATE_RUN_ID: '2026-09-23-94416' });
@@ -758,7 +760,7 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     );
   });
 
-  // `--cleanup` deletes every version of every key in the bucket it is given, and the account pin once held only for
+  // `--cleanup` deletes every version of every key in the bucket it is given, so the account pin holds for it as for
   // the mode that creates. With no credentials to be had, a cleanup must stop at the identity check, before any
   // request to S3; one that skipped it would go on to teardown and fail there. A cleanup loads nothing, so no
   // workload setting refuses it, and it needs no built library.
@@ -817,8 +819,8 @@ describe('a rehearsal cannot be committed as the evidence', () => {
   });
 
   // The two tests above tie `.gitignore` to `resultsFile()`; these tie the harness and the CloudShell script to it.
-  // Without them, putting the old hard-coded path back into the harness — the exact regression this block exists
-  // for — passed every test here.
+  // Without them, a hard-coded path in the harness — the exact regression this block exists for — passes every
+  // test here.
   it('the harness takes its output paths from resultsFile(), and names no file itself', () => {
     const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
     expect(src).toContain('resolve(ROOT, resultsFile(REHEARSE, runId))');
@@ -924,7 +926,7 @@ describe('a rehearsal cannot be committed as the evidence', () => {
         readFileSync(join(home, guards.resultsFile(true).split('/').pop() ?? ''), 'utf8'),
       ).toBe('rehearsal');
       // The file already in $HOME is left alone, and this run's copy goes beside it under a stamped name: CloudShell
-      // keeps $HOME between sessions and not the scratch directory, so a copy left there was as good as lost.
+      // keeps $HOME between sessions and not the scratch directory, so a copy left there is as good as lost.
       expect(readFileSync(join(home, '2026-09-24-b.partial.json'), 'utf8')).toBe('an older copy');
       // The stamp goes before `.partial.json`, so the copy is still a partial file, and one git ignores.
       const stamped = readdirSync(home).filter((f) =>
@@ -940,9 +942,9 @@ describe('a rehearsal cannot be committed as the evidence', () => {
 
   // The script's tail, run around a stand-in harness that tears down slowly: signalled the way a closed terminal, a
   // Ctrl-C or a `kill` would, the harness must get the signal exactly once, and the script must wait for it before
-  // copying anything. Run in the foreground, a SIGTERM or a hang-up stopped the script at once: its exit trap copied
-  // nothing and deleted the scratch directory under the harness mid-teardown; and a SIGTERM to the script alone
-  // never reached the harness at all, which ran the whole paid workload on its own.
+  // copying anything. Were the harness run in the foreground, a SIGTERM or a hang-up would stop the script at once:
+  // its exit trap would copy nothing and delete the scratch directory under the harness mid-teardown; and a SIGTERM
+  // to the script alone would never reach the harness at all, which would run the whole paid workload on its own.
   describe('the CloudShell script passes every signal on to the harness', () => {
     const sh = readFileSync(join(ROOT, 'bench', 'calibrate-cloudshell.sh'), 'utf8');
     const finish = /^finish\(\) \{[\s\S]*?^\}/m.exec(sh)?.[0] ?? '';
@@ -1020,7 +1022,7 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     }
 
     // Once the harness has stopped, the script only copies its results out, and nothing may cut that short: not a
-    // second Ctrl-C, and not SIGPIPE from a `tee` the first one stopped, which killed the copy half-way.
+    // second Ctrl-C, and not SIGPIPE from a `tee` the first one stopped, which would kill the copy half-way.
     it('ignores the signals that could cut the copy short, once the harness has exited', () => {
       const out = spawnSync('bash', ['-c', `${runHarness}\nWORK=.\nrun_harness true\ntrap -p`], {
         encoding: 'utf8',
@@ -1118,7 +1120,7 @@ describe('a rehearsal cannot be committed as the evidence', () => {
       expect(copied.has(dep), `${dep} is required and not copied`).toBe(true);
   });
 
-  // Evidence names the harness that ran. A bare commit named one that had not, whenever its files had been edited.
+  // Evidence names the harness that ran. A bare commit names one that did not, whenever its files have been edited.
   it('records a harness with uncommitted edits as dirty, from a checkout and from the CloudShell script', () => {
     const sh = readFileSync(join(ROOT, 'bench', 'calibrate-cloudshell.sh'), 'utf8');
     const fn = /^harness_ref\(\) \{[\s\S]*?^\}/m.exec(sh)?.[0];
@@ -1184,9 +1186,8 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     }
   });
 
-  // A rehearsal with --run ran the real identity check against whatever credentials the environment held. The pair
-  // is refused before the harness imports anything — run with no credentials and no confirmation, so even a broken
-  // refusal cannot get past the next check.
+  // `--rehearse` and `--run` ask for two different targets, so the pair is refused before any other check. It runs
+  // with no credentials and no confirmation, so even a broken refusal stops at the next check.
   it('refuses --rehearse with --run before doing anything', () => {
     const out = runHarness(['--rehearse', '--run']);
     expect(out.status).toBe(2);
@@ -1194,9 +1195,10 @@ describe('a rehearsal cannot be committed as the evidence', () => {
   });
 
   // Node creates stdout and stderr on first use, and on macOS creating one on a terminal that has hung up never
-  // returns. A hang-up handler whose first output was stderr's first use blocked there: no teardown, no results. A fix
-  // that only silenced the terminal blocked the same way, since reaching `process.stderr` created it. Run on a real
-  // pseudo-terminal that is then closed. Linux never blocked, so on CI this passes either way; on a Mac it is the check.
+  // returns. A hang-up handler whose first output is stderr's first use blocks there: no teardown, no results.
+  // Silencing the terminal alone blocks the same way, since reaching `process.stderr` creates it. Run on a real
+  // pseudo-terminal that is then closed. Linux does not block, so on CI this passes either way; on a Mac it is the
+  // check.
   const python = spawnSync('python3', ['--version']).status === 0;
   it.skipIf(!python)(
     'finishes after its terminal hangs up, because its streams were opened first',
@@ -1244,7 +1246,7 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     20_000,
   );
 
-  // A pipe or a file still has a reader: `nohup … > run.log`, `tee`, CI. Silencing those once lost the teardown and
+  // A pipe or a file still has a reader: `nohup … > run.log`, `tee`, CI. Silencing those would lose the teardown and
   // LEFTOVERS lines from the log. Only a terminal is silenced; the closed-terminal test above covers that half.
   it('stops writing to a terminal on a hang-up, and to nothing else, before it writes anything', () => {
     const out = spawnSync(
@@ -1277,9 +1279,9 @@ describe('a rehearsal cannot be committed as the evidence', () => {
 });
 
 // The meter runs at the SDK's `initialize` step, and the SDK's retry loop sits further in, at `finalizeRequest` —
-// so one call through the meter can be several requests on the wire. It once claimed to count retries "as AWS
-// bills them" and counted each send once. These drive the REAL SDK retry path against a local server that
-// answers 503 until told otherwise, so the claim is tested against the SDK's behaviour rather than restated.
+// so one call through the meter can be several requests on the wire, and AWS bills each. A meter that counts each
+// send once undercounts every retry. These drive the REAL SDK retry path against a local server that answers 503
+// until told otherwise, so the claim is tested against the SDK's behaviour rather than restated.
 describe('the meter counts every attempt the SDK makes, not every send', () => {
   const s3 = require_('@aws-sdk/client-s3') as {
     S3Client: new (cfg: Record<string, unknown>) => {
@@ -1387,8 +1389,8 @@ describe('the meter counts every attempt the SDK makes, not every send', () => {
     }
   });
 
-  // Teardown keeps its retries. The one-attempt pin once reached it too, and a single 503 on `ListObjectVersions`
-  // then left the bucket and everything in it behind.
+  // Teardown keeps its retries. With the one-attempt pin, a single 503 on `ListObjectVersions` would leave the
+  // bucket and everything in it behind.
   it('the teardown client retries, so one transient error cannot leave the bucket behind', async () => {
     const server = await flakyS3(1);
     const client = new s3.S3Client(guards.clientConfigs(baseFor(server.url)).admin);
@@ -1401,8 +1403,8 @@ describe('the meter counts every attempt the SDK makes, not every send', () => {
     }
   });
 
-  // The SDK's HTTP handler waits for ever by default. A teardown whose listing stopped answering once hung until it was
-  // killed, leaving the bucket and no results; teardown's client now gives up, and says so.
+  // The SDK's HTTP handler waits for ever by default. A teardown whose listing stops answering would hang until it is
+  // killed, leaving the bucket and no results, so teardown's client gives up, and says so.
   it('the teardown client gives up on a request that never answers', async () => {
     const server = createServer(() => {
       // Never answers.
@@ -1434,7 +1436,7 @@ describe('the meter counts every attempt the SDK makes, not every send', () => {
   it('the harness builds exactly those two clients, meters both, and tears down with the retrying one', () => {
     const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
     // Each variable tied to its config, and the workload metered: a swap of the two configs, or a workload client
-    // with a tally of its own, passed the looser version of these checks.
+    // with a tally of its own, passes a looser check.
     expect(src.match(/new s3\.S3Client\(/g)?.length).toBe(2);
     expect(src).toContain('const client = new s3.S3Client(configs.work)');
     expect(src).toContain('const admin = new s3.S3Client(configs.admin)');
@@ -1470,11 +1472,11 @@ describe('the meter counts every attempt the SDK makes, not every send', () => {
   });
 });
 
-// A store re-reads a segment's pointer once `cache.genTtlMs` (2 s by default) has passed since it last read it —
-// in the middle of an intersect, too. Run 2026-09-23-94416 was 83 ms from the region, its cold intersects took about
-// 3 s, and the median one read both pointers twice: 206 GETs where the same intersect inside the region makes 204. A count
-// that moves with the network is not a property of the library, and the projection had no term for it. These drive
-// the real engine on a clock where every storage read takes three seconds.
+// A store re-reads a segment's pointer once `cache.genTtlMs` (2 s by default) has passed since it last read it — in
+// the middle of an intersect, too. Run 2026-09-23-94416 was 83 ms from the region, its cold intersects took about
+// 3 s, and the median one read both pointers twice: 206 GETs where the same intersect inside the region makes 204.
+// A count that moves with the network is not a property of the library, and the projection has no term for it.
+// These drive the real engine on a clock where every storage read takes three seconds.
 describe("a cold intersect's request count does not depend on the network", () => {
   /** Wrap one method of `target` so `before` runs ahead of every call to it. */
   function around<T extends object>(target: T, methods: string[], before: () => void): T {
@@ -1634,9 +1636,9 @@ function teardownSource(src: string): string {
     .replace(/\/\/.*$/gm, '');
 }
 
-// A signal used to start teardown while the workload was still writing. A load's PUT landed after teardown's listing
-// and the bucket was left behind, in two of four rehearsals interrupted during their loads; and a signal during
-// CreateBucket would tear down a bucket that did not exist yet, which the create then made. So the work stops first.
+// A signal that starts teardown while the workload is still writing leaves the bucket behind: a load's PUT lands
+// after teardown's listing. And a signal during CreateBucket would tear down a bucket that does not exist yet,
+// which the create then makes. So the work stops first.
 describe('a signal stops the workload before teardown starts', () => {
   const s3 = require_('@aws-sdk/client-s3') as {
     S3Client: new (cfg: Record<string, unknown>) => {
@@ -1780,7 +1782,7 @@ describe('a signal stops the workload before teardown starts', () => {
   });
 
   // A request that fails while the run stops is still a failure: a 403 during the drain, the likeliest reason someone
-  // presses Ctrl-C on a run that looks stuck, was discarded because the run was stopping.
+  // presses Ctrl-C on a run that looks stuck, must not be discarded because the run is stopping.
   it('records every failure but the gate refusing a send, however the refusal was wrapped', () => {
     const refused = Object.assign(new Error('no new requests'), { name: 'CalibrationInterrupted' });
     expect(processLib.failureOf(refused)).toBeNull();
@@ -1802,9 +1804,10 @@ describe('a signal stops the workload before teardown starts', () => {
 });
 
 // Teardown is the one path whose failure leaves money on the table, so what counts as "done" is spelled out here.
-// Each rule below is a bug a fault-injecting proxy in front of MinIO reproduced: a lost-answer abort whose retry
-// got 404 NoSuchUpload made teardown skip the deletes and report nothing; and a key that could never be deleted
-// made the listing loop bill forever.
+// The rules below stop teardown from leaving a billing bucket behind, or from emptying one the harness did not
+// make: an abort whose answer is lost, and whose retry gets 404
+// NoSuchUpload, would make teardown skip the deletes and report nothing; and a key that can never be deleted would
+// make the listing loop bill forever.
 describe('teardown — what counts as done', () => {
   it('treats only NoSuchBucket as the bucket being gone', () => {
     expect(guards.bucketIsGone({ name: 'NoSuchBucket', $metadata: { httpStatusCode: 404 } })).toBe(
@@ -1866,7 +1869,7 @@ describe('teardown — what counts as done', () => {
     const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
     const teardown = teardownSource(src);
     expect(teardown).toContain('foreignKeys(');
-    // Checked before anything is touched: an upload may be someone else's too, and was once aborted first.
+    // Checked before anything is touched: an upload may be someone else's too, and must not be aborted unchecked.
     const check = teardown.indexOf('refuseForeign([');
     expect(check, 'teardown no longer checks uploads and objects together first').toBeGreaterThan(
       -1,
@@ -1886,7 +1889,7 @@ describe('teardown — what counts as done', () => {
     expect(teardown).toContain('leftoversHint({ notOurs, rehearse: REHEARSE, runId })');
   });
 
-  // The account pin held for a run and not for `--cleanup`, the mode that deletes.
+  // The account pin holds for `--cleanup`, the mode that deletes, as it does for a run.
   it('checks the account pin before a cleanup too', () => {
     const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
     const main = src.indexOf('async function main');
@@ -1895,11 +1898,11 @@ describe('teardown — what counts as done', () => {
     expect(identityAt).toBeLessThan(src.indexOf("if (MODE === 'cleanup') {", main));
   });
 
-  // An interrupt while CreateBucket is in flight used to meet the do-nothing handler, and exit without teardown.
+  // An interrupt while CreateBucket is in flight must not meet the do-nothing handler, and exit without teardown.
   it('arms the interrupt handler before the bucket is created', () => {
     const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
     // Searched from `main`: the module-level default, `let onInterrupt = async () => {}`, sits before it and does
-    // nothing — the first version of this check found that and passed.
+    // nothing, and a check searching the whole file finds that and passes.
     const main = src.indexOf('async function main');
     const armed = src.indexOf('onInterrupt = async', main);
     expect(main).toBeGreaterThan(-1);

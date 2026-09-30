@@ -10,10 +10,10 @@ import { fileURLToPath } from 'node:url';
  * MinIO, 3.640.0 drops the unmodeled `IfNoneMatch: "*"` and a second PUT to the same key SUCCEEDS — hard
  * invariant 2 silently lost — while 3.641.0 rejects it. The pinned floor sits a small margin above.
  *
- * Nothing checked it. The manifest range, the README's statement of it and the CHANGELOG's rationale were
- * three independent strings; lowering the manifest floor (a careless `pnpm up`, a merge, a "widen it for
- * compatibility") left the whole suite green while reintroducing silent data loss. `version-claims` cannot
- * help — it EXEMPTS `3.645.0` as a foreign version so the site check does not trip on it.
+ * The manifest range, the README's statement of it and the CHANGELOG's rationale are three independent
+ * strings. Without this, lowering the manifest floor (a careless `pnpm up`, a merge, a "widen it for
+ * compatibility") leaves the whole suite green while opening the way to silent data loss. `version-claims`
+ * cannot help — it EXEMPTS `3.645.0` as a foreign version so the site check does not trip on it.
  *
  * So this derives the floor from each driver manifest and asserts the package's own README states the same
  * range. Deriving means a sixth driver package is covered the day it is added.
@@ -55,8 +55,8 @@ describe('a driver package states its SDK range identically in the manifest and 
     // bounded by a backtick, a bracket, whitespace or the end of the line — so a longer range around it
     // cannot satisfy it.
     // The trailing boundary is a LOOKAHEAD that rejects any version character, not a character class that
-    // includes `.`. A class containing `.` still lets `^12` match inside `^12.5.0` — the exact substring
-    // hole this replaced — because the dot itself satisfies the boundary.
+    // includes `.`. A class containing `.` still lets `^12` match inside `^12.5.0` — the very substring
+    // hole this check closes — because the dot itself satisfies the boundary.
     const bounded = new RegExp(
       `(^|[\\s\`(\\[])${range.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w.-])`,
     );
@@ -67,9 +67,9 @@ describe('a driver package states its SDK range identically in the manifest and 
   });
 
   it.each(RANGES)("$name: site/usage.html quotes $sdk's range verbatim", ({ sdk, range }) => {
-    // The site's driver table states these ranges too, and nothing read it. The S3 cell said `>=3.645` while
-    // the manifest declared `>=3.645.0 <4` — semver-equivalent, but it dropped the upper bound this very file
-    // insists on for the READMEs, so a reader could conclude SDK v4 was supported. Same rule, same corpus.
+    // The site's driver table states these ranges too. An S3 cell saying `>=3.645` where the manifest declares
+    // `>=3.645.0 <4` has the same floor but drops the upper bound this very file insists on for the READMEs,
+    // so a reader could conclude SDK v4 is supported. Same rule, same corpus.
     const page = readFileSync(join(ROOT, 'site', 'usage.html'), 'utf8')
       .replace(/&gt;/g, '>')
       .replace(/&lt;/g, '<')

@@ -4,8 +4,8 @@
  *
  * WHY THIS SITS AT THE SDK LAYER, not at the library's metrics sink. The sink emits no `storage.put` event —
  * a known observability gap — and a PUT bills at 12.5x a GET, so an ingest-heavy workload priced from the sink
- * alone is materially understated. The previous calibration run learned this the expensive way; the meter is
- * the fix, and it counts what actually went over the wire regardless of what the library chose to report.
+ * alone is materially understated. The meter counts what actually went over the wire, regardless of what the
+ * library chose to report.
  *
  * It is a middleware, not a wrapper around individual calls: anything the SDK sends is counted, including
  * requests the driver makes that the caller never asked for (a multipart upload's per-part PUTs, a retry, a
@@ -25,8 +25,8 @@ const PUT_CLASS = new Set([
   'CompleteMultipartUploadCommand',
   'ListObjectsV2Command',
   'ListObjectsCommand',
-  // Teardown lists VERSIONS to empty a versioned bucket. It is a LIST like the others, and it was missing
-  // here — so it fell through to the GET rate, the 12.5x understatement this set exists to prevent.
+  // Teardown lists VERSIONS to empty a versioned bucket. It is a LIST like the others: missing from here, it
+  // would fall through to the GET rate, the 12.5x understatement this set exists to prevent.
   'ListObjectVersionsCommand',
   'ListMultipartUploadsCommand',
   'ListPartsCommand',
@@ -63,7 +63,7 @@ function newTally() {
 /**
  * What kind of read a `GetObject` was, from its `Range` header.
  *
- * WHY THE SHAPE MATTERS. A single bytes-fetched figure conflated two different things. Measured request by
+ * WHY THE SHAPE MATTERS. A single bytes-fetched figure conflates two different things. Measured request by
  * request, one cold intersect of two ~1 MB segments was 2 whole-object reads of the pointer (158 B each), 2
  * SUFFIX reads of the last 256 KiB of each generation — the reader grabs a generous tail so the footer and index
  * come back in one round trip — and 200 explicit ranges of ~516 B, one per shared chunk. The payload was 4.9% of
@@ -135,8 +135,8 @@ function meter(client, tally = newTally()) {
     },
     // `initialize` sees the command before the SDK resolves it, which is where `context.commandName` is set. It is
     // also OUTSIDE the retry loop (`retryMiddleware`, at `finalizeRequest`), which is why retries are read from the
-    // attempt count above rather than seen one by one. This comment once said the opposite, and the meter counted
-    // each send once.
+    // attempt count above rather than seen one by one. A meter that took this step for one inside the loop would
+    // count each send once, and every retry would go unbilled.
     { step: 'initialize', name: 'cloudbitmapsMeter' },
   );
   return tally;

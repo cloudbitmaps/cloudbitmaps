@@ -272,8 +272,8 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       }
     });
 
-    // A link's target was once passed wherever `](` began one, and these showed their digits: a target is passed
-    // only when the list names it, whole.
+    // A reading that exempts a link's target wherever `](` begins one lets each of these through, and each shows
+    // its digits: a target is exempt only when the list names it, whole.
     it.each([
       ['a code span holding a link', ' It costs `[x](85,509)` a month.'],
       ['escaped brackets', ' It costs \\[x\\](85,509) a month.'],
@@ -400,7 +400,7 @@ describe('bench:sizing:check fails what it exists to catch', () => {
         ['&divide', ' It is the bill &divide two.'],
         ['&sup2', ' It grows as n&sup2 does.'],
         ['&COPY', ' It is &COPY the vendor.'],
-      ])('refuses the legacy name %s, capitals and all', (name, text) => {
+      ])('refuses %s, a legacy entity name, capitals and all', (name, text) => {
         refused({ [WHY]: intoWhy(text) }, new RegExp(`holds an entity, "${name}`));
       });
 
@@ -632,7 +632,7 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       ['ninety per  cent less'],
       ['ninety per\u00A0\u00A0cent less'],
       ['ninety per- cent less'],
-      // Spellings the patterns once did not know.
+      // Multiples, folds, fractions and shares, in words, compound numbers among them.
       ['a ten-fold saving'],
       ['sixty times as much'],
       ['sixty-five times as much'],
@@ -771,7 +771,7 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       refused({ [WHY]: intoWhy(text) }, message);
     });
 
-    // Each way a figure got past a reading of markdown, refused before any is read.
+    // Each way a figure can hide from a reading of markdown, refused before any is read.
     it.each([
       ['a fence in a blockquote', `\n\n> ~~~\n> <!--\n> ~~~\n\n${F}\n\n`],
       ['a fence in a list item', `\n\n- \`\`\`\n  <!--\n  \`\`\`\n\n${F}\n\n`],
@@ -930,8 +930,8 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       expect(edited).not.toBe(readme);
       return edited;
     };
-    // Each was once read as it is written, and passed: emphasis, an escape, a code span, an invisible character, a
-    // comment or a tag holding a `>` split a share or a multiple that a reader is shown whole.
+    // Read as it is written, each of these passes: emphasis, an escape, a code span, an invisible character, a
+    // comment or a tag holding a `>` splits a share or a multiple that a reader is shown whole.
     it.each([
       ['Redis costs *twice* as much.', 'twice as much'],
       ['Redis costs _twice_ as much.', 'twice as much'],
@@ -1020,8 +1020,8 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       );
     });
 
-    // The Why section is read from its one `## Why CloudBitmaps` line. Each of these once let the section a reader
-    // sees start above that line, so the figure between the two was held to the rest of the README's weaker rule.
+    // The Why section is read from its one `## Why CloudBitmaps` line. Each of these starts the section a reader
+    // sees above that line, which would hold the figure between the two to the rest of the README's weaker rule.
     const FIG =
       'Kept all in memory, the large deployment would be 285 nodes and USD 85,509 a month, making 4,140 GETs a second.';
     it.each([

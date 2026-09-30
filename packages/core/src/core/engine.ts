@@ -451,9 +451,9 @@ export class SegmentEngine {
       const distinctKeys = new Set<number>();
       for (const o of operands) for (const k of o.keys) distinctKeys.add(k);
       for (const e of excludes) for (const k of e.keys) distinctKeys.add(k);
-      // `fetchedChunks` counts **distinct chunk keys**, not per-operand reads — its long-standing documented
-      // unit, asserted by the bench anchors and the metrics tests. Deliberately NOT changed to match the
-      // budget's request count: they measure different things on purpose (keys vs billable requests). The
+      // `fetchedChunks` counts **distinct chunk keys**, not per-operand reads — its documented unit, asserted by
+      // the bench anchors and the metrics tests. It deliberately differs from the budget's request count: they
+      // measure different things on purpose (keys vs billable requests). The
       // relationship is documented on the event instead.
       this.metrics.onEvent({
         kind: 'intersect',

@@ -20,12 +20,11 @@ export class SystemClock implements Clock {
     if (ms <= 0) return Promise.resolve();
     // A *ref'd* timer, deliberately. Every `sleep` on this clock backs a caller-awaited, bounded retry — today
     // the driver transient-retry loop (`withRetry`). A pending backoff therefore always means unfinished
-    // awaited work, so the timer MUST keep the event
-    // loop alive until it resolves. Unref-ing it (the pre-fix behaviour) let a short-lived process — CLI,
-    // Lambda, a bare script — whose only remaining handle was the backoff timer exit 0 mid-retry, silently
-    // dropping the awaited operation with neither a result nor a thrown error. Found by a stress test that
-    // drove many writers at one contended registry row, which is what makes the backoff path run long enough
-    // to be the last handle standing.
+    // awaited work, so the timer MUST keep the event loop alive until it resolves. An unref'd timer lets a
+    // short-lived process — CLI, Lambda, a bare script — whose only remaining handle is the backoff timer exit 0
+    // mid-retry, silently dropping the awaited operation with neither a result nor a thrown error. When a
+    // transient fault repeats (a backend throttling a hot key, say), the backoff timer can be the last handle
+    // standing.
     // Retries are bounded (`maxAttempts`/`maxRetries` + `maxDelayMs`), so a ref'd timer can only
     // extend a process by the small remaining backoff budget of work that is genuinely still in flight.
     return new Promise((resolve) => {

@@ -102,7 +102,7 @@ describe('a combine refuses an operand that names a segment which does not exist
     ]);
   });
 
-  it('reading an absent segment directly is unchanged — it answers empty', async () => {
+  it('reading an absent segment directly is not refused — it answers empty', async () => {
     const w = await world();
     const missing = w.store.segment('never-created', { namespace: 'audiences' });
     expect(await missing.count()).toBe(0);

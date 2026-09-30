@@ -42,8 +42,8 @@ interface Fence {
 
 /**
  * The site writes its samples as `<pre><code>` with a `<span>` per token, not as ``` fences — so the markdown
- * scanner below found **zero** samples in all seven site pages while the file glob made it look covered.
- * That is worse than not scanning them: it reads as coverage. This strips the markup and hands back the code.
+ * scanner below finds **zero** samples in the site's pages while the file glob makes them look covered. That
+ * is worse than not scanning them: it reads as coverage. This strips the markup and hands back the code.
  */
 function htmlSamplesOf(file: string, text = readFileSync(join(ROOT, file), 'utf8')): Fence[] {
   const out: Fence[] = [];
@@ -67,15 +67,15 @@ function htmlSamplesOf(file: string, text = readFileSync(join(ROOT, file), 'utf8
 /**
  * Fenced ```ts / ```js blocks, each with the line its code starts on.
  *
- * Leading indentation is matched and then stripped, because a fence nested inside a list item — which is how
- * every `CHANGELOG.md` sample is written — is indented. An earlier version of this anchored the fence at
- * column 0 and silently scanned none of them, which is the failure mode a gate must not have.
+ * Leading indentation is matched and then stripped, because a fence nested inside a list item, as in
+ * `docs/guide/getting-started.md`, is indented. A pattern anchored at column 0 silently skips it, which is the
+ * failure mode a gate must not have.
  */
 function fencesOf(file: string, text = readFileSync(join(ROOT, file), 'utf8')): Fence[] {
   const out: Fence[] = [];
   // An INFO STRING after the language is allowed. `\`\`\`ts title="wiring.ts"` and `\`\`\`ts twoslash` are
-  // ordinary Markdown that many renderers act on, and requiring end-of-line after the language meant such a
-  // fence left this gate altogether — not "checked more loosely", but unscanned, with every check in the file
+  // ordinary Markdown that many renderers act on, and requiring end-of-line after the language would drop such
+  // a fence from this gate altogether — not "checked more loosely", but unscanned, with every check in the file
   // silent on it. The language must still be the FIRST word, so a ```text block is not dragged in.
   const re =
     /^([ \t]*)```(?:ts|tsx|js|javascript|typescript)(?:[ \t]+[^\n]*)?[ \t]*$\n([\s\S]*?)^[ \t]*```[ \t]*$/gm;
@@ -132,12 +132,12 @@ describe('documentation code samples', () => {
   // `ReferenceError` on the first line a reader runs.
   //
   // What this deliberately does NOT flag is a fence that only *references* `backend` — samples on a page
-  // routinely elide the construction shown in an earlier fence, which is why a plain free-identifier check
-  // reported eight passages, every one of them correct. The defect is the contradiction, not the elision.
+  // routinely elide the construction shown in an earlier fence, so a plain free-identifier check fires on
+  // passages that are correct. The defect is the contradiction, not the elision.
   it('does not declare `storage` or `registry` and use an undeclared `backend`, or declare `backend` and use an undeclared `registry`', () => {
     // Comments, strings and template literals are blanked before anything is matched: half these names appear
-    // in prose ("the wrapped DEKs live in the backend's registry") and in paths ("pointers under ./x/registry").
-    // What is left is code.
+    // in prose ("the wrapped DEKs live in the backend's registry") and in paths ("pointers under ./x/registry"),
+    // and matching those would report correct samples. What is left is code.
 
     const offenders: string[] = [];
     for (const fence of allFences) {

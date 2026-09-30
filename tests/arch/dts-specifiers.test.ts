@@ -9,12 +9,13 @@ import { createRequire } from 'node:module';
  * so a form the scanner misses is a form the build does not fix AND the gate does not flag: the silent-`any`
  * failure ships with everything green.
  *
- * An adversarial review of the first draft — a bare regex inlined separately in both files — found one false
- * positive and four false negatives. The false positive is the one worth naming, because the SDK gate hit
- * the identical class first: tsc preserves JSDoc into the `.d.ts`, so a doc-comment showing a relative
- * import both failed the gate with an error asserting something false and was silently rewritten by the
- * build, editing published documentation. The remedy a contributor reaches for is to water the comment
- * down, which is the erosion these gates exist to prevent.
+ * A bare regex inlined separately in both files can drift apart, miss a form or read a comment as code, and a
+ * green gate does not show it, so every form the scanner must and must not match is planted here. The false
+ * positive is the one worth naming, as it is for the SDK-free gate's detector: tsc preserves JSDoc into
+ * the `.d.ts`, so a scanner that reads comments fails the gate on a doc-comment showing a relative import,
+ * with an error asserting something false, and the build silently rewrites that comment, editing published
+ * documentation. The remedy a contributor reaches for is to water the comment down, which is the erosion
+ * these gates exist to prevent.
  */
 const { findSpecifiers, allSpecifiers, rewriteSpecifiers } = createRequire(import.meta.url)(
   '../../scripts/dts-specifiers.cjs',
@@ -39,7 +40,7 @@ describe('the .d.ts specifier gate flags an extensionless relative import', () =
     ['dynamic / type-position import', "type T = import('./core/engine').X;"],
     ['a multi-line statement', "export {\n  X,\n} from\n  './core/engine';"],
     // Legal in a .d.ts, needs the extension exactly like `from`, and appears the moment anyone writes an
-    // `export =` interop shim. The first draft missed it in the build AND the gate — a mutual blind spot.
+    // `export =` interop shim. A scanner that misses it misses it in the build AND the gate — a mutual blind spot.
     ['import X = require(…)', "import X = require('./core/engine');"],
     ['export import X = require(…)', "export import X = require('./core/engine');"],
     // Augmenting a relative module: `declare module './x.js'` is the nodenext-correct spelling.

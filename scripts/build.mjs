@@ -2,7 +2,7 @@
  * The package build. Run from a package directory (`pnpm -r run build` does): bundles the entries with esbuild,
  * emits declarations with tsc, and rewrites the `@/…` self-alias in the emitted .d.ts to relative paths.
  *
- * This replaced tsup. What it reproduces, on purpose:
+ * What it produces, on purpose:
  *   - one ESM bundle per entry (`.js`, code-split into shared chunks) — every entry the package's own
  *     `exports` map declares — with sourcemaps, node platform, ES2022. ESM ONLY: the package is
  *     `"type": "module"` and the exports map offers a single `default` condition, so `require()` resolves to
@@ -19,7 +19,7 @@
  *   - the ESM-only `export-segments` bin with its `#!` line preserved (esbuild keeps an entry's hashbang);
  *   - the fuzz-only bundles into the git-ignored repo-root `fuzz/build/`, never into dist/.
  * `node scripts/smoke.cjs` (ESM import + `require()` of every entry, the bin, cross-bundle error identity) is the
- * check that the output still behaves.
+ * check that the output behaves.
  */
 import { build } from 'esbuild';
 import { createRequire } from 'node:module';
@@ -65,10 +65,10 @@ const common = {
   //
   // Each package's tsconfig maps `@cloudbitmaps/core` through `paths` to core's SOURCE, so it typechecks
   // without core being built first — and esbuild applies `paths` BEFORE it decides what to externalise, so
-  // without this line every dependent inlined its own private copy of core. That had three costs, all
-  // measured: a flavor bundle of 232 KB against 70 KB, four copies of the same classes in one install, and a
-  // published `.d.ts` asserting `extends ObjectStoreRegistry` that was false at runtime because the base
-  // class in the driver's copy was not the one core exports.
+  // without this line every dependent inlines its own private copy of core. That costs three things: a larger
+  // flavor bundle, four copies of the same classes in one install, and a published `.d.ts` asserting
+  // `extends ObjectStoreRegistry` that is false at runtime, because the base class in the driver's copy is not
+  // the one core exports.
   //
   // External means the declared `dependencies: { '@cloudbitmaps/core': … }` is load-bearing at runtime
   // rather than types-only, there is exactly one copy of core in an ordinary install, and `instanceof`
@@ -97,7 +97,7 @@ if (existsSync(path.join(pkgDir, 'src', 'bin', 'export-segments.ts'))) {
 
 // Declarations: tsc emits a tree mirroring src/ (tsconfig.build.json owns the emit options). Roaring's build
 // config resolves `@cloudbitmaps/core` to core's BUILT declarations rather than its source, so core's files never
-// enter roaring's program — the first cut aliased to source and tsc wrote core's .d.ts next to core's .ts files.
+// enter roaring's program: aliased to source, tsc would write core's .d.ts next to core's .ts files.
 const tsc = require.resolve('typescript/bin/tsc');
 execFileSync(process.execPath, [tsc, '-p', 'tsconfig.build.json'], {
   cwd: pkgDir,
@@ -135,11 +135,9 @@ for await (const file of dts(dist)) {
 // `skipLibCheck: true` suppresses the error, TypeScript then cannot resolve the module, and **every type
 // reached through one of those specifiers silently becomes `any`**. A consumer sees no diagnostic at all;
 // they just lose that whole type surface, including the compile-time half of guards that are supposed to
-// refuse a bad wiring. Measured on a packed install: 113 of 115 runtime exports were `any`, the survivors
-// being the few declared directly in an entry rather than re-exported.
-//
-// Verified before and after with a probe project resolving through the real exports map: `nodenext` accepted
-// `const leak: string = someStorageBackend` (i.e. `any`) before this, and rejects it after.
+// refuse a bad wiring. Only the few exports declared directly in an entry, rather than re-exported, would keep
+// their types: under `nodenext`, a probe project resolving through the real exports map would accept
+// `const leak: string = someStorageBackend` (i.e. `any`). With the extensions, it rejects it.
 //
 // `.js` and not `.d.ts`: a declaration file names the RUNTIME specifier, and TypeScript maps `./x.js` to
 // `./x.d.ts` itself. A directory specifier becomes `/index.js` for the same reason.
