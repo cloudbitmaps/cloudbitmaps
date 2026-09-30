@@ -108,8 +108,8 @@ export interface CodecInterface {
 /**
  * Resolve a codec that a **public core entry point** was given, failing fast when it is missing.
  *
- * Why these entry points take `codec?` rather than a required field: `bulkLoadCrbmGeneration` /
- * `eraseIdFromSegment` / `runExport` are call-compatible public API, and core cannot supply a default (the concrete
+ * Why these entry points take `codec?` rather than a required field: `loadSegment` / `eraseIdFromSegment` /
+ * `runExport` are call-compatible public API, and core cannot supply a default (the concrete
  * codec lives in a *flavor* package that depends on core — a default here would invert that arrow). A **flavor**
  * package binds the codec for its users (`@cloudbitmaps/roaring` re-exports codec-bound wrappers), so an
  * application never reaches this throw; only someone calling `@cloudbitmaps/core` directly — i.e. a flavor or

@@ -19,7 +19,6 @@ async function exercise(label, m) {
     'MemoryStorageDriver',
     'MemoryRegistryDriver',
     'MemoryStorageChunkSource',
-    'bulkLoadCrbmGeneration',
   ]) {
     if (m[name] == null) throw new Error(`${label}: missing export ${name}`);
   }
@@ -30,14 +29,9 @@ async function exercise(label, m) {
   // driver with no registry would leave the pointer path silently dead while the round-trip kept passing,
   // because a store with one generation list-scans to the same answer. Plain ESM run inside a container: no
   // compiler would say.
-  const backend = new m.MemoryStorage({ now: () => 0 });
-  await m.bulkLoadCrbmGeneration(
-    backend.storage,
-    { segment: 'lambda-smoke', generation: 0 },
-    [42, 70_000],
-    { registry: backend.registry },
-  );
-  const seg = new m.CloudRoaring({ storage: backend }).segment('lambda-smoke');
+  const store = new m.CloudRoaring({ storage: new m.MemoryStorage({ now: () => 0 }) });
+  await store.load({ segment: 'lambda-smoke' }, [42, 70_000]);
+  const seg = store.segment('lambda-smoke');
   const ok =
     (await seg.has(42)) &&
     (await seg.has(70_000)) &&

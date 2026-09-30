@@ -6,7 +6,6 @@ import {
   CrbmStorageChunkSource,
   MemoryStorageDriver,
   RecordingAuditSink,
-  bulkLoadCrbmGeneration,
   destroySegment,
 } from '@/index';
 import type { BlobSink, GenKey, IStorageDriver, IKeystore, SegmentRef } from '@/index';
@@ -19,6 +18,7 @@ import {
   ValidationError,
 } from '@/core/errors';
 import { collect, loadedStore } from '../helpers/loaded';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 /**
  * `subjectReport` (Art. 15) and `eraseSubject` (Art. 17) — the store-level admin scans over every registered

@@ -1,11 +1,7 @@
 import { gcOrphanGenerations, nextGeneration } from '@/core/generation-gc';
-import {
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
-  WriteConflictError,
-  bulkLoadCrbmGeneration,
-} from '@/index';
+import { MemoryStorageDriver, MemoryRegistryDriver, WriteConflictError } from '@/index';
 import type { GenKey, IStorageDriver, SegmentRef } from '@/index';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 /**
  * A row read before the listing, acted on after it — on both of `gcOrphanGenerations`' branches.

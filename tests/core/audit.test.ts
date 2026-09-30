@@ -5,7 +5,6 @@ import {
   MemoryStorageDriver,
   MemoryRegistryDriver,
   RecordingAuditSink,
-  bulkLoadCrbmGeneration,
   destroySegment,
   eraseIdFromSegment,
   eraseNamespace,
@@ -13,6 +12,7 @@ import {
 import type { AuditEvent, IKeystore, SegmentRef } from '@/index';
 import { NOOP_AUDIT, safeAudit } from '@/core/audit';
 import { InProcessKeystore } from '@/drivers/crypto';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 /**
  * The audit sink and every event the library emits: `segment.publish` (a load became current),

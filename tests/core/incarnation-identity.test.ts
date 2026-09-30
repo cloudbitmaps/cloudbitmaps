@@ -1,11 +1,6 @@
-import {
-  MemoryStorage,
-  CloudRoaring,
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
-  bulkLoadCrbmGeneration,
-} from '@/index';
+import { MemoryStorage, CloudRoaring, MemoryStorageDriver, MemoryRegistryDriver } from '@/index';
 import type { SegmentRef } from '@/index';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 /**
  * A generation number is not an identity. `nextGeneration` returns `max(currentGen, highest object) + 1`, so it

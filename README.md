@@ -469,15 +469,14 @@ new CloudRoaring({
 | `store.exportSegments(sink, { format })` | eject every segment to `roaring`/`ndjson` via an injected sink (your exit path) |
 | `CloudRoaring.estimateCost(input)` | planning estimate (static, no data) |
 
-**Lower-level free functions.** Everything above is also exported as a standalone function taking explicit
-deps — `bulkLoadCrbmGeneration` (write one generation), `nextGeneration` / `gcOrphanGenerations` (generation
-bookkeeping), `eraseIdFromSegment`, `destroySegment` / `eraseNamespace`, `dropSegment`,
+**Lower-level free functions.** Most of the above is also exported as a standalone function taking explicit
+deps — `loadSegment` (the load), `nextGeneration` / `gcOrphanGenerations` (generation bookkeeping), `eraseIdFromSegment`, `destroySegment` / `eraseNamespace`, `dropSegment`,
 `setSegmentRetention` / `getSegmentRetention` / `clearSegmentRetention`, and `retireExpired` (the sweep).
 Nothing here schedules itself — run the sweep from a cron, a Lambda on a timer, or a `CronJob`.
 
 **Prefer the store's own methods.** Building a store is free — no I/O, no connection — so a scheduled job has
 no reason to compose a write path by hand, and composing is where steps get dropped: `store.load` runs the
-empty guard *and* collects what the publish superseded, and a bare `bulkLoadCrbmGeneration` does neither.
+empty guard *and* collects what the publish superseded, which a write composed from the primitives does not.
 Reach for these only when you have no store to hold — most often a read-only store built on a pre-built
 `StorageChunkSource`, where the lifecycle helpers throw by design.
 
@@ -545,8 +544,9 @@ the **[getting-started guide](docs/guide/getting-started.md)**.
 **Why the shape works at segmentation scale.** Per-operation latency is the wrong lens for a workload with
 millions of users per segment, because the operations that govern it don't scale with N:
 
-- **Building or refreshing a segment** is one bulk-load → **a single (or multipart) S3 PUT**, bounded by the
-  bitmap's compressed bytes rather than by the number of users in it.
+- **Building or refreshing a segment** is one `store.load()` → **one object PUT (or a multipart upload)** and a
+  pointer write, bounded by the bitmap's compressed bytes rather than by the number of users in it: 4 PUT-class
+  and 7 GET-class requests for a segment's first load on S3, listings included.
 - **`count()` is free** — 0 payload reads on a published segment, summed from the `.crbm` index. Counting a
   ten-million-user audience costs the same as counting a thousand.
 - **Membership checks come from RAM** once warm — measured at 23 S3 GETs across 2,000 reads.

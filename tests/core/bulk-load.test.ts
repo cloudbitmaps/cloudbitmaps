@@ -3,12 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import fc from 'fast-check';
 import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
-// bulk-load is codec-bound: import the public (flavor) entry point, exactly as an application would.
-import { bulkLoadCrbmGeneration } from '@/index';
 import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 import { CloudRoaring } from '@/index';
 import { ValidationError, WriteConflictError } from '@/core/errors';
 import { joinId } from '@/core/bit-route';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 let root: string;
 let driver: LocalFsStorageDriver;

@@ -41,7 +41,7 @@ from constructing a cross-region topology. The points where personal data moves 
 | **Storage** (object store) | immutable `.crbm` generations — every generation a segment has had, until a superseded one is collected | the region of the bucket you wire |
 | **Registry** (S3 / GCS / Azure Blob / local) | one row per segment: the current-generation pointer, wrapped keys, retention metadata — no IDs | the region of the bucket you wire |
 | **cache** (process RAM) | decoded chunks, bounded LRU | **wherever your process/Lambda runs** — an EU segment queried from a US function is processed in the US |
-| **Loads and rewrites** (`bulkLoadCrbmGeneration`, the `*Into` verbs, `eraseSubject`) | read your source (or existing generations), write a new generation | run wherever you run them — a loader in one region writing to a bucket in another is a transfer |
+| **Loads and rewrites** (`store.load()`, the `*Into` verbs, `eraseSubject`) | read your source (or existing generations), write a new generation | run wherever you run them — a loader in one region writing to a bucket in another is a transfer |
 | **Intersection** | pulls chunks from N segments into one process | co-locates those segments in one region |
 
 **Guidance (not enforced by the library):** to keep EU data in EU infrastructure, wire region-local drivers
@@ -254,7 +254,9 @@ Object Lock + operational exclusion, documented in this section.
 ## Audit & accountability (GDPR Art. 30 / Art. 5(2))
 
 Wire the **audit sink** (`IAuditSink`) to get an append-only, vendor-neutral record of the compliance-relevant
-state changes — `segment.publish` (a loaded generation became current), `segment.rewrite` (a subject-erasure
+state changes — `segment.publish` (a loaded generation became current), `segment.load-refused` (a load that did
+not publish, because its guard refused it or another writer got there first), `segment.rollback` (an operator moved
+the pointer to a generation it named), `segment.rewrite` (a subject-erasure
 rewrite: `fromGeneration` → `generation`), `segment.erase` (a genuine crypto-shred), `segment.dispose` (a
 `dropSegment`, including every retirement the sweep performs) and `namespace.erase` — for your audit log / SIEM.
 It is off by default and exception-safe. See the [dashboards guide](docs/guide/dashboards.md), which also says

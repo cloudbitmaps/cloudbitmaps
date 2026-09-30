@@ -60,8 +60,8 @@ run's file, so under an evidence name it would be one `git add` from being commi
 `calibrate-aws.cjs` measures three things that need a real object store rather than local disk. The benchmarks page
 publishes one of them and lists the other two as owed:
 
-1. **Load throughput** — ids/s and bytes/s into a bucket, for objects that fit one PUT and objects large enough
-   to upload multipart. Still owed: it needs a run from inside the region.
+1. **Load throughput** — ids/s and bytes/s into a bucket through `store.load()`, the whole write path, for
+   objects that fit one PUT and objects large enough to upload multipart. Still owed: it needs a run from inside the region.
 2. **Cold intersect latency** — wall-clock for a chunk-skipping `A ∩ B` that has to fetch from the object store.
    Still owed, for the same reason.
 3. **The single-bucket bill** — the registry pointer lives in the same bucket as the data, so resolving a
@@ -108,9 +108,10 @@ constants and the source text:
   as absent would run the workload inside a real bucket of yours and then delete it on teardown.
 - **The projection is a real upper bound, and every run checks it.** It counts both operands of an intersect, and
   its retry bound must match the loop in `publishGeneration`: a test reads the loop's number out of the source and
-  fails if they differ, because a retyped number can be wrong. A load reads the pointer three times even with
-  nothing racing it (the loader, the publish, and the registry before its conditional write) and up to twelve if
-  every publish attempt loses, which a test drives through the real registry code, so a projection allowing one
+  fails if they differ, because a retyped number can be wrong. A load, `store.load()` of a new segment, lists the
+  segment twice (to choose the generation number, and to collect after the publish; on S3 a listing bills at the PUT
+  rate), and reads the pointer seven times even with nothing racing it, twice more for each publish attempt it loses,
+  and fifteen times at most. A test drives each count through the real registry code, so a projection allowing one
   read per attempt fails it. The workload's client makes one attempt per request, and every attempt teardown's client
   may make is allowed for, so no SDK retry can fall outside it either. After teardown, the run compares what it
   actually issued against what it projected, and flags itself if it went over.
@@ -223,9 +224,6 @@ results land in `~/calibrate-aws-rehearsal.json`.
 
 Its scope is the three debts above, on one workload shape. Also owed, and **not** in this harness yet:
 
-- **`store.load()` itself.** The load stage calls `bulkLoadCrbmGeneration` with the generation number given, so it
-  measures the write and the publish. `store.load()` also lists the segment to choose the number and runs a
-  collection pass after the publish; listings bill at the PUT rate, so its full count is its own figure.
 - **`andNot` with a large `exclude`**, and the `*Into` verbs, which publish their result as a new generation of
   a destination segment.
 - **Other shapes of intersect** — more than two operands, or a sweep of how many chunks the operands share. It

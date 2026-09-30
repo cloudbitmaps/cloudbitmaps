@@ -4,10 +4,11 @@ import { gcOrphanGenerations } from '@/core/generation-gc';
 import { openGenerationReader } from '@/core/crbm-storage-source';
 import { KeyUnavailableError, ValidationError, WriteConflictError } from '@/core/errors';
 import { InProcessKeystore } from '@/drivers/crypto';
-import { CloudRoaring, RecordingAuditSink, bulkLoadCrbmGeneration } from '@/index';
+import { CloudRoaring, RecordingAuditSink } from '@/index';
 import type { GenKey, IStorageDriver, IKeystore, SegmentRef } from '@/index';
 import { SafeBitmap, roaringCodec } from '@/roaring-codec';
 import { collect, loadedStore } from '../helpers/loaded';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 /**
  * `eraseIdFromSegment` — subject erasure on a loaded segment, one id at a time.

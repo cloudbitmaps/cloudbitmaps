@@ -3,14 +3,11 @@ import { loadSegment } from '@/core/load';
 import { openGenerationReader } from '@/core/crbm-storage-source';
 import { ValidationError } from '@/core/errors';
 import { InProcessKeystore } from '@/drivers/crypto';
-import {
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
-  RecordingAuditSink,
-  bulkLoadCrbmGeneration,
-} from '@/index';
+import { MemoryStorageDriver, MemoryRegistryDriver, RecordingAuditSink } from '@/index';
 import type { IStorageDriver, SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { setSegmentRetention } from '@/core/retention';
 
 /**
  * `loadSegment` — replace a segment's contents with one immutable generation.
@@ -224,6 +221,82 @@ describe('loadSegment — the guard, and what a refusal leaves behind', () => {
 });
 
 describe('loadSegment — racing writers', () => {
+  /** `storage` with `hook` run once, around the first object put: before it lands, or after. */
+  function around(
+    storage: IStorageDriver,
+    when: 'before' | 'after',
+    hook: () => Promise<unknown>,
+  ): IStorageDriver {
+    let fired = false;
+    return new Proxy(storage, {
+      get(t, p, rx) {
+        if (p !== 'put' && p !== 'putImmutable') return Reflect.get(t, p, rx) as unknown;
+        const inner = Reflect.get(t, p, rx) as (...a: never[]) => Promise<unknown>;
+        return async (...args: never[]) => {
+          if (!fired && when === 'before') {
+            fired = true;
+            await hook();
+          }
+          const out = await inner.apply(storage, args);
+          if (!fired) {
+            fired = true;
+            await hook();
+          }
+          return out;
+        };
+      },
+    }) as IStorageDriver;
+  }
+
+  it('a load that loses its generation number wrote nothing, and is audited like any refusal', async () => {
+    const w = world();
+    await loadSegment(SEG, [1], w.deps);
+    // Another load takes the same number and lands before this one's object put.
+    const racing = around(w.storage, 'before', () => loadSegment(SEG, [7], w.deps));
+    const audit = new RecordingAuditSink();
+    const r = await loadSegment(SEG, [2], { ...w.deps, storage: racing }, { audit });
+    expect(r).toMatchObject({ generation: 1, published: false, reason: 'superseded', size: 0 });
+    expect(audit.snapshot()).toEqual([
+      {
+        kind: 'segment.load-refused',
+        namespace: 'ns',
+        segment: 's',
+        generation: 1,
+        reason: 'superseded',
+        cardinality: 0,
+      },
+    ]);
+    expect(await idsOf(w.storage, 1)).toEqual([7]);
+  });
+
+  it('a refusal after another write changed the row leaves its object, superseded and guarded alike', async () => {
+    // The delete is fenced on the row's token, not its pointer: a retention change moves no pointer and still
+    // makes the number this call holds one it can no longer prove is its own.
+    for (const [ids, reason] of [
+      [[2], 'superseded'],
+      [[], 'empty'],
+    ] as const) {
+      const w = world();
+      await loadSegment(SEG, [1, 2, 3], w.deps);
+      const racing = around(w.storage, 'after', () =>
+        setSegmentRetention(SEG, { registry: w.registry }, { expiresAt: Date.now() + 86_400_000 }),
+      );
+      const r = await loadSegment(SEG, ids, { ...w.deps, storage: racing });
+      expect(r, reason).toMatchObject({ generation: 1, published: false, reason });
+      expect((await w.registry.get(SEG))!.currentGen, reason).toBe(0);
+      expect(await generations(w.storage), reason).toEqual([0, 1]);
+    }
+  });
+
+  it('a refusal whose row was deleted while it wrote deletes its object', async () => {
+    const w = world();
+    await loadSegment(SEG, [1, 2, 3], w.deps);
+    const racing = around(w.storage, 'after', () => w.registry.delete(SEG));
+    const r = await loadSegment(SEG, [2], { ...w.deps, storage: racing });
+    expect(r).toMatchObject({ generation: 1, published: false, reason: 'superseded' });
+    expect(await generations(w.storage)).toEqual([0]);
+  });
+
   it('reports superseded rather than publishing a generation no reader will resolve', async () => {
     const w = world();
     await loadSegment(SEG, [1], w.deps);

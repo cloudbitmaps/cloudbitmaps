@@ -2,12 +2,8 @@ import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fsSink, main, parseConfig } from '@/bin/export-segments';
-import {
-  LocalFsStorageDriver,
-  LocalFsRegistryDriver,
-  SafeBitmap,
-  bulkLoadCrbmGeneration,
-} from '@/index';
+import { LocalFsStorageDriver, LocalFsRegistryDriver, SafeBitmap } from '@/index';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 const roaringIds = (bytes: Uint8Array): number[] =>
   SafeBitmap.safeDeserialize(bytes, 1 << 30)

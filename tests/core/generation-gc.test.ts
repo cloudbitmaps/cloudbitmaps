@@ -1,7 +1,7 @@
 import { gcOrphanGenerations, nextGeneration } from '@/core/generation-gc';
-import { bulkLoadCrbmGeneration } from '@/index';
 import type { IStorageDriver, SegmentRef } from '@/index';
 import { loadedStore } from '../helpers/loaded';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 /**
  * Generation bookkeeping for the loaded store: which number the next object takes, and which superseded objects

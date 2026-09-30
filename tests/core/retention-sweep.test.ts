@@ -6,7 +6,6 @@ import {
   MemoryStorageDriver,
   MemoryRegistryDriver,
   MIN_EXPIRES_AT_MS,
-  bulkLoadCrbmGeneration,
   destroySegment,
   nextGeneration,
   retireExpired,
@@ -17,6 +16,7 @@ import { BudgetExceededError, UnsupportedError, ValidationError } from '@/core/e
 import { clearSegmentRetention } from '@/index';
 import type { DropDeps, RetireEntry, SegmentRef } from '@/index';
 import type { IStorageDriver, IRegistryDriver } from '@/core/ports';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 /**
  * The retention **sweep** — the piece that acts on the policies (`retention-policy.test.ts`).

@@ -229,7 +229,7 @@ segments by design. **The symptom you will actually notice is downstream**, and 
 
 | | What you see |
 |---|---|
-| **The name is fenced, permanently** | `publishGeneration` and `bulkLoadCrbmGeneration` **throw** on a `destroyed` row, and `eraseSubject` skips it. Re-loading that segment name never produces a readable generation — the load's object may land in the bucket, but nothing will ever point at it. |
+| **The name is fenced, permanently** | `publishGeneration` and a load **throw** on a `destroyed` row, and `eraseSubject` skips it. Re-loading that segment name never produces a readable generation — the load's object may land in the bucket, but nothing will ever point at it. |
 | **The row and its objects are billed forever** | the sweep will not purge an unstamped tombstone, and nothing else in the library calls `gcOrphanGenerations` for a tombstone the sweep does not own — so any generations left behind (and any object a late load wrote) stay. |
 
 ### Detect

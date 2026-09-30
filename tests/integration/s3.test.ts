@@ -10,11 +10,11 @@ import { S3StorageDriver } from '@/s3/storage';
 import { S3Storage } from '@cloudbitmaps/s3';
 import { S3RegistryDriver } from '@/s3/registry';
 import { CrbmStorageChunkSource, writeCrbmGeneration } from '@/core/crbm-storage-source';
-// bulk-load is codec-bound: import the public (flavor) entry point, exactly as an application would.
-import { CloudRoaring, bulkLoadCrbmGeneration } from '@/index';
+import { CloudRoaring } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
 import { NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { GenKey } from '@/core/ports';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 /**
  * A keyspace unique to THIS run.
@@ -182,7 +182,7 @@ describe('S3StorageDriver specifics (MinIO)', () => {
     expect(SafeBitmap.safeDeserialize(bytes!, 1 << 20).toArray()).toEqual([9]);
   });
 
-  it('end to end: bulk-load → S3 → engine count/iterate/intersect', async () => {
+  it('end to end: load → S3 → engine count/iterate/intersect', async () => {
     const driverA = new S3StorageDriver({ client, bucket: BUCKET, prefix: `${RUN}/e2e/${n++}` });
     const driverB = driverA; // same prefix space, different segments
     await bulkLoadCrbmGeneration(driverA, { segment: 'a', generation: 1 }, [1, 2, 3, 200_000]);

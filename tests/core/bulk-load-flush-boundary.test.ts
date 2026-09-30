@@ -1,6 +1,7 @@
-import { bulkLoadCrbmGeneration, MemoryStorageDriver } from '@/index';
+import { MemoryStorageDriver } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { joinId } from '@/core/bit-route';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 // Bulk-load buffers remainders and flushes them per chunk, and this covers the branch that flush creates.
 //

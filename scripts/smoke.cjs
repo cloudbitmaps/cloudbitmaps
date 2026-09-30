@@ -195,7 +195,7 @@ function entriesOf(pkgDir) {
   );
 }
 
-// The loaded store's whole write path in one call: `bulkLoadCrbmGeneration` encodes the ids into one immutable
+// The loaded store's whole write path in one call: `store.load()` encodes the ids into one immutable
 // `.crbm` generation and publishes it forward-only, and only then can a read see them. So this is also the
 // narrowest round-trip that actually exercises the native codec through the built bundle — the ids span two
 // 16-bit chunks, so chunk routing and the roaring encode/decode both run rather than a single-container no-op.
@@ -206,7 +206,6 @@ async function exerciseCore(label, m) {
     'MemoryStorageDriver',
     'MemoryRegistryDriver',
     'MemoryStorageChunkSource',
-    'bulkLoadCrbmGeneration',
   ]) {
     if (m[name] == null) throw new Error(`${label}: missing export ${name}`);
   }
@@ -214,16 +213,9 @@ async function exerciseCore(label, m) {
   // driver with no registry would leave the pointer path silently dead: a store with one generation
   // list-scans to the same answer, so the round-trip would keep passing. This file is plain CJS, so no
   // compiler would say.
-  const backend = new m.MemoryStorage({ now: () => 0 });
-  await m.bulkLoadCrbmGeneration(
-    backend.storage,
-    { segment: 'smoke', generation: 0 },
-    [42, 70_000],
-    {
-      registry: backend.registry,
-    },
-  );
-  const seg = new m.CloudRoaring({ storage: backend }).segment('smoke');
+  const store = new m.CloudRoaring({ storage: new m.MemoryStorage({ now: () => 0 }) });
+  await store.load({ segment: 'smoke' }, [42, 70_000]);
+  const seg = store.segment('smoke');
   const ok = (await seg.has(42)) && (await seg.has(70_000)) && (await seg.count()) === 2;
   if (!ok) throw new Error(`${label}: load/read round-trip returned a wrong result`);
 }

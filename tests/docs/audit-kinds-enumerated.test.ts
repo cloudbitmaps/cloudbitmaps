@@ -5,10 +5,11 @@ import { fileURLToPath } from 'node:url';
 /**
  * Pages that enumerate the audit event kinds must enumerate ALL of them.
  *
- * WHY THIS EXISTS. Two surfaces promise a complete list: `site/architecture.html` says "Every change of state
- * is an audit event beside it:", and `docs/guide/dashboards.md` introduces "what lands in the log" the same
- * way. A list after either that names five of the seven kinds reads as complete, and leaving out
- * `segment.rollback` or `segment.load-refused` is not cosmetic.
+ * WHY THIS EXISTS. Several surfaces promise a complete list. `site/architecture.html` says "Every change of state
+ * is an audit event beside it:", `docs/guide/dashboards.md` introduces "what lands in the log" the same way, and the
+ * getting-started guide's table of kinds, the API reference's compliance-trail row and both copies of the privacy
+ * note, the one npm ships included, each list them. A list in any of them that names five of the seven kinds reads as
+ * complete, and leaving out `segment.rollback` or `segment.load-refused` is not cosmetic.
  *
  * `segment.rollback` records an operator moving the pointer BACKWARDS, and the disaster-recovery guide tells
  * operators it is the one event whose effect cannot be reconstructed from the objects in the bucket — so a
@@ -29,7 +30,11 @@ function auditKinds(): string[] {
 
 /** Pages whose wording promises the whole set. */
 const ENUMERATING_PAGES = [
+  'PRIVACY.md',
+  join('packages', 'roaring', 'PRIVACY.md'),
+  join('docs', 'guide', 'api-reference.md'),
   join('docs', 'guide', 'dashboards.md'),
+  join('docs', 'guide', 'getting-started.md'),
   join('site', 'architecture.html'),
 ] as const;
 

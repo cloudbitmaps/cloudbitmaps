@@ -2,7 +2,6 @@ import { randomBytes } from 'node:crypto';
 import {
   CloudRoaring,
   CrbmStorageChunkSource,
-  bulkLoadCrbmGeneration,
   gcOrphanGenerations,
   nextGeneration,
   publishGeneration,
@@ -18,6 +17,7 @@ import type {
   SegmentRef,
 } from '@/index';
 import { collect, loadedStore } from '../helpers/loaded';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 /**
  * `currentGen: null` — "this segment exists and has **no Storage generation yet**".

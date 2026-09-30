@@ -7,12 +7,12 @@ import {
   LocalFsStorageDriver,
   LocalFsRegistryDriver,
   CrbmStorageChunkSource,
-  bulkLoadCrbmGeneration,
   writeCrbmGeneration,
 } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
 import { splitId } from '@/core/bit-route';
 import { collect } from './helpers/loaded';
+import { bulkLoadCrbmGeneration } from './helpers/bulk-load';
 
 /**
  * End-to-end: the engine reading a real on-disk `.crbm` generation through `CrbmStorageChunkSource` →

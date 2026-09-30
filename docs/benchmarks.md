@@ -97,7 +97,7 @@ from a laptop outside the region, so it calibrates **cost**, and publishes no la
 | --- | --- | --- | --- | --- |
 | Cold intersect, two 500,000-id segments sharing 100 of 1,999 chunks, the median measured | 206 GET | $0.0000824 | **$82.40** | derived |
 | The same, with each pointer read once | 204 GET | $0.0000816 | $81.60 | expected |
-| Write and publish a 1.05 MB segment with `bulkLoadCrbmGeneration`, pointer included | 2 PUT + 3 GET | $0.0000112 | **$11.20** | derived |
+| Write and publish a 1.05 MB segment, pointer included | 2 PUT + 3 GET | $0.0000112 | **$11.20** | derived |
 | Write and publish a 12.6 MB segment, multipart | 5 PUT-class + 3 GET | $0.0000262 | **$26.20** | derived |
 | A segment's first `store.load()`, single-part | 4 PUT-class + 7 GET | $0.0000228 | $22.80 | expected |
 
@@ -145,7 +145,7 @@ fleet-wide registry scan, and intersection unproven under load. This is the meas
 
 Intersection of two 2,000,000-id segments (2,000 chunks each, 100 shared): **fetched only 100 of the 2,000 chunks per segment** — the shared keys; the rest skipped by key alignment — in 24.6 ms.
 
-_Measured on Apple M3 Pro (arm64, node v24.18.1). **The bound is the retained heap** (post-GC), flat at 8.2 MiB @ 1,000 · 8.3 MiB @ 10,000 · 7.4 MiB @ 100,000 — the reader cache holds bounded live data regardless of fleet. Process **peak RSS** (shown for context) is a high-water that also folds in the benchmark's own fleet-*seeding* allocations and isn't returned to the OS after GC, so it grows with fleet here — it is not a clean read-path footprint (isolating read-path RSS in a reader-only process is a follow-up). Fleet seeded at ~38–51 durable segments/s (fsync-bound); discovery is LocalFs-filesystem-bound — the `O(total)` **shape** is the point, not the absolute ms._
+_Measured on Apple M3 Pro (arm64, node v24.18.1). **The bound is the retained heap** (post-GC), flat at 8.2 MiB @ 1,000 · 8.3 MiB @ 10,000 · 7.4 MiB @ 100,000 — the reader cache holds bounded live data regardless of fleet. Process **peak RSS** (shown for context) is a high-water that also folds in the benchmark's own fleet-*seeding* allocations and isn't returned to the OS after GC, so it grows with fleet here — it is not a clean read-path footprint (isolating read-path RSS in a reader-only process is a follow-up). Fleet seeded by writing and publishing each generation at ~38–51 durable segments/s (fsync-bound); discovery is LocalFs-filesystem-bound — the `O(total)` **shape** is the point, not the absolute ms._
 <!-- BENCH:SCALE:END -->
 
 - **Memory is a function of the working set, not the fleet.** The storage-reader cache is capped by open-segment
@@ -271,7 +271,7 @@ which is why none is published until an in-region run produces one.
 The loaded store's own measurements are the next benchmark pass. The single-bucket bill is measured
 ([above](#the-single-bucket-bill--run-2026-09-23-94416)); these are not published yet:
 
-- **Load throughput** — sustained `bulkLoadCrbmGeneration` rate against a real object store, from inside the
+- **Load throughput** — sustained load rate against a real object store, from inside the
   region, at the segment sizes a real refresh produces. The September run's upload rates timed whole loads from a
   laptop 83 ms from the region, and the at-scale table's seed rate is local disk, fsync-bound; neither is that
   number.
@@ -282,7 +282,8 @@ The loaded store's own measurements are the next benchmark pass. The single-buck
   count and chunk overlap.
 - **What `store.load()` costs on S3.** The run measured a load's write and publish. `store.load()` adds a listing
   to choose the generation number and a collection pass after the publish. A test counts the requests that adds,
-  which about doubles a load's bill; they are not yet measured on S3.
+  which about doubles a load's bill; they are not yet measured on S3. The harness now times `store.load()` itself, so
+  the next run measures them.
 - **A Lambda figure** — a function's cold start and initialisation against a real store, from inside one.
 
 **The harness is built, and has run for real from a laptop.** [`bench/calibrate-aws.cjs`](../bench/calibrate-aws.cjs)

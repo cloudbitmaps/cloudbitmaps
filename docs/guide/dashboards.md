@@ -172,7 +172,8 @@ await destroySegment({ segment: 'users' }, { registry }, { confirmSegment: 'user
 `segment.rollback` (an operator moved the pointer **backwards**; the one event whose effect cannot be
 reconstructed from the objects in the bucket, which is why the
 [disaster-recovery guide](disaster-recovery.md) treats it as the receipt that matters),
-`segment.load-refused` (a load was rejected by its guard rather than published — the absence of a
+`segment.load-refused` (a load wrote a generation and did not publish it, because its guard refused it or the
+segment's row changed first — the absence of a
 `segment.publish` is not otherwise distinguishable from a job that never ran), `segment.rewrite` (a
 generation derived from the segment itself replaced it — `fromGeneration` → `generation`; today the one
 emitter is a subject erasure, and it fires at the publish, *before* the superseded generation is collected, so

@@ -2,8 +2,8 @@
  * SegmentEngine — the read side of the loaded store: id routing, the chunk-skipping combines, and the cache
  * of decoded Storage chunks, over the {@link StorageChunkSource} port.
  *
- * **Read-only by design.** Every write in this library is a new immutable generation — `bulkLoadCrbmGeneration`,
- * the facade's `*Into` verbs, `eraseIdFromSegment` — published through the registry pointer. Nothing here mutates
+ * **Read-only by design.** Every write in this library is a new immutable generation — a load, the facade's
+ * `*Into` verbs, `eraseIdFromSegment` — published through the registry pointer. Nothing here mutates
  * stored bytes, so a read never merges tiers: one chunk read is one whole, checksum-verified, immutable chunk of
  * one generation. Storage-agnostic and time/random-free (the determinism seam): all I/O is via the injected
  * source; the cache carries its own `Clock`.

@@ -509,7 +509,7 @@
             <span class="rl-what">Load throughput</span>
             <span class="rl-fig">owed</span>
             <span class="rl-note">
-              Sustained <span class="m">bulkLoadCrbmGeneration</span> rate against a real object store, from inside
+              Sustained load rate against a real object store, from inside
               the region, at the segment sizes a real refresh produces. Its <em>cost</em> is measured — the
               loads row above — but the September run timed whole loads from a laptop 83 ms from the region,
               and the at-scale table's ~38&ndash;51 durable segments/s is local disk and fsync-bound. Neither is
@@ -592,7 +592,7 @@
           claim — memory is a function of the cap you set, not of how much data you own.
         </p>
         <!-- BENCH:SCALE:START -->
-<div class="tpanel"><div class="tpanel-head"><span class="label">Memory at fleet scale</span><span class="label">Measured &middot; 1,000 &rarr; 100,000 segments</span></div><div class="tscroll"><table><thead><tr><th>Fleet</th><th class="num">Retained heap (cap 1024)</th><th class="num">Peak RSS</th><th class="num">Discovery scan</th></tr></thead><tbody><tr><td>1,000 segments</td><td class="num">8.2 MiB</td><td class="num">68.1 MiB</td><td class="num">87.6 ms</td></tr><tr><td>10,000 segments</td><td class="num">8.3 MiB</td><td class="num">86.8 MiB</td><td class="num">1,067.9 ms</td></tr><tr><td>100,000 segments</td><td class="num">7.4 MiB</td><td class="num">162.2 MiB</td><td class="num">11,606.4 ms</td></tr></tbody></table></div><p class="tpanel-foot">A <strong>100&times;</strong> larger fleet moved retained heap by <strong>0.9 MiB</strong>. Intersection of two 2,000,000-id segments (2,000 chunks each, 100 shared) <strong>fetched only 100 of the 2,000 chunks per segment</strong>, in 24.6 ms. Fleet seeded at ~38&ndash;51 durable segments/s (fsync-bound). Measured on Apple M3 Pro (arm64, node v24.18.1) &mdash; discovery is filesystem-bound here, so the <strong>shape</strong> is the claim, not the absolute milliseconds.</p></div>
+<div class="tpanel"><div class="tpanel-head"><span class="label">Memory at fleet scale</span><span class="label">Measured &middot; 1,000 &rarr; 100,000 segments</span></div><div class="tscroll"><table><thead><tr><th>Fleet</th><th class="num">Retained heap (cap 1024)</th><th class="num">Peak RSS</th><th class="num">Discovery scan</th></tr></thead><tbody><tr><td>1,000 segments</td><td class="num">8.2 MiB</td><td class="num">68.1 MiB</td><td class="num">87.6 ms</td></tr><tr><td>10,000 segments</td><td class="num">8.3 MiB</td><td class="num">86.8 MiB</td><td class="num">1,067.9 ms</td></tr><tr><td>100,000 segments</td><td class="num">7.4 MiB</td><td class="num">162.2 MiB</td><td class="num">11,606.4 ms</td></tr></tbody></table></div><p class="tpanel-foot">A <strong>100&times;</strong> larger fleet moved retained heap by <strong>0.9 MiB</strong>. Intersection of two 2,000,000-id segments (2,000 chunks each, 100 shared) <strong>fetched only 100 of the 2,000 chunks per segment</strong>, in 24.6 ms. Fleet seeded by writing and publishing each generation at ~38&ndash;51 durable segments/s (fsync-bound). Measured on Apple M3 Pro (arm64, node v24.18.1) &mdash; discovery is filesystem-bound here, so the <strong>shape</strong> is the claim, not the absolute milliseconds.</p></div>
 <!-- BENCH:SCALE:END -->
         <ul class="rowlist">
           <li>

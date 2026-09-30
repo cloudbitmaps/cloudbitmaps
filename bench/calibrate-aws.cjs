@@ -697,7 +697,7 @@ async function main() {
     log(`network: round-trip floor ${floor.toFixed(1)} ms — ${results.network.client}`);
 
     const { S3Storage } = await import('@cloudbitmaps/s3');
-    const { CloudRoaring, bulkLoadCrbmGeneration } = await import('@cloudbitmaps/roaring');
+    const { CloudRoaring } = await import('@cloudbitmaps/roaring');
     const storage = new S3Storage({ client, bucket, prefix: STORE_PREFIX });
 
     /** Re-check the ceiling DURING a stage, not only at its end — loads have no fixed op count. */
@@ -708,16 +708,16 @@ async function main() {
     };
 
     // ---- load throughput: single-part and multipart ---------------------------------------------------------------
+    // `TIMED_STORE` changes nothing a load does: a load reads and writes through the drivers themselves, not the
+    // store's retrying, cached read path. It is spread so every store in the harness is built the same way.
+    const loader = new CloudRoaring({ storage, ...TIMED_STORE });
     const loads = [];
     const load = async (segment, ids, count) => {
       const before = snap();
       const t0 = process.hrtime.bigint();
-      const { size } = await bulkLoadCrbmGeneration(
-        storage.storage,
-        { segment, generation: 0 },
-        ids,
-        { registry: storage.registry },
-      );
+      // The whole write path, as a user runs it: the next generation number, the object, the publish, the collection.
+      const { size, published, reason } = await loader.load({ segment }, ids);
+      if (!published) throw new Error(`load of ${segment} was refused: ${reason}`);
       const ms = Number(process.hrtime.bigint() - t0) / 1e6;
       const after = snap();
       // Two different byte counts, kept apart. What went up is the object AND the pointer's body, since the meter
@@ -752,6 +752,9 @@ async function main() {
             medianUploadBytes: median(xs.map((l) => l.uploadBytes)),
           };
     results.phases.load = {
+      // Which load was timed. The figures code refuses a file that says `store.load()` until it derives that
+      // load's requests, rather than publish them as a write and publish alone.
+      via: 'store.load()',
       singlePart: summarise(loads.filter((l) => !l.multipart)),
       multipart: summarise(loads.filter((l) => l.multipart)),
     };

@@ -4,11 +4,11 @@ import {
   CloudRoaring,
   MemoryStorageDriver,
   MemoryRegistryDriver,
-  bulkLoadCrbmGeneration,
 } from '@/index';
 import { setSegmentRetention } from '@/core/retention';
 import { ValidationError } from '@/core/errors';
 import type { SegmentRef } from '@/index';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 /**
  * A segment that resolves to nothing is ambiguous in a way that matters only as an **operand**.

@@ -18,8 +18,8 @@
  *                                   each and never enumerate.
  *   M3  Intersection chunk-skipping two large multi-chunk segments, ~5% overlap: fetchedChunks ≪ total + latency
  *                                   (the crown jewel, on the ids-per-segment axis).
- *   M4  Load throughput             segments/sec while the fleet is bulk-loaded — one published generation per
- *                                   segment, which is the only write path the store has (a coarse write number).
+ *   M4  Load throughput             segments/sec while the fleet is loaded through `store.load()` — one published
+ *                                   generation per segment, the store's only write path (a coarse write number).
  *
  * Each fleet size is measured in a FRESH CHILD PROCESS so RSS is clean (RSS is monotonic within a process, so
  * running all sizes in one would contaminate the 100K baseline with 1K/10K residue). Run with --expose-gc so
@@ -116,7 +116,7 @@ function rmTmp(dir) {
 // ── M1+M2+M4: one fleet size, measured in its own process ────────────────────────────────────────────
 async function measureFleet(n) {
   const {
-    bulkLoadCrbmGeneration,
+    CloudRoaring,
     CrbmStorageChunkSource,
     LocalFsStorage,
     collectWithinBudget,
@@ -128,14 +128,11 @@ async function measureFleet(n) {
     const { storage, registry } = backend;
     const ids = segmentIds();
 
-    // M4 — load throughput (build the fleet on disk: one immutable .crbm generation + one registry row per
-    // segment, published forward-only — the store's only write path).
+    // M4 — load throughput (build the fleet on disk through `store.load()`: one immutable .crbm generation and one
+    // registry row per segment, the store's only write path).
+    const writer = new CloudRoaring({ storage: backend });
     const seed = await ms(async () => {
-      for (let i = 0; i < n; i++) {
-        await bulkLoadCrbmGeneration(storage, { segment: `s${i}`, generation: 0 }, ids, {
-          registry,
-        });
-      }
+      for (let i = 0; i < n; i++) await writer.load({ segment: `s${i}` }, ids);
     });
 
     // M1 — bounded memory. Read across the WHOLE fleet through a reader cache capped at CAP ≪ n. Each
@@ -180,6 +177,8 @@ async function measureFleet(n) {
 
     return {
       n,
+      // What M4 timed, so a render can say so: results without it timed a write and a publish per segment.
+      seedVia: 'store.load()',
       seedMs: round(seed.ms, 0),
       seedPerSec: round(n / (seed.ms / 1000), 0),
       readAllMs: round(read.ms, 0),
@@ -198,14 +197,13 @@ async function measureFleet(n) {
 
 // ── M3: intersection chunk-skipping on two large multi-chunk segments (ids-per-segment axis) ───────────
 async function measureIntersect() {
-  const { bulkLoadCrbmGeneration, MemoryStorage, CloudRoaring, CountingMetricsSink } = library();
+  const { MemoryStorage, CloudRoaring, CountingMetricsSink } = library();
   const CHUNKS = int(process.env.SCALE_INTERSECT_CHUNKS, 2000);
   const DENSITY = int(process.env.SCALE_INTERSECT_DENSITY, 1000);
   const OVERLAP = Number(process.env.SCALE_INTERSECT_OVERLAP || '0.05');
   const sharedChunks = Math.max(1, Math.round(CHUNKS * OVERLAP));
 
   const backend = new MemoryStorage({ now: () => 0 });
-  const { storage, registry } = backend;
   // Segment A: chunks [0, CHUNKS). Segment B: `sharedChunks` chunks shared with A, the rest disjoint (offset
   // past A's range) — so exactly `sharedChunks` chunk keys align, and intersect must fetch only those.
   const idsA = [];
@@ -215,8 +213,9 @@ async function measureIntersect() {
     const chunk = c < sharedChunks ? c : c + CHUNKS; // shared prefix, then a disjoint tail
     for (let j = 0; j < DENSITY; j++) idsB.push(chunk * 65536 + j);
   }
-  await bulkLoadCrbmGeneration(storage, { segment: 'A', generation: 0 }, idsA, { registry });
-  await bulkLoadCrbmGeneration(storage, { segment: 'B', generation: 0 }, idsB, { registry });
+  const writer = new CloudRoaring({ storage: backend });
+  await writer.load({ segment: 'A' }, idsA);
+  await writer.load({ segment: 'B' }, idsB);
 
   const metrics = new CountingMetricsSink();
   // The two halves ARE a StorageBackend — the port is structural, so an object literal satisfies it.
@@ -335,6 +334,13 @@ function render(r) {
   const header = ['Fleet', 'Retained heap (cap ' + r.cap + ')', 'Peak RSS', 'Discovery scan'];
   const seedLo = Math.min(...r.fleets.map((f) => f.seedPerSec));
   const seedHi = Math.max(...r.fleets.map((f) => f.seedPerSec));
+  const throughLoad = r.fleets.every((f) => f.seedVia === 'store.load()');
+  const seededBy = throughLoad
+    ? 'through `store.load()`'
+    : 'by writing and publishing each generation';
+  const seededByHtml = throughLoad
+    ? 'through <code>store.load()</code>'
+    : 'by writing and publishing each generation';
   const perSeg = `fetched only ${r.intersect.fetchedChunks} of the ${r.intersect.chunksPerSegment.toLocaleString('en-US')} chunks per segment`;
   const mdTable =
     `| ${header.join(' | ')} |\n| ${header.map(() => '---').join(' | ')} |\n` +
@@ -346,7 +352,7 @@ function render(r) {
     `flat at ${memFlat} — the reader cache holds bounded live data regardless of fleet. Process **peak RSS** ` +
     `(shown for context) is a high-water that also folds in the benchmark's own fleet-*seeding* allocations and ` +
     `isn't returned to the OS after GC, so it grows with fleet here — it is not a clean read-path footprint ` +
-    `(isolating read-path RSS in a reader-only process is a follow-up). Fleet seeded at ~${seedLo}–${seedHi} ` +
+    `(isolating read-path RSS in a reader-only process is a follow-up). Fleet seeded ${seededBy} at ~${seedLo}–${seedHi} ` +
     `durable segments/s (fsync-bound); discovery is LocalFs-filesystem-bound — the \`O(total)\` **shape** is the ` +
     `point, not the absolute ms._`;
   // The site's own markup, which site/cloudbitmaps.css styles: a table class the stylesheet does not define
@@ -378,7 +384,7 @@ function render(r) {
     `<strong>${heapSpread} MiB</strong>. Intersection of two ` +
     `${r.intersect.idsPerSegment.toLocaleString('en-US')}-id segments ` +
     `(${r.intersect.chunksPerSegment.toLocaleString('en-US')} chunks each, ${r.intersect.sharedChunks} shared) ` +
-    `<strong>${perSeg}</strong>, in ${r.intersect.intersectMs} ms. Fleet seeded at ~${seedLo}&ndash;${seedHi} ` +
+    `<strong>${perSeg}</strong>, in ${r.intersect.intersectMs} ms. Fleet seeded ${seededByHtml} at ~${seedLo}&ndash;${seedHi} ` +
     `durable segments/s (fsync-bound). Measured on ${esc(r.env.cpu)} (${r.env.arch}, node ` +
     `${r.env.node}) &mdash; discovery is filesystem-bound here, so the ` +
     `<strong>shape</strong> is the claim, not the absolute milliseconds.</p>` +

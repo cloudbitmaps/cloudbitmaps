@@ -8,7 +8,7 @@
  * segment/namespace). A `destroyed` segment reads as empty (its DEK is gone). Only works on an **encrypted**
  * segment; a cleartext segment has no key to shred.
  *
- * The tombstone is also the fence every writer respects: `publishGeneration` and `bulkLoadCrbmGeneration` refuse
+ * The tombstone is also the fence every writer respects: `publishGeneration` and the load refuse
  * a `destroyed` row, so a load racing an erasure cannot resurrect the segment. A single id's erasure is a different
  * operation — `eraseIdFromSegment` rewrites the generation without it.
  */
@@ -245,7 +245,7 @@ export interface DropResult {
  *
  * 1. **Registry first.** After the tombstone nothing resolves a generation for this segment, so no reader can
  *    reach for bytes that are about to disappear, and no writer can publish onto it (`publishGeneration` and
- *    `bulkLoadCrbmGeneration` refuse a `destroyed` row).
+ *    the load refuse a `destroyed` row).
  * 2. **Storage second, best-effort, and re-swept.** Once the pointer is a tombstone the segment resolves as empty,
  *    so a failure part-way through leaves **orphaned bytes, not a wrong answer.** Orphans cost money and are
  *    cleaned up by re-running; a torn pointer costs correctness and is not self-healing. Given the choice, leak
@@ -316,7 +316,7 @@ export async function dropSegment(
   // `missing-storage-generation` state this function exists to PREVENT.
   //
   // So the identity is claimed before anything is deleted. A `destroyed` row is exactly the fence the
-  // writers already respect — `publishGeneration` and `bulkLoadCrbmGeneration` both refuse one — so creating it
+  // writers already respect — `publishGeneration` and the load both refuse one — so creating it
   // converts the race into "the writer is refused and the bytes are collected".
   //
   // Only when Storage actually holds something, though. A drop against a *genuinely* nonexistent segment (the
