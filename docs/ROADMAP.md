@@ -116,7 +116,7 @@ is a dependency of both and is never installed directly. The storage drivers are
   `(namespace, segment, generation, chunk)`, KEK rotation, and an offline recovery KEK. Keys stay in your
   process; no cloud KMS dependency is forced on you.
 - **Subject erasure as a rewrite.** `eraseSubject` finds every registered segment an id is in, rewrites each
-  one's current generation without the id (one chunk in flight, one bit cleared), publishes it forward-only,
+  one's current generation without the id (one chunk in flight, one bit cleared), publishes it fenced on the generation it streamed,
   and deletes the generation that held the bit before returning — **physical deletion on return**, with a
   per-segment ledger and a `segment.rewrite` audit event. `subjectReport` is the read side (access). What a
   rewrite cannot reach — backups, replicas, noncurrent versions — is what crypto-shred is for.
