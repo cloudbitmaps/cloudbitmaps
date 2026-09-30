@@ -195,8 +195,10 @@ jobs:
       #      Trusted Publisher, which is a per-package npm setting that cannot be bound to a package that has
       #      never been published. `pnpm -r publish` walks the workspace topologically and stops at the first
       #      failure, so a family where `core` is published and a new driver package is not would put
-      #      `core@X.Y.Z` on the registry, immutably, and then fail — with the flagship never published at
-      #      all. Create the name first (`pnpm release:bootstrap`), bind its Trusted Publisher, then tag.
+      #      `core@X.Y.Z`, and any package pnpm reaches before the new one, on the registry, immutably, and
+      #      then fail — leaving part of the family published. Whether the flagship is among them depends on
+      #      the order pnpm walks the packages that depend on `core`. Create the name first
+      #      (`pnpm release:bootstrap`), bind its Trusted Publisher, then tag.
       #
       #   2. A VERSION THAT IS ALREADY THERE. `pnpm publish` SILENTLY SKIPS a version already on the
       #      registry and exits 0. A re-run, or a tag cut against a version some package was hand-published
