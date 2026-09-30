@@ -4,7 +4,7 @@
  * Immutable generations mean the previous version of a segment is usually still sitting in the bucket: a load
  * that replaced it did not overwrite anything, it wrote a new object and moved a pointer. So recovering from a
  * bad load is, in principle, moving the pointer back, which no load, publish or sweep can do, because every other
- * write path in the library is deliberately **forward-only** and refuses a regression.
+ * write path in the library only ever advances the pointer, and refuses a move that would lower it.
  *
  * That refusal is right for a *writer*: a load whose ids came from upstream loses nothing by being out-raced, and
  * letting it regress the pointer would let a slow loader silently undo a fast one. It is wrong for an *operator*,
@@ -173,13 +173,15 @@ export async function rollbackSegment(
       await deps.registry.compareAndSwap(ref, token, { currentGen: record.currentGen });
       undone = true;
     } catch {
-      /* the row moved again; the throw below says the pointer was left where it is */
+      // Not proof the undo did not land: a swap can apply and still throw, as when its response is lost. Only a
+      // read of the row says where the pointer is, so the message below says "may", not "does".
     }
     throw new NotFoundError(
       `rollback: generation ${toGeneration} of "${ref.segment}" was collected while the pointer was moving` +
         (undone
           ? ' — the pointer was put back'
-          : `, and the pointer could NOT be put back: it still names ${toGeneration}. Re-run a rollback to a ` +
+          : `, and the move back failed, so the pointer may still name ${toGeneration} (a write that landed and lost ` +
+            'its response reads as a failure here). Check which generation is current, then re-run a rollback to a ' +
             'generation that exists, or restore the object.'),
     );
   }
