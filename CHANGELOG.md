@@ -15,8 +15,9 @@ so, and so do the module headers in the code.
 
 The first removes an export. The next six make a call throw where it used to return: four of them fix a wrong
 answer, and the entries under **Fixed** say what the call returned before; two hold a call to a rule the rest of
-the library already kept. The last five hold the store, the backends and the registry to what the library itself
-takes and writes, and give its errors the library's own brand.
+the library already kept. The five after them hold the store, the backends and the registry to what the library
+itself takes and writes, stop checking for a local store's older directory layout, and give its errors the
+library's own brand. The last two change what `estimateCost()` compares with and what a `CostReport` carries.
 
 - **`bulkLoadCrbmGeneration` and `BulkLoadResult` are no longer exported**, from `@cloudbitmaps/core` or
   `@cloudbitmaps/roaring`. Load with `store.load(ref, ids, options)`, or `loadSegment(ref, ids, deps, options)` where
@@ -42,7 +43,8 @@ takes and writes, and give its errors the library's own brand.
   `live.intersect([snap])` with nothing moved since the pin. Materialise one side first, with
   `intersectInto(dest, [])`.
 - **`pin()` opens the generation it pins**, so it fails where the pin's first read used to: `NotFoundError` for a
-  pointer at a missing object, `IntegrityError` for a damaged one.
+  pointer at a missing object, `IntegrityError` for a damaged one. Handle both where you call `pin()`, as you did
+  around the pin's first read.
 - **An object whose footer names another generation is refused with `IntegrityError`** wherever it is opened, a pin
   included, so a default load onto a segment whose current generation is misfiled fails its guard. To move past it,
   roll the segment back to an earlier generation that opens, or load with `allowEmpty: true` and no
@@ -55,9 +57,12 @@ takes and writes, and give its errors the library's own brand.
   of such an `andNot` name the verb `union`.
 - **A custom `StorageChunkSource` that lists one chunk key twice is refused with `IntegrityError`** by every read
   that lists a segment's chunks: `iterate`, every combine, and a `count` with no index to sum. A combine used to drop
-  the duplicate. The sources the library ships never list a key twice.
+  the duplicate. The sources the library ships never list a key twice; make a custom one's `listChunkKeys` return
+  each key once.
 
-These make the library refuse what it used to ignore or accept, so that a wrong input fails where it is written:
+The first three of these make the library refuse what it used to ignore or accept, so that a wrong input fails
+where it is written. The fourth drops the check for a local store's older directory layout, and the fifth renames
+the error brands:
 
 - **`new CloudRoaring(options)` refuses every key it does not take**, at the top level and inside `cache`,
   `encryption`, `retry`, `budget` and `seams`, with a `ValidationError` naming each one and the keys the store or
@@ -73,13 +78,65 @@ These make the library refuse what it used to ignore or accept, so that a wrong 
   row a store created at `0.10.0` or later writes passes. A row last written before `0.10.0` does not, nor does a
   tombstone `0.10.0` wrote over one, since the tombstone keeps the row's fields, nor a row a caller set to
   `compacting` or `erasing` through the registry driver: load such a store's segments into a new one from their
-  source.
+  source. The registry drivers also refuse to write either status, with `ValidationError`.
 - **`LocalFsStorage` does not look for a `cold/` directory.** A root keeps its generations in `storage/`, and one
   that holds them anywhere else opens like any other with its generations missing: a read throws `NotFoundError`,
-  and `checkConsistency` reports `missing-storage-generation`.
+  and `checkConsistency` reports `missing-storage-generation`. Move a root's generations before you upgrade, with
+  `mv <root>/cold <root>/storage`: the objects inside are unchanged, and until they move, that report is the path,
+  not a torn restore.
 - **The error brands are `Symbol.for('cloudbitmaps.error')` and `Symbol.for('cloudbitmaps.error.transient')`.**
   Upgrade every `@cloudbitmaps` package together: a package from an earlier release brings its own copy of core,
   and neither your error predicates nor the store's own error handling recognise that copy's errors.
+
+These two change what `estimateCost()` reports:
+
+- **`estimateCost()` compares with the Redis that would hold your data, not one $346 cluster.** The default
+  verdict, rationale and read crossover are now against the cheapest ElastiCache for Redis OSS cluster that holds
+  the report's stored bytes at their compressed size: enough shards, each a primary and two replicas, with 25%
+  of each node's memory reserved, at AWS's us-east-1 on-demand prices from its price list of 2026-09-14, and the
+  burstable `t4g` nodes priced only as one shard. One cluster was the wrong size in both directions: 200 MB fits
+  three `cache.t4g.micro` nodes at $35.04 a month, and 2 TB does not fit it at all — three `cache.r6gd.16xlarge`
+  data-tiering nodes hold it, at about $27,325. The report names what it priced in the new `redisBaseline`,
+  `{ basis: 'fixed', monthlyUSD }` or `{ basis: 'sized-to-data', monthlyUSD, cluster: { nodeType, shards, nodes,
+  dataTiering } }`, and in the last of its notes. It is the cheapest cluster of one kind, not the least Redis could
+  cost: the compressed size is a floor on the memory Redis needs, since a native Redis bitmap is sized by its
+  highest id, but reserved nodes, one replica a shard, or ElastiCache for Valkey all cost less than it prices.
+
+  **To keep the old comparison**, pass `pricing: { ...AWS_US_EAST_1_ONDEMAND, redis: ONE_REDIS_HA_CLUSTER }`.
+  `ONE_REDIS_HA_CLUSTER` is the $346 cluster the benchmarks page still charts. What else changes:
+
+  - A default report has a different baseline at every data size, so a different crossover, and it can have a
+    different verdict.
+  - `pricing.redis` must give exactly one of `{ monthlyUSD }` and `{ sizedToData: RedisSizing }`, and one giving
+    both is refused with a `ValidationError`, where a key set to `undefined` gives nothing. So is a spread of the
+    default's `redis` with a price, `{ ...AWS_US_EAST_1_ONDEMAND.redis, monthlyUSD: 500 }`, since the spread now
+    carries the default's `sizedToData` too; it is refused rather than read one way.
+  - JavaScript that reads `AWS_US_EAST_1_ONDEMAND.redis.monthlyUSD` gets `undefined`, and a ratio built on it is
+    `NaN`. Read `report.redisBaseline.monthlyUSD` instead, or `ONE_REDIS_HA_CLUSTER.monthlyUSD` for the one
+    cluster. TypeScript types it `number | undefined`, so under `strictNullChecks` a ratio built on it does not
+    compile.
+  - A hand-built `CostReport` must carry `redisBaseline`, which is required.
+  - `segment.costReport()` sizes the Redis to that one segment — $35.04 for any segment up to 384 MiB, a tenth of
+    $346 — so per-segment verdicts move toward the lose-zone, and the baselines of a store's segments do not add up
+    to the store's. To judge a store, price all its segments in one `estimateCost()`. To alarm, sum the segments'
+    totals and compare the sum with the Redis you would run for the store, as the cost gauge in the dashboards
+    guide now does: a per-segment verdict against that whole price fires only when one segment alone costs more than
+    all of it.
+  - The catalogue is `ELASTICACHE_REDIS_US_EAST_1_ONDEMAND`, with the types `RedisSizing` and `RedisNodeType`. It,
+    `ONE_REDIS_HA_CLUSTER` and the default profile are frozen, so a caller that changes one no longer changes every
+    other caller's estimates: the change throws in strict mode, as in every ES module, and is ignored in a
+    sloppy-mode script.
+  - A report with no bytes to size to — nothing stored, or a storage source that cannot measure — compares with the
+    catalogue's cheapest cluster, and its rationale and notes say that no bytes were counted.
+  - The benchmarks page's line is still drawn against the $346 cluster, and now says that this is 2.4 times the
+    $142.35 Redis the default prices for its 1.2 GiB reference set, against which the line would sit at 135.42 reads
+    a second. `pnpm bench:check` fails CI when the chart, the page or `bench/results.json` drifts from the
+    estimator.
+- **`CostReport.monthlyUSD.byOp` gains the required `pointerRefresh`**, so a `CostReport` you build yourself must
+  set it, and `estimateCost()` refuses an `operandsPerIntersect` below 1 with `ValidationError`. The rationale names
+  intersections, loads and the refresh in new words, and the notes gain lines for intersections, the refresh and a
+  hot set larger than the reader cache, so a check that matches either's text needs its new wording. The entry
+  under **Fixed** says what the estimator counts now.
 
 ### Added
 
@@ -212,48 +269,6 @@ These make the library refuse what it used to ignore or accept, so that a wrong 
 
 ### Changed
 
-- **BREAKING — `estimateCost()` compares with the Redis that would hold your data, not one $346 cluster.** The
-  default verdict, rationale and read crossover are now against the cheapest ElastiCache for Redis OSS cluster that
-  holds the report's stored bytes at their compressed size: enough shards, each a primary and two replicas, with 25%
-  of each node's memory reserved, at AWS's us-east-1 on-demand prices from its price list of 2026-09-14, and the
-  burstable `t4g` nodes priced only as one shard. One cluster was the wrong size in both directions: 200 MB fits
-  three `cache.t4g.micro` nodes at $35.04 a month, and 2 TB does not fit it at all — three `cache.r6gd.16xlarge`
-  data-tiering nodes hold it, at about $27,325. The report names what it priced in the new `redisBaseline`,
-  `{ basis: 'fixed', monthlyUSD }` or `{ basis: 'sized-to-data', monthlyUSD, cluster: { nodeType, shards, nodes,
-  dataTiering } }`, and in the last of its notes. It is the cheapest cluster of one kind, not the least Redis could
-  cost: the compressed size is a floor on the memory Redis needs, since a native Redis bitmap is sized by its
-  highest id, but reserved nodes, one replica a shard, or ElastiCache for Valkey all cost less than it prices.
-
-  **To keep the old comparison**, pass `pricing: { ...AWS_US_EAST_1_ONDEMAND, redis: ONE_REDIS_HA_CLUSTER }`.
-  `ONE_REDIS_HA_CLUSTER` is the $346 cluster the benchmarks page still charts. What else changes:
-
-  - A default report has a different baseline at every data size, so a different crossover, and it can have a
-    different verdict.
-  - `pricing.redis` must give exactly one of `{ monthlyUSD }` and `{ sizedToData: RedisSizing }`, and one giving
-    both is refused with a `ValidationError`, where a key set to `undefined` gives nothing. So is a spread of the
-    default's `redis` with a price, `{ ...AWS_US_EAST_1_ONDEMAND.redis, monthlyUSD: 500 }`, since the spread now
-    carries the default's `sizedToData` too; it is refused rather than read one way.
-  - JavaScript that reads `AWS_US_EAST_1_ONDEMAND.redis.monthlyUSD` gets `undefined`, and a ratio built on it is
-    `NaN`. Read `report.redisBaseline.monthlyUSD` instead, or `ONE_REDIS_HA_CLUSTER.monthlyUSD` for the one
-    cluster. TypeScript types it `number | undefined`, so under `strictNullChecks` a ratio built on it does not
-    compile.
-  - A hand-built `CostReport` must carry `redisBaseline`, which is required.
-  - `segment.costReport()` sizes the Redis to that one segment — $35.04 for any segment up to 384 MiB, a tenth of
-    $346 — so per-segment verdicts move toward the lose-zone, and the baselines of a store's segments do not add up
-    to the store's. To judge a store, price all its segments in one `estimateCost()`. To alarm, sum the segments'
-    totals and compare the sum with the Redis you would run for the store, as the cost gauge in the dashboards
-    guide now does: a per-segment verdict against that whole price fires only when one segment alone costs more than
-    all of it.
-  - The catalogue is `ELASTICACHE_REDIS_US_EAST_1_ONDEMAND`, with the types `RedisSizing` and `RedisNodeType`. It,
-    `ONE_REDIS_HA_CLUSTER` and the default profile are frozen, so a caller that changes one no longer changes every
-    other caller's estimates: the change throws in strict mode, as in every ES module, and is ignored in a
-    sloppy-mode script.
-  - A report with no bytes to size to — nothing stored, or a storage source that cannot measure — compares with the
-    catalogue's cheapest cluster, and its rationale and notes say that no bytes were counted.
-  - The benchmarks page's line is still drawn against the $346 cluster, and now says that this is 2.4 times the
-    $142.35 Redis the default prices for its 1.2 GiB reference set, against which the line would sit at 135.42 reads
-    a second. `pnpm bench:check` fails CI when the chart, the page or `bench/results.json` drifts from the
-    estimator.
 - **The calibration harness counts what the library does, not what the network does.** Each timed intersect now
   turns off its store's timed pointer refresh (`cache.genTtlMs: 0`). On the default 2 s refresh, an intersect slower than that reads
   each pointer again, so run `2026-09-23-94416` — 83 ms from the region — counted 206 GETs for its median
@@ -428,10 +443,8 @@ These make the library refuse what it used to ignore or accept, so that a wrong 
   `chunksPerIntersect` and `requestsPerLoad` keep the meaning they had in `0.10.0`, the chunks an intersect fetches
   and the object's own PUT-class requests: if you followed the docs' and the site's advice, between the
   single-bucket run's publication and this fix, to fold the pointer into them, pass the plain counts again. Each
-  count the estimator adds is held by a test to the requests the real engine makes. **Type and text changes:**
-  `CostReport.monthlyUSD.byOp` gains the required `pointerRefresh`, so a `CostReport` you build yourself must set
-  it; `operandsPerIntersect` below 1 is refused; the rationale names intersections, loads and the refresh in new
-  words; and the notes gain lines for intersections, the refresh and a hot set larger than the reader cache.
+  count the estimator adds is held by a test to the requests the real engine makes. What this changes in the
+  report's type and text is under **Breaking**.
 
 ## [0.10.0] — 2026-09-21
 
