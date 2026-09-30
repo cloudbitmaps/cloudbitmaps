@@ -1,12 +1,8 @@
-import {
-  createBackend,
-  MemoryStorage,
-  CloudRoaring,
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
-} from '@/index';
+import { MemoryStorage, CloudRoaring } from '@/index';
 import type { IRegistryDriver } from '@/core/ports';
 import { UnsupportedError, ValidationError } from '@/core/errors';
+import { brandAsBackend } from '@/core/ports';
+import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 
 // "How do I know whether a segment already exists?" — the question this answers, and the reason a user should
 // NOT keep their own list of segment names beside the store. The registry is already that list.
@@ -89,7 +85,7 @@ describe('exists()', () => {
       list: (ns?: string) => registry.list(ns),
     };
     const s = new CloudRoaring({
-      storage: createBackend({ storage: new MemoryStorageDriver(), registry: counting }),
+      storage: brandAsBackend({ storage: new MemoryStorageDriver(), registry: counting }),
     });
 
     await expect(s.exists({ segment: '' })).rejects.toBeInstanceOf(ValidationError);
@@ -180,7 +176,7 @@ describe('segments()', () => {
       },
     };
     const s = new CloudRoaring({
-      storage: createBackend({ storage: new MemoryStorageDriver(), registry: counting }),
+      storage: brandAsBackend({ storage: new MemoryStorageDriver(), registry: counting }),
     });
     for (const n of ['a', 'b', 'c', 'd', 'e', 'f']) await s.load({ segment: n }, [1]);
 
@@ -231,7 +227,7 @@ describe('segments()', () => {
     // number, which is clock-dependent.
     const registry = new MemoryRegistryDriver();
     const s = new CloudRoaring({
-      storage: createBackend({ storage: new MemoryStorageDriver(), registry: registry }),
+      storage: brandAsBackend({ storage: new MemoryStorageDriver(), registry: registry }),
     });
     await s.load({ segment: 'real' }, [1]);
     await s.setRetention({ segment: 'real' }, { expiresAt: Date.now() + 86_400_000 });

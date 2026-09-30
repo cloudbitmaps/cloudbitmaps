@@ -1,19 +1,15 @@
 import { publishGeneration, writeCrbmGeneration } from '@/core/crbm-storage-source';
 import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { RoaringBitmap32, SerializationFormat } from 'roaring';
-import {
-  CloudRoaring,
-  createBackend,
-  IntegrityError,
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
-} from '@/index';
+import { CloudRoaring, IntegrityError } from '@/index';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { SafeBitmap, roaringCodec } from '@/roaring-codec';
 import { joinId, MAX_REMAINDER } from '@/core/bit-route';
 import { collect } from '../helpers/loaded';
 import { craftPortable, type CraftedContainer } from '../helpers/portable-bytes';
 import type { CodecBitmap } from '@/core/codec';
+import { brandAsBackend } from '@/core/ports';
+import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 
 // A chunk payload holds REMAINDERS — 16-bit offsets within one chunk. Nothing upstream enforces that: the
 // byte/length caps bound size, and CRC/AEAD only prove the bytes are the bytes that were written, which anyone
@@ -206,7 +202,7 @@ describe('chunk payload structure', () => {
       { chunkKey: 1, bitmap: forged },
     ]);
     await publishGeneration(registry, { ...SEG, generation: 0 });
-    return new CloudRoaring({ storage: createBackend({ storage, registry }), retry: false });
+    return new CloudRoaring({ storage: brandAsBackend({ storage, registry }), retry: false });
   }
 
   it('refuses it on a pinned read and in an export, the two paths that do not go through a plain read', async () => {

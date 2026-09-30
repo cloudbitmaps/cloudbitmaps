@@ -1,15 +1,10 @@
-import {
-  createBackend,
-  MemoryStorage,
-  CloudRoaring,
-  InProcessKeystore,
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
-} from '@/index';
+import { MemoryStorage, CloudRoaring, InProcessKeystore } from '@/index';
 import { destroySegment } from '@/core/erasure';
 import { setSegmentRetention } from '@/core/retention';
 import type { IStorageDriver, SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { brandAsBackend } from '@/core/ports';
+import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 
 /**
  * A store keeps two layers of derived state: a resolved snapshot per segment (an open reader, plus the DEK it
@@ -37,7 +32,7 @@ describe('destructive verbs invalidate what this store derived from the segment'
     const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, IDS, { registry });
 
-    const store = new CloudRoaring({ storage: createBackend({ storage, registry }) });
+    const store = new CloudRoaring({ storage: brandAsBackend({ storage, registry }) });
     expect(await store.segment('seg', { namespace: 'ns' }).has(4242)).toBe(true); // warms the snapshot + chunk 0
 
     const ledger = await store.eraseSubject(4242, { namespace: 'ns' });
@@ -57,7 +52,7 @@ describe('destructive verbs invalidate what this store derived from the segment'
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, IDS, { registry });
 
     const store = new CloudRoaring({
-      storage: createBackend({ storage, registry }),
+      storage: brandAsBackend({ storage, registry }),
       cache: { genTtlMs: 0 },
     });
     expect(await store.segment('seg', { namespace: 'ns' }).has(4242)).toBe(true);
@@ -70,7 +65,7 @@ describe('destructive verbs invalidate what this store derived from the segment'
     const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, IDS, { registry });
 
-    const store = new CloudRoaring({ storage: createBackend({ storage, registry }) });
+    const store = new CloudRoaring({ storage: brandAsBackend({ storage, registry }) });
     expect((await store.subjectReport(4242, { namespace: 'ns' })).segments).toHaveLength(1);
 
     await store.eraseSubject(4242, { namespace: 'ns' });
@@ -82,7 +77,7 @@ describe('destructive verbs invalidate what this store derived from the segment'
     const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, IDS, { registry });
 
-    const store = new CloudRoaring({ storage: createBackend({ storage, registry }) });
+    const store = new CloudRoaring({ storage: brandAsBackend({ storage, registry }) });
     await store.segment('seg', { namespace: 'ns' }).has(4242); // warm it
     await store.eraseSubject(4242, { namespace: 'ns' });
 
@@ -103,7 +98,7 @@ describe('destructive verbs invalidate what this store derived from the segment'
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, IDS, { registry, keystore });
 
     const store = new CloudRoaring({
-      storage: createBackend({ storage, registry }),
+      storage: brandAsBackend({ storage, registry }),
       cache: { genTtlMs: 0 },
       encryption: { keystore },
     });
@@ -126,7 +121,7 @@ describe('destructive verbs invalidate what this store derived from the segment'
     await setSegmentRetention(REF, { registry }, { expiresAt: PAST });
 
     const store = new CloudRoaring({
-      storage: createBackend({ storage, registry }),
+      storage: brandAsBackend({ storage, registry }),
       cache: { genTtlMs: 0 },
     });
     expect(await store.segment('seg', { namespace: 'ns' }).count()).toBe(4);
@@ -143,7 +138,7 @@ describe('destructive verbs invalidate what this store derived from the segment'
     await setSegmentRetention(REF, { registry }, { expiresAt: PAST });
 
     const store = new CloudRoaring({
-      storage: createBackend({ storage, registry }),
+      storage: brandAsBackend({ storage, registry }),
       cache: { genTtlMs: 0 },
     });
     expect(await store.segment('seg', { namespace: 'ns' }).count()).toBe(4);
@@ -159,7 +154,7 @@ describe('destructive verbs invalidate what this store derived from the segment'
     await bulkLoadCrbmGeneration(storage, { ...other, generation: 0 }, [5, 6], { registry });
 
     const store = new CloudRoaring({
-      storage: createBackend({ storage, registry }),
+      storage: brandAsBackend({ storage, registry }),
       cache: { genTtlMs: 0 },
     });
     expect(await store.segment('seg', { namespace: 'ns' }).count()).toBe(4);
@@ -195,7 +190,7 @@ describe('destructive verbs invalidate what this store derived from the segment'
     };
 
     const store = new CloudRoaring({
-      storage: createBackend({ storage, registry }),
+      storage: brandAsBackend({ storage, registry }),
       cache: { genTtlMs: 0 },
     });
     await store.segment('seg', { namespace: 'ns' }).has(4242);
@@ -239,7 +234,7 @@ describe('destructive verbs invalidate what this store derived from the segment'
     });
 
     const store = new CloudRoaring({
-      storage: createBackend({ storage: storage, registry: flaky as typeof registry }),
+      storage: brandAsBackend({ storage: storage, registry: flaky as typeof registry }),
       retry: false,
     });
     expect(await store.segment('seg', { namespace: 'ns' }).has(4242)).toBe(true); // warm the caches
@@ -257,7 +252,7 @@ describe('destructive verbs invalidate what this store derived from the segment'
   it('invalidating a segment this store never read is a no-op, not an error', async () => {
     const backend = new MemoryStorage();
     const { storage, registry } = backend;
-    const store = new CloudRoaring({ storage: createBackend({ storage, registry }) });
+    const store = new CloudRoaring({ storage: brandAsBackend({ storage, registry }) });
     expect(() => store.invalidate({ namespace: 'ns', segment: 'never-seen' })).not.toThrow();
   });
 });

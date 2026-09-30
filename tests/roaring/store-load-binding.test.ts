@@ -89,7 +89,7 @@ describe('a store built on a pre-built source', () => {
     expect(message).toMatch(
       /S3Storage.*GcsStorage.*AzureBlobStorage.*LocalFsStorage.*MemoryStorage/,
     );
-    // createBackend is leaving the public entries; nothing points an application at it.
+    // The removed pairing function is named nowhere an application reads.
     expect(message).not.toMatch(/createBackend/);
   });
 });

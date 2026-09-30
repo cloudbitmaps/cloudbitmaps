@@ -2,8 +2,6 @@ import { randomBytes } from 'node:crypto';
 import {
   CloudRoaring,
   CrbmStorageChunkSource,
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
   RecordingAuditSink,
   destroySegment,
   eraseNamespace,
@@ -14,6 +12,7 @@ import { InProcessKeystore } from '@/drivers/crypto';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { eraseIdFromSegment } from '@cloudbitmaps/core';
+import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 
 /**
  * The audit sink and every event the library emits: `segment.publish` (a load became current),

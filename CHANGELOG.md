@@ -16,7 +16,9 @@ so, and so do the module headers in the code.
 The first two narrow what an application sees: `@cloudbitmaps/roaring` exports a list of names in place of all of
 core's, and a `Segment` can no longer be constructed. The four after them remove exports: the first deletes names
 nothing in the library would still call, the second takes names off the public entries or moves them to the package
-that uses them, and the third and fourth remove the retrying driver wrappers and the bulk loader. The seventh makes
+that uses them, and the third and fourth remove the retrying driver wrappers and the bulk loader. The two after those
+make a backend class the one way an application builds its storage: the size settings move onto the backend options,
+and the separate storage and registry halves and `createBackend` are no longer exported. The ninth makes
 the collection refuse a `keep` it used to accept. The next eight make a call throw where it used to return: six of
 them fix a wrong answer, and the entries under **Fixed** say what the call returned before; two hold a call to a
 rule the rest of the library already kept. The
@@ -123,6 +125,35 @@ change what `estimateCost()` compares with and what a `CostReport` carries.
   - **Neither can be told to write a generation without publishing it, to write one with no registry, or to take its
     generation number from the caller.** Nothing exported can: `writeCrbmGeneration` and `publishGeneration`, which
     could, are no longer exported either (see above).
+- **The size settings are options of the backend classes, where they were options of the separate storage halves.**
+  Set each one on the backend; a backend refuses the settings of another backend by name, as it refuses any key it
+  does not take, and a setting keeps the name, default and validation it had.
+  - `S3Storage` takes `partBytes`, the multipart part size (default 8 MiB, raised to S3's 5 MiB minimum), and
+    `maxObjectBytes`, the largest object it writes and advertises (default `partBytes` × 10,000, about 80 GiB).
+    They were options of `S3StorageDriver`.
+  - `GcsStorage` takes `simpleUploadThresholdBytes`, the size up to which an object is one simple request (default
+    8 MiB), and `maxObjectBytes` (default 5 TiB, GCS's maximum). They were options of `GcsStorageDriver`.
+  - `AzureBlobStorage` takes `blockBytes`, the staged block size (default 8 MiB), and `maxObjectBytes` (default
+    `blockBytes` × 50,000, about 400 GiB). Each must be a positive safe integer, and a value that is not throws
+    `ValidationError` from the backend's constructor. They were options of `AzureBlobStorageDriver`.
+  - `MemoryStorage` and `LocalFsStorage` had no size settings, and take none.
+- **The separate storage and registry halves, their options types and `createBackend` are no longer exported.** An
+  application gets both halves from one backend class and never names one. Removed from `@cloudbitmaps/core` and
+  `@cloudbitmaps/roaring`: `MemoryStorageDriver`, `MemoryRegistryDriver`, `MemoryRegistryDriverOptions`,
+  `LocalFsStorageDriver`, `LocalFsRegistryDriver`, `LocalFsRegistryDriverOptions` and `createBackend`. Removed from
+  `@cloudbitmaps/s3`: `S3StorageDriver`, `S3RegistryDriver`, `S3StorageDriverOptions` and `S3RegistryDriverOptions`;
+  from `@cloudbitmaps/gcs` and `@cloudbitmaps/azure-blob`, the same four with their own prefix.
+  - **Use a backend class instead:** `MemoryStorage`, `LocalFsStorage`, `S3Storage`, `GcsStorage` or
+    `AzureBlobStorage`. The size settings are options of those classes (previous entry). A backend's `.storage` and
+    `.registry` are typed as the `IStorageDriver` and `IRegistryDriver` ports, including on `MemoryStorage` and
+    `LocalFsStorage`, where they were typed as the concrete classes.
+  - **To wrap a backend's half, or to pair it with a registry of your own** (tenant scoping, auditing, a registry in a
+    database you already run), build the backend with `brandAsBackend({ storage, registry })` from
+    `@cloudbitmaps/core/driver-kit`, in place of `createBackend`. It takes a plain object and returns it, branded. It
+    now checks what `createBackend` checked: `storage` needs a `putImmutable` and `registry` a `compareAndSwap`, and
+    it throws `ValidationError` naming the half that has neither. A store that refuses a hand-assembled
+    `{ storage, registry }` now names the backend classes and `brandAsBackend`, where it named `createBackend`.
+
 - **The collection refuses a `keep` that is not a non-negative integer**, with `ValidationError`. `load` and the
   `*Into` verbs already refused one before writing anything. The collection itself, which `gcOrphanGenerations`
   exposed, read `NaN` as a window that keeps nothing, so it collected the whole grace window, and a negative

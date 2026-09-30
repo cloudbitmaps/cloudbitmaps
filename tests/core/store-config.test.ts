@@ -1,19 +1,14 @@
 import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { randomBytes } from 'node:crypto';
-import {
-  createBackend,
-  MemoryStorage,
-  CloudRoaring,
-  CrbmStorageChunkSource,
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
-} from '@/index';
+import { MemoryStorage, CloudRoaring, CrbmStorageChunkSource } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { CapabilityError, KeyUnavailableError, ValidationError } from '@/core/errors';
 import type { IStorageDriver, SegmentRef } from '@/index';
 import { seededStore } from '../helpers/loaded';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { isStorageBackend } from '@cloudbitmaps/core';
+import { brandAsBackend } from '@/core/ports';
+import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 
 // The store takes ONE config shape: `storage` is a backend (a driver and its registry, wrapped into the .crbm
 // storage source here, so drivers are wired once), a raw IStorageDriver (no registry, so a list-scan), OR an
@@ -218,7 +213,7 @@ describe('CloudRoaring constructor — one config shape (storage: a backend, a r
     });
 
     // …and to keep a registry alongside an instrumented half, you say so.
-    it('`createBackend` is how an instrumented half keeps its registry', async () => {
+    it('`brandAsBackend` is how an instrumented half keeps its registry', async () => {
       const backend = new MemoryStorage();
       await bulkLoadCrbmGeneration(backend.storage, { ...SEG, generation: 0 }, [1, 2, 3], {
         registry: backend.registry,
@@ -236,22 +231,22 @@ describe('CloudRoaring constructor — one config shape (storage: a backend, a r
         list: (...a) => backend.storage.list(...a),
       };
       const store = new CloudRoaring({
-        storage: createBackend({ storage: counted, registry: backend.registry }),
+        storage: brandAsBackend({ storage: counted, registry: backend.registry }),
       });
       expect(await store.segment('s').count()).toBe(3);
       expect(tails).toBeGreaterThan(0);
     });
 
-    // A half-built backend is caught where it is built, by `createBackend`, rather than at the store.
+    // A half-built backend is caught where it is built, by `brandAsBackend`, rather than at the store.
     it('names which half of a near-miss backend failed its check', () => {
       expect(() =>
-        createBackend({
+        brandAsBackend({
           storage: new MemoryStorageDriver(),
           registry: {} as unknown as MemoryRegistryDriver, // no compareAndSwap
         }),
       ).toThrow(/registry.*IRegistryDriver/);
       expect(() =>
-        createBackend({
+        brandAsBackend({
           storage: {} as unknown as IStorageDriver,
           registry: new MemoryRegistryDriver(),
         }),
@@ -275,7 +270,7 @@ describe('CloudRoaring constructor — one config shape (storage: a backend, a r
     //
     // Three spellings, because a test that asserts only the object literal passes while an ENUMERABLE brand is
     // copied by `{ ...backend, registry: other }` and sails through. Spread is the idiomatic way to vary an
-    // object in JS, so that is not an exotic bypass: it is the form the audience for `createBackend` would
+    // object in JS, so that is not an exotic bypass: it is the form the audience for `brandAsBackend` would
     // reach for first.
     it.each(['literal', 'spread', 'Object.assign'])(
       'makes the mismatched-halves store unconstructible — %s',
@@ -332,10 +327,10 @@ describe('CloudRoaring constructor — one config shape (storage: a backend, a r
       } as unknown as IStorageDriver;
 
       expect(() => new CloudRoaring({ storage: wrapper })).toThrow(/also carries a .registry/);
-      expect(() => new CloudRoaring({ storage: wrapper })).toThrow(/createBackend/);
+      expect(() => new CloudRoaring({ storage: wrapper })).toThrow(/brandAsBackend/);
       // …and the named door works, resolving the PUBLISHED generation rather than the highest object.
       const store = new CloudRoaring({
-        storage: createBackend({ storage: wrapper, registry: backend.registry }),
+        storage: brandAsBackend({ storage: wrapper, registry: backend.registry }),
       });
       expect(await store.segment('s').count()).toBe(3);
     });
@@ -351,12 +346,41 @@ describe('CloudRoaring constructor — one config shape (storage: a backend, a r
       ).toThrow(/`registry` half is not an IRegistryDriver/);
     });
 
-    // The wall must route the caller to the door, or it teaches "this library cannot do what I need".
-    it('the refusal names `createBackend`', () => {
+    // The wall must route the caller to the door, or it teaches "this library cannot do what I need". An
+    // application is told to use a backend class; a driver author is told where the pairing door is.
+    it('the refusal names the backend classes and `brandAsBackend`, and no removed name', () => {
       const a = new MemoryStorage();
+      const attempt = (): unknown =>
+        new CloudRoaring({ storage: { storage: a.storage, registry: a.registry } as never });
+      expect(attempt).toThrow(
+        /S3Storage, GcsStorage, AzureBlobStorage, LocalFsStorage or MemoryStorage/,
+      );
+      expect(attempt).toThrow(/brandAsBackend.*@cloudbitmaps\/core\/driver-kit/);
       expect(
-        () => new CloudRoaring({ storage: { storage: a.storage, registry: a.registry } as never }),
-      ).toThrow(/createBackend/);
+        (() => {
+          try {
+            attempt();
+          } catch (e) {
+            return String(e);
+          }
+          return '';
+        })(),
+      ).not.toContain('createBackend');
+    });
+
+    // `brandAsBackend` is the driver author's pairing door: it takes a plain object, brands that same object
+    // non-enumerably, and refuses a half that is not a driver.
+    it('`brandAsBackend` brands a plain `{ storage, registry }` object in place', () => {
+      const a = new MemoryStorage();
+      const halves = { storage: a.storage, registry: a.registry };
+      const backend = brandAsBackend(halves);
+      expect(backend).toBe(halves);
+      expect(isStorageBackend(backend)).toBe(true);
+      expect(Object.keys(backend)).toEqual(['storage', 'registry']);
+      expect(isStorageBackend({ ...backend })).toBe(false);
+      for (const bad of [null, undefined, 'x']) {
+        expect(() => brandAsBackend(bad as never)).toThrow(/brandAsBackend needs/);
+      }
     });
 
     it('rejects an ambiguous `storage` exposing both getChunk and putImmutable', () => {

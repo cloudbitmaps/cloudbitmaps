@@ -10,13 +10,14 @@
 import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import { CloudRoaring, CountingMetricsSink, MemoryStorage, createBackend } from '@/index';
+import { CloudRoaring, CountingMetricsSink, MemoryStorage } from '@/index';
 import type { CloudRoaringOptions, IdRange, Segment } from '@/index';
 import { BudgetExceededError, IntegrityError, NotFoundError, ValidationError } from '@/core/errors';
 import { roaringCodec } from '@/roaring-codec';
 import { collect, seedSegment } from '../helpers/loaded';
 import { SafeBitmap } from '@/roaring-codec';
 import { SegmentEngine } from '@cloudbitmaps/core';
+import { brandAsBackend } from '@/core/ports';
 
 const K = 65_536;
 const U32_MAX = 0xffff_ffff;
@@ -138,7 +139,7 @@ describe('a range read fetches only the chunks the range spans', () => {
       },
     });
     const store = new CloudRoaring({
-      storage: createBackend({ storage: counted, registry: w.backend.registry }),
+      storage: brandAsBackend({ storage: counted, registry: w.backend.registry }),
       cache: { genTtlMs: 0 },
     });
     expect(await collect(store.segment('a').iterate({ after: 2 * K, through: 2 * K }))).toEqual([]);
@@ -298,7 +299,7 @@ describe('every combine takes the range, on every operand and every exclude', ()
       },
     });
     const store = new CloudRoaring({
-      storage: createBackend({ storage: w.backend.storage, registry }),
+      storage: brandAsBackend({ storage: w.backend.storage, registry }),
       cache: { genTtlMs: 0 },
     });
     const a = store.segment('a');
@@ -684,7 +685,7 @@ describe('an empty range reads nothing, on every verb, live and pinned', () => {
         },
       });
     const store = new CloudRoaring({
-      storage: createBackend({
+      storage: brandAsBackend({
         storage: counting(w.backend.storage),
         registry: counting(w.backend.registry),
       }),

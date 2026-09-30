@@ -53,8 +53,10 @@ await seg.has(2); // true
 `AzureBlobStorage` configures both halves — the immutable generation objects and the registry pointer row — from one set
 of values: a `connectionString` and a `container`, or a container-scoped `containerClient` instead, one or the
 other, and an optional `prefix`. It refuses any other key by name rather than ignoring it, and refuses both forms
-of client at once. Need the halves apart? This package also exports the two drivers and their option types, which
-`createBackend` joins; see the
+of client at once. Two more options size the staged upload: `blockBytes` (default 8 MiB) is the block size and so
+the peak write memory, and `maxObjectBytes` is the largest blob the backend will write (default `blockBytes` ×
+50,000, about 400 GiB). Raise `maxObjectBytes` and `blockBytes` grows to keep the 50,000-block limit reachable;
+either must be a positive safe integer. See the
 [API reference](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/api-reference.md).
 
 ## Retries on writes

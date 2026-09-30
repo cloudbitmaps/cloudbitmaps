@@ -13,12 +13,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 
 async function exercise(label, m) {
-  for (const name of [
-    'CloudRoaring',
-    'MemoryStorageDriver',
-    'MemoryRegistryDriver',
-    'MemoryStorage',
-  ]) {
+  for (const name of ['CloudRoaring', 'MemoryStorage']) {
     if (m[name] == null) throw new Error(`${label}: missing export ${name}`);
   }
   if (typeof m.CloudRoaring.estimateCost !== 'function')

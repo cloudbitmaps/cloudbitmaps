@@ -518,8 +518,9 @@ function resolveStorageSource(
     throw new ValidationError(
       '`storage` looks like a driver that also carries a `registry`. Passed as a bare driver it would have ' +
         'no pointer at all — generations would resolve by list-scan, so reads could serve a generation that ' +
-        'was written but never published. If you meant a backend, say so: ' +
-        '`createBackend({ storage: <your driver>, registry })`.',
+        'was written but never published. If you meant a backend, use a backend class — S3Storage, GcsStorage, ' +
+        'AzureBlobStorage, LocalFsStorage or MemoryStorage — or, to pair a driver of your own with a registry, ' +
+        'brand the pair with `brandAsBackend` from `@cloudbitmaps/core/driver-kit`.',
     );
   }
 
@@ -539,7 +540,8 @@ function resolveStorageSource(
       throw new ValidationError(
         '`storage` looks like a backend but its ' +
           bad +
-          ' — build one with a backend class, or with `createBackend({ storage, registry })`.',
+          ' — use a backend class, or brand a pair of drivers with `brandAsBackend` from ' +
+          '`@cloudbitmaps/core/driver-kit`.',
       );
     }
     throw new ValidationError(
@@ -547,9 +549,9 @@ function resolveStorageSource(
         'MemoryStorage. An object with `.storage` and `.registry` is not one: a backend builds both halves ' +
         'from a single bucket and prefix, so they cannot disagree, and hand-assembling them re-opens exactly ' +
         'that mismatch — a store whose pointer and generations live in different places reads as empty ' +
-        'rather than failing. If you genuinely want halves of your own — an instrumented driver, a registry ' +
-        'in a database you already run — say so with `createBackend({ storage, registry })`, which is you ' +
-        'taking on that they agree.',
+        'rather than failing. A driver author who genuinely wants halves of their own — an instrumented driver, ' +
+        'a registry in a database you already run — brands the pair with `brandAsBackend` from ' +
+        '`@cloudbitmaps/core/driver-kit`, which is taking on that they agree.',
     );
   }
 
@@ -2355,15 +2357,10 @@ export class Segment {
 // add one on purpose: `tests/docs/api-reference-sync.test.ts` fails until the API reference lists it.
 // ---------------------------------------------------------------------------------------------------
 export {
-  // Backends and their halves
+  // Backends
   MemoryStorage,
   LocalFsStorage,
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
-  LocalFsStorageDriver,
-  LocalFsRegistryDriver,
   CrbmStorageChunkSource,
-  createBackend,
   // Crypto-shred and the retention policy helpers
   destroySegment,
   eraseNamespace,
@@ -2446,9 +2443,7 @@ export type {
   LoadOptions,
   LoadRefusal,
   LoadResult,
-  LocalFsRegistryDriverOptions,
   LocalFsStorageOptions,
-  MemoryRegistryDriverOptions,
   MemoryStorageOptions,
   MetricEvent,
   MetricOpName,

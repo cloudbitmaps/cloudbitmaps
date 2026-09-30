@@ -1,10 +1,11 @@
-import { CloudRoaring, MemoryStorage, MemoryStorageDriver } from '@/index';
+import { CloudRoaring, MemoryStorage } from '@/index';
 import { bulkLoadCrbmGeneration as coreBulkLoad } from '@/core/crbm-storage-source';
 import { roaringCodec } from '@/roaring-codec';
 import { SystemClock } from '@/system-clock';
 import { YIELD_EVERY } from '@/core/cooperative';
 import { joinId } from '@/core/bit-route';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { MemoryStorageDriver } from '@/drivers/memory';
 
 // Bulk-load must not hold Node's only thread for the duration of the load.
 //

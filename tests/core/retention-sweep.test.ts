@@ -1,14 +1,6 @@
 import { nextGeneration } from '@/core/generation-gc';
 import { randomBytes } from 'node:crypto';
-import {
-  createBackend,
-  CloudRoaring,
-  CrbmStorageChunkSource,
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
-  MIN_EXPIRES_AT_MS,
-  destroySegment,
-} from '@/index';
+import { CloudRoaring, CrbmStorageChunkSource, MIN_EXPIRES_AT_MS, destroySegment } from '@/index';
 import { DEFAULT_RETIRE_LIMIT } from '@/core/retention-sweep';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { BudgetExceededError, UnsupportedError, ValidationError } from '@/core/errors';
@@ -17,6 +9,8 @@ import type { IStorageDriver, IRegistryDriver } from '@/core/ports';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { retireExpired, clearSegmentRetention } from '@cloudbitmaps/core';
 import type { DropDeps } from '@cloudbitmaps/core';
+import { brandAsBackend } from '@/core/ports';
+import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 
 /**
  * The retention **sweep** — the piece that acts on the policies (`retention-policy.test.ts`).
@@ -52,7 +46,7 @@ function world() {
   const clock = { now: () => T0, sleep: (): Promise<void> => Promise.resolve() };
   const store = (): CloudRoaring =>
     new CloudRoaring({
-      storage: createBackend({ storage, registry }),
+      storage: brandAsBackend({ storage, registry }),
       retry: false,
       seams: { clock },
     });

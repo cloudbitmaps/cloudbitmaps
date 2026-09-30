@@ -108,9 +108,8 @@ The rest of this guide walks each step in turn.
 
 ### Choosing a registry
 
-> **Every backend ships a registry.** `MemoryRegistryDriver`, `LocalFsRegistryDriver`, `S3RegistryDriver`
-> (`@cloudbitmaps/s3`), `GcsRegistryDriver` (`@cloudbitmaps/gcs`), `AzureBlobRegistryDriver`
-> (`@cloudbitmaps/azure-blob`). **Each
+> **Every backend ships a registry.** `MemoryStorage`, `LocalFsStorage`, `S3Storage` (`@cloudbitmaps/s3`),
+> `GcsStorage` (`@cloudbitmaps/gcs`) and `AzureBlobStorage` (`@cloudbitmaps/azure-blob`) each carry one. **Each
 > object store can host its own pointer**, so one bucket or one container is the whole deployment — no second
 > service, and for GCS and Azure no second *cloud*. All three ride the same primitive under different names:
 > S3 `If-None-Match`/`If-Match`, GCS `ifGenerationMatch`, Azure `ifNoneMatch`/`ifMatch`.
@@ -361,21 +360,17 @@ S3 or recent MinIO). Large objects upload via **S3 multipart automatically** —
 ~one part (default 8 MiB), and the object ceiling defaults to ≈80 GiB (10,000 parts), with write-once preserved
 (conditional `CompleteMultipartUpload`).
 
-The ceiling grows up to S3's 5 TiB through `partBytes` and `maxObjectBytes`, which are options of the storage
-driver, `S3StorageDriver`, not of `S3Storage` — `S3Storage` refuses them by name. To set them, build the two halves
-yourself and join them with `createBackend`:
+The ceiling grows up to S3's 5 TiB through `partBytes` and `maxObjectBytes`, which are options of `S3Storage`:
 
 ```ts
-import { S3Client } from '@aws-sdk/client-s3';
-import { CloudRoaring, createBackend } from '@cloudbitmaps/roaring';
-import { S3RegistryDriver, S3StorageDriver } from '@cloudbitmaps/s3';
+import { CloudRoaring } from '@cloudbitmaps/roaring';
+import { S3Storage } from '@cloudbitmaps/s3';
 
-const client = new S3Client({ region: 'us-east-1' });
-const where = { client, bucket: 'my-bitmaps', prefix: 'cloudbitmaps' }; // stated once, for both halves
 const store = new CloudRoaring({
-  storage: createBackend({
-    storage: new S3StorageDriver({ ...where, partBytes: 64 * 1024 * 1024 }), // 10,000 parts of 64 MiB ≈ 625 GiB
-    registry: new S3RegistryDriver(where),
+  storage: new S3Storage({
+    bucket: 'my-bitmaps',
+    prefix: 'cloudbitmaps',
+    partBytes: 64 * 1024 * 1024, // 10,000 parts of 64 MiB ≈ 625 GiB
   }),
 });
 ```
@@ -419,22 +414,19 @@ describes two instants ([§8](#8-generation-bookkeeping-what-a-load-leaves-behin
 Without a registry, a store finds the generation by listing the bucket when it opens a segment, and keeps it until
 the reader cache evicts that segment, a read finds it swept, or it is invalidated (single-process/local use).
 
-**Registry drivers** — the registry half is a pluggable seam (`IRegistryDriver`), independent of the storage half.
-There is no `registry` option on the store, and **you normally do not choose one** — a backend brings its own, in
-the same bucket as the generations. The table is here for the case where you are assembling the halves yourself,
-which you do with `createBackend({ storage, registry })`; a plain `{ storage, registry }` object is refused. It cannot check
-that your two halves point at the same place — the driver interfaces expose no location — so calling it is
-you taking that on.
+**The registry half** is a pluggable seam (`IRegistryDriver`), independent of the storage half. There is no
+`registry` option on the store, and **you choose one by choosing a backend**: each brings its own, in the same
+bucket as the generations. A plain `{ storage, registry }` object is refused.
 
-| Backend | Import | Use for |
+| Backend | Import | Its registry lives |
 | --- | --- | --- |
-| `MemoryRegistryDriver` | `@cloudbitmaps/roaring` | tests / dev |
-| `LocalFsRegistryDriver` | `@cloudbitmaps/roaring` | single node / on-prem |
-| `S3RegistryDriver` | `@cloudbitmaps/s3` | **the same bucket as your storage data — one store, no second service** |
-| `GcsRegistryDriver` | `@cloudbitmaps/gcs` | the same, on Google Cloud Storage |
-| `AzureBlobRegistryDriver` | `@cloudbitmaps/azure-blob` | the same, on Azure Blob Storage |
+| `MemoryStorage` | `@cloudbitmaps/roaring` | in process: tests / dev |
+| `LocalFsStorage` | `@cloudbitmaps/roaring` | under the root's `registry` directory: single node / on-prem |
+| `S3Storage` | `@cloudbitmaps/s3` | **in the same bucket as your storage data — one store, no second service** |
+| `GcsStorage` | `@cloudbitmaps/gcs` | the same, on Google Cloud Storage |
+| `AzureBlobStorage` | `@cloudbitmaps/azure-blob` | the same, on Azure Blob Storage |
 
-The **`S3RegistryDriver`** keeps the current-generation pointer as a tiny object in the *same bucket* as your
+The **S3 backend's registry** keeps the current-generation pointer as a tiny object in the *same bucket* as your
 Storage data, using S3's conditional writes (`If-Match`) for the atomic generation swap — so a deployment runs on
 **S3 only**:
 
@@ -500,9 +492,9 @@ const store = new CloudRoaring({ storage: backend }); // one bucket is the whole
 > **Checklist.** `@google-cloud/storage` is a real dependency of `@cloudbitmaps/gcs`, not a peer — installing
 > the package installs it. Generations are write-once via `ifGenerationMatch: 0` (both the
 > simple and resumable upload paths), and the registry swaps the pointer with `ifGenerationMatch: <generation>`.
-> A client you built yourself goes in `client`. `@google-cloud/storage` names its client class `Storage`, and the
-> lower-level `GcsStorageDriver` takes it as an option called `storage`, but `GcsStorage` refuses `storage`: in
-> `CloudRoaring`'s options, `storage` is the backend.
+> A client you built yourself goes in `client`. `@google-cloud/storage` names its client class `Storage`, which reads
+> as this library's word for the durable tier, so `GcsStorage` refuses `storage` as a key: in `CloudRoaring`'s
+> options, `storage` is the backend.
 
 ### Azure Blob — storage + registry (`@cloudbitmaps/azure-blob`)
 
@@ -640,6 +632,14 @@ is. `generations` is not retried either, so a fault there means asking again.
 > that multiplies each read's attempts. A call of your own is yours to retry: loop over it, and back off before the
 > next attempt when `isTransientError(err)` is true. The retry primitives a flavor or driver author builds on are on
 > `@cloudbitmaps/core`.
+>
+> Want a backend made of halves of your own — a driver wrapped for auditing, metrics or tenant scoping, or paired
+> with a registry in a database you already run? That is a driver author's job, and it goes through
+> `@cloudbitmaps/core/driver-kit`: build each half against `IStorageDriver` and `IRegistryDriver`, then
+> `brandAsBackend({ storage, registry })`, which checks that each half is a driver and returns the object the
+> store accepts as `storage`. It cannot check that the two halves point at the same place — the driver interfaces
+> expose no location — so branding them is you taking that on. To wrap a backend's half, pass its `.storage` or
+> `.registry` as the half you wrap.
 
 ## 7. Materializing: the `*Into` verbs
 

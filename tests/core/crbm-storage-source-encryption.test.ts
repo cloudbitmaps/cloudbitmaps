@@ -2,14 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  CloudRoaring,
-  CrbmStorageChunkSource,
-  LocalFsStorageDriver,
-  LocalFsRegistryDriver,
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
-} from '@/index';
+import { CloudRoaring, CrbmStorageChunkSource } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
 import {
   CapabilityError,
@@ -19,6 +12,9 @@ import {
 } from '@/core/errors';
 import type { IStorageDriver, IKeystore, SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
+import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
+import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 
 const SEG: SegmentRef = { segment: 's' };
 const IDS = [1, 2, 3, 100_000, 2_000_000_000];

@@ -21,7 +21,8 @@
  * `@cloudbitmaps/core`'s main entry. The contract is this subpath PLUS those record types.
  */
 
-// The ports a driver implements, and the brand that marks a pair of halves as a backend.
+// The ports a driver implements, and the brand that marks a pair of halves as a backend. `brandAsBackend` also
+// checks that each half is a driver, so a plain `{ storage, registry }` object can be branded with it.
 export type {
   GenKey,
   IRegistryDriver,

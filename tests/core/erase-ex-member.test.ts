@@ -1,10 +1,11 @@
 import { gcOrphanGenerations } from '@/core/generation-gc';
-import { MemoryStorage, CloudRoaring, MemoryStorageDriver, MemoryRegistryDriver } from '@/index';
+import { MemoryStorage, CloudRoaring } from '@/index';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { openGenerationReader } from '@/core/crbm-storage-source';
 import { roaringCodec } from '@/roaring-codec';
 import type { IStorageDriver, SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 
 /**
  * "The bit is physically gone from the bucket when the call returns" has to hold for **ex-members** as well as
@@ -17,17 +18,13 @@ import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
  */
 const REF: SegmentRef = { namespace: 'audiences', segment: 'active-30d' };
 
-async function heldIn(
-  storage: MemoryStorageDriver,
-  generation: number,
-  id: number,
-): Promise<boolean> {
+async function heldIn(storage: IStorageDriver, generation: number, id: number): Promise<boolean> {
   const reader = await openGenerationReader(storage, { ...REF, generation }, undefined);
   const bytes = await reader.getChunk(0);
   return bytes === null ? false : roaringCodec.safeDeserialize(bytes, 1 << 20).has(id);
 }
 
-async function generations(storage: MemoryStorageDriver): Promise<number[]> {
+async function generations(storage: IStorageDriver): Promise<number[]> {
   const out: number[] = [];
   for await (const k of storage.list(REF)) out.push(k.generation);
   return out.sort((a, b) => a - b);

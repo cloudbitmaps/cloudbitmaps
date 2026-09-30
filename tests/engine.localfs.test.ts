@@ -2,17 +2,14 @@ import { writeCrbmGeneration } from '@/core/crbm-storage-source';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  createBackend,
-  CloudRoaring,
-  LocalFsStorageDriver,
-  LocalFsRegistryDriver,
-  CrbmStorageChunkSource,
-} from '@/index';
+import { CloudRoaring, CrbmStorageChunkSource } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
 import { splitId } from '@/core/bit-route';
 import { collect } from './helpers/loaded';
 import { bulkLoadCrbmGeneration } from './helpers/bulk-load';
+import { brandAsBackend } from '@/core/ports';
+import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
+import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 
 /**
  * End-to-end: the engine reading a real on-disk `.crbm` generation through `CrbmStorageChunkSource` →
@@ -91,7 +88,7 @@ describe('engine over LocalFs storage (.crbm)', () => {
     const storage = new LocalFsStorageDriver(root);
     const registry = new LocalFsRegistryDriver(root);
     const fresh = (): CloudRoaring =>
-      new CloudRoaring({ storage: createBackend({ storage, registry }) });
+      new CloudRoaring({ storage: brandAsBackend({ storage, registry }) });
 
     await bulkLoadCrbmGeneration(storage, { segment: 'seg', generation: 0 }, [1, 2, 3, 100], {
       registry,
@@ -115,7 +112,7 @@ describe('engine over LocalFs storage (.crbm)', () => {
       registry,
     });
 
-    const seg = new CloudRoaring({ storage: createBackend({ storage, registry }) }).segment('seg');
+    const seg = new CloudRoaring({ storage: brandAsBackend({ storage, registry }) }).segment('seg');
     expect(await collect(seg.iterate())).toEqual([1, 3, 70_000]);
     expect(await seg.has(2)).toBe(false); // superseded, not merged: a load replaces the set
     expect(await seg.count()).toBe(3);

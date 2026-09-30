@@ -1,13 +1,8 @@
-import {
-  BudgetExceededError,
-  CloudRoaring,
-  MemoryStorage,
-  MIN_EXPIRES_AT_MS,
-  createBackend,
-} from '@/index';
+import { BudgetExceededError, CloudRoaring, MemoryStorage, MIN_EXPIRES_AT_MS } from '@/index';
 import { DEFAULT_MAX_SCAN_SEGMENTS } from '@/core/registry-scan';
 import type { RegistryRecord } from '@/core/ports';
 import { runConsistencyCheck, retireExpired } from '@cloudbitmaps/core';
+import { brandAsBackend } from '@/core/ports';
 
 // The DR consistency check bounds its registry scan, like every other enumeration in the library.
 //
@@ -84,7 +79,7 @@ describe('consistency check bounds its registry scan', () => {
       get: (t, p, rx) => (p === 'list' ? () => reg.list() : (Reflect.get(t, p, rx) as unknown)),
     });
     const store = new CloudRoaring({
-      storage: createBackend({ storage: backend.storage, registry }),
+      storage: brandAsBackend({ storage: backend.storage, registry }),
       retry: false,
     });
     const err = (await store.checkConsistency().catch((e: unknown) => e)) as Error;

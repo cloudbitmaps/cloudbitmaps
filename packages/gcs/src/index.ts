@@ -20,9 +20,5 @@
  * package builds against is `@cloudbitmaps/core/driver-kit`, the declared contract for a driver — the same
  * surface a third-party driver would use.
  */
-export { GcsStorageDriver } from './storage';
-export type { GcsStorageDriverOptions } from './storage';
-export { GcsRegistryDriver } from './registry';
-export type { GcsRegistryDriverOptions } from './registry';
 export { GcsStorage } from './backend';
 export type { GcsStorageOptions } from './backend';

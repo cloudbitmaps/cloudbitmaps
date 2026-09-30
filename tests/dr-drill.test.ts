@@ -1,17 +1,13 @@
 import { cpSync, mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  createBackend,
-  CloudRoaring,
-  IntegrityError,
-  LocalFsStorageDriver,
-  LocalFsRegistryDriver,
-  NotFoundError,
-} from '@/index';
+import { CloudRoaring, IntegrityError, NotFoundError } from '@/index';
 import type { AuditEvent, Segment, SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from './helpers/bulk-load';
 import { runConsistencyCheck } from '@cloudbitmaps/core';
+import { brandAsBackend } from '@/core/ports';
+import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
+import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 
 /**
  * Executable DR drill — the [disaster-recovery runbook](docs/guide/disaster-recovery.md)
@@ -52,7 +48,7 @@ function stores(root: string) {
   const storage = new LocalFsStorageDriver(root);
   const registry = new LocalFsRegistryDriver(root, { now: () => Date.now() });
   const store = new CloudRoaring({
-    storage: createBackend({ storage, registry }),
+    storage: brandAsBackend({ storage, registry }),
     retry: false,
   });
   return { storage, registry, store };

@@ -1,10 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import {
-  createBackend,
   MemoryStorage,
   CloudRoaring,
   CrbmStorageChunkSource,
-  MemoryStorageDriver,
   RecordingAuditSink,
   destroySegment,
 } from '@/index';
@@ -19,6 +17,8 @@ import {
 } from '@/core/errors';
 import { collect, loadedStore } from '../helpers/loaded';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { brandAsBackend } from '@/core/ports';
+import { MemoryStorageDriver } from '@/drivers/memory';
 
 /**
  * `subjectReport` (Art. 15) and `eraseSubject` (Art. 17) — the store-level admin scans over every registered
@@ -146,7 +146,7 @@ describe('subjectReport', () => {
     // A segment whose read faults must make the report THROW — never silently omit a (possible) member.
     const store = new CloudRoaring({
       // raw objects behind a poisoned read, paired with the real registry that resolves generations
-      storage: createBackend({
+      storage: brandAsBackend({
         storage: poisonStorageReadOf(w.storage, 'a'),
         registry: w.registry,
       }),
@@ -320,7 +320,7 @@ describe('eraseSubject', () => {
     const audit = new RecordingAuditSink();
 
     const res = await new CloudRoaring({
-      storage: createBackend({ storage: storage, registry: w.registry }),
+      storage: brandAsBackend({ storage: storage, registry: w.registry }),
       retry: false,
     }).eraseSubject(1, {
       namespace: NS,
@@ -363,7 +363,7 @@ describe('eraseSubject', () => {
     for (const s of ['a', 'b', 'poison']) await w.seed(s, [1, 2]);
     const store = new CloudRoaring({
       // bites when the rewrite opens `poison`'s generation
-      storage: createBackend({
+      storage: brandAsBackend({
         storage: poisonStorageReadOf(w.storage, 'poison'),
         registry: w.registry,
       }),
@@ -397,7 +397,7 @@ describe('eraseSubject', () => {
     );
 
     const res = await new CloudRoaring({
-      storage: createBackend({ storage: storage, registry: w.registry }),
+      storage: brandAsBackend({ storage: storage, registry: w.registry }),
       retry: false,
     }).eraseSubject(1, {
       allNamespaces: true,

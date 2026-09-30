@@ -22,9 +22,5 @@
  * package builds against is `@cloudbitmaps/core/driver-kit`, the declared contract for a driver — the same
  * surface a third-party driver would use.
  */
-export { AzureBlobStorageDriver } from './storage';
-export type { AzureBlobStorageDriverOptions } from './storage';
-export { AzureBlobRegistryDriver } from './registry';
-export type { AzureBlobRegistryDriverOptions } from './registry';
 export { AzureBlobStorage } from './backend';
 export type { AzureBlobStorageOptions } from './backend';

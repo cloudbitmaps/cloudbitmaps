@@ -7,18 +7,19 @@
  *
  *  - {@link seedSegment} — populate a `MemoryStorageChunkSource` chunk-by-chunk. No `.crbm`, no registry: the
  *    engine's routing/combine logic under test with nothing else in the way.
- *  - {@link loadedStore} / {@link load} — a real `CloudRoaring` over `MemoryStorageDriver` + `MemoryRegistryDriver`,
+ *  - {@link loadedStore} / {@link load} — a real `CloudRoaring` over `MemoryStorage`,
  *    every segment written by the loader `store.load()` is built on, and published: the objects and pointer
  *    production stores, and the fixture for anything that touches generations, the registry, or the lifecycle
  *    helpers.
  */
 import { MemoryStorageChunkSource } from './memory-chunk-source';
-import { MemoryStorage, CloudRoaring, MemoryStorageDriver, MemoryRegistryDriver } from '@/index';
+import { MemoryStorage, CloudRoaring } from '@/index';
 import type { CloudRoaringOptions, SegmentRef } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from './bulk-load';
 import type { BulkLoadResult } from './bulk-load';
 import { splitId } from '@cloudbitmaps/core';
+import type { IRegistryDriver, IStorageDriver } from '@/core/ports';
 
 /** Normalise a segment name or ref to a ref. */
 export function asRef(seg: string | SegmentRef): SegmentRef {
@@ -63,8 +64,8 @@ export interface LoadedStore {
   readonly store: CloudRoaring;
   /** The backend both halves came from — pass this to build a second store over the same data. */
   readonly backend: MemoryStorage;
-  readonly storage: MemoryStorageDriver;
-  readonly registry: MemoryRegistryDriver;
+  readonly storage: IStorageDriver;
+  readonly registry: IRegistryDriver;
   /** Load `ids` as the next generation of `seg` and publish it — the production write path. */
   load(
     seg: string | SegmentRef,
@@ -73,7 +74,7 @@ export interface LoadedStore {
 }
 
 /**
- * A `CloudRoaring` over `MemoryStorageDriver` + `MemoryRegistryDriver`, with every entry of `segments` loaded as
+ * A `CloudRoaring` over `MemoryStorage`, with every entry of `segments` loaded as
  * generation 0 through `bulkLoadCrbmGeneration` (+ publish). `load()` writes further generations.
  *
  * **`cache.genTtlMs` defaults to `0` (no timed refresh) when the caller passes neither a `seams.clock` nor a

@@ -261,8 +261,8 @@ const STORAGE_BACKEND_BRAND: unique symbol = Symbol.for('cloudbitmaps.storage-ba
  * remove, and it was reachable in five lines.
  *
  * So a backend comes from `MemoryStorage`, `LocalFsStorage`, `S3Storage`, `GcsStorage` or
- * `AzureBlobStorage` — each deriving both halves from one bucket and one prefix — or from
- * {@link createBackend}, which is the same thing said on purpose. The halves stay readable as `.storage` /
+ * `AzureBlobStorage` — each deriving both halves from one bucket and one prefix. A driver author composing halves
+ * of their own says so on purpose, with {@link brandAsBackend}. The halves stay readable as `.storage` /
  * `.registry`, because the free functions genuinely need them.
  *
  * **What this stops is the accident, not a determined caller.** The brand is a registered symbol, so it can
@@ -279,36 +279,51 @@ export interface StorageBackend {
 }
 
 /**
- * Build a backend from two halves you supply yourself.
+ * The brand key, for the type-only `declare` field a backend class carries.
  *
- * **Reach for a backend class first** — `MemoryStorage`, `LocalFsStorage`, `S3Storage`, `GcsStorage`,
- * `AzureBlobStorage`. Each derives both halves from one bucket and one prefix, so they cannot disagree, and
- * that is the whole reason the classes exist.
+ * Exported from `@cloudbitmaps/core/driver-kit` and part of the driver contract: a third-party storage
+ * package needs it to declare the field that {@link brandAsBackend} then stamps at runtime.
+ */
+export const STORAGE_BACKEND: typeof STORAGE_BACKEND_BRAND = STORAGE_BACKEND_BRAND;
+
+/**
+ * Stamp the brand on a backend, **non-enumerably**, after checking both halves are drivers. Returns `target`.
  *
- * This is the door for the cases a class cannot express, and they are real: a driver wrapped for auditing,
- * metrics, tenant scoping or client-side encryption; a registry in a database you already run; a
- * fault-injecting double in a test. What it is NOT is a shortcut — naming it is the point. The plain
- * `{ storage, registry }` literal is refused precisely because it let the two halves come from unrelated
- * places by accident, and answer **empty** rather than fail.
+ * This is the driver author's door, and it works on a backend class (`brandAsBackend(this)` as the last line of
+ * its constructor) and on a plain `{ storage, registry }` object alike — the latter is how a backend of your
+ * own halves is built: a driver wrapped for auditing, metrics, tenant scoping or client-side encryption, or
+ * paired with a registry in a database you already run. An application does not need it: it gets both halves
+ * from one backend class, which derives them from one bucket and one prefix so they cannot disagree.
+ *
+ * It throws {@link ValidationError} when `storage` has no `putImmutable` or `registry` has no `compareAndSwap`,
+ * so a half that is not a driver is refused here rather than at its first write.
  *
  * It cannot check that the halves agree: `IStorageDriver` and `IRegistryDriver` do not expose a location, so
- * nothing here can compare one. Calling this is you taking that on.
+ * nothing here can compare one. Branding two unrelated halves is you taking that on — the plain
+ * `{ storage, registry }` literal is refused by the store precisely because it let the two halves come from
+ * unrelated places by accident, and answer **empty** rather than fail.
+ *
+ * Non-enumerable is load-bearing, not tidiness. A class field (`readonly [BRAND] = true`) emits an
+ * *enumerable* own property, and spread and `Object.assign` copy exactly those — so
+ * `{ ...backend, registry: other.registry }` carried the brand and was accepted, reproducing the silent-empty
+ * bug the brand exists to close. This does not make the brand unforgeable — the symbol is registered, so anyone
+ * who wants it can write `Symbol.for('cloudbitmaps.storage-backend')`. That is deliberate effort equivalent to
+ * calling this function, and it is not what the check is for. The check is for the accident.
  */
-export function createBackend(halves: {
-  readonly storage: IStorageDriver;
-  readonly registry: IRegistryDriver;
-}): StorageBackend {
-  if (halves === null || typeof halves !== 'object') {
-    throw new ValidationError('createBackend needs `{ storage, registry }`');
+export function brandAsBackend<T extends { storage: IStorageDriver; registry: IRegistryDriver }>(
+  target: T,
+): T & StorageBackend {
+  if (target === null || typeof target !== 'object') {
+    throw new ValidationError('brandAsBackend needs `{ storage, registry }`');
   }
-  const { storage, registry } = halves;
+  const { storage, registry } = target;
   if (
     storage === null ||
     typeof storage !== 'object' ||
     typeof storage.putImmutable !== 'function'
   ) {
     throw new ValidationError(
-      'createBackend: `storage` must be an IStorageDriver (it has no `putImmutable`)',
+      'brandAsBackend: `storage` must be an IStorageDriver (it has no `putImmutable`)',
     );
   }
   if (
@@ -317,36 +332,9 @@ export function createBackend(halves: {
     typeof registry.compareAndSwap !== 'function'
   ) {
     throw new ValidationError(
-      'createBackend: `registry` must be an IRegistryDriver (it has no `compareAndSwap`)',
+      'brandAsBackend: `registry` must be an IRegistryDriver (it has no `compareAndSwap`)',
     );
   }
-  return brandAsBackend({ storage, registry });
-}
-
-/**
- * Stamp the brand on a backend, **non-enumerably**.
- *
- * Non-enumerable is load-bearing, not tidiness. A class field (`readonly [BRAND] = true`) emits an
- * *enumerable* own property, and spread and `Object.assign` copy exactly those — so
- * `{ ...backend, registry: other.registry }` carried the brand and was accepted, reproducing the silent-empty
- * bug this whole thing exists to close. That spelling is also the most idiomatic way a JS developer swaps one
- * half, which means the audience `createBackend` was added for walked straight past it.
- *
- * This does not make the brand unforgeable — the symbol is registered, so anyone who wants it can write
- * `Symbol.for('cloudbitmaps.storage-backend')`. That is deliberate effort equivalent to calling
- * `createBackend`, and it is not what the check is for. The check is for the accident.
- */
-/**
- * The brand key, for the type-only `declare` field a backend class carries.
- *
- * Exported from `@cloudbitmaps/core/driver-kit` and part of the driver contract: a third-party storage
- * package needs it to declare the field that {@link brandAsBackend} then stamps at runtime.
- */
-export const STORAGE_BACKEND: typeof STORAGE_BACKEND_BRAND = STORAGE_BACKEND_BRAND;
-
-export function brandAsBackend<T extends { storage: IStorageDriver; registry: IRegistryDriver }>(
-  target: T,
-): T & StorageBackend {
   Object.defineProperty(target, STORAGE_BACKEND_BRAND, {
     value: true,
     enumerable: false,
@@ -357,7 +345,7 @@ export function brandAsBackend<T extends { storage: IStorageDriver; registry: IR
 }
 
 /**
- * Is this a branded backend — from a backend class or from {@link createBackend}?
+ * Is this a branded backend — from a backend class or from {@link brandAsBackend}?
  *
  * Checks the brand, not the shape — see {@link StorageBackend} for why the shape alone is not enough.
  */

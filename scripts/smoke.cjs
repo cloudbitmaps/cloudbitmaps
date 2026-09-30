@@ -200,12 +200,7 @@ function entriesOf(pkgDir) {
 // narrowest round-trip that actually exercises the native codec through the built bundle — the ids span two
 // 16-bit chunks, so chunk routing and the roaring encode/decode both run rather than a single-container no-op.
 async function exerciseCore(label, m) {
-  for (const name of [
-    'CloudRoaring',
-    'MemoryStorageDriver',
-    'MemoryRegistryDriver',
-    'MemoryStorage',
-  ]) {
+  for (const name of ['CloudRoaring', 'MemoryStorage']) {
     if (m[name] == null) throw new Error(`${label}: missing export ${name}`);
   }
   if (typeof m.CloudRoaring.estimateCost !== 'function')
@@ -228,7 +223,7 @@ async function exerciseCore(label, m) {
  * catching it would `instanceof`-check, and the check silently stops matching — defeating transient-retry
  * and publish-race handling with no error of its own. The brand-based predicates must classify the error
  * anyway. This asserts that against the BUILT packages, where the whole test suite — one source graph —
- * cannot see it. Trigger: the S3 registry driver validates its `prefix` synchronously in the constructor and
+ * cannot see it. Trigger: the S3 backend validates its `prefix` synchronously in the constructor and
  * throws a ValidationError from its own copy.
  *
  * WHICH BOUNDARY IS LOAD-BEARING. Not the module format: the packages are ESM-only, and `require()` resolves to
@@ -253,7 +248,7 @@ async function exerciseCore(label, m) {
 function exerciseCrossBundleErrors(label, coreMod, driverMod, storeMod = coreMod) {
   let caught;
   try {
-    new driverMod.S3RegistryDriver({ client: {}, bucket: 'b', prefix: '..' });
+    new driverMod.S3Storage({ bucket: 'b', region: 'us-east-1', prefix: '..' });
   } catch (e) {
     caught = e;
   }
@@ -310,13 +305,13 @@ function assertPackagesShareOneCopy(coreMod, flavorMod, driverMod) {
   }
   let caught;
   try {
-    new driverMod.S3RegistryDriver({ client: {}, bucket: 'b', prefix: '..' });
+    new driverMod.S3Storage({ bucket: 'b', region: 'us-east-1', prefix: '..' });
   } catch (e) {
     caught = e;
   }
   if (!(caught instanceof coreMod.ValidationError)) {
     throw new Error(
-      'an error thrown by the S3 driver package is not `instanceof` the class core exports, so the driver ' +
+      'an error thrown by the S3 backend is not `instanceof` the class core exports, so the driver ' +
         'package is carrying its own copy of core.',
     );
   }

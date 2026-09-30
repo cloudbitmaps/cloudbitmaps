@@ -33,10 +33,10 @@ both. Each package is its own entry point, and `@cloudbitmaps/roaring` re-export
 an application uses, as the next paragraph says:
 
 ```
-@cloudbitmaps/roaring         the store + memory/localfs drivers + the errors, helpers and types an application uses
-@cloudbitmaps/s3              S3Storage, S3StorageDriver, S3RegistryDriver        (dep: @aws-sdk/client-s3)
-@cloudbitmaps/gcs             GcsStorage, GcsStorageDriver, GcsRegistryDriver     (dep: @google-cloud/storage)
-@cloudbitmaps/azure-blob      AzureBlobStorage, …StorageDriver, …RegistryDriver   (dep: @azure/storage-blob)
+@cloudbitmaps/roaring         the store + memory/localfs backends + the errors, helpers and types an application uses
+@cloudbitmaps/s3              S3Storage                                           (dep: @aws-sdk/client-s3)
+@cloudbitmaps/gcs             GcsStorage                                          (dep: @google-cloud/storage)
+@cloudbitmaps/azure-blob      AzureBlobStorage                                    (dep: @azure/storage-blob)
 @cloudbitmaps/core            the engine, the standalone forms of the store's methods,  (flavor and driver authors only)
                               the retry and budget internals
 @cloudbitmaps/core/driver-kit the declared contract for writing a driver package   (driver authors only)
@@ -66,26 +66,34 @@ package: doing so would put that SDK back into every install.
 what gives one-read generation resolution, encrypted segments, the `*Into` verbs and every lifecycle helper.
 Everything else is optional tuning with sensible defaults — see [`CloudRoaringOptions`](#construction--result-types).
 
-**Normally you pick a backend, not drivers.** A `StorageBackend` carries both halves — the generations and the
+**You pick a backend.** A `StorageBackend` carries both halves — the generations and the
 pointer — configured from one bucket and one prefix, which is what makes them impossible to mismatch:
 
 | Backend | Import | Construct |
 |---|---|---|
 | `MemoryStorage` (`MemoryStorageOptions`) | `@cloudbitmaps/roaring` | `new MemoryStorage({ now? }?)` |
 | `LocalFsStorage` (`LocalFsStorageOptions`) | `@cloudbitmaps/roaring` | `new LocalFsStorage('/var/lib/cloudbitmaps', { now? }?)` — generations under `<root>/storage`, pointers under `<root>/registry`, which is also the layout `export-segments` expects |
-| `S3Storage` | `@cloudbitmaps/s3` | `new S3Storage({ bucket, prefix?, client?, region?, endpoint?, pathStyle?, credentials?, now? })` |
-| `GcsStorage` | `@cloudbitmaps/gcs` | `new GcsStorage({ bucket, prefix?, client?, projectId?, apiEndpoint?, now? })` |
-| `AzureBlobStorage` | `@cloudbitmaps/azure-blob` | `new AzureBlobStorage({ containerClient, prefix?, now? })` or `({ connectionString, container, prefix?, now? })` — one or the other, and both is refused |
+| `S3Storage` | `@cloudbitmaps/s3` | `new S3Storage({ bucket, prefix?, client?, region?, endpoint?, pathStyle?, credentials?, maxObjectBytes?, partBytes?, now? })` |
+| `GcsStorage` | `@cloudbitmaps/gcs` | `new GcsStorage({ bucket, prefix?, client?, projectId?, apiEndpoint?, maxObjectBytes?, simpleUploadThresholdBytes?, now? })` |
+| `AzureBlobStorage` | `@cloudbitmaps/azure-blob` | `new AzureBlobStorage({ containerClient, prefix?, maxObjectBytes?, blockBytes?, now? })` or `({ connectionString, container, prefix?, maxObjectBytes?, blockBytes?, now? })` — one or the other, and both is refused |
 
-**A backend comes from one of these five classes, from `createBackend`, or from a class of your own that stamps
-the brand (below).** A plain `{ storage, registry }` object is
+**A backend comes from one of these five classes, or from a class of your own that stamps the brand
+([driver kit](#driver-kit--what-you-need-to-implement-a-driver)).** A plain `{ storage, registry }` object is
 refused — it is also the shape of the deps of core's standalone functions, so accepting it would let a store be built from
 halves belonging to two *unrelated* stores, which would construct happily and then read as **empty** because
 the pointer it consulted lived where nothing had been written.
 
-| function | what it is for |
-|---|---|
-| `createBackend({ storage, registry })` → `StorageBackend` | the deliberate door, for what a class cannot express: a driver wrapped for auditing/metrics/tenant-scoping, a registry in a database you already run, a fault-injecting double in a test. It validates each half, but **cannot** check that the two agree — the driver interfaces expose no location — so calling it is you taking that on. |
+**The size settings are backend options.** They size the storage half's uploads and are validated where the backend
+is built:
+
+| Backend | Option | Default | What it does |
+|---|---|---|---|
+| `S3Storage` | `partBytes` | 8 MiB, raised to at least S3's 5 MiB minimum | multipart part size, and so the peak write memory |
+| `S3Storage` | `maxObjectBytes` | `partBytes` × 10,000 (about 80 GiB at the default) | the largest object the backend will write and advertise; raise it and `partBytes` grows so the 10,000-part limit still covers it, up to S3's 5 TiB |
+| `GcsStorage` | `simpleUploadThresholdBytes` | 8 MiB | an object up to this size is one simple request; a larger one is a resumable stream |
+| `GcsStorage` | `maxObjectBytes` | 5 TiB, GCS's per-object maximum | the largest object the backend will write and advertise; set it lower to fail fast on a runaway write |
+| `AzureBlobStorage` | `blockBytes` | 8 MiB | staged block size, and so the peak write memory; a positive safe integer |
+| `AzureBlobStorage` | `maxObjectBytes` | `blockBytes` × 50,000 (about 400 GiB at the default) | the largest blob the backend will write and advertise; raise it and `blockBytes` grows so the 50,000-block limit still covers it; a positive safe integer |
 
 Each cloud backend builds its own SDK client unless you pass one. Every backend exposes both halves as `.storage`
 and `.registry`, and accepts an injected `now` for deterministic tests. The three cloud backends refuse an option
@@ -95,17 +103,8 @@ key they do not take, by name, as the store does.
 > it builds a store with no pointer: cleartext and read-only, as the raw-driver paragraph below describes. Pass
 > the backend itself.
 
-The individual drivers are exported too, for wiring a backend class does not cover — a different store for the
-pointer than for the objects, a decorator around one half, or a driver option the backend class does not take,
-such as `S3StorageDriver`'s `partBytes`. Combine them with `createBackend`. A class of your own that implements
-`StorageBackend` is recognised too, if it stamps the brand with `brandAsBackend` from
-[the driver kit](#driver-kit--what-you-need-to-implement-a-driver):
-
-| Slot | in-memory | local disk | cloud |
-|---|---|---|---|
-| **storage** (the `.crbm` generations) | `MemoryStorageDriver` | `LocalFsStorageDriver` | `S3StorageDriver` · `GcsStorageDriver` · `AzureBlobStorageDriver` |
-| **registry** (the `currentGen` pointer + wrapped keys) | `MemoryRegistryDriver` | `LocalFsRegistryDriver` | `S3RegistryDriver` · `GcsRegistryDriver` · `AzureBlobRegistryDriver` |
-| **keystore** (optional encryption) | `InProcessKeystore` (BYOK) | ← same | ← same |
+The **keystore** (optional encryption) is separate from the backend: `InProcessKeystore` (BYOK), passed as
+`encryption.keystore`.
 
 Pass a **raw** `IStorageDriver` as `storage` and the store builds the `.crbm` reader (`CrbmStorageChunkSource`) over it with
 **no registry** — generations then resolve by list-scan, so the store is **cleartext and read-only**; or pass a pre-built `StorageChunkSource` (a
@@ -289,8 +288,8 @@ error names each one and lists the keys the store or the group does take. A grou
 would be silent — a dropped `encryption.required` reads cleartext, a dropped `seams.clock` makes a deterministic
 job non-deterministic — so being ignored would be worse than being rejected. `S3Storage`, `GcsStorage` and
 `AzureBlobStorage` each refuse a key they do not take the same way, naming it and the keys they take: a client
-goes in `client` (`containerClient` on Azure), so `GcsStorage` refuses `storage`, the name `GcsStorageDriver`
-gives the same client, and `S3Storage` refuses `partBytes`, which is an `S3StorageDriver` option.
+goes in `client` (`containerClient` on Azure), so `GcsStorage` refuses `storage`, and each refuses another
+backend's size setting, such as `S3Storage` refusing `blockBytes`.
 
 ### Generation bookkeeping & erasure
 
@@ -495,11 +494,26 @@ listed below.
 
 </details>
 
+**Pairing halves of your own.** An application gets both halves from one backend class, which builds them from one
+bucket and one prefix so they cannot disagree. A driver author who wants a backend of halves of their own — a
+backend's `.storage` wrapped for auditing, metrics or tenant scoping, or paired with a registry in a database you
+already run — brands a plain object with the ports:
+
+```ts
+import { brandAsBackend } from '@cloudbitmaps/core/driver-kit';
+
+const backend = brandAsBackend({ storage: auditing(inner.storage), registry: inner.registry });
+const store = new CloudRoaring({ storage: backend });
+```
+
+`brandAsBackend` cannot check that the two halves agree: `IStorageDriver` and `IRegistryDriver` expose no location, so
+nothing can compare one. Branding them is you taking that on.
+
 | Symbol | What it does |
 |---|---|
 | `IStorageDriver` · `IRegistryDriver` | the two ports a driver implements — the object tier and the pointer row. A registry driver that does NOT extend `ObjectStoreRegistry` also needs `Token`, `RegCaps`, `RegistryRecord`, `NewRegistryRecord` and `RegistryPatch` to write its method signatures; those come from `@cloudbitmaps/core`'s main entry |
 | `StorageBackend` · `StorageCaps` · `SegmentRef` · `GenKey` | the backend pair, a driver's declared capabilities, and the two key shapes |
-| `brandAsBackend` · `STORAGE_BACKEND` | stamp the cross-package brand on a backend class, and the symbol it uses. A store accepts a backend by brand, never by `instanceof`, so a backend built in one package is recognised in another |
+| `brandAsBackend` · `STORAGE_BACKEND` | stamp the cross-package brand on a backend, and the symbol a backend class declares it with. A store accepts a backend by brand, never by `instanceof`, so a backend built in one package is recognised in another. It checks that `storage` has a `putImmutable` and `registry` a `compareAndSwap`, throwing `ValidationError` otherwise, and returns the object it was given. It takes a class (`brandAsBackend(this)` in the constructor) or a plain `{ storage, registry }` object, which is how halves of your own are paired — see below |
 | `Token` · `segmentKey` | **from `@cloudbitmaps/core`, not from `driver-kit`.** The opaque compare-and-swap token (unique per write, compared by equality only, ABA-safe across delete→recreate) and the canonical segment key-string helper. A driver package may import core's main entry for these |
 | `ObjectStoreRegistry` | compare-and-swap over a plain object store. Every cloud registry driver is a thin adapter over this, which is why all three pass one conformance suite — the OCC semantics live here, not in the drivers |
 | `ObjectRegistryStore` · `ObjectRow` | the minimal store a driver hands `ObjectStoreRegistry`, and the row it persists |
@@ -558,13 +572,6 @@ with what it listed before the call. The guide's
 
 `StorageCaps` · `RegCaps` · `ChunkRef` · `GenKey` · `RegistryRecord` · `NewRegistryRecord` · `RegistryPatch` ·
 `RegistryStatus` (`'active' | 'destroyed'`) · `GovernanceMeta` · `SegmentSize`
-
-### Driver option types (one per driver package)
-
-`MemoryRegistryDriverOptions` · `LocalFsRegistryDriverOptions` · `InProcessKeystoreOptions` ·
-`S3StorageDriverOptions` · `S3RegistryDriverOptions` ·
-`GcsStorageDriverOptions` · `GcsRegistryDriverOptions` · `AzureBlobStorageDriverOptions` ·
-`AzureBlobRegistryDriverOptions`
 
 ---
 
@@ -634,9 +641,7 @@ does not re-export. A driver author told elsewhere on this page to import `Token
 
 ### `@cloudbitmaps/roaring` — values
 
-`CloudRoaring` · `Segment` · `MemoryStorage` · `LocalFsStorage` · `createBackend` ·
-`MemoryStorageDriver` · `MemoryRegistryDriver` ·
-`LocalFsStorageDriver` · `LocalFsRegistryDriver` · `CrbmStorageChunkSource` ·
+`CloudRoaring` · `Segment` · `MemoryStorage` · `LocalFsStorage` · `CrbmStorageChunkSource` ·
 `destroySegment` · `eraseNamespace` · `InProcessKeystore` · `NodeAead` · `aadFor` ·
 `readRetentionPolicy` · `MIN_EXPIRES_AT_MS` ·
 `excludingReservedRows` · `DEFAULT_RETRY_POLICY` ·
@@ -656,8 +661,7 @@ does not re-export. A driver author told elsewhere on this page to import `Token
 · `AndNotIntoOptions` · `IdRange` · `LoadOptions` · `LoadGuard`
 · `LoadResult` · `LoadRefusal` · `GenerationEntry` · `RollbackResult` · `SegmentInfo`
 · `CrbmStorageChunkSourceOptions` ·
-`MemoryStorageOptions` · `LocalFsStorageOptions` · `MemoryRegistryDriverOptions` ·
-`LocalFsRegistryDriverOptions` · `ExportFormat` · `ExportSink` · `ExportWriter` · `ExportOptions` ·
+`MemoryStorageOptions` · `LocalFsStorageOptions` · `ExportFormat` · `ExportSink` · `ExportWriter` · `ExportOptions` ·
 `ExportedSegment` · `ExportFailure` · `ExportManifest` · `IStorageDriver` · `IRegistryDriver` ·
 `StorageBackend` · `StorageChunkSource` · `PinnedAt` · `PinnedObject` · `SegmentRef` · `ChunkRef` · `GenKey` · `StorageCaps`
 · `RegCaps` · `RegistryRecord` · `NewRegistryRecord` · `RegistryPatch` · `RegistryStatus` · `GovernanceMeta`
@@ -710,8 +714,7 @@ Boundary helpers and errors: `validateSegmentRef` · `BlobSink` · `ValidationEr
 
 `S3Storage` · `S3StorageOptions` — the backend, both halves in one bucket.
 
-`S3StorageDriver` · `S3RegistryDriver` · `S3StorageDriverOptions` · `S3RegistryDriverOptions` — the halves.
-Each conditional write they make — the write-once `PutObject`, a multipart upload's `CompleteMultipartUpload`, and
+Each conditional write the backend makes — the write-once `PutObject`, a multipart upload's `CompleteMultipartUpload`, and
 the registry's create, compare-and-swap and delete, which writes a tombstone — is sent once, with the SDK's retry off for that request alone, whether
 the client is one you passed or one `S3Storage` built. Every other request keeps the client's retry. A transient
 failure of a conditional write throws `TransientError`, and the write may or may not have landed
@@ -720,10 +723,9 @@ failure of a conditional write throws `TransientError`, and the write may or may
 ### `@cloudbitmaps/gcs`
 
 `GcsStorage` · `GcsStorageOptions` — the backend, both halves in one bucket. It builds its own client, which
-also sidesteps a confusing collision: `@google-cloud/storage` calls its client class `Storage`, so the
-lower-level driver option that takes it is `storage` too.
+also sidesteps a confusing collision: `@google-cloud/storage` calls its client class `Storage`, which reads as
+this library's word for the durable tier, so the backend takes it as `client`.
 
-`GcsStorageDriver` · `GcsRegistryDriver` · `GcsStorageDriverOptions` · `GcsRegistryDriverOptions` — the halves.
 The registry lets a GCS deployment run on **one bucket
 alone**: compare-and-swap rides GCS object preconditions (`ifGenerationMatch: 0` to create, `ifGenerationMatch:
 <generation>` to swap), so no second service is needed to hold the `currentGen` pointer. The registry's writes, and
@@ -739,9 +741,7 @@ that carries its own id is a success and any other a `WriteConflictError`
 `AzureBlobStorage` · `AzureBlobStorageOptions` — the backend, both halves in one container. Give it a
 `containerClient`, or a `connectionString` + `container` and it builds one.
 
-`AzureBlobStorageDriver` · `AzureBlobRegistryDriver` · `AzureBlobStorageDriverOptions` ·
-`AzureBlobRegistryDriverOptions` — the halves. Inject a
-container-scoped `ContainerClient`; write-once via `ifNoneMatch: '*'`. The registry lets an Azure deployment
+Generations are write-once via `ifNoneMatch: '*'`. The registry lets an Azure deployment
 run on **one container alone**: compare-and-swap rides blob conditions (`ifNoneMatch: '*'` to create,
 `ifMatch: <etag>` to swap), so no second service is needed to hold the `currentGen` pointer. Every request goes
 through the client's retry policy, the conditional writes included. Each conditional write carries a random id in

@@ -1,7 +1,7 @@
 /**
  * `@cloudbitmaps/core` — the codec-agnostic cloud engine behind the @cloudbitmaps family.
  *
- * Everything here is **independent of any bitmap codec**: the read engine, every storage driver, the `.crbm`
+ * Everything here is **independent of any bitmap codec**: the read engine, the SDK-free storage backends, the `.crbm`
  * format, the loaded store's write path (`loadSegment`: write, guard, publish, collect), encryption/crypto-shred, the registry,
  * the budget/consistency/eject machinery. Bitmaps are only ever constructed and combined through the
  * {@link CodecInterface} seam, so a *flavor* package (`@cloudbitmaps/roaring` today) supplies the codec and a
@@ -41,18 +41,13 @@ export { segmentKey } from './core/keys';
 // ---------------------------------------------------------------------------------------------------
 // The public surface. An application reaches most of these through its flavor package, which re-exports the ones it
 // needs by name; the rest of this entry is the flavor-author kit above and the standalone forms of the store's methods.
-// `createBackend` is how a caller supplies a half of its own; `isStorageBackend` tests the brand.
-export { createBackend, isStorageBackend } from './core/ports';
+// `isStorageBackend` tests the brand a backend class carries.
+export { isStorageBackend } from './core/ports';
 // ---------------------------------------------------------------------------------------------------
-export { MemoryStorageDriver, MemoryRegistryDriver } from './drivers/memory';
-export type { MemoryRegistryDriverOptions } from './drivers/memory';
-export { LocalFsStorageDriver } from './drivers/localfs/storage';
-export { LocalFsRegistryDriver } from './drivers/localfs/registry';
 // The two SDK-free backends: each states its location once, so the objects and the pointer cannot be
 // mismatched. Their cloud siblings ship in their own packages, where the SDK does.
 export { LocalFsStorage, MemoryStorage } from './drivers/backends';
 export type { LocalFsStorageOptions, MemoryStorageOptions } from './drivers/backends';
-export type { LocalFsRegistryDriverOptions } from './drivers/localfs/registry';
 // A storage source over the `.crbm` generations in an `IStorageDriver`.
 export { CrbmStorageChunkSource } from './core/crbm-storage-source';
 export type { CrbmStorageChunkSourceOptions, PinnedObject } from './core/crbm-storage-source';

@@ -1,13 +1,7 @@
 import { SafeBitmap } from '@/roaring-codec';
 import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { randomBytes } from 'node:crypto';
-import {
-  createBackend,
-  CloudRoaring,
-  CountingMetricsSink,
-  MemoryStorage,
-  MemoryRegistryDriver,
-} from '@/index';
+import { CloudRoaring, CountingMetricsSink, MemoryStorage } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { TransientError } from '@/core/errors';
 import type {
@@ -21,6 +15,8 @@ import type {
 import { KeyUnavailableError, ValidationError, BudgetExceededError } from '@/core/errors';
 import type { SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { brandAsBackend } from '@/core/ports';
+import { MemoryRegistryDriver } from '@/drivers/memory';
 
 /**
  * The store takes one required `storage` plus four groups (`cache`, `encryption`, `retry`, `seams`);
@@ -128,7 +124,7 @@ describe('grouped options reach the thing they configure', () => {
       list: (...a) => backend.storage.list(...a),
     };
     const store = new CloudRoaring({
-      storage: createBackend({ storage: counting, registry: backend.registry }),
+      storage: brandAsBackend({ storage: counting, registry: backend.registry }),
       cache,
     });
     for (let i = 0; i < 4; i++) {
@@ -405,7 +401,7 @@ describe('`retry` retries reads of segment data, and no write', () => {
     };
     const retries: number[] = [];
     const store = new CloudRoaring({
-      storage: createBackend({ storage, registry }),
+      storage: brandAsBackend({ storage, registry }),
       retry: { onRetry: ({ attempt }) => retries.push(attempt) },
       seams: { clock: { now: () => 0, sleep: () => Promise.resolve() }, rng: { next: () => 0 } },
     });

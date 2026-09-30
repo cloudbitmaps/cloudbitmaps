@@ -1,10 +1,10 @@
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { openGenerationReader, publishGeneration } from '@/core/crbm-storage-source';
 import { dropSegment } from '@/core/erasure';
-import { MemoryStorageDriver, MemoryRegistryDriver } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import type { IStorageDriver, SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 
 /**
  * A generation number identifies a generation only **within one incarnation of a name**. `nextGeneration`

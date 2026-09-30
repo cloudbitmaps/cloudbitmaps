@@ -292,10 +292,10 @@ no SDK for a service you do not use.
 
 | Install | Gives you | Pulls |
 |---|---|---|
-| `@cloudbitmaps/roaring` | `CloudRoaring` + the in-memory and local-filesystem drivers, loading, erasure, crypto, cost/metrics/audit seams, errors | `roaring`, `@cloudbitmaps/core` |
-| `@cloudbitmaps/s3` | `S3Storage` — and `S3StorageDriver` / `S3RegistryDriver` if you want the halves separately. S3 and every S3-compatible service: R2, MinIO, Ceph, Wasabi, B2 | `@aws-sdk/client-s3`, core |
-| `@cloudbitmaps/gcs` | `GcsStorage`, `GcsStorageDriver`, `GcsRegistryDriver` | `@google-cloud/storage`, core |
-| `@cloudbitmaps/azure-blob` | `AzureBlobStorage`, `AzureBlobStorageDriver`, `AzureBlobRegistryDriver` | `@azure/storage-blob`, core |
+| `@cloudbitmaps/roaring` | `CloudRoaring` + the in-memory and local-filesystem backends, loading, erasure, crypto, cost/metrics/audit seams, errors | `roaring`, `@cloudbitmaps/core` |
+| `@cloudbitmaps/s3` | `S3Storage` — S3 and every S3-compatible service: R2, MinIO, Ceph, Wasabi, B2 | `@aws-sdk/client-s3`, core |
+| `@cloudbitmaps/gcs` | `GcsStorage` | `@google-cloud/storage`, core |
+| `@cloudbitmaps/azure-blob` | `AzureBlobStorage` | `@azure/storage-blob`, core |
 | `export-segments` (CLI bin, in the flavor) | eject every segment to portable files (`roaring` \| `ndjson`) — your exit path | — |
 
 **Why by service rather than by cloud.** Each package speaks one storage service through one SDK, and a
@@ -377,22 +377,18 @@ written:
 | `GcsStorage` | `@cloudbitmaps/gcs` | `new GcsStorage({ bucket, prefix })` |
 | `AzureBlobStorage` | `@cloudbitmaps/azure-blob` | `new AzureBlobStorage({ connectionString, container })` |
 
-Underneath, each seam is still an independent, swappable driver — all pass the same conformance suite, so the
-same application code runs on any mix. Reach for these directly only when a backend cannot express your
-deployment (a registry in a database you already run, say):
+Underneath, a backend holds two halves behind the driver ports: the **storage** half that keeps the `.crbm`
+generations and the **registry** half that keeps the current-generation pointer. Every backend's halves pass the
+same conformance suite, so the same application code runs on any of them. An application never builds a half: it
+gets both from one backend class, and the size settings are that class's options (`partBytes` and `maxObjectBytes`
+on `S3Storage`, `simpleUploadThresholdBytes` and `maxObjectBytes` on `GcsStorage`, `blockBytes` and `maxObjectBytes`
+on `AzureBlobStorage`). Encryption's **keystore** is separate and optional: `InProcessKeystore` (BYOK), with KMS and
+Vault adapters a future package.
 
-| Seam | in-memory | local filesystem | cloud |
-|---|---|---|---|
-| **Storage** (the durable base) | `MemoryStorageDriver` | `LocalFsStorageDriver` | `S3StorageDriver` · `GcsStorageDriver` · `AzureBlobStorageDriver` |
-| **Registry** (current-gen pointer) | `MemoryRegistryDriver` | `LocalFsRegistryDriver` | `S3RegistryDriver` · `GcsRegistryDriver` · `AzureBlobRegistryDriver` |
-| **Keystore** (optional encryption) | `InProcessKeystore` (BYOK) | ← same | ← same (KMS/Vault adapters are a future package) |
-
-Mix freely: storage objects and the registry in **one bucket** is the whole deployment, on any of the three
-clouds — which is exactly what a backend builds for you. To put the registry somewhere else entirely, behind
-the `IRegistryDriver` interface, build the backend deliberately with
-`createBackend({ storage, registry })`. A plain object literal is refused, because a literal is how halves from
-two unrelated stores get paired by accident, which reads as an empty segment rather than an error. `createBackend`
-cannot check that your two halves agree either; calling it is you taking that on.
+Storage objects and the registry in **one bucket** is the whole deployment, on any of the three clouds — which is
+exactly what a backend builds for you. A driver author who wants halves of their own, such as a registry in a
+database you already run, pairs them with `brandAsBackend({ storage, registry })` from
+`@cloudbitmaps/core/driver-kit`; the [API reference's driver kit](docs/guide/api-reference.md#driver-kit--what-you-need-to-implement-a-driver) says how.
 
 ## The whole surface, in three steps
 
@@ -672,7 +668,7 @@ public roadmap tracks all of it: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 The library ships as the **`@cloudbitmaps`** family — one shared engine, pluggable codecs, pluggable
 storage. The repo is a pnpm workspace of five packages on two axes: `@cloudbitmaps/core` (the codec-agnostic
-engine, the `.crbm` format, the driver ports, and the SDK-free memory and local-filesystem drivers — zero
+engine, the `.crbm` format, the driver ports, and the SDK-free memory and local-filesystem backends — zero
 runtime dependencies), the **codec** axis `@cloudbitmaps/roaring` (the roaring codec, the `CloudRoaring`
 facade, and the `export-segments` CLI), and the **storage** axis `@cloudbitmaps/s3` · `/gcs` · `/azure-blob`,
 one package per service. You install one of each axis; core arrives as their dependency.
