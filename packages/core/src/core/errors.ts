@@ -1,7 +1,7 @@
 /**
- * Typed errors — callers learn *why* something failed, never by parsing strings. Retry is the driver
- * decorators' job, not the engine's: a driver classifies its backend's failures into this vocabulary, and
- * `withRetry` decides what is transient.
+ * Typed errors — callers learn *why* something failed, never by parsing strings. Retry is not the engine's job: a
+ * driver classifies its backend's failures into this vocabulary, and the store's read wrapper retries the
+ * transient ones through `withRetry`.
  */
 
 /**
@@ -87,8 +87,9 @@ export class BudgetExceededError extends CloudRoaringError {}
 export class KeyUnavailableError extends CloudRoaringError {}
 
 /**
- * A **transient** infrastructure fault that is safe to retry — throttling, a 5xx, a dropped connection,
- * a client-side request timeout. Drivers classify their backend's retryable faults and raise this (the
+ * A **transient** infrastructure fault — throttling, a 5xx, a dropped connection, a client-side request
+ * timeout. Retrying a read that failed this way is safe; a write that failed this way may still have landed, so
+ * its caller re-runs the call rather than replaying the request. Drivers classify their backend's retryable faults and raise this (the
  * SDK-specific knowledge stays in the SDK-specific driver); the retry layer (`core/retry`) retries **only**
  * this class, never a deterministic error like {@link ValidationError}, {@link IntegrityError},
  * {@link NotFoundError}, or {@link WriteConflictError} (retrying those is pointless or wrong). The original

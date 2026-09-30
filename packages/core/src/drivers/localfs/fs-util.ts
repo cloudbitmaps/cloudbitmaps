@@ -26,8 +26,9 @@ export const isFsTransient = (err: unknown): boolean =>
   err instanceof Error && TRANSIENT_FS_CODES.has((err as NodeError).code ?? '');
 
 /**
- * Reclassify a transient filesystem fault as a retryable {@link TransientError} (so the retry decorator can
- * ride it out); everything else — including the driver's own typed errors — propagates unchanged.
+ * Reclassify a transient filesystem fault as a retryable {@link TransientError}, so the store's read retry can
+ * ride it out and a write's caller can tell it from a deterministic failure; everything else — including the
+ * driver's own typed errors — propagates unchanged.
  */
 export const mapFsError = (err: unknown): unknown =>
   isFsTransient(err)

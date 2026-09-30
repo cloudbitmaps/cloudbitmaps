@@ -38,7 +38,8 @@ export interface RetryPolicy {
 /**
  * Conservative defaults: 4 attempts, 50ms → 100 → 200 (×2), capped at 2s, full jitter. Tuned for a cloud
  * backend's brief throttle/5xx blip — enough to ride out a transient fault without turning a hard outage
- * into a long hang. Override per store/driver if your latency budget differs.
+ * into a long hang. Override per store (`retry`) or per read source (`RetryingStorageChunkSource`) if your latency
+ * budget differs.
  */
 export const DEFAULT_RETRY_POLICY: RetryPolicy = {
   maxAttempts: 4,
@@ -85,8 +86,8 @@ export async function withRetry<T>(
   const retryable = deps.isRetryable ?? isTransientError;
   // `Math.max(1, x)` guards 0 and negatives but NOT NaN — `Math.max(1, NaN)` is NaN, and `1 <= NaN` is false,
   // so the loop below would never execute: `op()` never called, and the function rejects with the literal
-  // `undefined` from `lastErr`. Every write would silently no-op without touching the backend, and callers
-  // would catch a non-Error. Reachable from ordinary wiring — `maxAttempts: Number(process.env.X)` with the
+  // `undefined` from `lastErr`. Every retried read would fail without touching the backend, and callers would
+  // catch a non-Error. Reachable from ordinary wiring — `maxAttempts: Number(process.env.X)` with the
   // var unset is NaN. Fail loudly instead, and floor it so a fractional value can't sleep on a final attempt
   // that never happens.
   if (!Number.isFinite(policy.maxAttempts) || policy.maxAttempts < 1) {

@@ -255,9 +255,10 @@ export class S3StorageDriver implements IStorageDriver {
   }
 
   /**
-   * Reclassify a transient S3 fault (throttle/5xx/dropped connection) as a retryable {@link TransientError}
-   * so the retry decorator can ride it out; everything else propagates unchanged. The final fallback at every
-   * `client.send` site, so callers and the decorator only ever see typed errors.
+   * Reclassify a transient S3 fault (throttle/5xx/dropped connection) as a retryable {@link TransientError},
+   * so the store's read retry can ride it out and a write's caller can tell it from a deterministic failure;
+   * everything else propagates unchanged. The final fallback at every `client.send` site, so callers and the
+   * read retry only ever see typed errors.
    */
   private mapError(err: unknown): unknown {
     if (isTransient(err)) {

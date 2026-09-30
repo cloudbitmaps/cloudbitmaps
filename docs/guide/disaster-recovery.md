@@ -447,10 +447,12 @@ registry row). So:
 - **Loads published after the registry's restore point.** Their objects may still exist in storage, *above* the
   restored pointer. Reads never see them (the pointer is authoritative), `nextGeneration` skips past them, and
   `gcOrphanGenerations` never touches a generation at or above `currentGen` — so they sit there, billed, until
-  you act. The safe recovery is to **re-run the load from your source**: it writes the next generation and
-  supersedes the strays, which GC then collects. Do not hand-publish an object you cannot vouch for — a load that
-  crashed mid-write can leave a partial object above the pointer, and `publishGeneration` will point at it if
-  asked.
+  you act. The safe recovery is to **re-run the load from your source**: it writes the next generation above the
+  strays, which then sit below the pointer, where collection counts them within `keep` like any other generation.
+  Under the default `keep: 1` it keeps the newest stray and collects the rest, the restored generation included, so
+  pass a `keep` above the number of strays if the restored generation must stay a rollback target. Do not
+  hand-publish an object you cannot vouch for — a load that crashed mid-write can leave a partial object above the
+  pointer, and `publishGeneration` will point at it if asked.
 
 ## Deferred: self-healing rebuild from storage
 

@@ -227,9 +227,10 @@ export class AzureBlobStorageDriver implements IStorageDriver {
   }
 
   /**
-   * Reclassify a transient Azure fault (throttle/5xx/dropped connection) as a retryable {@link TransientError}
-   * so the retry decorator can ride it out; everything else propagates unchanged. The final fallback at every
-   * client-call site, so callers + the decorator only ever see typed errors.
+   * Reclassify a transient Azure fault (throttle/5xx/dropped connection) as a retryable {@link TransientError},
+   * so the store's read retry can ride it out and a write's caller can tell it from a deterministic failure;
+   * everything else propagates unchanged. The final fallback at every client-call site, so callers and the read
+   * retry only ever see typed errors.
    */
   private mapError(err: unknown): unknown {
     if (isTransient(err)) {

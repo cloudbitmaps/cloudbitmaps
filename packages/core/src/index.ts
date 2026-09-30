@@ -229,16 +229,15 @@ export type {
   ExportManifest,
 } from './export';
 
-// Resilience: the retry primitive + decorators + policy. `CloudRoaring` wires these by default; they're exported
-// so driver authors / advanced callers can wrap their own drivers or tune the policy.
+// Resilience: the retry primitive, the policy and its defaults, and the read-source wrapper `CloudRoaring` builds
+// around the source it reads segment data through, a caller's pre-built one included. Exported for a source read
+// outside a store (wrapping one that is then handed to the store multiplies each read's attempts), and so a caller
+// can retry a call of its own with `withRetry`. Nothing wraps a write: a conditional write replayed after it landed
+// reports that write as a conflict, so a write's caller re-runs the call or checks what landed.
 export { withRetry, DEFAULT_RETRY_POLICY } from './core/retry';
 export type { RetryPolicy, RetryDeps } from './core/retry';
-export {
-  RetryingStorageChunkSource,
-  RetryingStorageDriver,
-  RetryingRegistryDriver,
-} from './drivers/retry/retrying-drivers';
-export type { RetryingOptions } from './drivers/retry/retrying-drivers';
+export { RetryingStorageChunkSource } from './drivers/retry/retrying-chunk-source';
+export type { RetryingOptions } from './drivers/retry/retrying-chunk-source';
 
 // `.crbm` archive format — the on-disk Storage layout. Exposed for driver authors and tooling.
 // The READER only. Tooling inspects a `.crbm`; building one is this library's job, and `CrbmWriter` has no

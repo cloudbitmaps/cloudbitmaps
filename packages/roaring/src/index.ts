@@ -183,11 +183,16 @@ export interface CloudRoaringOptions {
   readonly encryption?: EncryptionOptions;
 
   /**
-   * Resilience: by default every storage read retries **transient** faults (throttling, 5xx, dropped
-   * connections) with bounded, jittered exponential backoff (see {@link DEFAULT_RETRY_POLICY}). Pass a partial
-   * policy to tune it — anything you leave out keeps its default — or `false` to disable the transient-retry
-   * wrapper entirely (e.g. if your injected client already retries). Deterministic errors
-   * (`ValidationError`/`IntegrityError`/`WriteConflictError`/…) are never retried by this layer.
+   * Resilience: by default every read of segment data retries **transient** faults (throttling, 5xx, dropped
+   * connections) with bounded, jittered exponential backoff (see {@link DEFAULT_RETRY_POLICY}): `has`, `count`,
+   * `iterate` and the combines, the `*Into` verbs' reads of their operands included, a pinned handle's reads and
+   * `pin()` itself. Writes are not retried, and nor are the calls that read the registry or list the bucket
+   * directly (`exists`, `segments`, `generations`, `getRetention`, `checkConsistency`, and the registry scan
+   * `subjectReport` and `exportSegments` start from): they report a transient fault to their caller, because a conditional write that lands and then loses its response would, replayed,
+   * report its own write as a conflict. Pass a partial policy to tune it — anything you leave out keeps its
+   * default — or `false` to turn the read retry off (e.g. if your injected client already retries).
+   * Deterministic errors (`ValidationError`/`IntegrityError`/`WriteConflictError`/…) are never retried by this
+   * layer.
    */
   readonly retry?: RetryOptions | false;
 
@@ -1181,9 +1186,9 @@ export class CloudRoaring {
    * Scoping to a namespace narrows the LIST prefix, so it really is the difference between reading one tenant
    * and reading all of them.
    *
-   * It streams, and stopping the iteration stops the scan — except behind a driver that buffers its
-   * enumeration to retry it as a unit, which `RetryingRegistryDriver` does: wrapped in that, the whole scan is
-   * paid for and resident before the first row arrives.
+   * It streams, and stopping the iteration stops the scan. It reads the registry directly and is not retried: a
+   * transient fault part-way through ends the loop with that error, and calling `segments()` again scans from the
+   * start.
    *
    * Yields `destroyed` tombstones and rows with `currentGen: null`, because a filtered enumeration that looks
    * complete is worse than an honest one — filter on `status`/`currentGen` yourself, or ask
