@@ -210,6 +210,23 @@ describe('AzureBlobRegistryDriver write id', () => {
     });
   });
 
+  it('the token a reconciled write returns is the one stored in its own row, and fences the next write', async () => {
+    const c = new FakeContainer();
+    const reg = registryOver(c);
+    c.replayConflictAfterWrite = restErr(409, 'BlobAlreadyExists');
+    const created = await reg.create(ref, { currentGen: 0 });
+    expect(created.token).toBe((await reg.get(ref))?.token);
+    c.replayConflictAfterWrite = restErr(412, 'ConditionNotMet');
+    const swapped = await reg.compareAndSwap(ref, created.token, { currentGen: 1 });
+    expect(swapped.token).toBe((await reg.get(ref))?.token);
+    expect(swapped.token).not.toBe(created.token);
+    // the returned token is live: a stale one is refused, the returned one is accepted
+    await expect(reg.compareAndSwap(ref, created.token, { currentGen: 2 })).rejects.toBeInstanceOf(
+      WriteConflictError,
+    );
+    await expect(reg.compareAndSwap(ref, swapped.token, { currentGen: 2 })).resolves.toBeDefined();
+  });
+
   it('a delete whose tombstone meets its own row is a success, written once', async () => {
     const c = new FakeContainer();
     const reg = registryOver(c);

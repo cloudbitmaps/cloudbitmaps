@@ -38,8 +38,8 @@ from constructing a cross-region topology. The points where personal data moves 
 
 | Location | What's there | Residency note |
 |---|---|---|
-| **Storage** (object store) | immutable `.crbm` generations — every generation a segment has had, until a superseded one is collected | the region of the bucket you wire |
-| **Registry** (S3 / GCS / Azure Blob / local) | one row per segment: the current-generation pointer, wrapped keys, retention metadata — no IDs | the region of the bucket you wire |
+| **Storage** (object store) | immutable `.crbm` generations — every generation a segment has had, until a superseded one is collected. Azure Blob objects, and GCS objects above the simple-upload threshold, also carry a random write id in their metadata (`cbwid`): 128 random bits, no data from the bitmap or the source | the region of the bucket you wire |
+| **Registry** (S3 / GCS / Azure Blob / local) | one row per segment: the current-generation pointer, wrapped keys, retention metadata — no IDs. An Azure Blob row also carries the random write id in its metadata | the region of the bucket you wire |
 | **cache** (process RAM) | decoded chunks, bounded LRU | **wherever your process/Lambda runs** — an EU segment queried from a US function is processed in the US |
 | **Loads and rewrites** (`store.load()`, the `*Into` verbs, `eraseSubject`) | read your source (or existing generations), write a new generation | run wherever you run them — a loader in one region writing to a bucket in another is a transfer |
 | **Intersection** | pulls chunks from N segments into one process | co-locates those segments in one region |
