@@ -16,7 +16,7 @@ function recordingClock(): Clock & { sleeps: number[] } {
   };
 }
 const zeroRng: Rng = { next: () => 0 };
-// 5 attempts so a couple of transient failures are comfortably ridden out; no real waiting (instant clock).
+// 5 attempts, so one transient failure is ridden out with room to spare; no real waiting (instant clock).
 const opts = (clock: Clock): RetryingOptions => ({
   clock,
   rng: zeroRng,
@@ -64,6 +64,53 @@ describe('RetryingStorageChunkSource', () => {
     const inner = { listChunkKeys: () => keys() } as unknown as StorageChunkSource;
     const d = new RetryingStorageChunkSource(inner, opts(clock));
     expect(await d.listChunkKeys(seg)).toEqual([1, 2, 3]);
+    expect(clock.sleeps).toHaveLength(1);
+  });
+
+  // The optional reads, each present only when the inner source has it. The engine reads them in the middle of a
+  // segment read — `count()` reads `cardinalities`, and a combine checks an empty operand with `exists` — so an
+  // unretried one fails a read the store says it retries.
+  const OPTIONAL = [
+    { member: 'sizeOf', value: { bytes: 10, chunks: 1 } },
+    { member: 'cardinalities', value: new Map([[0, 3]]) },
+    { member: 'currentGeneration', value: 4 },
+    { member: 'exists', value: true },
+    { member: 'currentVersion', value: 'v1' },
+  ] as const;
+
+  it.each(OPTIONAL)('retries a transient $member', async ({ member, value }) => {
+    const clock = recordingClock();
+    const read = flaky(1, new TransientError('blip'), value);
+    const inner = { [member]: () => read() } as unknown as StorageChunkSource;
+    const d = new RetryingStorageChunkSource(inner, opts(clock));
+    const call = d[member] as ((r: SegmentRef) => Promise<unknown>) | undefined;
+    expect(call).toBeTypeOf('function');
+    expect(await call?.(seg)).toBe(value);
+    expect(clock.sleeps).toHaveLength(1);
+  });
+
+  it.each(OPTIONAL)('leaves $member absent when the inner source has none', ({ member }) => {
+    const inner = { getChunk: () => Promise.resolve(null) } as unknown as StorageChunkSource;
+    const d = new RetryingStorageChunkSource(inner, opts(recordingClock()));
+    expect(d[member]).toBeUndefined();
+  });
+
+  it('retries what a caller-supplied isRetryable accepts, and nothing it refuses', async () => {
+    const clock = recordingClock();
+    const mine = new Error('mine');
+    const inner = { getChunk: flaky(1, mine, Uint8Array.of(1)) } as unknown as StorageChunkSource;
+    const d = new RetryingStorageChunkSource(inner, {
+      ...opts(clock),
+      isRetryable: (err) => err === mine,
+    });
+    expect(await d.getChunk(ref)).toEqual(Uint8Array.of(1));
+    expect(clock.sleeps).toHaveLength(1);
+
+    const refusing = new RetryingStorageChunkSource(
+      { getChunk: flaky(1, new TransientError('blip'), null) } as unknown as StorageChunkSource,
+      { ...opts(clock), isRetryable: () => false },
+    );
+    await expect(refusing.getChunk(ref)).rejects.toBeInstanceOf(TransientError);
     expect(clock.sleeps).toHaveLength(1);
   });
 });

@@ -12,6 +12,7 @@ import { TransientError } from '@/core/errors';
 import type {
   ChunkRef,
   Clock,
+  IRegistryDriver,
   IStorageDriver,
   SegmentRef as Ref,
   StorageChunkSource,
@@ -350,5 +351,103 @@ describe('a nullish options bag is a typed error, not a TypeError', () => {
     expect(() => new CloudRoaring(bad as unknown as { storage: MemoryStorage })).toThrow(
       ValidationError,
     );
+  });
+});
+
+describe('`retry` retries reads of segment data, and no write', () => {
+  // A write that lands and then loses its response would, replayed, find its own write already there and report
+  // it as a conflict, so the store reports a transient fault on a write to its caller, who re-runs the call. The
+  // registry and bucket reads the store makes directly are left to the caller the same way. Each case fails one
+  // call once, with the retry on, and counts both the calls and the retries.
+  type Fault = 'putImmutable' | 'create' | 'compareAndSwap' | 'get' | 'list' | 'getTail';
+
+  const faultyStore = (fault: Fault) => {
+    const base = new MemoryStorage();
+    const s = base.storage;
+    const r = base.registry;
+    const calls = new Map<Fault, number>();
+    const state = { armed: false };
+    const trips = (name: Fault): boolean => {
+      calls.set(name, (calls.get(name) ?? 0) + 1);
+      if (!state.armed || name !== fault) return false;
+      state.armed = false;
+      return true;
+    };
+    const blip = (name: Fault): TransientError => new TransientError(`${name}: transient`);
+    const storage: IStorageDriver = {
+      capabilities: () => s.capabilities(),
+      putImmutable: (key, write) =>
+        trips('putImmutable') ? Promise.reject(blip('putImmutable')) : s.putImmutable(key, write),
+      getRange: (key, offset, length) => s.getRange(key, offset, length),
+      getTail: (key, maxBytes) =>
+        trips('getTail') ? Promise.reject(blip('getTail')) : s.getTail(key, maxBytes),
+      delete: (key) => s.delete(key),
+      list: (ref) =>
+        trips('list')
+          ? (async function* () {
+              yield* [];
+              throw blip('list');
+            })()
+          : s.list(ref),
+    };
+    const registry: IRegistryDriver = {
+      capabilities: () => r.capabilities(),
+      get: (ref) => (trips('get') ? Promise.reject(blip('get')) : r.get(ref)),
+      create: (ref, record) =>
+        trips('create') ? Promise.reject(blip('create')) : r.create(ref, record),
+      compareAndSwap: (ref, token, patch) =>
+        trips('compareAndSwap')
+          ? Promise.reject(blip('compareAndSwap'))
+          : r.compareAndSwap(ref, token, patch),
+      list: (namespace) => r.list(namespace),
+      delete: (ref) => r.delete(ref),
+    };
+    const retries: number[] = [];
+    const store = new CloudRoaring({
+      storage: createBackend({ storage, registry }),
+      retry: { onRetry: ({ attempt }) => retries.push(attempt) },
+      seams: { clock: { now: () => 0, sleep: () => Promise.resolve() }, rng: { next: () => 0 } },
+    });
+    const count = (name: Fault): number => calls.get(name) ?? 0;
+    return { store, count, retries, arm: () => (state.armed = true) };
+  };
+
+  it.each([
+    ['object put', 'putImmutable', false],
+    ['first pointer write, onto no row,', 'create', false],
+    ['pointer advance', 'compareAndSwap', true],
+  ] as const)(
+    'a load whose %s fails once throws, and nothing retries it',
+    async (_, fault, loaded) => {
+      const f = faultyStore(fault);
+      if (loaded) await f.store.load(SEG, [1, 2]);
+      const before = f.count(fault);
+      f.arm();
+      await expect(f.store.load(SEG, [1, 2, 3])).rejects.toBeInstanceOf(TransientError);
+      expect(f.count(fault) - before).toBe(1);
+      expect(f.retries).toEqual([]);
+    },
+  );
+
+  it.each([
+    ['exists', 'get', (store: CloudRoaring) => store.exists(SEG)],
+    ['generations', 'list', (store: CloudRoaring) => store.generations(SEG)],
+  ] as const)(
+    '`%s` reads directly, and throws on a fault with no retry',
+    async (_, fault, call) => {
+      const f = faultyStore(fault);
+      await f.store.load(SEG, [1]);
+      f.arm();
+      await expect(call(f.store)).rejects.toBeInstanceOf(TransientError);
+      expect(f.retries).toEqual([]);
+    },
+  );
+
+  it('while a read of segment data through the same store rides the same kind of fault out', async () => {
+    const f = faultyStore('getTail');
+    await f.store.load(SEG, [1, 2, 3]);
+    f.arm();
+    expect(await f.store.segment('s').count()).toBe(3);
+    expect(f.retries).toEqual([1]);
   });
 });
