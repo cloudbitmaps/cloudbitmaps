@@ -171,8 +171,9 @@ await destroySegment({ segment: 'users' }, { registry }, { confirmSegment: 'user
 ```
 
 **What lands in the log** — seven kinds. `segment.publish` (a loaded generation became current),
-`segment.rollback` (an operator moved the pointer to a generation they named: backwards, or forward with
-`allowForward: true` to undo an earlier rollback; the one event whose effect cannot be reconstructed from the
+`segment.rollback` (an operator moved the pointer to a generation they named: backwards, or forward — with
+`allowForward: true` to undo an earlier rollback, or onto a segment that had no current generation, when
+`fromGeneration` is `null`; the one event whose effect cannot be reconstructed from the
 objects in the bucket, which is why the [disaster-recovery guide](disaster-recovery.md) treats it as the receipt
 that matters, and emitted only on the sink passed to that `rollback` call),
 `segment.load-refused` (a load that did not publish, with its `reason` and the refused generation's
@@ -213,12 +214,12 @@ them would make your dashboard over-attest.**
 
 > **One gap worth knowing:** when a sweep deletes a retired segment's tombstone **row**, **no audit event is
 > emitted.** It deletes one in two cases: the tombstone of an earlier retirement, once `tombstoneGraceMs` (default
-> 24 h) has passed and the segment's Storage generations are provably gone; and, in the same pass that retires it,
-> the tombstone of a segment that held no Storage generation at all, since that row would only fence the name. The
-> `segment.dispose` above is the receipt for the data (for an empty segment it carries `generationsDeleted: 0`);
-> the row removal is not separately attested. If your controls treat the presence of a `destroyed` row as the
-> attestation, `purgeTombstones: false` keeps the first kind and not the second: the sweep deletes an empty
-> segment's row whatever that option says.
+> 24 h) has passed and the segment's Storage generations are provably gone; and, in the same pass, the tombstone
+> of a retirement whose drop found no Storage generation to delete and left none behind, since that row would only
+> fence the name. The `segment.dispose` above is the receipt for the data (for such a retirement it carries
+> `generationsDeleted: 0`); the row removal is not separately attested. If your controls treat the presence of a
+> `destroyed` row as the attestation, `purgeTombstones: false` keeps the first kind and not the second: the sweep
+> deletes the second kind's row whatever that option says.
 
 A **cleartext** `dropSegment` emits only `segment.dispose`. An **encrypted** one emits **both**, because both
 things genuinely happened. So: count `segment.erase` for an Art. 17 destruction claim (on the terms in its row

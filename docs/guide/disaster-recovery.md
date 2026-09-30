@@ -51,7 +51,7 @@ and easy to forget — and losing either is as fatal as losing the object store.
 ## Why coordination matters (the torn restore)
 
 Because the stores are independent, a restore can bring them back at **different points in time**, and any
-difference tears. The obvious case is a **registry that is ahead of the object store**:
+difference can tear. The obvious case is a **registry that is ahead of the object store**:
 
 ```text
   09:00  a load publishes segment "S" generation 42:
@@ -82,16 +82,20 @@ names.
 > since `T` brought back.**
 
 That single rule prevents the torn restore. Every live row the registry held at `T` named a generation that
-storage held at `T`, because an object is committed whole before any pointer names it. At any other pair of
+storage held at `T`, because an object is committed whole before any pointer names it (unless the fleet was
+already torn at `T`, which `checkConsistency()` finds either way). At any other pair of
 instants the two can disagree: after `T`, collection deletes generations a `T` registry names (above); before `T`,
 storage lacks generations a `T` registry names.
 
-Restoring storage to `T` means every object that existed at `T` is present with the bytes it had at `T`: bring back
-each one deleted since `T` (restore its noncurrent version, or remove the delete marker over it). Objects created
-after `T` and still present can stay; they sit above the restored pointers, where reads through a backend never
-look (a store on a bare `IStorageDriver` is the exception; see
-[readers still on an old generation](#readers-still-on-an-old-generation)). Do not bring back an object that was
-created after `T` and deleted since: no restored row names it.
+Restoring storage to `T` means every object key that existed at `T` holds the version it held at `T`. For most
+keys that means bringing back an object deleted since `T` (restore its noncurrent version, or remove the delete
+marker over it). A key can also have been **written again**: once a segment's row is purged and its bucket
+emptied, generation numbers restart at 0, so a name loaded anew after `T` re-writes keys that existed at `T` with
+another incarnation's bytes. Put the `T` version back there too; `checkConsistency()` checks presence only, so it
+would not notice the wrong bytes. Keys that did not exist at `T` can stay: they belong to loads after `T`, which sit
+above the restored pointers, or to segments with no row at `T`, which step 4 of the procedure deals with. Reads
+through a backend never see either (a store on a bare `IStorageDriver` is the exception; see
+[readers still on an old generation](#readers-still-on-an-old-generation)).
 
 **Bringing back a deleted object undoes the deletion.** When the object is a generation a subject erasure deleted
 after `T`, the restored registry points at it again, and **the erased id is back**. The restore procedure therefore
@@ -101,8 +105,8 @@ To make the rule achievable you need **object versioning covering both the stora
 prefix** — which one bucket makes easier, since both live in it and share one version history:
 
 - **Storage (the object store):** enable **versioning** (S3 versioning, GCS object versioning, Azure blob
-  versioning + soft delete). Generations are never overwritten, so a restore to `T` writes back only the objects
-  deleted since `T`, and those exist only as noncurrent versions.
+  versioning + soft delete). A generation is never overwritten in place, so what a restore to `T` writes back —
+  objects deleted since `T`, and keys a re-created segment wrote again — exists only as noncurrent versions.
 - **Registry:** enable **versioning** on the bucket or container holding the `registry/` prefix — this is a
   **requirement, not a nice-to-have**, because it's the only way to put every row back as it was at `T`. The
   registry lives in the object store, so this is usually the same setting you just enabled for storage; confirm it
@@ -184,21 +188,24 @@ makes the coordinated restore point easy to hit rather than something you have t
 2. **Quiesce writers** for the affected segments (below) — loads, `*Into` materialisations, `eraseSubject`, the
    retention sweep.
 3. **Restore storage** to `T` itself — not later: collection since `T` has deleted generations the restored
-   registry names. Bring back every object that existed at `T` and has been deleted since (restore its noncurrent
-   version, or remove the delete marker over it), and only those. Objects created after `T` that are still present
-   can stay.
+   registry names. For every storage key whose current version is not the one it held at `T` — deleted since `T`,
+   or deleted and written again by a segment re-created under the same name — put the `T` version back (restore the
+   noncurrent version, or remove the delete marker over it), and only those. Keys that did not exist at `T` can
+   stay.
 4. **Restore the registry** to `T`. There is **no single restore-to-timestamp operation on an object store**, so
    this is a sweep, not a button: for every object under the `registry/` prefix (`<prefix>registry/` on a backend
    built with a `prefix`) whose current version is newer than `T`, find the newest version at or before `T` and
    copy it back to current. Script it. Copy versions back rather than writing a row's body yourself: the registry
    refuses a row it did not write, and one such row stops every listing that reaches it (see
    [a registry row the library did not write](#a-registry-row-the-library-did-not-write)). A row created after `T`
-   has no such version: remove it with the backend's `registry.delete(ref)` (the row's body names its `namespace`
-   and `segment`), which leaves a tombstone that keeps the row's token counter. Do not remove it with an object-store delete, which takes the tombstone too, so the
-   name's next row would issue tokens from 0 again. Its objects stay in the bucket with no row; list them with
-   `store.generations(ref)` and delete them with `store.dropSegment(ref, { confirmSegment: ref.segment, audit })` if
-   you do not want them (the drop leaves a tombstone row that fences the name; [repair (b)](#repair) below returns a
-   name to service). Step 6 is what tells you the result is coherent.
+   has no such version; the row's body names its `namespace` and `segment`. If you do not want that segment's
+   objects, first run `store.dropSegment(ref, { confirmSegment: ref.segment, audit })`, which deletes them and
+   removes the wrapped key from the row. Then remove the row with the backend's `registry.delete(ref)`, which
+   leaves a tombstone that keeps the row's token counter, and the rest of the row with it, wrapped keys included —
+   the reason for dropping first. Do not remove it with an object-store delete, which takes the tombstone too, so
+   the name's next row would issue tokens from 0 again. A segment you delete the row of without dropping keeps its
+   objects in the bucket with no row; `store.generations(ref)` lists them. Step 6 is what tells you the result is
+   coherent.
 5. **Restore the keystore** (if encryption is on), and check it can open the key of every restored segment:
    [Encryption & DR](#encryption--dr) has the check.
 6. **Run `checkConsistency()`** (below) **before** serving traffic.
@@ -230,9 +237,12 @@ makes the coordinated restore point easy to hit rather than something you have t
    ```
 
    `destroySegment` reports `reason: 'absent'` for a segment whose row did not exist at `T`, which step 4 already
-   removed. A re-shred is complete only on the terms [Encryption & DR](#encryption--dr) sets out.
-9. **Restart every process that holds a store over the bucket, or invalidate the restored segments in each**
-   (`store.invalidate(ref)`), then route traffic. Waiting out `cache.genTtlMs` is not enough here: a restored row
+   removed. It reports `reason: 'cleartext'` and leaves the row active for a row that held no key yet at `T` (its
+   first encrypted load came after `T`): that row names no generation, and `store.dropSegment` deletes the objects
+   the later load left and fences the name. A re-shred is complete only on the terms
+   [Encryption & DR](#encryption--dr) sets out.
+9. **Restart every process that holds a store over the bucket, or invalidate in each the segments steps 3 to 8
+   touched** (`store.invalidate(ref)`), then route traffic. Waiting out `cache.genTtlMs` is not enough here: a restored row
    carries the token counter it had at `T`, so the tokens issued after `T` will be issued again, and a store keys
    a segment's cached chunks by generation and token. [Readers still on an old generation](#readers-still-on-an-old-generation)
    covers the stores that need more than that. Optionally run a targeted `subjectReport`/read spot-check on a few
@@ -241,7 +251,8 @@ makes the coordinated restore point easy to hit rather than something you have t
 ## Quiesce writers during a restore
 
 Writers are safe *against each other* without any coordination. A load publishes with a compare-and-swap fenced
-on the row it read, and a subject-erasure rewrite on the generation it streamed, so the one that loses a race
+on the row it read (an unguarded load onto a segment with no row publishes forward-only instead), and a
+subject-erasure rewrite on the generation it streamed, so the one that loses a race
 reports `superseded` rather than clobbering the newer generation: a load as `published: false, reason:
 'superseded'`, a rewrite as `erased: false, note: 'superseded'`. A load that finds its generation number already
 taken writes nothing and reports the same `superseded` (objects are write-once). A writer racing a **restore** is a
@@ -290,6 +301,7 @@ state and is cheap to check for, so check for it after any hard kill of a proces
 ```text
   1. dropSegment(ref)          CAS the registry row → status: 'destroyed'   ← the retirement itself
                                then sweep Storage: list + delete, up to three passes
+     forgetDuePointer(ref)     delete the segment's due-index pointer, if it has one
   2. stampRetirement(ref)      CAS retention.retiredBySweepAt = now         ← the attribution
 ```
 
@@ -303,7 +315,11 @@ writes on its own work*. The alternative — inferring "this tombstone was a ret
 `retention`, so the ordinary sequence *(set a 30-day policy → a GDPR request arrives mid-window →
 `destroySegment`)* produces a **crypto-shred** tombstone carrying an expired policy. Auto-purging that row
 destroys your local attestation for a right-to-erasure execution and un-fences the name for every writer. The
-marker cannot be forged by that ordering; the inference can.
+marker cannot be forged by that ordering; the inference can. One narrower ordering does put the marker on a
+crypto-shred's tombstone: a `destroySegment` that lands between the sweep's re-read of an expired row and its
+drop. The drop finds the tombstone, reports it dropped, and the sweep stamps it. The trail then holds a
+`segment.erase` and a `segment.dispose`, as a sweep's own retirement of an encrypted segment does; only the actors
+your sinks stamp on the two tell them apart.
 
 **Why nothing tells you.** The purge path reads the stamp and, finding none, does a bare `continue`:
 
@@ -352,25 +368,27 @@ Deciding which is which is the part that needs a person:
   `eraseNamespace`) emits `segment.erase` alone, and `eraseNamespace` adds one `namespace.erase` for the namespace.
   A `dropSegment` of an encrypted segment emits the same `segment.erase` first, and every `dropSegment` then emits
   `segment.dispose` once its storage sweep ends. The sweep's retirements are `dropSegment` calls, so they emit
-  exactly what a manual drop does, and one killed mid-sweep emits the `segment.erase` and no `segment.dispose`.
-  So a `segment.erase` with no `segment.dispose` is a crypto-shred or an interrupted drop of an encrypted segment,
-  and a `segment.dispose` is a drop, the sweep's or anyone's. What tells the sweep's drops apart is the actor your
+  exactly what a manual drop does. One killed mid-sweep emits the `segment.erase` if the segment was encrypted,
+  nothing if it was cleartext, and no `segment.dispose`; one killed after its sweep but before the stamp emits
+  both. So a `segment.erase` with no `segment.dispose` is a crypto-shred or an interrupted drop of an encrypted
+  segment, and a `segment.dispose` is a drop, the sweep's or anyone's. What tells the sweep's drops apart is the actor your
   sink stamps, when the process that runs the sweep passes a sink that names it. If the events cannot settle it,
   leave the row alone: a tombstone kept costs a fenced name and a few bytes, and a crypto-shred's tombstone deleted
   is a lost attestation.
 - An expired `retention.expiresAt` on the row is **not** sufficient evidence on its own — see the GDPR ordering
   above. Treat it as a hint that narrows the list, never as the answer.
-- Correlate with the kill: an interrupted retirement is contemporaneous with the crash. `updatedAt` on the row
-  is within seconds of it.
+- Correlate with the kill: an interrupted retirement is contemporaneous with the crash. `updatedAt` on the row is
+  the tombstone write, which precedes the kill by at most the storage sweep, including any hang in it.
 
 ### Repair
 
 Once you have established a row was an interrupted *retirement*, pick by whether the name must come back:
 
 **(a) Let the sweep finish its job — the default.** Write the stamp the crash prevented. The first fleet sweep
-that runs at least `tombstoneGraceMs` (default 24 h) after the stamp's value — `retireExpired` with the default
-`scan: 'fleet'`, and `purgeTombstones` not set to `false` — then treats the row as its own, verifies storage is
-actually empty, collects any orphan generations itself, and deletes the row. A `scan: 'index'` pass may never
+that reaches the row at least `tombstoneGraceMs` (default 24 h) after the stamp's value — `retireExpired` with the
+default `scan: 'fleet'`, over the row's namespace (and shard, if you shard), with `purgeTombstones` not set to
+`false`, and not cut short by its `limit` before the row (`limited: true`) — then treats the row as its own,
+verifies storage is actually empty, collects any orphan generations itself, and deletes the row. A `scan: 'index'` pass may never
 reach it: that scan reads only the rows the due index points at, and the retirement can have removed the
 segment's pointer before the kill.
 
@@ -487,7 +505,7 @@ if (report.errored.length > 0) {
   drift or an operator mistake — an object-store lifecycle rule that expired a current generation shows up here.
 
 **Resolving a `missing-storage-generation`:** either (a) restore the missing storage generation from the object's
-version history or a backup (after a restore to `T`, it is an object that existed at `T` and step 3 did not bring
+version history or a backup (after a restore to `T`, usually an object that existed at `T` and step 3 did not bring
 back), or (b) roll the registry's `currentGen` for that segment **back** to a generation that does exist —
 accepting the loss of the loads after that point, but restoring correctness. Then re-run `checkConsistency()`.
 
@@ -500,21 +518,25 @@ await store.checkConsistency();            // confirm
 ```
 
 `rollback` refuses rather than guessing: a generation not in the bucket throws `NotFoundError` and **names what is
-available**, a crypto-shredded segment throws `ValidationError` (every generation of it is unreadable), a row that
+available**, a `destroyed` row (a crypto-shred's or a drop's tombstone) throws `ValidationError`, a row that
 changed after `rollback` read it throws `WriteConflictError` and moves nothing, and a target *above* the pointer
-needs an explicit `{ allowForward: true }` — above the pointer is where objects live that were never published,
-such as a load that wrote its object and died before the publish. It deletes nothing, so the rollback is itself
-reversible. It records the move as `segment.rollback` on the `audit` sink passed to the call, and that event is the
-only record the library makes of a pointer moved back: with no sink, it records nothing.
+needs an explicit `allowForward: true` — above the pointer is where objects live that may never have been current,
+such as a load that wrote its object and died before the publish. `store.rollback` passes that option through, but
+its declared options type takes only `audit`, so from TypeScript make a forward move with
+`rollbackSegment(ref, n, backend, { allowForward: true, audit })` and then `store.invalidate(ref)`. It deletes
+nothing, so the rollback is itself reversible. It records the move as `segment.rollback` on the `audit` sink passed
+to the call, and that event is the only record the library makes of it: with no sink, it records nothing. A
+rollback to the generation already current changes nothing and records nothing.
 
 **A rollback can fail half-way.** It moves the pointer and then checks the target is still in the bucket, because
 collection can take a generation below the pointer between the listing and the move. If the target has gone, it
-moves the pointer back and throws `NotFoundError` saying `the pointer was put back`. If it cannot move it back
-(the row changed again), it throws `NotFoundError` saying `the pointer could NOT be put back: it still names <n>`:
-the segment now points at a generation that is not there, the torn state this section resolves. Run
-`store.generations(ref)` and roll back again to a generation it lists, or restore the object, then re-run
-`checkConsistency()`. Neither failure records `segment.rollback`; the event is emitted only for a rollback that
-completes, so keep the error with your incident record.
+moves the pointer back and throws `NotFoundError` saying `the pointer was put back`. If moving it back fails too
+(the row changed again, or the registry write failed), it throws `NotFoundError` saying
+`the pointer could NOT be put back: it still names <n>`. Then the segment points at a generation that is not
+there, the torn state this section resolves, unless the write that beat the undo moved the pointer elsewhere.
+Check with `store.generations(ref)`, which marks the current generation, and `checkConsistency()`; roll back again
+to a generation it lists, or restore the object. Neither failure records `segment.rollback` — the event is emitted
+only once the pointer is on the target — so keep the error with your incident record.
 
 > **One thing to know before you roll back a segment a subject was erased from.** An erasure entry that says
 > `erased: true` means no generation of the segment holds the id: not the current one, not one below the
@@ -529,27 +551,33 @@ completes, so keep the error with your incident record.
 
 ## A registry row the library did not write
 
-The registry reads a row only in the exact shape the library writes, and refuses anything else rather than guess
-at it: a body that is not JSON, that has no `schemaVersion`, that carries a field the library does not write (at
-the top level or in the record), or that holds a value out of range, such as an unknown `status`. Each is an
-`IntegrityError`, and its message names the row's key (except for a row over the 1 MiB size cap). A row with a
+The registry reads a row only in a shape the library writes, and refuses anything else rather than guess at it:
+a body that is not JSON, that has no `schemaVersion`, that carries a field the library does not write (at the top
+level or in the record), or that holds a value out of range, such as an unknown `status` or a malformed
+`wrappedDeks` list. Each is an `IntegrityError`, and its message names the row's key, except for a row over the
+1 MiB size cap and a malformed `wrappedDeks` list. A `token` that is not a plain decimal counter passes the read and
+fails every write to the row instead (`load`, `rollback`, `dropSegment`, `setRetention`, `registry.delete`), with
+an `IntegrityError` that quotes the token and not the key. A row with a
 higher `schemaVersion` than this build reads was written by a newer release; it is refused with
 `UnsupportedError`, and the fix is to upgrade the process reading it, not to touch the row.
 
 One refused row costs far more than its own segment:
 
-- **`get` of that segment throws**, so every read of the segment fails, and so does every call that reads its row
-  first — `load`, `rollback`, `dropSegment`, `setRetention`, a subject erasure.
+- **`get` of that segment throws**, so every fresh resolve of the segment fails (a store that already had it
+  resolved keeps answering from the generation it holds), and so does every call that reads its row first —
+  `load`, `rollback`, `dropSegment`, `setRetention`, a subject erasure.
 - **Every `list()` that reaches it throws**, whether it lists the row's namespace or every namespace, so the one row
-  stops the whole listing. Every fleet-wide call enumerates through one: `checkConsistency`, `retireExpired`,
-  `eraseSubject`, `subjectReport`, `exportSegments`, `store.segments()` and `eraseNamespace` each fail with no
-  result, over that namespace or over all of them, until the row is fixed. A subject erasure scoped to that
-  namespace, or to every namespace, cannot run at all.
+  stops the whole listing. Every fleet-wide call enumerates through one. `checkConsistency`, a fleet
+  `retireExpired`, `eraseSubject`, `subjectReport` and `eraseNamespace` read the whole listing before acting, so
+  each fails with no result; `exportSegments` and `store.segments()` stream it, so they deliver the rows listed
+  before the bad one and then throw. A `retireExpired` with `scan: 'index'` does not list the namespace, and throws
+  only when a due pointer names the row. A subject erasure scoped to that namespace, or to every namespace, cannot
+  run at all.
 
 How one gets there: a row body written by hand or by a script, including a restore script that writes a row rather
-than copying a version back; an object another tool put under the `registry/` prefix with a `.reg` name; a
-truncated or damaged copy. An object under the prefix whose key is not a row's key is skipped by the listing, not
-refused.
+than copying a version back; an object another tool put under the `registry/` prefix at a row's key
+(`registry/<namespace>/<segment>.reg`, with names encoded as the library encodes them); a truncated or damaged
+copy. An object under the prefix whose key is not a row's key is skipped by the listing, not refused.
 
 **Repair.** Read the object the error names (on `LocalFsStorage`, the file), then:
 
@@ -559,9 +587,12 @@ refused.
 2. If there is no such version, delete the object with the object store's own delete; `registry.delete(ref)` cannot,
    since it has to read the row first. That also removes any token counter the key held, so a row created later
    under the same name starts again at 0; restart or invalidate the stores over the bucket afterwards for the same
-   reason.
+   reason. The segment then has no row: it reads empty, nothing collects its objects (`store.generations(ref)` lists
+   them), and an encrypted one cannot be decrypted without a registry version that holds its key. Reload it from
+   your source, or drop it with `store.dropSegment`.
 
-Then re-run whatever failed; nothing else was damaged.
+Then run `checkConsistency()` — a version copied back can name a generation collected since it was current — and
+re-run whatever failed.
 
 **Prevent it.** Change a row only through the library: `store.load`, `store.rollback`, `store.setRetention` /
 `clearRetention`, `store.dropSegment`, `destroySegment`, and for this runbook's repairs `compareAndSwap` / `delete`
@@ -622,16 +653,19 @@ keystore, and the wrapped per-segment DEKs live in the segment's registry row. S
   wrapping opens under it: the wrong key material under that `keyId`, or a damaged row.
 - **A crypto-shred is complete only once nothing can unwrap the key again.** A shred (`destroySegment`,
   `eraseNamespace`, or a `dropSegment` of an encrypted segment) is one compare-and-swap that removes the wrapped
-  DEKs from the segment's current registry row. It destroys no KEK, and it leaves the objects where they are.
+  DEKs from the segment's current registry row. It destroys no KEK, and the shred itself leaves the objects where
+  they are (a `dropSegment` then deletes them from the bucket, which does not reach their versions or backups).
   Versioning on the `registry/` prefix, which this runbook requires, keeps the row's earlier versions, and each of
-  them still holds the wrapped DEKs; so does every backup or point-in-time copy of the prefix. Anyone holding one of
+  them written since the segment's first encrypted load still holds the wrapped DEKs; so does every backup or
+  point-in-time copy of the prefix. Anyone holding one of
   those copies and a KEK that wrapped it can decrypt the segment, and a registry restore to a point before the shred
   copies such a version back to current, where the segment reads again. So a shred is complete once no retained
   copy of the row still holds the wrapped key — noncurrent object versions, backups and PITR copies included — or
   once every KEK that wrapped it is destroyed. How long the first takes is set by how long your storage keeps those
   copies, which is also the history a registry restore picks from. The second happens in your keystore, with no
-  library call; with `InProcessKeystore`, one KEK wraps the DEK of every segment created while it was active (and
-  a recovery KEK, if configured, wraps them all again), so destroying it shreds every one of them.
+  library call, and shreds a segment only once every KEK in its wrappings is destroyed: with `InProcessKeystore`,
+  the KEK that was active when the segment was first loaded and, if one was configured, the recovery KEK, which
+  wraps every segment's DEK a second time. Destroying those shreds every segment they wrapped.
 - After a restore, re-shred every segment with a `segment.erase` event after `T`
   ([restore procedure](#restore-procedure), step 8).
 
@@ -651,19 +685,22 @@ keystore, and the wrapped per-segment DEKs live in the segment's registry row. S
   `nextGeneration` skips past them, and `gcOrphanGenerations` never touches a generation at or above `currentGen`
   — so they sit there, billed, until you act. The safe recovery is to **re-run the load from your source**: it
   writes a generation above them, which puts them below the pointer, where collection counts them within `keep`
-  like any other generation. Under the default `keep: 1` it keeps the newest stray and collects the rest, the
-  restored generation included, so pass a `keep` above the number of strays if the restored generation must stay a
-  rollback target. Do not hand-publish an object you cannot vouch for. A stray
+  like any other generation: it takes all but the newest `keep` of them, and each later load takes one more. Under
+  the default `keep: 1` it keeps the newest stray and collects the rest, the restored generation included, so pass a
+  `keep` above the number of strays if the restored generation must stay a rollback target. Do not hand-publish an
+  object you cannot vouch for. A stray
   above the pointer is a whole object — every backend commits an object atomically, so a crash never leaves a
-  partial one — but it was never published: a load whose process died before its guard ran, or one a guard refused
-  whose cleanup was skipped because the row had changed. `publishGeneration`, or `store.rollback` with
+  partial one — but the bucket cannot tell you whether it was ever current. After a restore it is usually a load
+  published after `T`; otherwise it can be a load whose process died between writing and publishing, a load refused
+  or superseded after the row changed, or a load whose publish threw. `publishGeneration`, or a rollback with
   `allowForward: true`, will point at it if asked.
 
 ## Not shipped: rebuilding the registry from storage
 
 The library cannot rebuild a **lost** registry from the storage objects that survive it: the registry is
 authoritative and must be restored from its own version history (hence the versioning requirement above). Making
-storage objects self-describing enough to rebuild it (and to decrypt without the original keystore) would take a
+storage objects self-describing enough to rebuild it (and to decrypt without the registry row, though still with
+the keystore's KEK) would take a
 `.crbm` **format change** that carries a KEK-wrapped DEK in each object. The fixed 104-byte footer cannot hold one:
 its reserved field is 2 bytes, and its 16-byte `key_id` field, written as zeros, is smaller than a wrapped DEK. It
 would also change the crypto-shred model, since shredding would then have to delete the storage objects too, not
