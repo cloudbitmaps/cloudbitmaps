@@ -20,15 +20,19 @@ itself takes and writes, stop checking for a local store's older directory layou
 library's own brand. The last two change what `estimateCost()` compares with and what a `CostReport` carries.
 
 - **`RetryingStorageDriver` and `RetryingRegistryDriver` are no longer exported**, from `@cloudbitmaps/core` or
-  `@cloudbitmaps/roaring`. Nothing in the library used them. The store's read retry is unchanged: it wraps every
-  source it reads through in `RetryingStorageChunkSource`, which stays exported with `RetryingOptions`, `withRetry`,
-  `DEFAULT_RETRY_POLICY` and the `retry` option. The two removed wrappers retried every call of the driver they
+  `@cloudbitmaps/roaring`. Nothing in the library used them. The store's read retry is unchanged: every read of
+  segment data goes through `RetryingStorageChunkSource`, which stays exported, with `RetryingOptions`, `withRetry`
+  and `DEFAULT_RETRY_POLICY`, and the store's `retry` option is unchanged. The two removed wrappers retried every call of the driver they
   wrapped, writes included, and a retried conditional write can report a write that landed as a conflict: when a
   write-once put or a compare-and-swap lands and its response is lost, the replay finds that write already there,
-  so the put throws `WriteConflictError` and a load reports `superseded`, for the caller's own write. Each also
-  collected a whole `list` before yielding any of it. To retry a write, re-run the call: a re-run `load` takes a
-  fresh generation number and re-reads the row, so it is safe whether or not the first attempt landed. To learn
-  whether that attempt landed, check `store.generations(ref)` rather than replaying the request.
+  so the put throws `WriteConflictError` and a load reports `superseded`, for the caller's own write; a load whose
+  pointer write was replayed can report `superseded` while its own generation is current. Each also collected a whole
+  `list` before yielding any of it. To retry a write, re-run the call, passing the ids again through a fresh
+  iterator: a re-run `load` takes a fresh generation number and re-reads the row, so once the first attempt has
+  settled it publishes whenever that attempt would have, whether or not it landed. Each attempt whose object landed
+  takes a `keep` slot, so under the default `keep: 1` the re-run collects the generation the segment held before the
+  load; pass a `keep` one above the number of attempts that landed to keep it. To learn whether an attempt landed,
+  compare `store.generations(ref)` with what it listed before the call rather than replaying the request.
 - **`bulkLoadCrbmGeneration` and `BulkLoadResult` are no longer exported**, from `@cloudbitmaps/core` or
   `@cloudbitmaps/roaring`. Load with `store.load(ref, ids, options)`, or `loadSegment(ref, ids, deps, options)` where
   you wire the drivers yourself. Either takes the next generation number itself and publishes, and returns a

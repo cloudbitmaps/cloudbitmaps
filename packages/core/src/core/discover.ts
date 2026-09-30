@@ -68,10 +68,11 @@ export async function segmentExists(ref: SegmentRef, registry: IRegistryDriver):
  *
  * Streams, so a large fleet need not be held at once, and stopping the iteration stops the scan — as long as the
  * registry driver's own `list` streams. One that collects its whole enumeration before yielding defeats both
- * properties, since the scan is then paid for and resident before the first row reaches you, so a custom driver
- * yields as it reads. On the four native drivers the guarantee holds; on S3 the granularity is a page, so one
- * LIST page and its in-flight row reads complete regardless. Nothing here retries the scan: a transient fault
- * part-way through ends the iteration with that error, and a new iteration scans from the start.
+ * properties, since the scan is then paid for and resident before the first row reaches you, so a custom driver's
+ * `list` should yield each row as it reads it. The registry drivers this library ships all stream; on S3, GCS and
+ * Azure Blob the granularity is a page, so one LIST page and its in-flight row reads complete regardless. Nothing
+ * here retries the scan: a transient fault part-way through ends the iteration with that error, and calling
+ * `listSegments` again scans from the start, since the iterable one call returns is used up.
  *
  * Yields `destroyed` tombstones, and rows whose `currentGen` is `null`, because hiding either would make this
  * disagree with the registry it reports on — a filtered enumeration that looks complete is how a retention

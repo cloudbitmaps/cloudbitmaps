@@ -255,7 +255,10 @@ between here and there:
    the registry row; freezing it is what makes cross-language ports and long-lived data safe.
 8. **Adoption feedback** — real deployments finding the sharp edges that our own tests don't.
 9. **Closing the named deferrals:** self-healing disaster recovery, an exclusion predicate on the retention
-   sweep (legal hold), and an automated reconcile of unstamped tombstones. (Multi-tenant isolation is tracked
+   sweep (legal hold), an automated reconcile of unstamped tombstones, and a `rollback` that opens its target
+   before it moves the pointer. It checks only that the object is in the bucket, so on an encrypted segment it can
+   move onto a generation a first load wrote and never published, sealed under a key the registry never stored,
+   which then fails every read and which `checkConsistency` does not flag. (Multi-tenant isolation is tracked
    separately, post-`1.0`.)
 
 ## Planned / exploring

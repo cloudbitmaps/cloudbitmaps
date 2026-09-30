@@ -87,8 +87,9 @@ export class BudgetExceededError extends CloudRoaringError {}
 export class KeyUnavailableError extends CloudRoaringError {}
 
 /**
- * A **transient** infrastructure fault that is safe to retry — throttling, a 5xx, a dropped connection,
- * a client-side request timeout. Drivers classify their backend's retryable faults and raise this (the
+ * A **transient** infrastructure fault — throttling, a 5xx, a dropped connection, a client-side request
+ * timeout. Retrying a read that failed this way is safe; a write that failed this way may still have landed, so
+ * its caller re-runs the call rather than replaying the request. Drivers classify their backend's retryable faults and raise this (the
  * SDK-specific knowledge stays in the SDK-specific driver); the retry layer (`core/retry`) retries **only**
  * this class, never a deterministic error like {@link ValidationError}, {@link IntegrityError},
  * {@link NotFoundError}, or {@link WriteConflictError} (retrying those is pointless or wrong). The original

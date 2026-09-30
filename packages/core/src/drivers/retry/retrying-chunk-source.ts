@@ -4,7 +4,9 @@
  * {@link RetryingStorageChunkSource} wraps a {@link StorageChunkSource} so every read it serves retries
  * **transient** faults with bounded, jittered backoff, through the one shared `core/retry` primitive, so every
  * backend (S3, GCS, Azure Blob, LocalFS, …) inherits the same policy instead of each rolling its own. `CloudRoaring`
- * wraps every source it reads through in one, a pinned handle's included, unless it is built with `retry: false`.
+ * wraps the source it reads segment data through in one — a `StorageChunkSource` passed as `storage` included, so
+ * wrapping that one first multiplies each read's attempts — and a pinned handle's source too, unless it is built
+ * with `retry: false`.
  * Pure composition over the port (no SDK, no I/O of its own); the driver under the source is responsible for
  * *classifying* its transient faults (raising {@link TransientError}), and this wrapper decides *whether and when*
  * to retry.

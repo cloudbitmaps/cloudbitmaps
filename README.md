@@ -26,7 +26,7 @@
 > `iterate` / **`intersect` (chunk-skipping)** / `union` / `andNot`, all with `exclude` suppression folded into
 > the same pass · `intersectInto` / `unionInto` / `andNotInto`, which publish a new generation of their
 > destination · the `.crbm` archive format · a bounded, generation-keyed cache · **automatic retry with
-> backoff** that rides out transient cloud faults on reads · registry-resolved generation pointers (no per-read scan)
+> backoff** that rides out transient cloud faults on segment reads · registry-resolved generation pointers (no per-read scan)
 > with a short refresh TTL · generation GC that never touches the current generation · **subject erasure by
 > generation rewrite** (the bit is physically gone from the bucket when the call returns) · `dropSegment`,
 > retention policies and a `retireExpired` sweep you schedule · **encryption-at-rest** (opt-in AES-256-GCM,
@@ -184,18 +184,19 @@ encrypted bytes permanently unrecoverable *everywhere, including backups* — GD
 reaching every copy. Rotate keys without re-encrypting data, and wrap under an offline **recovery key** so a
 lost key isn't fatal.
 
-**Resilient by default — a blip never loses data.** Cloud storage throttles, returns 5xx, and drops
-connections; CloudBitmaps treats that as normal. Every storage **read** automatically **retries transient faults**
+**Resilient by default — a blip never loses data.** Cloud storage throttles, returns 5xx, and drops connections;
+CloudBitmaps treats that as normal. Every **read of segment data** automatically **retries transient faults**
 (throttle / 5xx / dropped connection / request timeout) with bounded exponential backoff + full jitter — on by
 default, tunable, or `retry: false` to defer to your client's own retry. A **write** reports a transient fault to
 you instead, because a conditional write that lands and then loses its response would, replayed, report your own
-write as a conflict. The retry is yours, and it is **safe by construction**: re-run the call, and a re-run load
-takes a fresh generation number and re-reads the row, while the pointer moves only forward, so it can never
-regress a segment. To learn whether the failed attempt landed, check `store.generations(ref)` rather than replay
-the request. All tier bytes are checksum-verified (and AEAD-authenticated when encrypted) before use, so
-corruption is rejected rather than returned as a wrong answer. Set a request timeout on your injected storage
-client (a timed-out read is retried as transient); see the
-[getting-started guide](docs/guide/getting-started.md#6-reliability-retries-backoff--timeouts) for tuning.
+write as a conflict. The retry is yours, and it is **safe by construction**: re-run the call with the same ids. A
+re-run load takes a fresh generation number and re-reads the row, so once the failed attempt has settled it
+publishes whether or not that attempt landed, and the pointer never moves backwards. If the generation before the
+load must stay a rollback target, re-run with `keep: 2`: an attempt whose object landed takes the default single
+slot. To learn whether it landed, check `store.generations(ref)` rather than replay the request. All tier bytes are
+checksum-verified (and AEAD-authenticated when encrypted) before use, so corruption is rejected rather than returned
+as a wrong answer. Set a request timeout on your injected storage client (a timed-out read is retried as transient);
+see the [getting-started guide](docs/guide/getting-started.md#6-reliability-retries-backoff--timeouts) for tuning.
 
 ## What it costs — measured on real AWS
 
