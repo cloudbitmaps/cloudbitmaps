@@ -5,7 +5,7 @@
 > a segment is a series of write-once `.crbm` generations in object storage — **in-memory**, **local-filesystem**,
 > **S3-compatible**, **GCS** or **Azure Blob** — behind one **registry** pointer (memory / LocalFs / S3 /
 > GCS / Azure Blob). You compute a set upstream, **load** it as a generation, and read it — `has`, `count`, `iterate`
-> and chunk-skipping `intersect` — from anywhere, with **automatic retry/backoff**, **encryption-at-rest +
+> and chunk-skipping `intersect` — from anywhere, with **automatic retry/backoff on reads**, **encryption-at-rest +
 > crypto-shred**, retention, GDPR erasure, cost reporting and observability around it.
 
 > **Two packages to install: a codec and a storage.** Every import below is the real specifier. The codec is
@@ -13,7 +13,8 @@
 > the `CloudRoaring` facade. The storage you use is the second package — `@cloudbitmaps/s3`,
 > `@cloudbitmaps/gcs` or `@cloudbitmaps/azure-blob` — which depends on its cloud SDK for real, so installing
 > it is the whole step. Both depend on **`@cloudbitmaps/core`**, the codec-agnostic engine, which arrives
-> **transitively**: you never install or name it.
+> **transitively**: you never install or name it. Every package needs **Node 22.12 or later**, and ships as ES
+> modules only: `import` it, or `require()` it through Node's `require(esm)`.
 
 > **Every export at a glance:** for the complete list of everything you can import and call (across
 > `@cloudbitmaps/roaring` and the `s3` / `gcs` / `azure-blob` driver packages), see the
@@ -52,6 +53,7 @@
   │  clearRetention()                                                     │
   │  eraseSubject() subjectReport()    ← GDPR Art. 17 / Art. 15           │
   │  checkConsistency() exportSegments()                                  │
+  │  invalidate()  ← forget what this store cached about a segment        │
   └───────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -62,15 +64,18 @@ import { S3Storage } from '@cloudbitmaps/s3';
 const store = new CloudRoaring({ storage: new S3Storage({ bucket: 'bitmaps', prefix: 'prod' }) });
 
 const r = await store.load({ segment: 'vips' }, idsFromWarehouse());
-if (!r.published) logger.warn({ reason: r.reason, had: r.cardinalityBefore });
+if (!r.published) console.warn({ reason: r.reason, had: r.cardinalityBefore });
+await store.load({ segment: 'engaged' }, engagedFromWarehouse()); // an operand has to exist: load it first
 
 for await (const id of store.segment('vips').intersect([store.segment('engaged')])) {
   /* the audience */
 }
 ```
 
-**You never name a registry, a generation number or a driver.** They exist and are exported, but a store, a
-backend and the verbs above are the whole surface — everything below here is detail.
+**A store, a backend and the verbs above are the whole everyday surface.** The registry, the drivers and generation
+numbers exist and are exported; the few free functions that take drivers (a crypto-shred, a collection pass) take
+them from the backend, as `backend.registry` and `backend.storage`, so nothing is configured twice. Everything below
+here is detail.
 
 The rest of this guide walks each step in turn.
 
@@ -92,7 +97,7 @@ The rest of this guide walks each step in turn.
 | **Generation bookkeeping** — `nextGeneration` for the number a writer takes next; `gcOrphanGenerations` to collect superseded objects | ✅ |
 | **Encryption-at-rest** (AES-256-GCM, BYOK keystore) **+ crypto-shred** (`destroySegment` / `eraseNamespace`) | ✅ |
 | **Observability** — optional metrics sink (`IMetricsSink`): `storage.get` / `cache` / `retry` / `intersect` / `op` events | ✅ |
-| **Audit trail** — optional audit sink (`IAuditSink`): publish / rewrite / erase / dispose compliance events | ✅ |
+| **Audit trail** — optional audit sink (`IAuditSink`): publish / load-refused / rollback / rewrite / erase / dispose / namespace-erase compliance events | ✅ |
 | **Cost estimator** — `CloudRoaring.estimateCost()` (planning) + grounded `segment.costReport()` | ✅ |
 | **Benchmark-as-test** — cost/perf claims are CI-gated; published [crossover chart](../benchmarks.md) | ✅ |
 | **Subject access & erasure** (GDPR Art. 15/17: `subjectReport` / `eraseSubject` — a rewrite, physically gone on return) | ✅ |
@@ -109,10 +114,11 @@ The rest of this guide walks each step in turn.
 > object store can host its own pointer**, so one bucket or one container is the whole deployment — no second
 > service, and for GCS and Azure no second *cloud*. All three ride the same primitive under different names:
 > S3 `If-None-Match`/`If-Match`, GCS `ifGenerationMatch`, Azure `ifNoneMatch`/`ifMatch`.
-> A registry is **optional for a read-only, cleartext store** (the store then list-scans the bucket for the
-> highest generation), and **required** for encrypted segments, the `*Into` verbs, and every lifecycle helper
-> (`eraseSubject`, `dropSegment`, `setRetention`, `retireExpired`, `checkConsistency`, `exportSegments`). Full
-> registry details are in [§5](#5-the-segment-registry-resolving-the-current-generation).
+> A backend always carries its registry. Only a bare storage driver has none, and a store built on one is
+> **read-only and cleartext**: it list-scans the bucket for the highest generation. Encrypted segments, the `*Into`
+> verbs and every lifecycle helper (`eraseSubject`, `dropSegment`, `setRetention`, `retireExpired`,
+> `checkConsistency`, `exportSegments`) need the registry, so they need a backend. Full registry details are in
+> [§5](#5-the-segment-registry-resolving-the-current-generation).
 
 ## 1. The simplest thing: in-memory
 
@@ -171,9 +177,21 @@ await store.load({ segment: 'active-this-week' }, activeUserIds);
 > still works, but it has no pointer, so generations resolve by list-scan: **cleartext and read-only**. Or pass
 > an already-built **`StorageChunkSource`** — a `MemoryStorageChunkSource` seeded chunk by chunk
 > in a test, or a `CrbmStorageChunkSource` you configured with advanced reader options (`tailBytes`, size caps). On
-> that path, configure the registry/keystore **on the source itself** — passing them at the top level is rejected
-> as a wiring mistake — and the store is **read-only**: the `*Into` verbs and the lifecycle helpers need the raw
-> driver to write through and throw `UnsupportedError`.
+> that path, configure the registry and keystore **on the source itself**: the store has no `registry` option, and
+> an `encryption.keystore` or `encryption.required: true` beside a pre-built source is rejected as a wiring mistake.
+> The store is then **read-only**: the `*Into` verbs and the lifecycle helpers need the raw driver to write through,
+> and they, like `exists`, `segments`, `subjectReport` and `exportSegments`, throw `UnsupportedError`.
+>
+> **`backend.storage` is only the storage half** — a raw driver — so passing it as `storage` constructs without
+> complaint and builds the read-only, cleartext store above rather than a backend's; pass the backend itself. Two
+> wirings are refused at construction, with `CapabilityError`: a driver that cannot serve range reads, and a
+> keystore or `encryption.required: true` on a bare driver, which has no registry to hold wrapped keys.
+
+**A key the store does not take is refused, not ignored.** `new CloudRoaring({ … })` throws `ValidationError` for
+any option it does not take, at the top level or inside a group (`cache.maxChunk`, a `keystore` beside
+`encryption`), naming each one and the keys it does take; a `registry` key is refused the same way, because a
+backend carries it. `S3Storage`, `GcsStorage` and `AzureBlobStorage` refuse an unknown key the same way, so a typo
+in a client or endpoint option cannot quietly build a client against the default endpoint.
 
 ## 3. Loading a segment
 
@@ -343,8 +361,29 @@ It's the same `IStorageDriver` contract as the local-filesystem driver (it passe
 suite), so everything above — reads, `count`, `iterate`, `intersect`, generation pinning — works unchanged.
 Generations are **write-once** (a conditional `If-None-Match:*` PUT; requires a backend that honors it — AWS
 S3 or recent MinIO). Large objects upload via **S3 multipart automatically** — write memory stays
-~one part (default 8 MiB); the object ceiling defaults to ≈80 GiB and grows via `partBytes` / `maxObjectBytes`
-up to S3's 5 TiB max, with write-once preserved (conditional `CompleteMultipartUpload`).
+~one part (default 8 MiB), and the object ceiling defaults to ≈80 GiB (10,000 parts), with write-once preserved
+(conditional `CompleteMultipartUpload`).
+
+The ceiling grows up to S3's 5 TiB through `partBytes` and `maxObjectBytes`, which are options of the storage
+driver, `S3StorageDriver`, not of `S3Storage` — `S3Storage` refuses them by name. To set them, build the two halves
+yourself and join them with `createBackend`:
+
+```ts
+import { S3Client } from '@aws-sdk/client-s3';
+import { CloudRoaring, createBackend } from '@cloudbitmaps/roaring';
+import { S3RegistryDriver, S3StorageDriver } from '@cloudbitmaps/s3';
+
+const client = new S3Client({ region: 'us-east-1' });
+const where = { client, bucket: 'my-bitmaps', prefix: 'cloudbitmaps' }; // stated once, for both halves
+const store = new CloudRoaring({
+  storage: createBackend({
+    storage: new S3StorageDriver({ ...where, partBytes: 64 * 1024 * 1024 }), // 10,000 parts of 64 MiB ≈ 625 GiB
+    registry: new S3RegistryDriver(where),
+  }),
+});
+```
+
+A write holds about one part in memory, so a larger part costs the writer that much more.
 
 ## 5. The segment registry (resolving the current generation)
 
@@ -383,12 +422,10 @@ describes two instants ([§8](#8-generation-bookkeeping-what-a-load-leaves-behin
 Without a registry, a store finds the generation by listing the bucket when it opens a segment, and keeps it until
 the reader cache evicts that segment, a read finds it swept, or it is invalidated (single-process/local use).
 
-**Registry backends** — `registry` is a pluggable seam (`IRegistryDriver`), independent of your storage choice; pick
-per deployment:
-
-**You normally do not choose one** — a backend brings its own, in the same bucket as the generations. The
-table is here for the case where you are assembling the halves yourself, which you do with
-`createBackend({ storage, registry })`; a plain `{ storage, registry }` object is refused. It cannot check
+**Registry drivers** — the registry half is a pluggable seam (`IRegistryDriver`), independent of the storage half.
+There is no `registry` option on the store, and **you normally do not choose one** — a backend brings its own, in
+the same bucket as the generations. The table is here for the case where you are assembling the halves yourself,
+which you do with `createBackend({ storage, registry })`; a plain `{ storage, registry }` object is refused. It cannot check
 that your two halves point at the same place — the driver interfaces expose no location — so calling it is
 you taking that on.
 
@@ -405,8 +442,11 @@ Storage data, using S3's conditional writes (`If-Match`) for the atomic generati
 **S3 only**:
 
 ```ts
+import { S3Client } from '@aws-sdk/client-s3';
+import { CloudRoaring } from '@cloudbitmaps/roaring';
 import { S3Storage } from '@cloudbitmaps/s3';
 
+const s3 = new S3Client({ region: 'us-east-1' }); // or let S3Storage build one
 const backend = new S3Storage({ bucket: 'my-bitmaps', client: s3 }); // one bucket, no second service
 const store = new CloudRoaring({ storage: backend });
 ```
@@ -428,6 +468,15 @@ three.
 > listing, so nothing but the bill will tell you. This is the one case where cost can accumulate quietly, which
 > matters more here than it would elsewhere, because a low idle bill is the point of the library.
 
+> **The registry reads only rows the library wrote.** Each persisted row is a small JSON object under `registry/`, and one
+> that does not parse as the library's own — hand-edited, written by another tool, a field it does not declare, no
+> `schemaVersion`, a `status` other than `active` or `destroyed` — fails with `IntegrityError` naming the object's
+> key. It fails its own `get` **and every `list()` that reaches it**: its namespace's, and every unscoped one. So one
+> bad object stops `segments()`, the retention sweep, the subject scans and `checkConsistency()` across the fleet,
+> rather than letting them skip a segment whose generations would then look unreferenced. Restore the object to a
+> valid row, or delete it, and enumeration resumes. A row from a newer build, with a higher `schemaVersion`, is
+> refused with `UnsupportedError`.
+
 The record also carries `status` (`active`, or the `destroyed` tombstone a crypto-shred or drop leaves), the
 wrapped data-key(s) of an encrypted segment (§9), and the `retention` policy (§13.5). `currentGen` can be
 **`null`** — a row `setRetention` minted before the first load — which reads exactly like a segment with no row
@@ -436,9 +485,10 @@ and takes the first publish. To publish a generation you wrote yourself, call
 
 ## Production wiring for the cloud drivers
 
-§4–§5 wired S3. The two remaining clouds — GCS and Azure Blob — follow the same shape: construct your own
-client, hand it to the driver. Each hosts **both** the storage tier and the registry, so either one is a complete
-deployment on its own (see [Choosing a registry](#choosing-a-registry)).
+§4–§5 wired S3. The two remaining clouds — GCS and Azure Blob — follow the same shape: the backend builds its own
+client, or takes one you built. Each hosts **both** the storage tier and the registry, so either one is a complete
+deployment on its own (see [Choosing a registry](#choosing-a-registry)). Each backend refuses an option key it does
+not take, by name, and the error lists the keys it does take.
 
 ### GCS — storage + registry (`@cloudbitmaps/gcs`)
 
@@ -454,9 +504,9 @@ const store = new CloudRoaring({ storage: backend }); // one bucket is the whole
 > **Checklist.** `@google-cloud/storage` is a real dependency of `@cloudbitmaps/gcs`, not a peer — installing
 > the package installs it. Generations are write-once via `ifGenerationMatch: 0` (both the
 > simple and resumable upload paths), and the registry swaps the pointer with `ifGenerationMatch: <generation>`.
-> Note the two senses of the word in that snippet: the drivers' own `storage` option takes the **GCS client**
-> (`@google-cloud/storage` names its client class `Storage`), which is why it is built as `gcs` above — while
-> `CloudRoaring`'s `storage` option takes the driver.
+> A client you built yourself goes in `client`. `@google-cloud/storage` names its client class `Storage`, and the
+> lower-level `GcsStorageDriver` takes it as an option called `storage`, but `GcsStorage` refuses `storage`: in
+> `CloudRoaring`'s options, `storage` is the backend.
 
 ### Azure Blob — storage + registry (`@cloudbitmaps/azure-blob`)
 
@@ -474,7 +524,8 @@ const store = new CloudRoaring({ storage: backend }); // one container is the wh
 ```
 
 > **Checklist.** `@azure/storage-blob` is a real dependency of `@cloudbitmaps/azure-blob`, not a peer.
-> Inject a container-scoped `ContainerClient`; generations are
+> Give it a connection string and a container name, as above, or a container-scoped `ContainerClient` as
+> `containerClient` — one or the other, since both is refused. Generations are
 > write-once via `If-None-Match: '*'`, and the registry swaps the pointer with `If-Match: <etag>`.
 
 Per-backend DR/backup guidance (RPO/RTO, point-in-time recovery, what to snapshot) lives in the
@@ -496,7 +547,7 @@ Tune it, or turn it off, per store:
 
 ```ts
 const store = new CloudRoaring({
-  storage, // a backend — S3Storage, GcsStorage, …
+  storage: backend, // S3Storage, GcsStorage, …
   // Tune the policy — it is a PARTIAL, so name only what you are changing. Everything else keeps its
   // default, and `onRetry` goes in the same group.
   // …or `retry: false` to turn the read retry off (e.g. your client already retries).
@@ -514,10 +565,11 @@ can't help or would be wrong): `ValidationError` (bad input), `IntegrityError` (
 was contended past its own re-read-and-retry loop).
 
 **Set a timeout on your client.** CloudBitmaps intentionally has no homegrown timeout (it would abandon
-in-flight requests). Instead, give your injected storage client a request timeout — the resulting timeout
-is treated as transient and retried:
+in-flight requests). Instead, give your injected storage client a request timeout — on a read, the resulting
+timeout is treated as transient and retried:
 
 ```ts
+import { S3Client } from '@aws-sdk/client-s3';
 import { NodeHttpHandler } from '@smithy/node-http-handler';
 const client = new S3Client({
   region: 'us-east-1',
@@ -536,7 +588,7 @@ so do the calls that read the registry or list the bucket directly: `exists`, `s
 `getRetention` and `checkConsistency`, and the registry scan that `subjectReport` and `exportSegments` start from. A write that lands and then loses its response looks, from the error alone,
 like one that failed, and replaying its conditional put or compare-and-swap would find that write already there and
 report it as a conflict. So a transient fault on a write reaches its caller (as a ledger entry or a throw), and the
-retry is yours: re-run the call.
+retry is yours: re-run the call. The `retry` option tunes the reads alone.
 
 A re-run `load` takes a fresh generation number and re-reads the row, so once the first attempt has settled it
 publishes whenever that attempt would have, whether or not it landed, with the same ids and options, under every
@@ -572,9 +624,14 @@ The three combines each have a materializing twin — `intersectInto`, `unionInt
 result as a **new generation of a destination segment** instead of streaming it to you:
 
 ```ts
+// Every operand has to name a segment that exists (see below), so these are loaded first.
+await store.load({ segment: 'high-value-shoppers' }, shopperIds);
+await store.load({ segment: 'active-this-week' }, activeIds);
+await store.load({ namespace: 'suppression', segment: 'global-opt-out' }, optOutIds);
+
 const shoppers = store.segment('high-value-shoppers');
 const active = store.segment('active-this-week');
-const optedOut = store.segment('global-opt-out');
+const optedOut = store.segment('global-opt-out', { namespace: 'suppression' });
 
 const res = await shoppers.intersectInto(store.segment('campaign-targets'), [active], {
   exclude: [optedOut],
@@ -582,20 +639,27 @@ const res = await shoppers.intersectInto(store.segment('campaign-targets'), [act
 res; // { generation, published, reason?, cardinality, cardinalityBefore, chunkCount, size, collected }
 ```
 
-> **An operand that names a segment which does not exist is refused.** `store.segment('global-opt-out')` and
+> **An operand that names a segment which does not exist is refused**, by every combine — the streamed ones as
+> well as these. `store.segment('global-opt-out')` and
 > `store.segment('global-opt-out', { namespace: 'suppression' })` are **different segments**, and unchecked the
 > first one would resolve to nothing and suppress nobody — returning the full audience, with no error.
 > The dangerous direction is the quiet one: a mistyped *include* collapses an intersect to nothing and you
 > notice; a mistyped *exclude* removes a safeguard and you do not. Both are a `ValidationError` naming the
-> segment. A segment that **exists and is empty** — a row minted by `setRetention` before its first load — is
-> still fine, because somebody created it deliberately; it is only a name nobody ever created that is refused.
-> Pass `allowAbsentOperands: true` if you mean to combine against a name that may not exist yet.
+> segment. A segment with a registry row but no ids is still accepted, because somebody created it deliberately:
+> a row minted by `setRetention` before its first load, a tombstone, or a segment loaded empty — even though
+> `store.exists()` answers `false` for the first two, since a read of them finds nothing. It is only a name with
+> no registry row that is refused. Pass `allowAbsentOperands: true` if you mean to combine against a name that
+> may not exist yet; it then reads as empty.
 
-Four properties, all consequences of "a write is a load":
+Five properties, all consequences of "a write is a load":
 
 - **The destination is superseded, not added to.** `campaign-targets` now holds exactly this result; whatever it
   held before is the previous generation. Re-running a window into the same target each day is therefore correct
   — each run is a fresh generation — and there is no accumulating-window hazard.
+- **A range replaces the whole destination too.** The `*Into` verbs take the combine's `after` / `through`
+  ([Page through a segment](#page-through-a-segment)), and `dest` then holds exactly the result's ids inside
+  `(after, through]`: whatever it held outside the range is superseded with the rest, not kept. Materialising a
+  range page by page into one destination leaves only the last page.
 - **Readers of the destination see the old generation or the new one, never a partial.** The result streams into
   one immutable object under a bounded memory window (`concurrency × operands × chunk`), and the pointer moves
   only once the object is durable.
@@ -627,16 +691,18 @@ survived.
 
 ## 8. Generation bookkeeping: what a load leaves behind
 
-Storage objects are immutable and generation-keyed, so **every load, every `*Into`, every erasure rewrite leaves its
-predecessor in the bucket**, still billed. Reads are unaffected — the pointer always names a live object — so the
+Storage objects are immutable and generation-keyed, so **every write leaves its predecessor in the bucket until
+something collects it**, still billed. Reads are unaffected — the pointer always names a live object — so the
 only symptom of never collecting them is a storage bill that never goes down. Something has to delete them, and
-in a library with no background process that something is a call you make:
+in a library with no background process that something is a call — the write's own, as the table below says, or
+this one, which an `*Into` leaves to you:
 
 ```ts
 import { gcOrphanGenerations } from '@cloudbitmaps/roaring';
 
-// After a successful load: delete every generation below the current one, keeping the newest 1 as a grace window.
-const deleted = await gcOrphanGenerations(ref, { storage, registry }, { keep: 1 });
+// After an *Into: delete every generation below the current one, keeping the newest 1 as a grace window.
+const ref = { segment: 'campaign-targets' };
+const deleted = await gcOrphanGenerations(ref, { storage: backend.storage, registry: backend.registry }, { keep: 1 });
 ```
 
 What it does, precisely: deletes generations **strictly below `currentGen`**, keeping the most recent `keep` of
@@ -657,8 +723,9 @@ nothing, which is what keeps routine collection working on a busy segment.
 
 The row is re-proved before **every** delete, not once after the listing, because the deletes are one round trip
 each. If the segment changed underneath the pass the call **throws `WriteConflictError`** — re-run it, and note
-that a refusal part-way through may already have deleted objects it will now never report. An empty array still
-means what it always did — no row at all, or no pointer yet — so an empty array is **not** a receipt:
+that a refusal part-way through may already have deleted objects it will now never report. An empty array also
+means one of the two cases that are genuinely nothing to collect — no row at all, or no pointer yet — so an empty
+array is **not** a receipt:
 `eraseIdFromSegment` reads the list as the physical half of its erasure receipt, and checks the **claim** — that
 the generation it needed is gone from the bucket — rather than its own membership in the list, because a
 concurrent collector may have taken it first. One more consequence of the reconcile: `keep` counts distinct generations, not
@@ -671,7 +738,7 @@ Who calls it today:
 | `store.load` | **it does** — collection is part of the call, keeping `keep` generations (default 1) |
 | an `*Into` | **you** — pass `keep` to collect on the way through, or call `gcOrphanGenerations` on your own cadence (right after the call, or a nightly pass). This is the step `store.load` exists to stop you forgetting |
 | `eraseSubject` / `eraseIdFromSegment` | **yes**, with `keep: 0` — the whole point is that the generation holding the bit does not survive the call. A holder *above* the pointer, which a `rollback` leaves there, is outside collection's range, so the erasure deletes it itself |
-| `retireExpired` | **yes**, for tombstoned segments only — it collects a straggler generation before purging the tombstone row |
+| `retireExpired` | **yes**, for the tombstones it wrote itself — it collects a straggler generation before purging the row. A tombstone a hand-run `dropSegment` or a crypto-shred left is never touched |
 | `dropSegment` | deletes every generation of the segment it drops (and reports any it could not in `generationsRemaining`) |
 
 **Read staleness, restated for the whole picture.** With a registry and a `cache.genTtlMs` above 0, a store
@@ -699,6 +766,11 @@ already fetched up to `concurrency` keys past the one holding its last id; those
 page usually finds them. `iterate` fetches one chunk at a time and nothing ahead.
 
 ```ts
+// All three are loaded segments (§3): an operand that names no segment is refused.
+await store.load({ segment: 'active-30d' }, activeIds);
+await store.load({ segment: 'zone-eu' }, euIds);
+await store.load({ namespace: 'suppression', segment: 'global-opt-out' }, optOutIds);
+
 // The audience is held at one generation for the whole send; the zone and the opt-out list are read live, page by
 // page, so an opt-out that lands mid-send applies to the pages after it.
 const audience = await store.segment('active-30d').pin();
@@ -776,6 +848,33 @@ as a durability guarantee and would not be one: an ordinary read is already cove
 job that must not change generations needs the snapshot handle, not a window wide enough to hope with. See
 [Deliberately not planned](../ROADMAP.md#deliberately-not-planned).
 
+### Rolling a segment back
+
+`store.generations(ref)` lists what the bucket holds for a segment, and
+`store.rollback(ref, toGeneration, { audit?, allowForward? })` moves the pointer to one of them — the one pointer
+move no automatic path makes:
+
+```ts
+import { RecordingAuditSink } from '@cloudbitmaps/roaring';
+
+const audit = new RecordingAuditSink();
+const ref = { segment: 'audience:active' };
+await store.generations(ref); // → [{ generation: 3, current: false }, { generation: 4, current: true }]
+await store.rollback(ref, 3, { audit }); // → { fromGeneration: 4, generation: 3 }
+
+// Generation 4 is still in the bucket, above the pointer now, so undoing the rollback needs the opt-in:
+await store.rollback(ref, 4, { audit, allowForward: true });
+```
+
+A rollback deletes nothing, and it is fenced on the row it read, so a load that lands meanwhile makes it throw
+`WriteConflictError` rather than being undone. A generation that is not in the bucket throws `NotFoundError` naming
+the ones that are, and a target above the pointer throws `ValidationError` without `allowForward`, because that is
+also where objects live that were never published, such as those of a load that died before its publish. A load
+keeps one generation below the one it publishes by default (`keep: 1`), so there is one to roll back to; pass a
+larger `keep` on the loads of a segment you may want to roll further back. Each move emits `segment.rollback` to
+the `audit` sink you pass ([§12](#12-audit-trail-security--compliance-events)), and this store drops its cached
+view of the segment.
+
 ## 9. Encryption at rest + crypto-shred
 
 Encrypt the Storage `.crbm` objects so a leaked bucket reveals **neither ids nor cardinality** (payloads *and* the
@@ -835,18 +934,32 @@ you meant to leave cleartext.
 ```ts
 import { destroySegment, eraseNamespace } from '@cloudbitmaps/roaring';
 
-// Irreversible — you must name the exact segment as confirmation:
-await destroySegment({ segment: 'pii' }, { registry }, { confirmSegment: 'pii' });
-// or a whole namespace:
-await eraseNamespace('tenant-42', { registry }, { confirmNamespace: 'tenant-42' });
+// Free functions over the registry half of the backend. Irreversible — name the exact segment as confirmation:
+const one = await destroySegment({ segment: 'pii' }, { registry: backend.registry }, { confirmSegment: 'pii' });
+// one.reason is 'cleartext' for a segment with no key to shred: nothing changed (see below).
+
+// or a whole namespace, with one result per segment — inspect them:
+const { destroyed } = await eraseNamespace('tenant-42', { registry: backend.registry }, {
+  confirmNamespace: 'tenant-42',
+});
+for (const r of destroyed) if (!r.destroyed) console.warn(r.segment, r.reason); // still holds data
 ```
 
 This deletes the segment's wrapped DEK from the registry (a `destroyed` tombstone). The encrypted Storage objects
 are left in place — but with the key gone they're **permanently unreadable, everywhere, including backups**. The
-segment then reads as empty, and the tombstone is a fence: a load and `publishGeneration`
-refuse a destroyed segment, so a load racing an erasure cannot resurrect it. To also reclaim the storage, use
+segment then reads as empty to a store that opens it afresh, and the tombstone is a fence: a load and
+`publishGeneration` refuse a destroyed segment, so a load racing an erasure cannot resurrect it. A store that
+already had the segment open is another matter: these are free functions over the registry, so they invalidate no
+store, and one that holds the unwrapped key keeps decrypting with it until it re-resolves the segment — within
+`cache.genTtlMs` (default 2 s) on a store with a registry and a positive TTL — or until `store.invalidate(ref)` is
+called on it ([§13](#13-subject-access--erasure-gdpr-art-15--17) has the table). To also reclaim the storage, use
 `dropSegment` ([§13.5](#135-retention-ttl-and-pruning--what-exists-and-what-doesnt)), which crypto-shreds an
 encrypted segment *and* deletes its objects.
+
+**A cleartext segment has no key to shred.** `destroySegment` on one changes nothing and returns
+`{ destroyed: false, cryptoShredded: false, reason: 'cleartext' }` rather than throwing, and `eraseNamespace` leaves
+such segments as they are and reports each the same way. `allowCleartext: true` tombstones them anyway, which
+stops them resolving but leaves their bytes readable in the bucket; `dropSegment` is the call that deletes them.
 
 ### ⚠️ Read this before you turn on encryption — key management
 
@@ -863,8 +976,8 @@ encrypted segment *and* deletes its objects.
 - **Rotate, don't lose.** Add a new KEK, point `activeKeyId` at it, and **keep the old KEK** — old segments keep
   decrypting with no data re-encryption. Use a **recovery KEK** (kept offline) so losing the active one isn't
   fatal.
-- **KMS/Vault later.** The default is dependency-free in-process BYOK; the `IKeystore` interface lets a
-  KMS/Vault adapter drop in later (a future phase) — encryption never forces a cloud dependency on you.
+- **KMS/Vault.** The default is dependency-free in-process BYOK. `IKeystore` is the interface a KMS or Vault
+  adapter would implement; none ships, and encryption never forces a cloud dependency on you.
 
 ## 10. Observability: metrics
 
@@ -906,12 +1019,13 @@ dependency of its own:
 
 ```ts
 import { metrics as otel } from '@opentelemetry/api';
+import { CloudRoaring } from '@cloudbitmaps/roaring';
 const meter = otel.getMeter('cloudbitmaps');
 const storageBytes = meter.createCounter('cloudbitmaps.storage.bytes');
 const cacheHits = meter.createCounter('cloudbitmaps.cache.hits');
 
 const store = new CloudRoaring({
-  storage, // a backend — S3Storage, GcsStorage, …
+  storage: backend, // S3Storage, GcsStorage, …
   metrics: {
     onEvent(e) {
       if (e.kind === 'storage.get') storageBytes.add(e.bytes); // NB: see the label caveat below
@@ -1073,14 +1187,17 @@ build-breaking CI assertions, so the numbers can never drift ahead of reality.
 ## 12. Audit trail: security & compliance events
 
 Separate from metrics — which reports *volume* (bytes, latency, hit rate) — the **audit sink** records the
-handful of **compliance-relevant state changes** an auditor cares about: when a segment's data was published,
-**rewritten**, or **erased**. It's the natural feed for an append-only audit log / SIEM, and doubles as your
+handful of **compliance-relevant state changes** an auditor cares about: when a segment's data was published or
+a load of it refused, when its pointer was rolled back, and when it was **rewritten**, **erased** or disposed of.
+It's the natural feed for an append-only audit log / SIEM, and doubles as your
 GDPR Art. 30 "record of processing" for the erasure path. Like metrics, it's an injected `IAuditSink`, it's
 **off by default** (a no-op), and a throwing sink can never break the operation it observes.
 
-Unlike metrics, audit isn't a store-constructor option — the events fire from the **operations that write**
-(a load, an `*Into` materialisation, an erasure, a drop, the retention sweep), which are separate entry points,
-so you pass `audit` to each:
+Unlike metrics, audit isn't a store-constructor option — the events fire from the **operations that write**,
+which are separate entry points, so you pass `audit` to each: a load (`store.load`, `loadSegment`), an `*Into`
+materialisation, a rollback (`store.rollback`, `rollbackSegment`), an erasure (`store.eraseSubject`,
+`eraseIdFromSegment`), a drop (`store.dropSegment`, `dropSegment`), a crypto-shred (`destroySegment`,
+`eraseNamespace`) and the retention sweep (`store.retireExpired`, `retireExpired`):
 
 ```ts
 import { RecordingAuditSink, destroySegment } from '@cloudbitmaps/roaring';
@@ -1092,7 +1209,7 @@ await store.load({ segment: 'users' }, ids, { audit });
 // A subject erasure — a rewrite of the current generation without one id:
 await store.eraseSubject(userId, { namespace: 'eu', audit });
 // A GDPR crypto-shred — the key wrappings are dropped:
-await destroySegment({ segment: 'users' }, { registry }, { confirmSegment: 'users', audit });
+await destroySegment({ segment: 'users' }, { registry: backend.registry }, { confirmSegment: 'users', audit });
 
 audit.snapshot();
 // [ { kind: 'segment.publish', segment: 'users', generation: 0 },
@@ -1101,13 +1218,14 @@ audit.snapshot();
 // (segment.erase fires only for an ENCRYPTED segment — a cleartext tombstone leaves the bytes readable.)
 ```
 
-The events are **vendor-neutral** — seven kinds, all carrying the segment/namespace name:
+The events are **vendor-neutral** — seven kinds, each carrying the segment's name and namespace, or, for
+`namespace.erase`, the namespace's:
 
 | Event | Fired when | Extra fields |
 | --- | --- | --- |
-| `segment.publish` | a load makes a generation the current one (needs a `registry`; not on a forward-only no-op) | `generation` |
-| `segment.load-refused` | a load wrote a generation and did not publish it: a guard refused it, or the segment's row changed first | `generation`, `reason`, `cardinality` |
-| `segment.rollback` | `store.rollback` moved the pointer to a generation it names, still in the bucket: **backwards**, or forward with `allowForward` — the one pointer move no automatic path makes | `fromGeneration`, `generation` |
+| `segment.publish` | a load — `store.load`, `loadSegment` or an `*Into` verb — makes a generation the current one | `generation` |
+| `segment.load-refused` | a load did not publish: a guard refused its result, the segment's row changed while it wrote, or another load took its generation number first, in which case it wrote nothing and `cardinality` is `0` | `generation`, `reason`, `cardinality` |
+| `segment.rollback` | `store.rollback` or `rollbackSegment` moved the pointer to a generation it names, still in the bucket: **backwards**, or forward with `allowForward` — the one pointer move no automatic path makes | `fromGeneration`, `generation` |
 | `segment.rewrite` | a generation derived from the segment itself became current in place of `fromGeneration` — today, an erasure rewrite (`eraseSubject` / `eraseIdFromSegment`), emitted at the publish, before the superseded generation is collected | `fromGeneration`, `generation` |
 | `segment.erase` | a **genuine crypto-shred** — not the idempotent re-run, and not a cleartext tombstone (bytes stay readable) | — |
 | `segment.dispose` | `dropSegment` tombstoned a segment and swept its storage — the weaker, storage-reclamation attestation; an encrypted drop emits **both** this and `segment.erase` | `generationsDeleted` |
@@ -1129,8 +1247,8 @@ For a worked example that routes metrics, cost, and audit to real dashboards, se
 
 Two admin helpers answer "what do you hold about this person?" and "forget this person everywhere." Both scan
 the **registered** segments (no reverse index — nothing taxes the hot path), so they're complete over what's
-registered — every loaded segment has a row, so wire the registry the loads used — and cost `O(registered
-segments)` per call. The scan fans out at a **bounded `concurrency`** (default 8; pass `{ concurrency }`) —
+registered — every loaded segment has a row, so build the store on the backend the loads used — and cost
+`O(registered segments)` per call. The scan fans out at a **bounded `concurrency`** (default 8; pass `{ concurrency }`) —
 parallel enough to stay quick over a large fleet, bounded so it can't stampede your backend; `eraseSubject`
 isolates a per-segment fault so one bad segment never aborts the ledger.
 
@@ -1145,14 +1263,15 @@ const report = await store.subjectReport(userId, { namespace: 'eu' });
 report.segments; // [{ segment, namespace }, …]   report.scannedSegments — the completeness denominator
 
 // Art. 17 — remove the id everywhere, across all tenants (explicit fleet-wide ack)
+const audit = new RecordingAuditSink(); // from '@cloudbitmaps/roaring' — §12
 const ledger = await store.eraseSubject(userId, { allNamespaces: true, audit });
 ledger.erasedFrom; // [{ segment, namespace, erased: true, fromGeneration: 4, generation: 5 }, …]
 ```
 
 **An erasure is a rewrite.** There is no per-id delete on an immutable object and no mutable tier to hold a
 tombstone, so `eraseSubject` does what every other write in the library does: for each registered segment the id
-is a member of, it streams the current generation through — every chunk copied, the one chunk holding the id
-re-encoded with that bit cleared — verifies the new object, publishes it **fenced on the generation it streamed**, and then **deletes the
+is a member of, it streams the current generation through — every chunk decoded and re-encoded, the one holding
+the id with that bit cleared — verifies the new object, publishes it **fenced on the generation it streamed**, and then **deletes the
 generation that held the bit** (`gcOrphanGenerations` with `keep: 0`). The bit is physically gone from the
 bucket when the call returns, constant memory, one chunk in flight. Segments the id is not in are not listed.
 
@@ -1168,8 +1287,8 @@ holds the id**, above the pointer or below it. When the current generation does 
 rewritten, so the entry carries no `generation` and no `segment.rewrite` event is emitted.
 
 Both helpers **reuse the store's own drivers** — no `registry`/deps to re-pass. `eraseSubject` needs the store
-built with a **backend** (it writes generations); `subjectReport` needs only the backend's registry (it
-just enumerates + `has()`). A store missing what a helper needs throws `UnsupportedError` — a
+built with a **backend** (it writes generations); `subjectReport` needs one too, for the registry it
+enumerates before it calls `has()`. A store missing what a helper needs throws `UnsupportedError` — a
 pre-built-`StorageChunkSource` store can't run `eraseSubject`; use the `eraseIdFromSegment(ref, id, { storage, registry,
 keystore? })` free function out-of-process instead. The returned `erasedFrom` list is your **erasure ledger**
 (proof of deletion) — a return value only, so persist it or route it to your audit sink (a `segment.rewrite` event
@@ -1186,9 +1305,9 @@ is also emitted per rewrite when you pass `audit`).
   rewrite still holds the winner's id, and when it sits above the winner's pointer the loser deletes it before
   returning. Re-run against the new generation: it erases the id if the id
   is still present, and lists nothing for the segment if the racing writer was an erasure of the same id that
-  already removed it. The reason is read off the registry row, so a row tombstoned mid-rewrite reports
-  `'destroyed'` and one purged by the retention sweep reports `'absent'` — the same answers a fresh call gives,
-  so you never have to care at which point it was discovered.
+  already removed it. The outcome is read off the registry row, so a segment whose row is tombstoned or purged
+  mid-rewrite is left out of the ledger, as a fresh call would leave it out — you never have to care at which
+  point it was discovered. (`eraseIdFromSegment` reports those two as `'destroyed'` and `'absent'`.)
 - `` `error: <message>` `` — an isolated per-segment fault. Causes worth telling apart: a transient storage
   fault (re-run), a missing keystore for an encrypted segment (wire it), an `IntegrityError` naming a chunk
   whose values are out of range — that segment is **corrupt**, the rewrite refused to copy the corruption into a
@@ -1201,7 +1320,10 @@ is also emitted per rewrite when you pass `audit`).
 
 Re-running is safe and idempotent: a segment the id is no longer in is simply not listed — but "not listed" is
 not by itself proof the id is gone, because a segment whose **registry row** has been purged is not scanned
-either, and its objects outlive it as orphans. `store.checkConsistency()` is what finds those. **One contract the
+either, and its objects outlive it as orphans. `store.generations(ref)` lists those, since it reads the bucket
+whether or not a row exists, and `store.dropSegment(ref, { confirmSegment })` deletes them, writing a `destroyed`
+row first as it always does, which then fences the name. `store.checkConsistency()` and `gcOrphanGenerations`
+start from the rows, so neither reaches them. **One contract the
 library cannot check: do not load the segment while erasing from it.** A load that lands *after* the rewrite
 carries whatever its source held, and the library cannot know that source was meant to exclude the id — quiesce
 loads of the affected segments for the duration, or fix the source first and load after. A writer that lands
@@ -1268,9 +1390,11 @@ const bucket = (day: string) => store.segment(day, { namespace: 'active-daily' }
 const ref = { namespace: 'active-daily', segment: today };
 await store.load(ref, idsSeenToday);
 
-// "Active in the last 7 days" — a union over the buckets you still keep.
+// "Active in the last 7 days" — a union over the buckets you still keep. A day whose bucket was never loaded (a
+// job that did not run) names no segment, which a combine refuses; `allowAbsentOperands` reads it as empty instead.
+// Leave it out to be told.
 const [head, ...rest] = last7Days.map(bucket);
-for await (const id of head.union(rest)) { /* … */ }
+for await (const id of head.union(rest, { allowAbsentOperands: true })) { /* … */ }
 
 // Retention = dropping whole buckets, not aging bits.
 ```
@@ -1278,8 +1402,10 @@ for await (const id of head.union(rest)) { /* … */ }
 > **A name is any non-empty string.** `dedup:2026-08-01`, `orders/2026`, `user@example.com`, `日本語`, `100%` —
 > all legal. There is no character allowlist, because each storage layer escapes what *it* cannot take
 > literally, which is the library's problem rather than yours. The only two refusals are an **empty** name and
-> one too long: the limit is **256 characters once encoded for a storage key**, so plain ASCII gets 256 while
-> heavily non-ASCII text reaches it sooner (one emoji is twelve encoded characters).
+> one too long: the limit is **256 characters once encoded for a storage key**. Letters, digits, `.`, `_`, `:`
+> and `-` are kept as they are (a leading `_` excepted), so a name of those gets all 256; every other character,
+> ASCII included — a space, `/`, `@`, `%` — is escaped to three characters per byte, so such names reach the
+> limit sooner (one emoji is twelve encoded characters).
 >
 > The namespace split is still the better shape for a *family*: `store.segments({ namespace: 'active-daily' })`
 > enumerates exactly that family's buckets, and `eraseNamespace` can retire the whole family at once. With one
@@ -1293,7 +1419,9 @@ exactly that day's window:
 
 ```ts
 const window = store.segment('active-7d', { namespace: 'windows' });
-await days[0].unionInto(window, days.slice(1)); // window's previous generation is superseded, not merged into
+const days = last7Days.map(bucket);
+// window's previous generation is superseded, not merged into
+await days[0].unionInto(window, days.slice(1), { allowAbsentOperands: true });
 ```
 
 Loading a bucket a day is the natural shape for a "seen this period" set: today's bucket is a different, empty set
@@ -1309,7 +1437,7 @@ you have recorded a policy. Four levers exist, and they answer different questio
 |---|---|---|
 | **`store.retireExpired({ … })`** | enumerates the registry and retires every segment whose recorded `expiresAt` has passed, **through `dropSegment`**. Bounded, previewable, returns a per-segment ledger. You schedule it | **a policy-driven rolling window** — the usual answer, [below](#the-sweep--storeretireexpired) |
 | **`store.dropSegment(ref, { confirmSegment })`** | tombstones the segment, then deletes its Storage generations (re-swept, with any residual reported in `generationsRemaining`). Works on a cleartext segment; on an encrypted one it *also* discards the DEK, so it is a strict superset there. Afterwards the segment **reads as empty** — see the caveat below | **retiring a bucket and reclaiming the storage** |
-| `destroySegment(ref, { registry }, { confirmSegment })` | **crypto-shred**: discards the DEK so the Storage bytes are unreadable *everywhere including backups and WORM* — but leaves the objects in your bucket, still billed. **Requires encryption** (no key, nothing to shred) | erasure that must reach immutable copies |
+| `destroySegment(ref, { registry }, { confirmSegment })` | **crypto-shred**: discards the DEK so the Storage bytes are unreadable *everywhere including backups and WORM* — but leaves the objects in your bucket, still billed. **Requires encryption**: a cleartext segment has no key to shred, and the call leaves it as it is and returns `reason: 'cleartext'` | erasure that must reach immutable copies |
 | `gcOrphanGenerations(ref, { storage, registry }, { keep })` | deletes only **superseded** generations, keeping `keep` as a reader grace window | reclaiming what loads leave behind ([§8](#8-generation-bookkeeping-what-a-load-leaves-behind)), not live data |
 
 Deleting an object does not reach a noncurrent version, a cross-region replica, or a PITR snapshot; discarding
@@ -1352,13 +1480,17 @@ property of the *segment* rather than of your code, [`setRetention` + `retireExp
 is this loop with the decision moved to the writer and the bounds, preview and ledger already built:
 
 ```ts
-for await (const rec of registry.list('active-daily')) {
-  if (rec.segment >= cutoffDay) continue;              // ISO dates sort lexicographically
-  const ref = { namespace: rec.namespace, segment: rec.segment };
+// Names first, drops after: a drop writes the row, and a paged listing may or may not see its own writes.
+const old: string[] = [];
+for await (const s of store.segments({ namespace: 'active-daily' })) {
+  if (s.status === 'active' && s.segment < cutoffDay) old.push(s.segment); // ISO dates sort lexicographically
+}
+for (const segment of old) {
+  const ref = { namespace: 'active-daily', segment };
   const res = await store.dropSegment(ref, { confirmSegment: ref.segment });
   // Non-empty means bytes survived — a load that was already writing when the tombstone landed finished its
-  // object. The segment reads as empty either way, so this is a billing leak, not a correctness one; re-run
-  // to collect it (the retention sweep also will, for a tombstoned segment).
+  // object. The segment reads as empty either way, so this is a billing leak, not a correctness one; re-run the
+  // drop to collect it. The retention sweep will not: it purges only the tombstones it wrote itself.
   if (res.generationsRemaining.length > 0) {
     console.warn(`${ref.segment}: ${res.generationsRemaining.length} generation(s) not reclaimed`);
   }
@@ -1381,14 +1513,19 @@ would take; a retention bug you can read in a log is worth more than one you fin
    collects the remainder. The sweep repeats (up to three passes) because a load that was already writing its
    object when the tombstone landed still finishes the write: its publish is then refused, but the object
    survives and holds the complete set. **Check `generationsRemaining`** — non-empty means bytes are still there
-   and the drop should be repeated. The retention sweep also collects them, since `gcOrphanGenerations` takes
-   every generation of a tombstoned segment.
+   and the drop should be repeated: a re-drop of a tombstone re-sweeps its storage. The retention sweep collects
+   them only for a tombstone it wrote itself, through `retireExpired`; one a hand-run `dropSegment` wrote is
+   left to you.
 
 Two limits worth knowing before you automate it:
 
 - **A drop is final for the name.** The tombstone fences every later load of that segment (refused with
-  `ValidationError`), which is what makes step 2 converge. To reuse a name, let `retireExpired` purge the
-  tombstone (below), or use a fresh dated name — which is the pattern anyway.
+  `ValidationError`), which is what makes step 2 converge. To reuse a name, use a fresh dated name — which is the
+  pattern anyway — or retire the segment through `retireExpired`, which purges the tombstones it wrote itself
+  once their grace period has passed and their storage is empty (below). A tombstone a hand-run `dropSegment`
+  wrote is never purged by the library; the
+  [disaster-recovery runbook](disaster-recovery.md#repair-an-unstamped-tombstone-after-a-hard-kill) shows how to
+  delete such a row by hand once its storage is empty.
 - **"Reads as empty" needs a timed refresh.** The `cache.genTtlMs` bound applies to a reader with a registry *and* a
   positive TTL, on a storage source with a clock, which every source a store builds for itself has. With no registry
   (a bare `IStorageDriver`), or with `cache: { genTtlMs: 0 }`, a reader has no timed refresh: it notices the drop only
@@ -1456,6 +1593,15 @@ hand-edited one. That is deliberately not folded into `null`: a
 malformed policy reading as "never expires" on a segment someone believes is expiring is exactly the kind of
 silence that costs a compliance commitment. And cancelling is its **own verb**, because "never expire" passed
 into the setter as a magic value is how a typo becomes a deletion.
+
+**A deadline can also sit on a handle.** `store.segment(name, { namespace, expiresAt })` takes the same
+epoch-milliseconds instant, and past it every read through **that handle** answers empty — `has` → `false`,
+`count` → `0`, `iterate` → nothing — as one comparison against the store's clock, with no I/O. An expired operand
+makes an `intersect` empty, drops out of a `union` and excludes nothing in an `andNot`, and an `*Into` that
+involves one throws `ValidationError`. It reclaims nothing and binds no other handle, so `count()` answering `0`
+while the objects are still in the bucket is expected: it is one reader's cut-off, not a policy. Record the
+policy with `setRetention` to make the expiry durable, visible to the sweep and reclaimable. A seconds-shaped
+value is refused at the handle, and `seg.expiresAt` reads it back.
 
 ### The sweep — `store.retireExpired()`
 
@@ -1548,7 +1694,7 @@ retired daily bucket accumulates forever. The sweep deletes those rows too, but 
 because deleting the row is what makes the name writable again:
 
 1. the row carries the **sweep's own retirement stamp**. This is a positive marker `retireExpired` writes on the
-   tombstones it creates, *not* an inference from "destroyed + an expired policy" — that inference was wrong, and
+   tombstones it creates, *not* an inference from "destroyed + an expired policy", which would be wrong, and
    dangerously so: a crypto-shred leaves `retention` untouched, so the ordinary ordering (set a 30-day policy, then
    a right-to-erasure request arrives mid-window and you `destroySegment`) produces a **GDPR tombstone carrying an
    expired policy**. Deleting that row would destroy the local attestation for an Art. 17 execution and un-fence
@@ -1590,7 +1736,7 @@ CR_EXPORT_ROOT=./.cloudbitmaps CR_EXPORT_OUT=./dump pnpm exec export-segments
 # CR_EXPORT_ROOT holds the local-filesystem store: <root>/storage and <root>/registry
 ```
 
-In-process (any store with a registry), with your own sink (an fs writer, an S3 upload, stdout, a test buffer):
+In-process (any store built on a backend), with your own sink (an fs writer, an S3 upload, stdout, a test buffer):
 
 ```ts
 import type { ExportSink } from '@cloudbitmaps/roaring';
@@ -1614,9 +1760,9 @@ const { RoaringBitmap32, DeserializationFormat } = roaring;
 const ids = RoaringBitmap32.deserialize(readFileSync('dump/_default/vips.roaring'), DeserializationFormat.portable).toArray();
 ```
 
-Notes: `exportSegments` needs a `registry` (throws `UnsupportedError` otherwise). Enumeration is the registry's
-known set, and **every loaded segment has a row** — the publish writes it — so the registry is complete by
-construction; a segment loaded *without* a registry is not exportable here (wire the registry the loads used).
+Notes: `exportSegments` needs a store built on a backend, for its registry (it throws `UnsupportedError`
+otherwise). Enumeration is the registry's known set, and **every loaded segment has a row** — the publish writes
+it — so the registry is complete by construction; build the store on the backend the loads used.
 Encrypted segments are **decrypted** transparently if the store has the keystore — so the export is **cleartext**
 (protect it). Crypto-shredded segments are skipped.
 
@@ -1647,6 +1793,8 @@ import { CloudRoaring, BudgetExceededError } from '@cloudbitmaps/roaring';
 
 // on by default — generous (1,000,000 units); set your own store-wide ceiling:
 const store = new CloudRoaring({ storage: backend, budget: { maxRequests: 50_000 } });
+await store.load({ segment: 'huge' }, hugeIds);
+await store.load({ segment: 'other' }, otherIds);
 
 try {
   for await (const id of store.segment('huge').intersect([store.segment('other')])) {
@@ -1667,7 +1815,7 @@ it never resets it to the generous default):
 ```ts
 // tighten or lift the ceiling for a specific call:
 await store.subjectReport(userId, { namespace: 'eu', budget: { maxRequests: 5_000 } });
-for await (const _ of store.segment('a').intersect([store.segment('b')], { budget: false })) {
+for await (const _ of store.segment('huge').intersect([store.segment('other')], { budget: false })) {
   /* trusted batch job — no ceiling for this call */
 }
 ```
@@ -1706,7 +1854,11 @@ if (report.errored.length > 0) {
 
 Run it **after any restore** and as a periodic health check. It needs a **backend** (same
 requirement as the other lifecycle helpers; throws `UnsupportedError` otherwise) and fans out at a bounded
-`concurrency` (default 8). A single unreadable segment never aborts the scan — it lands in `errored` so you still
+`concurrency` (default 8). It holds the registry rows it enumerates resident, at most **250,000**, and past that
+throws `BudgetExceededError` rather than report a partial scan as a whole one. `store.checkConsistency` takes no
+ceiling of its own: narrow the scan with `namespace`, or run the free function over the backend's two halves,
+`runConsistencyCheck({ storage: backend.storage, registry: backend.registry }, { maxScanSegments })`. It visits
+registry rows, so objects whose row is gone are not in its report; `store.generations(ref)` lists those. A single unreadable segment never aborts the scan — it lands in `errored` so you still
 get the full picture; and each segment is checked against its authoritative **live** pointer (a strong read), not
 the enumeration snapshot, so a concurrent load that advanced the generation during the scan isn't misreported as
 a tear. See the [disaster-recovery runbook](disaster-recovery.md) for the full restore procedure, RPO/RTO
@@ -1722,11 +1874,16 @@ guidance, and why the registry must be point-in-time-recoverable alongside the o
 | `intersect(others, { after?, through?, exclude?, concurrency?, budget? })` | `AsyncIterable<number>` | ascending; chunk-skipping. `exclude` subtracts suppression segments **in the same pass** |
 | `union(others, { after?, through?, exclude?, concurrency?, budget? })` | `AsyncIterable<number>` | ascending. The one composite with **no** chunk-skipping — every chunk of every operand is read |
 | `andNot(excludes, { after?, through?, concurrency?, budget? })` | `AsyncIterable<number>` | ascending. Reads all of `this`; each suppression list **only where it overlaps** |
-| `intersectInto` / `unionInto` / `andNotInto` `(dest, …)` | `Promise<MaterializeResult>` | write the result as a **new generation of `dest`** (superseding it) — `{ generation, cardinality, chunkCount, size }`. Needs a backend |
+| `intersectInto` / `unionInto` / `andNotInto` `(dest, …)` | `Promise<MaterializeResult>` | write the result as a **new generation of `dest`** (superseding it, and with a range, holding only the ids inside it) — `{ generation, published, reason?, cardinality, cardinalityBefore, chunkCount, size, collected }`. Needs a backend |
 | `costReport({ workload?, pricing? })` | `Promise<CostReport>` | grounded $ report from this segment's real `.crbm` size ([§11](#11-cost-estimate-it-then-ground-it)) |
 
 There is no per-id write on a segment: data enters as a generation — `store.load`
 ([§3](#3-loading-a-segment)) or an `*Into` verb — and leaves the same way (`eraseSubject`, `dropSegment`).
+
+**Every combine refuses an operand that names no segment** — `this`, every other operand and every `exclude` —
+with `ValidationError` naming it: one that holds no chunks and has no registry row. A mistyped exclude would
+otherwise suppress nobody. Pass `allowAbsentOperands: true` in the combine's options to read such a name as empty
+([§7](#7-materializing-the-into-verbs) has the rule).
 
 **What each combine has to read** — a property of the set operation, not of the implementation:
 
@@ -1771,9 +1928,10 @@ The *read* side carries over one-for-one:
 | `EXPIRE key seconds` | `store.setRetention(ref, { expiresAt })` + `store.retireExpired()` | per **segment**, never per id (a bitmap stores ids, not timestamps), and the sweep is **yours to schedule** — this library starts no timer, so it behaves the same in a Lambda and a server. [§13.5](#135-retention-ttl-and-pruning--what-exists-and-what-doesnt) |
 
 You are not giving up the bitmap: each 65,536-id chunk is stored in whichever of Roaring's three encodings is
-smallest for that chunk, and past **4,096 ids** in a chunk (6.25% of it) the winner is a flat bit array — the same
-bytes you have now, chosen per chunk instead of assumed for all of them. Below that threshold you stop paying for
-the empty span.
+smallest for that chunk. Past **4,096 ids** in a chunk (6.25% of it) a flat bit array — a bit per id, as your
+Redis bitmap holds it — beats a sorted list of ids, unless the ids form runs, where a run encoding is smaller
+still: a contiguous range costs a few bytes a chunk. So the bit array is chosen per chunk instead of assumed for all of
+them, and below that threshold you stop paying for the empty span.
 
 **What does not carry over: the raw bytes.** A `.crbm` object is not a flat bit array, so anything that reads
 your Redis bitmap's underlying string — a job that `GET`s the key and indexes into it, a byte-for-byte backup,
@@ -1790,6 +1948,12 @@ transfers today; everything reached through the bytes does not.
 whose 16-bit key appears in *all* of them, so two huge segments that barely overlap transfer almost nothing:
 
 ```ts
+// Every operand is a loaded segment: a combine refuses one that names no segment.
+await store.load({ segment: 'high-value-shoppers' }, shopperIds);
+await store.load({ segment: 'active-this-week' }, activeIds);
+await store.load({ segment: 'opted-in' }, optedInIds);
+await store.load({ namespace: 'suppression', segment: 'global-opt-out' }, optOutIds);
+
 const shoppers = store.segment('high-value-shoppers');
 const active = store.segment('active-this-week');
 
@@ -1804,7 +1968,8 @@ for await (const id of shoppers.intersect([active, store.segment('opted-in')])) 
 }
 
 // minus a suppression list, in the same pass — the opt-out list is read only where the intersection survived
-for await (const id of shoppers.intersect([active], { exclude: [store.segment('global-opt-out')] })) {
+const optOut = store.segment('global-opt-out', { namespace: 'suppression' });
+for await (const id of shoppers.intersect([active], { exclude: [optOut] })) {
   /* … */
 }
 
@@ -1821,24 +1986,30 @@ tear the result.
 ## Deploying to AWS Lambda
 
 CloudBitmaps' crown jewel is serverless chunk-skipping intersection, so Lambda is a first-class target — with
-one thing to know. The bitmap math runs on **`roaring`, a native (C++) addon**, and it ships **no prebuilt
-binary for the Lambda Node runtimes on Linux** (checked: `nodejs20`/`nodejs22`, arm64). So you can't just
-`npm install` on the bare runtime — the addon must be **built for the target platform** (exactly like `sharp`
-or `better-sqlite3`). This is a one-time build step, not a per-invocation cost.
+one thing to know. The bitmap math runs on **`roaring`, a native (C++) addon**, whose install fetches a binary for
+the platform the install runs on. So a `node_modules` installed on a laptop and zipped up does not load on
+Lambda: **install for the target** — Amazon Linux, your function's architecture, its Node version — as any native
+addon needs. `roaring` publishes no prebuilt binary for Linux on arm64, so on a Graviton function the addon
+compiles from source during that install, which needs a C/C++ toolchain. This is a one-time build step, not a
+per-invocation cost. Every CloudBitmaps package needs Node 22.12 or later, so the function runs on `nodejs22.x`
+or a later runtime.
 
 Pick whichever you already use:
 
 - **`sam build --use-container`** (or `--use-container` on your framework) — builds deps inside an Amazon
-  Linux image matching the runtime, so `roaring` compiles for the target. The simplest path.
+  Linux image matching the runtime, so `roaring` is installed for the target. The simplest path.
 - **Container image Lambda** — `FROM public.ecr.aws/lambda/nodejs:22`, add a build toolchain
   (`dnf install -y gcc-c++ make python3`), `npm ci`, deploy the image.
 - **A Lambda layer** — build `node_modules` once in an Amazon Linux 2023 container and ship it as a layer,
   reused across functions.
 
 Match the **arch** (`arm64` Graviton vs `x86_64`) and **Node version** of your function when you build. Our
-CI proves this path end-to-end with a `pnpm lambda-smoke` gate (builds `roaring` in an AL2023 container and
-loads the package under both ESM and CJS). *(A prebuilt, drop-in Lambda layer ships too: `pnpm build-lambda-layer`
-produces `dist-lambda/cloudbitmaps-lambda-layer.zip`.)*
+CI proves this path end-to-end with a `pnpm lambda-smoke` gate (builds `roaring` from source in an AL2023
+container and loads the package under both ESM and CJS). The repository can also build a layer for you: from a
+clone, `pnpm build-lambda-layer` produces `dist-lambda/cloudbitmaps-lambda-layer.zip`, holding core and the roaring
+flavor with the addon compiled in an AL2023 container of the machine's own architecture. It is a script in the
+repository, not a published artifact: nothing on npm or on a GitHub release carries it, though a manually
+dispatched CI run can build one and attach it to that run.
 
 ## Troubleshooting
 
@@ -1938,9 +2109,9 @@ bytes as well as by count — lower `cache.readerMaxBytes` for a memory-tight de
 reads across many wide segments.
 
 **Neither limits how many ids a segment can hold.** A segment holds up to the full 32-bit id space — ~4.29
-billion members — and no ceiling here changes that. `maxScanSegments` (on the sweep and the consistency check)
-counts **segments** — distinct named bitmaps in the registry — not members: 500 audience segments count as 500,
-whatever their size.
+billion members — and no ceiling here changes that. `maxScanSegments` — an option of `retireExpired` and
+`runConsistencyCheck`, while `store.checkConsistency` holds the default of 250,000 — counts **segments**, distinct
+named bitmaps in the registry, not members: 500 audience segments count as 500, whatever their size.
 
 ## What blocks the event loop, and where to run it
 
@@ -1956,8 +2127,9 @@ on an M3 Pro:
 | `has` / `count` / `intersect` / `union` / `andNot` | microseconds of CPU; dominated by network | — | anywhere |
 
 The **stall** column is the number that decides whether co-resident work survives, and it is not the same as
-cost. A load yields the event loop periodically, so its ~405 ms is spent in slices of ~22 ms at most with the loop
-free in between — other requests interleave rather than queueing behind the whole load. Without a clock to yield
+cost. A load yields the event loop periodically, so its ~405 ms is spent in slices — the longest ~22 ms in the
+median run and 26 ms in the worst — with the loop free in between: other requests interleave rather than
+queueing behind the whole load. Without a clock to yield
 through, the two columns are the same number: the same 1M-id load holds the loop for **~408 ms straight**, long
 enough for a health check to time out and the instance to be pulled from its load balancer. Both figures are the
 median of seven runs, measured on the same machine.
@@ -1977,5 +2149,7 @@ and keep `has`, `count` and `intersect` where the requests are.
   path to `1.0`, and what we've deliberately said no to.
 - [API Reference](api-reference.md) — every export, kept in sync with the code by CI.
 - Writing your own storage driver? A shared **conformance suite** (`packages/roaring/src/testing/conformance.ts`) is the bar
-  every driver must pass. It remains an internal SDK helper (consumed in-repo via the `@/` alias) — it is not
-  exported as a public `./testing` package subpath.
+  every driver in this repository passes. It is an internal helper, consumed in-repo through the `@/` alias and
+  not exported as a public `./testing` package subpath, so a driver outside the repository cannot run it; the
+  [driver kit](api-reference.md#driver-kit--what-you-need-to-implement-a-driver) lists the behaviours to reproduce
+  by hand.
