@@ -387,6 +387,86 @@ describe('retireExpired — faults, races and malformed input', () => {
     expect(await w.store().segment('typo').count()).toBe(1);
   });
 
+  describe('with purgeTombstones: false, the row of a segment that held nothing stays too', () => {
+    it('keeps the stamped tombstone, reports the retirement truthfully, and leaves the name fenced', async () => {
+      const w = world();
+      await w.store().setRetention({ segment: 'typo' }, { expiresAt: EXPIRED });
+
+      const res = await retireExpired(w.dropDeps, { now: T0, purgeTombstones: false });
+      expect(res.retired).toBe(1);
+      expect(res.tombstonesPurged).toBe(0);
+      expect(res.entries[0]).toMatchObject({ action: 'retired', segment: 'typo' });
+      const entry = res.entries[0]!;
+      if (!('result' in entry) || entry.result === undefined) throw new Error('no result');
+      expect(entry.result).toMatchObject({
+        dropped: true,
+        generationsDeleted: [],
+        generationsRemaining: [],
+      });
+
+      const row = await w.registry.get({ segment: 'typo' });
+      expect(row!.status).toBe('destroyed');
+      expect(row!.retention).toHaveProperty('retiredBySweepAt', T0); // ours, so a later purge may take it
+      expect(await w.store().exists({ segment: 'typo' })).toBe(false);
+      const listed: string[] = [];
+      for await (const info of w.store().segments()) listed.push(info.segment);
+      expect(listed).toEqual(['typo']); // discovery yields a tombstone as it always does
+      // Like every kept tombstone, it fences the name.
+      await expect(w.load('typo', [1])).rejects.toBeDefined();
+    });
+
+    it('is stable: later sweeps with purging off neither re-retire it nor count it', async () => {
+      const w = world();
+      await w.store().setRetention({ segment: 'typo' }, { expiresAt: EXPIRED });
+      await retireExpired(w.dropDeps, { now: T0, purgeTombstones: false });
+      const before = await w.registry.get({ segment: 'typo' });
+
+      for (const now of [T0, T0 + 2 * DAY, T0 + 365 * DAY]) {
+        const again = await retireExpired(w.dropDeps, { now, purgeTombstones: false });
+        expect(again).toMatchObject({
+          retired: 0,
+          eligible: 0,
+          tombstonesPurged: 0,
+          limited: false,
+        });
+        expect(again.entries).toEqual([]);
+      }
+      expect(await w.registry.get({ segment: 'typo' })).toEqual(before);
+      expect(await w.store().checkConsistency()).toMatchObject({
+        checked: 1,
+        inconsistent: [],
+        errored: [],
+      });
+    });
+
+    it('is purged by a later sweep with purging on, after the grace window, and the name works again', async () => {
+      const w = world();
+      await w.store().setRetention({ segment: 'typo' }, { expiresAt: EXPIRED });
+      await retireExpired(w.dropDeps, { now: T0, purgeTombstones: false });
+
+      const early = await retireExpired(w.dropDeps, { now: T0 + 1000 });
+      expect(early.tombstonesPurged).toBe(0); // inside the grace window
+      const late = await retireExpired(w.dropDeps, { now: T0 + 2 * DAY });
+      expect(late.tombstonesPurged).toBe(1);
+      expect(late.entries[0]).toMatchObject({ action: 'purged-tombstone', segment: 'typo' });
+      expect(await w.registry.get({ segment: 'typo' })).toBeNull();
+      await w.load('typo', [1]);
+      expect(await w.store().segment('typo').count()).toBe(1);
+    });
+
+    it('a dry run previews the retirement and leaves no row either way', async () => {
+      const w = world();
+      await w.store().setRetention({ segment: 'typo' }, { expiresAt: EXPIRED });
+      const res = await retireExpired(w.dropDeps, {
+        now: T0,
+        purgeTombstones: false,
+        dryRun: true,
+      });
+      expect(res.wouldRetire).toBe(1);
+      expect((await w.registry.get({ segment: 'typo' }))!.status).toBe('active');
+    });
+  });
+
   it('survives a malformed retention blob without abandoning the sweep', async () => {
     // `readRetentionPolicy` is called outside the per-segment try, so a stored `retention: null` that threw an
     // untyped TypeError there would abort the fleet sweep, and the healthy expired segment beside it would never

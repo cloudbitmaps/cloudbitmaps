@@ -1754,7 +1754,11 @@ because deleting the row is what makes the name writable again:
    simply retries.
 
 Pass `purgeTombstones: false` to keep every tombstone — the right choice if something outside this library treats
-the presence of a `destroyed` row as an attestation. (Two options rather than one `number | 'never'` on purpose:
+the presence of a `destroyed` row as an attestation. That includes the row of a retirement whose drop found no
+Storage generation to delete and left none behind: with the default, the sweep deletes that row in the same pass,
+since it would only fence the name (a `setRetention` on a mistyped name mints such a row); with `false` it stays,
+stamped, and fences the name like any kept tombstone, until a sweep with purging on deletes it once its grace period
+has passed. The ledger entry reports the retirement the same either way. (Two options rather than one `number | 'never'` on purpose:
 `0` would have to mean "purge immediately" here while `cache.genTtlMs: 0` in this same library means "never refresh on a timer",
 and one option whose zero is the opposite of another's is a trap for whoever tunes both.)
 

@@ -478,6 +478,15 @@ These two change what `estimateCost()` reports:
 
 ### Fixed
 
+- **`purgeTombstones: false` kept every tombstone but one.** The option's contract is that the sweep deletes no row
+  of a retirement it made, yet a retired segment that held nothing (a `setRetention` on a name that was never
+  loaded, or a mistyped one) had its row deleted in the same pass whatever the option said. With `false` that row
+  now stays, stamped like the sweep's other tombstones, so a later sweep with purging on deletes it once
+  `tombstoneGraceMs` has passed. While it stays it fences the name against every writer, as a kept tombstone does.
+  The ledger entry and the `segment.dispose` event are the same either way, and a later sweep with purging off
+  skips the row without re-processing it. The default, `purgeTombstones: true`, deletes the row as before. A
+  caller that passes `false` and relied on an empty segment's name being free again after the sweep must pass
+  `true` for the sweep that should free it.
 - **A subject erasure could report `erased: true` while another generation of the segment still held the id.**
   `PRIVACY.md` promises that an `erased: true` entry means the id is physically gone from every generation that
   held it. Three cases broke that promise:
