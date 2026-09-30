@@ -29,9 +29,9 @@ export interface GcsStorageOptions {
    * say.
    */
   readonly client?: GcsClient;
-  /** Project id for the client built when `client` is absent. Falls back to the SDK's own resolution. */
+  /** Project id for the client built when `client` is absent (refused beside `client`). Falls back to the SDK's own resolution. */
   readonly projectId?: string;
-  /** Endpoint override — point it at fake-gcs-server locally. Ignored when `client` is supplied. */
+  /** Endpoint override — point it at fake-gcs-server locally. Refused beside `client`, which carries its own. */
   readonly apiEndpoint?: string;
   /** Largest object the backend will write and advertise (default = GCS's 5 TiB max). Must be a positive safe integer. */
   readonly maxObjectBytes?: number;
@@ -57,6 +57,9 @@ export const GCS_STORAGE_OPTION_KEYS = [
   'simpleUploadThresholdBytes',
   'now',
 ] as const;
+
+/** The settings that build a client, which a supplied `client` already carries and so cannot be given beside. */
+const CLIENT_SETTINGS = ['projectId', 'apiEndpoint'] as const;
 
 /** Refuse an options bag that is not an object, or that holds a key not in `keys`, naming each such key. */
 function refuseUnknown(
@@ -94,12 +97,26 @@ export class GcsStorage implements StorageBackend {
       GCS_STORAGE_OPTION_KEYS,
       'a @google-cloud/storage client goes in `client`',
     );
-    this.client =
-      options.client ??
-      new GcsClient({
+    if (options.client !== undefined) {
+      // A supplied client already carries its project and endpoint, so a setting beside it is ignored, and
+      // ignoring it leaves the store talking to somewhere the caller did not mean: an `apiEndpoint` meant for an
+      // emulator, silently dropped, is production traffic from a client that was built for the public endpoint.
+      // Refuse instead of picking one.
+      const ignored = CLIENT_SETTINGS.filter((k) => options[k] !== undefined);
+      if (ignored.length > 0) {
+        throw new ValidationError(
+          `GcsStorage takes \`client\` OR ${CLIENT_SETTINGS.map((k) => `\`${k}\``).join(' / ')}, not both — ` +
+            `got \`client\` with ${ignored.map((k) => `\`${k}\``).join(', ')}; ` +
+            'the `client` already carries them, so configure them on the client, or drop `client`',
+        );
+      }
+      this.client = options.client;
+    } else {
+      this.client = new GcsClient({
         ...(options.projectId === undefined ? {} : { projectId: options.projectId }),
         ...(options.apiEndpoint === undefined ? {} : { apiEndpoint: options.apiEndpoint }),
       });
+    }
     const shared = {
       storage: this.client,
       bucket: options.bucket,

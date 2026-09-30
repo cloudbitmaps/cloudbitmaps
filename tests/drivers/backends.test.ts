@@ -100,7 +100,7 @@ describe('a backend configures both halves from one place', () => {
       /does not take `storage`.*goes in `client`/,
     );
     expect(build({ bucket: 'b', endpoint: 'http://x' })).toThrow(/`endpoint`/);
-    expect(build({ bucket: 'b', client, prefix: 'p', projectId: 'x', now: () => 0 })).not.toThrow();
+    expect(build({ bucket: 'b', client, prefix: 'p', now: () => 0 })).not.toThrow();
   });
 
   it('S3Storage and AzureBlobStorage refuse a key they do not take, and every backend a bag that is not an object', () => {
@@ -219,6 +219,91 @@ describe('a backend configures both halves from one place', () => {
     expect(
       azure({ connectionString: AZURITE_CONN, container: 'c', simpleUploadThresholdBytes: 1 }),
     ).toThrow(/does not take `simpleUploadThresholdBytes`/);
+  });
+
+  // A supplied client already carries its own region, endpoint, addressing and credentials (S3), or project and
+  // endpoint (GCS). A setting beside it would be ignored, which sends an `endpoint` meant for MinIO, or an
+  // `apiEndpoint` meant for an emulator, to a client that talks to production. Each such key is refused and
+  // named, as AzureBlobStorage refuses `connectionString` / `container` beside `containerClient`.
+  describe('a client carries its own connection settings, so none may be given beside it', () => {
+    const s3Settings = {
+      region: 'us-east-1',
+      endpoint: 'http://127.0.0.1:9000',
+      pathStyle: true,
+      credentials: { accessKeyId: 'a', secretAccessKey: 's' },
+    } as const;
+    const gcsSettings = { projectId: 'p', apiEndpoint: 'http://127.0.0.1:4443' } as const;
+    const s3Client = new S3Storage({ bucket: 'b' }).client;
+    const gcsClient = new GcsStorage({ bucket: 'b', apiEndpoint: 'http://127.0.0.1:4443' }).client;
+    const s3 = (options: object) => () => new S3Storage({ bucket: 'b', ...options });
+    const gcs = (options: object) => () => new GcsStorage({ bucket: 'b', ...options });
+
+    for (const [key, value] of Object.entries(s3Settings)) {
+      it(`S3Storage refuses \`${key}\` beside \`client\`, names it, and says the client carries it`, () => {
+        const build = s3({ client: s3Client, [key]: value });
+        expect(build).toThrow(ValidationError);
+        expect(build).toThrow(new RegExp(`with \`${key}\`; the \`client\` already carries them`));
+        // …and only that key is named: the others were not given.
+        for (const other of Object.keys(s3Settings).filter((k) => k !== key)) {
+          expect(build).not.toThrow(new RegExp(`with .*\`${other}\`; `));
+        }
+        // …while the same key without a client still builds one.
+        expect(s3({ [key]: value })).not.toThrow();
+      });
+    }
+
+    for (const [key, value] of Object.entries(gcsSettings)) {
+      it(`GcsStorage refuses \`${key}\` beside \`client\`, names it, and says the client carries it`, () => {
+        const build = gcs({ client: gcsClient, [key]: value });
+        expect(build).toThrow(ValidationError);
+        expect(build).toThrow(new RegExp(`with \`${key}\`; the \`client\` already carries them`));
+        for (const other of Object.keys(gcsSettings).filter((k) => k !== key)) {
+          expect(build).not.toThrow(new RegExp(`with .*\`${other}\`; `));
+        }
+        expect(gcs({ [key]: value })).not.toThrow();
+      });
+    }
+
+    it('several settings beside a client are all named', () => {
+      expect(s3({ client: s3Client, ...s3Settings })).toThrow(
+        /with `region`, `endpoint`, `pathStyle`, `credentials`; the `client` already carries them/,
+      );
+      expect(s3({ client: s3Client, region: 'x', credentials: s3Settings.credentials })).toThrow(
+        /with `region`, `credentials`;/,
+      );
+      expect(gcs({ client: gcsClient, ...gcsSettings })).toThrow(
+        /with `projectId`, `apiEndpoint`; the `client` already carries them/,
+      );
+    });
+
+    it('the message says what to do: configure the client, or drop `client`', () => {
+      expect(s3({ client: s3Client, region: 'x' })).toThrow(
+        /configure them on the client, or drop `client`/,
+      );
+      expect(gcs({ client: gcsClient, projectId: 'x' })).toThrow(
+        /configure them on the client, or drop `client`/,
+      );
+    });
+
+    it('a client alone, and the keys the backend itself uses beside it, are taken', () => {
+      const now = () => 0;
+      expect(s3({ client: s3Client })).not.toThrow();
+      expect(s3({ client: s3Client, prefix: 'p', now })).not.toThrow();
+      expect(gcs({ client: gcsClient })).not.toThrow();
+      expect(gcs({ client: gcsClient, prefix: 'p', now })).not.toThrow();
+      // A key set to `undefined` is absent, as it is for AzureBlobStorage's `containerClient`.
+      expect(s3({ client: s3Client, region: undefined, credentials: undefined })).not.toThrow();
+      expect(
+        gcs({ client: gcsClient, projectId: undefined, apiEndpoint: undefined }),
+      ).not.toThrow();
+      expect(new S3Storage({ bucket: 'b', client: s3Client }).client).toBe(s3Client);
+      expect(new GcsStorage({ bucket: 'b', client: gcsClient }).client).toBe(gcsClient);
+    });
+
+    it('a built client takes every setting without a client', () => {
+      expect(s3({ ...s3Settings })).not.toThrow();
+      expect(gcs({ ...gcsSettings })).not.toThrow();
+    });
   });
 
   it('each cloud backend takes exactly the keys its options interface declares (checked by the compiler)', () => {

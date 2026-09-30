@@ -33,11 +33,11 @@ export interface S3StorageOptions {
    * applies to every request except the conditional writes, which are sent once whatever it is configured to do.
    */
   readonly client?: S3Client;
-  /** Region for the client built when `client` is absent. Falls back to the SDK's own resolution. */
+  /** Region for the client built when `client` is absent (refused beside `client`). Falls back to the SDK's own resolution. */
   readonly region?: string;
-  /** Endpoint for an S3-compatible store (MinIO, Ceph, R2). Ignored when `client` is supplied. */
+  /** Endpoint for an S3-compatible store (MinIO, Ceph, R2). Refused beside `client`, which carries its own. */
   readonly endpoint?: string;
-  /** Path-style addressing, which most S3-compatible stores require. Ignored when `client` is supplied. */
+  /** Path-style addressing, which most S3-compatible stores require. Refused beside `client`, which carries its own. */
   readonly pathStyle?: boolean;
   /**
    * Static credentials, for the S3-compatible stores that issue them (MinIO, Ceph, R2).
@@ -45,7 +45,7 @@ export interface S3StorageOptions {
    * On AWS itself, leave this unset — the SDK's own chain (instance role, SSO, environment, profile) is what
    * you want, and hard-coding keys to reach it would be a downgrade. It exists because the alternative for a
    * MinIO user was to construct an `S3Client` purely to carry two strings, which is the ergonomics this class
-   * is here to remove. Ignored when `client` is supplied.
+   * is here to remove. Refused beside `client`, which carries its own.
    */
   readonly credentials?: {
     readonly accessKeyId: string;
@@ -84,6 +84,9 @@ export const S3_STORAGE_OPTION_KEYS = [
   'now',
 ] as const;
 
+/** The settings that build a client, which a supplied `client` already carries and so cannot be given beside. */
+const CLIENT_SETTINGS = ['region', 'endpoint', 'pathStyle', 'credentials'] as const;
+
 /** Refuse an options bag that is not an object, or that holds a key not in `keys`, naming each such key. */
 function refuseUnknown(
   name: string,
@@ -115,14 +118,28 @@ export class S3Storage implements StorageBackend {
 
   constructor(options: S3StorageOptions) {
     refuseUnknown('S3Storage', options, S3_STORAGE_OPTION_KEYS, 'an S3 client goes in `client`');
-    this.client =
-      options.client ??
-      new S3Client({
+    if (options.client !== undefined) {
+      // A supplied client already carries its region, endpoint, addressing style and credentials, so a setting
+      // beside it is ignored, and ignoring it leaves the store talking to somewhere the caller did not mean:
+      // an `endpoint` meant for MinIO, silently dropped, is production traffic from a client that was built
+      // for AWS. Refuse instead of picking one.
+      const ignored = CLIENT_SETTINGS.filter((k) => options[k] !== undefined);
+      if (ignored.length > 0) {
+        throw new ValidationError(
+          `S3Storage takes \`client\` OR ${CLIENT_SETTINGS.map((k) => `\`${k}\``).join(' / ')}, not both — ` +
+            `got \`client\` with ${ignored.map((k) => `\`${k}\``).join(', ')}; ` +
+            'the `client` already carries them, so configure them on the client, or drop `client`',
+        );
+      }
+      this.client = options.client;
+    } else {
+      this.client = new S3Client({
         ...(options.region === undefined ? {} : { region: options.region }),
         ...(options.endpoint === undefined ? {} : { endpoint: options.endpoint }),
         ...(options.pathStyle === undefined ? {} : { forcePathStyle: options.pathStyle }),
         ...(options.credentials === undefined ? {} : { credentials: options.credentials }),
       });
+    }
     const shared = {
       client: this.client,
       bucket: options.bucket,

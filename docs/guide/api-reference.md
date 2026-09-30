@@ -73,8 +73,8 @@ pointer — configured from one bucket and one prefix, which is what makes them 
 |---|---|---|
 | `MemoryStorage` (`MemoryStorageOptions`) | `@cloudbitmaps/roaring` | `new MemoryStorage({ now? }?)` |
 | `LocalFsStorage` (`LocalFsStorageOptions`) | `@cloudbitmaps/roaring` | `new LocalFsStorage('/var/lib/cloudbitmaps', { now? }?)` — generations under `<root>/storage`, pointers under `<root>/registry`, which is also the layout `export-segments` expects |
-| `S3Storage` | `@cloudbitmaps/s3` | `new S3Storage({ bucket, prefix?, client?, region?, endpoint?, pathStyle?, credentials?, maxObjectBytes?, partBytes?, now? })` |
-| `GcsStorage` | `@cloudbitmaps/gcs` | `new GcsStorage({ bucket, prefix?, client?, projectId?, apiEndpoint?, maxObjectBytes?, simpleUploadThresholdBytes?, now? })` |
+| `S3Storage` | `@cloudbitmaps/s3` | `new S3Storage({ bucket, prefix?, client?, region?, endpoint?, pathStyle?, credentials?, maxObjectBytes?, partBytes?, now? })` — `client` or the four settings that build one, and both is refused |
+| `GcsStorage` | `@cloudbitmaps/gcs` | `new GcsStorage({ bucket, prefix?, client?, projectId?, apiEndpoint?, maxObjectBytes?, simpleUploadThresholdBytes?, now? })` — `client` or the two settings that build one, and both is refused |
 | `AzureBlobStorage` | `@cloudbitmaps/azure-blob` | `new AzureBlobStorage({ containerClient, prefix?, maxObjectBytes?, blockBytes?, now? })` or `({ connectionString, container, prefix?, maxObjectBytes?, blockBytes?, now? })` — one or the other, and both is refused |
 
 **A backend comes from one of these five classes, or from a class of your own that stamps the brand
@@ -289,7 +289,9 @@ would be silent — a dropped `encryption.required` reads cleartext, a dropped `
 job non-deterministic — so being ignored would be worse than being rejected. `S3Storage`, `GcsStorage` and
 `AzureBlobStorage` each refuse a key they do not take the same way, naming it and the keys they take: a client
 goes in `client` (`containerClient` on Azure), so `GcsStorage` refuses `storage`, and each refuses another
-backend's size setting, such as `S3Storage` refusing `blockBytes`.
+backend's size setting, such as `S3Storage` refusing `blockBytes`. They refuse a setting beside a client the same way: a `client` carries its own
+connection settings, so `S3Storage` refuses `region`, `endpoint`, `pathStyle` and `credentials` beside it, and
+`GcsStorage` refuses `projectId` and `apiEndpoint`, each named. Configure them on the client, or drop `client`.
 
 ### Generation bookkeeping & erasure
 

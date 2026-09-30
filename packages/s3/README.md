@@ -60,7 +60,9 @@ await seg.has(2); // true
 `S3Storage` configures both halves — the immutable generation objects and the registry pointer row — from one set
 of values: `bucket`, `prefix`, and `client` or the `region` / `endpoint` / `pathStyle` / `credentials` it builds one
 from. It refuses any other key by name rather than ignoring it, so a mistyped endpoint option cannot quietly build
-a client against AWS. Two more options size the multipart upload: `partBytes` (default 8 MiB; a smaller value is raised to 5 MiB) is the
+a client against AWS. A `client` carries its own region, endpoint, addressing and credentials, so giving any of
+those four beside it is refused too, and named: configure them on the client, or drop `client`. Two more options
+size the multipart upload: `partBytes` (default 8 MiB; a smaller value is raised to 5 MiB) is the
 part size and so the peak write memory, and `maxObjectBytes` is the largest object the backend will write
 (default `partBytes` × 10,000, about 80 GiB). Raise `maxObjectBytes` and `partBytes` grows to keep the 10,000-part
 limit reachable, up to S3's 5 TiB. Either must be a positive safe integer. See the
