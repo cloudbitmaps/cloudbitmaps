@@ -583,7 +583,7 @@ compare-and-swap and delete, which writes a tombstone — that retry gives the w
 meets itself, and fails its own precondition, which reads as a lost race for a write that won. So the S3 and GCS
 packages send a conditional write once where the SDK lets them, with its retry off for that request alone, and
 the Azure Blob package, whose retry has no per-request switch, tags each write and settles a conflict by reading
-it back. The client is otherwise
+it back, as the GCS package does for an object above `simpleUploadThresholdBytes`, which uploads as a resumable session. The client is otherwise
 left as it is, a client you pass in included, and every other request it makes keeps the retry rules the SDK gives
 it. A transient failure of a conditional write reaches its caller as `TransientError`, and the write may or may not
 have landed. Where each package stands:
@@ -626,8 +626,7 @@ guard setting and with or without a row ([publish is forward-only](#3-loading-a-
   load can publish: with `allowEmpty: true`, or onto a segment that holds no data.
 - **A late write reads as a lost race.** A request that timed out on your client can still land while the re-run is
   under way, and the re-run then reports `superseded`, with nothing new current when what landed late was the
-  object. The Azure Blob client's retry policy, and the resumable session of a large GCS object, can replay a conditional
-  write after a lost response, with the same result. So on a `superseded` right after a transient fault, check before you re-derive,
+  object. So on a `superseded` right after a transient fault, check before you re-derive,
   and run the load again if your ids are not current.
 - **Every attempt that landed takes a `keep` slot.** An attempt whose object landed, published or not, is one more
   generation below the re-run's pointer, so the default `keep: 1` keeps the latest of them and collects the
