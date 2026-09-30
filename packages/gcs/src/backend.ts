@@ -23,7 +23,11 @@ export interface GcsStorageOptions {
   readonly bucket: string;
   /** Optional object-name prefix under which everything lives — generations and the registry alike. */
   readonly prefix?: string;
-  /** A constructed `@google-cloud/storage` client. One is built from the ambient credentials when absent. */
+  /**
+   * A constructed `@google-cloud/storage` client. One is built from the ambient credentials when absent. Its retry
+   * options apply to every request except the single-request conditional writes, which are sent once whatever they
+   * say.
+   */
   readonly client?: GcsClient;
   /** Project id for the client built when `client` is absent. Falls back to the SDK's own resolution. */
   readonly projectId?: string;

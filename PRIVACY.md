@@ -98,7 +98,9 @@ ledger alongside any earlier one. An `error: …` note is an isolated per-segmen
 rewrite was published — a Storage `delete` fault, a collection pass that could not prove the segment was still
 the same one, or a generation still holding the id when the bucket is listed at the end, such as one an operator
 rolled the pointer onto while the rewrite was collecting — then the pointer has already moved, and the re-run
-searches every generation in the bucket, not only the current one. (The same refusal can come from the
+searches every generation in the bucket, not only the current one. A transient fault on the publish itself is an `error: …` note too, and there the rewrite may or
+may not have become current: the re-run settles it either way, rewriting the id out if the pointer did not move and
+finding it in the generation the rewrite replaced if it did. (The same refusal can come from the
 collect-only path, where the bit was found only outside the current generation and nothing was published; there
 the pointer has not moved, and a re-run simply repeats the attempt.) **Read what it says.** Usually it reports `erased: true` against the generation it found the
 id in, which is the receipt the failed call could not give you. If a racing collector took that generation

@@ -46,9 +46,20 @@ export function isInvalidRange(err: unknown): boolean {
 }
 
 /**
+ * S3 refused the request's signature because the client's clock was off by minutes, and the SDK has corrected the
+ * clock for the next request. Nothing was applied, and a second request is signed right. The SDK's own retry treats
+ * this as transient; a conditional write is sent once without that retry, so the driver has to say so itself.
+ */
+function isClockSkewCorrected(err: unknown): boolean {
+  const e = err as { $metadata?: { clockSkewCorrected?: unknown } } | null;
+  return e?.$metadata?.clockSkewCorrected === true;
+}
+
+/**
  * A transient S3 fault that is safe to retry: throttling (`SlowDown` / 503), any 5xx, a dropped/timed-out
- * connection, or anything the SDK itself marks retryable. Excludes the deterministic outcomes above
- * (412/404/416) — those are caller-meaningful and must never be retried/reclassified.
+ * connection, a clock-skew refusal the SDK has corrected for, or anything the SDK itself marks retryable. Excludes
+ * the deterministic outcomes above (412/404/416) — those are caller-meaningful and must never be
+ * retried/reclassified.
  */
 export function isTransient(err: unknown): boolean {
   // A conditional-write conflict (412/409) is caller-meaningful OCC, not a blind-retryable transient.
@@ -57,7 +68,8 @@ export function isTransient(err: unknown): boolean {
     errorName(err) === 'SlowDown' ||
     isServerSide(err) ||
     isNetworkOrTimeout(err) ||
-    isSdkRetryable(err)
+    isSdkRetryable(err) ||
+    isClockSkewCorrected(err)
   );
 }
 

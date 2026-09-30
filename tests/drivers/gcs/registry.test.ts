@@ -1,3 +1,4 @@
+import { Writable } from 'node:stream';
 import type { Storage } from '@google-cloud/storage';
 import { registryConformance, registryConcurrency } from '@/testing/conformance';
 import { GcsRegistryDriver } from '@/gcs/registry';
@@ -6,11 +7,11 @@ import { IntegrityError, ValidationError, WriteConflictError } from '@/core/erro
 
 /**
  * A faithful in-memory fake of the slice of GCS the registry uses: `getMetadata`, a generation-pinned
- * `download`, a **conditional** `save`, and a paginated `getFiles`.
+ * `download`, a **conditional** upload through `createWriteStream`, and a paginated `getFiles`.
  *
  * Two modelling decisions carry the weight here, both copied from the backend rather than invented:
  *
- * 1. **A precondition only binds on the simple upload path.** `save()` opens a resumable session unless
+ * 1. **A precondition only binds on the simple upload path.** An upload opens a resumable session unless
  *    `resumable: false` is passed, and fake-gcs-server 1.52.2 — the emulator the integration lane runs
  *    against, pinned in `docker-compose.yml` for exactly this property — does not enforce
  *    `ifGenerationMatch` on that path. A driver that omits the flag therefore has no compare-and-swap at
@@ -75,18 +76,35 @@ class FakeGcs {
         if (pinned !== undefined && pinned !== String(obj.generation)) throw gcsError(404);
         return [Buffer.from(obj.bytes)];
       },
-      save: async (
-        body: Buffer,
-        opts?: { resumable?: boolean; preconditionOpts?: { ifGenerationMatch?: number } },
-      ): Promise<void> => {
-        const cur = this.objects.get(name);
-        const expect = opts?.preconditionOpts?.ifGenerationMatch;
-        // The emulator enforces the precondition ONLY on the simple (non-resumable) path.
-        if (opts?.resumable === false && expect !== undefined) {
-          if (expect === 0 && cur !== undefined) throw gcsError(412);
-          if (expect !== 0 && (cur === undefined || cur.generation !== expect)) throw gcsError(412);
-        }
-        this.objects.set(name, { bytes: Uint8Array.from(body), generation: ++this.seq + 1_000 });
+      createWriteStream: (opts?: {
+        resumable?: boolean;
+        preconditionOpts?: { ifGenerationMatch?: number };
+      }): Writable => {
+        const chunks: Buffer[] = [];
+        return new Writable({
+          write(chunk: Uint8Array, _encoding, done) {
+            chunks.push(Buffer.from(chunk));
+            done();
+          },
+          // The upload lands when the stream ends, as the SDK's does: check and store in one step, so two
+          // concurrent writers race exactly where they do against the service.
+          final: (done) => {
+            const cur = this.objects.get(name);
+            const expect = opts?.preconditionOpts?.ifGenerationMatch;
+            // The emulator enforces the precondition ONLY on the simple (non-resumable) path.
+            if (opts?.resumable === false && expect !== undefined) {
+              if (expect === 0 && cur !== undefined) return done(gcsError(412));
+              if (expect !== 0 && (cur === undefined || cur.generation !== expect)) {
+                return done(gcsError(412));
+              }
+            }
+            this.objects.set(name, {
+              bytes: Uint8Array.from(Buffer.concat(chunks)),
+              generation: ++this.seq + 1_000,
+            });
+            done();
+          },
+        });
       },
     };
   }
@@ -255,7 +273,8 @@ describe('GcsRegistryDriver — construction + GCS specifics', () => {
           file: () => ({
             getMetadata: async () => [{ generation: '"etag-1"', size: String(cur.bytes.length) }],
             download: async () => [Buffer.from(cur.bytes)],
-            save: async () => undefined,
+            // An upload that would succeed, so only the fence check can make this call fail.
+            createWriteStream: () => new Writable({ write: (_chunk, _encoding, done) => done() }),
           }),
         }) as never,
     );

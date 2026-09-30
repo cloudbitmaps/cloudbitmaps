@@ -52,6 +52,14 @@ describe('S3 error classification', () => {
       expect(isTransient({ code: 'ECONNRESET' })).toBe(true);
       expect(isTransient({ $retryable: { throttling: true } })).toBe(true);
     });
+    // The SDK marks a signature refused for a skewed clock once it has corrected the clock; only then is it transient.
+    it('flags a clock-skew refusal the SDK corrected for, and not one it did not', () => {
+      const skewed = { name: 'RequestTimeTooSkewed', $metadata: { httpStatusCode: 403 } };
+      expect(
+        isTransient({ ...skewed, $metadata: { ...skewed.$metadata, clockSkewCorrected: true } }),
+      ).toBe(true);
+      expect(isTransient(skewed)).toBe(false);
+    });
     it('never reclassifies the deterministic outcomes (412/404/416)', () => {
       expect(isTransient({ name: 'PreconditionFailed' })).toBe(false);
       expect(isTransient({ $metadata: { httpStatusCode: 404 } })).toBe(false);

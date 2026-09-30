@@ -684,6 +684,11 @@ Boundary helpers and errors: `validateSegmentRef` · `BlobSink` · `ValidationEr
 `S3Storage` · `S3StorageOptions` — the backend, both halves in one bucket.
 
 `S3StorageDriver` · `S3RegistryDriver` · `S3StorageDriverOptions` · `S3RegistryDriverOptions` — the halves.
+Each conditional write they make — the write-once `PutObject`, a multipart upload's `CompleteMultipartUpload`, and
+the registry's create, compare-and-swap and delete, which writes a tombstone — is sent once, with the SDK's retry off for that request alone, whether
+the client is one you passed or one `S3Storage` built. Every other request keeps the client's retry. A transient
+failure of a conditional write throws `TransientError`, and the write may or may not have landed
+([why](getting-started.md#6-reliability-retries-backoff--timeouts)).
 
 ### `@cloudbitmaps/gcs`
 
@@ -694,7 +699,11 @@ lower-level driver option that takes it is `storage` too.
 `GcsStorageDriver` · `GcsRegistryDriver` · `GcsStorageDriverOptions` · `GcsRegistryDriverOptions` — the halves.
 The registry lets a GCS deployment run on **one bucket
 alone**: compare-and-swap rides GCS object preconditions (`ifGenerationMatch: 0` to create, `ifGenerationMatch:
-<generation>` to swap), so no second service is needed to hold the `currentGen` pointer.
+<generation>` to swap), so no second service is needed to hold the `currentGen` pointer. The registry's writes, and
+an object up to `simpleUploadThresholdBytes` (8 MiB by default), are each one request sent once, with no SDK retry
+around it, so a transient failure throws `TransientError` and the write may or may not have landed. A larger object
+is a resumable upload, a session of requests that the SDK retries within, under the client's retry options
+([why](getting-started.md#6-reliability-retries-backoff--timeouts)).
 
 ### `@cloudbitmaps/azure-blob`
 
@@ -705,7 +714,9 @@ alone**: compare-and-swap rides GCS object preconditions (`ifGenerationMatch: 0`
 `AzureBlobRegistryDriverOptions` — the halves. Inject a
 container-scoped `ContainerClient`; write-once via `ifNoneMatch: '*'`. The registry lets an Azure deployment
 run on **one container alone**: compare-and-swap rides blob conditions (`ifNoneMatch: '*'` to create,
-`ifMatch: <etag>` to swap), so no second service is needed to hold the `currentGen` pointer.
+`ifMatch: <etag>` to swap), so no second service is needed to hold the `currentGen` pointer. Every request goes
+through the client's retry policy, the conditional writes included, so a write that landed and lost its response
+can be reported as `WriteConflictError` ([why](getting-started.md#6-reliability-retries-backoff--timeouts)).
 
 ## Keeping this in sync
 

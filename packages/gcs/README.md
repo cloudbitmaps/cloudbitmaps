@@ -53,6 +53,19 @@ client — so a mistyped option cannot quietly build a client against the public
 This package also exports the two drivers and their option types, which `createBackend` joins; see the
 [API reference](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/api-reference.md).
 
+## Conditional writes are sent once
+
+The SDK sends an upload again when it does not get the response, and a conditional one sent again meets itself and
+fails its precondition, which turns a write that landed into a reported conflict. So this package uploads the
+registry's rows, and every object up to `simpleUploadThresholdBytes` (8 MiB by default), as one request sent once,
+with no SDK retry around it. A client you pass keeps its configuration, and every other request it makes keeps its
+retry. A larger object is a resumable upload: a session of requests that the SDK retries within, under the client's
+retry options.
+
+A transient failure of a single-request write throws `TransientError`, and the write may or may not have landed:
+`store.generations(ref)` lists what the bucket holds, with the current generation marked. See
+[the getting-started guide](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#6-reliability-retries-backoff--timeouts).
+
 ## What this package is
 
 These drivers move opaque payload bytes, so they are codec-agnostic: the same package serves every codec

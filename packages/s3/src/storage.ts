@@ -15,8 +15,11 @@
  * constant memory — a small object is a single conditional `PutObject`; a large one is a **multipart upload**
  * (parts flushed as the codec writes, freed as they go) finished with a conditional `CompleteMultipartUpload`,
  * so a load's footprint stays ~one part regardless of segment size, up to the advertised `maxObjectBytes`
- * (default `partBytes × 10,000` — S3's per-upload part limit). Drivers may use `node:crypto`; only `core/`
- * is bound by the determinism lint.
+ * (default `partBytes × 10,000` — S3's per-upload part limit). **Each conditional request is sent once**, with the
+ * SDK's retry off for it ({@link sendOnce}): a replay of a write that landed and lost its response would find its own
+ * object and read as a lost race. A transient failure there throws {@link TransientError}, and the object may or may
+ * not exist. The unconditional requests — the reads, the delete, and a multipart upload's own start, parts and abort —
+ * keep the SDK's retry. Drivers may use `node:crypto`; only `core/` is bound by the determinism lint.
  */
 import {
   NotFoundError,
@@ -60,6 +63,7 @@ import {
   isTransient,
   totalFromContentRange,
 } from './s3-errors';
+import { sendOnce } from './send-once';
 
 /** Part size for multipart uploads. ≥ the S3 5 MiB minimum; an object that fits in one part uses a single
  * conditional PUT instead (no multipart overhead, strongest write-once). Peak write memory ≈ one part. */
@@ -286,8 +290,9 @@ function concatBytes(parts: readonly Uint8Array[], total: number): Uint8Array {
  * Streaming {@link BlobSink} that uploads one S3 object in **constant memory**. It buffers at most
  * one part: as the codec writes, full parts are flushed via `UploadPart` and freed. A small object that never
  * reaches one part is committed as a single conditional `PutObject`; a larger one is finished with a
- * conditional `CompleteMultipartUpload` — **both enforce write-once** via `If-None-Match: *`. SHA-256 is hashed
- * incrementally. On any error the caller invokes {@link abort} to clean up the in-flight multipart upload.
+ * conditional `CompleteMultipartUpload` — **both enforce write-once** via `If-None-Match: *`, and both are sent
+ * once. SHA-256 is hashed incrementally. On any error the caller invokes {@link abort} to clean up the in-flight
+ * multipart upload.
  */
 class S3MultipartSink implements BlobSink {
   private readonly hash: Hash = createHash('sha256');
@@ -355,7 +360,8 @@ class S3MultipartSink implements BlobSink {
   async finish(): Promise<{ size: number; sha256: string }> {
     const sha256 = this.hash.digest('hex');
     if (this.uploadId === undefined) {
-      await this.client.send(
+      await sendOnce(
+        this.client,
         new PutObjectCommand({
           Bucket: this.bucket,
           Key: this.objectKey,
@@ -366,7 +372,8 @@ class S3MultipartSink implements BlobSink {
       return { size: this.total, sha256 };
     }
     if (this.pendingLen > 0) await this.flushPart(); // the final part may be < partBytes (allowed)
-    await this.client.send(
+    await sendOnce(
+      this.client,
       new CompleteMultipartUploadCommand({
         Bucket: this.bucket,
         Key: this.objectKey,
