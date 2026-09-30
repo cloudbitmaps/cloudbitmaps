@@ -138,4 +138,33 @@ describe('withRetry', () => {
       { attempt: 2, delayMs: 100 },
     ]);
   });
+
+  describe('a throwing onRetry hook', () => {
+    const boom = (): never => {
+      throw new Error('hook blew up');
+    };
+
+    it('does not abort the retry: the operation still gets its remaining attempts', async () => {
+      const clock = recordingClock();
+      const { op, calls } = flaky(2, new TransientError('x'), 'ok');
+      const result = await withRetry(op, policy({ jitter: 'none', maxAttempts: 5 }), {
+        clock,
+        rng: rngOf(0),
+        onRetry: boom,
+      });
+      expect(result).toBe('ok');
+      expect(calls()).toBe(3);
+      expect(clock.sleeps).toEqual([50, 100]); // both backoff waits still happened
+    });
+
+    it("does not replace the operation's error when the attempts run out", async () => {
+      const clock = recordingClock();
+      const failure = new TransientError('the operation failed');
+      const { op, calls } = flaky(99, failure, 'never');
+      await expect(
+        withRetry(op, policy({ maxAttempts: 3 }), { clock, rng: rngOf(0), onRetry: boom }),
+      ).rejects.toBe(failure);
+      expect(calls()).toBe(3);
+    });
+  });
 });

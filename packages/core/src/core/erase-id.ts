@@ -464,10 +464,12 @@ export async function eraseIdFromSegment(
     try {
       const reader = await openGenerationReader(deps.storage, fromKey, cryptoAt(from));
       const bytes = await reader.getChunk(chunkKey);
-      if (bytes === null) return notInCurrent();
+      // `return await`, not `return`: the sweep's rejection must land in the `catch` below, which is where a
+      // `NotFoundError` is translated by re-reading the row. A bare `return` of the promise hands it past the `try`.
+      if (bytes === null) return await notInCurrent();
       const target = codec.safeDeserialize(bytes, maxBytes);
       assertRemaindersInRange(target, chunkKey); // invariant 5, on the chunk we are about to re-encode
-      if (!target.has(remainder)) return notInCurrent();
+      if (!target.has(remainder)) return await notInCurrent();
       target.remove(remainder);
 
       const generation = await nextGeneration(ref, deps);
