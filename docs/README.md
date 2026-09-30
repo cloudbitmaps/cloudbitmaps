@@ -19,6 +19,6 @@ New here? Start with the [**getting-started guide**](guide/getting-started.md).
 
 Prefer something visual? The **shareable site** in [**`../site/`**](../site/) — [`index.html`](../site/index.html)
 (overview), [`usage.html`](../site/usage.html) (how-to, flows & use cases), and
-[`architecture.html`](../site/architecture.html) (a phase-by-phase deep-dive with diagrams) — is a
+[`architecture.html`](../site/architecture.html) (how a read, a write and an erasure work, with diagrams) — is a
 self-contained, Pages-ready walkthrough of what CloudBitmaps is and how it's built. Open the files
 locally or serve `site/` as a static site.

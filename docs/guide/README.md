@@ -1,7 +1,7 @@
 # CloudBitmaps guide
 
-User-facing documentation — how to actually use CloudBitmaps. Kept accurate to what's **shipped**, and
-grown one capability per phase, so it never describes vapor: the planned work it mentions, in
+User-facing documentation — how to actually use CloudBitmaps. Kept accurate to what's **shipped**, so it
+never describes vapor: the planned work it mentions, in
 [what it saves](why-cloudbitmaps.md#what-is-planned-for-each-weakness), is said there not to be built, and the
 [roadmap](../ROADMAP.md#planned--exploring) is the whole list.
 

@@ -40,5 +40,5 @@ pnpm add @cloudbitmaps/roaring @cloudbitmaps/s3   # the roaring flavor (flagship
 Depend on `@cloudbitmaps/core` directly only to **author a flavor or a driver**. It has **zero runtime
 dependencies** of its own.
 
-Full docs, guides, and the design corpus live in the
-[repository](https://github.com/cloudbitmaps/cloudbitmaps). Licensed Apache-2.0.
+Full docs and guides live in the [repository](https://github.com/cloudbitmaps/cloudbitmaps), and each module
+there opens with the decision it encodes. Licensed Apache-2.0.

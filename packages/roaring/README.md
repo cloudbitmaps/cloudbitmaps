@@ -7,8 +7,8 @@
 > [repository README](https://github.com/cloudbitmaps/cloudbitmaps#install--entry-points) for the details.
 
 
-**Distributed, cloud-native Roaring Bitmaps.** Query and intersect billion-scale integer sets straight out of
-object storage — a bounded RAM cache over immutable `.crbm` objects in your own bucket — at a fraction of an
+**Distributed, cloud-native Roaring Bitmaps.** Query and intersect large sets of 32-bit integer ids straight out
+of object storage — a bounded RAM cache over immutable `.crbm` objects in your own bucket — at a fraction of an
 always-on cache, with the familiar bitmap API: `has`, `count`, `iterate`, `intersect`, `union`, `andNot`.
 
 This is the **flagship flavor** of the [CloudBitmaps](https://github.com/cloudbitmaps/cloudbitmaps) family: the
@@ -36,7 +36,8 @@ import { CloudRoaring } from '@cloudbitmaps/roaring';
 import { S3Storage } from '@cloudbitmaps/s3';
 ```
 
-Install the storage you have alongside this: **`@cloudbitmaps/s3`** (also R2, MinIO, Ceph, Wasabi, B2),
+Install the storage you have alongside this: **`@cloudbitmaps/s3`** (AWS S3, or an S3-compatible store that
+honours conditional writes — `If-None-Match` and `If-Match` — which the tests run against MinIO),
 **`@cloudbitmaps/gcs`** or **`@cloudbitmaps/azure-blob`**. Each depends on its cloud SDK for real, so nothing
 is an optional peer and no install carries an SDK you do not use. Ships one CLI: `export-segments`.
 
@@ -57,6 +58,9 @@ const store = new CloudRoaring({ storage: backend });
 
 // One call is the whole write path: write the object, check it, move the pointer, collect the old generation.
 await store.load({ segment: 'high-value' }, idsFromWarehouse());
+// A combine refuses an operand that names no segment, so the other two are loaded as well.
+await store.load({ segment: 'eu-residents' }, euResidentIds());
+await store.load({ segment: 'opted-out' }, optedOutIds());
 
 const seg = store.segment('high-value');
 
@@ -70,14 +74,15 @@ for await (const id of seg.intersect([store.segment('eu-residents')], { exclude:
 `intersectInto`, `unionInto` and `andNotInto` write the result as a **new generation of the destination** rather
 than streaming it to you, using the same write-once-then-publish protocol.
 
-## Measured, not modeled
+## Measured on real S3, and what is modelled
 
 Benchmarked against **real** S3 in `us-east-1`, not an emulator, with the pointer in the same bucket as the
 data: the median cold `intersect` of two 500,000-id segments sharing 100 of their 1,999 chunks made 206 GETs as
 measured, **$82.40 per million**, requesting only the shared chunks; inside the region it is expected at 204 GETs,
-$81.60. Writing and publishing a segment is **$11.20 per million**, pointer included, and `store.load()`, which also
-lists and collects, is expected at about twice that — against an always-on Redis-HA line of **$346/month,
-standing**, and a modelled **$0.03/month** for 1.2 GiB of segments at rest.
+$81.60. Writing and publishing a segment is **$11.20 per million**, pointer included, from its measured requests at
+list prices, and `store.load()`, which also lists and collects, is expected at about twice that — against an
+always-on Redis-HA line of **$346/month, standing**, a list price, and a modelled **$0.03/month** for 1.2 GiB of
+segments at rest.
 Request counts are read off the AWS SDK layer rather than estimated from sizes. `count()` on a published
 segment does **0 payload reads**.
 
@@ -90,8 +95,9 @@ for a standing Redis cluster to keep them warm, use this.
 
 **A durable home for set-shaped work** — audiences, dedup, suppression, membership, eligibility — where the sets
 are large, mostly read, must survive a restart, and are **computed in batches** upstream. You are not giving up
-the bitmap either: past **4,096 ids** in a 65,536-id chunk — 6.25% of it — Roaring stores that chunk *as* a flat
-bit array, byte for byte what you have now. It just stops paying for the chunks you never wrote to.
+the bitmap either: past **4,096 ids** in a 65,536-id chunk — 6.25% of it — Roaring stores that chunk as a flat
+bit array, a bit per id as your Redis bitmap holds it, unless its ids form runs, which a run encoding stores in a
+few bytes. It just stops paying for the chunks you never wrote to.
 
 The read side carries over one-for-one:
 
@@ -119,12 +125,14 @@ decides whether it gets built.
 
 ## Compliance is built in, not bolted on
 
-- `subjectReport(id)` — which segments an id is in (GDPR Art. 15).
-- `eraseSubject(id)` — rewrites every segment holding the id without it and deletes every generation that held
-  the bit, including one a `rollback` left above the pointer, so it is **physically gone from the bucket when the
-  call returns**; you get an erasure ledger back and a `segment.rewrite` audit event per segment it had to
-  rewrite (Art. 17; an id found only outside the current generation is collected rather than rewritten, so that
-  one is attested by the ledger entry alone).
+- `subjectReport(id, { namespace })` — which segments an id is in (GDPR Art. 15). Ids share one space across
+  namespaces, so both calls take a `namespace`, or `{ allNamespaces: true }` for the whole fleet, and throw
+  without either.
+- `eraseSubject(id, { namespace })` — rewrites every segment holding the id without it and deletes every
+  generation that held the bit, including one a `rollback` left above the pointer, so it is **physically gone from
+  the bucket when the call returns**; you get an erasure ledger back and a `segment.rewrite` audit event per segment
+  it had to rewrite (Art. 17; an id found only outside the current generation is collected rather than rewritten,
+  so that one is attested by the ledger entry alone).
 - `destroySegment` / `eraseNamespace` — **crypto-shred**: drop the segment's wrapped data key so its encrypted
   bytes are unreadable *everywhere, including backups*.
 - `dropSegment(ref, { confirmSegment, dryRun })` — retire a segment and reclaim its storage.
@@ -177,9 +185,10 @@ supersedes itself; `gcOrphanGenerations` collects what an `*Into` write, which c
 a **backend** — `S3Storage`, `GcsStorage` or `AzureBlobStorage` from the storage package you installed, or
 `LocalFsStorage` / `MemoryStorage` from this one — and you get all of it: generations resolved with one strong read,
 encrypted segments, and the lifecycle helpers. `storage` also accepts a bare driver or a pre-built chunk source for
-read-only wiring, which carries no registry and so offers none of those. There is no separate `registry` option: the
-backend carries the registry, and the store refuses any key it does not take, by name.
+read-only wiring. A bare driver carries no registry; a pre-built source can read through one of its own, but the
+store cannot write or enumerate through it, so neither offers the lifecycle helpers. There is no separate
+`registry` option: the backend carries the registry, and the store refuses any key it does not take, by name.
 
-Full README, guides, [benchmarks](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/benchmarks.md) (with
-the method and what the numbers do *not* establish), and the design corpus live in the
+The full README, guides and [benchmarks](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/benchmarks.md)
+(with the method and what the numbers do *not* establish) live in the
 [repository](https://github.com/cloudbitmaps/cloudbitmaps). Licensed Apache-2.0.
