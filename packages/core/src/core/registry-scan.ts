@@ -1,7 +1,7 @@
 /**
  * The one bounded drain of `registry.list()`.
  *
- * `runConsistencyCheck` and `retireExpired` drain through it; `eraseNamespace` enumerates the registry unbounded.
+ * `runConsistencyCheck`, `retireExpired` and `eraseNamespace` drain through it.
  * One copy of the loop, the ceiling constant and the option validation keeps them from drifting apart, and a
  * fleet-wide enumeration is exactly the place where drift between callers costs memory rather than tidiness.
  *

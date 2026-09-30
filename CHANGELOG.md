@@ -19,9 +19,9 @@ nothing in the library would still call, the second takes names off the public e
 that uses them, and the third and fourth remove the retrying driver wrappers and the bulk loader. The two after those
 make a backend class the one way an application builds its storage: the size settings move onto the backend options,
 and the separate storage and registry halves and `createBackend` are no longer exported. The ninth makes
-the collection refuse a `keep` it used to accept. The next nine make a call throw where it used to return: five of
+the collection refuse a `keep` it used to accept. The next ten make a call throw where it used to return: five of
 them fix a wrong answer, and the entries under **Fixed** say what the call returned before; one changes when a pin fails;
-two hold a call to a rule the rest of the library already kept; the last of the nine refuses a namespace the library keeps for its own
+three hold a call to a rule the rest of the library already kept; the last of the ten refuses a namespace the library keeps for its own
 rows, and says in its own entry what the call returned before. The six after them hold the store, the backends and the registry to what the library itself takes and writes, stop
 checking for a local store's older directory layout, and give its errors the library's own brand. The last two
 change what `estimateCost()` compares with and what a `CostReport` carries.
@@ -200,6 +200,14 @@ change what `estimateCost()` compares with and what a `CostReport` carries.
   that lists a segment's chunks: `iterate`, every combine, and a `count` with no index to sum. A combine used to drop
   the duplicate. The sources the library ships never list a key twice; make a custom one's `listChunkKeys` return
   each key once.
+- **`eraseNamespace` throws `BudgetExceededError` for a namespace of more than 250,000 segments**, where it erased
+  it. It listed the whole namespace with no bound, holding every row resident, when every other fleet scan stops at
+  a ceiling. It now holds its listing to `DEFAULT_MAX_SCAN_SEGMENTS` (250,000), and the error reads as the other
+  scans' does: raise the new `maxScanSegments` option on the call when the namespace really is that large and the
+  memory is there. The call lists the whole namespace before it destroys anything, so the refusal comes first and
+  nothing is erased. A `maxScanSegments` that is not a finite number of at least 1 throws `ValidationError`, also
+  before anything is destroyed. `eraseNamespace` is a free function over a registry, so no store method forwards
+  the option.
 - **A namespace starting with `cbm.due.` is refused with `ValidationError`**, in every segment ref and in every
   `namespace` option: `store.segment`, `load`, `exists`, `generations`, `rollback`, `dropSegment`, `setRetention`,
   `getRetention`, `clearRetention`, `invalidate`, `segments`, `retireExpired`, `checkConsistency`, `exportSegments`,
