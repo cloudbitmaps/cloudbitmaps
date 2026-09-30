@@ -78,11 +78,11 @@ the error brands:
   row a store created at `0.10.0` or later writes passes. A row last written before `0.10.0` does not, nor does a
   tombstone `0.10.0` wrote over one, since the tombstone keeps the row's fields, nor a row a caller set to
   `compacting` or `erasing` through the registry driver: load such a store's segments into a new one from their
-  source. The registry drivers also refuse to write either status, with `ValidationError`.
+  source. The registry drivers also refuse to write any status but `active` and `destroyed`, with `ValidationError`.
 - **`LocalFsStorage` does not look for a `cold/` directory.** A root keeps its generations in `storage/`, and one
   that holds them anywhere else opens like any other with its generations missing: a read throws `NotFoundError`,
-  and `checkConsistency` reports `missing-storage-generation`. Move a root's generations before you upgrade, with
-  `mv <root>/cold <root>/storage`: the objects inside are unchanged, and until they move, that report is the path,
+  and `checkConsistency` reports `missing-storage-generation`. Move a root's generations before you upgrade, while
+  `<root>/storage` does not exist yet, with `mv <root>/cold <root>/storage`: the objects inside are unchanged, and until they move, that report is the path,
   not a torn restore.
 - **The error brands are `Symbol.for('cloudbitmaps.error')` and `Symbol.for('cloudbitmaps.error.transient')`.**
   Upgrade every `@cloudbitmaps` package together: a package from an earlier release brings its own copy of core,
@@ -135,7 +135,8 @@ These two change what `estimateCost()` reports:
 - **`CostReport.monthlyUSD.byOp` gains the required `pointerRefresh`**, so a `CostReport` you build yourself must
   set it, and `estimateCost()` refuses an `operandsPerIntersect` below 1 with `ValidationError`. The rationale names
   intersections, loads and the refresh in new words, and the notes gain lines for intersections, the refresh and a
-  hot set larger than the reader cache, so a check that matches either's text needs its new wording. The entry
+  hot set larger than the reader cache, and its loads line is reworded, so a check that matches either's text needs
+  its new wording. The entry
   under **Fixed** says what the estimator counts now.
 
 ### Added
@@ -424,7 +425,7 @@ These two change what `estimateCost()` reports:
   generation. Such an object was written under one generation and stored under another, and was never a valid
   object.
 - **`estimateCost()` counts the pointer, the index and the pointer refresh, which it had left out.** On a
-  single-bucket store, the topology that ships, it under-quoted both operations it prices: a load as its object's
+  single-bucket store, the topology that ships, it under-quoted two of the operations it prices: a load as its object's
   PUT-class requests alone, and an intersect as its chunk reads alone.
   - **A load** now adds what `store.load()` makes around the object's write — two listings and the pointer's
     write, and nine GETs — so a single-part load prices at about $23.60 per million at the default rates, where it
@@ -434,11 +435,11 @@ These two change what `estimateCost()` reports:
   - **A new term prices the pointer refresh**: `hotSegments`, the segments each long-lived reader keeps reading,
     in each of `readerProcesses` readers, each re-reading its pointer at most every `genTtlMs` (the store's
     `cache.genTtlMs`, 2 s by default), and the term at most once a point read: about $0.53 a segment a month. It is
-    reported as `byOp.pointerRefresh`, disclosed in the notes when it is not modeled, and taken out of the read
+    reported as `byOp.pointerRefresh`, disclosed in the notes when a report prices point reads without it, and taken out of the read
     crossover's baseline when it is. `segment.costReport()` prices it at the store's own TTL.
   - **GCS and Azure Blob** read an object's metadata before its bytes, so a pointer read or a tail read is two
-    requests there, where it is one on S3. A pricing profile's new `storage.requestsPerSizedRead` (1 by default,
-    2 for those two) doubles those reads.
+    requests there, where it is one on S3. A pricing profile's new `storage.requestsPerSizedRead` (1 by default;
+    set it to 2 for those two) doubles those reads.
 
   `chunksPerIntersect` and `requestsPerLoad` keep the meaning they had in `0.10.0`, the chunks an intersect fetches
   and the object's own PUT-class requests: if you followed the docs' and the site's advice, between the

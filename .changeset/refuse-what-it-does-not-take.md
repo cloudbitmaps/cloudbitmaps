@@ -9,6 +9,6 @@
 `new CloudRoaring(options)`, `new S3Storage(options)`, `new GcsStorage(options)` and `new AzureBlobStorage(options)`
 refuse every option key they do not take, by name, and the store refuses a group that is not an object. A
 registry row with a status other than `active` or `destroyed`, a field its record or envelope does not declare, or
-no `schemaVersion` is refused on read, and the registry drivers refuse to write either of the other two statuses.
+no `schemaVersion` is refused on read, and the registry drivers refuse to write any other status.
 `LocalFsStorage` does not look for a `cold/` directory. The error brands are
 `Symbol.for('cloudbitmaps.error')` and `Symbol.for('cloudbitmaps.error.transient')`.

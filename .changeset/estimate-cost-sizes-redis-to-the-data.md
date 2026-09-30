@@ -1,5 +1,6 @@
 ---
 "@cloudbitmaps/core": minor
+"@cloudbitmaps/roaring": minor
 ---
 
 **BREAKING:** `estimateCost()` compares with the Redis that would hold the data, sized from a catalogue of
