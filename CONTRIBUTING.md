@@ -24,7 +24,7 @@ Every change must pass these locally, and CI runs each of them on every pull req
 - `pnpm lint:arch` runs `tests/arch`: the import graph is acyclic; every import-boundary rule in
   `eslint.config.js` (the storage-agnostic-core rule and its siblings, the **runtime**-agnostic
   `core-no-node-builtins` among them) is proven to fire on a planted violation, and so is `core/`'s ban on the
-  `fetch` and `crypto` globals; and the detectors the build, `pnpm smoke` and the Node-floor gate rely on are fired
+  `fetch` and `crypto` globals and on the global object (`globalThis`, `self`, `window`, `global`); and the detectors the build, `pnpm smoke` and the Node-floor gate rely on are fired
   at planted inputs in both directions.
 - `pnpm smoke` loads **every** built package through its own `exports` map under both ESM and `require()` —
   the entry list is derived from each manifest, so a declared entry that does not load fails the build. It checks
@@ -70,7 +70,7 @@ entry outside a driver package names an SDK or a driver package. `pnpm lint:arch
 fires.
 
 `core/` is also **runtime**-agnostic: `pnpm lint` fails on any `node:*` import under `packages/core/src/core`, and
-on the `fetch` and `crypto` globals there, so the seam stays loadable where no node builtin exists (a V8 isolate —
+on the `fetch` and `crypto` globals there, and on the global object that would reach them (`globalThis`, `self`, `window`, `global`), so the seam stays loadable where no node builtin exists (a V8 isolate —
 Workers, Deno Deploy). Randomness, time and I/O reach it through injected seams — `Clock`, `Rng`, `BlobReader`, the
 driver ports — which is what makes that enforceable rather than aspirational. **Anything needing a builtin belongs
 in a driver** — either one of the driver packages, or `packages/core/src/drivers/` where the SDK-free memory and local-filesystem drivers live.

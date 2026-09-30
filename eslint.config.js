@@ -67,6 +67,29 @@ export default tseslint.config(
           message:
             'core/ must take randomness via an injected Rng, and encryption via an injected Aead.',
         },
+        // The global object under each of its names. `globalThis.fetch(...)` reaches every global above without
+        // naming it, so naming the object is the same hole: `globalThis` everywhere, `self` in a worker or an
+        // isolate, `window` in a browser, `global` in Node.
+        {
+          name: 'globalThis',
+          message:
+            'core/ reaches no ambient global through the global object — take time, randomness and I/O through injected seams and driver ports.',
+        },
+        {
+          name: 'self',
+          message:
+            'core/ reaches no ambient global through the global object — take time, randomness and I/O through injected seams and driver ports.',
+        },
+        {
+          name: 'window',
+          message:
+            'core/ reaches no ambient global through the global object — take time, randomness and I/O through injected seams and driver ports.',
+        },
+        {
+          name: 'global',
+          message:
+            'core/ reaches no ambient global through the global object — take time, randomness and I/O through injected seams and driver ports.',
+        },
       ],
       'no-restricted-properties': [
         'error',

@@ -294,6 +294,21 @@ describe('architecture: core/ reaches no ambient I/O or randomness (eslint no-re
     expect(await globalErrors(CORE, 'export const id = crypto.randomUUID();')).toHaveLength(1);
   });
 
+  // `globalThis.fetch(...)` names none of the globals above, so a ban by name alone lets it through. The global
+  // object is banned under each of its names: `globalThis`, `self` (workers, isolates), `window` (browsers) and
+  // `global` (Node).
+  it('core/ reaches no ambient global through the global object', async () => {
+    expect(
+      await globalErrors(CORE, "export const probe = globalThis.fetch('https://example.com/');"),
+    ).toHaveLength(1);
+    expect(await globalErrors(CORE, 'export const t = globalThis.setTimeout;')).toHaveLength(1);
+    expect(await globalErrors(CORE, "export const r = globalThis['crypto'];")).toHaveLength(1);
+    expect(await globalErrors(CORE, 'export const g = globalThis;')).toHaveLength(1);
+    expect(await globalErrors(CORE, 'export const p = self.fetch;')).toHaveLength(1);
+    expect(await globalErrors(CORE, 'export const p = window.fetch;')).toHaveLength(1);
+    expect(await globalErrors(CORE, 'export const p = global.fetch;')).toHaveLength(1);
+  });
+
   it('the look-alikes core/ really writes are untouched', async () => {
     // The writers take a `CrbmCrypto` and bind it to a local named `crypto`: a local is not the global.
     expect(
@@ -305,6 +320,17 @@ describe('architecture: core/ reaches no ambient I/O or randomness (eslint no-re
     ).toEqual([]);
     // A property or a method that shares the name is not the global either.
     expect(await globalErrors(CORE, 'export const deps = { crypto: 1, fetch: 2 };')).toEqual([]);
+    // Nor is a local or a member named for the global object.
+    expect(
+      await globalErrors(
+        CORE,
+        'export function pick(self: { id: number }, window: number, global: number): number {\n' +
+          '  return self.id + window + global;\n}',
+      ),
+    ).toEqual([]);
+    expect(
+      await globalErrors(CORE, 'export const scope = { globalThis: 1, self: 2, window: 3 };'),
+    ).toEqual([]);
     expect(
       await globalErrors(
         CORE,
@@ -318,6 +344,12 @@ describe('architecture: core/ reaches no ambient I/O or randomness (eslint no-re
       await globalErrors(
         'packages/core/src/drivers/some-driver.ts',
         'export const nonce = crypto.getRandomValues(new Uint8Array(12));',
+      ),
+    ).toEqual([]);
+    expect(
+      await globalErrors(
+        'packages/core/src/drivers/some-driver.ts',
+        'export const g = globalThis;',
       ),
     ).toEqual([]);
   });
