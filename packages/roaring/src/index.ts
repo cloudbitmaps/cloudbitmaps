@@ -382,7 +382,8 @@ export interface SubjectErasureEntry {
    * re-run against the new generation, which erases it if it is still there and reports nothing for the segment
    * if the racing writer already removed it. `` `error: <message>` `` — an isolated per-segment fault
    * (per-segment faults are recorded so one segment can't discard the whole ledger); re-run after fixing the
-   * fault. A fault that landed once part of the work was already done — a Storage `delete` fault, a collect that
+   * fault. A budget refusal is one of these: the segment's generations did not fit `budget`, so it was not finished;
+   * re-run with a higher `budget`. A fault that landed once part of the work was already done — a Storage `delete` fault, a collect that
    * could not prove the segment was still the same one, or a generation still holding the id when the bucket was
    * listed at the end, whether or not a rewrite was published first — also re-runs, but **read what the re-run
    * says**: it usually reports `erased: true` against the generation it found the id in, it reports
@@ -1082,7 +1083,8 @@ export class CloudRoaring {
    * keep-everything default of the `*Into` verbs that is one per generation the segment ever had. The per-op
    * `budget` is charged one unit for each segment and one for each generation opened beyond the one its row names,
    * so a fleet with long histories can exhaust it where the segment count alone would not. A segment that does is
-   * reported `erased: false` with an `error:` note, before it deletes anything, and the
+   * reported `erased: false` with an `error:` note, before it deletes anything (the one refusal that can come after a
+   * rewrite is the last check for a generation a concurrent writer left behind), and the
    * rest of the scan continues: the call itself does not throw for it. Per-subject crypto-shred is infeasible (a subject's bit is
    * co-mingled in a shared container), so this is the single-subject erasure route; whole-segment/tenant erasure
    * is `dropSegment` / the `destroySegment`/`eraseNamespace` free functions.

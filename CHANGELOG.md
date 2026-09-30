@@ -330,7 +330,8 @@ This one changes what an erasure charges its budget for:
   the segment's row names, so the call is `O(registered segments + superseded generations)`; a rewrite of a segment
   that holds the id, and the read that verifies it, are not charged beyond the segment's unit. The default,
   1,000,000, still covers a normal fleet. A segment that runs the budget out is listed with `erased: false` and
-  an `error:` note carrying the budget refusal's message, before it deletes anything, and the
+  an `error:` note carrying the budget refusal's message, before it deletes anything (the one refusal that can come after a rewrite is
+  the last check for a generation a concurrent writer left behind), and the
   scan goes on: the call does not throw for it, so the ledger of the erasures that did happen is not lost. A call
   that listed nothing for such a segment, because the id was in none of its generations, therefore now lists an
   error entry for it. Re-run with a higher `budget`, per call or per store, or `budget: false`.

@@ -149,4 +149,23 @@ describe('eraseSubject charges the generations it opens', () => {
     const ledger = await store.eraseSubject(ID, { namespace: NS, budget: false });
     expect(ledger.erasedFrom).toEqual([]);
   });
+
+  it('concurrent segments share one count: the opens that reach storage never exceed the budget', async () => {
+    const backend = new MemoryStorage();
+    for (let i = 0; i < 6; i++) await history(backend, `seg-${i}`, cleanGenerations(4)); // 3 charged opens each
+    const store = new CloudRoaring({ storage: backend });
+    const getTail = vi.spyOn(backend.storage, 'getTail');
+
+    // Six segments, so six units, leaving room for seven of the eighteen charged opens. The six current-generation
+    // opens are the segments' own and are not charged, so exactly thirteen reads reach storage.
+    const ledger = await store.eraseSubject(ID, {
+      namespace: NS,
+      concurrency: 6,
+      budget: { maxRequests: 13 },
+    });
+    expect(getTail).toHaveBeenCalledTimes(13);
+    expect(ledger.erasedFrom.length).toBeGreaterThanOrEqual(4);
+    expect(ledger.erasedFrom.every((e) => !e.erased && e.note?.startsWith('error: '))).toBe(true);
+    for (let i = 0; i < 6; i++) expect(await present(backend, `seg-${i}`)).toEqual([0, 1, 2, 3]);
+  });
 });

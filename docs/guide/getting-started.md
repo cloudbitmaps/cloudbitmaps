@@ -1351,7 +1351,8 @@ is also emitted per rewrite when you pass `audit`).
   mid-rewrite is left out of the ledger, as a fresh call would leave it out — you never have to care at which
   point it was discovered.
 - `` `error: <message>` `` — an isolated per-segment fault. Causes worth telling apart: a transient storage
-  fault (re-run), a missing keystore for an encrypted segment (wire it), an `IntegrityError` naming a chunk
+  fault (re-run), the call's `budget` running out before the segment's generations were all searched (re-run with a
+  higher `budget`), a missing keystore for an encrypted segment (wire it), an `IntegrityError` naming a chunk
   whose values are out of range — that segment is **corrupt**, the rewrite refused to copy the corruption into a
   new generation, and no erasure happened on it, so it needs investigating rather than re-running — and a
   `WriteConflictError`, which means the erasure could not remove a generation holding the id and refused to
