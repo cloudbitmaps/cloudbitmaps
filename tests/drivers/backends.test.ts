@@ -402,6 +402,15 @@ describe('a backend configures both halves from one place', () => {
     expect(() => new AzureBlobStorage({ containerClient: client })).not.toThrow();
   });
 
+  it('a containerClient of null is no containerClient: the settings build one, and without them it is refused up front', () => {
+    // `ContainerClient | undefined` is the declared type, but a plain-JS caller can pass null, as for S3 and GCS.
+    const nul = (options: object) => () => new AzureBlobStorage(options);
+    expect(
+      nul({ containerClient: null, connectionString: AZURITE_CONN, container: 'c' }),
+    ).not.toThrow();
+    expect(nul({ containerClient: null })).toThrow(/needs either `containerClient`/);
+  });
+
   it('every backend satisfies the port: both halves present and usable', () => {
     for (const backend of [
       new MemoryStorage(),

@@ -89,7 +89,7 @@ export class AzureBlobStorage implements StorageBackend {
       AZURE_BLOB_STORAGE_OPTION_KEYS,
       'a container client goes in `containerClient`',
     );
-    if (options.containerClient !== undefined) {
+    if (options.containerClient !== undefined && options.containerClient !== null) {
       // `containerClient` already names the account AND the container, so anything that also names them is
       // either redundant or a contradiction — and the contradiction loses silently, leaving a store pointed
       // at a container the caller did not ask for. Refuse instead of picking one.

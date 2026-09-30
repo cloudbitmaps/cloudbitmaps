@@ -234,7 +234,10 @@ the error brands:
   region, endpoint and credentials, so an `endpoint` meant for MinIO beside a client built for AWS sent the store's
   traffic to AWS. Configure those settings on the client, or drop `client` and let the store build one from them.
   `bucket`, `prefix`, `now` and the size settings (`maxObjectBytes`, `partBytes`, `simpleUploadThresholdBytes`) are still
-  taken beside a `client`, as is a setting set to `undefined`.
+  taken beside a `client`, as is a setting set to `undefined`. A `client` of
+  `null` counts as none, so the settings build one; `AzureBlobStorage` reads a `containerClient` of `null` the same
+  way, which throws `ValidationError` at construction unless `connectionString` and `container` are given, where it
+  used to build a store that failed on its first read.
 - **`RegistryStatus` is `'active' | 'destroyed'`.** A stored registry row with another status, a field its record
   or its envelope does not declare, or no `schemaVersion` is refused on read with `IntegrityError`, and so is every
   `list()` of a registry that holds one, which the retention sweep, `checkConsistency` and subject erasure run. Every
