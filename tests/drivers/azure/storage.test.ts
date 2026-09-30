@@ -88,6 +88,8 @@ function fakeContainerWith(rec: Recorder, ctl: Record<string, unknown>): Contain
       rec.uploadOpts.push(opts);
       if (typeof ctl.uploadThrow === 'function') await (ctl.uploadThrow as () => Promise<void>)();
     },
+    // The read-back a conflict makes: a blob that carries no write id, so the conflict stands.
+    getProperties: async () => ({ metadata: undefined }),
     stageBlock: async () => {
       rec.stagedBlocks += 1;
     },

@@ -45,6 +45,7 @@ import {
   segmentObjectPrefix,
 } from './keys';
 import { isConditionalConflict, isInvalidRange, isNotFound, isTransient } from './azure-errors';
+import { newWriteId, storedWriteId, writeIdMetadata } from './write-id';
 
 /** Flush threshold for staged uploads: the sink buffers until `pending` reaches this, then stages it as one
  * block. A blob that never reaches it is a single conditional `upload` instead (no block-list overhead,
@@ -278,6 +279,8 @@ class AzureBlockBlobSink implements BlobSink {
    * 6 random bytes → 12 fixed hex chars, keeping every id equal-length (Azure's within-blob id requirement).
    */
   private readonly uploadNonce = randomBytes(6).toString('hex');
+  /** This write's own id, stored in the blob's metadata: see {@link storedWriteId}. */
+  private readonly writeId = newWriteId();
 
   constructor(
     private readonly blob: BlockBlob,
@@ -324,16 +327,28 @@ class AzureBlockBlobSink implements BlobSink {
     this.blockIds.push(id);
   }
 
-  /** Commit the blob: a single conditional `upload` if it fit in one block, else commit the staged block list. */
+  /**
+   * Commit the blob: a single conditional `upload` if it fit in one block, else commit the staged block list. Both
+   * tag the blob with this write's id. The client's retry policy may send the commit again after a lost response,
+   * and the replay meets the blob it just wrote: a conflict whose stored blob carries this write's id is a success.
+   */
   async finish(): Promise<{ size: number; sha256: string }> {
     const sha256 = this.hash.digest('hex');
-    if (this.blockIds.length === 0) {
-      const body = concatBytes(this.pending, this.pendingLen);
-      await this.blob.upload(body, body.length, IF_ABSENT); // write-once (single-shot path)
-      return { size: this.total, sha256 };
+    const options = { ...IF_ABSENT, metadata: writeIdMetadata(this.writeId) };
+    try {
+      if (this.blockIds.length === 0) {
+        const body = concatBytes(this.pending, this.pendingLen);
+        await this.blob.upload(body, body.length, options); // write-once (single-shot path)
+      } else {
+        if (this.pendingLen > 0) await this.flushBlock(); // the final block may be < blockBytes (allowed)
+        await this.blob.commitBlockList(this.blockIds, options); // write-once (staged path)
+      }
+    } catch (err) {
+      // A write-once blob is never overwritten, so the id it holds says who wrote it. A failed read-back throws,
+      // and reaches the caller as `TransientError` when the fault is transient: neither a success nor a conflict.
+      if (!isConditionalConflict(err) || (await storedWriteId(this.blob)) !== this.writeId)
+        throw err;
     }
-    if (this.pendingLen > 0) await this.flushBlock(); // the final block may be < blockBytes (allowed)
-    await this.blob.commitBlockList(this.blockIds, IF_ABSENT); // write-once (staged path)
     return { size: this.total, sha256 };
   }
 }

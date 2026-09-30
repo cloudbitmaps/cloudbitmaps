@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 // Runs against Azurite from docker-compose (see docker-compose.yml): `docker compose up -d` then
 // `pnpm test:integration`. No real Azure needed. The well-known dev connection string points at the emulator
 // and skips auth; the driver takes a `ContainerClient` scoped to an already-created container.
-import { BlobServiceClient } from '@azure/storage-blob';
+import { BlobServiceClient, type ContainerClient } from '@azure/storage-blob';
 import {
   storageChunkSourceConformance,
   registryConformance,
@@ -13,6 +13,7 @@ import { AzureBlobStorageDriver } from '@/azure-blob/storage';
 import { AzureBlobRegistryDriver } from '@/azure-blob/registry';
 import { AzureBlobStorage } from '@cloudbitmaps/azure-blob';
 import { isConditionalConflict } from '@/azure-blob/azure-errors';
+import { storageObjectName } from '@/azure-blob/keys';
 import { CrbmStorageChunkSource, writeCrbmGeneration } from '@/core/crbm-storage-source';
 import { CloudRoaring } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
@@ -277,5 +278,120 @@ describe('AzureBlobStorage (Azurite) — the backend builds its own container cl
     );
     expect(await store.segment('via-backend').count()).toBe(2);
     expect(await backend.registry.get({ segment: 'via-backend' })).not.toBeNull();
+  });
+});
+
+// A conditional write that lands and loses its response is sent again by the client's retry policy, meets its own
+// blob, and is answered 409 or 412. The proxy below reproduces that against Azurite: it sends the write, which lands,
+// then sends the same request again and throws what Azurite answers to the replay. Each write tags its blob with an id
+// in metadata, so the driver reads the blob back on that conflict and reports success for its own write.
+function replayingContainer(): ContainerClient {
+  const replay =
+    <A extends unknown[]>(send: (...args: A) => Promise<unknown>) =>
+    async (...args: A): Promise<unknown> => {
+      await send(...args);
+      return send(...args);
+    };
+  return new Proxy(container, {
+    get(target, prop, receiver) {
+      if (prop !== 'getBlockBlobClient') return Reflect.get(target, prop, receiver) as unknown;
+      return (name: string) => {
+        const blob = target.getBlockBlobClient(name);
+        return new Proxy(blob, {
+          get(b, p) {
+            if (p === 'upload') return replay(b.upload.bind(b));
+            if (p === 'commitBlockList') return replay(b.commitBlockList.bind(b));
+            const v = Reflect.get(b, p) as unknown;
+            return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(b) : v;
+          },
+        });
+      };
+    },
+  });
+}
+
+describe('Azure conflict against the write own id (Azurite)', () => {
+  const bm = (...v: number[]): SafeBitmap => SafeBitmap.fromValues(v);
+  const gen = (generation: number): GenKey => ({ segment: 's', generation });
+  const many = bm(...Array.from({ length: 400 }, (_, i) => i));
+  const uniq = (label: string): string => `${RUN}/${label}/${n++}`;
+
+  describe.each([
+    ['upload (one block)', undefined],
+    ['staged commit (several blocks)', 8],
+  ])('a generation on the %s path', (_label, blockBytes) => {
+    const opts = (containerClient: ContainerClient, prefix: string) => ({
+      containerClient,
+      prefix,
+      ...(blockBytes === undefined ? {} : { blockBytes, maxObjectBytes: 1 << 20 }),
+    });
+
+    it('is a success when the conflict is the write meeting its own blob', async () => {
+      const prefix = uniq('own');
+      const driver = new AzureBlobStorageDriver(opts(replayingContainer(), prefix));
+      await writeCrbmGeneration(driver, gen(1), [{ chunkKey: 0, bitmap: many }]);
+      // it landed, intact
+      const source = new CrbmStorageChunkSource(
+        new AzureBlobStorageDriver(opts(container, prefix)),
+      );
+      const bytes = await source.getChunk({ segment: 's', chunkKey: 0 });
+      expect(SafeBitmap.safeDeserialize(bytes!, 1 << 20).toArray()).toHaveLength(400);
+    });
+
+    it('stays a conflict when another writer holds the key', async () => {
+      const prefix = uniq('other');
+      await writeCrbmGeneration(new AzureBlobStorageDriver(opts(container, prefix)), gen(1), [
+        { chunkKey: 0, bitmap: bm(1, 2, 3) },
+      ]);
+      // A second writer, through the replaying client: the blob is not its own, so its replay is not a success.
+      await expect(
+        writeCrbmGeneration(
+          new AzureBlobStorageDriver(opts(replayingContainer(), prefix)),
+          gen(1),
+          [{ chunkKey: 0, bitmap: many }],
+        ),
+      ).rejects.toBeInstanceOf(WriteConflictError);
+    });
+
+    it('stays a conflict when the blob was written with no id', async () => {
+      const prefix = uniq('noid');
+      const driver = new AzureBlobStorageDriver(opts(container, prefix));
+      const name = storageObjectName(prefix, gen(1));
+      await container
+        .getBlockBlobClient(name)
+        .upload(new Uint8Array([1]), 1, { conditions: { ifNoneMatch: '*' } });
+      await expect(
+        writeCrbmGeneration(driver, gen(1), [{ chunkKey: 0, bitmap: bm(9) }]),
+      ).rejects.toBeInstanceOf(WriteConflictError);
+    });
+  });
+
+  it('a registry create, swap and tombstone that meet their own row are successes', async () => {
+    const prefix = uniq('reg-own');
+    const reg = new AzureBlobRegistryDriver({
+      containerClient: replayingContainer(),
+      prefix,
+      now: ticking(),
+    });
+    const ref = { segment: 'r' };
+    const { token } = await reg.create(ref, { currentGen: 0 });
+    const swapped = await reg.compareAndSwap(ref, token, { currentGen: 1 });
+    expect(swapped.token).not.toBe(token);
+    expect((await reg.get(ref))?.currentGen).toBe(1);
+    await reg.delete(ref);
+    expect(await reg.get(ref)).toBeNull();
+  });
+
+  it('a registry swap that lost to another writer stays a conflict', async () => {
+    const prefix = uniq('reg-lost');
+    const a = new AzureBlobRegistryDriver({ containerClient: container, prefix, now: ticking() });
+    const b = new AzureBlobRegistryDriver({ containerClient: container, prefix, now: ticking() });
+    const ref = { segment: 'r' };
+    const { token } = await a.create(ref, { currentGen: 0 });
+    await b.compareAndSwap(ref, token, { currentGen: 1 });
+    await expect(a.compareAndSwap(ref, token, { currentGen: 2 })).rejects.toBeInstanceOf(
+      WriteConflictError,
+    );
+    expect((await a.get(ref))?.currentGen).toBe(1);
   });
 });

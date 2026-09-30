@@ -31,7 +31,7 @@ import type {
   SegmentRef,
   StorageCaps,
 } from '@cloudbitmaps/core/driver-kit';
-import { createHash, type Hash } from 'node:crypto';
+import { createHash, randomBytes, type Hash } from 'node:crypto';
 import type { Writable } from 'node:stream';
 import { once } from 'node:events';
 import type { Storage } from '@google-cloud/storage';
@@ -46,6 +46,9 @@ import { saveOnce } from './send-once';
 
 /** Default object ceiling: GCS's 5 TiB per-object hard max. Set lower to fail fast on a runaway write. */
 const DEFAULT_MAX_OBJECT_BYTES = 5 * 1024 * 1024 * 1024 * 1024;
+
+/** The custom-metadata name a resumable upload stores its write id under. Short: it travels with every such write. */
+const WRITE_ID_KEY = 'cbwid';
 
 /**
  * Objects at/under this size are uploaded in a **single simple (non-resumable) request**; larger ones switch to
@@ -237,7 +240,9 @@ function concatBytes(parts: readonly Uint8Array[], total: number): Uint8Array {
  * **The simple upload is sent once** ({@link saveOnce}): a replay of one that landed and lost its response would find
  * its own object and read as a lost race, so a transient failure throws {@link TransientError} instead. The resumable
  * upload is a session of requests, which the SDK retries within by asking the session how much it holds; the SDK takes
- * that retry from the client's options, not the call's, so it stays on.
+ * that retry from the client's options, not the call's, so it stays on. Instead, each resumable upload tags its
+ * object with a random id in custom metadata, and a `412` on its commit is read back: an object that carries this
+ * upload's id is a success, and any other is the lost race. The read is paid only on that `412`.
  */
 class GcsUploadSink implements BlobSink {
   private readonly hash: Hash = createHash('sha256');
@@ -258,6 +263,12 @@ class GcsUploadSink implements BlobSink {
     preconditionOpts: { ifGenerationMatch: 0 as const }, // write-once: create only if absent
     metadata: { contentType: 'application/octet-stream' },
   };
+
+  /**
+   * This write's own id, which the resumable upload stores in the object's custom metadata (outside the `.crbm`
+   * bytes) so a conflict can be told from a replay of this same write. The simple upload is sent once and needs none.
+   */
+  private readonly writeId = randomBytes(16).toString('hex');
 
   async write(bytes: Uint8Array): Promise<void> {
     if (this.failure !== undefined) throw this.failure;
@@ -281,7 +292,14 @@ class GcsUploadSink implements BlobSink {
 
   /** Cross into resumable streaming: open the stream, flush the buffered bytes, keep only ~one threshold resident. */
   private startResumable(): void {
-    const stream = this.file.createWriteStream({ resumable: true, ...GcsUploadSink.WRITE_OPTS });
+    const stream = this.file.createWriteStream({
+      resumable: true,
+      ...GcsUploadSink.WRITE_OPTS,
+      metadata: {
+        ...GcsUploadSink.WRITE_OPTS.metadata,
+        metadata: { [WRITE_ID_KEY]: this.writeId },
+      },
+    });
     this.stream = stream;
     this.done = once(stream, 'finish'); // resolves on a clean commit; rejects on 'error' (e.g. 412)
     stream.on('error', (e: unknown) => {
@@ -295,7 +313,6 @@ class GcsUploadSink implements BlobSink {
   }
 
   async finish(): Promise<{ size: number; sha256: string }> {
-    if (this.failure !== undefined) throw this.failure;
     const sha256 = this.hash.digest('hex');
     if (this.stream === undefined) {
       // Small object: one simple (non-resumable) upload, sent once — write-once enforced everywhere, the emulator too.
@@ -306,9 +323,29 @@ class GcsUploadSink implements BlobSink {
       );
       return { size: this.total, sha256 };
     }
-    this.stream.end();
-    await this.done; // rejects if the commit fails (e.g. 412 write-once conflict)
+    try {
+      if (this.failure !== undefined) throw this.failure;
+      this.stream.end();
+      await this.done; // rejects if the commit fails (e.g. 412 write-once conflict)
+    } catch (err) {
+      // The SDK retries a resumable session, so a commit that landed and lost its response can be answered `412` by
+      // its own replay. Nothing overwrites a write-once object, so the id it holds says who wrote it. A failed
+      // read-back throws, and reaches the caller as `TransientError` when the fault is transient: neither a success
+      // nor a conflict.
+      if (!isPreconditionFailed(err) || (await this.storedWriteId()) !== this.writeId) throw err;
+    }
     return { size: this.total, sha256 };
+  }
+
+  /** The id the stored object carries in its custom metadata, or `undefined` when it carries none or is gone. */
+  private async storedWriteId(): Promise<string | undefined> {
+    try {
+      const [meta] = await this.file.getMetadata();
+      return meta.metadata?.[WRITE_ID_KEY] as string | undefined;
+    } catch (err) {
+      if (isNotFound(err)) return undefined;
+      throw err;
+    }
   }
 
   async abort(): Promise<void> {

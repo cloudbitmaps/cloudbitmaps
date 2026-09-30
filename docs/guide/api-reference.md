@@ -702,7 +702,9 @@ alone**: compare-and-swap rides GCS object preconditions (`ifGenerationMatch: 0`
 <generation>` to swap), so no second service is needed to hold the `currentGen` pointer. The registry's writes, and
 an object up to `simpleUploadThresholdBytes` (8 MiB by default), are each one request sent once, with no SDK retry
 around it, so a transient failure throws `TransientError` and the write may or may not have landed. A larger object
-is a resumable upload, a session of requests that the SDK retries within, under the client's retry options
+is a resumable upload, a session of requests that the SDK retries within, under the client's retry options: it
+carries a random id in the object's metadata, and a `412` on its commit reads the stored object back, so an object
+that carries its own id is a success and any other a `WriteConflictError`
 ([why](getting-started.md#6-reliability-retries-backoff--timeouts)).
 
 ### `@cloudbitmaps/azure-blob`
@@ -715,8 +717,9 @@ is a resumable upload, a session of requests that the SDK retries within, under 
 container-scoped `ContainerClient`; write-once via `ifNoneMatch: '*'`. The registry lets an Azure deployment
 run on **one container alone**: compare-and-swap rides blob conditions (`ifNoneMatch: '*'` to create,
 `ifMatch: <etag>` to swap), so no second service is needed to hold the `currentGen` pointer. Every request goes
-through the client's retry policy, the conditional writes included, so a write that landed and lost its response
-can be reported as `WriteConflictError` ([why](getting-started.md#6-reliability-retries-backoff--timeouts)).
+through the client's retry policy, the conditional writes included. Each conditional write carries a random id in
+the blob's metadata, and a conflict reads the stored blob back, so a blob that carries its own id is a success and
+any other a `WriteConflictError` ([why](getting-started.md#6-reliability-retries-backoff--timeouts)).
 
 ## Keeping this in sync
 

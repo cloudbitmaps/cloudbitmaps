@@ -60,9 +60,12 @@ fails its precondition, which turns a write that landed into a reported conflict
 registry's rows, and every object up to `simpleUploadThresholdBytes` (8 MiB by default), as one request sent once,
 with no SDK retry around it. A client you pass keeps its configuration, and every other request it makes keeps its
 retry. A larger object is a resumable upload: a session of requests that the SDK retries within, under the client's
-retry options.
+retry options, with no per-request switch to turn that off. It carries a random id in the object's custom metadata
+(`cbwid`), outside the `.crbm` bytes, and a `412` on its commit reads the stored object back: its own id is a
+success, and any other, or none, is a `WriteConflictError`. The read is made only on that `412`, works with the
+client you pass, and adds no option.
 
-A transient failure of a single-request write throws `TransientError`, and the write may or may not have landed:
+A transient failure of a single-request write, or of the read-back, throws `TransientError`, and the write may or may not have landed:
 `store.generations(ref)` lists what the bucket holds, with the current generation marked. See
 [the getting-started guide](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#6-reliability-retries-backoff--timeouts).
 

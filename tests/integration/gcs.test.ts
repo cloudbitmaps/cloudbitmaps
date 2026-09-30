@@ -5,6 +5,7 @@ import http from 'node:http';
 // `pnpm test:integration`. No real GCP needed. Passing `apiEndpoint` (with any `projectId`) targets the
 // emulator and skips auth — do NOT also set `STORAGE_EMULATOR_HOST` (empirically it makes the JSON-API calls
 // 404 against fake-gcs-server; apiEndpoint alone is the working config).
+import { Writable } from 'node:stream';
 import { Storage } from '@google-cloud/storage';
 import {
   storageChunkSourceConformance,
@@ -13,6 +14,7 @@ import {
   CONFORMANCE_SEGMENT,
 } from '@/testing/conformance';
 import { GcsStorageDriver } from '@/gcs/storage';
+import { storageObjectName } from '@/gcs/keys';
 import { GcsRegistryDriver } from '@/gcs/registry';
 import { GcsStorage } from '@cloudbitmaps/gcs';
 import { CrbmStorageChunkSource, writeCrbmGeneration } from '@/core/crbm-storage-source';
@@ -213,6 +215,121 @@ describe('GcsStorageDriver specifics (fake-gcs-server)', () => {
     const gens: number[] = [];
     for await (const k of driver.list({ segment: 's' })) gens.push(k.generation);
     expect(gens.sort((a, b) => a - b)).toEqual([1, 3]);
+  });
+});
+
+// A resumable upload is a session the SDK retries within, so a commit that landed and lost its response can be
+// answered 412 by its own replay. fake-gcs-server does not enforce `ifGenerationMatch` on a resumable commit (see the
+// note above), so it can produce neither answer. The proxy below stands in for the service's 412 and keeps the rest
+// real: a resumable stream that sends the object to the emulator, with the metadata the driver attached, and then
+// fails its commit with a 412, as the replay of a write that landed does (`'replay'`), or fails its commit with a 412
+// without sending anything, as a write that lost to another does (`'refuse'`). The driver's read-back is real: it
+// reads the stored object's metadata from the emulator.
+function resumableAnswering412(mode: 'replay' | 'refuse'): Storage {
+  return new Proxy(storage, {
+    get(target, prop, receiver) {
+      if (prop !== 'bucket') return Reflect.get(target, prop, receiver) as unknown;
+      return (name: string) => {
+        const bucket = target.bucket(name);
+        return new Proxy(bucket, {
+          get(b, p) {
+            if (p !== 'file') {
+              const v = Reflect.get(b, p) as unknown;
+              return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(b) : v;
+            }
+            return (objectName: string) => {
+              const file = b.file(objectName);
+              return new Proxy(file, {
+                get(f, q) {
+                  if (q !== 'createWriteStream') {
+                    const v = Reflect.get(f, q) as unknown;
+                    return typeof v === 'function'
+                      ? (v as (...a: unknown[]) => unknown).bind(f)
+                      : v;
+                  }
+                  return (options: Parameters<typeof f.createWriteStream>[0]) => {
+                    const chunks: Buffer[] = [];
+                    return new Writable({
+                      write(chunk: Buffer, _enc, cb) {
+                        chunks.push(chunk);
+                        cb();
+                      },
+                      final(cb) {
+                        const lost = Object.assign(new Error('precondition failed'), { code: 412 });
+                        if (mode === 'refuse') return cb(lost);
+                        const real = f.createWriteStream(options);
+                        real.once('error', cb);
+                        real.once('finish', () => cb(lost));
+                        real.end(Buffer.concat(chunks));
+                      },
+                    });
+                  };
+                },
+              });
+            };
+          },
+        });
+      };
+    },
+  });
+}
+
+describe('GCS resumable conflict against the write own id (fake-gcs-server)', () => {
+  const bm = (...v: number[]): SafeBitmap => SafeBitmap.fromValues(v);
+  const gen = (generation: number): GenKey => ({ segment: 's', generation });
+  const resumable = (client: Storage, prefix: string): GcsStorageDriver =>
+    new GcsStorageDriver({
+      storage: client,
+      bucket: BUCKET,
+      prefix,
+      simpleUploadThresholdBytes: 8, // any real .crbm object exceeds this: resumable
+    });
+
+  it('stores the id in the object custom metadata, outside its bytes', async () => {
+    const prefix = `${RUN}/wid-meta/${n++}`;
+    await writeCrbmGeneration(resumable(storage, prefix), gen(1), [
+      { chunkKey: 0, bitmap: bm(1, 2, 3) },
+    ]);
+    const [files] = await storage.bucket(BUCKET).getFiles({ prefix });
+    expect(files).toHaveLength(1);
+    const [meta] = await files[0]!.getMetadata();
+    expect((meta.metadata as { cbwid?: string }).cbwid).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  it('is a success when the 412 is the upload meeting its own object', async () => {
+    const prefix = `${RUN}/wid-own/${n++}`;
+    await writeCrbmGeneration(resumable(resumableAnswering412('replay'), prefix), gen(1), [
+      { chunkKey: 0, bitmap: bm(1, 2, 3) },
+    ]);
+    const source = new CrbmStorageChunkSource(resumable(storage, prefix));
+    const bytes = await source.getChunk({ segment: 's', chunkKey: 0 });
+    expect(SafeBitmap.safeDeserialize(bytes!, 1 << 20).toArray()).toEqual([1, 2, 3]);
+  });
+
+  it('stays a conflict when another writer holds the key', async () => {
+    const prefix = `${RUN}/wid-other/${n++}`;
+    await writeCrbmGeneration(resumable(storage, prefix), gen(1), [
+      { chunkKey: 0, bitmap: bm(1, 2, 3) },
+    ]);
+    await expect(
+      writeCrbmGeneration(resumable(resumableAnswering412('refuse'), prefix), gen(1), [
+        { chunkKey: 0, bitmap: bm(9) },
+      ]),
+    ).rejects.toBeInstanceOf(WriteConflictError);
+  });
+
+  it('stays a conflict when the object was written with no id', async () => {
+    const prefix = `${RUN}/wid-noid/${n++}`;
+    const name = storageObjectName(prefix, gen(1));
+    await storage
+      .bucket(BUCKET)
+      .file(name)
+      .save(Buffer.from([1]), { resumable: false });
+    await expect(
+      writeCrbmGeneration(resumable(resumableAnswering412('refuse'), prefix), gen(1), [
+        { chunkKey: 0, bitmap: bm(9) },
+      ]),
+    ).rejects.toBeInstanceOf(WriteConflictError);
   });
 });
 

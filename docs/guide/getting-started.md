@@ -580,8 +580,10 @@ const client = new S3Client({
 **Your client's own retry, and the writes it does not reach.** Each cloud SDK retries a failed request itself,
 under the store's retry. For a conditional write — a generation's write-once put, and the registry's create,
 compare-and-swap and delete, which writes a tombstone — that retry gives the wrong answer: a write that lands and then loses its response is sent again,
-meets itself, and fails its own precondition, which reads as a lost race for a write that won. So the storage
-packages send a conditional write once, with the SDK's retry off for that request alone. The client is otherwise
+meets itself, and fails its own precondition, which reads as a lost race for a write that won. So the S3 and GCS
+packages send a conditional write once where the SDK lets them, with its retry off for that request alone, and
+the Azure Blob package, whose retry has no per-request switch, tags each write and settles a conflict by reading
+it back. The client is otherwise
 left as it is, a client you pass in included, and every other request it makes keeps the retry rules the SDK gives
 it. A transient failure of a conditional write reaches its caller as `TransientError`, and the write may or may not
 have landed. Where each package stands:
@@ -589,8 +591,19 @@ have landed. Where each package stands:
 | package | conditional writes |
 |---|---|
 | `@cloudbitmaps/s3` | every one is sent once: the write-once `PutObject`, a multipart upload's `CompleteMultipartUpload`, and the registry's create, compare-and-swap and delete |
-| `@cloudbitmaps/gcs` | the registry's writes, and an object up to `simpleUploadThresholdBytes` (8 MiB by default), are each one request, sent once. A larger object is a resumable upload: a session of requests that the SDK retries within, under the client's retry options |
-| `@cloudbitmaps/azure-blob` | sent through the client's retry policy, which sends a request again after a network error or a 500 or 503. A write that landed and lost its response can therefore be reported as `WriteConflictError` |
+| `@cloudbitmaps/gcs` | the registry's writes, and an object up to `simpleUploadThresholdBytes` (8 MiB by default), are each one request, sent once. A larger object is a resumable upload, a session of requests that the SDK retries within, under the client's retry options; it and every Azure Blob write are tagged with a random id in metadata, as described below |
+| `@cloudbitmaps/azure-blob` | sent through the client's retry policy, which sends a request again after a network error or a 500 or 503. Each write is tagged with a random id in blob metadata, and a conflict is settled by reading the stored blob back, as described below |
+
+**Writes that are tagged instead.** Azure Blob's retry is a policy on the client's pipeline, and a GCS resumable
+upload is a session the SDK retries within, so neither has a per-request switch. Each of their conditional writes
+carries a random id in the object's metadata (`cbwid`), outside the `.crbm` bytes and outside the registry row's
+body. When such a write reports a conflict, the driver reads the stored blob or object back, one metadata request,
+and reports success when it carries the write's own id and `WriteConflictError` otherwise. The read is made only on a
+conflict, works with a client you pass, and adds no option. A read-back that fails transiently throws
+`TransientError`. A generation's `.crbm` object is never overwritten, so its read-back is definitive. A registry row
+is overwritten by compare-and-swap, so a writer that swaps in over a write that landed, before the read-back,
+makes that write report `WriteConflictError`: the store's callers re-read the row on it, and none deletes a
+generation because of it.
 
 **Your data is safe across a transient fault.** Generations are write-once (no half-written object a reader could
 pick up); a publish only moves the pointer forward, and each attempt of its own conflict loop re-reads the row
