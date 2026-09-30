@@ -182,7 +182,7 @@ export interface EraseIdResult {
    *  - `'absent'` — the segment's registry row is gone, so it is no longer a segment at all and
    *    `store.eraseSubject` will not even scan it. Anything left in the bucket is an **orphan**: list it with
    *    `listGenerations` (`store.generations`) and delete it with `dropSegment` (`store.dropSegment`), which both
-   *    read the bucket as well as the row. `checkConsistency()` and `gcOrphanGenerations` start from the row, so
+   *    read the bucket as well as the row. `checkConsistency()` and the generation collection start from the row, so
    *    neither reaches a segment that has none.
    */
   readonly collected: readonly number[];
@@ -301,7 +301,7 @@ export async function eraseIdFromSegment(
    *
    * It verifies the **claim** — no generation of the segment holds the id — rather than what this call deleted,
    * in both directions. A holder missing from `collected` does not mean it survived: a concurrent collector
-   * (`gcOrphanGenerations(ref, deps, { keep: 0 })`, the call this library tells operators to run) may simply have
+   * (the generation collection with `keep: 0`, which this call and a retirement run) may simply have
    * taken it first, and then the claim is true no matter who made it true. And a collection pass that declined
    * does not mean nothing was left: it returns an empty list when the row was gone as it started, the same value
    * it returns when there was genuinely nothing to collect, and a retirement only has to land between this call's
@@ -331,7 +331,7 @@ export async function eraseIdFromSegment(
    * The id is not in the current generation — which is **not** the same as not being in the bucket.
    *
    * A re-seed that simply stops including someone leaves their bit in the generation it dropped them from, and
-   * the documented post-load call (`gcOrphanGenerations` with its default `keep: 1`) *retains* exactly that
+   * the collection a load runs after it publishes (default `keep: 1`) *retains* exactly that
    * generation as the reader grace window. So the ordinary lifecycle of a rotating audience leaves an ex-member's
    * bit sitting in a retained object. Answering `'not-member'` there would filter the segment out of the
    * `eraseSubject` ledger entirely: a clean Art. 17 receipt over bytes still in the bucket, for the one

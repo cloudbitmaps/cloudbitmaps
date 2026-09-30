@@ -2,9 +2,9 @@
  * `loadSegment` — the loaded store's primary write path, as one call.
  *
  * A load is always the same four steps: take the next generation number, write one immutable object, move the
- * pointer, collect what the move superseded. Inside the library they are `nextGeneration` +
- * `bulkLoadCrbmGeneration` + `publishGeneration` + `gcOrphanGenerations`, and the step a hand-composed load leaves
- * out is the last one, so a store that composed it would accumulate superseded generations it keeps paying for.
+ * pointer, collect what the move superseded. Inside the library each is its own internal function, and the
+ * step a hand-composed load leaves out is the last one, so a store that composed it would accumulate superseded
+ * generations it keeps paying for.
  * Composing it here, once, is the point.
  *
  * The other reason it is one call is the **guard**. A load REPLACES a segment: whatever the stream contains is
