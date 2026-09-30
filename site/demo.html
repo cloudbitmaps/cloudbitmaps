@@ -22,7 +22,7 @@
     <title>CloudBitmaps — a measured intersection, replayed</title>
     <meta
       name="description"
-      content="Step through a real intersection of two 2,000,000-id segments. 100 of 2,000 chunk keys align, 3,800 chunk reads never happen, and 3,000 bytes are read in 24.6 ms — replayed from a recorded benchmark run, not simulated."
+      content="Step through a real intersection of two 2,000,000-id segments. 100 of 2,000 chunk keys align, 3,800 chunk reads never happen, and 3,000 bytes of chunk payload are read in 24.6 ms on the in-memory drivers — replayed from a recorded benchmark run, not simulated."
     />
     <link rel="stylesheet" href="cloudbitmaps.css" />
     <meta name="google-site-verification" content="UpdnyEE0wCiY5rHqUovfc-lRkEa9ZN9M-F67eTRNKhE" />
@@ -96,15 +96,16 @@
         <h1>100 of 2,000 keys. The rest are never read.</h1>
         <p class="hero-lede" style="max-width: 74ch">
           Two segments of <strong>2,000,000 ids</strong> each. Intersecting them reads
-          <strong>3,000 bytes</strong> and returns <strong>100,000 ids</strong> in
-          <strong>24.6 ms</strong> — because keys are compared before any bytes move, and
-          <strong>3,800</strong> chunk reads simply never happen.
+          <strong>3,000 bytes</strong> of chunk payload and returns <strong>100,000 ids</strong> in
+          <strong>24.6 ms</strong> on the in-memory drivers — because keys are compared before any bytes
+          move, and <strong>3,800</strong> chunk reads simply never happen.
         </p>
         <p class="note" style="max-width: 78ch">
-          Every number on this page comes from one recorded run of
-          <span class="m">SCALE_INJECT=1 pnpm bench:scale</span>, checked into the repository. Nothing here is simulated,
-          and nothing is computed live — this is a replay, and it says so because the distinction is the
-          point.
+          Every measured number on this page comes from one recorded run of
+          <span class="m">SCALE_INJECT=1 pnpm bench:scale</span>, checked into the repository; the rest is
+          arithmetic on that run or on the format, and the panels below say which is which. Nothing here is
+          simulated, and nothing is computed live — this is a replay, and it says so because the distinction
+          is the point.
         </p>
       </section>
 
@@ -154,7 +155,8 @@
 
         <p class="note" style="max-width: 82ch">
           That asymmetry is the entire trick. Keys are small and comparable; remainders are the payload. The
-          replay below compares 4,000 keys and fetches 100 payloads.
+          replay below compares the two segments' 4,000 keys and fetches 200 payloads: the 100 shared chunks,
+          from each segment.
         </p>
 
         <h3 style="margin-top: 44px">Then each chunk picks its own shape</h3>
@@ -192,8 +194,9 @@
         <p class="note" style="max-width: 82ch">
           The two costs cross at <strong>4,096 ids</strong>, and that is arithmetic rather than a tuning
           choice: 4,096 &times; 2 bytes is <strong>8 KiB</strong>, exactly what a bitset costs. Below it an
-          array is smaller; above it a bitset is. <a href="flavors.html">The flavors page</a> walks all three
-          shapes and the conversions between them.
+          array is smaller; above it a bitset is — unless the ids run contiguously, when runs beat both.
+          <a href="flavors/roaring.html">The roaring flavor's page</a> walks how a chunk picks among the
+          three.
         </p>
       </section>
 
@@ -314,7 +317,7 @@
                 <span class="tally-note">never requested, never billed</span>
               </div>
               <div class="tally-cell">
-                <span class="label">Bytes read</span>
+                <span class="label">Chunk bytes read</span>
                 <span class="tally-fig" id="t-bytes">3,000</span>
                 <span class="tally-note">30 per fetched key, both operands</span>
               </div>
@@ -417,9 +420,9 @@
                     <td class="from">metrics sink</td>
                   </tr>
                   <tr>
-                    <td>Storage bytes read</td>
+                    <td>Chunk payload bytes read</td>
                     <td class="num">3,000</td>
-                    <td class="from">metrics sink</td>
+                    <td class="from">metrics sink, chunk reads only</td>
                   </tr>
                   <tr>
                     <td>Wall time</td>
@@ -476,7 +479,8 @@
             </div>
             <p class="tpanel-foot">
               A derived number is only as good as the construction behind it &mdash;
-              <strong>bench/scale.cjs</strong> is 40 lines, and worth reading.
+              <strong>measureIntersect</strong> in <strong>bench/scale.cjs</strong> builds both segments, and it
+              is short enough to read.
             </p>
           </div>
         </div>
@@ -484,7 +488,8 @@
           The check is a build gate rather than a promise:
           <span class="m">scripts/site-replay.cjs</span> fails if the reads the benchmark
           <em>reported</em> stop matching what its construction <em>implies</em>, fails if this page drifts
-          from either, and fails if the page states any figure the benchmark cannot account for at all.
+          from either, and fails if the page states a figure written with thousands separators that the
+          benchmark cannot account for.
         </p>
       </section>
 
@@ -515,7 +520,7 @@
             <p>
               Key alignment does not care how ids sit inside a chunk, so <em>100 of 2,000</em> holds for any
               segment. The byte figure does care: this run seeds each chunk with a contiguous run, which Roaring
-              stores in a few dozen bytes. Scattered ids at the same density land nearer 2 KB per chunk. Read
+              stores in about 15 bytes. Scattered ids at the same density land nearer 2 KB per chunk. Read
               3,000 bytes as "the window is small and bounded", not as a number to plan a bill around.
             </p>
           </div>
@@ -539,7 +544,7 @@
       <section>
         <div class="close-grid">
           <div class="close-copy">
-            <h2>Six lines, no cloud account.</h2>
+            <h2>Eight lines, no cloud account.</h2>
             <p class="lede" style="margin: 0">
               Everything above ran against the in-memory drivers, which ship inside the package and need no
               configuration at all. So the quickstart runs as-is, and you can see the shape before you point
@@ -556,14 +561,14 @@
             <div class="install-head label"><span>Install</span><span>A codec and a storage</span></div>
             <pre><code>npm i @cloudbitmaps/roaring @cloudbitmaps/s3
 
-<span class="c"># the memory and local drivers need nothing else</span>
-<span class="c"># for a real backend, add its package:</span>
-<span class="c"># @cloudbitmaps/s3 · @cloudbitmaps/gcs · @cloudbitmaps/azure-blob</span></code></pre>
+<span class="c"># the codec, and the storage you have —</span>
+<span class="c"># or @cloudbitmaps/gcs · @cloudbitmaps/azure-blob</span>
+<span class="c"># the memory and local drivers need the codec alone</span></code></pre>
             <div class="install-alt">
               <p class="label">Or reproduce the run above</p>
               <pre><code>git clone https://github.com/cloudbitmaps/cloudbitmaps
 pnpm install
-pnpm bench:scale  <span class="c"># writes scale-results.json</span></code></pre>
+pnpm bench:scale  <span class="c"># measures and prints; records nothing</span></code></pre>
             </div>
             <p class="link-row"><a href="benchmarks.html">Methodology and caveats →</a></p>
           </div>

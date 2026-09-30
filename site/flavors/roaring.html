@@ -172,10 +172,9 @@
           <a href="../flavors.html">a separate plain-bitset flavor</a> is not planned.
         </p>
 
-        <!-- This section argued against "one big bitset" in the abstract for its whole life, when a Redis
-             bitmap IS one big bitset — a String with SETBIT/BITCOUNT/BITOP over it. Naming that turns an
-             abstract argument into a concrete comparison, and it is the answer to the question every reader
-             arrives with: "why not just use Redis for this?"
+        <!-- A Redis bitmap IS one big bitset — a String with SETBIT/BITCOUNT/BITOP over it. Naming that turns
+             an abstract argument against "one big bitset" into a concrete comparison, and it is the answer to
+             the question every reader arrives with: "why not just use Redis for this?"
 
              DELIBERATELY NO BYTE COMPARISON. Everything here is either a documented property of Redis's data
              types or a fact about our own codec. A bytes-per-id figure against a Redis Set or Bitmap would be
@@ -247,10 +246,12 @@
             half-dense block is <strong>1.02× larger</strong>. Read that last one carefully, because
             it is not a shape where a flat bitset is the better idea: it is the shape where roaring
             <em>becomes</em> one. Every chunk there is past the array/bitset threshold, so each is
-            stored as a flat 8 KiB bitset and the 2% is per-chunk bookkeeping. The floor of the
-            adaptive choice is the fixed choice plus a rounding error. Encoded bytes, not Redis
-            process memory: a real Set carries per-member overhead above the packed figure, so every
-            alternative here is quoted at its best case.
+            stored as a flat 8 KiB bitset, and the 2% is almost all edge padding: the block starts
+            and ends part-way through a chunk, and a bitset covers its whole chunk, with a few bytes
+            of per-chunk bookkeeping on top. The floor of the adaptive choice is the fixed choice
+            plus a rounding error. Encoded bytes, not Redis process memory: a real Set carries
+            per-member overhead above the packed figure, so every alternative here is quoted at its
+            best case.
           </p>
           <p class="tpanel-foot">
             Redis has no Roaring type of its own — there is a third-party module that wraps
@@ -269,9 +270,9 @@
       <!-- ── COMING FROM REDIS BITMAPS ──────────────────────────────────────
            The section above answers "why not one big bitset" and "why not just use Redis" — both structural
            questions about the design. Neither answers the one a reader actually arrives with, which is
-           practical: "I already run Redis bitmaps. What happens to MY workload?" That question was going
-           unanswered, and the /flavors table's `Not planned` row against a plain-bitset flavor made it louder
-           rather than quieter — a bitmap-literate reader reads that row and reasonably wonders what they lose.
+           practical: "I already run Redis bitmaps. What happens to MY workload?" The /flavors table's
+           `Not planned` row against a plain-bitset flavor makes that question louder rather than quieter — a
+           bitmap-literate reader reads that row and reasonably wonders what they lose.
 
            The third block is the load-bearing one. Two paragraphs saying "everything transfers" are worth
            nothing without the paragraph that names what does not, and raw byte-level compatibility genuinely
@@ -340,9 +341,9 @@
                   <td class="from">
                     The destination form, which is the only form Redis has. The result becomes a
                     <strong>new generation</strong> of <span class="m">dest</span> — superseded, not
-                    added to — published forward-only, and you get back what it wrote. A combine
-                    that comes out <strong>empty is refused</strong>, not published over a non-empty
-                    destination, so a mistyped operand cannot wipe it.
+                    added to — published the way a load is, and you get back what it wrote. A
+                    combine that comes out <strong>empty is refused</strong>, not published over a
+                    non-empty destination, so a mistyped operand cannot wipe it.
                     <span class="call">unionInto</span> and <span class="call">andNotInto</span> are
                     the same for OR and DIFF.
                   </td>
@@ -356,8 +357,10 @@
                   <td class="from">
                     Per <em>segment</em>, not per id: the writer records an absolute
                     <span class="m">expiresAt</span> and the sweep is a call you schedule — nothing
-                    here starts a timer. Never point an object-lifecycle rule at the bucket on its
-                    own; it deletes bytes the pointer still names.
+                    here starts a timer. For the lazy half of Redis's expiry, a handle opened with
+                    <span class="m">store.segment(name, { expiresAt })</span> reads empty past it,
+                    with no I/O. Never point an object-lifecycle rule at the bucket on its own; it
+                    deletes bytes the pointer still names.
                   </td>
                 </tr>
               </tbody>
@@ -369,7 +372,10 @@
             <span class="m">BITCOUNT</span> have no equivalent: this is a set of ids, not an
             addressable bit buffer, and there is no bounded universe to complement against.
             <span class="m">XOR</span> and <span class="m">ANDOR</span> have no single call but
-            compose from the rows above.
+            compose from the rows above. An id range is the nearest thing to a byte range: in the
+            next release, not v0.10.0, <span class="call">iterate</span> and every combine read the
+            ids in <span class="m">(after, through]</span> and fetch only the chunks it overlaps —
+            but nothing counts a range without reading it.
           </p>
           <p class="tpanel-foot">
             <span class="label">Read this twice</span> <span class="m">SETBIT</span> flips one bit
@@ -382,14 +388,15 @@
             paying for is the cadence, not the id count.
           </p>
           <p class="tpanel-foot">
-            <span class="label">What that costs</span> Two line items, and no third. A
+            <span class="label">What that costs</span> Three line items. A
             <strong>read</strong> that misses the cache is one ranged GET, once the segment's
-            pointer and index are read; a <strong>publish</strong> is one object PUT plus the
-            pointer's own PUT and reads. Storage is the segment sitting there, which is the cheap
-            part. Nothing bills per id, and nothing bills while the segment is idle &mdash; which is
-            the whole difference from a node you keep standing. Rates are region-specific and the
-            vendor's to change; every figure we publish uses the default
-            <span class="m">aws-us-east-1-ondemand</span> rates, and
+            pointer and index are read; a <strong>load</strong> is one object PUT plus the pointer's
+            own PUT and reads, and <span class="m">store.load()</span> adds the listings that number
+            the generation and collect what it supersedes; and <strong>storage</strong> is the
+            segment sitting there, which is the cheap part. Nothing bills per id, and an idle
+            segment bills its storage alone &mdash; which is the whole difference from a node you
+            keep standing. Rates are region-specific and the vendor's to change; every figure we
+            publish uses the default <span class="m">aws-us-east-1-ondemand</span> rates, and
             <span class="call">estimateCost</span> accepts your own.
           </p>
           <p class="tpanel-foot">
@@ -409,9 +416,12 @@
               A Redis bitmap is one flat bit array. Roaring stores each 65,536-id chunk as
               <em>whichever of three encodings is smallest for that chunk</em> — and past
               <strong>4,096 ids</strong> in a chunk, <strong>6.25%</strong> of it, the winner is a
-              flat bit array. Byte for byte, the same thing you have now. The flat representation is
-              not the alternative we rejected; it is the one this codec picks whenever it is the
-              right answer. The figure below is that choice being made.
+              flat bit array, unless the ids run contiguously, when runs are smaller still. The same
+              idea as the bitmap you have now, one bit per possible id, though not the same bytes:
+              Redis numbers a byte's bits from the most significant, and Roaring packs a chunk's
+              bits into 64-bit words from the least. The flat representation is not the alternative
+              we rejected; it is the one this codec picks whenever it is the right answer. The
+              figure below is that choice being made.
             </p>
           </div>
           <div class="limit">
@@ -444,9 +454,9 @@
            story lives once, on /architecture, because it is codec-independent — which is also why a second
            flavor drops its own version of THIS figure into THIS slot and changes nothing else.
 
-           All four stages stay fully legible at all times and only a marker moves. The delivery dims inactive
-           stages to .34 to cycle attention; full opacity is strictly better here, because dimmed body text
-           stops clearing AA and a figure has no business hiding information to direct attention. -->
+           All four stages stay fully legible at all times and only a marker moves. None is dimmed to cycle
+           attention: body text dimmed to .34 opacity stops clearing AA, and a figure has no business hiding
+           information to direct attention. -->
       <section>
         <h2>How a chunk picks its representation</h2>
         <p class="lede">
@@ -553,12 +563,12 @@
             <p class="label">Uniformly dense ids</p>
             <p>
               If nearly every chunk is dense, every chunk picks bitset and you have paid for a
-              decision engine that always returns the same answer. A plain-bitset flavor was the
-              obvious answer, and we measured it before building it: past roughly
-              <strong>6%</strong> density a Roaring chunk already <em>is</em> an uncompressed
-              bitset, so on the workload built to favour it a flat bitset came out
-              <strong>2%</strong> ahead — while Roaring won the other shapes by 543×, 63× and 1.88×.
-              It is <a href="../flavors.html">decided against</a>, not queued.
+              decision engine that always returns the same answer. A plain-bitset flavor is the
+              obvious answer, and it was measured before anything was built: past roughly
+              <strong>6%</strong> density a Roaring chunk of scattered ids already <em>is</em> an
+              uncompressed bitset, so on the workload built to favour it a flat bitset comes out
+              <strong>2%</strong> ahead — while Roaring wins the other shapes by 543×, 63× and
+              1.88×. It is <a href="../flavors.html">decided against</a>, not queued.
             </p>
           </div>
           <div class="limit">
@@ -570,8 +580,9 @@
               Graviton, an unusual libc, a locked-down build that forbids compilation &mdash;
               compiles from source or does not install. Native addons <em>do</em> load on Deno, Bun
               and Lambda; what they cannot enter is an isolate runtime such as Cloudflare Workers.
-              Note that today the engine itself does not run there either, for reasons that have
-              nothing to do with the codec.
+              The codec is what stops it there, not the engine: core imports no Node builtin. Edge
+              runtimes are not supported, and none will be claimed until CI runs the suite inside
+              one.
             </p>
           </div>
           <div class="limit">

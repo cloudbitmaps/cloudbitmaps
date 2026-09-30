@@ -29,7 +29,7 @@
     <meta property="og:title" content="CloudBitmaps usage — zero setup, then the same code in production" />
     <meta
       property="og:description"
-      content="The memory drivers need nothing. Swap them for S3 later and only the two driver lines change."
+      content="The memory drivers need nothing. Swap them for S3 later and only the backend changes."
     />
     <meta property="og:url" content="https://cloudbitmaps.pages.dev/usage" />
     <meta property="og:image" content="https://cloudbitmaps.pages.dev/assets/logo-light.png" />
@@ -37,7 +37,7 @@
     <meta name="twitter:title" content="CloudBitmaps usage — zero setup, then production" />
     <meta
       name="twitter:description"
-      content="The memory drivers need nothing. Only the driver lines change when you go to production."
+      content="The memory drivers need nothing. Only the backend changes when you go to production."
     />
     <meta name="twitter:image" content="https://cloudbitmaps.pages.dev/assets/logo-light.png" />
     <link rel="icon" href="assets/favicon-16.svg" sizes="16x16" type="image/svg+xml" />
@@ -126,13 +126,14 @@ npm audit signatures</code></pre>
       </section>
 
       <!-- ── QUICKSTART, THEN PRODUCTION ─────────────────────────────────────
-           Side by side on purpose. The claim is that only the two driver lines change, and two blocks a reader
+           Side by side on purpose. The claim is that only the backend changes, and two blocks a reader
            can compare line-for-line make that checkable rather than something they have to believe. -->
       <section id="quickstart">
         <h2>Eight lines, then the same eight lines</h2>
         <p class="lede">
-          The only difference between these two is which backend the first line constructs. Nothing below
-          them knows, or can know, whether the bytes are in a Map or in a bucket.
+          The difference that matters between these two is the backend the store is built on; the cache bound
+          beside it is optional tuning. Nothing below them knows, or can know, whether the bytes are in a Map
+          or in a bucket.
         </p>
         <div class="prov">
           <div class="tpanel">
@@ -153,7 +154,7 @@ npm audit signatures</code></pre>
           </div>
           <div class="tpanel">
             <div class="tpanel-head">
-              <span class="label">production.ts</span><span class="label">Only the drivers</span>
+              <span class="label">production.ts</span><span class="label">Only the backend</span>
             </div>
             <pre class="code-plain"><code><span class="k">import</span> { CloudRoaring } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
 <span class="k">import</span> { S3Storage } <span class="k">from</span> <span class="s">'@cloudbitmaps/s3'</span>;
@@ -165,7 +166,7 @@ npm audit signatures</code></pre>
 
 <span class="k">const</span> store = <span class="k">new</span> CloudRoaring({
   storage: backend,
-  cache: { maxChunks: <span class="n">512</span> },   <span class="c">// optional bounded LRU</span>
+  cache: { maxChunks: <span class="n">512</span> },   <span class="c">// optional: the LRU's bound</span>
 });
 
 <span class="c">// …every line below here is unchanged</span></code></pre>
@@ -179,6 +180,18 @@ npm audit signatures</code></pre>
           is why <span class="m">storage</span> is the only location key the store takes. Hand the store a bare
           <span class="m">IStorageDriver</span> instead and there is no pointer at all: it finds the highest
           generation in the bucket by list-scan, cleartext and read-only. Fine for a first look, not past it.
+        </p>
+        <p class="note" style="max-width: 82ch">
+          <strong>Everything else the store takes is optional.</strong> <span class="m">cache</span> bounds
+          memory and read staleness. <span class="m">encryption: { keystore }</span> encrypts a segment at rest from its first
+          generation — <span class="m">InProcessKeystore</span> ships in the package, or bring your own
+          <span class="m">IKeystore</span> — and needs a backend, because the wrapped key lives in the pointer's
+          row. <span class="m">budget: { maxRequests }</span> caps the chunk fetches one count, iterate or
+          combine may fan out into, and the segments one subject scan may reach — 1,000,000 by default — and
+          refuses the call before it fans out; <span class="m">false</span> lifts it. <span class="m">retry</span> tunes how a read retries a
+          transient fault, <span class="m">metrics</span> takes the sink for the
+          <a href="architecture.html#operating">events the engine emits</a>, and <span class="m">seams</span>
+          injects a clock and randomness for tests.
         </p>
       </section>
 
@@ -210,8 +223,11 @@ npm audit signatures</code></pre>
                   <td><span class="m">store.load(ref, ids)</span></td>
                   <td class="from">
                     <strong>The only way data gets in.</strong> Streams an unsorted id source into one
-                    immutable <span class="m">.crbm</span> object, then advances the segment's pointer
-                    forward-only. Grouped by chunk first, so it bills <strong>per object, not per id</strong>.
+                    immutable <span class="m">.crbm</span> object, then moves the segment's pointer to it by
+                    compare-and-swap, fenced on the row it read, and collects what that superseded, keeping one.
+                    An empty result over a non-empty segment is refused rather than published, so branch on
+                    <span class="m">published</span>. Grouped by chunk first, so it bills
+                    <strong>per object, not per id</strong>.
                     On S3, a segment's first load is expected at 4 PUT-class and 7 GET requests, listings
                     included — S3 bills a listing at the PUT rate.
                   </td>
@@ -236,15 +252,44 @@ npm audit signatures</code></pre>
                   <td class="num">the index</td>
                 </tr>
                 <tr>
+                  <td>
+                    <span class="m">iterate()</span><br /><span class="m">iterate({ after, through })</span>
+                  </td>
+                  <td class="from">
+                    Every id, ascending, one chunk at a time. With a range, only the ids in
+                    <span class="m">(after, through]</span>, fetching only the chunks it overlaps — keyset
+                    paging — and every combine takes the same two options. The range is
+                    <strong>unreleased</strong>: it is in the next release, not in v0.10.0.
+                  </td>
+                  <td class="num">each chunk read</td>
+                </tr>
+                <tr>
                   <td><span class="m">intersect(others, { exclude })</span></td>
                   <td class="from">
                     Async-iterates the intersection. Compares chunk keys first and requests only shared chunks;
-                    the storage payload footprint is bounded by
-                    <span class="m">concurrency × operands × chunk</span>, and that is the whole term — there
-                    is no second tier to snapshot. <span class="m">exclude</span> subtracts suppression
-                    segments in the same pass.
+                    the payload in flight is bounded by <span class="m">concurrency × operands × chunk</span>.
+                    <span class="m">exclude</span> subtracts suppression segments in the same pass.
+                    <span class="m">union</span> takes the same options and reads every chunk of every operand;
+                    <span class="m">andNot</span> takes all of them but <span class="m">exclude</span>, since its
+                    argument is the subtraction. An operand that names no
+                    segment is <strong>refused</strong> with <span class="m">ValidationError</span> rather than
+                    read as empty — a misspelled suppression list would otherwise suppress nothing — unless you
+                    pass <span class="m">allowAbsentOperands: true</span>.
                   </td>
                   <td class="num">the shared chunks</td>
+                </tr>
+                <tr>
+                  <td><span class="m">seg.pin()</span></td>
+                  <td class="from">
+                    A handle held at the generation that is current now, for as long as you keep it — for an
+                    export, a reconciliation, a send that has to match the count you reported. An ordinary
+                    handle moves on to a newer generation within <span class="m">cache.genTtlMs</span> of one being
+                    published. A hold, not a lease: a pinned read whose generation has been collected fails
+                    rather than serve another, so size <span class="m">keep</span> to your longest pinned job.
+                    In v0.10.0 a pin can still be handed a chunk of another generation — after a sweep, or where
+                    a live read cached the same chunk; the next release makes it read only the object it pinned.
+                  </td>
+                  <td class="num">the row and the index</td>
                 </tr>
                 <tr>
                   <td>
@@ -254,18 +299,39 @@ npm audit signatures</code></pre>
                   <td class="from">
                     Publishes the result as a <strong>new generation of <span class="m">dest</span></strong>
                     rather than streaming it to you — superseded, not added to — and hands back
-                    <span class="m">{ generation, cardinality, chunkCount, size }</span>.
+                    <span class="m">{ generation, published, reason, cardinality, … }</span>. Branch on
+                    <span class="m">published</span>: an empty result over a non-empty
+                    <span class="m">dest</span> is refused and reported, as a load's is, and a lost race throws
+                    <span class="m">WriteConflictError</span>. It collects nothing unless you pass
+                    <span class="m">keep</span>.
                   </td>
                   <td class="num">storage + registry</td>
                 </tr>
                 <tr>
-                  <td><span class="m">store.eraseSubject(id)</span></td>
+                  <td><span class="m">store.eraseSubject(id, { namespace })</span></td>
                   <td class="from">
-                    Rewrites every segment holding the id without it and deletes the generation that held the
-                    bit, so it is <strong>physically gone from the bucket</strong> when the call returns. A
+                    Rewrites every segment in the namespace that holds the id without it, and deletes the
+                    generation that held the bit — so for each entry its ledger reports
+                    <span class="m">erased: true</span>, the bit is <strong>physically gone from the
+                    bucket</strong> when the call returns; a noncurrent version, a replica or a backup keeps the
+                    old object until its own lifecycle removes it. It needs a scope: a <span class="m">namespace</span>,
+                    or <span class="m">{ allNamespaces: true }</span> to sweep every tenant. Read the ledger: an
+                    entry noted <span class="m">superseded</span> was not erased by this call, so re-run. A
                     compliance operation, not a hot-path verb — there is no per-id write.
                   </td>
                   <td class="num">storage + registry</td>
+                </tr>
+                <tr>
+                  <td><span class="m">store.rollback(ref, generation)</span></td>
+                  <td class="from">
+                    Moves the pointer <strong>back</strong> to a generation still in the bucket —
+                    <span class="m">store.generations(ref)</span> lists them. The one pointer move that is not
+                    forward, and only an operator makes it: it deletes nothing, refuses a generation that is
+                    gone, refuses one above the current pointer, which may
+                    never have been published, and records <span class="m">segment.rollback</span> on the audit
+                    sink you pass it.
+                  </td>
+                  <td class="num">registry + two listings</td>
                 </tr>
                 <tr>
                   <td><span class="m">store.retireExpired()</span></td>
@@ -301,7 +367,10 @@ npm audit signatures</code></pre>
             <span class="m">setRetention(ref, { expiresAt })</span> and a <span class="m">retireExpired()</span>
             sweep retires it, on a schedule you own. An individual <em>id</em> cannot, because a bitmap stores ids
             and not <span class="m">(id, timestamp)</span> pairs — an expiry per id costs 4&ndash;8 bytes each
-            and takes the compression with it. Retention is a segment that expires, not a bit that ages.
+            and takes the compression with it. Retention is a segment that expires, not a bit that ages. A
+            handle can carry a deadline of its own, too: <span class="m">store.segment(name, { expiresAt })</span>
+            reads empty past it, with no I/O, so the data stops being served on time even when the sweep is
+            late. It reclaims nothing, and it binds that handle alone.
           </p>
         </div>
 
@@ -322,20 +391,23 @@ npm audit signatures</code></pre>
 
 <span class="k">const</span> ref = { namespace: <span class="s">'audience'</span>, segment: <span class="s">'high-value'</span> };
 
-<span class="c">// The warehouse decides the set; hand over the cursor,</span>
-<span class="c">// not an array. Re-run on a cadence — each run</span>
-<span class="c">// publishes the next generation and supersedes the last.</span>
+<span class="c">// The warehouse decides the set; hand over its cursor</span>
+<span class="c">// (any AsyncIterable of ids), not an array. Re-run on a</span>
+<span class="c">// cadence — each run publishes the next generation.</span>
 <span class="k">const</span> r = <span class="k">await</span> store.load(ref, athenaCursor());
 
-r.cardinality;  <span class="c">// distinct ids now published</span></code></pre>
+<span class="k">if</span> (r.published) console.log(r.cardinality); <span class="c">// now current</span>
+<span class="k">else</span> console.warn(r.reason); <span class="c">// 'empty' or 'superseded'</span></code></pre>
           </div>
           <div class="tpanel">
             <div class="tpanel-head">
               <span class="label">audience.ts</span><span class="label">The bytes never come to you</span>
             </div>
-            <pre class="code-plain"><code><span class="k">const</span> seg = (name) =&gt;
+            <pre class="code-plain"><code><span class="k">const</span> seg = (name: string) =&gt;
   store.segment(name, { namespace: <span class="s">'audience'</span> });
 
+<span class="c">// Each operand is loaded as in load.ts: a combine refuses</span>
+<span class="c">// one that names no segment rather than read it as empty.</span>
 <span class="k">const</span> vips = seg(<span class="s">'high-value'</span>);
 <span class="k">const</span> eu = seg(<span class="s">'eu-residents'</span>);
 <span class="k">const</span> optedOut = seg(<span class="s">'opted-out'</span>);
@@ -343,7 +415,7 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
 
 <span class="c">// Suppression folds into the same pass, and the result</span>
 <span class="c">// becomes a new generation of `target` — unless it comes</span>
-<span class="c">// out empty, which is refused rather than wiping it.</span>
+<span class="c">// out empty over a non-empty one, which is refused.</span>
 <span class="k">const</span> res = <span class="k">await</span> vips.intersectInto(
   target, [eu], { exclude: [optedOut] },
 );
@@ -353,9 +425,9 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
       </section>
 
       <!-- ── RETENTION: THE DEDUP WINDOW ────────────────────────────────────
-           Added because the first real consumer asked for TTL, twice, and then reached for the workaround that
-           corrupts reads (a lifecycle rule alone). The absence of TTL was already stated a few lines up; what was
-           missing was the thing you do instead, spelled out in code, on the page a reader is on when they ask.
+           The question a reader asks here is TTL, and the workaround that corrupts reads — a lifecycle rule on
+           its own — is the one within reach. The absence of TTL is stated a few lines up; this section is the
+           thing you do instead, spelled out in code, on the page a reader is on when they ask.
 
            The dedup framing is the strongest version of this: the bucket key IS the re-eligibility rule, so
            there is no per-user expiry bookkeeping at all. That is a genuinely nicer answer than TTLs, not a
@@ -364,8 +436,10 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
         <h2>Retention: a segment that expires</h2>
         <p class="lede">
           Put the date in the name and the window becomes set algebra. A user is re-eligible the moment the wave
-          moves to tomorrow&rsquo;s bucket, because tomorrow&rsquo;s bucket is a different, empty set. The old bucket
-          retires itself once you record when it should — see <span class="m">setRetention</span> below.
+          moves to tomorrow&rsquo;s bucket, because tomorrow&rsquo;s bucket is a different, empty set. Nothing
+          retires itself: drop the old bucket as below, or record when it expires with
+          <span class="m">setRetention</span> and let the <span class="m">retireExpired</span> sweep you
+          schedule drop it.
         </p>
         <div class="prov">
           <div class="tpanel">
@@ -376,8 +450,9 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
 <span class="k">const</span> ref = { namespace: <span class="s">'sent-daily'</span>, segment: localDay };
 <span class="k">const</span> sent = store.segment(localDay, { namespace: <span class="s">'sent-daily'</span> });
 
-<span class="k">if</span> (<span class="k">await</span> sent.has(userId)) <span class="k">return</span>;  <span class="c">// already sent today</span>
-<span class="k">await</span> send(userId);                  <span class="c">// then queue the id</span>
+<span class="k">if</span> (!(<span class="k">await</span> sent.has(userId))) { <span class="c">// not sent today</span>
+  <span class="k">await</span> send(userId);                <span class="c">// then queue the id</span>
+}
 
 <span class="c">// On a cadence — every few minutes, or once at the end</span>
 <span class="c">// of the wave — publish the day so far as one object.</span>
@@ -414,8 +489,10 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
           <strong>Names</strong> —
           any non-empty string, segment and namespace alike. <span class="m">sent:2026-08-01</span>,
           <span class="m">orders/2026</span> and <span class="m">user@example.com</span> are all legal; each
-          storage layer escapes what it cannot take literally. The only limits are non-empty and 256 characters
-          once encoded for a storage key. The namespace split is still the better shape for a family: listing
+          storage layer escapes what it cannot take literally. The limits are three: non-empty, encodable as UTF-8
+          (no unpaired surrogate), and 256 characters once encoded for storage. Encoding expands anything
+          outside <span class="m">A–Z a–z 0–9 . _ -</span>, and a leading <span class="m">_</span>, so a name full of colons or non-ASCII text reaches that
+          sooner than its length suggests. The namespace split is still the better shape for a family: listing
           the namespace enumerates exactly that family&rsquo;s buckets, which is the list a retention sweep
           wants.
         </p>
@@ -508,24 +585,32 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
           </div>
           <p class="tpanel-foot">
             <strong>Memory</strong> drivers ship in the main entry too and need nothing — they are what the
-            quickstart uses. An <strong>S3-compatible</strong> endpoint (R2, MinIO) works through the S3 driver
-            by pointing the client's <span class="m">endpoint</span> at it.
+            quickstart uses. An <strong>S3-compatible</strong> store (R2, MinIO) works through the S3 driver,
+            given its <span class="m">endpoint</span> — most also need <span class="m">pathStyle</span> and
+            <span class="m">credentials</span> — if it honours S3's conditional writes: the write-once put
+            and the pointer's compare-and-swap are built on them. MinIO is the one the integration suite runs
+            against.
           </p>
         </div>
       </section>
 
       <!-- ── YOUR OWN BILL ──────────────────────────────────────────────── -->
-      <section>
+      <section id="estimate">
         <h2>Estimate your own bill</h2>
         <p class="lede">
           Our published numbers are <span class="m">us-east-1</span> on-demand. Yours are not. Feed your own
           rates in and get your own crossover — the site's modelled figures call this same function, so they
           cannot drift ahead of the library. It counts the pointer too — the object beside your data that says
           which generation is current — and each operand's index, so pass
-          <span class="m">chunksPerIntersect</span> as the chunks your intersects fetch, and
-          <span class="m">hotSegments</span> for the segments each long-lived reader keeps reading, with
-          <span class="m">readerProcesses</span> for how many readers: each re-reads its pointers every
-          <span class="m">cache.genTtlMs</span>.
+          <span class="m">chunksPerIntersect</span> as the chunks your intersects fetch, summed over their operands,
+          and <span class="m">hotSegments</span> for the segments each long-lived reader keeps reading, with
+          <span class="m">readerProcesses</span> for how many readers: each re-reads a segment's pointer at
+          most once per <span class="m">genTtlMs</span>, which the estimate takes as the store's default of
+          2 s unless the workload names your <span class="m">cache.genTtlMs</span>. By default it compares with
+          the Redis that would hold your data; the site's chart compares with one $346 cluster,
+          <span class="m">ONE_REDIS_HA_CLUSTER</span>, passed as the profile's <span class="m">redis</span>.
+          All of this is the next release's estimator: v0.10.0's counts chunk reads and the object's own PUTs
+          only, takes none of the pointer inputs, and compares with the $346 cluster.
         </p>
         <div class="prov">
           <div class="tpanel">
@@ -538,9 +623,9 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
 <span class="k">const</span> bill = estimateCost({
   segments: [{ sizeBytes: <span class="n">60_000_000</span>, count: <span class="n">20</span> }],
   workload: { readsPerSec: <span class="n">800</span>, loadsPerMonth: <span class="n">900</span>, hotSegments: <span class="n">20</span> },
-  pricing: myPricingProfile,  <span class="c">// or the AWS default</span>
+  pricing: AWS_US_EAST_1_ONDEMAND,  <span class="c">// or your own profile</span>
 });
-bill.redisCrossover.readsPerSec;</code></pre>
+bill.redisCrossover.readsPerSec;  <span class="c">// against a Redis sized to the data</span></code></pre>
           </div>
           <ul class="rowlist">
             <li>
@@ -572,7 +657,7 @@ bill.redisCrossover.readsPerSec;</code></pre>
                 <span class="m">*Into</span> write collects nothing, and
                 <span class="m">gcOrphanGenerations</span> collects its predecessors. Storage is the only cost
                 of that window. It is not a snapshot facility: no setting here holds a long job on one
-                generation.
+                generation — <span class="m">seg.pin()</span> does.
               </span>
             </li>
           </ul>
@@ -580,15 +665,12 @@ bill.redisCrossover.readsPerSec;</code></pre>
       </section>
 
       <!-- ── THE EXIT ───────────────────────────────────────────────────────
-           This was two cards, one of which led with "the real risk is operational maturity". That disclosure
-           belongs on the site — an evaluator finds pre-1.0 and single-maintainer from the version number and
-           the contributor count whether we say it or not, and saying it first is the difference between being
-           told and finding out. But it is ALREADY on this page in the footer, and /benchmarks carries the
-           caveats in full. A third statement of it, framed as a risk, at the moment somebody is about to
-           install, is redundant weight in the worst possible place.
-
-           So the section is the exit instead, which is the load-bearing reassurance and is three facts rather
-           than one. -->
+           The section is the exit, which is the load-bearing reassurance and is three facts rather than one.
+           The operational-maturity disclosure belongs on the site — an evaluator finds pre-1.0 and
+           single-maintainer from the version number and the contributor count whether we say it or not, and
+           saying it first is the difference between being told and finding out — and it is here in the footer,
+           with the caveats in full on /benchmarks. A third statement of it, framed as a risk, at the moment
+           somebody is about to install, would be redundant weight in the worst possible place. -->
       <section>
         <h2>Your data is not held hostage</h2>
         <p class="lede">
@@ -631,7 +713,7 @@ bill.redisCrossover.readsPerSec;</code></pre>
           </li>
         </ul>
         <p class="note" style="max-width: 82ch">
-          The <a href="benchmarks.html">benchmarks page</a> carries the rate past which a flat tier is cheaper, the
+          The <a href="benchmarks.html">benchmarks page</a> carries the rate past which a standing cluster is cheaper, the
           methodology, and what each measurement does and does not establish.
         </p>
       </section>
