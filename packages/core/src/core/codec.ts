@@ -63,7 +63,10 @@ export interface CodecBitmap {
    * cannot answer this in better than O(n) should simply omit it — the engine then skips the check rather
    * than walking every value on the read path, which is the one thing this must never cost.
    *
-   * Roaring answers it in O(1) from its container index, so the flagship codec implements it.
+   * Roaring answers it in O(1) from its container index, so the flagship codec implements it. The check is only
+   * as good as the answer: a codec that implements this must return the true largest value of whatever
+   * {@link CodecInterface.safeDeserialize} decoded, which for roaring holds only because that call refuses bytes
+   * whose containers or values are out of order.
    */
   maximum?(): number | undefined;
   /**
@@ -101,6 +104,12 @@ export interface CodecInterface {
   /**
    * Size-cap (`bytes.length <= maxBytes`) then portable-deserialize. Throws `IntegrityError` when the input
    * exceeds the cap or fails to decode — the native decoder is never handed unbounded or unsafe-format input.
+   *
+   * "Fails to decode" includes bytes that are the right length and the wrong shape. A bitmap this returns must
+   * satisfy every invariant its own operations assume (for roaring: containers and values in order, runs
+   * disjoint, cardinalities matching the bits), because the engine trusts `has`, `size`, iteration order and
+   * {@link CodecBitmap.maximum} on what comes back, and a decoder that only bounds its reads guarantees none of
+   * them.
    */
   safeDeserialize(bytes: Uint8Array, maxBytes: number): CodecBitmap;
 }

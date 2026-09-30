@@ -15,14 +15,19 @@ surfaces **directly**, ungated, and keep a third target for the validation front
 
 | Target | Entry point | Coverage | Runs |
 | --- | --- | --- | --- |
-| `targets/safe-deserialize.mjs` | `SafeBitmap.safeDeserialize` → **native** CRoaring portable deserializer | black-box (native C++ isn't instrumentable from JS) | `pnpm fuzz:deser` |
+| `targets/safe-deserialize.mjs` | `SafeBitmap.safeDeserialize` → its structural check → **native** CRoaring portable deserializer | **coverage-guided** over the structural check; black-box beyond it (native C++ isn't instrumentable from JS) | `pnpm fuzz:deser` |
 | `targets/crbm-index.mjs` | `parseIndex` **directly** on raw index bytes | **coverage-guided** (pure, branch-dense TS) | `pnpm fuzz:index` |
 | `targets/crbm-reader.mjs` | `CrbmReader.open` validation front (+ full chain on valid seeds) | **coverage-guided** | `pnpm fuzz:crbm` |
 
 The **contract** all three assert: arbitrary bytes either succeed self-consistently or throw a typed
-`CloudRoaringError` — never a `RangeError`/`TypeError`, native crash, unbounded allocation, or hang. This is
-memory-safety/liveness, **not** semantic correctness (a wrong-but-well-formed decode is the `Set`-oracle
-property tests' job). An escape is a finding; libFuzzer writes the reproducer under `fuzz/crashes/`.
+`CloudRoaringError` — never a `RangeError`/`TypeError`, native crash, unbounded allocation, or hang. The two
+targets that decode a bitmap also hold what they accept to `assertConsistentDecode` (in
+`packages/roaring/src/testing/fuzz-codec.ts`): it iterates strictly ascending, and its `size` and `has` agree with
+what it iterates. That catches a structurally broken decode — containers or values out of order, a cardinality
+that disagrees with the bits — which is well-behaved memory until something trusts it, so a memory-safety
+contract alone would pass it. It is still **not** semantic correctness (a well-formed decode of the wrong ids is
+the `Set`-oracle property tests' job). An escape is a finding; libFuzzer writes the reproducer under
+`fuzz/crashes/`.
 
 ## Run
 
@@ -51,13 +56,14 @@ rests on `dist ≈ src` (esbuild, no minify, same native addon).
 
 `fuzz/corpus/` (seed + evolved inputs), `fuzz/crashes/` (findings), and `fuzz/build/` are git-ignored. Seeds are
 generated deterministically by `fuzz/seed-corpus.cjs` (valid bitmaps/`.crbm` files/index regions spanning every
-container type, plus truncations/flips), so nothing binary lives in the repo. The nightly workflow caches
-`fuzz/corpus/` so coverage accretes across runs.
+container type, plus truncations/flips), so no seed is committed: the only inputs in the repo are the
+reproducers below. The nightly workflow caches `fuzz/corpus/` so coverage accretes across runs.
 
 ## When a crash is found — the regression loop
 
 1. Minimize it: `jazzer <target> -- -minimize_crash=1 <fuzz/crashes/crash-…>`.
-2. Copy the reproducer into `tests/core/crbm/fuzz-corpus/{safe-deserialize,crbm-index,crbm-reader}/`.
+2. Copy the reproducer into `tests/core/crbm/fuzz-corpus/{safe-deserialize,crbm-index,crbm-reader}/`. A
+   reproducer written by hand, for a hostile shape the campaign has not reached, goes in the same place.
 3. Fix the bug. [`tests/core/crbm/fuzz-corpus.test.ts`](../tests/core/crbm/fuzz-corpus.test.ts) replays every
    committed reproducer on **every PR** (the campaign itself is nightly-only), so the fix stays locked in.
 

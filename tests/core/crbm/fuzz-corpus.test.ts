@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { CrbmReader, parseIndex } from '@/core/crbm/reader';
 import { BufferReader } from '@/core/blob';
 import { SafeBitmap } from '@/roaring-codec';
+import { assertConsistentDecode } from '@/testing/fuzz-codec';
 import { CloudRoaringError } from '@/core/errors';
 
 /**
@@ -13,8 +14,9 @@ import { CloudRoaringError } from '@/core/errors';
  * committed here and this test — which DOES run in the normal suite on every PR — locks the fix in.
  *
  * The contract mirrors the fuzz targets exactly: arbitrary bytes fed through the real read path either succeed
- * self-consistently or throw a typed `CloudRoaringError`; a `RangeError`/`TypeError`/native crash/hang is a bug.
- * Two corpora mirror the two targets: raw serialized bitmaps (native deserializer) and whole `.crbm` objects.
+ * self-consistently or throw a typed `CloudRoaringError`; a `RangeError`/`TypeError`/native crash/hang is a bug,
+ * and so is a decode that is not self-consistent (see {@link assertConsistentDecode}). Three corpora mirror the three
+ * targets: raw serialized bitmaps (native deserializer), raw index regions, and whole `.crbm` objects.
  */
 const MAX_BYTES = 16 * 1024 * 1024;
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -30,9 +32,7 @@ function reproducers(sub: string): Array<{ name: string; bytes: Uint8Array }> {
 
 /** The native-deserializer target's contract (mirrors fuzz/targets/safe-deserialize.mjs). */
 function deserialize(bytes: Uint8Array): void {
-  const bm = SafeBitmap.safeDeserialize(bytes, MAX_BYTES);
-  // Force materialization, but bound toArray() so a valid run-heavy bitmap can't OOM/RangeError the replay.
-  if (bm.size <= 1_000_000) bm.toArray();
+  assertConsistentDecode(SafeBitmap.safeDeserialize(bytes, MAX_BYTES));
 }
 
 /** The index-parser target's contract: raw index bytes → self-consistent entries or a typed error. */
@@ -52,7 +52,7 @@ async function readChain(bytes: Uint8Array): Promise<void> {
   for (const k of new Set([...reader.chunkKeys(), 0, 1, 256, 4096, 65535])) {
     try {
       const chunk = await reader.getChunk(k);
-      if (chunk !== null) SafeBitmap.safeDeserialize(chunk, MAX_BYTES).toArray();
+      if (chunk !== null) assertConsistentDecode(SafeBitmap.safeDeserialize(chunk, MAX_BYTES));
     } catch (err) {
       if (!(err instanceof CloudRoaringError)) throw err;
     }
@@ -73,7 +73,7 @@ describe('fuzz crash-reproducer replay (the committed regression corpus)', () =>
   }
 
   for (const { name, bytes } of deser) {
-    it(`safe-deserialize reproducer ${name} raises only a typed error`, () => {
+    it(`safe-deserialize reproducer ${name} raises only a typed error, or decodes consistently`, () => {
       expect(() => {
         try {
           deserialize(bytes);
@@ -97,7 +97,7 @@ describe('fuzz crash-reproducer replay (the committed regression corpus)', () =>
   }
 
   for (const { name, bytes } of crbm) {
-    it(`crbm-reader reproducer ${name} raises only a typed error`, async () => {
+    it(`crbm-reader reproducer ${name} raises only a typed error, or decodes consistently`, async () => {
       await expect(readChain(bytes)).resolves.toBeUndefined();
     });
   }

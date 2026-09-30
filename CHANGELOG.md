@@ -13,7 +13,7 @@ so, and so do the module headers in the code.
 
 ### Breaking
 
-The first two remove exports. The next six make a call throw where it used to return: four of them fix a wrong
+The first two remove exports. The next seven make a call throw where it used to return: five of them fix a wrong
 answer, and the entries under **Fixed** say what the call returned before; two hold a call to a rule the rest of
 the library already kept. The five after them hold the store, the backends and the registry to what the library
 itself takes and writes, stop checking for a local store's older directory layout, and give its errors the
@@ -63,6 +63,12 @@ library's own brand. The last two change what `estimateCost()` compares with and
   included, so a default load onto a segment whose current generation is misfiled fails its guard. To move past it,
   roll the segment back to an earlier generation that opens, or load with `allowEmpty: true` and no
   `guard.minRetained`, which then does not read the current generation.
+- **A chunk payload that is not a well-formed roaring bitmap is refused with `IntegrityError`**, by every read and
+  every erasure that decodes it, and by `SafeBitmap.safeDeserialize` and `roaringCodec.safeDeserialize`, where the
+  native deserializer accepted it: containers or values out of order or listed twice, runs that overlap,
+  touch or run past their container, a run container with no runs, a bitset whose header cardinality disagrees with
+  its bits, and an offset header that disagrees with where the containers are. Nothing the library writes has any of
+  these shapes, so a segment it loaded reads as it did.
 - **A combine whose other operands have all expired checks its own segment as every combine does.**
   `seg.union([expired])` and `seg.andNot([expired])` read `seg` alone, and now refuse a `seg` that names no segment
   with `ValidationError`, as `seg.union([live])` already did, where they returned no ids; `allowAbsentOperands: true`
@@ -348,6 +354,21 @@ These two change what `estimateCost()` reports:
   reads are unchanged. A `rollback` that lands while the call deletes generations above the pointer is reported as
   `reason: 'superseded'` (`note: 'superseded'` in the ledger). `EraseIdResult.collected` then lists every holder
   the call deleted, and `fromGeneration` names the newest of them.
+- **A chunk payload listing its roaring containers out of order read as ids the segment does not hold.** The 16-bit
+  range check on a chunk reads `maximum()`, which roaring answers from the last container, and the native deserializer
+  accepts containers in any order. So a payload with container 1 before container 0 passed the check, and `iterate`
+  and every combine yielded container 1's values masked into the chunk: ids `has()` denied, and missing
+  from a range read over the same ids. The native deserializer bounds its reads and checks nothing else —
+  CRoaring leaves the rest to its caller, and `roaring` never does it — so the same gap took more shapes: values or
+  runs out of order, listed twice or overlapping, which `has()` denied and `size` counted twice; a run past the end of
+  its container, which wrapped `maximum()` past the range check the same way; a run container with no runs, which
+  crashed the process when iterated, intersected or unioned; and a bitset whose header understated its bits, whose
+  `remove()` overflowed the native heap. An erasure over such a chunk reported `erased: true` and carried the
+  corruption into the generation it wrote. `SafeBitmap.safeDeserialize` now checks the structure before the native
+  addon sees the bytes and refuses each of these with `IntegrityError` (see **Breaking**). The check runs once per
+  chunk fetched, never per id or on a cache hit, and costs a third to a half of the CRC32C the `.crbm` reader already
+  computes over the same payload: about 0.7 µs for a 2 KB chunk and 2.5 to 3.2 µs for an 8 KB one, measured on an M3
+  Pro.
 - **`PRIVACY.md` said subject erasure is physical on return for more segments than it is.** Its table row, and
   the copy npm ships in `@cloudbitmaps/roaring`, said "on return" holds for every segment whose ledger entry is not
   `error: …`. An entry can also say `erased: false, note: 'superseded'`, when a racing writer overtook the rewrite:

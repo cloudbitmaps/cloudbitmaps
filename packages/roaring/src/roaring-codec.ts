@@ -2,9 +2,10 @@
  * SafeBitmap — the thin wrapper around the `roaring` (CRoaring) engine that owns the
  * untrusted-bytes boundary.
  *
- * All (de)serialization uses the **portable** format — the stable, validated one. The
+ * All (de)serialization uses the **portable** format — the stable, bounds-checked one. The
  * `unsafe_frozen_*` formats are never used (they are explicitly documented as crash/attack
- * vectors). Every deserialize is preceded by a hard size cap.
+ * vectors). Every deserialize is preceded by a hard size cap and a structural check, because the native
+ * portable deserializer bounds its reads and checks nothing else (see `portable/layout.ts`).
  */
 // `roaring` is a CommonJS native addon. A *named* ESM import (`import { RoaringBitmap32 } from 'roaring'`)
 // crashes Node's ESM loader — its static lexer can't see the CJS module's exports — so we take the runtime
@@ -14,6 +15,7 @@
 import roaring from 'roaring';
 import type { CodecBitmap, CodecInterface } from '@cloudbitmaps/core';
 import { IntegrityError } from '@cloudbitmaps/core';
+import { checkPortableLayout } from './portable/layout';
 
 const { RoaringBitmap32, SerializationFormat, DeserializationFormat } = roaring;
 type RoaringBitmap32 = InstanceType<typeof RoaringBitmap32>;
@@ -34,14 +36,20 @@ export class SafeBitmap implements CodecBitmap {
   }
 
   /**
-   * Validate size, then deserialize with the **portable** (validated) format.
-   * Throws `IntegrityError` if the input exceeds `maxBytes` or fails to decode — the
-   * native addon is never handed unbounded or unsafe-format input.
+   * Cap the size, check the structure, then deserialize with the **portable** format.
+   * Throws `IntegrityError` if the input exceeds `maxBytes`, is not a well-formed portable bitmap, or fails to
+   * decode — the native addon is never handed unbounded, malformed or unsafe-format input.
+   *
+   * The structural check is what makes the decoded bitmap's answers mean anything. The native deserializer
+   * bounds its reads and checks nothing else, so bytes of the right length and the wrong shape (containers or
+   * values out of order, overlapping runs, a cardinality that disagrees with the bits) decode into a bitmap
+   * whose `maximum()`, `has()` and `size` are wrong, and some of those shapes crash the process when used.
    */
   static safeDeserialize(bytes: Uint8Array, maxBytes: number): SafeBitmap {
     if (bytes.length > maxBytes) {
       throw new IntegrityError(`serialized bitmap is ${bytes.length}B, exceeds cap ${maxBytes}B`);
     }
+    checkPortableLayout(bytes);
     try {
       return new SafeBitmap(RoaringBitmap32.deserialize(bytes, DeserializationFormat.portable));
     } catch (err) {
@@ -76,8 +84,10 @@ export class SafeBitmap implements CodecBitmap {
   }
 
   /**
-   * Largest value, or `undefined` when empty. O(1) — roaring reads it off the container index, so the engine's
-   * per-chunk range assertion costs one call per chunk rather than a walk per id.
+   * Largest value, or `undefined` when empty. O(1) — roaring reads it off the last container, so the engine's
+   * per-chunk range assertion costs one call per chunk rather than a walk per id. The last container holds the
+   * largest value only because {@link SafeBitmap.safeDeserialize} refuses bytes whose containers or values are
+   * out of order.
    */
   maximum(): number | undefined {
     return this.bitmap.isEmpty ? undefined : this.bitmap.maximum();

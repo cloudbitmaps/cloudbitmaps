@@ -116,7 +116,8 @@ is a dependency of both and is never installed directly. The storage drivers are
 
 ### Security & data protection
 
-- **All stored bytes are untrusted.** The safe Roaring deserializer behind a hard size cap, per-chunk /
+- **All stored bytes are untrusted.** The safe Roaring deserializer behind a hard size cap and a structural check
+  of every payload (containers and values in order, runs disjoint, cardinalities matching the bits), per-chunk /
   per-index / per-footer CRC32C, and field validation on every `.crbm` header — a corrupt or hostile object
   fails closed with a typed error instead of reaching the native addon trustingly.
 - **Optional encryption at rest** — AES-256-GCM over the payload *and* the index (so metadata is hidden),
@@ -328,7 +329,8 @@ move it up.
   **codec** — `roaring` is a native C++ addon, and no isolate can load one under any compatibility flag. So the
   first piece is a dependency-free JavaScript **reader** for the standard portable Roaring format, which is in
   the tree, is checked against the native library on 200 randomly-shaped bitmaps plus every container
-  encoding, and is **not exported, not wired into anything, and not something you can use yet**. Read-only by
+  encoding, refuses the same malformed bytes the native path does because the two share one structural check, and
+  is **not exported, not wired into anything, and not something you can use yet**. Read-only by
   design: loads stay in Node, where the native codec is the right tool. **We will not claim this works on any
   runtime until CI runs the conformance suite inside that runtime**: what a runtime can load is easy to get
   wrong, and a claim is not a test.

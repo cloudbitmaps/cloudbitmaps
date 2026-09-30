@@ -4,7 +4,7 @@ import {
   isCloudRoaringError,
   DEFAULT_MAX_PAYLOAD_BYTES,
 } from '../build/fuzz-core.js';
-import { SafeBitmap } from '../build/fuzz-codec.js';
+import { SafeBitmap, assertConsistentDecode } from '../build/fuzz-codec.js';
 
 /*
  * Coverage-guided fuzz target: the `.crbm` reader's FRONT — `CrbmReader.open` (footer magic/CRC · version ·
@@ -19,7 +19,8 @@ import { SafeBitmap } from '../build/fuzz-codec.js';
  * the wall) and the native deserializer by `safe-deserialize.mjs` (direct, ungated); the deterministic
  * crafted-hostile suite (tests/core/crbm/crafted.test.ts) forges valid-CRC hostile indexes too.
  *
- * Contract: a typed CloudRoaring error (matched by the cross-bundle brand predicate) or a self-consistent success — never a `RangeError`/native crash/hang.
+ * Contract: a typed CloudRoaring error (matched by the cross-bundle brand predicate) or a self-consistent success —
+ * never a `RangeError`/native crash/hang, and never a decode `assertConsistentDecode` fails.
  */
 const PROBE_KEYS = [0, 1, 256, 4096, 65535];
 
@@ -35,7 +36,9 @@ export async function fuzz(data) {
   for (const k of keys) {
     try {
       const bytes = await reader.getChunk(k);
-      if (bytes !== null) SafeBitmap.safeDeserialize(bytes, DEFAULT_MAX_PAYLOAD_BYTES).toArray();
+      if (bytes !== null) {
+        assertConsistentDecode(SafeBitmap.safeDeserialize(bytes, DEFAULT_MAX_PAYLOAD_BYTES));
+      }
     } catch (err) {
       if (isCloudRoaringError(err)) continue; // typed rejection on one chunk is fine
       throw err;
