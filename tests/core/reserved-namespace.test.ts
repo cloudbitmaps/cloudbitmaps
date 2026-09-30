@@ -229,12 +229,22 @@ describe('every entry point that takes a namespace refuses the reserved one', ()
     });
   });
 
-  it('refuses before doing anything: no row, no object, no ledger', async () => {
-    const { store, registry, storage } = world();
-    await expect(store.load(BAD, [1])).rejects.toBeInstanceOf(ValidationError);
-    await expect(store.setRetention(BAD, { expiresAt: FUTURE })).rejects.toBeInstanceOf(
-      ValidationError,
-    );
+  it('refuses before doing anything: no row, no object, no ledger, from every write', async () => {
+    const { store, registry, storage, deps } = world();
+    const writes: (() => unknown)[] = [
+      () => store.load(BAD, [1]),
+      () => store.rollback(BAD, 0, { allowForward: true }),
+      () => store.dropSegment(BAD, { confirmSegment: 's' }),
+      () => store.setRetention(BAD, { expiresAt: FUTURE }),
+      () => store.clearRetention(BAD),
+      () => loadSegment(BAD, [], deps),
+      () => destroySegment(BAD, deps, { confirmSegment: 's' }),
+      () => dropSegment(BAD, deps, { confirmSegment: 's' }),
+      () => eraseNamespace(RESERVED, deps, { confirmNamespace: RESERVED }),
+      () => setSegmentRetention(BAD, { registry }, { expiresAt: FUTURE }),
+      () => clearSegmentRetention(BAD, { registry }),
+    ];
+    for (const run of writes) await rejectsValidation(run);
     const rows = [];
     for await (const r of registry.list()) rows.push(r);
     expect(rows).toEqual([]);
