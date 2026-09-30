@@ -6,10 +6,9 @@
 # Supply-chain guarantees this pipeline enforces:
 #   - **Tokenless auth (npm Trusted Publishing)**: there is **NO long-lived `NPM_TOKEN`**. npm authenticates
 #     the publish from the GitHub OIDC identity of this workflow, so there is no repo secret that can leak,
-#     be exfiltrated by a malicious dependency, or need rotating. Matches the sibling projects (onadiet,
-#     babystack) and is what lets each package be set to *"require 2FA and disallow tokens"* on npm — that
-#     setting REJECTS an automation-token publish outright, so token auth and that hardening are mutually
-#     exclusive. Trusted Publishing is not a token, so it passes.
+#     be exfiltrated by a malicious dependency, or need rotating. It is also what lets each package be set to
+#     *"require 2FA and disallow tokens"* on npm — that setting REJECTS an automation-token publish outright, so
+#     token auth and that hardening are mutually exclusive. Trusted Publishing is not a token, so it passes.
 #   - **Human gate**: the publish job runs in the protected `release` environment, whose required reviewer is
 #     the approval prompt. Nothing reaches npm without a person clicking approve.
 #   - **Provenance**: `NPM_CONFIG_PROVENANCE=true` records a signed, verifiable link from the published tarball
@@ -17,11 +16,14 @@
 #     GitHub-hosted runner, so `runs-on` is pinned to `ubuntu-latest`. A self-hosted runner has no OIDC
 #     identity to attest to and would silently cost the attestation.
 #   - **Frozen, reproducible install**: `pnpm install --frozen-lockfile` (fails if the lockfile is stale).
-#   - **Publish only a fully-verified tree**: the complete CI gate (lint · arch · format · typecheck · test ·
-#     build · smoke) runs here again before the tarball is created — a green `main` is necessary but not
-#     sufficient; the exact commit being published is re-verified.
+#   - **Publish only a fully-verified tree**: the gate that governs the artifact (lint · lint:arch ·
+#     format:check · typecheck · test · audit · build · smoke) runs here again before the tarball is created — a
+#     green `main` is necessary but not sufficient; the exact commit being published is re-verified. It is not
+#     every check CI runs: CI's site, benchmark-page and tracked-tree checks and its other jobs stay there, and
+#     RELEASING.md "What the automation does" says why.
 #   - **SHA-pinned Actions**: every `uses:` is pinned to a full commit SHA (a moved tag can't inject code).
-#   - **Version/tag agreement**: a `vX.Y.Z` tag must match `package.json` version, or the run fails.
+#   - **Version/tag agreement**: every package manifest's `version` must equal the `vX.Y.Z` tag, or the run
+#     fails. The check keys on a tag ref, so a run started by hand on a branch skips it.
 # Prerequisites (one-time, outside this file — see RELEASING.md):
 #   1. npmjs.com → each published package (`@cloudbitmaps/core`, `@cloudbitmaps/roaring`, `@cloudbitmaps/s3`,
 #      `@cloudbitmaps/gcs`, `@cloudbitmaps/azure-blob`) → Trusted Publisher:
@@ -308,9 +310,9 @@ jobs:
   #
   # A SEPARATE job, deliberately. Creating a release needs `contents: write`, and SECURITY.md's hardening
   # checklist promises the publish job "carries only the OIDC `id-token` permission" — so the write scope lives
-  # here, on a job that cannot publish, instead of being added to the job that can. (Both sibling projects let
-  # `changesets/action` do this inside the publish job with `contents: write`; that is simpler, and it widens
-  # the blast radius of the one job an attacker would most want to influence.)
+  # here, on a job that cannot publish, instead of being added to the job that can. (Letting `changesets/action`
+  # do this inside the publish job, with `contents: write`, is simpler, and it widens the blast radius of the one
+  # job an attacker would most want to influence.)
   #
   # `needs: publish` + the tag condition mean a release object only ever appears for a version that really
   # published. Nothing here is approval-gated a second time: the human already approved the publish, and this
