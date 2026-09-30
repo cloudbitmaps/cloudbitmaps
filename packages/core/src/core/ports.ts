@@ -149,9 +149,10 @@ export interface StorageCaps {
  *   stored object. `load` reads that error as a lost race for the generation number (`superseded`), so a driver
  *   that threw anything else for an existing key would surface as a failed load.
  * - **A missing object makes `getRange` and `getTail` throw {@link NotFoundError}** — never an empty or short
- *   result. Heal-forward (a read whose generation a sweep collected re-resolves), `notInCurrent` and a pin's
- *   replaced-object check all branch on that one error. (A zero-length `getRange` may answer empty without
- *   reaching the backend; the engine never asks for one of an object it has not found.)
+ *   result. Heal-forward (a read whose generation a sweep collected re-resolves), the erasure's holder probe and
+ *   its verify of the rewrite, and a pin's replaced-object check all branch on that one error. (A zero-length
+ *   `getRange` may answer empty without reaching the backend; the engine never asks for one of an object it has
+ *   not found.)
  * - **An out-of-range read throws {@link ValidationError}**: a range that runs past the end of the object, or a
  *   negative or non-integer offset or length. Never a clamped, short or adjacent read. A pin whose object
  *   was purged and loaded again as a smaller one asks for a range past its end, and this error is what sends it
@@ -160,9 +161,10 @@ export interface StorageCaps {
  * - **`delete` is idempotent.** Deleting an absent key is a no-op, not an error: collection passes race each
  *   other and retry.
  * - **`list` is strongly consistent, read-after-delete.** Once `delete` has resolved, `list` no longer yields
- *   that generation, and once `putImmutable` has resolved it does. The erasure's `assertCollected`,
- *   `generationsRemaining` and rollback's post-move check prove a deletion by listing, so a listing that lags
- *   reports an erasure as incomplete (or, worse, a stale object as gone).
+ *   that generation, and once `putImmutable` has resolved it does. The erasure's re-check for a generation still
+ *   holding the id, `dropSegment`'s `generationsRemaining`, the retention sweep's check that a tombstone's storage
+ *   is gone, and rollback's post-move check prove a deletion or a presence by listing, so a listing that lags
+ *   reports an erasure as incomplete or a stale object as gone.
  * - **Never replay a conditional write without telling the replay apart.** A `putImmutable` that lands and then
  *   loses its response, sent again, finds its own object and would report a collision. Either send each write
  *   once, with the backend client's retry off for that request, or recognise your own write when the

@@ -540,13 +540,14 @@ driver to them (`IStorageDriver`'s doc comment states the same list):
 - `putImmutable` is write-once and reports a collision as `WriteConflictError`. `load` reads that error as a lost
   race for the generation number (`superseded`).
 - A missing object makes `getRange` and `getTail` throw `NotFoundError`, never an empty or short result. Heal-forward,
-  `notInCurrent` and a pin's replaced-object check branch on it. A zero-length `getRange` may answer empty without
+  the erasure's holder probe and verify, and a pin's replaced-object check branch on it. A zero-length `getRange` may answer empty without
   reaching the backend.
 - An out-of-range read, meaning a range past the end or a negative or non-integer offset or length, throws
   `ValidationError`, never a clamped or short read. `getTail` reports the object's true total size.
 - `delete` is idempotent: deleting an absent key is a no-op.
 - `list` is strongly consistent, read-after-delete: once `delete` resolves, the generation is no longer listed. The
-  erasure's completeness check, `generationsRemaining` and rollback's post-move check prove a deletion by listing.
+  erasure's re-check for a generation still holding the id, `generationsRemaining`, the retention sweep's check that a
+  tombstone's storage is gone, and rollback's post-move check prove a deletion or a presence by listing.
 - Never replay a conditional write without telling the replay apart. A write that lands and loses its response, sent
   again, meets its own object and would report a collision. Send each write once, with the client's retry off for
   that request, or, when the precondition fails, read back an id you stored with the write and treat a match as
