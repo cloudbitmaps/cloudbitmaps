@@ -123,8 +123,10 @@ produced the package they installed**. The controls:
   (`lint · lint:arch · format:check · typecheck · test · audit · build · smoke`, plus a `leak-scan` of the
   packed tarball) against the exact commit being published before the tarball is created — a green `main` is
   necessary but not sufficient. CI's site and fuzz-lockfile checks are not repeated here; they guard what is
-  served from `main`, not what is published. A `vX.Y.Z` tag must also match `package.json`
-  version, or the release fails.
+  served from `main`, not what is published. A pushed `vX.Y.Z` tag must also match every package's
+  version, or the release fails. A manual dispatch with `dryRun: false` publishes for real too, and checks less: run
+  from a branch, it skips the tag/version check and the release-notes check and ships whatever versions the
+  manifests declare, and from any ref it creates no GitHub Release.
 - **Reproducible, frozen installs.** Both CI and the release build use `pnpm install --frozen-lockfile` (fails
   on a stale lockfile). Consumers get the same guarantee with **`npm ci`** against a committed lockfile.
 - **SHA-pinned GitHub Actions.** Every third-party `uses:`, in every workflow and in the composite actions under
@@ -158,10 +160,10 @@ produced the package they installed**. The controls:
   and the sourcemaps carry every `src` comment verbatim in `sourcesContent`. It runs **before** the publish
   because an npm tarball is immutable outside the 72-hour unpublish window; there is no fixing a string that
   has already shipped.
-- **Recoverable checks run before the irreversible one.** Every gate above — the re-run test suite, the audit,
-  the tag/version agreement, the release-notes check, the tarball scan — precedes `pnpm publish`, and
-  [`tests/ci/release-workflow.test.ts`](tests/ci/release-workflow.test.ts) fails if any of them is ever moved
-  after it. A release is also never cancelled in flight (`cancel-in-progress: false`), so the five packages
+- **Recoverable checks run before the irreversible one.** Every gate above that a run performs — the re-run test
+  suite, the audit, the tag/version agreement, the release-notes check, the tarball scan — precedes `pnpm publish`,
+  and [`tests/ci/release-workflow.test.ts`](tests/ci/release-workflow.test.ts) fails if the audit, the tag/version
+  agreement, the release-notes check or the tarball scan is ever moved after it. A release is also never cancelled in flight (`cancel-in-progress: false`), so the five packages
   cannot be left half-published.
 - **Least-privilege CI.** Workflows declare minimal `permissions:`: the workflow-level default is
   `contents: read`, and the release workflow adds `id-token: write` for provenance. **Exactly one job holds
@@ -171,6 +173,9 @@ produced the package they installed**. The controls:
   [`tests/ci/release-workflow.test.ts`](tests/ci/release-workflow.test.ts) resolves **effective** permissions
   (job-level, falling back to workflow-level) and fails if the publish job can ever write to the repo.
 
-Releases run through the workflow only. It can also be dispatched in **dry-run**
-(`workflow_dispatch` with `dryRun: true`), which exercises the **full gate + tarball pack** without
-publishing — a dry run mints no attestation, by design.
+Releases run through the workflow, apart from the two hand-run paths named above — a new name's bootstrap
+prerelease, and the [break-glass release](RELEASING.md#manual--break-glass-release) — neither of which carries
+provenance. The workflow can also be dispatched by hand (`workflow_dispatch`): with `dryRun: true`, the default, it
+runs as a **dry run**, which exercises the **full gate + tarball pack** without publishing — a dry run mints no
+attestation, by design; with `dryRun: false` it publishes, with the differences described under *Publish only a
+re-verified tree* above.

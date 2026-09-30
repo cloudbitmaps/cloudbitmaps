@@ -51,9 +51,8 @@ from constructing a cross-region topology. The points where personal data moves 
 **Guidance (not enforced by the library):** to keep EU data in EU infrastructure, wire region-local drivers
 *and* run your loaders and erasure jobs in-region; keep a segment's storage objects, its registry row, and the querying compute in
 one jurisdiction; treat the cache and the intersection runtime as **processing locations** in your transfer
-assessment and breach scope (process RAM, and any heap/core dumps, hold personal data). A fail-closed
-residency-enforcement policy in the library was considered and deferred as over-engineering for v1 — the honest
-posture is "you wire it correctly," documented here.
+assessment and breach scope (process RAM, and any heap/core dumps, hold personal data). The library has no
+fail-closed residency-enforcement policy; the posture is "you wire it correctly," documented here.
 
 ## Erasure — what "delete" actually means
 
@@ -62,8 +61,8 @@ CloudBitmaps gives you three levers with different guarantees. Use them delibera
 | Lever | API | Guarantee | Use for |
 |---|---|---|---|
 | **Subject erasure** | `store.eraseSubject(id, { namespace })` (or `eraseIdFromSegment(ref, id, deps)` for one segment) | *Physical on return* — the segment's current generation is rewritten without the id (every chunk streamed through, one bit cleared), published **fenced on the generation it streamed**, and **the generation that held the bit is deleted before the call returns**. So is every other generation still holding the id: a retained *superseded* one (an ex-member dropped by a re-seed), and each one above the pointer after a `rollback` — generations a rollback can move the pointer onto again — while, when the current generation does not hold the id, the ones there that never held it stay as rollback targets (a rewrite is numbered above everything, so its `keep: 0` collection takes every older generation, above the pointer or below). Before it says `erased: true` the call lists the bucket and reads what is left, so **`erased: true` means no generation of the segment holds the id**, above the pointer or below it. `eraseSubject` reports a per-segment fault as an `error: …` ledger entry rather than throwing it, and a call that a racing writer overtook (a load, another erasure, or a rollback) as `erased: false, note: 'superseded'`, so "on return" is a claim about every segment whose entry says **`erased: true`** (`eraseIdFromSegment` throws the fault, and returns `erased: false, reason: 'superseded'` for the race). The store that performs the call stops serving the id immediately; **other processes converge on their own read TTL** — see [One process, and the rest of your fleet](#one-process-and-the-rest-of-your-fleet). Does **not** reach backups, replicas or noncurrent object versions — those hold the old generation until their own lifecycle removes it. | "forget this person" — GDPR Art. 17 |
-| **Dispose** | `store.dropSegment(ref, { confirmSegment })` | *Immediate* — the segment is tombstoned and its Storage generations deleted, reclaiming the space. **Check `generationsRemaining`:** if it is non-empty the space was *not* fully reclaimed and the drop should be re-run (a load that was already writing when the tombstone landed still finishes its object). Works on cleartext; on an encrypted segment it *also* discards the key. Does **not** reach noncurrent versions / replicas / PITR snapshots — deleting an object is weaker than destroying a key. | retiring a dated bucket; rolling-window retention |
-| **Crypto-shred** | `destroySegment` / `eraseNamespace` | *Instant + total at rest* — destroys the segment's wrapped key, so **every** copy (current, prior generations, backups, WORM-locked objects) becomes unreadable without touching the bytes. Requires the segment to be encrypted. A process that had already opened the segment holds the **unwrapped** key in memory and keeps reading until it is told — call `store.invalidate(ref)` there; see [One process, and the rest of your fleet](#one-process-and-the-rest-of-your-fleet). | whole-segment / tenant offboarding; erasure under immutable backups (see below) |
+| **Dispose** | `store.dropSegment(ref, { confirmSegment })` | *Immediate* — the segment is tombstoned and its Storage generations deleted, reclaiming the space. **Check `generationsRemaining`:** if it is non-empty the space was *not* fully reclaimed and the drop should be re-run (a load that was already writing when the tombstone landed still finishes its object). Works on cleartext; on an encrypted segment it *also* crypto-shreds, on the terms in the next row. Does **not** reach noncurrent versions / replicas / PITR snapshots — deleting an object is weaker than removing a key. | retiring a dated bucket; rolling-window retention |
+| **Crypto-shred** | `destroySegment` / `eraseNamespace` | *At rest, complete once no copy of the wrapped key survives* — removes the segment's wrapped DEK(s) from its registry row in one compare-and-swap, without touching the bytes or any KEK. **Every** copy of the objects (current, prior generations, backups, WORM-locked objects) is then unreadable once no retained copy of that row still holds the wrapped key — noncurrent object versions, backups and PITR copies of the row included — or once every KEK that wrapped it is destroyed. Until then, a retained copy of the row and a KEK that wrapped it decrypt the segment, and a registry restore to a point before the shred makes it readable again; see *Erasure vs. backups / WORM* below. Requires the segment to be encrypted. A process that had already opened the segment holds the **unwrapped** key in memory and keeps reading until it is told — call `store.invalidate(ref)` there; see [One process, and the rest of your fleet](#one-process-and-the-rest-of-your-fleet). | whole-segment / tenant offboarding; erasure under immutable backups (see below) |
 
 **Subject-wide erasure** (GDPR Art. 17 — "forget this person everywhere") is
 `store.eraseSubject(id, { namespace })` — or `{ allNamespaces: true }` to sweep every tenant deliberately. For
@@ -95,25 +94,27 @@ which is not the same as the id still being present — if the racing writer was
 is already gone. For `'superseded'` re-run `eraseSubject`: it is idempotent, it erases the id if the id is still
 there, and a segment the id is no longer in is simply not listed — though "not listed" alone does not prove the
 id is gone, since a segment whose **registry row** has been purged is not scanned either and its objects outlive
-it as orphans (`store.checkConsistency()` finds those). Because a settled segment drops out of the
+it as orphans (`store.checkConsistency()` does not report them: it visits registry rows only). Because a settled segment drops out of the
 ledger entirely, **the attestation for a subject is the ledger of the run that reported `erased: true`** — if you
 must hold one artifact per request, re-run until no entry carries a `'superseded'` note, and keep that run's
-ledger alongside any earlier one. An `error: …` note is an isolated per-segment fault; if it occurred *after* the
-rewrite was published — a Storage `delete` fault, a collection pass that could not prove the segment was still
-the same one, or a generation still holding the id when the bucket is listed at the end, such as one an operator
+ledger alongside any earlier one. An `error: …` note is an isolated per-segment fault, and it is reported rather
+than swallowed because it can be the signal that a *published* rewrite's physical half did not complete **on that
+call**. If it occurred *after* the rewrite was published — a Storage `delete` fault, a collection pass that
+could not prove the segment was still the same one, or a generation still holding the id when the bucket is listed at the end, such as one an operator
 rolled the pointer onto while the rewrite was collecting — then the pointer has already moved, and the re-run
 searches every generation in the bucket, not only the current one. A transient fault on the publish itself is an `error: …` note too, and there the rewrite may or
 may not have become current: the re-run settles it either way, rewriting the id out if the pointer did not move and
 finding it in the generation the rewrite replaced if it did. (The same refusal can come from the
 collect-only path, where the bit was found only outside the current generation and nothing was published; there
-the pointer has not moved, and a re-run simply repeats the attempt.) **Read what it says.** Usually it reports `erased: true` against the generation it found the
-id in, which is the receipt the failed call could not give you. If a racing collector took that generation
-first it reports nothing for the segment: the bit is gone, but no run holds a receipt for it, so keep the failed
-call's error alongside your ledger. And if the segment's registry row has since been purged, it is not a segment
-any more and `eraseSubject` does not scan it at all — anything left in its bucket is an **orphan**, found by
-`store.checkConsistency()` and collected by `gcOrphanGenerations`. An empty ledger is not by itself proof the id
-is gone. That note is the signal that a *published* rewrite's physical half did not complete **on that call**,
-which is why it is reported rather than swallowed.
+the pointer has not moved, and a re-run simply repeats the attempt.) **Read what the re-run says.** Usually it reports `erased: true` against the
+generation it found the id in, which is the receipt the failed call could not give you. If a racing collector took
+that generation first it reports nothing for the segment: the bit is gone, but no run holds a receipt for it, so
+keep the failed call's error alongside your ledger. And if the segment's registry row has since been purged, it is
+not a segment any more and `eraseSubject` does not scan it at all — anything left in its bucket is an **orphan**,
+which neither `store.checkConsistency()` (it visits registry rows only) nor `gcOrphanGenerations` (it collects
+nothing without a row) reaches. List those objects with `store.generations(ref)` and delete them with
+`store.dropSegment(ref, { confirmSegment: ref.segment })`, which leaves a tombstone row fencing the name. An empty
+ledger is not by itself proof the id is gone.
 
 ### One process, and the rest of your fleet
 
@@ -124,7 +125,7 @@ bucket.
 
 | | when the id stops being readable |
 |---|---|
-| storage | on return — the generation holding it is deleted, the DEK is destroyed |
+| storage | on return — the generation holding it is deleted, or the wrapped DEK is removed from the segment's current registry row (a crypto-shred is complete once no retained copy of that row holds it, or every KEK that wrapped it is destroyed; see *Erasure vs. backups / WORM* below) |
 | the store whose verb made the call (`eraseSubject`, `dropSegment`, `retireExpired`) | on return — it invalidates what it cached, and its pins then fail |
 | another store, with a registry and a `cache.genTtlMs` above 0 | within `cache.genTtlMs` (default 2 s), when its snapshot re-resolves |
 | another store with **no registry** (a bare `IStorageDriver`), with `cache: { genTtlMs: 0 }`, or on a storage source built with **no clock** | **no bound** — only when its caches happen to let the segment go, or something tells it |
@@ -159,20 +160,38 @@ object your storage keeps on its own — noncurrent versions (S3 versioning), cr
 WORM-locked copies hold the old generation until their own lifecycle expires it. **Per-subject crypto-shred is
 infeasible** (one DEK covers the whole segment, and a subject's bit is co-mingled with millions of others), so
 single-subject erasure is a rewrite (`eraseSubject`), while crypto-shred (`destroySegment` / `eraseNamespace`)
-handles segment/tenant-level erasure and is the only erasure that survives immutable backups / WORM. And a
+handles segment/tenant-level erasure and is the only erasure that reaches immutable backups / WORM copies of the
+objects — once no copy of the segment's registry row still holds its wrapped key, or every KEK that wrapped it
+is destroyed (below). And a
 **materialised segment** (`intersectInto` / `unionInto` / `andNotInto`) is a point-in-time snapshot of its
 inputs: erasing a subject from a source does not touch a destination computed earlier — which is exactly why
 `eraseSubject` scans *every* registered segment, destinations included, rather than erasing per source.
 
 **Erasure vs. backups / WORM (the trap).** If you enable S3 versioning, Object Lock, or registry PITR for
 durability, a subject-erasure rewrite *does not* reach the retained copies — the deleted bit survives in
-noncurrent versions, locked objects, and backups. **Crypto-shred is the only erasure that survives all of
-them**, because it destroys the key, not the bytes. So: use **per-segment/tenant encryption** as your erasure
-posture under immutable objects; give noncurrent versions a short expiry (a lifecycle rule on *noncurrent*
-versions is fine — it is *current* generations that a rule must never expire, see below); reserve S3 Object
-Lock **COMPLIANCE** mode for data under a genuine legal hold (it *cannot* be deleted before its retention date,
-by anyone — incompatible with on-demand erasure), and prefer **GOVERNANCE** mode where erasure must remain
-possible.
+noncurrent versions, locked objects, and backups, and a restore that brings one of them back brings the erased id
+back with it (the [disaster-recovery guide](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/disaster-recovery.md#restore-procedure) re-runs the
+erasures made after the restore point). **Crypto-shred reaches the retained copies of the objects without touching
+them**, because it removes the key, not the bytes — but it removes the key from one place: the segment's current
+registry row. The same versioning, PITR and backups keep earlier copies of that row, and every copy written since
+the segment's first encrypted load still holds the wrapped key. **A shred is complete once no retained copy of the
+registry row still holds the wrapped key** (noncurrent object versions, backups and PITR copies included), **or
+once every KEK that wrapped it is destroyed.** Until then, a retained copy of the row plus a KEK that wrapped it
+decrypts the segment, and a registry restore to a point before the shred makes it readable again, which is why the
+disaster-recovery guide re-shreds after a restore. Versioning on the registry prefix is a requirement of that
+guide's restore procedure, so with it on, when a shred completes is set by how long your storage keeps the row's
+noncurrent versions and backups — the same history a registry restore picks from — and an Object Lock default
+retention on a bucket that also holds the registry locks those versions for that retention period. Destroying a
+KEK happens in your keystore, not through the library, and a segment is shredded that way only once every KEK in
+its wrappings is destroyed: with `InProcessKeystore`, the KEK that was active when the segment was first loaded
+and, if one was configured, the recovery KEK, which wraps every segment's DEK a second time. Destroying those
+shreds every segment they wrapped. So: use **per-segment/tenant encryption** as your erasure posture under
+immutable objects, and count the registry row's retained copies in when you state that a shred is complete; give
+noncurrent versions of the objects a short expiry (a lifecycle rule on *noncurrent* versions is fine — it is
+*current* generations that a rule must never expire, see below — though it also bounds how far back the
+disaster-recovery guide can restore); reserve S3 Object Lock **COMPLIANCE** mode for data under a genuine legal
+hold (it *cannot* be deleted before its retention date, by anyone — incompatible with on-demand erasure), and
+prefer **GOVERNANCE** mode where erasure must remain possible.
 
 ## Retention & data minimization
 
@@ -193,7 +212,11 @@ to run, and the deletion is ours to perform correctly.** Practical patterns:
   out *within* a segment is a matter of loading the next generation from a source that no longer includes them.
   The registry row's `retention` is untouched by a load, an `*Into` materialisation or an erasure rewrite, so the
   `expiresAt` you set stays put across all of them.
-- Surface segment age/size via the **metrics sink** so unbounded growth is visible, not silent.
+- Surface segment age and size so unbounded growth is visible, not silent. The **metrics sink** carries neither (its `storage.get` events count the bytes of each read, not a segment's size).
+  `seg.count()` gives a segment's cardinality; `seg.costReport()` prices its current generation's measured size
+  (`monthlyUSD.byOp.storage`, $0 when the storage source cannot measure it), and does not count superseded
+  generations still in the bucket, which `store.generations(ref)` lists; and its registry row carries `createdAt`
+  and `updatedAt`, which the backend's `registry.list()` returns for every row.
 
 **Be precise about what "drop the oldest" involves**, because the three levers differ in what they guarantee:
 
@@ -201,14 +224,16 @@ to run, and the deletion is ours to perform correctly.** Practical patterns:
   `retireExpired` is the policy-driven form that calls it — and its result must be inspected, not
   assumed: `generationsRemaining` non-empty means bytes survived and the call should be repeated. It tombstones
   the segment and deletes **every Storage generation** — so the space is actually reclaimed. It works on a
-  cleartext segment, and on an encrypted one it *also* discards the key, making it a strict superset there.
-- **`destroySegment` crypto-shreds** — it discards the key, so the Storage bytes become unreadable *everywhere
-  including backups, replicas and WORM-locked copies*, which no object deletion can achieve. But **the objects
+  cleartext segment, and on an encrypted one it *also* crypto-shreds, making it a strict superset there.
+- **`destroySegment` crypto-shreds** — it removes the wrapped key from the registry row, so the Storage bytes
+  become unreadable *everywhere including backups, replicas and WORM-locked copies* once no retained copy of that
+  row still holds the key, or every KEK that wrapped it is destroyed (see the trap above), which no object
+  deletion can achieve. But **the objects
   remain in your bucket** and you keep paying for them, and it **requires encryption at rest** (a cleartext
   segment has no key to discard; `allowCleartext` writes the tombstone while leaving the Storage bytes readable — and
   still in the bucket).
-- **`gcOrphanGenerations`** deletes only *superseded* generations, never the current one — with `keep: 0` it is
-  how a subject erasure removes the generations below the pointer that held the bit. A holder *above* the pointer
+- **`gcOrphanGenerations`** deletes only *superseded* generations, never the current one (on a tombstoned segment,
+  every generation) — with `keep: 0` it is how a subject erasure removes the generations below the pointer that held the bit. A holder *above* the pointer
   is outside its range, so the erasure deletes that one itself.
 
 So the two are complements, not alternatives: **`dropSegment` for "stop paying for it", `destroySegment` for
@@ -219,17 +244,18 @@ So the two are complements, not alternatives: **`dropSegment` for "stop paying f
 > *intermittently*, because a read consults the in-process cache before Storage, so it passes testing on a warm
 > process and starts failing after a restart. A lifecycle rule is a fine **backstop** for orphans left by a
 > failed `dropSegment`, and a fine way to expire *noncurrent* object versions; give it a window comfortably
-> longer than your retention and never let it touch a current generation. Earlier revisions of this document
-> recommended it as the primary mechanism, which was wrong.
+> longer than your retention and never let it touch a current generation.
 
-> ⚠️ **Never apply a lifecycle-expiration rule to the registry prefix either** — a separate trap, and a worse
-> one. Deleting a registry row does not remove it: it writes a **tombstone** carrying a counter that only ever
-> advances, which is what makes the row's token unique for all time. Expire those tombstones and a segment
+> ⚠️ **Never let a lifecycle rule expire a registry row's current version or its tombstone** — a separate trap,
+> and a worse one. Deleting a registry row does not remove it: it writes a **tombstone** carrying a counter that only
+> ever advances, which is what makes the row's token unique for all time. Expire those tombstones and a segment
 > re-created under the same name starts the counter again and re-issues a token that was already used. That
 > token is the segment's **identity**: it is what a cached reader, a fenced publish and a generation-collection
 > pass each compare to decide whether two observations describe the same segment. Re-issue one and they can all
 > answer "yes" about a segment that no longer exists — serving a deleted incarnation's data, or collecting a
-> live one's objects. Storage for a tombstone is a few bytes per retired segment; treat it as permanent.
+> live one's objects. Storage for a tombstone is a few bytes per retired segment; treat it as permanent. A rule
+> on *noncurrent* versions of the registry prefix touches neither the current row nor its tombstone; what it
+> shortens is the history a registry restore picks from, and the time a crypto-shred takes to complete (above).
 
 Full detail, including the dated-bucket pattern and the pitfalls, is in the retention section of the
 [guide](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md).
@@ -251,10 +277,12 @@ locked Storage object *cannot* be deleted before its retention date by anyone (n
    still written, so the segment reads as empty while the locked bytes remain. **Do not rely on Object Lock to be
    the guard**, and note how exclusion works today: `retireExpired` has **no exclusion predicate**, so a held
    segment must either *never carry a retention policy*, or have it removed with `clearRetention` for the
-   duration of the hold and re-set afterwards. Recording the hold itself is free — any key other than
-   `expiresAt` in the row's `retention` metadata is yours and survives both `setRetention` and
+   duration of the hold and re-set afterwards. Recording the hold itself is free — any key in the row's
+   `retention` metadata other than `expiresAt` and `retiredBySweepAt` (the stamp the sweep puts on its own
+   retirements, which marks a tombstone as one it may purge) is yours and survives both `setRetention` and
    `clearRetention`, so `{ legalHold: 'case-1234' }` is a durable marker; it is simply not yet something the
-   sweep reads. (An `exclude` predicate is under consideration; say so on an issue if you need it.)
+   sweep reads. `setRetention` writes only `expiresAt`, so write the marker yourself, with `compareAndSwap` on the
+   backend's `registry`. (An `exclude` predicate is under consideration; say so on an issue if you need it.)
 3. Decide hold-vs-erasure precedence when both apply to the same subject — that is a **legal determination**;
    under a hold, erasure is suspended.
 
@@ -290,7 +318,7 @@ weaker: the library will store what you name, and will not sanitise it for you.
 |---|---|---|
 | **Controller/processor role** | an embedded library; sends nothing to us | be the controller/processor; run your own DPAs with *your* cloud providers |
 | **Encryption at rest** | AES-256-GCM envelope encryption, BYOK keystore (`InProcessKeystore`), per-segment DEK + active/recovery KEK | hold and protect your keys (KMS/HSM); enable encryption for sensitive segments |
-| **Erasure** | `eraseSubject` (per-id rewrite, physical on return), `dropSegment` (dispose), `destroySegment`/`eraseNamespace` (crypto-shred) | read the erasure ledger and re-run on `erased: false`; don't load a segment while erasing from it; choose crypto-shred under WORM/backups; classify what needs erasing |
+| **Erasure** | `eraseSubject` (per-id rewrite, physical on return), `dropSegment` (dispose), `destroySegment`/`eraseNamespace` (crypto-shred) | read the erasure ledger and re-run on `erased: false`; don't load a segment while erasing from it; choose crypto-shred under WORM/backups, and count the registry row's retained copies in when a shred is complete; re-apply erasures after a restore; classify what needs erasing |
 | **Residency** | region-agnostic drivers; you choose every location | wire region-correct drivers; run loaders and compute in-region; assess transfers |
 | **Classification** | opaque handling; a place to keep sensitive segments encrypted + audited | classify your segments (the library can't infer sensitivity) |
 | **Retention** | per-segment `expiresAt` + `retireExpired` (bounded, previewable, ledgered); rolling-window pattern | set the policy per segment; **schedule the sweep yourself** and alarm on its ledger |

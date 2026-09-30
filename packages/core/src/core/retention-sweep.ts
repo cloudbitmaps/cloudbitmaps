@@ -27,8 +27,10 @@
  * It also **purges the tombstones its own retirements leave behind**. A retired segment that had a registry row
  * gets a `destroyed` row, and one dead row per retired daily bucket — or per retired dedup wave — is exactly the
  * registry litter `dropSegment` already refuses to create for a row-less accumulator. Purging is narrow on
- * purpose: only a tombstone that still carries an **expired retention policy** (so it is attributably ours, never
- * a GDPR crypto-shred), only after a grace period, and only once Storage is provably empty for it —
+ * purpose: only a tombstone carrying the **stamp this sweep writes on its own retirements** (so it is attributably
+ * ours: a crypto-shred's tombstone does not carry it, unless the shred lands between this sweep's re-read of the
+ * row and its drop, which then reports the tombstone dropped and stamps it), only after a grace period, and only
+ * once Storage is provably empty for it —
  * because deleting the row is what makes the name reusable and takes the segment out of reach of
  * `gcOrphanGenerations`.
  */
@@ -113,8 +115,11 @@ export interface RetireExpiredOptions {
   readonly lookbackBuckets?: number;
   /**
    * Whether to delete the tombstone rows this sweep's own past retirements left (default `true`). Set `false` to
-   * keep every tombstone forever — the right choice if something outside this library treats the presence of a
-   * `destroyed` row as an attestation.
+   * keep them — the right choice if something outside this library treats the presence of a `destroyed` row as an
+   * attestation — with one exception this option does not govern: a retirement whose drop found no Storage
+   * generation to delete and left none behind has its row deleted by the same pass, whatever this says, since that
+   * tombstone would do nothing but fence the name against every writer. What records that retirement is its ledger entry, and
+   * its `segment.dispose` event (`generationsDeleted: 0`) when an `audit` sink is passed.
    *
    * Two knobs rather than one `number | 'never'`, deliberately: `0` would have had to mean "purge immediately"
    * here while `cache.genTtlMs: 0` in this same library means "never refresh on a timer", and one option whose

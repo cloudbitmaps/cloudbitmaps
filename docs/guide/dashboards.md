@@ -153,7 +153,7 @@ function siemAudit(actor: string): IAuditSink {
       auditLog.append({
         at: new Date().toISOString(), // the sink owns the clock
         actor, // …and the identity
-        ...event, // kind + segment/namespace (+ generation / fromGeneration, generationsDeleted, or segmentsShredded)
+        ...event, // kind + segment/namespace (+ generation / fromGeneration, reason + cardinality, generationsDeleted, or segmentsShredded)
       });
     },
   };
@@ -164,17 +164,22 @@ const audit = siemAudit('batch-loader@svc');
 // Pass it to each lifecycle op (audit is not a store-constructor option — these are separate entry points):
 await store.load({ segment: 'users' }, ids, { audit });
 await store.eraseSubject(subjectId, { namespace: 'eu', audit }); // GDPR Art. 17 — one segment.rewrite per segment
+await store.rollback({ segment: 'users' }, 4, { audit }); // an operator moving the pointer
 await store.dropSegment({ segment: 'users' }, { confirmSegment: 'users', audit }); // retire + reclaim storage
+await store.retireExpired({ audit }); // one segment.dispose per retirement
 await destroySegment({ segment: 'users' }, { registry }, { confirmSegment: 'users', audit }); // crypto-shred
 ```
 
 **What lands in the log** — seven kinds. `segment.publish` (a loaded generation became current),
-`segment.rollback` (an operator moved the pointer **backwards**; the one event whose effect cannot be
-reconstructed from the objects in the bucket, which is why the
-[disaster-recovery guide](disaster-recovery.md) treats it as the receipt that matters),
-`segment.load-refused` (a load wrote a generation and did not publish it, because its guard refused it or the
-segment's row changed first — the absence of a
-`segment.publish` is not otherwise distinguishable from a job that never ran), `segment.rewrite` (a
+`segment.rollback` (an operator moved the pointer to a generation they named: backwards, or forward — with
+`allowForward: true` to undo an earlier rollback, or onto a segment that had no current generation, when
+`fromGeneration` is `null`; the one event whose effect cannot be reconstructed from the
+objects in the bucket, which is why the [disaster-recovery guide](disaster-recovery.md) treats it as the receipt
+that matters, and emitted only on the sink passed to that `rollback` call),
+`segment.load-refused` (a load that did not publish, with its `reason` and the refused generation's
+`cardinality`: its guard refused the generation it wrote, the segment's row changed while it was writing, or
+another load took its generation number first, in which case it wrote nothing and `cardinality` is 0 — without it
+the absence of a `segment.publish` is not otherwise distinguishable from a job that never ran), `segment.rewrite` (a
 generation derived from the segment itself replaced it — `fromGeneration` → `generation`; today the one
 emitter is a subject erasure, and it fires at the publish, *before* the superseded generation is collected, so
 the record exists the moment the generation without the id is authoritative — no `segment.publish`
@@ -185,7 +190,9 @@ which may be 0).
 
 **Which event is the receipt.** An auditor asks "prove subject X's data was destroyed on date Y":
 
-- For a whole segment or tenant, a `segment.erase` for that segment is the receipt.
+- For a whole segment or tenant, a `segment.erase` for that segment is the receipt, on the terms its row in the
+  table below sets out: it attests that the key left the segment's current registry row, and the destruction is
+  complete once no other copy of that row still holds it.
 - For one subject, it is the `segment.rewrite` for each segment that had to be **rewritten**, paired with the
   erasure ledger `eraseSubject` returned — `{ erased: true, fromGeneration, generation }` per segment. The event
   attests that the generation without the id became authoritative; the ledger attests that the generation which
@@ -201,20 +208,23 @@ them would make your dashboard over-attest.**
 
 | Event | What it proves | What it does NOT prove |
 |---|---|---|
-| `segment.erase` | The wrapped DEK(s) are gone, so the segment's at-rest bytes are unreadable **everywhere — backups, replicas, PITR snapshots, WORM included**. The only erasure claim that survives immutable objects | — |
-| `segment.rewrite` | A generation without the erased id is now current, derived from `fromGeneration`. With the ledger entry it came with, the object that held the bit is gone from the bucket | **Not** that every copy is gone. A noncurrent object version, a cross-region replica or a backup can still hold `fromGeneration` until its own lifecycle removes it — for a claim that survives those, the segment has to be encrypted and the receipt is `segment.erase` |
+| `segment.erase` | The wrapped DEK(s) are gone from the segment's **current** registry row, so nothing that opens the segment through that row from then on can decrypt its bytes — in the bucket, or in any backup, replica, PITR snapshot or WORM copy of its objects. The one erasure event whose claim reaches immutable copies of the objects | **Not** that no copy of the wrapped key survives. A shred is one compare-and-swap on the row and destroys no KEK: a noncurrent version, a backup or a PITR copy of the registry row still holds the wrapped DEK(s), which decrypt the segment with a KEK that wrapped them, and a registry restore to a point before the event makes the segment readable again. The destruction is complete once no retained copy of the row holds them, or once every KEK that wrapped them is destroyed |
+| `segment.rewrite` | A generation without the erased id is now current, derived from `fromGeneration`. With the ledger entry it came with, the object that held the bit is gone from the bucket | **Not** that every copy is gone. A noncurrent object version, a cross-region replica or a backup can still hold `fromGeneration` until its own lifecycle removes it — for a claim that reaches those, the segment has to be encrypted and the receipt is `segment.erase`, on the terms in its row |
 | `segment.dispose` | The segment was tombstoned and its storage reclaimed (`generationsDeleted` Storage generations). Emitted by `dropSegment` — including **every retirement a `retireExpired` sweep performs**, since the sweep forwards its `audit` sink through. A retention-driven fleet will therefore emit these in batches on whatever schedule you gave the sweep | **Not** that the bytes are unreadable. A noncurrent object version, a cross-region replica or a PITR snapshot can still hold the cleartext. Also not that reclamation is *complete* — check `DropResult.generationsRemaining` |
 
-> **One gap worth knowing:** when a sweep later deletes a retired segment's tombstone **row** (registry
-> housekeeping — it happens only once the segment's Storage generations are provably gone), **no audit event is
-> emitted.** The `segment.dispose` above is the receipt for the data; the row removal is not separately
-> attested. If your controls treat the presence of a `destroyed` row as the attestation, run the sweep with
-> `purgeTombstones: false` so the rows are kept.
+> **One gap worth knowing:** when a sweep deletes a retired segment's tombstone **row**, **no audit event is
+> emitted.** It deletes one in two cases: the tombstone of an earlier retirement, once `tombstoneGraceMs` (default
+> 24 h) has passed and the segment's Storage generations are provably gone; and, in the same pass, the tombstone
+> of a retirement whose drop found no Storage generation to delete and left none behind, since that row would only
+> fence the name. The `segment.dispose` above is the receipt for the data (for such a retirement it carries
+> `generationsDeleted: 0`); the row removal is not separately attested. If your controls treat the presence of a
+> `destroyed` row as the attestation, `purgeTombstones: false` keeps the first kind and not the second: the sweep
+> deletes the second kind's row whatever that option says.
 
 A **cleartext** `dropSegment` emits only `segment.dispose`. An **encrypted** one emits **both**, because both
-things genuinely happened. So: count `segment.erase` for an Art. 17 destruction claim, `segment.rewrite` (with
-its ledger) for a per-subject erasure, and `segment.dispose` for a retention/lifecycle trail. Never substitute
-one for another.
+things genuinely happened. So: count `segment.erase` for an Art. 17 destruction claim (on the terms in its row
+above), `segment.rewrite` (with its ledger) for a per-subject erasure, and `segment.dispose` for a
+retention/lifecycle trail. Never substitute one for another.
 
 > **KEK rotation is not in this stream** — rotating the key-encryption key is operator-side keystore
 > reconfiguration (no library call to hook). Audit it at your KMS/keystore layer. See the audit section of
