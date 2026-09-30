@@ -1160,7 +1160,9 @@ bucket when the call returns, constant memory, one chunk in flight. Segments the
 bit in the generation `keep` retains, and a `store.rollback` leaves the generations it rolled back from *above*
 the pointer, where a later rollback can make them current again. So the call searches every generation in the
 segment's bucket: a holder below the pointer goes with the `keep: 0` collection, each holder above it is deleted
-one by one, and a generation up there that never held the id stays as a rollback target. An entry says
+one by one, and a generation up there that never held the id stays as a rollback target when the current
+generation does not hold the id (a rewrite is numbered above everything, so its `keep: 0` collection takes every
+older generation, above the pointer or below). An entry says
 `erased: true` only once the call has listed the bucket and read what is left: **no generation of the segment
 holds the id**, above the pointer or below it. When the current generation does not hold the id, nothing is
 rewritten, so the entry carries no `generation` and no `segment.rewrite` event is emitted.

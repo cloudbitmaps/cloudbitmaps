@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { publishGeneration } from '@/core/crbm-storage-source';
+import { rollbackSegment } from '@/core/rollback';
 import { IntegrityError, ValidationError, WriteConflictError } from '@/core/errors';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { createBackend, CloudRoaring, MemoryStorageChunkSource } from '@/index';
@@ -173,6 +174,51 @@ describe('a publish derived from one generation lands only on that generation', 
     expect(outer).toMatchObject({ erased: false, reason: 'superseded', generation: 2 });
     expect(await generations(w.storage, SEG)).toEqual([1]); // the loser's generation 2 is gone
     expect(await collect(w.reader().segment('s').iterate())).toEqual([2, 3]);
+  });
+
+  it('the loser leaves its object alone when the pointer has been rolled onto it', async () => {
+    // The delete's bound is what keeps the invariant that nothing deletes the current generation: an operator who
+    // rolls forward onto the loser's unpublished object between its refusal and its cleanup has made it current.
+    const w = await world();
+    await w.load(SEG, [1, 2, 3]);
+
+    let inner: Awaited<ReturnType<typeof eraseIdFromSegment>> | undefined;
+    let written = false;
+    let readsAfterWrite = 0;
+    const hooked = afterFirstChunkRead(w.storage, async () => {
+      inner = await eraseIdFromSegment(SEG, 1, w.deps); // wins, as generation 1
+    });
+    const storage: IStorageDriver = {
+      ...hooked,
+      capabilities: () => hooked.capabilities(),
+      getTail: (k, m) => hooked.getTail(k, m),
+      getRange: (k, o, l) => hooked.getRange(k, o, l),
+      delete: (k) => hooked.delete(k),
+      list: (r) => hooked.list(r),
+      putImmutable: async (k, fn) => {
+        const out = await hooked.putImmutable(k, fn);
+        written = k.generation === 2;
+        return out;
+      },
+    };
+    const registry = new Proxy(w.registry, {
+      get(t, p, rx) {
+        if (p !== 'get') return Reflect.get(t, p, rx) as unknown;
+        return async (...a: Parameters<IRegistryDriver['get']>) => {
+          // The first read after the write is the pre-verify check; the second is the cleanup's.
+          if (written && ++readsAfterWrite === 2) {
+            await rollbackSegment(SEG, 2, w.deps, { allowForward: true });
+          }
+          return t.get(...a);
+        };
+      },
+    });
+    const outer = await eraseIdFromSegment(SEG, 2, { ...w.deps, storage, registry });
+
+    expect(inner).toMatchObject({ erased: true, generation: 1 });
+    expect(outer).toMatchObject({ erased: false, reason: 'superseded', generation: 2 });
+    expect((await w.registry.get(SEG))!.currentGen).toBe(2);
+    expect(await generations(w.storage, SEG)).toEqual([1, 2]); // the pointer names an object that exists
   });
 
   it('the receipt looks at every generation in the bucket, not only the one this call replaced', async () => {

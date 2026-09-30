@@ -390,6 +390,58 @@ describe('rollback and erasure — a rollback must not resurrect an erased id', 
     expect(await generationsOf(w.deps)).toEqual([3]);
   });
 
+  it('a rewrite takes every older generation, the clean ones above the pointer included', async () => {
+    // The other half of the rule above. When the current generation holds the id, the rewrite is numbered above
+    // everything in the bucket and its `keep: 0` collection takes every generation below that: a clean rollback
+    // target above the old pointer is no exception, unlike when the current generation is clean.
+    const w = world();
+    await loadSegment(SEG, [111, 999], w.load, { keep: 9 }); // gen 0 — holds it, and is current after the rollback
+    await loadSegment(SEG, [111], w.load, { keep: 9 }); // gen 1 — clean, above the pointer
+    await loadSegment(SEG, [111, 999], w.load, { keep: 9 }); // gen 2 — holds it, above the pointer
+    await rollbackSegment(SEG, 0, w.deps);
+
+    const res = await eraseIdFromSegment(SEG, 999, w.load);
+    expect(res).toMatchObject({ erased: true, fromGeneration: 0, generation: 3 });
+    expect([...res.collected].sort((a, b) => a - b)).toEqual([0, 1, 2]);
+    expect(await generationsOf(w.deps)).toEqual([3]);
+    expect(await holdersOf(w.storage, 999)).toEqual([]);
+  });
+
+  it('a holder that appears above the pointer after the deletes is not attested over', async () => {
+    // The receipt on the path where the current generation is clean. The scan found its holder below the pointer
+    // and collected it; then a writer that had derived its object from an older generation lands one above the
+    // pointer. The bucket, not the call's own list of deletes, decides.
+    const w = world();
+    await loadSegment(SEG, [111, 999], w.load, { keep: 9 }); // gen 0 — the holder the call finds
+    await loadSegment(SEG, [111], w.load, { keep: 9 }); // gen 1 — current, clean
+
+    const late = afterFirstDelete(w.storage, () =>
+      bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 9 }, [111, 999]),
+    );
+    await expect(eraseIdFromSegment(SEG, 999, { ...w.load, storage: late })).rejects.toBeInstanceOf(
+      WriteConflictError,
+    );
+    expect(await holdersOf(w.storage, 999)).toEqual([9]); // exactly why it could not say `erased: true`
+
+    // The re-run finds it above the pointer and deletes it.
+    const rerun = await eraseIdFromSegment(SEG, 999, w.load);
+    expect(rerun).toMatchObject({ erased: true, fromGeneration: 9, collected: [9] });
+    expect(await holdersOf(w.storage, 999)).toEqual([]);
+  });
+
+  it('…and one that appears without the id does not trip it', async () => {
+    const w = world();
+    await loadSegment(SEG, [111, 999], w.load, { keep: 9 });
+    await loadSegment(SEG, [111], w.load, { keep: 9 });
+
+    const late = afterFirstDelete(w.storage, () =>
+      bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 9 }, [111, 333]),
+    );
+    const res = await eraseIdFromSegment(SEG, 999, { ...w.load, storage: late });
+    expect(res).toMatchObject({ erased: true, fromGeneration: 0, collected: [0] });
+    expect(await generationsOf(w.deps)).toEqual([1, 9]);
+  });
+
   it('a rollback onto a holder between the rewrite’s publish and its collect is not attested', async () => {
     // The rewrite path: the current generation holds the id, and so does a generation a rollback left above
     // it. The rewrite publishes, and before its collection runs an operator rolls back onto that holder —
@@ -445,6 +497,25 @@ async function holdersOf(storage: IStorageDriver, id: number): Promise<number[]>
     }
   }
   return out.sort((a, b) => a - b);
+}
+
+/** A storage driver that runs `hook` once, right after the first `delete` returns. */
+function afterFirstDelete(base: IStorageDriver, hook: () => Promise<unknown>): IStorageDriver {
+  let fired = false;
+  return {
+    capabilities: () => base.capabilities(),
+    getRange: (k, o, l) => base.getRange(k, o, l),
+    getTail: (k, m) => base.getTail(k, m),
+    list: (r) => base.list(r),
+    putImmutable: (k, fn) => base.putImmutable(k, fn),
+    delete: async (k) => {
+      await base.delete(k);
+      if (!fired) {
+        fired = true;
+        await hook();
+      }
+    },
+  };
 }
 
 /** A storage driver that runs `hook` once, just before the first object open of a generation `match` selects. */

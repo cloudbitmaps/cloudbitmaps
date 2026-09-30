@@ -62,6 +62,9 @@
  * A live read still fetching from the collected generation heals forward to the rewrite, and a pin of it fails with
  * `NotFoundError` for any chunk it has yet to read: that is the documented cost of physical deletion on return. **Do not re-load the id while erasing it**: a load that lands after this rewrite
  * carries whatever its source held, and the library cannot know that source was meant to exclude the id.
+ * A load already in flight is the same case: it writes its object above the pointer before it publishes, and an
+ * erasure that finds the id in that object deletes it as it does any holder there, so a load that then publishes
+ * leaves the pointer naming a missing object.
  */
 import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
 import { MAX_REMAINDER, splitId } from './bit-route';
@@ -350,7 +353,10 @@ export async function eraseIdFromSegment(
    *    rollback point, and keeping it would make the erasure undoable by an ordinary operator action. Each delete
    *    is re-proved against the row first, as collection's are, because the danger is the same one: a rollback
    *    that lands on a generation this call has queued, which would leave the pointer naming a missing object.
-   *    If the pointer has moved at all, the deletes stop.
+   *    If the pointer has moved at all, the deletes stop. One round trip remains between that read and the delete,
+   *    exactly as in collection's own loop: a rollback that lands inside it onto the generation being deleted
+   *    leaves the pointer naming a missing object. The rollback's own move-then-verify catches every such landing
+   *    except one whose check runs before the delete, and no storage port offers a conditional delete to close it.
    *
    * Then {@link holderLeft} decides. If nothing in the bucket holds the id, the claim is true however the pointer
    * moved meanwhile: a load that published mid-call puts every holder below its pointer, where the collection

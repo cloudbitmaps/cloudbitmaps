@@ -333,7 +333,7 @@ These two change what `estimateCost()` reports:
     first, deleted the first one holding the id and stopped, so an older one stayed in the bucket, one
     `rollback({ allowForward: true })` from being served again. It now reads every generation above the pointer
     and deletes each one that holds the id, re-reading the row before each delete and stopping if the pointer has
-    moved. The generations up there that never held the id stay as rollback targets.
+    moved. When the current generation does not hold the id, the generations up there that never held it stay as rollback targets.
   - **A `rollback` onto a holder between a rewrite's publish and its collection.** Collection stopped at the lower
     pointer, so the entry said `erased: true` while the segment served the id from the generation rolled back
     onto. The call now throws `WriteConflictError`, which `eraseSubject` records as an `error: …` entry, and a
