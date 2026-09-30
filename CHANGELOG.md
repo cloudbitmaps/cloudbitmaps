@@ -19,9 +19,9 @@ nothing in the library would still call, the second takes names off the public e
 that uses them, and the third and fourth remove the retrying driver wrappers and the bulk loader. The two after those
 make a backend class the one way an application builds its storage: the size settings move onto the backend options,
 and the separate storage and registry halves and `createBackend` are no longer exported. The ninth makes
-the collection refuse a `keep` it used to accept. The next nine make a call throw where it used to return: six of
-them fix a wrong answer, and the entries under **Fixed** say what the call returned before; two hold a call to a
-rule the rest of the library already kept; the last of the nine refuses a namespace the library keeps for its own
+the collection refuse a `keep` it used to accept. The next nine make a call throw where it used to return: five of
+them fix a wrong answer, and the entries under **Fixed** say what the call returned before; one changes when a pin fails;
+two hold a call to a rule the rest of the library already kept; the last of the nine refuses a namespace the library keeps for its own
 rows, and says in its own entry what the call returned before. The five after them hold the store, the backends and the registry to what the library itself takes and writes, stop
 checking for a local store's older directory layout, and give its errors the library's own brand. The last two
 change what `estimateCost()` compares with and what a `CostReport` carries.
@@ -96,8 +96,8 @@ change what `estimateCost()` compares with and what a `CostReport` carries.
   - `validateSegmentRef` is exported from `@cloudbitmaps/core/driver-kit` only. It was also on `@cloudbitmaps/core`
     and `@cloudbitmaps/roaring`.
 - **`RetryingStorageDriver` and `RetryingRegistryDriver` are no longer exported**, from `@cloudbitmaps/core` or
-  `@cloudbitmaps/roaring`. Nothing in the library used them. The store's read retry is unchanged: every read of
-  segment data goes through `RetryingStorageChunkSource`, which stays on `@cloudbitmaps/core`, with `RetryingOptions`
+  `@cloudbitmaps/roaring`. Nothing in the library used them. The store's read retry is unchanged: the reads that
+  answer a query go through `RetryingStorageChunkSource`, which stays on `@cloudbitmaps/core`, with `RetryingOptions`
   and `withRetry`, and the store's `retry` option and `DEFAULT_RETRY_POLICY` are unchanged. The two removed wrappers retried every call of the driver they
   wrapped, writes included, and a retried conditional write can report a write that landed as a conflict: when a
   write-once put or a compare-and-swap lands and its response is lost, the replay finds that write already there,

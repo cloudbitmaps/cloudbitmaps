@@ -520,8 +520,8 @@ await store.checkConsistency();            // confirm
 available**, a `destroyed` row (a crypto-shred's or a drop's tombstone) throws `ValidationError`, a row that
 changed after `rollback` read it throws `WriteConflictError` and moves nothing, and a target *above* the pointer
 needs an explicit `allowForward: true` — above the pointer is where objects live that may never have been current,
-such as a load that wrote its object and died before the publish. Pass it with `audit` in `store.rollback`'s
-options: `store.rollback(ref, n, { allowForward: true, audit })`. It deletes
+such as a load that wrote its object and died before the publish. Make a forward move with
+`await store.rollback(ref, n, { allowForward: true, audit })`; `store.rollback` invalidates its own store. It deletes
 nothing, so the rollback is itself reversible. It records the move as `segment.rollback` on the `audit` sink passed
 to the call, and that event is the only record the library makes of it: with no sink, it records nothing. A
 rollback to the generation already current changes nothing and records nothing.
@@ -667,6 +667,20 @@ keystore, and the wrapped per-segment DEKs live in the segment's registry row. S
 - After a restore, re-shred every segment with a `segment.erase` event after `T`
   ([restore procedure](#restore-procedure), step 8).
 
+### Optional: make a shred durable with a registry expiry rule
+
+A crypto-shred stays open to undoing for as long as your storage keeps a superseded version of the registry row. To
+close it on a schedule, add a **noncurrent-version expiry** lifecycle rule to the `registry/` prefix: once a
+superseded version of a row is that many days old it is deleted, so a shred is durable that many days after it is
+made. The cost is the restore window: you can restore the registry only that far back, because a point older than
+the rule's days no longer has its row versions.
+
+On S3 that is a rule on the `registry/` prefix with a `NoncurrentVersionExpiration` of `NoncurrentDays: 30`, for
+example, which leaves the current version of every row and every tombstone alone. GCS and Azure Blob have an
+equivalent (a lifecycle condition on noncurrent versions of the prefix); take its exact syntax from your provider's
+documentation. Set the days at or above the restore window your [RPO](#rpo--rto) needs, and never apply the rule to
+current versions.
+
 ## What a restore does and does not bring back
 
 - **A crypto-shred made after `T` is undone.** A shred removes the wrapped DEKs from the segment's current row and
@@ -683,9 +697,10 @@ keystore, and the wrapped per-segment DEKs live in the segment's registry row. S
   a load numbers its generation above them, and its collection never touches a generation at or above `currentGen`
   — so they sit there, billed, until you act. The safe recovery is to **re-run the load from your source**: it
   writes a generation above them, which puts them below the pointer, where collection counts them within `keep`
-  like any other generation: it takes all but the newest `keep` of them, and each later load takes one more. Under
-  the default `keep: 1` it keeps the newest stray and collects the rest, the restored generation included, so pass a
-  `keep` above the number of strays if the restored generation must stay a rollback target. Do not hand-publish an
+  like any other generation: `keep` counts every generation below the new pointer, strays first, so collection takes
+  all but the newest `keep` of them, and each later load takes one more. Under the default `keep: 1` it keeps the
+  newest stray and collects the rest, the restored generation included, so pass a `keep` above the number of strays
+  if the restored generation must stay a rollback target. Do not hand-publish an
   object you cannot vouch for. A stray
   above the pointer is a whole object — every backend commits an object atomically, so a crash never leaves a
   partial one — but the bucket cannot tell you whether it was ever current. After a restore it is usually a load

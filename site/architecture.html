@@ -605,8 +605,10 @@
             <span class="rl-note">
               A read's retry reports its reason with the attempt number and the delay, so backoff storms are
               visible rather than inferred — and there is exactly one reason,
-              <span class="m">transient</span>: the store retries a read's transient faults and not a write's,
-              and a write never replays its object — a publish that loses its compare-and-swap re-reads the row
+              <span class="m">transient</span>: the store retries a read's transient faults and never retries a write.
+              On S3, and on GCS up to its simple-upload threshold, nothing replays a write's object either; on Azure Blob,
+              and on GCS above that threshold, the client's own retry can, and the driver settles the replay by reading
+              back the write id the object carries. A publish that loses its compare-and-swap re-reads the row
               and advances only if its fences still hold, and otherwise says so to its caller. Seven kinds of
               change are audit events beside it, on the sink the call was given: <span class="m">segment.publish</span>,
               <span class="m">segment.rollback</span>, <span class="m">segment.load-refused</span>,
