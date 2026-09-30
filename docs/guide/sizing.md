@@ -55,8 +55,8 @@ rates above. Both take memory, and the defaults hold less than the larger deploy
 
 A reader past `cache.readerMaxBytes` evicts segments and opens them again as it reads them, a pointer read and a tail
 read each, which **neither the bill below nor the estimator's report prices**: the report warns only when there are
-more hot segments than `cache.readerMax`, since it cannot see how large each index is. Two more things about these
-columns:
+more hot segments than the default `cache.readerMax`, since it sees neither your store's own setting nor how large
+each index is. Two more things about these columns:
 
 - **The index column is the reader's own count, an estimate.** The reader counts each chunk's index entry at the
   fixed size in the column's heading, an estimate reasoned from V8's object layout rather than measured on the heap,
@@ -195,7 +195,7 @@ report.assumptions.notes; // what it modeled, and what it did not
 <!-- SIZING:SAMPLE:END -->
 
 Every report says what it modeled and what it left out: which Redis it priced and why, loads or the refresh when you
-did not size them, and more hot segments than a reader keeps open. [§11 of the
+did not size them, and more hot segments than a reader keeps open by default. [§11 of the
 guide](getting-started.md#11-cost-estimate-it-then-ground-it) has the whole model, and `segment.costReport()` prices a
 real segment at its measured size and the store's own `cache.genTtlMs`.
 

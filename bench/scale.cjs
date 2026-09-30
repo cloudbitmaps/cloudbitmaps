@@ -345,9 +345,10 @@ function render(r) {
   const mdTable =
     `| ${header.join(' | ')} |\n| ${header.map(() => '---').join(' | ')} |\n` +
     rows.map((row) => `| ${row.join(' | ')} |`).join('\n') +
-    `\n\nIntersection of two ${r.intersect.idsPerSegment.toLocaleString('en-US')}-id segments ` +
+    `\n\nIntersection of two ${r.intersect.idsPerSegment.toLocaleString('en-US')}-id segments on in-memory storage ` +
     `(${r.intersect.chunksPerSegment.toLocaleString('en-US')} chunks each, ${r.intersect.sharedChunks} shared): ` +
-    `**${perSeg}** — the shared keys; the rest skipped by key alignment — in ${r.intersect.intersectMs} ms.\n\n` +
+    `**${perSeg}** — the shared keys; the rest skipped by key alignment — in ${r.intersect.intersectMs} ms, ` +
+    `which times the engine rather than object storage.\n\n` +
     `_Measured on ${r.env.cpu} (${r.env.arch}, node ${r.env.node}). **The bound is the retained heap** (post-GC), ` +
     `flat at ${memFlat} — the reader cache holds bounded live data regardless of fleet. Process **peak RSS** ` +
     `(shown for context) is a high-water that also folds in the benchmark's own fleet-*seeding* allocations and ` +

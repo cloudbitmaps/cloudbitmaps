@@ -65,10 +65,9 @@ Every number above is turned into a **deterministic, build-breaking CI assertion
 
 ## Real-cloud calibration — AWS
 
-The loaded store has been metered against real S3 in `us-east-1` twice, and one run is published here. The first
-packed its shared ids into a handful of chunks and answered most intersects from cache, so none of its figures are.
-The published run measured the topology that ships, with the pointer in the same bucket as the data. It was driven
-from a laptop outside the region, so it calibrates **cost**, and publishes no latency.
+One run of the loaded store against real S3 in `us-east-1` is published here. It measured the topology that ships,
+with the pointer in the same bucket as the data. It was driven from a laptop outside the region, so it calibrates
+**cost**, and publishes no latency.
 
 ### The single-bucket bill — run `2026-09-23-94416`
 
@@ -130,11 +129,13 @@ refresh, for the segments a long-lived reader keeps reading. The
 
 > **Measured, not modeled.** Unlike the cost curve above (which comes from the estimator), the numbers here are
 > wall-clock + memory from a real run of `pnpm bench:scale` that builds a fleet of up to 100K segments on local
-> disk and reads across all of it. They're machine-dependent — a point-in-time snapshot, **not** a CI gate. What CI
-> does check is that the table below is what the committed results file renders.
+> disk and reads across all of it, and intersects two large segments on in-memory storage. They're
+> machine-dependent — a point-in-time snapshot, **not** a CI gate. What CI does check is that the table below is
+> what the committed results file renders.
 
-The production-readiness audit flagged three scale risks — an unbounded `.crbm` reader cache, an `O(total)`
-fleet-wide registry scan, and intersection unproven under load. This is the measured evidence at fleet scale:
+Three things could make a large fleet expensive to run: an unbounded `.crbm` reader cache, an `O(total)`
+fleet-wide registry scan, and an intersection of large segments that read more than it needs. This is the
+measured evidence at fleet scale:
 
 <!-- BENCH:SCALE:START -->
 | Fleet | Retained heap (cap 1024) | Peak RSS | Discovery scan |
@@ -143,14 +144,14 @@ fleet-wide registry scan, and intersection unproven under load. This is the meas
 | 10,000 segments | 8.3 MiB | 86.8 MiB | 1,067.9 ms |
 | 100,000 segments | 7.4 MiB | 162.2 MiB | 11,606.4 ms |
 
-Intersection of two 2,000,000-id segments (2,000 chunks each, 100 shared): **fetched only 100 of the 2,000 chunks per segment** — the shared keys; the rest skipped by key alignment — in 24.6 ms.
+Intersection of two 2,000,000-id segments on in-memory storage (2,000 chunks each, 100 shared): **fetched only 100 of the 2,000 chunks per segment** — the shared keys; the rest skipped by key alignment — in 24.6 ms, which times the engine rather than object storage.
 
 _Measured on Apple M3 Pro (arm64, node v24.18.1). **The bound is the retained heap** (post-GC), flat at 8.2 MiB @ 1,000 · 8.3 MiB @ 10,000 · 7.4 MiB @ 100,000 — the reader cache holds bounded live data regardless of fleet. Process **peak RSS** (shown for context) is a high-water that also folds in the benchmark's own fleet-*seeding* allocations and isn't returned to the OS after GC, so it grows with fleet here — it is not a clean read-path footprint (isolating read-path RSS in a reader-only process is a follow-up). Fleet seeded by writing and publishing each generation at ~38–51 durable segments/s (fsync-bound); discovery is LocalFs-filesystem-bound — the `O(total)` **shape** is the point, not the absolute ms._
 <!-- BENCH:SCALE:END -->
 
 - **Memory is a function of the working set, not the fleet.** The storage-reader cache is capped by open-segment
-  _count_ (`maxOpenSegments`, default 1024) **and** aggregate parsed-index _bytes_ (`maxOpenIndexBytes`, default
-  64 MiB), so **retained live heap after reading the _entire_ fleet is flat from 1K to 100K segments** — a 100×
+  _count_ (`cache.readerMax`, default 1024) **and** aggregate parsed-index _bytes_ (`cache.readerMaxBytes`,
+  default 64 MiB), so **retained live heap after reading the _entire_ fleet is flat from 1K to 100K segments** — a 100×
   larger fleet holds the same resident reader set, and unusually _wide_ segments can't pin gigabytes of indices
   while the count looks "in bounds". Peak RSS is shown for context only: it is a **process high-water** that also
   folds in the benchmark's own fleet-_seeding_ allocations (not returned to the OS after GC), so it grows with
@@ -164,26 +165,23 @@ _Measured on Apple M3 Pro (arm64, node v24.18.1). **The bound is the retained he
 
   **Why a ceiling and not an RSS reading.** The ceiling is a property of the workload; a reader-process RSS
   figure is a property of the machine, and published as a headline it gets read as a spec the project has not
-  promised. The two are easy to tell apart here because two very different machines were compared: a Linux CI
-  runner and an Apple M3 Pro under Docker landed **0.4 MiB apart** on reader RSS (69.5 vs 69.9 MiB) while
-  throughput differed **3.7×** (12.7/s vs 46.7/s). The memory envelope travels; the rate does not — which is
-  exactly why this figure is published and the latency figures above it still are not.
+  promised. [Why a ceiling is published](#why-a-ceiling-is-published-and-not-a-number) says more.
 
 - **The fleet-wide registry scan is `O(total segments)`** — the near-linear "discovery" column is the
   enumeration that every admin pass (`checkConsistency`, `retireExpired`, `eraseSubject`, `subjectReport`)
   pays before it does any
   work. **No read verb enumerates**: `has`, `count`, `iterate` and `intersect` each address one segment. The
-  retention sweep is the one pass that no longer has to pay it — `retireExpired({ scan: 'index' })` reads a
-  due-day index instead of the fleet — but `checkConsistency`, `eraseSubject` and `subjectReport` still
-  enumerate, and the
-  column below is that enumeration.
+  retention sweep enumerates too by default (`scan: 'fleet'`); `retireExpired({ scan: 'index' })` reads a due-day
+  index instead of the fleet, and is the fast half of a pair, since a periodic `'fleet'` pass is what retires a
+  policy the index missed. `checkConsistency`, `eraseSubject` and `subjectReport` always enumerate, and the
+  column above is that enumeration.
 - **Chunk-skipping intersection holds at scale** — intersecting two large multi-chunk segments fetches only the
   shared chunks and skips the rest by key alignment (the crown jewel, on the ids-per-segment axis). The
   load-bearing figure there is the chunk **count** — 100 fetched of 2,000 — because key alignment does not depend
   on how the ids inside a chunk are distributed. The accompanying **bytes** figure does: this fixture seeds each
-  chunk with a contiguous run of ids, which Roaring stores as a run container of a few dozen bytes, so ~30 bytes
-  per fetched chunk is a **best case for the encoding** rather than a typical segment. Real ids at that density
-  are scattered and land in an array container nearer 2 KB per chunk. Read the byte count as "the window is
+  chunk with a contiguous run of ids, which Roaring stores as a single run, so the 3,000 bytes read (measured) over
+  200 chunk reads (derived: each of the 100 shared keys is read from both segments) come to 15 bytes a read: a
+  **best case for the encoding** rather than a typical segment. Real ids at that density are scattered and land in an array container nearer 2 KB per chunk. Read the byte count as "the window is
   small and bounded", not as a size to plan a bill around — for that, price the requests.
 
 ## What RSS is, and why it is the number we bound
@@ -231,20 +229,11 @@ rather than reporting a measurement. Two reasons the reading is the less useful 
    headline it would be read as a specification this project has not promised.
 
 The ceiling, by contrast, is a property of *the workload and the bound*, which is what the gate actually
-establishes and what a reader can act on.
-
-The two-machine comparison is the evidence for that split, and it is why this figure is published while the
-latency figures under [What is still owed](#what-is-still-owed) are not:
-
-| | reader-process RSS | throughput |
-|---|---|---|
-| Linux CI runner | 69.5 MiB | 12.7 iters/s |
-| Apple M3 Pro under Docker | 69.9 MiB | 46.7 iters/s |
-| **spread** | **0.4 MiB** | **3.7×** |
-
-Same workload, same code, two very different machines. **The memory envelope travels; the rate does not.** A
-memory bound is therefore something we can state for your machine as well as ours. A latency number is not,
-which is why none is published until an in-region run produces one.
+establishes and what a reader can act on. The committed run, `bench/rss-gate-results.json`, is one arm64 machine
+under Docker: its isolated reader process sat at 69.5 MiB of RSS, well inside the ceiling. CI runs the same gate on
+an x64 Linux runner and fails the build if the workload is OOM-killed or creeps; it keeps no reading. A latency
+number moves with the machine and the network as well, which is why none is published until an in-region run
+produces one.
 
 ## Caveats
 
@@ -255,8 +244,8 @@ which is why none is published until an in-region run produces one.
 - **Model, not a cloud bill** — the dollars in the crossover chart come from the cost formulas + published
   rates. Measured AWS dollars live in [Real-cloud calibration](#real-cloud-calibration--aws).
 - **Three kinds of number here.** The crossover chart is _modeled money_ (estimator, deterministic, CI-gated);
-  the at-scale table is _measured memory + wall-clock_ (real run on local disk, machine-dependent, never
-  CI-gated — shared runners are too noisy); and the real-cloud section is _measured AWS cost_ (owner-run against
+  the at-scale table is _measured memory + wall-clock_ (a real run, the fleet on local disk and the large
+  intersect in memory, machine-dependent, never CI-gated — shared runners are too noisy); and the real-cloud section is _measured AWS cost_ (owner-run against
   a real account, on 2026-09-23). Only the third is cloud-calibrated, and even then the dollars are
   published prices applied to wire-metered requests, not the invoice itself.
 - **Rates are the vendor's to change, and are region-specific.** Every dollar figure in this document uses the
@@ -278,12 +267,12 @@ The loaded store's own measurements are the next benchmark pass. The single-buck
 - **Point-read latency** — in-region wall-clock for `has()` and `count()` on the loaded store, against a real object
   store.
 - **Intersect latency** — in-region wall-clock for a chunk-skipping `A ∩ B`, and for `andNot` with a large
-  `exclude`, against a real object store rather than local disk; then the `*Into` verbs, and the sweep over operand
+  `exclude`, against a real object store rather than in memory; then the `*Into` verbs, and the sweep over operand
   count and chunk overlap.
 - **What `store.load()` costs on S3.** The run measured a load's write and publish. `store.load()` adds a listing
   to choose the generation number and a collection pass after the publish. A test counts the requests that adds,
-  which about doubles a load's bill; they are not yet measured on S3. The harness now times `store.load()` itself, so
-  the next run measures them.
+  which about doubles a load's bill; they are not yet measured on S3. The harness times `store.load()` itself, so
+  its next run measures them.
 - **A Lambda figure** — a function's cold start and initialisation against a real store, from inside one.
 
 **The harness is built, and has run for real from a laptop.** [`bench/calibrate-aws.cjs`](../bench/calibrate-aws.cjs)
@@ -294,19 +283,18 @@ reads and conditional PUTs included, counted attempt by attempt. Each intersect 
 or no latency is reported, and each turns off its store's timed pointer refresh, so a cold intersect's request count does not move
 with the network. Every run records its own round-trip floor to the region and labels its latency in-region only
 below 30 ms — a line that keeps another continent out, not a neighbouring region, so the raw floor is recorded with
-it for a reader who wants a stricter one. Its run `2026-09-23-94416`, from a laptop, paid the cost side above. A run
-from AWS CloudShell can pay the rows it measures: in-region intersect latency and load throughput. Point reads,
-`andNot` with a large `exclude`, `store.load()` itself, the `*Into` verbs, the sweep and the Lambda figure are not in it
-yet.
+it for a reader who wants a stricter one. Its run `2026-09-23-94416`, from a laptop, paid the cost side above; it
+timed a write and a publish rather than `store.load()`, and ran on the store's default refresh, which is why its
+median intersect read each pointer twice. A run from AWS CloudShell can pay the rows it measures: in-region intersect
+latency, load throughput and what `store.load()` costs on S3. Point reads, `andNot` with a large `exclude`, the
+`*Into` verbs, the sweep and the Lambda figure are not in it yet.
 How it guards against spending more than it says, and how to run it from inside the region:
 [`bench/README.md`](../bench/README.md#real-cloud-calibration).
 
 Nothing above should be read as covering any of these.
 
-<!-- No count in that sentence, deliberately. It said "any of the three" while this list held four,
-     and the RSS-soak row leaving made it accidentally correct — which is the worse failure, because a
-     number that is right by coincidence reads as maintained. A tally in prose beside a list it does not
-     derive from is a drift surface with nothing checking it. -->
+<!-- No count in that sentence, deliberately: a tally in prose beside a list it does not derive from is a
+     drift surface with nothing checking it, and a count that happens to be right reads as maintained. -->
 
 ## Reproduce
 
@@ -315,7 +303,8 @@ pnpm calibrate:aws            # projection only — touches nothing, needs no cr
 pnpm calibrate:aws --rehearse # the workload against MinIO from docker-compose, free — no money guards run
 bash bench/calibrate-cloudshell.sh   # from AWS CloudShell: in-region, against the PUBLISHED packages
 pnpm bench         # builds, then regenerates bench/crossover.svg, bench/results.json, and the cost table here + the site
-pnpm bench:scale   # HEAVY: builds a fleet up to 100K segments on local disk (fsync-bound), measures, rewrites the at-scale table
+pnpm bench:scale   # HEAVY: builds a fleet up to 100K segments on local disk (fsync-bound), measures, and prints
+SCALE_INJECT=1 pnpm bench:scale   # the same, then rewrites bench/scale-results.json and the at-scale table here + the site
 SCALE_FLEETS=1000,10000 pnpm bench:scale   # smaller + faster for a quick check
 pnpm soak          # sustained loaded-store reads + combines + re-loads; heap/native creep verdict
 pnpm rss-gate      # the same soak under a hard cgroup --memory ceiling (needs Docker)

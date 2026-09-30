@@ -22,13 +22,16 @@
 > in its own package — **object storage** on **S3-compatible** (`@cloudbitmaps/s3`), **GCS**
 > (`@cloudbitmaps/gcs`), and **Azure Blob** (`@cloudbitmaps/azure-blob`); a **segment registry** on each of those same three clouds
 > (plus memory / LocalFs), so a deployment can run on **one bucket alone**. `store.load` (write one immutable
-> generation from an array, a Set or an async cursor, then publish it forward-only) · `has` / `count` /
-> `iterate` / **`intersect` (chunk-skipping)** / `union` / `andNot`, all with `exclude` suppression folded into
-> the same pass · `intersectInto` / `unionInto` / `andNotInto`, which publish a new generation of their
+> generation from an array, a Set or an async cursor, then publish it by compare-and-swap on the segment's registry
+> row) · `has` / `count` / `iterate` / **`intersect` (chunk-skipping)** / `union` / `andNot`, all with `exclude`
+> suppression folded into the same pass · an **id-range read**, `iterate({ after, through })` and the same bounds on
+> every combine, fetching only the chunks the range overlaps (in the next release after `0.10.0`; no published
+> version has it yet) · `intersectInto` / `unionInto` / `andNotInto`, which publish a new generation of their
 > destination · the `.crbm` archive format · a bounded, generation-keyed cache · **automatic retry with
 > backoff** that rides out transient cloud faults on segment reads · registry-resolved generation pointers (no per-read scan)
 > with a short refresh TTL · generation GC that never touches the current generation · **subject erasure by
-> generation rewrite** (the bit is physically gone from the bucket when the call returns) · `dropSegment`,
+> generation rewrite** (the bit is deleted from the bucket's objects when the call returns; a versioned bucket
+> keeps the old generation as a noncurrent version until its own lifecycle expires it) · `dropSegment`,
 > retention policies and a `retireExpired` sweep you schedule · **encryption-at-rest** (opt-in AES-256-GCM,
 > bring-your-own-key, **no required cloud dependency**) with **crypto-shred** erasure · an optional
 > **observability metrics sink** (`IMetricsSink` — storage/cache/retry/intersect/op events, no-op by default, no
@@ -136,7 +139,7 @@ MinIO:
 
 ```text
   load(ids) ─► group by chunk ─► write ONE immutable .crbm object ─► publish the pointer
-                                   (segment.<gen>.crbm, write-once)     (registry CAS, forward-only)
+                                   (segment.<gen>.crbm, write-once)     (a registry compare-and-swap)
 
   has(id)   ─► CACHE? (RAM + bounded LRU) ─► STORAGE (single-chunk byte-range read)
   count()   ─► the object's footer index (0 payload reads)
@@ -152,24 +155,30 @@ MinIO:
 
 **Data enters by loading a generation, never by mutating one.** `store.load(ref, ids)` streams your ids —
 an array, a Set, or an async cursor straight out of Athena/BigQuery/Postgres — into a single write-once object,
-checks the result is plausible, advances the pointer, and collects what the move superseded. That makes the write path trivially safe in the ways that usually hurt: a crash
-before the publish leaves the previous generation authoritative, a rerun is idempotent, two loaders racing the
-same generation number means one of them gets a `WriteConflictError` rather than a torn segment, and there is
-no such thing as a partially-visible load. The same protocol backs the derived writes — `intersectInto`,
-`unionInto` and `andNotInto` publish a new generation of their destination — so there is exactly one way data
-becomes visible.
+checks the result is plausible, advances the pointer, and collects the generations below the new one, keeping the
+newest by default (`keep: 1`). That makes the write path trivially safe in the ways that usually hurt: a crash
+before the publish leaves the previous generation authoritative, a rerun with the same ids publishes the same
+contents again, a race never tears a segment, and there is no such thing as a partially-visible load. The same
+write path backs the derived writes — `intersectInto`, `unionInto` and `andNotInto` publish a new generation of
+their destination, and by default collect nothing — so there is exactly one way data becomes visible.
 
 **The crown jewel: serverless, chunk-skipping intersection.** To find the IDs in *both* of two billion-ID
 segments, CloudBitmaps reads only the two small chunk **index maps**, aligns their 16-bit keys, and fetches
-**only the chunks present in both** — so two 100 MB segments overlapping in 5% of chunks transfer ~10 MB, not
-200 MB, and the whole thing runs inside a 128 MB Lambda. Suppression composes into the same pass: an `exclude`
-operand is read *only at the keys that survived*, so subtracting a 61,000-chunk global opt-out list from a
-40-chunk audience costs at most 40 reads, not 61,000. This is the capability no embeddable OSS bitmap library
-offers off the shelf.
+**only the chunks present in both** — so two 100 MB segments overlapping in 5% of chunks transfer ~10 MB of
+chunks, not 200 MB, beside each one's index (arithmetic, for chunks of equal size). Suppression composes into the
+same pass: an `exclude` operand is read *only at the keys that survived*, so subtracting a 61,000-chunk global
+opt-out list from a 40-chunk audience reads at most 40 of its chunks, not 61,000, beside its pointer read and its
+index, which for a list that size takes two reads. This is the capability no embeddable OSS bitmap library offers
+off the shelf.
 
-**Erasure is a rewrite, and it is physical.** `eraseSubject(id)` finds every segment the id is in, streams that
-segment's current generation through a fresh one with the single bit cleared, publishes it, and then deletes the
-generation that held the bit — so when the call returns the id is **gone from the bucket**, not merely masked.
+**Erasure is a rewrite, and it is physical.** `eraseSubject(id, { namespace })` finds every segment of that
+namespace the id is in (`{ allNamespaces: true }` sweeps every namespace), streams each one's current generation
+through a fresh one with the single bit cleared, publishes it fenced on the generation it streamed, and then
+deletes the generation that held the bit, with every other generation below the new one — so when the call
+returns, every segment its ledger reports
+`erased: true` has the id **gone from the bucket's objects**, not merely masked. Storage the bucket keeps on its
+own is outside that: with versioning on, the deleted generation stays as a noncurrent version until a lifecycle
+rule expires it, and replicas and backups keep their copies ([`PRIVACY.md`](PRIVACY.md) has the details).
 Constant memory (one chunk in flight), and the audit sink gets a `segment.rewrite` receipt naming both
 generations. `dropSegment` retires a whole segment (tombstone, then sweep the objects); `retireExpired` does the
 same for everything whose retention policy has passed. Superseded generations are collected by
@@ -213,7 +222,7 @@ data — the topology that ships: 12 loads and 40 cold intersects, all 40 exact.
 
 Each intersect requested 100 of the 1,999 chunks per segment — the ones the two share — and never requested the
 rest: chunk-skipping, on real S3. `store.load()`, which also lists the segment and collects old generations, is
-about twice the load figure. The [run's report](bench/calibration/2026-09-23-94416.md) explains every figure, and
+expected at about twice the load figure, counted by a test rather than measured. The [run's report](bench/calibration/2026-09-23-94416.md) explains every figure, and
 the [benchmarks page](docs/benchmarks.md) states exactly what the run did and did not measure.
 
 Request counts are read off the AWS SDK layer, command by command — not estimated from sizes, and not taken
@@ -318,15 +327,19 @@ await seg.count(); // → 4     (summed from the object's index — no payload r
 for await (const id of seg.iterate()) {
   /* ascending IDs */
 }
-// A range, (after, through]: only the chunks it overlaps are read, and the budget is charged for those alone.
+// A range, (after, through], in the next release after 0.10.0 and in no published version yet: only the
+// chunks it overlaps are read, and the budget is charged for those alone.
 for await (const id of seg.iterate({ after: 99_999, through: 2_000_000_000 })) {
   /* 1_234_567_890, then 2_000_000_000 */
 }
 
-// Chunk-skipping intersection: only the chunks present in both are ever fetched.
+// Chunk-skipping intersection: only the chunks present in both are ever fetched. Every operand must exist: a
+// combine refuses a segment that was never created, since a mistyped exclude would otherwise suppress nobody.
+await store.load({ segment: 'eu-residents' }, [5, 1_234_567_890, 2_000_000_000]);
+await store.load({ segment: 'opted-out' }, [2_000_000_000]);
 const optedOut = store.segment('opted-out');
 for await (const id of seg.intersect([store.segment('eu-residents')], { exclude: [optedOut] })) {
-  /* the audience to send to */
+  /* 5, then 1_234_567_890: the audience to send to */
 }
 ```
 
@@ -376,8 +389,8 @@ deployment (a registry in a database you already run, say):
 Mix freely: storage objects and the registry in **one bucket** is the whole deployment, on any of the three
 clouds — which is exactly what a backend builds for you. To put the registry somewhere else entirely, behind
 the `IRegistryDriver` interface, build the backend deliberately with
-`createBackend({ storage, registry })`. A plain object literal is refused — it was also how halves from two
-unrelated stores got paired by accident, which reads as an empty segment rather than an error. `createBackend`
+`createBackend({ storage, registry })`. A plain object literal is refused, because a literal is how halves from
+two unrelated stores get paired by accident, which reads as an empty segment rather than an error. `createBackend`
 cannot check that your two halves agree either; calling it is you taking that on.
 
 ## The whole surface, in three steps
@@ -412,6 +425,7 @@ cannot check that your two halves agree either; calling it is you taking that on
   │  clearRetention()                                                     │
   │  eraseSubject() subjectReport()    ← GDPR Art. 17 / Art. 15           │
   │  checkConsistency() exportSegments()                                  │
+  │  invalidate()        ← drop what this store cached for a segment      │
   └───────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -449,16 +463,30 @@ new CloudRoaring({
 });
 ```
 
+**Any other key is refused, not ignored.** A key the store does not take, at the top level or inside `cache`,
+`encryption`, `retry`, `budget` or `seams`, throws a `ValidationError` at construction that names it and lists
+the keys that group takes, so a typo such as `cache.maxChunk` fails where it is written instead of configuring
+nothing. A group that is not an object is refused the same way (`false` is taken by `retry` and `budget` alone),
+and so is a key `S3Storage`, `GcsStorage` or `AzureBlobStorage` does not take. This is in the next release after
+`0.10.0`.
+
 **Per-segment ops** — `store.segment(name, { namespace?, expiresAt? })`:
 
 | Method | Does |
 |---|---|
 | `has` · `count` · `iterate` | read one chunk / the index / the whole set, or with `iterate({ after, through })` only the chunks the range overlaps. `count` is **0 payload reads** — it sums the `.crbm` index |
 | `intersect(others, { exclude?, after?, through? })` | chunk-skipping set intersection, streamed. `exclude` subtracts suppression segments **in the same pass** — no intermediate segment |
-| `union(others, { exclude?, after?, through? })` | set union, streamed. The one composite with **no** chunk-skipping — every chunk of every operand is read |
-| `andNot(excludes)` | set difference. Reads all of `this`, but each suppression list **only where it overlaps** |
-| `intersectInto(dest, …)` · `unionInto(dest, …)` · `andNotInto(dest, …)` | materialise the result as a **new generation of `dest`** (write-once, published forward-only) and report what was written |
+| `union(others, { exclude?, after?, through? })` | set union, streamed. The one composite with **no** chunk-skipping — every chunk of every operand is read, or with `after` / `through` every chunk the range overlaps |
+| `andNot(excludes, { after?, through? })` | set difference. Reads all of `this`, or all of it the range overlaps, but each suppression list **only where it overlaps** |
+| `intersectInto(dest, …)` · `unionInto(dest, …)` · `andNotInto(dest, …)` | materialise the result as a **new generation of `dest`** through the load's write path, and report what was written. Write-once, and the publish fences on `dest`'s row as a load's does; a lost race throws `WriteConflictError` |
 | `costReport({ workload, pricing })` | grounded cost from the segment's real `.crbm` size |
+
+`after` / `through` are the id-range read, in the next release after `0.10.0` and in no published version yet.
+
+**Every operand must exist.** A combine refuses an operand, `this` included, that names a segment never created,
+with a `ValidationError` naming it. Read directly, such a segment is empty, which is right; as an operand, a
+mistyped name or a missing `namespace` would contribute nothing and look correct, and as an `exclude` it would
+suppress nobody. Pass `allowAbsentOperands: true` when an operand may legitimately not exist yet.
 
 **Store admin** (reuse the store's own drivers; need the store built with a backend):
 
@@ -467,7 +495,7 @@ new CloudRoaring({
 | `store.dropSegment(ref, { confirmSegment, dryRun? })` | retire a segment and reclaim its storage — tombstone, then every Storage generation. `dryRun` previews |
 | `store.setRetention(ref, { expiresAt })` · `getRetention` · `clearRetention` | record **when a segment becomes eligible for retirement** (an absolute instant you set — per segment, never per id) |
 | `store.retireExpired({ namespace?, limit?, dryRun? })` | the **retention sweep**: retire everything whose expiry has passed, through `dropSegment`. A call you schedule, not a daemon — bounded, previewable, returns a per-segment ledger |
-| `store.eraseSubject(id, { namespace })` | GDPR Art. 17 — rewrite every segment holding the id without it, so the bit is **physically gone** on return, and hand back an erasure ledger |
+| `store.eraseSubject(id, { namespace })` | GDPR Art. 17 — rewrite every segment holding the id without it, so the bit is **gone from the bucket's objects** on return for every segment the ledger reports `erased: true` (a versioned bucket keeps a noncurrent copy), and hand back that ledger |
 | `store.subjectReport(id, { namespace })` | GDPR Art. 15 — which segments an id is in |
 | `store.checkConsistency()` | after a restore: every pointer's `.crbm` is actually present |
 | `store.exportSegments(sink, { format })` | eject every segment to `roaring`/`ndjson` via an injected sink (your exit path) |
@@ -480,7 +508,8 @@ Nothing here schedules itself — run the sweep from a cron, a Lambda on a timer
 
 **Prefer the store's own methods.** Building a store is free — no I/O, no connection — so a scheduled job has
 no reason to compose a write path by hand, and composing is where steps get dropped: `store.load` runs the
-empty guard *and* collects what the publish superseded, which a write composed from the primitives does not.
+empty guard *and* collects the generations below the one it published (keeping the newest by default), which a
+write composed from the primitives does not.
 Reach for these only when you have no store to hold — most often a read-only store built on a pre-built
 `StorageChunkSource`, where the lifecycle helpers throw by design.
 
@@ -527,10 +556,22 @@ if (!result.published) {
 }
 ```
 
-The generation number is picked for you, from the highest the registry and the bucket know. Peak memory is the segment's compressed size (~2 MB for a million ids), not the id list: ids are
-folded into per-chunk bitmaps as they arrive and the object streams out in 8 MiB parts. Re-running after a crash
-is safe — a crash before the publish leaves the previous generation authoritative — and two loaders racing the
-same generation number means one gets a `WriteConflictError`, never a torn segment.
+The generation number is picked for you, from the highest the registry and the bucket know. Peak memory is the
+segment's bitmaps, one compressed bitmap per non-empty chunk rather than the id list, plus a staging buffer between
+the input and the bitmaps that holds at most 1,048,576 ids however long the input is. On S3 the writer also buffers
+up to one upload part, 8 MiB by default; an object that fits in one part goes up as a single PUT.
+
+The publish is a compare-and-swap on the segment's registry row. A load that finds a row fences on the row's
+token; a default load also fences on the pointer it judged, or on the row's absence; only an unguarded load
+(`allowEmpty: true` and no `guard.minRetained`) onto a segment with no row is bare forward-only; and a duplicate
+publish is an idempotent no-op.
+
+A crash before the publish leaves the previous generation current. A rerun numbers its generation past the object
+the crash left behind, so re-running with the same ids publishes the same contents as a new generation. With the
+default `keep: 1`, that left-behind object is the generation the rerun keeps, and the one current before the crash
+is collected; pass a larger `keep` where a job may need to roll back past a crash. A fenced load that loses a race
+reports `published: false` with `reason: 'superseded'`; two unguarded loads onto a segment with no row can both
+report `published: true`, and the higher generation number stands. No race leaves a torn segment.
 
 The one way to make this expensive is to materialise the ids yourself first (`const ids = [...]` over ten
 million rows) before handing them over; pass the cursor instead. Full signatures and per-backend setup are in
@@ -550,12 +591,20 @@ millions of users per segment, because the operations that govern it don't scale
 
 - **Building or refreshing a segment** is one `store.load()` → **one object PUT (or a multipart upload)** and a
   pointer write, bounded by the bitmap's compressed bytes rather than by the number of users in it: 4 PUT-class
-  and 7 GET-class requests for a segment's first load on S3, listings included.
-- **`count()` is free** — 0 payload reads on a published segment, summed from the `.crbm` index. Counting a
-  ten-million-user audience costs the same as counting a thousand.
-- **Membership checks come from RAM** once warm — measured at 23 S3 GETs across 2,000 reads.
+  and 7 GET-class requests for a segment's first single-part load on S3, listings included (expected: a test
+  counts them against the engine; no run has measured them on S3 yet).
+- **`count()` reads no payload** — 0 payload reads on a published segment, summed from the `.crbm` index. A cold
+  count is a pointer read and one tail read, which brings the index (a second read for an index larger than it);
+  a reader that already has the segment open re-reads only the pointer, at most once each `cache.genTtlMs`. So
+  counting a ten-million-user audience makes the same requests as counting a thousand while its index fits that
+  one tail read.
+- **Membership checks come from RAM** once warm: a `has()` whose chunk is in the cache makes no request, beyond
+  at most one pointer read per segment each `cache.genTtlMs` (2 s by default), for as long as the reader cache
+  keeps the segment open.
 - **Intersections skip** — two 2,000,000-id segments intersect by fetching only the shared chunks (100 of 2,000
-  each, 24.6 ms). This is the case an always-on RAM store pays for by keeping both bitmaps resident.
+  each). The [at-scale benchmark](docs/benchmarks.md#at-scale--measured-1k--10k--100k-segments) measured it at
+  24.6 ms, on in-memory storage on an Apple M3 Pro, so that figure times the engine and not object storage. This
+  is the case an always-on RAM store pays for by keeping both bitmaps resident.
 
 It is **not** a general database, a full-text index, or a replacement for Redis as a low-latency cache —
 it's a specialized engine for big, durable, cloud-resident bitmaps. A single membership check that misses the
@@ -568,41 +617,32 @@ trade-offs (and where Redis or a columnar store wins instead) are documented as 
 **Already using Redis bitmaps?** That paragraph is about Redis as a *cache*; this is about `SETBIT`-on-one-giant-key
 as a *data model*, which is a different question. The **read** operations carry over one-for-one — `GETBIT` →
 `has`, `BITCOUNT` → `count`, `BITOP AND`/`OR`/`DIFF` → `intersect`/`union`/`andNot` — and you are not giving up
-the bitmap: past **4,096 ids** in a 65,536-id chunk (6.25% of it) Roaring stores that chunk *as* a flat bit
-array, byte for byte what you have now. What does **not** carry over is the **write** model — there is no
-per-id write here at all — and the raw bytes: a `.crbm` is not a flat bit array. See
+the bitmap: past **4,096 ids** in a 65,536-id chunk (6.25% of it) Roaring stores that chunk *as* a flat 8 KiB bit
+array, unless runs of consecutive ids take less, when it stores the runs. The same bitmap, though not the same
+bytes: Redis numbers a byte's bits from the most significant, and Roaring numbers them from the least
+significant, in 64-bit words. What does **not** carry over is the **write** model — there is no per-id write here
+at all — and the raw bytes: a `.crbm` is not a flat bit array. See
 [*What this is not*](#what-this-is-not) above, and the full command mapping in the
 [guide](docs/guide/getting-started.md#coming-from-redis-bitmaps).
 
 ## Status & where it's headed
 
-Built in phases, each shipped behind tests and an adversarial review:
+Everything under *Works today* is built behind tests and an adversarial review, and the
+[validated envelope](docs/ROADMAP.md#the-validated-envelope--whats-proven-and-what-isnt) says where it is ready:
+read-mostly, up to about 100,000 segments, single-tenant and single-region, on S3 storage, with the scale and
+tenancy limits stated there. Storage and registry drivers ship for S3, GCS and Azure Blob; the GCS and Azure Blob
+ones pass the conformance suites and sit outside the envelope.
 
-- **M1 — local end-to-end** *(complete)*: the core engine + `.crbm` format + local-filesystem drivers +
-  a shared driver conformance suite + a deterministic, seed-replayable concurrency simulator. No cloud needed.
-- **M2 — Topology-A (the showcase)** *(complete)*: the S3 storage driver, bulk load, and the chunk-skipping
-  intersection engine — the first shippable, the centerpiece.
-- **M3 — durability & compliance** *(complete)*: the segment registry, forward-only publishing, and
-  **encryption-at-rest + crypto-shred**.
-- **M4 — production-grade** *(complete)*: an observability metrics sink, an honest cost estimator, a
-  **benchmark-as-test** harness that turns the cost/perf claims into build-breaking CI assertions, a
-  **free `count()`** (0 payload reads on a published segment), an **audit sink** (`IAuditSink` — a truthful
-  GDPR Art. 30 erasure trail), and the **compliance & governance** layer — [`PRIVACY.md`](PRIVACY.md),
-  **subject access & erasure** (`subjectReport` / `eraseSubject` with a physical-deletion guarantee), and
-  legal-hold guidance — have all landed. See the [benchmarks & crossover chart](docs/benchmarks.md) and the
-  [dashboards guide](docs/guide/dashboards.md).
-- **M5**: a hardened, benchmarked, trademarked **v1.0** public launch.
+Beside the unit, property and conformance suites, it has mutation testing of the highest-risk core modules, a
+disaster-recovery drill in the test suite, coverage-guided fuzzing of the untrusted-`.crbm` boundary (nightly,
+plus a weekly deep run), and a soak that CI runs under a hard RSS ceiling, a cgroup memory limit with swap off.
+It has no stress, tail-latency or chaos harness for the loaded store; the loaded store's in-region latency and
+load throughput are on the [owed list](docs/benchmarks.md#what-is-still-owed). Supply-chain hardening is in
+place: npm build provenance on every release, SHA-pinned Actions, a dependency audit, a native OS matrix, and a
+Lambda layer that CI builds on manual dispatch.
 
-Beyond the milestones, the pre-1.0 **hardening backlog** is complete and the testing frontier now runs five
-disciplines (soak · mutation · fuzz · DR · security) plus a hard RSS ceiling under a cgroup limit. Three went
-with the write path they exercised — the stress, load/tail-latency and chaos harnesses all drove per-id writes
-against an emulator, so they are **withdrawn rather than counted**, and the loaded-store equivalents are on the
-owed list in [`docs/benchmarks.md`](docs/benchmarks.md). The production-readiness re-assessment
-lands at **ready within a validated envelope** (read-mostly / large-fleet / single-tenant / single-region; the
-scale/tenancy deferrals are tracked openly). **Additional storage drivers**: **GCS + Azure
-Blob storage drivers shipped** (the object-store story is complete on AWS + GCP + Azure). Security and supply-chain hardening is in place: npm build
-provenance on every release, SHA-pinned Actions, a hard cgroup-RSS ceiling in CI, a native OS matrix, a
-prebuilt Lambda layer, and continuous coverage-guided fuzzing.
+`1.0` is a hardened, benchmarked public launch, and [the roadmap](docs/ROADMAP.md#on-the-way-to-10) lists what
+stands between here and there.
 
 **Where it is headed (September 2026).** The **loaded store** is the library. Compute a set upstream — a
 warehouse query, a nightly job — load it as one immutable generation into your bucket, and then `has`, `count`
@@ -625,8 +665,8 @@ benchmarks of in-region latency and load throughput are **owed, not shipped**; t
 [what is still owed](docs/benchmarks.md#what-is-still-owed). What the [benchmarks page](docs/benchmarks.md) does
 quote from the cloud is cost: the single-bucket bill of the September 2026 calibration run, pointer included,
 driven from outside the region, so it carries no latency. Its
-crossover chart is modelled, its at-scale table is a local-disk run, and its RSS ceiling comes from a local
-container under a hard memory limit — and it labels each as such. The
+crossover chart is modelled, its at-scale table is a local run (the fleet on local disk, the large intersect in
+memory), and its RSS ceiling comes from a local container under a hard memory limit — and it labels each as such. The
 public roadmap tracks all of it: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 The library ships as the **`@cloudbitmaps`** family — one shared engine, pluggable codecs, pluggable
@@ -649,7 +689,8 @@ one package per service. You install one of each axis; core arrives as their dep
 - **[Benchmarks](docs/benchmarks.md)** — the CloudBitmaps-vs-flat-Redis crossover chart + the gated cost/perf anchors.
 - **[Privacy & shared responsibility](PRIVACY.md)** — the trust boundary (you are the controller; nothing is sent to us), the erasure/retention/residency contracts, and a DPIA + Art. 30 template.
 - **[Roadmap](docs/ROADMAP.md)** — what's shipped, the **validated envelope** (what's proven and what isn't), what stands between here and `1.0`, and what we've deliberately said no to.
-- **[Changelog](CHANGELOG.md)** — what's changed (newest first; everything under `[Unreleased]` until v1.0).
+- **[Changelog](CHANGELOG.md)** — what's changed, newest first: changes land under `[Unreleased]` and are cut
+  into a version on each release.
 - **[Contributing](CONTRIBUTING.md)** — the gate every change runs, the adversarial-review step, and the code style.
 
 ## Building & contributing
