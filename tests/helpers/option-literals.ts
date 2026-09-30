@@ -94,3 +94,25 @@ export function unknownStoreKeys(
   }
   return out;
 }
+
+/**
+ * Every key a `new <className>({ … })` in `src` passes that is not in `keys`, with the line it is on — for the
+ * backends, which refuse an unknown key as the store does. Only the literal's own keys are read: a backend has no
+ * groups, and a spread names no key.
+ */
+export function unknownConstructorKeys(
+  src: string,
+  className: string,
+  keys: readonly string[],
+): Array<{ line: number; key: string }> {
+  const code = codeOnly(src);
+  const out: Array<{ line: number; key: string }> = [];
+  for (const m of code.matchAll(new RegExp(`new\\s+${className}\\(\\s*\\{`, 'g'))) {
+    const open = code.indexOf('{', m.index ?? 0);
+    const line = src.slice(0, open).split('\n').length;
+    for (const { key } of literalKeys(code.slice(open + 1, closing(code, open)))) {
+      if (!keys.includes(key)) out.push({ line, key });
+    }
+  }
+  return out;
+}

@@ -1,4 +1,12 @@
-import { runConsistencyCheck, BudgetExceededError } from '@/index';
+import {
+  runConsistencyCheck,
+  BudgetExceededError,
+  CloudRoaring,
+  MemoryStorage,
+  MIN_EXPIRES_AT_MS,
+  createBackend,
+  retireExpired,
+} from '@/index';
 import { DEFAULT_MAX_SCAN_SEGMENTS } from '@/core/registry-scan';
 import type { RegistryRecord } from '@/core/ports';
 
@@ -66,6 +74,40 @@ describe('consistency check bounds its registry scan', () => {
       /maxScanSegments/,
     );
     expect(reg.yielded()).toBe(0);
+  });
+
+  it('names a call that takes the ceiling, when the store method that ran it does not', async () => {
+    // `store.checkConsistency` takes no `maxScanSegments`, so advice to raise it would send the caller to an option
+    // that does not exist. The refusal has to name where the ceiling can be raised: `runConsistencyCheck`.
+    const backend = new MemoryStorage();
+    const reg = registryOf(DEFAULT_MAX_SCAN_SEGMENTS + 1);
+    const registry = new Proxy(backend.registry, {
+      get: (t, p, rx) => (p === 'list' ? () => reg.list() : (Reflect.get(t, p, rx) as unknown)),
+    });
+    const store = new CloudRoaring({
+      storage: createBackend({ storage: backend.storage, registry }),
+      retry: false,
+    });
+    const err = (await store.checkConsistency().catch((e: unknown) => e)) as Error;
+    expect(err).toBeInstanceOf(BudgetExceededError);
+    expect(err.message).toContain(String(DEFAULT_MAX_SCAN_SEGMENTS));
+    expect(err.message).toContain('namespace');
+    expect(err.message).toMatch(/raise `maxScanSegments` on `runConsistencyCheck`/);
+    expect(err.message).toMatch(/`store\.checkConsistency` takes no ceiling/);
+    expect(reg.yielded()).toBe(DEFAULT_MAX_SCAN_SEGMENTS + 1);
+  });
+
+  it('still tells a caller that takes the ceiling itself to raise it', async () => {
+    // The look-alike: the retention sweep drains through the same bound, and its callers — the free function and
+    // `store.retireExpired` — both take `maxScanSegments`, so for them raising it is the right advice.
+    const reg = registryOf(3);
+    const err = (await retireExpired(depsWith(reg), {
+      now: MIN_EXPIRES_AT_MS,
+      maxScanSegments: 2,
+    }).catch((e: unknown) => e)) as Error;
+    expect(err).toBeInstanceOf(BudgetExceededError);
+    expect(err.message).toMatch(/or raise `maxScanSegments` if the fleet/);
+    expect(err.message).not.toContain('runConsistencyCheck');
   });
 
   it('defaults to a ceiling generous enough not to bother real fleets', () => {

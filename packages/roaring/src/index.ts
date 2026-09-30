@@ -375,7 +375,9 @@ export interface SubjectErasureEntry {
    * says**: it usually reports `erased: true` against the generation it found the id in, it reports
    * nothing at all if a racing collector took that generation first (the bit is gone, but no run holds a
    * receipt for it), and if the segment's row has since been purged it is no longer scanned at all — anything
-   * left in its bucket is an orphan for `checkConsistency` / `gcOrphanGenerations`. **Segments the id is not in
+   * left in its bucket is an orphan, which `store.generations(ref)` lists and `store.dropSegment(ref, {
+   * confirmSegment })` deletes; `checkConsistency` and `gcOrphanGenerations` read rows, so neither reaches it.
+   * **Segments the id is not in
    * are not listed, and neither are segments that no longer have a registry row** — an empty ledger is not by
    * itself proof the id is gone.
    */
@@ -413,9 +415,9 @@ export interface MaterializeResult {
   /**
    * Whether this generation is now the destination's current one.
    *
-   * Before the guard existed this was always true, because a materialisation always published. Branch on it:
-   * a refusal is reported, not thrown, so a caller that ignores it sees a successful-looking result for a
-   * write that deliberately did not happen.
+   * `false` when the guard refused the result: an empty one over a non-empty destination, or one outside
+   * `guard`'s bounds. Branch on it: a refusal is reported, not thrown, so a caller that ignores it sees a
+   * successful-looking result for a write that deliberately did not happen.
    */
   readonly published: boolean;
   /** Set only when `published` is false. A lost race throws {@link WriteConflictError} rather than appearing here. */
@@ -1041,9 +1043,10 @@ export class CloudRoaring {
    *
    * A racing **erasure** is caught before that, and reported the same way. It collects with `keep: 0`, taking
    * every generation below its new pointer — the one this rewrite is streaming, and the object this rewrite
-   * just wrote — so the loser can find its own inputs deleted mid-flight. That surfaces as a reason rather than
-   * an error, read off the row: a moved pointer is `'superseded'`, a concurrent `dropSegment` `'destroyed'`,
-   * a retention sweep that purged the row `'absent'`. Re-running is the fix in every case.
+   * just wrote — so the loser can find its own inputs deleted mid-flight. That surfaces as an outcome rather than
+   * an error, read off the row: a moved pointer is a `'superseded'` entry, which a re-run settles, and a segment
+   * that a concurrent `dropSegment` tombstoned or a retention sweep purged is left out of the ledger, as a fresh
+   * call would leave it out.
    *
    * **Read `note` on any `erased: false` entry — the two reasons mean different things.** `'superseded'` means
    * another writer (a load, another erasure, or a rollback) moved the pointer mid-call, so **this call** did not
@@ -1146,7 +1149,7 @@ export class CloudRoaring {
    *
    * What the bucket holds, not what the segment has ever been — collection deletes superseded objects, so this is
    * the grace window plus whatever has not been collected yet. It is the set {@link CloudRoaring.rollback} can
-   * choose from, which is the reason to look at it. One `list` call; it does not open the objects.
+   * choose from, which is the reason to look at it. One registry read and one listing; it does not open the objects.
    *
    * Needs a backend.
    */
@@ -1242,12 +1245,16 @@ export class CloudRoaring {
    * under them. The one call that deletes one of them is {@link CloudRoaring.eraseSubject}, and only one that
    * holds the id it erases: a rollback target that still holds erased data would make the erasure undoable.
    *
+   * A target **above** the pointer needs `{ allowForward: true }`, and is refused with {@link ValidationError}
+   * without it: that is also where objects live that were never published, such as a load that wrote its object
+   * and died before the publish. Undoing an earlier rollback is what the opt-in is for.
+   *
    * Needs a backend.
    */
   async rollback(
     ref: SegmentRef,
     toGeneration: number,
-    options: { audit?: IAuditSink } = {},
+    options: { audit?: IAuditSink; allowForward?: boolean } = {},
   ): Promise<RollbackResult> {
     validateSegmentRef(ref);
     const deps = this.lifecycleDeps('rollback');
@@ -1523,7 +1530,7 @@ export class CloudRoaring {
    * Synchronous, best-effort, and safe to call for a segment this store has never read.
    *
    * ```ts
-   * await destroySegment(ref, { storage, registry, keystore }, { confirmSegment: ref.segment });
+   * await destroySegment(ref, { registry: backend.registry }, { confirmSegment: ref.segment });
    * store.invalidate(ref);                       // this process
    * await bus.publish('cloudbitmaps.invalidate', ref); // and every other one
    * ```
@@ -1658,11 +1665,16 @@ export class CloudRoaring {
    * **Cross-tier DR consistency check.** After a restore/failover, verify every registered segment's `currentGen`
    * actually has its `.crbm` present in Storage — catching a **torn restore** where the registry (`currentGen`) came
    * back ahead of the object store, so a pointer references a generation that isn't there (reads would then
-   * throw). Read-only, bounded fan-out; run it at startup after a restore. Returns `{ checked, inconsistent }` —
-   * `inconsistent` empty ⇒ coherent; otherwise it names the segments to recover (restore the object store, or
-   * roll the registry back to a coherent point). Needs the store built with a **backend**
+   * throw). Read-only, bounded fan-out; run it at startup after a restore. Returns `{ checked, inconsistent,
+   * errored }` — `inconsistent` empty ⇒ coherent; otherwise it names the segments to recover (restore the object
+   * store, or roll the registry back to a coherent point). Needs the store built with a **backend**
    * (throws {@link UnsupportedError} otherwise). `destroyed` (crypto-shredded) segments are skipped. Pair it with
    * the DR runbook (docs/guide/disaster-recovery.md).
+   *
+   * It holds the registry rows it enumerates resident, at most 250,000 of them, and throws
+   * `BudgetExceededError` past that rather than report a partial scan as a whole one. This method takes no
+   * ceiling of its own: narrow the scan with `namespace`, or call `runConsistencyCheck` over the backend's
+   * `storage` and `registry` with a higher `maxScanSegments`.
    */
   async checkConsistency(
     options: { namespace?: string; concurrency?: number } = {},

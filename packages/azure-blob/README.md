@@ -38,7 +38,11 @@ import { CloudRoaring } from '@cloudbitmaps/roaring';
 import { AzureBlobStorage } from '@cloudbitmaps/azure-blob';
 
 const store = new CloudRoaring({
-  storage: new AzureBlobStorage({ connectionString, container: 'bitmaps', prefix: 'cr' }),
+  storage: new AzureBlobStorage({
+    connectionString: process.env.AZURE_STORAGE_CONNECTION_STRING,
+    container: 'bitmaps',
+    prefix: 'cr',
+  }),
 });
 
 await store.load({ segment: 'active-users' }, [1, 2, 3]);
@@ -47,7 +51,10 @@ await seg.has(2); // true
 ```
 
 `AzureBlobStorage` configures both halves — the immutable generation objects and the registry pointer row — from one set
-of values. Need them apart? This package also exports the two drivers and their option types; see the
+of values: a `connectionString` and a `container`, or a container-scoped `containerClient` instead, one or the
+other, and an optional `prefix`. It refuses any other key by name rather than ignoring it, and refuses both forms
+of client at once. Need the halves apart? This package also exports the two drivers and their option types, which
+`createBackend` joins; see the
 [API reference](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/api-reference.md).
 
 ## What this package is

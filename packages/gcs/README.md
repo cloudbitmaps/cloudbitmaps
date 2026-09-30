@@ -47,7 +47,10 @@ await seg.has(2); // true
 ```
 
 `GcsStorage` configures both halves — the immutable generation objects and the registry pointer row — from one set
-of values. Need them apart? This package also exports the two drivers and their option types; see the
+of values: `bucket`, `prefix`, and `client` or the `projectId` / `apiEndpoint` it builds one from. It refuses any
+other key by name rather than ignoring it — `storage` included, which is what the lower-level driver calls the
+client — so a mistyped option cannot quietly build a client against the public endpoint. Need the halves apart?
+This package also exports the two drivers and their option types, which `createBackend` joins; see the
 [API reference](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/api-reference.md).
 
 ## What this package is

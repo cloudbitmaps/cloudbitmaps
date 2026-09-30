@@ -4,8 +4,8 @@
  *
  * There is no per-id delete on an immutable object, and there is no mutable tier to hold a tombstone, so erasure
  * is what every other write in this library is: a new generation. The current generation is streamed chunk by
- * chunk through the ascending writer — every chunk copied through, the one chunk holding the id re-encoded with
- * that bit cleared — then published fenced on the generation it streamed, and that generation is collected immediately
+ * chunk through the ascending writer — every chunk decoded, range-checked and re-encoded, the one holding the id
+ * with that bit cleared — then published fenced on the generation it streamed, and that generation is collected immediately
  * (`keep: 0`), so the bit is **physically gone from the bucket when this returns**. Constant memory: one chunk in
  * flight, never the whole segment.
  *
@@ -180,8 +180,10 @@ export interface EraseIdResult {
    *  - `'not-member'` — a racing collector took that generation first. The bit is gone, but **no run reports a
    *    receipt for it**, so keep the failed call's error alongside your ledger if you need the audit trail;
    *  - `'absent'` — the segment's registry row is gone, so it is no longer a segment at all and
-   *    `store.eraseSubject` will not even scan it. Anything left in the bucket is an **orphan**: find it with
-   *    `checkConsistency()` and collect it with `gcOrphanGenerations`.
+   *    `store.eraseSubject` will not even scan it. Anything left in the bucket is an **orphan**: list it with
+   *    `listGenerations` (`store.generations`) and delete it with `dropSegment` (`store.dropSegment`), which both
+   *    read the bucket as well as the row. `checkConsistency()` and `gcOrphanGenerations` start from the row, so
+   *    neither reaches a segment that has none.
    */
   readonly collected: readonly number[];
 }

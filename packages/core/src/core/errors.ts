@@ -44,9 +44,9 @@ export class WriteConflictError extends CloudRoaringError {}
 export class IntegrityError extends CloudRoaringError {}
 
 /**
- * A requested object/row does not exist. Part of the driver error vocabulary; thrown by
- * the persistent drivers (S3, GCS, Azure Blob, local filesystem) — the in-memory drivers return
- * `null` instead.
+ * A requested object/row does not exist. Part of the driver error vocabulary: every storage driver this
+ * library ships, the in-memory one included, throws it for a read of a generation object that is not there.
+ * A registry `get` of a row that is not there returns `null` instead.
  */
 export class NotFoundError extends CloudRoaringError {}
 
@@ -110,9 +110,10 @@ export class TransientError extends CloudRoaringError {
 
 /**
  * A single attempt exceeded its time budget. Subclass of {@link TransientError} so the retry layer treats a
- * timeout as retryable by default — a stalled request often succeeds on a fresh connection. Raised by a
- * driver whose injected client reports a request timeout — setting one on your injected client is the
- * recommended way to bound a hang.
+ * timeout as retryable by default — a stalled request often succeeds on a fresh connection. No driver this
+ * library ships raises it: a request timeout that one of them recognises is raised as a plain
+ * {@link TransientError}. It is here for a driver of your own that wants to tell a timeout apart. Setting a
+ * request timeout on your injected client remains the recommended way to bound a hang.
  */
 export class TimeoutError extends TransientError {}
 

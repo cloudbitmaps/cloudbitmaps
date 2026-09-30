@@ -1,12 +1,13 @@
 /**
  * Audit sink — an injected, no-op-by-default seam for **security/compliance** events, distinct
- * from the metrics sink (5a). Different audience (an audit log / SIEM, not a dashboard), different retention,
- * and only the compliance-relevant *state changes* — never routine reads/writes (that's the metrics sink).
- * It doubles as the GDPR Art. 30 "record of processing" surface: publishes, rewrites, and erasures.
+ * from the metrics sink (`IMetricsSink`). Different audience (an audit log / SIEM, not a dashboard), different
+ * retention, and only the compliance-relevant *state changes* — never routine reads/writes (that's the metrics
+ * sink). It doubles as the GDPR Art. 30 "record of processing" surface: publishes, refused loads, rollbacks,
+ * rewrites, erasures and disposals.
  *
  * Like `Clock`/`Rng`/`IMetricsSink`, it's injected (into the operations that emit — a load, the `*Into`
- * verbs, the erasure rewrite, crypto-shred, disposal and the retention sweep) and wrapped exception-safe, so a
- * buggy sink can never break the operation it observes.
+ * verbs, a rollback, the erasure rewrite, crypto-shred, disposal and the retention sweep) and wrapped
+ * exception-safe, so a buggy sink can never break the operation it observes.
  * Events are vendor-neutral and carry no timestamp/actor — the sink runs synchronously at the event, so it
  * stamps its own time / attaches the caller identity (keeps `core/` free of ambient time). As with metrics,
  * `segment`/`namespace` are caller-controlled strings that may be PII — treat them accordingly when routing.
@@ -27,7 +28,8 @@ export type AuditEvent =
     }
   | {
       /**
-       * A segment's pointer was moved **backwards**, to a generation still in the bucket.
+       * A segment's pointer was moved by a rollback to a generation still in the bucket that the caller named:
+       * **backwards**, or forward with `allowForward`, which undoes an earlier rollback.
        *
        * The only non-forward-only pointer move in the library, and the only one no automatic path can perform —
        * a human decided the current generation was wrong and named the one they wanted. Every other pointer move
