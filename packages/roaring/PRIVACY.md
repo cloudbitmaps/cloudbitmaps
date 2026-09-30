@@ -62,7 +62,7 @@ CloudBitmaps gives you three levers with different guarantees. Use them delibera
 |---|---|---|---|
 | **Subject erasure** | `store.eraseSubject(id, { namespace })` (or `eraseIdFromSegment(ref, id, deps)` for one segment) | *Physical on return* — the segment's current generation is rewritten without the id (every chunk streamed through, one bit cleared), published **fenced on the generation it streamed**, and **the generation that held the bit is deleted before the call returns**. So is every other generation still holding the id: a retained *superseded* one (an ex-member dropped by a re-seed), and each one above the pointer after a `rollback` — generations a rollback can move the pointer onto again — while, when the current generation does not hold the id, the ones there that never held it stay as rollback targets (a rewrite is numbered above everything, so its `keep: 0` collection takes every older generation, above the pointer or below). Before it says `erased: true` the call lists the bucket and reads what is left, so **`erased: true` means no generation of the segment holds the id**, above the pointer or below it. `eraseSubject` reports a per-segment fault as an `error: …` ledger entry rather than throwing it, and a call that a racing writer overtook (a load, another erasure, or a rollback) as `erased: false, note: 'superseded'`, so "on return" is a claim about every segment whose entry says **`erased: true`** (`eraseIdFromSegment` throws the fault, and returns `erased: false, reason: 'superseded'` for the race). The store that performs the call stops serving the id immediately; **other processes converge on their own read TTL** — see [One process, and the rest of your fleet](#one-process-and-the-rest-of-your-fleet). Does **not** reach backups, replicas or noncurrent object versions — those hold the old generation until their own lifecycle removes it. | "forget this person" — GDPR Art. 17 |
 | **Dispose** | `store.dropSegment(ref, { confirmSegment })` | *Immediate* — the segment is tombstoned and its Storage generations deleted, reclaiming the space. **Check `generationsRemaining`:** if it is non-empty the space was *not* fully reclaimed and the drop should be re-run (a load that was already writing when the tombstone landed still finishes its object). Works on cleartext; on an encrypted segment it *also* crypto-shreds, on the terms in the next row. Does **not** reach noncurrent versions / replicas / PITR snapshots — deleting an object is weaker than removing a key. | retiring a dated bucket; rolling-window retention |
-| **Crypto-shred** | `destroySegment` / `eraseNamespace` | *Complete once no copy of the wrapped key survives* — removes the segment's wrapped DEK(s) from its registry row in one compare-and-swap, without touching the bytes or any KEK. **Every** copy of the objects (current, prior generations, backups, WORM-locked objects) is then unreadable once no retained copy of that row still holds the wrapped key — noncurrent object versions, backups and PITR copies of the row included — or once every KEK that wrapped it is destroyed. Until then, a retained copy of the row and a KEK decrypt the segment, and a registry restore to a point before the shred makes it readable again; see *Erasure vs. backups / WORM* below. Requires the segment to be encrypted. A process that had already opened the segment holds the **unwrapped** key in memory and keeps reading until it is told — call `store.invalidate(ref)` there; see [One process, and the rest of your fleet](#one-process-and-the-rest-of-your-fleet). | whole-segment / tenant offboarding; erasure under immutable backups (see below) |
+| **Crypto-shred** | `destroySegment` / `eraseNamespace` | *At rest, complete once no copy of the wrapped key survives* — removes the segment's wrapped DEK(s) from its registry row in one compare-and-swap, without touching the bytes or any KEK. **Every** copy of the objects (current, prior generations, backups, WORM-locked objects) is then unreadable once no retained copy of that row still holds the wrapped key — noncurrent object versions, backups and PITR copies of the row included — or once every KEK that wrapped it is destroyed. Until then, a retained copy of the row and a KEK that wrapped it decrypt the segment, and a registry restore to a point before the shred makes it readable again; see *Erasure vs. backups / WORM* below. Requires the segment to be encrypted. A process that had already opened the segment holds the **unwrapped** key in memory and keeps reading until it is told — call `store.invalidate(ref)` there; see [One process, and the rest of your fleet](#one-process-and-the-rest-of-your-fleet). | whole-segment / tenant offboarding; erasure under immutable backups (see below) |
 
 **Subject-wide erasure** (GDPR Art. 17 — "forget this person everywhere") is
 `store.eraseSubject(id, { namespace })` — or `{ allNamespaces: true }` to sweep every tenant deliberately. For
@@ -125,7 +125,7 @@ bucket.
 
 | | when the id stops being readable |
 |---|---|
-| storage | on return — the generation holding it is deleted, or the wrapped DEK is removed from the segment's current registry row (a crypto-shred is complete once no retained copy of that row holds it; see *Erasure vs. backups / WORM* below) |
+| storage | on return — the generation holding it is deleted, or the wrapped DEK is removed from the segment's current registry row (a crypto-shred is complete once no retained copy of that row holds it, or every KEK that wrapped it is destroyed; see *Erasure vs. backups / WORM* below) |
 | the store whose verb made the call (`eraseSubject`, `dropSegment`, `retireExpired`) | on return — it invalidates what it cached, and its pins then fail |
 | another store, with a registry and a `cache.genTtlMs` above 0 | within `cache.genTtlMs` (default 2 s), when its snapshot re-resolves |
 | another store with **no registry** (a bare `IStorageDriver`), with `cache: { genTtlMs: 0 }`, or on a storage source built with **no clock** | **no bound** — only when its caches happen to let the segment go, or something tells it |
@@ -161,7 +161,8 @@ WORM-locked copies hold the old generation until their own lifecycle expires it.
 infeasible** (one DEK covers the whole segment, and a subject's bit is co-mingled with millions of others), so
 single-subject erasure is a rewrite (`eraseSubject`), while crypto-shred (`destroySegment` / `eraseNamespace`)
 handles segment/tenant-level erasure and is the only erasure that reaches immutable backups / WORM copies of the
-objects — once no copy of the segment's registry row still holds its wrapped key (below). And a
+objects — once no copy of the segment's registry row still holds its wrapped key, or every KEK that wrapped it
+is destroyed (below). And a
 **materialised segment** (`intersectInto` / `unionInto` / `andNotInto`) is a point-in-time snapshot of its
 inputs: erasing a subject from a source does not touch a destination computed earlier — which is exactly why
 `eraseSubject` scans *every* registered segment, destinations included, rather than erasing per source.
@@ -172,22 +173,25 @@ noncurrent versions, locked objects, and backups, and a restore that brings one 
 back with it (the [disaster-recovery guide](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/disaster-recovery.md#restore-procedure) re-runs the
 erasures made after the restore point). **Crypto-shred reaches the retained copies of the objects without touching
 them**, because it removes the key, not the bytes — but it removes the key from one place: the segment's current
-registry row. The same versioning, PITR and backups keep earlier copies of that row, and each still holds the
-wrapped key. **A shred is complete once no retained copy of the registry row still holds the wrapped key**
-(noncurrent object versions, backups and PITR copies included), **or once every KEK that wrapped it is
-destroyed.** Until then, a retained copy of the row plus a KEK decrypts the segment, and a registry restore to a
-point before the shred makes it readable again, which is why the disaster-recovery guide re-shreds after a
-restore. Versioning on the registry prefix is a requirement of that guide's restore procedure, so with it on, when
-a shred completes is set by how long your storage keeps the row's noncurrent versions and backups — the same
-history a registry restore picks from — and an Object Lock default retention on a bucket that also holds the
-registry locks those versions for that retention period. Destroying a KEK happens in your keystore, not through the library, and
-reaches every segment the KEK wrapped: with `InProcessKeystore`, that is every segment created while it was the
-active KEK. So: use **per-segment/tenant encryption** as your erasure posture under immutable objects, and count the
-registry row's retained copies in when you state that a shred is complete; give noncurrent versions of the objects
-a short expiry (a lifecycle rule on *noncurrent* versions is fine — it is *current* generations that a rule must
-never expire, see below — though it also bounds how far back the disaster-recovery guide can restore); reserve S3 Object Lock **COMPLIANCE** mode for data under a genuine legal hold (it
-*cannot* be deleted before its retention date, by anyone — incompatible with on-demand erasure), and prefer
-**GOVERNANCE** mode where erasure must remain possible.
+registry row. The same versioning, PITR and backups keep earlier copies of that row, and every copy written since
+the segment's first encrypted load still holds the wrapped key. **A shred is complete once no retained copy of the
+registry row still holds the wrapped key** (noncurrent object versions, backups and PITR copies included), **or
+once every KEK that wrapped it is destroyed.** Until then, a retained copy of the row plus a KEK that wrapped it
+decrypts the segment, and a registry restore to a point before the shred makes it readable again, which is why the
+disaster-recovery guide re-shreds after a restore. Versioning on the registry prefix is a requirement of that
+guide's restore procedure, so with it on, when a shred completes is set by how long your storage keeps the row's
+noncurrent versions and backups — the same history a registry restore picks from — and an Object Lock default
+retention on a bucket that also holds the registry locks those versions for that retention period. Destroying a
+KEK happens in your keystore, not through the library, and a segment is shredded that way only once every KEK in
+its wrappings is destroyed: with `InProcessKeystore`, the KEK that was active when the segment was first loaded
+and, if one was configured, the recovery KEK, which wraps every segment's DEK a second time. Destroying those
+shreds every segment they wrapped. So: use **per-segment/tenant encryption** as your erasure posture under
+immutable objects, and count the registry row's retained copies in when you state that a shred is complete; give
+noncurrent versions of the objects a short expiry (a lifecycle rule on *noncurrent* versions is fine — it is
+*current* generations that a rule must never expire, see below — though it also bounds how far back the
+disaster-recovery guide can restore); reserve S3 Object Lock **COMPLIANCE** mode for data under a genuine legal
+hold (it *cannot* be deleted before its retention date, by anyone — incompatible with on-demand erasure), and
+prefer **GOVERNANCE** mode where erasure must remain possible.
 
 ## Retention & data minimization
 
@@ -208,10 +212,11 @@ to run, and the deletion is ours to perform correctly.** Practical patterns:
   out *within* a segment is a matter of loading the next generation from a source that no longer includes them.
   The registry row's `retention` is untouched by a load, an `*Into` materialisation or an erasure rewrite, so the
   `expiresAt` you set stays put across all of them.
-- Surface segment age and size so unbounded growth is visible, not silent. The **metrics sink** carries neither:
-  `seg.count()` gives a segment's cardinality, `seg.costReport()` prices its stored bytes as measured
-  (`monthlyUSD.byOp.storage`, where the storage source can measure them), and its registry row carries `createdAt` and `updatedAt`, which the backend's
-  `registry.list()` returns for every row.
+- Surface segment age and size so unbounded growth is visible, not silent. The **metrics sink** carries neither.
+  `seg.count()` gives a segment's cardinality; `seg.costReport()` prices its current generation's measured size
+  (`monthlyUSD.byOp.storage`, $0 when the storage source cannot measure it), and does not count superseded
+  generations still in the bucket, which `store.generations(ref)` lists; and its registry row carries `createdAt`
+  and `updatedAt`, which the backend's `registry.list()` returns for every row.
 
 **Be precise about what "drop the oldest" involves**, because the three levers differ in what they guarantee:
 
@@ -222,7 +227,8 @@ to run, and the deletion is ours to perform correctly.** Practical patterns:
   cleartext segment, and on an encrypted one it *also* crypto-shreds, making it a strict superset there.
 - **`destroySegment` crypto-shreds** — it removes the wrapped key from the registry row, so the Storage bytes
   become unreadable *everywhere including backups, replicas and WORM-locked copies* once no retained copy of that
-  row still holds the key (see the trap above), which no object deletion can achieve. But **the objects
+  row still holds the key, or every KEK that wrapped it is destroyed (see the trap above), which no object
+  deletion can achieve. But **the objects
   remain in your bucket** and you keep paying for them, and it **requires encryption at rest** (a cleartext
   segment has no key to discard; `allowCleartext` writes the tombstone while leaving the Storage bytes readable — and
   still in the bucket).
@@ -275,7 +281,8 @@ locked Storage object *cannot* be deleted before its retention date by anyone (n
    `retention` metadata other than `expiresAt` and `retiredBySweepAt` (the stamp the sweep puts on its own
    retirements, which marks a tombstone as one it may purge) is yours and survives both `setRetention` and
    `clearRetention`, so `{ legalHold: 'case-1234' }` is a durable marker; it is simply not yet something the
-   sweep reads. (An `exclude` predicate is under consideration; say so on an issue if you need it.)
+   sweep reads. `setRetention` writes only `expiresAt`, so write the marker yourself, with `compareAndSwap` on the
+   backend's `registry`. (An `exclude` predicate is under consideration; say so on an issue if you need it.)
 3. Decide hold-vs-erasure precedence when both apply to the same subject — that is a **legal determination**;
    under a hold, erasure is suspended.
 

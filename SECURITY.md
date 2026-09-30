@@ -161,9 +161,9 @@ produced the package they installed**. The controls:
   because an npm tarball is immutable outside the 72-hour unpublish window; there is no fixing a string that
   has already shipped.
 - **Recoverable checks run before the irreversible one.** Every gate above that a run performs — the re-run test
-  suite, the audit, the tag/version agreement, the release-notes check, the tarball scan — precedes `pnpm publish`, and
-  [`tests/ci/release-workflow.test.ts`](tests/ci/release-workflow.test.ts) fails if any of them is ever moved
-  after it. A release is also never cancelled in flight (`cancel-in-progress: false`), so the five packages
+  suite, the audit, the tag/version agreement, the release-notes check, the tarball scan — precedes `pnpm publish`,
+  and [`tests/ci/release-workflow.test.ts`](tests/ci/release-workflow.test.ts) fails if the audit, the tag/version
+  agreement, the release-notes check or the tarball scan is ever moved after it. A release is also never cancelled in flight (`cancel-in-progress: false`), so the five packages
   cannot be left half-published.
 - **Least-privilege CI.** Workflows declare minimal `permissions:`: the workflow-level default is
   `contents: read`, and the release workflow adds `id-token: write` for provenance. **Exactly one job holds
@@ -173,7 +173,9 @@ produced the package they installed**. The controls:
   [`tests/ci/release-workflow.test.ts`](tests/ci/release-workflow.test.ts) resolves **effective** permissions
   (job-level, falling back to workflow-level) and fails if the publish job can ever write to the repo.
 
-Releases run through the workflow only. It can also be dispatched by hand (`workflow_dispatch`): with
-`dryRun: true`, the default, it runs as a **dry run**, which exercises the **full gate + tarball pack** without
-publishing — a dry run mints no attestation, by design; with `dryRun: false` it publishes, with the narrower checks
-described under *Publish only a re-verified tree* above.
+Releases run through the workflow, apart from the two hand-run paths named above — a new name's bootstrap
+prerelease, and the [break-glass release](RELEASING.md#manual--break-glass-release) — neither of which carries
+provenance. The workflow can also be dispatched by hand (`workflow_dispatch`): with `dryRun: true`, the default, it
+runs as a **dry run**, which exercises the **full gate + tarball pack** without publishing — a dry run mints no
+attestation, by design; with `dryRun: false` it publishes, with the differences described under *Publish only a
+re-verified tree* above.
