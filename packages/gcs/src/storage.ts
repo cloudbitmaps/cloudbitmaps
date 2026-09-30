@@ -42,6 +42,7 @@ import {
   segmentObjectPrefix,
 } from './keys';
 import { isInvalidRange, isNotFound, isPreconditionFailed, isTransient } from './gcs-errors';
+import { saveOnce } from './send-once';
 
 /** Default object ceiling: GCS's 5 TiB per-object hard max. Set lower to fail fast on a runaway write. */
 const DEFAULT_MAX_OBJECT_BYTES = 5 * 1024 * 1024 * 1024 * 1024;
@@ -227,11 +228,16 @@ function concatBytes(parts: readonly Uint8Array[], total: number): Uint8Array {
 
 /**
  * {@link BlobSink} that uploads one GCS object write-once. It **buffers up to a threshold**: an object that
- * finishes at/under it is committed in a **single simple (non-resumable) request** (`file.save`) — the write-once
+ * finishes at/under it is committed in a **single simple (non-resumable) request** ({@link saveOnce}) — the write-once
  * path both real GCS and `fake-gcs-server` enforce; a larger one switches to a **resumable stream**, flushing the
  * buffer then piping the rest in constant memory (peak ≈ one threshold). SHA-256 is hashed incrementally. Both
  * paths carry `ifGenerationMatch: 0` (create-only-if-absent) → a conflict is a 412, mapped by the driver to
  * {@link WriteConflictError}. On error the caller invokes {@link abort}.
+ *
+ * **The simple upload is sent once** ({@link saveOnce}): a replay of one that landed and lost its response would find
+ * its own object and read as a lost race, so a transient failure throws {@link TransientError} instead. The resumable
+ * upload is a session of requests, which the SDK retries within by asking the session how much it holds; the SDK takes
+ * that retry from the client's options, not the call's, so it stays on.
  */
 class GcsUploadSink implements BlobSink {
   private readonly hash: Hash = createHash('sha256');
@@ -292,11 +298,12 @@ class GcsUploadSink implements BlobSink {
     if (this.failure !== undefined) throw this.failure;
     const sha256 = this.hash.digest('hex');
     if (this.stream === undefined) {
-      // Small object: a single simple (non-resumable) upload — write-once enforced everywhere (incl. the emulator).
-      await this.file.save(concatBytes(this.buffered, this.bufferedLen), {
-        resumable: false,
-        ...GcsUploadSink.WRITE_OPTS,
-      });
+      // Small object: one simple (non-resumable) upload, sent once — write-once enforced everywhere, the emulator too.
+      await saveOnce(
+        this.file,
+        concatBytes(this.buffered, this.bufferedLen),
+        GcsUploadSink.WRITE_OPTS,
+      );
       return { size: this.total, sha256 };
     }
     this.stream.end();

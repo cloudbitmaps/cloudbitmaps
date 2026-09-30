@@ -9,7 +9,11 @@
  *
  * **The atomic swap is offloaded to GCS's object preconditions.** `ifGenerationMatch: 0` is create-only
  * ("only if it does not exist") and `ifGenerationMatch: <generation>` is compare-and-swap — the same pair S3
- * spells `If-None-Match: *` / `If-Match: <etag>`. A lost race returns `412` → {@link WriteConflictError}.
+ * spells `If-None-Match: *` / `If-Match: <etag>`. A lost race returns `412` → {@link WriteConflictError}. Each write
+ * is one request sent once ({@link saveOnce}), so a `412` means another write got there first, never this one meeting
+ * itself after a lost response. A transient failure reaches the caller as {@link TransientError}: the write may or may
+ * not have landed, and the caller re-reads the row to learn where it stands.
+ *
  * **The version fence is the object's `generation`, not its ETag**: GCS mutates the generation on every
  * overwrite and it is the value `ifGenerationMatch` compares, so it is the only correct fence here. (Note
  * the unrelated collision of vocabulary — a GCS *object generation* has nothing to do with a CloudBitmaps
@@ -38,6 +42,7 @@ import {
 import type { ObjectRegistryStore, ObjectRow } from '@cloudbitmaps/core/driver-kit';
 import type { Storage } from '@google-cloud/storage';
 import { isNotFound, isPreconditionFailed, isTransient } from './gcs-errors';
+import { saveOnce } from './send-once';
 
 export interface GcsRegistryDriverOptions {
   /** A constructed `@google-cloud/storage` `Storage` client (point `apiEndpoint` at fake-gcs-server locally). */
@@ -104,14 +109,11 @@ class GcsStore implements ObjectRegistryStore {
     expect: 'absent' | { version: string },
   ): Promise<void> {
     try {
-      await this.file(key).save(Buffer.from(body), {
+      // One request, sent once: a replay of a write that landed would fail its own precondition, and read as a lost
+      // race. A registry row is a few hundred bytes, so a resumable session would also carry one round trip's worth
+      // of data over two.
+      await saveOnce(this.file(key), body, {
         contentType: 'application/json',
-        // `resumable: false` is load-bearing, not a tuning knob. `save()` otherwise opens a resumable
-        // session, and a registry row is a few hundred bytes — one round trip's worth of data carried over
-        // two. It also costs the fence: fake-gcs-server does not enforce `ifGenerationMatch` on the
-        // resumable path, so the whole integration lane would pass over a registry with no
-        // compare-and-swap at all. `GcsStorageDriver` pins the same flag for the same reason.
-        resumable: false,
         preconditionOpts: {
           ifGenerationMatch: expect === 'absent' ? 0 : generationFence(expect.version, key),
         },

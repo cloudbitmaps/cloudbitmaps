@@ -27,7 +27,10 @@ export interface S3StorageOptions {
   readonly bucket: string;
   /** Optional key prefix under which everything lives — generations and the registry alike. */
   readonly prefix?: string;
-  /** A constructed client. Supply one for a credential chain the SDK cannot infer; otherwise one is built. */
+  /**
+   * A constructed client. Supply one for a credential chain the SDK cannot infer; otherwise one is built. Its retry
+   * applies to every request except the conditional writes, which are sent once whatever it is configured to do.
+   */
   readonly client?: S3Client;
   /** Region for the client built when `client` is absent. Falls back to the SDK's own resolution. */
   readonly region?: string;

@@ -577,6 +577,21 @@ const client = new S3Client({
 });
 ```
 
+**Your client's own retry, and the writes it does not reach.** Each cloud SDK retries a failed request itself,
+under the store's retry. For a conditional write — a generation's write-once put, and the registry's create,
+compare-and-swap and delete, which writes a tombstone — that retry gives the wrong answer: a write that lands and then loses its response is sent again,
+meets itself, and fails its own precondition, which reads as a lost race for a write that won. So the storage
+packages send a conditional write once, with the SDK's retry off for that request alone. The client is otherwise
+left as it is, a client you pass in included, and every other request it makes keeps the retry rules the SDK gives
+it. A transient failure of a conditional write reaches its caller as `TransientError`, and the write may or may not
+have landed. Where each package stands:
+
+| package | conditional writes |
+|---|---|
+| `@cloudbitmaps/s3` | every one is sent once: the write-once `PutObject`, a multipart upload's `CompleteMultipartUpload`, and the registry's create, compare-and-swap and delete |
+| `@cloudbitmaps/gcs` | the registry's writes, and an object up to `simpleUploadThresholdBytes` (8 MiB by default), are each one request, sent once. A larger object is a resumable upload: a session of requests that the SDK retries within, under the client's retry options |
+| `@cloudbitmaps/azure-blob` | sent through the client's retry policy, which sends a request again after a network error or a 500 or 503. A write that landed and lost its response can therefore be reported as `WriteConflictError` |
+
 **Your data is safe across a transient fault.** Generations are write-once (no half-written object a reader could
 pick up); a publish only moves the pointer forward, and each attempt of its own conflict loop re-reads the row
 first, so no publish can regress it; and all bytes are checksum-verified before use. A fault costs a read some
@@ -598,8 +613,8 @@ guard setting and with or without a row ([publish is forward-only](#3-loading-a-
   load can publish: with `allowEmpty: true`, or onto a segment that holds no data.
 - **A late write reads as a lost race.** A request that timed out on your client can still land while the re-run is
   under way, and the re-run then reports `superseded`, with nothing new current when what landed late was the
-  object. Your SDK client's own retry sits below the library and can replay a conditional write after a lost
-  response, with the same result. So on a `superseded` right after a transient fault, check before you re-derive,
+  object. The Azure Blob client's retry policy, and the resumable session of a large GCS object, can replay a conditional
+  write after a lost response, with the same result. So on a `superseded` right after a transient fault, check before you re-derive,
   and run the load again if your ids are not current.
 - **Every attempt that landed takes a `keep` slot.** An attempt whose object landed, published or not, is one more
   generation below the re-run's pointer, so the default `keep: 1` keeps the latest of them and collects the

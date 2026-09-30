@@ -57,6 +57,15 @@ of client at once. Need the halves apart? This package also exports the two driv
 `createBackend` joins; see the
 [API reference](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/api-reference.md).
 
+## Retries on writes
+
+Every request goes through the client's retry policy, which sends a request again after a network error or a 500
+or 503, and that includes the conditional writes: a generation's write-once upload and commit, and the registry's
+create, compare-and-swap and delete, which writes a tombstone. A conditional write that lands and loses its response is therefore sent again, meets
+itself and fails its precondition, so it can be reported as `WriteConflictError` for a write that landed. Before
+treating such a write as lost, check: `store.generations(ref)` lists what the container holds, with the current
+generation marked. See [the getting-started guide](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#6-reliability-retries-backoff--timeouts).
+
 ## What this package is
 
 These drivers move opaque payload bytes, so they are codec-agnostic: the same package serves every codec

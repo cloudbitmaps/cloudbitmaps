@@ -64,6 +64,19 @@ a client against AWS. Need the halves apart, or a driver option such as `partByt
 two drivers and their option types, which `createBackend` joins; see the
 [API reference](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/api-reference.md).
 
+## Conditional writes are sent once
+
+The SDK sends a request again when it does not get the response. For a conditional write that turns a write that
+landed into a reported conflict: the second send meets the first and fails its precondition. So this package sends
+each conditional write once — the write-once `PutObject`, a multipart upload's `CompleteMultipartUpload`, and the
+registry's create, compare-and-swap and delete, which writes a tombstone — with the SDK's retry off for that request
+alone. A client you pass keeps its
+configuration, and every other request it makes keeps its retry.
+
+A transient failure of a conditional write throws `TransientError`, and the write may or may not have landed:
+`store.generations(ref)` lists what the bucket holds, with the current generation marked. See
+[the getting-started guide](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#6-reliability-retries-backoff--timeouts).
+
 ## What this package is
 
 These drivers move opaque payload bytes, so they are codec-agnostic: the same package serves every codec

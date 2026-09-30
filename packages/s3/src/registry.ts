@@ -8,9 +8,11 @@
  *
  * **The atomic swap is offloaded to S3's conditional writes** (GA Nov 2024): `If-None-Match: *` for
  * create-only and `If-Match: <etag>` for compare-and-swap, so a concurrent writer between our read and our
- * PUT loses with a `412` → {@link WriteConflictError}. Reads are strongly consistent (S3, since 2020),
- * satisfying the registry's `strongRead` contract. The client is **injected**, exactly like
- * {@link S3StorageDriver}.
+ * PUT loses with a `412` → {@link WriteConflictError}. Each conditional PUT is sent once, with the SDK's retry off
+ * for it ({@link sendOnce}), so a `412` means another write got there first, never this one meeting itself after a
+ * lost response. A transient failure reaches the caller as {@link TransientError}: the write may or may not have
+ * landed, and the caller re-reads the row to learn where it stands. Reads are strongly consistent (S3, since 2020),
+ * satisfying the registry's `strongRead` contract. The client is **injected**, exactly like {@link S3StorageDriver}.
  *
  * **Deployment requirements** (a backend/policy that violates these silently corrupts the registry):
  * - The backend **must honor `If-Match`** (AWS S3; recent MinIO). One that returns ETags but ignores the
@@ -37,6 +39,7 @@ import {
   type S3Client,
 } from '@aws-sdk/client-s3';
 import { isConditionalConflict, isNotFound, isTransient } from './s3-errors';
+import { sendOnce } from './send-once';
 
 export interface S3RegistryDriverOptions {
   /** A constructed S3 client (point its `endpoint` at MinIO for local/integration use). */
@@ -87,7 +90,9 @@ class S3Store implements ObjectRegistryStore {
     expect: 'absent' | { version: string },
   ): Promise<void> {
     try {
-      await this.client.send(
+      // Sent once: a replay of a write that landed would fail its own precondition, and read as a lost race.
+      await sendOnce(
+        this.client,
         new PutObjectCommand({
           Bucket: this.bucket,
           Key: key,

@@ -13,7 +13,7 @@ so, and so do the module headers in the code.
 
 ### Breaking
 
-The first two remove exports. The next seven make a call throw where it used to return: five of them fix a wrong
+The first two remove exports. The next eight make a call throw where it used to return: six of them fix a wrong
 answer, and the entries under **Fixed** say what the call returned before; two hold a call to a rule the rest of
 the library already kept. The five after them hold the store, the backends and the registry to what the library
 itself takes and writes, stop checking for a local store's older directory layout, and give its errors the
@@ -49,6 +49,15 @@ library's own brand. The last two change what `estimateCost()` compares with and
     `IntegrityError`. A load with `allowEmpty: true` and no `guard.minRetained` does not read it.
   - **Neither can be told to write a generation without publishing it, to write one with no registry, or to take its
     generation number from the caller.** `writeCrbmGeneration` and `publishGeneration` still do each of those, from bitmaps.
+- **On S3, and on GCS for the registry and for objects up to `simpleUploadThresholdBytes`, a conditional write that
+  fails transiently throws `TransientError`**, where the SDK used to send it again and the call could return: a
+  dropped connection, a timeout, a 5xx, throttling, and on S3 a signature refused for a clock minutes out, which the
+  SDK corrects before the next request. These writes are a generation's write-once put, which `store.load`, the
+  `*Into` verbs and an erasure's rewrite make, and the registry's create, compare-and-swap and delete, which writes a
+  tombstone, one of which every publish, `rollback`, `setRetention`, drop, crypto-shred and retention sweep makes. The write may or may not have landed: re-run the call, and
+  check what landed before treating the write as lost, since `store.generations(ref)` lists what the bucket holds with
+  the current generation marked. Every other request keeps the SDK's retry, and a client you pass keeps its
+  configuration.
 - **A pinned read of a segment whose row is gone or destroyed throws `NotFoundError`**, where it read empty,
   part-way through a call included. Catch it where a pin can outlive its segment: across a `dropSegment`, a
   `retireExpired` or a crypto-shred.
@@ -376,6 +385,21 @@ These two change what `estimateCost()` reports:
 - **`store.rollback(ref, generation, { allowForward: true })` did not compile.** Its options type took `audit`
   alone, though the call passed `allowForward` through to `rollbackSegment` and the docs showed it for undoing a
   rollback. The type now takes `allowForward`, as `rollbackSegment`'s does.
+- **A conditional write that landed and lost its response was reported as a conflict, on S3 and on GCS.** Each SDK
+  sends a request again when its response does not arrive, after a timeout, a reset connection or a 5xx, and a
+  conditional write sent again meets the one that landed and fails its own precondition. So a load reported
+  `published: false, reason: 'superseded'` for a generation it had just made current, and collected nothing; an
+  `*Into` verb threw `WriteConflictError` for a generation that was current; a load whose write-once put landed
+  reported that nothing was written, and left the object above the pointer; `rollback` threw `WriteConflictError`
+  after moving the pointer; and a crypto-shred reported `cryptoShredded: false, reason: 'already'`, and emitted no
+  `segment.erase` event, for a shred that had happened. The S3 driver now sends each conditional write once: it
+  replaces the client's retry step for that one command, so a client you pass, whatever its retry strategy or
+  `maxAttempts`, is otherwise unchanged. The GCS driver uploads the registry's rows, and objects up to
+  `simpleUploadThresholdBytes`, as one request with no retry loop around it, where `file.save()` wrapped the same
+  request in one. Tests drive both drivers through the real SDK, over a stub transport that applies a write and then
+  drops its response; each failed before the fix. Two paths are unchanged: Azure Blob, whose SDK takes its retry
+  policy from the client and has no per-request switch, and a GCS object above the threshold, which uploads as a
+  resumable session that the SDK retries within.
 - **`PRIVACY.md` said subject erasure is physical on return for more segments than it is.** Its table row, and
   the copy npm ships in `@cloudbitmaps/roaring`, said "on return" holds for every segment whose ledger entry is not
   `error: …`. An entry can also say `erased: false, note: 'superseded'`, when a racing writer overtook the rewrite:
