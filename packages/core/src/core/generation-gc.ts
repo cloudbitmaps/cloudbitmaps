@@ -3,11 +3,15 @@
  * superseded generations may be collected.
  *
  * Storage generations are write-once, generation-keyed objects (`<segment>.<gen>.crbm`) behind one registry pointer
- * (`currentGen`). Every write path in the library — a bulk load, an `*Into` materialisation, a subject-erasure
- * rewrite — writes a **new** object and then advances the pointer, forward-only for a load and fenced on its
- * source generation for the rewrite (see invariant 1). That leaves the superseded object
- * in the bucket, still billed, so something has to collect it: {@link gcOrphanGenerations}. Pure orchestration
- * over the driver ports — no I/O, time or randomness of its own.
+ * (`currentGen`). Every write path in the library — a load, an `*Into` materialisation, a subject-erasure rewrite —
+ * writes a **new** object and then advances the pointer. Every load that finds a row fences its publish on the
+ * row's token; a guarded load (the default, since the empty refusal reads the current generation) also fences on
+ * the pointer it judged (`expectFrom`), and one that found no row fences on that absence instead. Only an unguarded
+ * load (`allowEmpty: true` and no `guard.minRetained`) onto a segment with no row publishes bare forward-only. An
+ * `*Into` materialisation is a load, and publishes the same way. The rewrite is fenced on its source generation and
+ * the row's token (see invariant 1). That leaves the superseded object in the bucket, still billed, so something has
+ * to collect it: {@link gcOrphanGenerations}. Pure orchestration over the driver ports — no I/O, time or randomness
+ * of its own.
  */
 import { WriteConflictError } from './errors';
 import type { IStorageDriver, IRegistryDriver, SegmentRef } from './ports';

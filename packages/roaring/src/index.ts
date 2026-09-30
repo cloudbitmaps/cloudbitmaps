@@ -836,15 +836,18 @@ export class CloudRoaring {
   }
 
   /**
-   * Write `ids` as a **new generation of `dest`** and publish it forward-only — the shared body of the `*Into`
-   * verbs. The destination's previous generation stays readable until the publish lands (readers re-resolve
+   * Write `ids` as a **new generation of `dest`** and publish it — the shared body of the `*Into` verbs. An `*Into`
+   * materialisation is a load, and publishes the same way (hard invariant 1): every load that finds a row fences its
+   * publish on the row's token; a guarded load (the default, since the empty refusal reads the current generation)
+   * also fences on the pointer it judged (`expectFrom`), and one that found no row fences on that absence instead.
+   * Only an unguarded load (`allowEmpty: true` and no `guard.minRetained`) onto a segment with no row publishes bare
+   * forward-only. The destination's previous generation stays readable until the publish lands (readers re-resolve
    * within `cache.genTtlMs`).
    *
    * This routes through `loadSegment` rather than writing the generation itself, and that is the whole point
    * of it. A materialisation is a load whose ids happen to come from a combine instead of from upstream, so
    * everything `load()` learned the hard way applies unchanged: the generation is written UNPUBLISHED, the
-   * guard runs while the old generation is still authoritative, the publish is fenced (on the pointer it
-   * judged, on the row's identity, and — where it judged an ABSENT segment — on that absence), and a refused
+   * guard runs while the old generation is still authoritative, the publish is fenced as above, and a refused
    * object is reclaimed only after re-reading the row and finding the same incarnation (hard invariant 1:
    * deleting it after a purge-and-recreate would put a live row over a missing generation).
    *
