@@ -19,6 +19,36 @@ const SIZING = 'docs/guide/sizing.md';
 const GUIDE = 'docs/guide/getting-started.md';
 const page = (rel: string): string => readFileSync(join(ROOT, rel), 'utf8');
 
+function deepFreeze<T>(value: T): T {
+  if (typeof value === 'object' && value !== null && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const v of Object.values(value)) deepFreeze(v);
+  }
+  return value;
+}
+/**
+ * The script prices the same few thousand workloads on every run, and every case below runs it, so the prices are the
+ * bulk of a run. `estimateCost` is a pure function of its input, so a result is kept by the input that made it. It is
+ * kept frozen: the script is strict, so a change it tried to make to a shared result would throw rather than reach
+ * the next case. A case that serves another estimator through `mods` does not go through this, and every page and
+ * figure a case edits is still compared with the estimator's own answer.
+ */
+const priced = new Map<string, ReturnType<typeof core.estimateCost>>();
+const cachedCore: typeof core = {
+  ...core,
+  estimateCost: (input) => {
+    const key = JSON.stringify(input);
+    let report = priced.get(key);
+    if (report === undefined) {
+      report = deepFreeze(core.estimateCost(input));
+      priced.set(key, report);
+    }
+    return report;
+  },
+};
+// What git lists is the tree as committed, which the cases never change (they lay pages over it).
+const listed = new Map<string, string>();
+
 class Exit extends Error {
   constructor(readonly code: number) {
     super(`exit ${code}`);
@@ -66,7 +96,10 @@ function sizingCheck(
   const childProcess = {
     ...realCp,
     execFileSync: (cmd: string, args: string[], options: object) => {
-      const out = String(realCp.execFileSync(cmd, args, options));
+      const listKey = JSON.stringify([cmd, args]);
+      if (!listed.has(listKey))
+        listed.set(listKey, String(realCp.execFileSync(cmd, args, options)));
+      const out = listed.get(listKey)!;
       const kinds = args.filter((a) => a.startsWith('*.')).map((a) => a.slice(1));
       const extra = Object.keys(pages).filter(
         (p) => !realFs.existsSync(join(ROOT, p)) && kinds.some((k) => p.endsWith(k)),
@@ -77,7 +110,7 @@ function sizingCheck(
   const modules: Record<string, unknown> = {
     'node:fs': fs,
     'node:child_process': childProcess,
-    '@cloudbitmaps/core': core,
+    '@cloudbitmaps/core': cachedCore,
     ...mods,
   };
   const lines: string[] = [];
