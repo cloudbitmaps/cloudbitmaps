@@ -6,14 +6,13 @@
  * `@cloudbitmaps/roaring` should never have to pass one. So this module re-binds each such entry point with
  * {@link roaringCodec} and the facade re-exports these **explicitly**, which shadows the same names coming from
  * `export * from '@cloudbitmaps/core'` (an explicit export always wins over a star export). Net effect: an
- * application calls `bulkLoadCrbmGeneration(driver, key, ids)` with no options at all.
+ * application calls `loadSegment(ref, ids, deps)` or `eraseIdFromSegment(ref, id, deps)` with no codec at all.
  *
  * A caller who *wants* a different codec passes it explicitly; the binding only fills an absent one — via
  * `?? roaringCodec` rather than spread order, so an explicit `codec: undefined` still gets the binding
  * (`exactOptionalPropertyTypes` is off, so that call typechecks and must not fall through to the throw).
  */
 import {
-  bulkLoadCrbmGeneration as coreBulkLoad,
   eraseIdFromSegment as coreEraseIdFromSegment,
   loadSegment as coreLoadSegment,
   runExport as coreRunExport,
@@ -21,27 +20,9 @@ import {
 import { roaringCodec } from './roaring-codec';
 import { SystemClock } from './system-clock';
 
-type BulkLoad = typeof coreBulkLoad;
 type LoadSegment = typeof coreLoadSegment;
 type EraseIdFromSegment = typeof coreEraseIdFromSegment;
 type RunExport = typeof coreRunExport;
-
-/**
- * {@link coreBulkLoad} with the roaring codec **and a real clock** pre-bound.
- *
- * The clock is what makes a large load **cooperative**: bulk-load yields the event loop periodically instead of
- * stalling the process for its whole duration (measured end-to-end at 450 ms of unbroken blocking for a 1M-id
- * load, now ~19 ms worst case). `core/` cannot
- * default it — it is timer-free by lint, which is precisely why waiting goes through the `Clock` seam — so the
- * flavor package supplies it, exactly as it supplies the codec. A caller who passes their own clock (a virtual
- * one in a simulation, say) keeps it.
- */
-export const bulkLoadCrbmGeneration: BulkLoad = (driver, key, ids, options = {}) =>
-  coreBulkLoad(driver, key, ids, {
-    ...options,
-    codec: options.codec ?? roaringCodec,
-    clock: options.clock ?? new SystemClock(),
-  });
 
 /** {@link coreEraseIdFromSegment} with the roaring codec and a real (cooperative) clock pre-bound. */
 export const eraseIdFromSegment: EraseIdFromSegment = (ref, id, deps, options) =>
@@ -56,7 +37,15 @@ export const eraseIdFromSegment: EraseIdFromSegment = (ref, id, deps, options) =
 export const runExport: RunExport = (reader, registry, sink, options = {}) =>
   coreRunExport(reader, registry, sink, { ...options, codec: options.codec ?? roaringCodec });
 
-/** {@link coreLoadSegment} with the roaring codec and a real clock pre-bound, for the same reasons as above. */
+/**
+ * {@link coreLoadSegment} with the roaring codec **and a real clock** pre-bound.
+ *
+ * The clock is what makes a large load **cooperative**: the load yields the event loop periodically instead of
+ * stalling the process for its whole duration (a 1M-id load spread across the id space runs ~405 ms on an M3 Pro,
+ * and its longest stall measured ~21 ms). `core/` cannot default it — it is timer-free by lint, which is precisely why
+ * waiting goes through the `Clock` seam — so the flavor package supplies it, exactly as it supplies the codec. A
+ * caller who passes their own clock (a virtual one in a simulation, say) keeps it.
+ */
 export const loadSegment: LoadSegment = (ref, ids, deps, options = {}) =>
   coreLoadSegment(
     ref,

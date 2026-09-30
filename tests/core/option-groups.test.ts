@@ -5,7 +5,6 @@ import {
   CountingMetricsSink,
   MemoryStorage,
   MemoryRegistryDriver,
-  bulkLoadCrbmGeneration,
 } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryStorageChunkSource, SafeBitmap } from '@/index';
@@ -19,6 +18,7 @@ import type {
 } from '@/index';
 import { KeyUnavailableError, ValidationError, BudgetExceededError } from '@/core/errors';
 import type { SegmentRef } from '@/index';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 /**
  * The store takes one required `storage` plus four groups (`cache`, `encryption`, `retry`, `seams`);

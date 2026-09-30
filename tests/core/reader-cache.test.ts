@@ -1,10 +1,6 @@
-import {
-  CrbmStorageChunkSource,
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
-  bulkLoadCrbmGeneration,
-} from '@/index';
+import { CrbmStorageChunkSource, MemoryStorageDriver, MemoryRegistryDriver } from '@/index';
 import type { IStorageDriver } from '@/index';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 /**
  * Bounded storage-reader cache. `CrbmStorageChunkSource` keeps its opened readers (each carrying a fully-parsed

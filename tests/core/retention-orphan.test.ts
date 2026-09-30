@@ -1,13 +1,9 @@
-import {
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
-  bulkLoadCrbmGeneration,
-  gcOrphanGenerations,
-} from '@/index';
+import { MemoryStorageDriver, MemoryRegistryDriver, gcOrphanGenerations } from '@/index';
 import { openGenerationReader } from '@/core/crbm-storage-source';
 import { setSegmentRetention } from '@/core/retention';
 import { retireExpired } from '@/core/retention-sweep';
 import type { DropResult, IStorageDriver, RetireEntry, SegmentRef } from '@/index';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 /**
  * `dropSegment` reports two different facts: what its sweep deleted, and what is still there. The sweep loop

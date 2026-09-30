@@ -8,7 +8,6 @@ import {
   NotFoundError,
   TransientError,
   ValidationError,
-  bulkLoadCrbmGeneration,
   gcOrphanGenerations,
   setSegmentRetention,
 } from '@/index';
@@ -20,6 +19,7 @@ import { PinnedStorageChunkSource } from '@/core/pinned-storage-source';
 import type { PinnedAt } from '@/core/pinned-storage-source';
 import { BoundedLru } from '@/core/lru';
 import { roaringCodec } from '@/roaring-codec';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 /**
  * A pinned handle must only ever be handed chunks of the generation it pinned.

@@ -2,9 +2,10 @@
  * `loadSegment` — the loaded store's primary write path, as one call.
  *
  * A load is always the same four steps: take the next generation number, write one immutable object, move the
- * pointer, collect what the move superseded. Done by hand they are `nextGeneration` + `bulkLoadCrbmGeneration` +
- * `publishGeneration` + `gcOrphanGenerations`, and the step people leave out is the last one — so stores that
- * compose it themselves accumulate superseded generations they keep paying for. Composing it here is the point.
+ * pointer, collect what the move superseded. Inside the library they are `nextGeneration` +
+ * `bulkLoadCrbmGeneration` + `publishGeneration` + `gcOrphanGenerations`, and the step a hand-composed load leaves
+ * out is the last one, so a store that composed it would accumulate superseded generations it keeps paying for.
+ * Composing it here, once, is the point.
  *
  * The other reason it is one call is the **guard**. A load REPLACES a segment: whatever the stream contains is
  * what the segment contains afterwards. That makes an upstream query returning fewer rows than usual — or none —
@@ -14,10 +15,12 @@
  *
  * Refusing therefore has to clean up after itself. The object is already durable at that point, and it sits
  * ABOVE `currentGen`, where generation collection deliberately never looks (it deletes strictly below the
- * pointer). Nothing else would ever reclaim it, so a refused load deletes its own object before returning.
+ * pointer), so a refused load deletes its own object before returning, while the segment's row is unchanged or
+ * gone. Once another write has changed the row, the object's number may name a re-created segment's live object,
+ * so it stays, and collection takes it like any other generation once one above it is current.
  */
 import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
-import type { CodecInterface } from './codec';
+import { type CodecInterface, requireCodec } from './codec';
 import {
   bulkLoadCrbmGeneration,
   openGenerationReader,
@@ -78,7 +81,11 @@ export interface LoadOptions {
   /**
    * Generations to keep below the new pointer as a grace window (default 1). Keep at least one: a read that is
    * still fetching chunks from the just-superseded generation would otherwise have it deleted out from under it
-   * and pay a re-resolve. A wider window costs storage and buys nothing a pinned read would not do better.
+   * and pay a re-resolve. A wider window costs storage, and it is what a pinned handle needs: a pin is never
+   * re-resolved, so a chunk a pinned read has not fetched fails with `NotFoundError` once its generation is
+   * collected. Keep at least one generation for every one that can be written above the pinned one while your
+   * longest pinned job runs, on every writer that loads the segment — see "Sizing `keep`" in the getting-started
+   * guide.
    */
   readonly keep?: number;
   readonly audit?: IAuditSink;
@@ -89,11 +96,21 @@ export type LoadRefusal =
   | 'empty'
   | 'min-cardinality'
   | 'min-retained'
-  /** Another writer published a higher generation first. The object was written, then removed. */
+  /**
+   * Another writer got there first. Either another load wrote the same generation number first, so the write-once
+   * put refused this one and it wrote nothing (`size: 0`); or the segment's registry row changed while the load was
+   * writing: another load published, a retention change, a rollback or an erasure wrote the row, or the row was
+   * deleted. Once another write has changed the row, the object stays in the bucket, because its generation number
+   * may by then name another incarnation's live object; once the row is gone, the object is deleted.
+   */
   | 'superseded';
 
 export interface LoadResult {
-  /** The generation written. Present even when refused — it is what was deleted again. */
+  /**
+   * The generation written. Present even when refused: a refusal deletes that object while the segment's row is
+   * unchanged or gone, and leaves it in the bucket once another write has changed the row. A load that lost its
+   * generation number to another wrote nothing, and reports `size: 0`.
+   */
   readonly generation: number;
   /** Whether this generation is now the segment's current one. */
   readonly published: boolean;
@@ -176,6 +193,8 @@ export async function loadSegment(
   options: LoadOptions = {},
 ): Promise<LoadResult> {
   validateSegmentRef(ref);
+  // Before any round trip: a core caller that forgot the codec learns it from this call's name, not the loader's.
+  requireCodec(deps.codec, 'loadSegment');
   const keep = options.keep ?? 1;
   if (!Number.isInteger(keep) || keep < 0) {
     throw new ValidationError(`keep must be a non-negative integer; got ${String(keep)}`);
@@ -230,8 +249,17 @@ export async function loadSegment(
     // Another loader took this generation number first — write-once refused the second put. That is a lost race,
     // and `LoadRefusal` documents a lost race as `'superseded'`; letting a `WriteConflictError` escape here would
     // make a caller who branches on `published` (as the doc-comment tells them to) miss the one outcome they were
-    // told to expect. Nothing was written, so there is nothing to clean up.
+    // told to expect. Nothing was written, so there is nothing to clean up; the refusal is still audited, as every
+    // other one is, since a downstream reconciliation needs to know the replacement it asked for did not happen.
     if (!isWriteConflictError(err)) throw err;
+    audit.onEvent({
+      kind: 'segment.load-refused',
+      segment: ref.segment,
+      namespace: ref.namespace,
+      generation,
+      reason: 'superseded',
+      cardinality: 0,
+    });
     return {
       generation,
       published: false,
@@ -246,8 +274,8 @@ export async function loadSegment(
   }
 
   const refuse = async (reason: LoadRefusal): Promise<LoadResult> => {
-    // The object is durable and sits above `currentGen`, where collection never looks. Nothing else would ever
-    // reclaim it, so the refusal reclaims it here — but ONLY while this is still the same segment.
+    // The object is durable and sits above `currentGen`, where collection never looks until a later load numbers
+    // above it, so the refusal reclaims it here — but ONLY while this is still the same segment.
     //
     // A generation number identifies a generation within one incarnation of a row, and nothing more (invariant
     // 1). If the row was purged and the name re-created while this load was in flight, `nextGeneration` restarts

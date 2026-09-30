@@ -7,11 +7,11 @@ import {
   MemoryStorageDriver,
   MemoryRegistryDriver,
   SafeBitmap,
-  bulkLoadCrbmGeneration,
 } from '@/index';
 import type { ExportSink, ExportWriter, IKeystore, SegmentRef } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { UnsupportedError } from '@/core/errors';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 // `store.exportSegments` — dump every registered segment's current generation to a portable file via an injected sink. These
 // tests use an in-memory sink so they assert the actual bytes (roaring decodes back; ndjson parses back).

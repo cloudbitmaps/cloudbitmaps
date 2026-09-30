@@ -3,15 +3,11 @@ import { eraseIdFromSegment } from '@/core/erase-id';
 import { publishGeneration } from '@/core/crbm-storage-source';
 import { IntegrityError, ValidationError, WriteConflictError } from '@/core/errors';
 import { InProcessKeystore } from '@/drivers/crypto';
-import {
-  createBackend,
-  CloudRoaring,
-  MemoryStorageChunkSource,
-  bulkLoadCrbmGeneration,
-} from '@/index';
+import { createBackend, CloudRoaring, MemoryStorageChunkSource } from '@/index';
 import type { ChunkRef, IStorageDriver, IKeystore, SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { collect, loadedStore, seedSegment } from '../helpers/loaded';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 /**
  * The two fences that stand between the write-once protocol and a wrong answer, plus three guards. None of the
@@ -19,7 +15,7 @@ import { collect, loadedStore, seedSegment } from '../helpers/loaded';
  * as cases bolted onto those paths.
  *
  *  1 · **A publish that DERIVED its content from a generation must land only on that generation.** Forward-only
- *      is right for a load (its ids come from upstream, so it loses nothing by winning), and wrong for the
+ *      is right for an unguarded load (its ids come from upstream, so it loses nothing by winning), and wrong for the
  *      erasure rewrite (its content is `from` minus one bit, so winning over a newer generation silently
  *      discards whatever that generation added). `publishGeneration`'s `expectFrom` is that distinction.
  *  2 · **A segment's encryption posture is decided once, at its first generation.** A keystore is wired on the

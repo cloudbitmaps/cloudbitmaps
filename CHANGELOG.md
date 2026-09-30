@@ -13,11 +13,27 @@ so, and so do the module headers in the code.
 
 ### Breaking
 
-The first six make a call throw where it used to return. The first four each fix a wrong answer, and the entries
-under **Fixed** say what the call returned before. The next two hold a call to a rule the rest of the library
-already kept. The last five hold the store, the backends and the registry to what the library itself takes and
-writes, and give its errors the library's own brand.
+The first removes an export. The next six make a call throw where it used to return: four of them fix a wrong
+answer, and the entries under **Fixed** say what the call returned before; two hold a call to a rule the rest of
+the library already kept. The last five hold the store, the backends and the registry to what the library itself
+takes and writes, and give its errors the library's own brand.
 
+- **`bulkLoadCrbmGeneration` and `BulkLoadResult` are no longer exported**, from `@cloudbitmaps/core` or
+  `@cloudbitmaps/roaring`. Load with `store.load(ref, ids, options)`, or `loadSegment(ref, ids, deps, options)` where
+  you wire the drivers yourself. Either takes the next generation number itself and publishes, and returns a
+  `LoadResult` whose `published` says whether the load took effect, where the removed result said `becameCurrent`.
+  Five more differences can change what a job does:
+  - **A load collects.** Once it publishes, it deletes the generations the publish superseded, keeping the newest
+    `keep` below the new pointer (default `1`). The removed loader deleted nothing, so a job that keeps older
+    generations as `rollback` targets passes the `keep` it needs.
+  - **An empty result over a non-empty segment is refused**, as `published: false` with `reason: 'empty'`. Pass
+    `allowEmpty: true` when emptying the segment is the point.
+  - **A load fences its publish on the row it read**, so a `setRetention`, a `rollback` or an erasure that lands
+    while it writes makes it report `reason: 'superseded'`, where the removed loader published forward regardless.
+  - **A load reads the current generation's size to guard it**, so a current object that will not open throws
+    `IntegrityError`. A load with `allowEmpty: true` and no `guard.minRetained` does not read it.
+  - **Neither can be told to write a generation without publishing it, to write one with no registry, or to take its
+    generation number from the caller.** `writeCrbmGeneration` and `publishGeneration` still do each of those, from bitmaps.
 - **A pinned read of a segment whose row is gone or destroyed throws `NotFoundError`**, where it read empty,
   part-way through a call included. Catch it where a pin can outlive its segment: across a `dropSegment`, a
   `retireExpired` or a crypto-shred.
@@ -288,6 +304,15 @@ These make the library refuse what it used to ignore or accept, so that a wrong 
   that after a collection fault a re-run reports nothing for the segment, leaving the old generation to
   `gcOrphanGenerations` or a sweep; a re-run searches the superseded generations and collects it, as
   `SubjectErasureEntry.note` says.
+- **`LoadOptions.keep`'s doc said a wider window "buys nothing a pinned read would not do better".** A pin is never
+  re-resolved, so a pinned read fails with `NotFoundError` once its generation is collected, and for a job pinned
+  across loads `keep` is what keeps it readable. The doc now says so, and getting-started's "Sizing `keep`" table
+  has a row for a long job on a pinned handle: keep at least one generation for every one that can be written above
+  the pinned one while it runs, on every writer that loads the segment.
+- **A load that lost its generation number to another load emitted no audit event.** Every other refusal emits
+  `segment.load-refused`, and this one reported `reason: 'superseded'` to the caller alone, so an audit trail could
+  not tell the replacement it asked for had not happened. It now emits `segment.load-refused` with `reason:
+  'superseded'` and `cardinality: 0`, since it wrote nothing.
 
 - **A pinned handle could read chunks of another generation than the one it pinned.** A live read of the same
   segment on the same store cached each chunk it fetched under the version it had resolved when it began — but if,

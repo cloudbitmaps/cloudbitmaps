@@ -5,10 +5,11 @@ import { NotFoundError, ValidationError } from '@/core/errors';
 import { destroySegment } from '@/core/erasure';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { randomBytes } from 'node:crypto';
-import { MemoryStorage, CloudRoaring, RecordingAuditSink, bulkLoadCrbmGeneration } from '@/index';
+import { MemoryStorage, CloudRoaring, RecordingAuditSink } from '@/index';
 import { WriteConflictError } from '@/core/errors';
 import type { SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 /**
  * `listGenerations` / `rollbackSegment` — see what a segment has been, and put it back.

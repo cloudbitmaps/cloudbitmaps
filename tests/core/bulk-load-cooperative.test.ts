@@ -1,10 +1,10 @@
-import { MemoryStorageDriver } from '@/index';
+import { CloudRoaring, MemoryStorage, MemoryStorageDriver } from '@/index';
 import { bulkLoadCrbmGeneration as coreBulkLoad } from '@/core/crbm-storage-source';
-import { bulkLoadCrbmGeneration } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { SystemClock } from '@/system-clock';
 import { YIELD_EVERY } from '@/core/cooperative';
 import { joinId } from '@/core/bit-route';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 // Bulk-load must not hold Node's only thread for the duration of the load.
 //
@@ -69,10 +69,11 @@ async function loopTurnsDuring<T>(load: () => Promise<T>): Promise<{ turns: numb
 
 describe('bulk-load is cooperative', () => {
   it('lets the event loop turn hundreds of times during a load that would otherwise block it entirely', async () => {
+    const store = new CloudRoaring({ storage: new MemoryStorage() });
     const { turns, result } = await loopTurnsDuring(() =>
-      bulkLoadCrbmGeneration(new MemoryStorageDriver() as never, KEY as never, ids),
+      store.load({ segment: KEY.segment, namespace: KEY.namespace }, ids),
     );
-    // The flavor package pre-binds a real clock, so this is what an ordinary caller gets with no wiring at all.
+    // The flavor package gives `store.load()` a real clock, so this is what an ordinary caller gets with no wiring.
     //
     // The bound is derived from the fixture rather than picked to be safely low: CHUNKS/YIELD_EVERY chunk-level
     // yields must happen in each of the flush, tally and write loops, so losing any ONE of them drops the count
@@ -131,23 +132,5 @@ describe('bulk-load is cooperative', () => {
     const chunkYields = Math.floor(CHUNKS / YIELD_EVERY) * 3;
     expect(clock.yields).toBeGreaterThanOrEqual(ingestYields + chunkYields);
     expect((result as { cardinality: number }).cardinality).toBe(new Set(ids).size);
-  });
-
-  it('accepts an explicitly injected clock instead of the pre-bound one', async () => {
-    // A simulation wires a virtual clock; the binding must fill an absent clock, never override a supplied one.
-    let yields = 0;
-    const counting = new SystemClock();
-    const spy = {
-      now: () => counting.now(),
-      sleep: (ms: number) => counting.sleep(ms),
-      yieldNow: () => {
-        yields += 1;
-        return counting.yieldNow();
-      },
-    };
-    await bulkLoadCrbmGeneration(new MemoryStorageDriver() as never, KEY as never, ids, {
-      clock: spy,
-    } as never);
-    expect(yields).toBeGreaterThan(20);
   });
 });

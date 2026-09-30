@@ -378,7 +378,7 @@
               <b>last</b>, by compare-and-swap, and only <b>forward</b>. Until it does, every reader still sees
               generation 6 &mdash; so a half-written publish cannot be observed, a crash between the two steps
               leaves 6 authoritative, and the superseded object stays readable for a grace window before the
-              sweep collects it. Every write in the library is this same protocol.
+              next load collects it. Every write in the library is this same protocol.
             </p>
           </figure>
         </div>
@@ -576,8 +576,8 @@
               stale generation shows up as a mismatch. The write protocol gets named tests of its own for the
               cases that are otherwise arguments: a crash between the object write and the publish leaves the
               previous generation authoritative; a publish arriving out of order, or onto a destroyed segment,
-              is refused rather than applied; and a load that lost the write-once race takes the generation
-              above the object that beat it, leaving that object intact. Time and randomness are injected
+              is refused rather than applied; and a load that lost the write-once race reports it, leaving the
+              object that beat it intact. Time and randomness are injected
               rather than ambient, so a failure is reproducible instead of being a story about a flaky test.
             </span>
           </li>
@@ -624,8 +624,8 @@
             <span class="rl-note">
               A set changes only by loading a new generation, so correcting one id costs a rewrite of the
               segment that holds it. Immutability is what buys the untearable read and the physical erasure;
-              the price is that nothing is cheap to edit, and that the retention sweep which collects
-              superseded generations is a job you schedule.
+              the price is that nothing is cheap to edit, and that the retention sweep which retires expired
+              segments is a job you schedule.
             </span>
           </li>
         </ul>

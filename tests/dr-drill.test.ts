@@ -8,10 +8,10 @@ import {
   LocalFsStorageDriver,
   LocalFsRegistryDriver,
   NotFoundError,
-  bulkLoadCrbmGeneration,
   runConsistencyCheck,
 } from '@/index';
 import type { Segment, SegmentRef } from '@/index';
+import { bulkLoadCrbmGeneration } from './helpers/bulk-load';
 
 /**
  * Executable DR drill — the [disaster-recovery runbook](docs/guide/disaster-recovery.md)

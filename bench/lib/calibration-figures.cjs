@@ -40,8 +40,8 @@ const { planLayout, DEFAULT_LAYOUT, EVIDENCE_DIR, CHUNK_SPAN } = require('./cali
 
 /**
  * What `store.load()` bills, in requests, as `tests/bench/calibrate-guards.test.ts` counts them against local
- * drivers and the real registry protocol — which the harness does not time, since it calls
- * `bulkLoadCrbmGeneration` with the generation given. PUT-class: the object, two listings (one to choose the
+ * drivers and the real registry protocol — which run 2026-09-23-94416 did not time: its harness wrote and published
+ * with the generation given, where the harness now times `store.load()` itself. PUT-class: the object, two listings (one to choose the
  * generation, one to collect after the publish) and the pointer. GETs: seven pointer reads on a segment's first
  * load; a reload also reads the current generation's index; from the third load on, the collection pass re-reads
  * the pointer before its delete. The test asserts these numbers, so the prices below cannot drift from what runs.
@@ -182,6 +182,14 @@ function derive(run, src) {
   );
   check(run.projectionExceeded === undefined, 'the run exceeded its own projection');
   check(it.cold === true && it.exact === true, 'its intersects are not recorded as cold and exact');
+  // A run whose load stage timed `store.load()` makes two listings and more pointer reads per load than the write
+  // and publish this derivation prices, and its collection pass reads the pointer where the intersects do. Deriving
+  // it here would publish wrong figures that every gate then required, so it is refused until the derivation
+  // prices that load.
+  check(
+    run.phases?.load?.via === undefined,
+    `its load stage timed ${run.phases?.load?.via}, which this derivation does not price yet`,
+  );
   check(
     run.pricing === src.pricing.name,
     `it was priced with "${run.pricing}", which is not the library's profile "${src.pricing.name}"`,

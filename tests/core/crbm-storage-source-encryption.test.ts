@@ -9,7 +9,6 @@ import {
   LocalFsRegistryDriver,
   MemoryStorageDriver,
   MemoryRegistryDriver,
-  bulkLoadCrbmGeneration,
 } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
 import {
@@ -19,6 +18,7 @@ import {
   ValidationError,
 } from '@/core/errors';
 import type { IStorageDriver, IKeystore, SegmentRef } from '@/index';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 const SEG: SegmentRef = { segment: 's' };
 const IDS = [1, 2, 3, 100_000, 2_000_000_000];

@@ -14,11 +14,11 @@ import { AzureBlobRegistryDriver } from '@/azure-blob/registry';
 import { AzureBlobStorage } from '@cloudbitmaps/azure-blob';
 import { isConditionalConflict } from '@/azure-blob/azure-errors';
 import { CrbmStorageChunkSource, writeCrbmGeneration } from '@/core/crbm-storage-source';
-// bulk-load is codec-bound: import the public (flavor) entry point, exactly as an application would.
-import { CloudRoaring, bulkLoadCrbmGeneration } from '@/index';
+import { CloudRoaring } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
 import { NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { GenKey } from '@/core/ports';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 /**
  * A keyspace unique to THIS run.
@@ -236,8 +236,8 @@ describe('AzureBlobStorageDriver specifics (Azurite)', () => {
 
 describe('AzureBlobStorageDriver end-to-end through the engine (Azurite)', () => {
   // Proves the driver works behind a real `CloudRoaring` store — not just the low-level storage-source contract:
-  // bulk-load two segments to Azure Blob, then count + chunk-skipping intersect via the engine's public API.
-  it('bulk-load → Azure Blob → engine count / iterate / intersect (multi-chunk, chunk-skipping)', async () => {
+  // load two segments to Azure Blob, then count + chunk-skipping intersect via the engine's public API.
+  it('load → Azure Blob → engine count / iterate / intersect (multi-chunk, chunk-skipping)', async () => {
     const driver = new AzureBlobStorageDriver({
       containerClient: container,
       prefix: `${RUN}/e2e/${n++}`,

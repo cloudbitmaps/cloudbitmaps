@@ -1,10 +1,4 @@
-import {
-  CloudRoaring,
-  LocalFsStorage,
-  MemoryStorage,
-  bulkLoadCrbmGeneration,
-  nextGeneration,
-} from '@/index';
+import { CloudRoaring, LocalFsStorage, MemoryStorage, nextGeneration } from '@/index';
 import { S3Storage } from '@cloudbitmaps/s3';
 import { GcsStorage } from '@cloudbitmaps/gcs';
 import { GCS_STORAGE_OPTION_KEYS } from '@/gcs/backend';
@@ -17,6 +11,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { SameKeys } from '../helpers/types';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 // Azurite's fixed, publicly-documented dev account + key (not a secret — the same value ships in every SDK).
 // Constructing a client parses this string but talks to nothing, which is all these wiring tests need.

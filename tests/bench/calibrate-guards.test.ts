@@ -12,12 +12,12 @@ import {
   CloudRoaring,
   MemoryStorage,
   MemoryStorageDriver,
-  bulkLoadCrbmGeneration,
   createBackend,
 } from '@/index';
 import { WriteConflictError } from '@/core/errors';
 import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
 import { CountingObjectStore, counting } from '../helpers/counting';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 // Guards on a script that spends real money against a real cloud account. Each case below plants the defect its
 // guard prevents, because a guard nobody can plant a defect against is decoration.
@@ -412,39 +412,65 @@ describe('calibrate guards — what a real run is held to', () => {
   });
 
   // Run 2026-09-23-94416's GETs add up only with the loads counted: 36 pointer reads that each answered 404, three
-  // per load of a new segment. The loader reads the row, the publish reads it again, and the registry reads it once
-  // more before its conditional write — and a publish that loses its race goes round again, up to the retry bound,
-  // then reads the row one last time. A projection allowing one read per attempt holds only because nothing races
-  // the harness's loads, and a bound that holds only by luck is not a bound.
-  it('projects every pointer read a load can make, even when each publish attempt loses its race', async () => {
-    const load = async (lostRaces: number): Promise<{ reads: number; writes: number }> => {
-      const store = new CountingObjectStore(lostRaces);
-      const registry = new ObjectStoreRegistry(store, undefined, () => 0);
+  // per load of a new segment. A projection allowing one read per attempt would hold only because nothing races the
+  // harness's loads, and a bound that holds only by luck is not a bound. The harness times `store.load()`, which
+  // also lists the segment twice, so every request a load can make is counted here, at every number of lost races
+  // up to the retry bound, against local drivers and the real registry protocol.
+  it('projects every request a load can make, even when each publish attempt loses its race', async () => {
+    const load = async (
+      lostRaces: number,
+    ): Promise<{ reads: number; writes: number; objects: number; lists: number }> => {
+      const calls: Record<string, number> = {};
+      const pointer = new CountingObjectStore(lostRaces);
+      const store = new CloudRoaring({
+        storage: createBackend({
+          storage: counting(new MemoryStorageDriver(), calls),
+          registry: new ObjectStoreRegistry(pointer, undefined, () => 0),
+        }),
+      });
       try {
-        await bulkLoadCrbmGeneration(
-          new MemoryStorageDriver(),
-          { segment: 's', generation: 0 },
-          [1, 2, 3],
-          { registry },
-        );
+        await store.load({ segment: 's' }, [1, 2, 3]);
       } catch (err) {
         if (!(err instanceof WriteConflictError)) throw err;
       }
-      return { reads: store.reads, writes: store.writes };
+      return {
+        reads: pointer.reads,
+        writes: pointer.writes,
+        objects: calls.putImmutable ?? 0,
+        lists: calls.list ?? 0,
+      };
     };
-    // Nothing racing: three reads and the one conditional write, as run 2026-09-23-94416 measured.
-    expect(await load(0)).toEqual({ reads: 3, writes: 1 });
-    const worst = await load(guards.RETRY_BOUND);
-    expect(worst.writes).toBe(guards.RETRY_BOUND);
+    // Nothing racing: seven reads, two listings, the object and the one conditional write.
+    expect(await load(0)).toEqual({ reads: 7, writes: 1, objects: 1, lists: 2 });
     const p = guards.projectOps({
       loads: 1,
       reads: 0,
       chunksPerRead: 0,
       retryBound: guards.RETRY_BOUND,
     });
-    expect(p.get).toBeGreaterThanOrEqual(worst.reads);
-    // The generation's own PUT, then every attempt at the pointer.
-    expect(p.put).toBeGreaterThanOrEqual(1 + worst.writes);
+    const PARTS = 3;
+    const large = guards.projectOps({
+      loads: 0,
+      largeLoads: 1,
+      partsPerLargeLoad: PARTS,
+      reads: 0,
+      chunksPerRead: 0,
+      retryBound: guards.RETRY_BOUND,
+    });
+    for (let lost = 0; lost <= guards.RETRY_BOUND; lost++) {
+      const worst = await load(lost);
+      expect(p.get, `${lost} lost races`).toBeGreaterThanOrEqual(worst.reads);
+      // The object, the listings, then every attempt at the pointer; on S3 a listing bills at the PUT rate.
+      expect(p.put, `${lost} lost races`).toBeGreaterThanOrEqual(
+        worst.objects + worst.lists + worst.writes,
+      );
+      // A multipart load lists and publishes the same way; only its object differs, as a create, the parts and a
+      // complete.
+      expect(large.get, `multipart, ${lost} lost races`).toBeGreaterThanOrEqual(worst.reads);
+      expect(large.put, `multipart, ${lost} lost races`).toBeGreaterThanOrEqual(
+        2 + PARTS + worst.lists + worst.writes,
+      );
+    }
   });
 
   it('flags a run that exceeded its projection, and only then', () => {
@@ -1448,13 +1474,17 @@ describe('the meter counts every attempt the SDK makes, not every send', () => {
   });
 
   // The store has a retry layer of its own, above the client's, and it re-runs a failed read INSIDE the timed
-  // window. The client's one-attempt pin does not reach it, so the timed store turns it off.
-  it("the timed reads run with the store's own retry off, and its pointer refresh off", () => {
+  // window. The client's one-attempt pin does not reach it, so every store the harness builds turns it off: the one
+  // that times the reads, and the one that times the loads.
+  it('every store the harness times runs with its own retry off, and its pointer refresh off', () => {
     expect(guards.TIMED_STORE.retry).toBe(false);
     expect(guards.TIMED_STORE.cache.genTtlMs).toBe(0);
     const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
-    expect(src.match(/new CloudRoaring\(/g)?.length).toBe(1);
-    expect(src).toMatch(/new CloudRoaring\(\{\s*storage,\s*\.\.\.TIMED_STORE\s*\}\)/);
+    const built = src.match(/new CloudRoaring\(/g)?.length ?? 0;
+    const timed =
+      src.match(/new CloudRoaring\(\{\s*storage,\s*\.\.\.TIMED_STORE\s*\}\)/g)?.length ?? 0;
+    expect(built).toBe(2);
+    expect(timed).toBe(built);
   });
 
   it('counts a request that needed no retry exactly once', async () => {
@@ -1550,13 +1580,13 @@ describe("a cold intersect's request count does not depend on the network", () =
   });
 });
 
-// The harness times `bulkLoadCrbmGeneration` with the generation number given: a load's write and its publish.
-// `store.load()`, the one-call load the guide leads with, also works out the next generation from a listing, reads
-// the current one's cardinality to guard against a shrink, and collects superseded generations after the publish.
-// The benchmarks page says it should cost roughly twice as much, with no run behind the figure — so the requests it
-// adds are counted here, against local drivers and the real registry protocol. On S3 a listing bills at the PUT rate.
-describe('what the harness does not measure: store.load()', () => {
-  it('lists twice, and reads the pointer four more times, beyond a write and publish', async () => {
+// Run 2026-09-23-94416 timed a load's write and its publish alone. `store.load()`, the one-call load the guide leads
+// with and what the harness now times, also works out the next generation from a listing, reads the current one's
+// cardinality to guard against a shrink, and collects superseded generations after the publish. The benchmarks page
+// prices it from the requests counted here, against local drivers and the real registry protocol, until a run
+// measures it. On S3 a listing bills at the PUT rate.
+describe('what a load requests: store.load()', () => {
+  it('writes one object and the pointer once, lists twice, and reads the pointer seven or eight times', async () => {
     const storageCalls: Record<string, number> = {};
     const pointer = new CountingObjectStore(0);
     const store = new CloudRoaring({
@@ -1581,8 +1611,8 @@ describe('what the harness does not measure: store.load()', () => {
         pointerWrites: pointer.writes,
       };
     };
-    // A write and publish alone is 1 object write, 1 pointer write and 3 pointer reads (the test above). A segment's
-    // first load through store.load() adds two listings and four pointer reads.
+    // A segment's first load: the object and the pointer written once each, one listing to number the generation
+    // and one to collect, and seven pointer reads.
     const first = await load([1, 2, 3]);
     expect(first).toEqual({
       putImmutable: 1,

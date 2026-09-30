@@ -2,8 +2,8 @@ import fc from 'fast-check';
 import { collect, loadedStore } from './helpers/loaded';
 
 /**
- * Property tests against a `Set` oracle. Every generation here is written through the real load
- * path (`bulkLoadCrbmGeneration` + publish), so the properties hold over the shape production actually stores:
+ * Property tests against a `Set` oracle. Every generation here is written by the loader `store.load()` is built
+ * on, and published, so the properties hold over the shape production actually stores:
  * a published `.crbm` generation, read back chunk by chunk.
  *
  * The oracle is a plain `Set` — deliberately the dumbest possible model of "a segment is a set of u32". Any

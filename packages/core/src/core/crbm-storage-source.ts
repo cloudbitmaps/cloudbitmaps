@@ -4,7 +4,7 @@
  * `CrbmStorageChunkSource` implements the {@link StorageChunkSource} the engine reads through, over an
  * {@link IStorageDriver}: it resolves a segment's current generation, opens its {@link CrbmReader} once, and serves
  * per-chunk payloads. `writeCrbmGeneration` / `writeCrbmGenerationStream` are the write primitives (a generation
- * built from bitmaps, in memory or streamed), `bulkLoadCrbmGeneration` is the load path over them, and
+ * built from bitmaps, in memory or streamed), `bulkLoadCrbmGeneration` is the loader `load()` is built on, and
  * `publishGeneration` is the forward-only pointer advance every write ends with.
  */
 import {
@@ -949,7 +949,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
 }
 
 /**
- * Write one immutable generation from in-memory bitmaps (the seed / bulk-load primitive). Chunks are
+ * Write one immutable generation from in-memory bitmaps. Chunks are
  * sorted ascending and empty bitmaps skipped (empty chunks are never stored). Returns the driver's
  * `{ size, sha256 }` for the written object. Pass `options.crypto` to AES-256-GCM-encrypt the generation
  * (built from the segment's DEK, with associated data bound to `(segment, generation)`).
@@ -1274,13 +1274,14 @@ export async function bulkLoadCrbmGeneration(
      * DEK comes back on the result so the deferred publish can store it.
      *
      * A caller that defers the publish owns what it wrote: an unpublished object sits ABOVE `currentGen`, where
-     * generation collection deliberately never looks, so nothing else will ever reclaim it.
+     * generation collection deliberately never looks, so nothing reclaims it until a later generation above it is
+     * current.
      */
     publish?: boolean;
   } = {},
 ): Promise<BulkLoadResult> {
   if (options.keystore === undefined && options.requireEncryption === true) {
-    throw new ValidationError('requireEncryption: bulk-load needs a keystore to write encrypted');
+    throw new ValidationError('requireEncryption: a load needs a keystore to write encrypted');
   }
   const codec = requireCodec(options.codec, 'bulkLoadCrbmGeneration');
   const byChunk = new Map<number, CodecBitmap>();
@@ -1375,7 +1376,7 @@ export async function bulkLoadCrbmGeneration(
   }
 
   if (options.keystore !== undefined && options.registry === undefined) {
-    throw new ValidationError('bulk-load encryption requires a registry to store the wrapped DEK');
+    throw new ValidationError('an encrypted load requires a registry to store the wrapped DEK');
   }
   // Read the segment's record once (when a registry is wired): to refuse writing to a crypto-shredded segment
   // (which would create unreadable/unreachable bytes), and to reuse its DEK if it's encrypted.
@@ -1398,7 +1399,7 @@ export async function bulkLoadCrbmGeneration(
     options.keystore === undefined
   ) {
     throw new KeyUnavailableError(
-      `segment "${key.segment}" is encrypted but this bulk-load has no keystore — refusing to write a cleartext ` +
+      `segment "${key.segment}" is encrypted but this load has no keystore — refusing to write a cleartext ` +
         `generation onto an encrypted segment. Pass the keystore holding its DEK.`,
     );
   }

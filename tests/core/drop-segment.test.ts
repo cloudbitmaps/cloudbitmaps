@@ -3,7 +3,6 @@ import {
   MemoryStorage,
   CloudRoaring,
   CrbmStorageChunkSource,
-  bulkLoadCrbmGeneration,
   dropSegment,
   gcOrphanGenerations,
   publishGeneration,
@@ -17,6 +16,7 @@ import {
 } from '@/core/errors';
 import type { DropDeps, IKeystore, SegmentRef } from '@/index';
 import { loadedStore } from '../helpers/loaded';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 /**
  * `dropSegment` — the operational sibling of crypto-shred: it deletes the objects.

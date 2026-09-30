@@ -117,16 +117,17 @@ function projectOps({
   if (!Number.isInteger(operandsPerRead) || operandsPerRead < 1) {
     throw new Error(`operandsPerRead must be a positive integer, got ${operandsPerRead}`);
   }
-  // A load: the generation PUT, then the pointer advance — a conditional PUT, each attempt of which can lose the
-  // compare-and-swap and go round again. Its reads are more than one per attempt: the loader reads the row before
-  // it writes, each attempt reads it again and the registry reads it once more before its conditional write, and a
-  // publish that loses every attempt reads it a last time. So a load of a new segment makes three GETs even with
-  // nothing racing it — run 2026-09-23-94416 measured 36 across 12 loads — and twelve at worst. The harness is the
-  // only writer, so its loads never race; the bound still has to hold if one did.
-  const putPerLoad = 1 + retryBound;
-  const getPerLoad = 2 + 2 * retryBound;
-  // A multipart load: create + parts + complete for the object, then the same pointer advance.
-  const putPerLargeLoad = 2 + partsPerLargeLoad + retryBound;
+  // A load, `store.load()` of a new segment: the object PUT, two listings (one to choose the generation number, one
+  // to collect after the publish; on S3 a listing bills at the PUT rate), then the pointer advance — a conditional
+  // PUT, each attempt of which can lose the compare-and-swap and go round again. Its reads are more than one per
+  // attempt: counted against the real registry protocol in tests/bench/calibrate-guards.test.ts, a load of a new
+  // segment reads the pointer seven times with nothing racing it, twice more for each attempt it loses, and fifteen
+  // times at most; one that loses every attempt throws after fourteen. The harness is the only writer, so its loads
+  // never race; the bound still has to hold if one did.
+  const putPerLoad = 3 + retryBound;
+  const getPerLoad = 5 + 2 * retryBound;
+  // A multipart load: create + parts + complete for the object, then the same listings and pointer advance.
+  const putPerLargeLoad = 4 + partsPerLargeLoad + retryBound;
   // A read, per operand: resolve the pointer, read the footer and the index, then one GET per chunk fetched.
   // Three fixed GETs is the generous reading of "open a generation": the pointer, the tail read, and a second read
   // for an index longer than the tail. The pointer is read once only because the timed store has no timed refresh

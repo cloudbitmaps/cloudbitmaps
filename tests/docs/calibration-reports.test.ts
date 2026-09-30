@@ -545,6 +545,21 @@ describe('calibration reports are held to their evidence', () => {
     });
   });
 
+  // The harness now times `store.load()`, whose requests this derivation does not price. Its next file must be
+  // refused, loudly, rather than derive a write and publish's figures from a different load.
+  describe('a run that timed store.load()', () => {
+    it('is refused until the derivation prices that load', () => {
+      const file = EVIDENCE.find((e) => e.includes('2026-09-23-94416'));
+      expect(file).toBeDefined();
+      if (file === undefined) return;
+      const run = JSON.parse(read(file)) as { phases: { load: Record<string, unknown> } };
+      expect(() => figures.derive(run, SOURCES)).not.toThrow();
+      const later = structuredClone(run);
+      later.phases.load.via = 'store.load()';
+      expect(() => figures.derive(later, SOURCES)).toThrow(/timed store\.load\(\)/);
+    });
+  });
+
   describe.each(EVIDENCE.map((file) => ({ file, id: basename(file, '.json') })))(
     'run $id',
     ({ file, id }) => {

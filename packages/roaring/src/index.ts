@@ -11,8 +11,8 @@
  * so resolves generations by list-scanning storage (**cleartext and read-only**), and an already-built
  * {@link StorageChunkSource} for advanced reader options you configure yourself.
  *
- * **Data gets in by loading a generation**, never by mutating one: `bulkLoadCrbmGeneration` streams a set of ids
- * into one immutable object and publishes it forward-only. Every other write in the library is a load in
+ * **Data gets in by loading a generation**, never by mutating one: `store.load()` streams a set of ids into one
+ * immutable object and publishes it forward-only. Every other write in the library is a load in
  * disguise — `intersectInto`/`unionInto`/`andNotInto` write a new generation of their destination, and
  * `eraseSubject` rewrites a generation without one id. Reads (`has`/`count`/`iterate`/`intersect`/`union`/`andNot`)
  * see whole, checksum-verified generations and nothing else.
@@ -394,7 +394,10 @@ export type MaterializeRefusal = Exclude<LoadRefusal, 'superseded'>;
 
 /** What an `*Into` verb wrote: the new generation of the destination, and whether it became current. */
 export interface MaterializeResult {
-  /** The generation written. Present even when refused — it is what was written and then deleted again. */
+  /**
+   * The generation written. Present even when refused: the refusal deleted that object, unless the destination's
+   * row changed while it was writing, which leaves it in the bucket.
+   */
   readonly generation: number;
   /**
    * Whether this generation is now the destination's current one.
@@ -910,7 +913,8 @@ export class CloudRoaring {
       // materialisation that silently did not take effect is the one outcome a caller cannot detect on its
       // own.
       // `size > 0` distinguishes the two ways a materialisation loses the race, and the operator needs them
-      // apart: the object either exists as an orphan above the pointer (collected by the next sweep) or was
+      // apart: the object either exists as an orphan above the pointer (collected by the first load that collects
+      // once a generation above it is current, or by `gcOrphanGenerations`) or was
       // never written at all, because the write-once PUT itself collided. Telling someone to look for an
       // orphan that does not exist is a wasted investigation.
       // Deliberately does NOT assert which of the four causes it was. "A newer generation was published first"
@@ -1243,8 +1247,8 @@ export class CloudRoaring {
    * attention to and everybody pays for.
    *
    * ```ts
-   * const r = await store.load('audience:active', idsFromWarehouse, {
-   *   guard: { maxShrink: 0.5 },   // refuse a load that drops more than half the segment
+   * const r = await store.load({ segment: 'audience:active' }, idsFromWarehouse, {
+   *   guard: { minRetained: 0.5 }, // refuse a load that would drop more than half the segment
    * });
    * if (!r.published) console.warn(`load refused: ${r.reason}`);
    * ```
@@ -1262,15 +1266,22 @@ export class CloudRoaring {
    * `eraseIdFromSegment` instead, because three of its four refusals are expected guard outcomes rather than
    * faults.
    *
-   * The object written for a refused load is deleted again before returning — it sits above `currentGen`, where
-   * generation collection deliberately never looks, so nothing else would reclaim it. The exception is a load
-   * that finds the segment **re-created** underneath it: the generation number it holds may then name the new
-   * incarnation's live object, so it leaves the orphan rather than risk deleting live data.
+   * `'superseded'` means another writer got there first: another load took the same generation number, so this
+   * one wrote nothing (`size: 0`), or the segment's registry row changed while the load was writing — another load
+   * published, a retention change, a rollback or an erasure wrote the row, or the row was deleted.
    *
-   * Two things it does **throw** for, rather than report: a crypto-shredded segment (`ValidationError` — there
-   * is no key to write under), and a collection pass that could not prove the segment was still the same one
-   * (`WriteConflictError`). The second can be raised **after** the publish already landed, so a throw does not
-   * by itself mean the load did not take effect — re-read the pointer rather than assuming.
+   * A refused load deletes the object it wrote before returning — it sits above `currentGen`, where generation
+   * collection deliberately never looks — but only while the segment's registry row is unchanged or gone. Once
+   * another write has changed the row, the generation number it holds may name another incarnation's live object,
+   * so it leaves the orphan rather than risk deleting live data. The orphan is an ordinary generation once a later
+   * one is current above it, and collection counts it within `keep`.
+   *
+   * What it **throws** for is a fault rather than an outcome: invalid options or ids, and a crypto-shredded
+   * segment (`ValidationError`); a key the keystore cannot provide (`KeyUnavailableError`); a current generation
+   * that will not open when a guard reads its size (`IntegrityError`); a driver failure; and a collection pass
+   * that could not prove the segment was still the same one (`WriteConflictError`). The last can be raised
+   * **after** the publish already landed, so a throw does not by itself mean the load did not take effect —
+   * re-read the pointer rather than assuming.
    *
    * Needs a backend (throws {@link UnsupportedError} otherwise).
    */
@@ -1847,8 +1858,8 @@ type Materialize = (
  * **IDs must be integers in `[0, 2^32)`** (dense 32-bit). A non-integer / negative / out-of-range id
  * throws {@link ValidationError}.
  *
- * A handle has no per-id write: data enters a segment as a whole generation (`bulkLoadCrbmGeneration`, or one
- * of the `*Into` verbs), and leaves it the same way (`eraseSubject`, `dropSegment`).
+ * A handle has no per-id write: data enters a segment as a whole generation (`store.load()`, or one of the
+ * `*Into` verbs), and leaves it the same way (`eraseSubject`, `dropSegment`).
  */
 export class Segment {
   private readonly metricsOn: boolean;
@@ -2259,12 +2270,10 @@ export * from '@cloudbitmaps/core';
 
 // ...with the codec-bound overrides layered on top. These three core entry points need a bitmap codec, which
 // core cannot default (it is codec-agnostic). Re-exporting them EXPLICITLY here shadows the same names from the
-// `export *` above, so an application never passes a codec — e.g. `bulkLoadCrbmGeneration(driver, key, ids)`
-// works with no options at all.
-export { bulkLoadCrbmGeneration, eraseIdFromSegment, loadSegment, runExport } from './codec-bound';
+// `export *` above, so an application calls each with no codec at all.
+export { eraseIdFromSegment, loadSegment, runExport } from './codec-bound';
 
-// The roaring codec itself. `SafeBitmap` is public surface (`writeCrbmGeneration` takes them — the seed /
-// bulk-load path); `roaringCodec` is the `CodecInterface` this facade injects, exported so an advanced caller
+// The roaring codec itself. `SafeBitmap` is public surface (`writeCrbmGeneration` takes them); `roaringCodec` is the `CodecInterface` this facade injects, exported so an advanced caller
 // can construct a `SegmentEngine` by hand.
 export { SafeBitmap, roaringCodec } from './roaring-codec';
 

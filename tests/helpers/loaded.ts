@@ -8,8 +8,9 @@
  *  - {@link seedSegment} — populate a `MemoryStorageChunkSource` chunk-by-chunk. No `.crbm`, no registry: the
  *    engine's routing/combine logic under test with nothing else in the way.
  *  - {@link loadedStore} / {@link load} — a real `CloudRoaring` over `MemoryStorageDriver` + `MemoryRegistryDriver`,
- *    every segment written through `bulkLoadCrbmGeneration` and published. This is the production path end to
- *    end, and the fixture for anything that touches generations, the registry, or the lifecycle helpers.
+ *    every segment written by the loader `store.load()` is built on, and published: the objects and pointer
+ *    production stores, and the fixture for anything that touches generations, the registry, or the lifecycle
+ *    helpers.
  */
 import {
   MemoryStorage,
@@ -17,11 +18,12 @@ import {
   MemoryStorageChunkSource,
   MemoryStorageDriver,
   MemoryRegistryDriver,
-  bulkLoadCrbmGeneration,
   splitId,
 } from '@/index';
-import type { BulkLoadResult, CloudRoaringOptions, SegmentRef } from '@/index';
+import type { CloudRoaringOptions, SegmentRef } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
+import { bulkLoadCrbmGeneration } from './bulk-load';
+import type { BulkLoadResult } from './bulk-load';
 
 /** Normalise a segment name or ref to a ref. */
 export function asRef(seg: string | SegmentRef): SegmentRef {

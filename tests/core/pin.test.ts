@@ -6,12 +6,12 @@ import {
   MemoryStorageChunkSource,
   MemoryStorageDriver,
   MemoryRegistryDriver,
-  bulkLoadCrbmGeneration,
   gcOrphanGenerations,
 } from '@/index';
 import { destroySegment } from '@/core/erasure';
 import { NotFoundError, UnsupportedError } from '@/core/errors';
 import type { SegmentRef } from '@/index';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 /**
  * A pin exists so a long job describes one instant. The obvious shape for it — a `Segment` over a

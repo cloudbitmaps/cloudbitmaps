@@ -96,9 +96,9 @@ export interface EraseIdDeps {
    * -bound AAD. Rewriting an encrypted segment without a keystore throws {@link KeyUnavailableError}.
    */
   readonly keystore?: IKeystore;
-  /** When true, refuse to rewrite a **cleartext** segment (the same guard the read path and bulk-load offer). */
+  /** When true, refuse to rewrite a **cleartext** segment (the same guard the read path and a load offer). */
   readonly requireEncryption?: boolean;
-  /** Supplying a clock that can yield makes the rewrite cooperative — see `bulkLoadCrbmGeneration`. */
+  /** Supplying a clock that can yield makes the rewrite cooperative, as it makes a load. */
   readonly clock?: Yielder;
   /** Per-chunk decode ceiling (invariant 5); defaults to 1 MiB. */
   readonly maxBitmapBytes?: number;

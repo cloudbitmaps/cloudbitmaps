@@ -14,11 +14,11 @@ import { GcsStorageDriver } from '@/gcs/storage';
 import { GcsRegistryDriver } from '@/gcs/registry';
 import { GcsStorage } from '@cloudbitmaps/gcs';
 import { CrbmStorageChunkSource, writeCrbmGeneration } from '@/core/crbm-storage-source';
-// bulk-load is codec-bound: import the public (flavor) entry point, exactly as an application would.
-import { CloudRoaring, bulkLoadCrbmGeneration } from '@/index';
+import { CloudRoaring } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
 import { NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { GenKey } from '@/core/ports';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 /**
  * A keyspace unique to THIS run.
@@ -202,8 +202,8 @@ describe('GcsStorageDriver specifics (fake-gcs-server)', () => {
 
 describe('GcsStorageDriver end-to-end through the engine (fake-gcs-server)', () => {
   // Proves the driver works behind a real `CloudRoaring` store — not just the low-level storage-source contract:
-  // bulk-load two segments to GCS, then count + chunk-skipping intersect via the engine's public API.
-  it('bulk-load → GCS → engine count / iterate / intersect (multi-chunk, chunk-skipping)', async () => {
+  // load two segments to GCS, then count + chunk-skipping intersect via the engine's public API.
+  it('load → GCS → engine count / iterate / intersect (multi-chunk, chunk-skipping)', async () => {
     const driver = new GcsStorageDriver({ storage, bucket: BUCKET, prefix: `${RUN}/e2e/${n++}` });
     // Ids straddle two 16-bit chunks (0 and 3), so intersect must chunk-skip, not read everything.
     await bulkLoadCrbmGeneration(driver, { segment: 'a', generation: 1 }, [1, 2, 3, 200_000]);

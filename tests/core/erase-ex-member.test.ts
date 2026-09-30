@@ -3,13 +3,13 @@ import {
   CloudRoaring,
   MemoryStorageDriver,
   MemoryRegistryDriver,
-  bulkLoadCrbmGeneration,
   gcOrphanGenerations,
 } from '@/index';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { openGenerationReader } from '@/core/crbm-storage-source';
 import { roaringCodec } from '@/roaring-codec';
 import type { IStorageDriver, SegmentRef } from '@/index';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 /**
  * "The bit is physically gone from the bucket when the call returns" has to hold for **ex-members** as well as

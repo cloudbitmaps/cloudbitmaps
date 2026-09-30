@@ -6,11 +6,11 @@ import {
   CrbmStorageChunkSource,
   LocalFsStorageDriver,
   MemoryRegistryDriver,
-  bulkLoadCrbmGeneration,
   publishGeneration,
 } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
 import type { GenKey, SegmentRef } from '@/index';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 const SEG: SegmentRef = { segment: 's' };
 

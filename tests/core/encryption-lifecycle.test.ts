@@ -4,7 +4,6 @@ import {
   CrbmStorageChunkSource,
   MemoryStorageDriver,
   MemoryRegistryDriver,
-  bulkLoadCrbmGeneration,
   destroySegment,
   eraseIdFromSegment,
   eraseNamespace,
@@ -14,6 +13,7 @@ import {
 import { InProcessKeystore } from '@/drivers/crypto';
 import { KeyUnavailableError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { EraseIdDeps, IKeystore, SegmentRef } from '@/index';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 const SEG: SegmentRef = { segment: 's' };
 const k = (): Uint8Array => randomBytes(32);

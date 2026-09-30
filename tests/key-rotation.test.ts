@@ -4,11 +4,11 @@ import {
   CrbmStorageChunkSource,
   MemoryStorageDriver,
   MemoryRegistryDriver,
-  bulkLoadCrbmGeneration,
 } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { KeyUnavailableError } from '@/core/errors';
 import type { IKeystore, SegmentRef } from '@/index';
+import { bulkLoadCrbmGeneration } from './helpers/bulk-load';
 
 /**
  * End-to-end KEK rotation.

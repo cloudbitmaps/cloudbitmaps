@@ -2,7 +2,7 @@
  * `@cloudbitmaps/core` — the codec-agnostic cloud engine behind the @cloudbitmaps family.
  *
  * Everything here is **independent of any bitmap codec**: the read engine, every storage driver, the `.crbm`
- * format, the loaded store's write path (bulk load + forward-only publish), encryption/crypto-shred, the registry,
+ * format, the loaded store's write path (`loadSegment`: write, guard, publish, collect), encryption/crypto-shred, the registry,
  * the budget/consistency/eject machinery. Bitmaps are only ever constructed and combined through the
  * {@link CodecInterface} seam, so a *flavor* package (`@cloudbitmaps/roaring` today) supplies the codec and a
  * facade on top.
@@ -63,19 +63,14 @@ export { LocalFsRegistryDriver } from './drivers/localfs/registry';
 export { LocalFsStorage, MemoryStorage } from './drivers/backends';
 export type { LocalFsStorageOptions, MemoryStorageOptions } from './drivers/backends';
 export type { LocalFsRegistryDriverOptions } from './drivers/localfs/registry';
-// The loaded store's write path: build one immutable generation from ids (bulk-load), or from pre-grouped
-// bitmaps, then make it current (publish). Every write in the library is one of these.
+// The write primitives under the loaded store's write path, which is `load()`: build one immutable generation from
+// pre-grouped bitmaps, then make it current (publish).
 export {
   CrbmStorageChunkSource,
   writeCrbmGeneration,
-  bulkLoadCrbmGeneration,
   publishGeneration,
 } from './core/crbm-storage-source';
-export type {
-  BulkLoadResult,
-  CrbmStorageChunkSourceOptions,
-  PinnedObject,
-} from './core/crbm-storage-source';
+export type { CrbmStorageChunkSourceOptions, PinnedObject } from './core/crbm-storage-source';
 // A pinned view of one segment at one generation — everything else passes through to the live source.
 export { PinnedStorageChunkSource } from './core/pinned-storage-source';
 export type { PinnedAt } from './core/pinned-storage-source';
@@ -278,7 +273,7 @@ export type {
 } from './core/cost';
 
 // Audit trail: a separate injected seam for security/compliance state changes (publish/rewrite/erase/dispose) —
-// distinct from metrics. Pass `audit` to the bulk-load/erasure APIs; see the dashboards guide. Exception-safe; the
+// distinct from metrics. Pass `audit` to the load and erasure APIs; see the dashboards guide. Exception-safe; the
 // default records nothing.
 export { RecordingAuditSink } from './core/audit';
 export type { IAuditSink, AuditEvent, AuditEventKind } from './core/audit';

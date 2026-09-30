@@ -193,15 +193,13 @@ for.
 
 **Branch on `published`.** A load *replaces*: whatever the stream contains is what the segment contains
 afterwards. So an upstream query returning fewer rows than usual is a shrink nobody asked for and an empty one
-is a wipe — and at the storage layer both are an ordinary successful write. An empty result over a non-empty
-segment is therefore **refused by default** (`allowEmpty` overrides), and `guard: { minCardinality, minRetained }`
-says what else counts as implausible. A refusal is reported rather than thrown, which means a discarded result
-is a load that silently did nothing.
+is a wipe — and at the storage layer both are an ordinary successful write, which is why a load checks its result
+before it publishes. `guard: { minCardinality, minRetained }` says what counts as implausible, and an empty result
+over a non-empty segment is refused even with no guard, as the last of the five points below says. A refusal is
+reported rather than thrown, which means a discarded result is a load that silently did nothing.
 
-`bulkLoadCrbmGeneration` is the layer underneath, and it is still there when you want the pieces separately —
-writing a generation without publishing it, or publishing on your own schedule. It consumes a stream of ids,
-routes each into its chunk's bitmap, writes the whole set as one immutable `.crbm` object, and — when you pass a
-`registry` — publishes it so readers see it. Five things to know:
+Underneath, a load consumes a stream of ids, routes each into its chunk's bitmap, writes the whole set as one
+immutable `.crbm` object, and publishes it so readers see it. Five things to know:
 
 **Any id source, any order, duplicates welcome.** The input is a sync *or* async iterable, consumed lazily and
 deduplicated on insert. An array, a `Set`, a generator, a file stream, a warehouse cursor:
@@ -210,14 +208,8 @@ deduplicated on insert. An array, a `Set`, a generator, a file stream, a warehou
 async function* activeUsers() {
   for await (const page of warehouse.paginate(query)) for (const row of page) yield row.user_id;
 }
-const ref = { namespace: 'audiences', segment: 'active-30d' };
-const res = await bulkLoadCrbmGeneration(
-  storage,
-  { ...ref, generation: await nextGeneration(ref, { storage, registry }) },
-  activeUsers(),
-  { registry },
-);
-res; // { size, sha256, chunkCount, cardinality, becameCurrent } — the object written and what it holds
+const res = await store.load({ namespace: 'audiences', segment: 'active-30d' }, activeUsers());
+res; // { generation, published, cardinality, collected, … } — what was written, and whether it is current
 ```
 
 Memory is bounded by the **distinct set being built** — one compressed bitmap per non-empty chunk — not by the
@@ -226,30 +218,35 @@ buffer between input and bitmaps is capped at ~28 MB measured, whatever the key 
 set)`, though, not window-bounded like `intersect`: a load holds the whole generation in RAM, which suits a batch
 job and not a request handler — see [where to run it](#what-blocks-the-event-loop-and-where-to-run-it).
 
-**Generation numbering: take it from `nextGeneration`.** Generations are write-once — reusing a number throws
-`WriteConflictError` — and the number a writer should use next is one above the highest the registry points at
-*or* that is present in the bucket, whichever is higher. `nextGeneration(ref, { storage, registry })` computes exactly
-that (a brand-new segment starts at `0`). The two are both consulted on purpose: a load that wrote its object and
-crashed before publishing leaves an object *above* `currentGen`, and a writer consulting only the pointer would pick
-that same number and conflict on every retry.
+**Generation numbering is the load's.** Generations are write-once, and a load takes the next number itself: one
+above the highest the registry points at *or* that is present in the bucket, whichever is higher (a brand-new
+segment starts at `0`). Both are consulted on purpose: a load that wrote its object and crashed before publishing
+leaves an object *above* `currentGen`, and a writer consulting only the pointer would pick that same number and
+conflict on every retry.
 
-**Publish is forward-only, so a rerun is safe.** The object is written first; only once it is durable does
-`publishGeneration` advance the registry pointer — a compare-and-swap that never moves backwards. Run the same job
-twice and the second load is simply a newer identical generation; run two loads concurrently and the higher number
-wins while the other is left as an orphan below the pointer. A publish that finds a newer generation already
-current is a no-op rather than an error.
+**Publish is forward-only, so a rerun is safe.** The object is written first; only once it is durable does the
+load advance the registry pointer — a compare-and-swap that never moves backwards. Run the same job twice and the
+second load is simply a newer identical generation. Run two loads of one segment at once and at most one of them
+lands, and the other reports `published: false` with `reason: 'superseded'`. If both took the same generation
+number, the second to write it is refused by the write-once put and writes nothing; if not, the publish that lands
+second finds the row changed since its load read it. Neither may land: a load that won the number can still be
+refused by its guard. The one exception is a segment with no row yet, loaded with `allowEmpty: true` and no
+`guard.minRetained`: neither load read anything to fence on, so both can publish, in number order, and the higher
+stays current.
 
 **A crash never moves the pointer.** If the process dies mid-write, the object never completes (every storage driver
 commits atomically — a rename, a conditional PUT, a multipart complete) and the pointer still names the previous
-generation, which readers keep serving. If it dies between the write and the publish, the object is an orphan the
-next `nextGeneration` skips past and `gcOrphanGenerations` collects ([§8](#8-generation-bookkeeping-what-a-load-leaves-behind)).
-There is no half-loaded state a reader can observe: a read resolves one generation and reads whole,
-checksum-verified chunks from it.
+generation, which readers keep serving. A load that dies between the write and the publish leaves an orphan: an
+object that was never current. So does a refused load that finds another write has changed the segment's row, since
+by then its generation number may name a re-created segment's object. Once a generation above it is current, it is one more
+generation below the pointer, which collection counts within `keep` like any other. So under the default `keep: 1`
+the load that lands above it keeps the orphan and collects the generation readers were on, and the next load
+collects the orphan ([§8](#8-generation-bookkeeping-what-a-load-leaves-behind)). There is no half-loaded state a reader can observe: a
+read resolves one generation and reads whole, checksum-verified chunks from it.
 
-**An empty source writes an empty generation — and publishes it.** That is the correct result for a set that is
-genuinely empty, and the wrong one for a warehouse query that returned nothing because it failed upstream. Guard
-for that before you load: the library cannot tell the two apart (an empty guard with rollback is the next thing
-on the roadmap, as part of a higher-level `load()`).
+**An empty result over a non-empty segment is refused.** That is the wrong result for a warehouse query that
+returned nothing because it failed upstream, and the library cannot tell it from a set that is genuinely empty, so
+it asks: pass `allowEmpty: true` when emptying the segment is the point.
 
 > **Do not load an empty segment "to create it".** A never-loaded segment already answers `count() → 0`,
 > `has(x) → false`, `iterate() → []`; an empty load just costs an object and a registry row you then have to
@@ -640,7 +637,7 @@ Who calls it today:
 | Path | Collects? |
 |---|---|
 | `store.load` | **it does** — collection is part of the call, keeping `keep` generations (default 1) |
-| your load job, after `bulkLoadCrbmGeneration` or an `*Into` | **you** — call `gcOrphanGenerations` on your own cadence (right after the load, or a nightly pass). This is the step `store.load` exists to stop you forgetting |
+| an `*Into` | **you** — pass `keep` to collect on the way through, or call `gcOrphanGenerations` on your own cadence (right after the call, or a nightly pass). This is the step `store.load` exists to stop you forgetting |
 | `eraseSubject` / `eraseIdFromSegment` | **yes**, with `keep: 0` — the whole point is that the generation holding the bit does not survive the call |
 | `retireExpired` | **yes**, for tombstoned segments only — it collects a straggler generation before purging the tombstone row |
 | `dropSegment` | deletes every generation of the segment it drops (and reports any it could not in `generationsRemaining`) |
@@ -706,7 +703,7 @@ erasure collects the generation it rewrote whatever `keep` says.
 `keep` is a **grace window**: a read fetches from the generation its snapshot names, and `keep` decides how
 many publishes can land underneath before that object is gone. Three facts size it.
 
-**A miss is a re-read, not a failure.** If the generation a read is on is swept, the Storage driver throws
+**A miss is a re-read, not a failure.** If the generation an unpinned read is on is swept, the Storage driver throws
 `NotFoundError`; the storage source drops the stale snapshot, re-resolves `currentGen` and retries **once** —
 covering both the fetch and the reopen, which are separate round trips and separately exposed. The call then
 serves the newer, committed generation: a monotonic move forward within that segment's lifetime, never a torn object. A second miss is
@@ -717,7 +714,7 @@ crypto-shredded, where reading empty is the documented outcome.
 **The exposure window is the TTL, not the length of your call.** A snapshot is re-checked every `cache.genTtlMs`, so
 at most `ceil(genTtlMs ÷ gap between publishes)` publishes can land under any snapshot a read actually uses — **one**,
 at the 2 s default, against any realistic publish cadence. A sixty-second `intersect` does not need a sixty-second
-window. The exception is a store with no timed refresh — no registry, `cache: { genTtlMs: 0 }`, or a storage source
+window. A pinned handle is the exception: it is never re-resolved, so its window is the length of the job it serves. So is a store with no timed refresh — no registry, `cache: { genTtlMs: 0 }`, or a storage source
 built with no clock — whose snapshot lasts until an eviction, a read that finds its generation swept, or an
 invalidation moves it on, however long that takes; there no finite `keep` covers it, and the re-read above is the
 mechanism that keeps it correct.
@@ -732,13 +729,15 @@ Which gives:
 | anything on a normal TTL — the common case | **`1`**, the default |
 | publishes landing faster than `cache.genTtlMs` (a tight loader, or a raised TTL) | cover them: `ceil(genTtlMs ÷ gap between publishes)` |
 | a large segment where a rare re-read is cheaper than a second copy | `0` |
-| a long job that must see **one** instant, not merely succeed | none of the above — see below |
+| a long job on a pinned handle (`seg.pin()`), an export or a send | at least one for every generation written above the pinned one while the job runs — each load that lands, and each that is superseded or crashes before publishing — set on **every** writer that loads the segment, since each load collects with its own `keep`. A pin is never re-resolved: once its generation is collected, a chunk it has not already fetched fails with `NotFoundError`, and so does every chunk once the pin's own store writes the segment — a load, a `rollback` or an `*Into` write — since that drops what the store has cached. No value survives an erasure, which collects every generation below its new pointer |
+| a long job that must see **one** instant, not merely succeed | a pinned handle, with `keep` sized as the row above — see below |
 
 **What no value of `keep` gives you is a single instant.** The generation hop above has four causes, and
 collection is one of them: a read whose TTL elapses, whose reader is evicted, or whose store is invalidated moves to
 another generation whether or not the old one still exists. Retaining more copies removes only the sweep's heal,
-and not even that after an erasure, whose rewrite collects the erased generation whatever `keep` says. A job that needs one instant (an export,
-a reconciliation, a send that must match the count you reported) needs a snapshot handle.
+and not even that after an erasure, whose rewrite collects every generation below its new pointer whatever `keep` says. A job that needs one instant (an export,
+a reconciliation, a send that must match the count you reported) needs a snapshot handle, and the handle needs
+`keep` sized as the table says.
 
 There is deliberately **no time-based floor** on collection ("keep nothing younger than 24 h"). It would read
 as a durability guarantee and would not be one: an ordinary read is already covered by the retry above, and a
@@ -812,7 +811,7 @@ await eraseNamespace('tenant-42', { registry }, { confirmNamespace: 'tenant-42' 
 
 This deletes the segment's wrapped DEK from the registry (a `destroyed` tombstone). The encrypted Storage objects
 are left in place — but with the key gone they're **permanently unreadable, everywhere, including backups**. The
-segment then reads as empty, and the tombstone is a fence: `bulkLoadCrbmGeneration` and `publishGeneration`
+segment then reads as empty, and the tombstone is a fence: a load and `publishGeneration`
 refuse a destroyed segment, so a load racing an erasure cannot resurrect it. To also reclaim the storage, use
 `dropSegment` ([§13.5](#135-retention-ttl-and-pruning--what-exists-and-what-doesnt)), which crypto-shreds an
 encrypted segment *and* deletes its objects.
@@ -825,8 +824,10 @@ encrypted segment *and* deletes its objects.
 - **If you lose every KEK for a segment, its at-rest bytes are gone — by design.** There is no backdoor (that's
   the whole point — a leaked bucket has no backdoor either). This is also what makes crypto-shred *work*.
 - **But it's usually not catastrophic:** CloudBitmaps segments are almost always **derived data** (audience /
-  membership sets built from your primary datastore), so a lost KEK means **reload the segment from source**
-  (`bulkLoadCrbmGeneration`), not permanent business-data loss.
+  membership sets built from your primary datastore), so a lost KEK means **load it from source into a new
+  segment** (`store.load()` with the new keystore), not permanent business-data loss. The lost segment itself
+  cannot be reloaded: its row still carries the key material that is gone, so a load onto it throws
+  `KeyUnavailableError`.
 - **Rotate, don't lose.** Add a new KEK, point `activeKeyId` at it, and **keep the old KEK** — old segments keep
   decrypting with no data re-encryption. Use a **recovery KEK** (kept offline) so losing the active one isn't
   fatal.
@@ -1068,11 +1069,13 @@ audit.snapshot();
 // (segment.erase fires only for an ENCRYPTED segment — a cleartext tombstone leaves the bytes readable.)
 ```
 
-The events are **vendor-neutral** — five kinds, all carrying the segment/namespace name:
+The events are **vendor-neutral** — seven kinds, all carrying the segment/namespace name:
 
 | Event | Fired when | Extra fields |
 | --- | --- | --- |
 | `segment.publish` | a load makes a generation the current one (needs a `registry`; not on a forward-only no-op) | `generation` |
+| `segment.load-refused` | a load wrote a generation and did not publish it: a guard refused it, or the segment's row changed first | `generation`, `reason`, `cardinality` |
+| `segment.rollback` | `store.rollback` moved the pointer to a generation it names, still in the bucket: **backwards**, or forward with `allowForward` — the one pointer move no automatic path makes | `fromGeneration`, `generation` |
 | `segment.rewrite` | a generation derived from the segment itself became current in place of `fromGeneration` — today, an erasure rewrite (`eraseSubject` / `eraseIdFromSegment`), emitted at the publish, before the superseded generation is collected | `fromGeneration`, `generation` |
 | `segment.erase` | a **genuine crypto-shred** — not the idempotent re-run, and not a cleartext tombstone (bytes stay readable) | — |
 | `segment.dispose` | `dropSegment` tombstoned a segment and swept its storage — the weaker, storage-reclamation attestation; an encrypted drop emits **both** this and `segment.erase` | `generationsDeleted` |
@@ -1324,7 +1327,7 @@ would take; a retention bug you can read in a log is worth more than one you fin
 `dropSegment` does registry → Storage, and each position is load-bearing:
 
 1. **Registry first.** After the tombstone nothing resolves a generation, so no reader can reach for bytes about
-   to disappear — and no writer can publish onto it: `bulkLoadCrbmGeneration` and `publishGeneration` both refuse
+   to disappear — and no writer can publish onto it: a load and `publishGeneration` both refuse
    a `destroyed` row, so a load racing the drop cannot resurrect the segment.
 2. **Storage second, best-effort, and swept more than once.** Once the pointer is a tombstone the segment reads as
    empty and is *correct*, so a failure part-way through leaks **bytes, not correctness** — and re-running
@@ -1717,7 +1720,7 @@ The *read* side carries over one-for-one:
 | `BITOP ANDOR dst x y1 y2` (Redis 8.2+) | — | no single call; it is `x ∩ (y1 ∪ y2)` — `unionInto` a temp, then `intersect` |
 | `BITOP XOR` | — | no single call; compose as `(a ∪ b) \ (a ∩ b)` |
 | `BITOP NOT` · `BITOP ONE` | — | no equivalent |
-| `SETBIT key id 1` / `SETBIT key id 0` | — | **no per-id write.** Build the set upstream and `bulkLoadCrbmGeneration` it; remove one id everywhere with `eraseSubject` (a rewrite, for compliance — not a hot-path verb) |
+| `SETBIT key id 1` / `SETBIT key id 0` | — | **no per-id write.** Build the set upstream and `store.load()` it; remove one id everywhere with `eraseSubject` (a rewrite, for compliance — not a hot-path verb) |
 | `EXPIRE key seconds` | `store.setRetention(ref, { expiresAt })` + `store.retireExpired()` | per **segment**, never per id (a bitmap stores ids, not timestamps), and the sweep is **yours to schedule** — this library starts no timer, so it behaves the same in a Lambda and a server. [§13.5](#135-retention-ttl-and-pruning--what-exists-and-what-doesnt) |
 
 You are not giving up the bitmap: each 65,536-id chunk is stored in whichever of Roaring's three encodings is
@@ -1901,18 +1904,19 @@ on an M3 Pro:
 
 | path | cost | longest single stall | where it belongs |
 | --- | --- | --- | --- |
-| `bulkLoadCrbmGeneration` (1M ids) | ~256 ms | **~19 ms** | a batch job or worker; survivable off the request path |
+| a load, `store.load()` (1M ids spread across the id space, in-memory storage) | ~405 ms | **~22 ms** (26 ms at worst) | a batch job or worker; survivable off the request path |
 | `eraseSubject` / `eraseIdFromSegment` | decodes and re-encodes every chunk of the segment — same order of work as a load | yields on the same cadence | an admin job, never a request handler |
 | `has` / `count` / `intersect` / `union` / `andNot` | microseconds of CPU; dominated by network | — | anywhere |
 
 The **stall** column is the number that decides whether co-resident work survives, and it is not the same as
-cost. A load yields the event loop periodically, so its ~256 ms is spent in ~19 ms slices with the loop free
-in between — other requests interleave rather than queueing behind the whole load. Without the yields the two
-columns would be the same number: a 1M-id load would hold the loop for **450 ms straight**, long enough for a
-health check to time out and the instance to be pulled from its load balancer.
+cost. A load yields the event loop periodically, so its ~405 ms is spent in slices of ~22 ms at most with the loop
+free in between — other requests interleave rather than queueing behind the whole load. Without a clock to yield
+through, the two columns are the same number: the same 1M-id load holds the loop for **~408 ms straight**, long
+enough for a health check to time out and the instance to be pulled from its load balancer. Both figures are the
+median of seven runs, measured on the same machine.
 
 Yielding is on by default for `@cloudbitmaps/roaring` users; there is nothing to configure. It needs a `Clock`,
-which the flavor package pre-binds into `bulkLoadCrbmGeneration` and `eraseIdFromSegment`. If you call
+which the flavor package passes to `store.load()`, `loadSegment` and `eraseIdFromSegment`. If you call
 `@cloudbitmaps/core` directly, pass one (`clock`) or the work runs uninterrupted.
 
 **The rule:** anything that touches a whole generation belongs out of the request path. Yielding makes a load a

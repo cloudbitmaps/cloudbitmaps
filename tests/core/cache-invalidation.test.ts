@@ -5,11 +5,11 @@ import {
   InProcessKeystore,
   MemoryStorageDriver,
   MemoryRegistryDriver,
-  bulkLoadCrbmGeneration,
 } from '@/index';
 import { destroySegment } from '@/core/erasure';
 import { setSegmentRetention } from '@/core/retention';
 import type { IStorageDriver, SegmentRef } from '@/index';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 /**
  * A store keeps two layers of derived state: a resolved snapshot per segment (an open reader, plus the DEK it
