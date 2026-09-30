@@ -1,7 +1,7 @@
 /**
  * Shared driver conformance suite.
  *
- * A backend is only "supported" once it's green here. Every `StorageChunkSource` / `IRegistryDriver`
+ * A backend is only "supported" once it's green here. Every `StorageChunkSource` / `IStorageDriver` / `IRegistryDriver`
  * implementation — first-party (in-memory, LocalFs) and community — runs the **same** contract tests via
  * these factories, so substitutability is proven, not assumed. The factories use Vitest globals
  * (`describe`/`it`/`expect`); a driver author wires them into their own test file with a factory that
@@ -14,14 +14,17 @@
  */
 import { describe, expect, it } from 'vitest';
 import { SafeBitmap } from '../roaring-codec';
+import { createHash } from 'node:crypto';
 import type {
   ChunkRef,
+  GenKey,
   StorageChunkSource,
   IRegistryDriver,
+  IStorageDriver,
   RegistryRecord,
   SegmentRef,
 } from '@cloudbitmaps/core';
-import { ValidationError, WriteConflictError } from '@cloudbitmaps/core';
+import { NotFoundError, ValidationError, WriteConflictError } from '@cloudbitmaps/core';
 
 // The fixtures deliberately carry a colon. A name may contain one, and the character is only safe because
 // each driver maps it onto its physical key correctly — a filesystem driver has to encode it, an object
@@ -144,6 +147,147 @@ export function storageChunkSourceConformance(
           ),
         ).resolves.not.toThrow();
       }
+    });
+  });
+}
+
+/** The storage-driver cases {@link storageDriverConformance} runs; an emulator that cannot model one skips it by name. */
+export type StorageDriverCase =
+  | 'write-once round trip'
+  | 'collision'
+  | 'missing object'
+  | 'out-of-range read'
+  | 'tail size'
+  | 'idempotent delete'
+  | 'list read-after-delete';
+
+/** `n` bytes that differ at every offset, so a read from the wrong offset cannot match by accident. */
+function patterned(n: number): Uint8Array {
+  return Uint8Array.from({ length: n }, (_v, i) => (i * 31 + 7) % 251);
+}
+
+async function putBytes(
+  d: IStorageDriver,
+  key: GenKey,
+  bytes: Uint8Array,
+): Promise<{ size: number; sha256: string }> {
+  return d.putImmutable(key, async (sink) => {
+    // Two writes, so a driver that keeps only the last `write` (or the first) fails here.
+    const half = Math.floor(bytes.length / 2);
+    await sink.write(bytes.subarray(0, half));
+    await sink.write(bytes.subarray(half));
+  });
+}
+
+async function generationsOf(d: IStorageDriver, ref: SegmentRef): Promise<number[]> {
+  const out: number[] = [];
+  for await (const k of d.list(ref)) out.push(k.generation);
+  return out.sort((a, b) => a - b);
+}
+
+/**
+ * Contract tests for an {@link IStorageDriver} — the contract its doc comment lists: write-once with
+ * `WriteConflictError` on a collision, `NotFoundError` for a missing object, `ValidationError` for an out-of-range
+ * read, `getTail`'s true total size, idempotent `delete`, and a `list` that is read-after-delete. `makeDriver` MUST
+ * return a driver over an empty, isolated keyspace on each call.
+ *
+ * `skip` names the cases a backend cannot exercise (a local emulator that does not model a contract), so each
+ * skip is visible at the call site, with the reason beside it, rather than hidden in a weakened assertion.
+ */
+export function storageDriverConformance(
+  label: string,
+  makeDriver: () => IStorageDriver,
+  options: { readonly skip?: readonly StorageDriverCase[] } = {},
+): void {
+  const skipped = new Set<StorageDriverCase>(options.skip ?? []);
+  const test = (name: StorageDriverCase, fn: () => Promise<void>): void => {
+    (skipped.has(name) ? it.skip : it)(name, fn);
+  };
+  const key = (generation: number): GenKey => ({ segment: CONFORMANCE_SEGMENT, generation });
+
+  describe(`IStorageDriver conformance: ${label}`, () => {
+    test('write-once round trip', async () => {
+      const d = makeDriver();
+      expect(d.capabilities().rangeRead).toBe(true);
+      const bytes = patterned(1000);
+      const put = await putBytes(d, key(0), bytes);
+      expect(put.size).toBe(1000);
+      expect(put.sha256).toBe(createHash('sha256').update(bytes).digest('hex'));
+      expect(await d.getRange(key(0), 0, 1000)).toEqual(bytes);
+      expect(await d.getRange(key(0), 100, 50)).toEqual(bytes.subarray(100, 150));
+      expect(await d.getRange(key(0), 950, 50)).toEqual(bytes.subarray(950)); // exactly to the end
+    });
+
+    test('collision', async () => {
+      const d = makeDriver();
+      const first = patterned(300);
+      await putBytes(d, key(0), first);
+      await expect(putBytes(d, key(0), patterned(400))).rejects.toBeInstanceOf(WriteConflictError);
+      // Write-once means the loser changed nothing: the stored object is still the first.
+      expect(await d.getRange(key(0), 0, 300)).toEqual(first);
+      expect((await d.getTail(key(0), 10)).size).toBe(300);
+    });
+
+    test('missing object', async () => {
+      const d = makeDriver();
+      await expect(d.getRange(key(0), 0, 10)).rejects.toBeInstanceOf(NotFoundError);
+      await expect(d.getTail(key(0), 10)).rejects.toBeInstanceOf(NotFoundError);
+      await putBytes(d, key(1), patterned(100));
+      await expect(d.getRange(key(0), 0, 10)).rejects.toBeInstanceOf(NotFoundError); // a neighbour is not it
+    });
+
+    test('out-of-range read', async () => {
+      const d = makeDriver();
+      await putBytes(d, key(0), patterned(100));
+      // Runs past the end, starts past the end, and malformed ranges: each is refused, never a short read.
+      await expect(d.getRange(key(0), 90, 20)).rejects.toBeInstanceOf(ValidationError);
+      await expect(d.getRange(key(0), 500, 10)).rejects.toBeInstanceOf(ValidationError);
+      await expect(d.getRange(key(0), -1, 10)).rejects.toBeInstanceOf(ValidationError);
+      await expect(d.getRange(key(0), 0, -1)).rejects.toBeInstanceOf(ValidationError);
+      await expect(d.getRange(key(0), 1.5, 10)).rejects.toBeInstanceOf(ValidationError);
+    });
+
+    test('tail size', async () => {
+      const d = makeDriver();
+      const bytes = patterned(1000);
+      await putBytes(d, key(0), bytes);
+      // The size is the object's, not the length of the tail returned.
+      const small = await d.getTail(key(0), 64);
+      expect(small.size).toBe(1000);
+      expect(small.bytes).toEqual(bytes.subarray(936));
+      const whole = await d.getTail(key(0), 5000);
+      expect(whole.size).toBe(1000);
+      expect(whole.bytes).toEqual(bytes);
+      const none = await d.getTail(key(0), 0);
+      expect(none.size).toBe(1000);
+      expect(none.bytes.length).toBe(0);
+    });
+
+    test('idempotent delete', async () => {
+      const d = makeDriver();
+      await d.delete(key(0)); // absent: a no-op
+      await putBytes(d, key(0), patterned(10));
+      await d.delete(key(0));
+      await d.delete(key(0)); // already gone: a no-op
+      await expect(d.getTail(key(0), 10)).rejects.toBeInstanceOf(NotFoundError);
+    });
+
+    test('list read-after-delete', async () => {
+      const d = makeDriver();
+      const other: SegmentRef = { segment: 'other' };
+      expect(await generationsOf(d, SEG)).toEqual([]);
+      await putBytes(d, key(0), patterned(10));
+      await putBytes(d, key(1), patterned(10));
+      await putBytes(d, key(2), patterned(10));
+      await putBytes(d, { ...other, generation: 0 }, patterned(10));
+      // Read-after-put, then read-after-delete, with no wait in between: a listing that lags fails here.
+      expect(await generationsOf(d, SEG)).toEqual([0, 1, 2]);
+      await d.delete(key(1));
+      expect(await generationsOf(d, SEG)).toEqual([0, 2]);
+      await d.delete(key(0));
+      await d.delete(key(2));
+      expect(await generationsOf(d, SEG)).toEqual([]);
+      expect(await generationsOf(d, other)).toEqual([0]); // another segment's generation is not this one's
     });
   });
 }
@@ -499,6 +643,57 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       );
     });
 
+    // ── `delete` with an expected token ──────────────────────────────────────────────────────────────────
+    // A delete decided from a row read earlier must not take a row created after that read. The token is the
+    // row's identity, so a delete that carries it is refused for any other incarnation.
+    it('delete with the current token tombstones the row', async () => {
+      const d = makeDriver();
+      const { token } = await d.create(SEG, { currentGen: 0 });
+      await d.delete(SEG, token);
+      expect(await d.get(SEG)).toBeNull();
+      expect(await drainSegments(d.list())).toEqual([]);
+      const { token: next } = await d.create(SEG, { currentGen: 0 }); // the name is free again, with a fresh token
+      expect(next).not.toBe(token);
+    });
+
+    it('delete with a stale token throws and leaves the row', async () => {
+      const d = makeDriver();
+      const { token: t0 } = await d.create(SEG, { currentGen: 0 });
+      const { token: t1 } = await d.compareAndSwap(SEG, t0, { currentGen: 1 });
+      await expect(d.delete(SEG, t0)).rejects.toBeInstanceOf(WriteConflictError);
+      const row = await d.get(SEG);
+      expect(row).toMatchObject({ currentGen: 1, status: 'active', token: t1 });
+      await d.compareAndSwap(SEG, t1, { currentGen: 2 }); // still live, and its token still works
+    });
+
+    it('delete with a token from before a delete-and-recreate leaves the new row', async () => {
+      const d = makeDriver();
+      const { token: old } = await d.create(SEG, { currentGen: 0 });
+      await d.delete(SEG, old);
+      const { token: fresh } = await d.create(SEG, { currentGen: 5 });
+      // The replayed or delayed delete: same name, the token of an incarnation that is gone.
+      await expect(d.delete(SEG, old)).rejects.toBeInstanceOf(WriteConflictError);
+      expect(await d.get(SEG)).toMatchObject({ currentGen: 5, token: fresh });
+    });
+
+    it('delete with a token against an absent or already-deleted row throws', async () => {
+      const d = makeDriver();
+      await expect(d.delete(SEG, '1')).rejects.toBeInstanceOf(WriteConflictError); // never existed
+      const { token } = await d.create(SEG, { currentGen: 0 });
+      await d.delete(SEG, token);
+      await expect(d.delete(SEG, token)).rejects.toBeInstanceOf(WriteConflictError); // tombstoned
+      expect(await d.get(SEG)).toBeNull();
+    });
+
+    it('delete without a token is unchanged: it takes the row at whatever token it carries', async () => {
+      const d = makeDriver();
+      const { token } = await d.create(SEG, { currentGen: 0 });
+      await d.compareAndSwap(SEG, token, { currentGen: 1 });
+      await d.delete(SEG);
+      expect(await d.get(SEG)).toBeNull();
+      await d.delete(SEG); // and stays idempotent
+    });
+
     it('list(namespace) excludes a namespace that merely shares its prefix', async () => {
       const d = makeDriver();
       await d.create({ namespace: 'ns', segment: 'a' }, { currentGen: 0 });
@@ -582,6 +777,21 @@ export function registryConcurrency(
         expect(del.status).toBe('fulfilled');
         expect(row).toBeNull();
       }
+    });
+
+    it('a delete fenced on a token it read before a swap loses to it: the row survives', async () => {
+      const [a, b] = makeDrivers();
+      const { token } = await a.create(SEG, { currentGen: 0 });
+      await b.compareAndSwap(SEG, token, { currentGen: 1 }); // lands between the delete's read and its write
+      await expect(a.delete(SEG, token)).rejects.toBeInstanceOf(WriteConflictError);
+      expect((await a.get(SEG))?.currentGen).toBe(1);
+    });
+
+    it('two deletes fenced on the same token: exactly one lands', async () => {
+      const [a, b] = makeDrivers();
+      const { token } = await a.create(SEG, { currentGen: 0 });
+      expectOneWinner(await Promise.allSettled([a.delete(SEG, token), b.delete(SEG, token)]));
+      expect(await a.get(SEG)).toBeNull();
     });
 
     it('a reader never observes a row as absent while a writer is overwriting it', async () => {

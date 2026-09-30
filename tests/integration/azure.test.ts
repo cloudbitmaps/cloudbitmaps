@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { BlobServiceClient, type ContainerClient } from '@azure/storage-blob';
 import {
   storageChunkSourceConformance,
+  storageDriverConformance,
   registryConformance,
   registryConcurrency,
   CONFORMANCE_SEGMENT,
@@ -99,6 +100,10 @@ const freshDriver = (): AzureBlobStorageDriver =>
   new AzureBlobStorageDriver({ containerClient: container, prefix: `${RUN}/conf/${n++}` });
 
 // The Azure driver must pass the SAME storage-source contract as in-memory + LocalFs + S3 + GCS.
+// The same IStorageDriver contract memory and LocalFs pass: write-once, typed errors, true tail size, idempotent
+// delete, read-after-delete listing.
+storageDriverConformance('AzureBlobStorageDriver (Azurite)', freshDriver);
+
 storageChunkSourceConformance('AzureBlobStorageDriver (Azurite)', async (chunks) => {
   const driver = freshDriver();
   await writeCrbmGeneration(driver, { segment: CONFORMANCE_SEGMENT, generation: 1 }, chunks);

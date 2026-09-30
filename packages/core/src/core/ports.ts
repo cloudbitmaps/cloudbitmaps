@@ -141,23 +141,64 @@ export interface StorageCaps {
  * Immutable object storage for `.crbm` generations. A "dumb byte mover": it
  * understands neither roaring nor the `.crbm` layout, only opaque bytes addressed by a {@link GenKey}.
  * The core never reuses a key, so puts are write-once.
+ *
+ * **What a driver must do** — callers rely on each of these, and the storage conformance suite holds every
+ * shipped driver to them:
+ *
+ * - **`putImmutable` is write-once and reports a collision as {@link WriteConflictError}.** It never overwrites a
+ *   stored object. `load` reads that error as a lost race for the generation number (`superseded`), so a driver
+ *   that threw anything else for an existing key would surface as a failed load.
+ * - **A missing object makes `getRange` and `getTail` throw {@link NotFoundError}** — never an empty or short
+ *   result. Heal-forward (a read whose generation a sweep collected re-resolves), `notInCurrent` and a pin's
+ *   replaced-object check all branch on that one error. (A zero-length `getRange` may answer empty without
+ *   reaching the backend; the engine never asks for one of an object it has not found.)
+ * - **An out-of-range read throws {@link ValidationError}**: a range that runs past the end of the object, or a
+ *   negative or non-integer offset or length. Never a clamped, short or adjacent read. A pin whose object
+ *   was purged and loaded again as a smaller one asks for a range past its end, and this error is what sends it
+ *   to check that the object is still the one it pinned.
+ * - **`getTail` reports the object's true total size**, not the number of bytes it returned.
+ * - **`delete` is idempotent.** Deleting an absent key is a no-op, not an error: collection passes race each
+ *   other and retry.
+ * - **`list` is strongly consistent, read-after-delete.** Once `delete` has resolved, `list` no longer yields
+ *   that generation, and once `putImmutable` has resolved it does. The erasure's `assertCollected`,
+ *   `generationsRemaining` and rollback's post-move check prove a deletion by listing, so a listing that lags
+ *   reports an erasure as incomplete (or, worse, a stale object as gone).
+ * - **Never replay a conditional write without telling the replay apart.** A `putImmutable` that lands and then
+ *   loses its response, sent again, finds its own object and would report a collision. Either send each write
+ *   once, with the backend client's retry off for that request, or recognise your own write when the
+ *   precondition fails by reading an id you stored with it back, and treat a match as success. The first is
+ *   what the S3 driver and the single-request GCS upload do; the second is what the Azure Blob driver and the
+ *   resumable GCS upload do.
+ * - **Raise a transient fault as {@link TransientError}** (throttling, a 5xx, a dropped connection), so the read
+ *   retry can ride it out and a write's caller can tell it from a deterministic failure.
  */
 export interface IStorageDriver {
   capabilities(): StorageCaps;
   /**
    * Stream a new immutable generation. The driver opens a destination, hands `write` a {@link BlobSink},
-   * then atomically commits (and computes the content hash). Throws if the key already exists (write-once).
+   * then atomically commits (and computes the content hash). Throws {@link WriteConflictError} if the key
+   * already exists (write-once).
    */
   putImmutable(
     key: GenKey,
     write: (sink: BlobSink) => Promise<void>,
   ): Promise<{ size: number; sha256: string }>;
-  /** Range read; the caller bounds-checks. Out-of-range is rejected, never a short/adjacent read. */
+  /**
+   * Range read; the caller bounds-checks. Out-of-range throws {@link ValidationError}, never a short/adjacent
+   * read, and a missing object throws {@link NotFoundError}.
+   */
   getRange(key: GenKey, offset: number, length: number): Promise<Uint8Array>;
-  /** Speculative tail read: the last `min(maxBytes, size)` bytes + the total object size. */
+  /**
+   * Speculative tail read: the last `min(maxBytes, size)` bytes + the object's **true total size**. A missing
+   * object throws {@link NotFoundError}.
+   */
   getTail(key: GenKey, maxBytes: number): Promise<{ bytes: Uint8Array; size: number }>;
+  /** Idempotent: deleting an absent key is a no-op, not an error. */
   delete(key: GenKey): Promise<void>;
-  /** Enumerate the generations present for a segment (orphan sweep / latest-gen resolution). */
+  /**
+   * Enumerate the generations present for a segment (orphan sweep / latest-gen resolution). Strongly
+   * consistent, read-after-delete and read-after-put.
+   */
   list(ref: SegmentRef): AsyncIterable<GenKey>;
 }
 
@@ -380,6 +421,26 @@ export function isStorageBackend(value: unknown): value is StorageBackend {
  * Per-segment registry — the authoritative source of `currentGen`, the discovery index, and the wrapped-DEK
  * holder. One row per segment under OCC: a never-reused, equality-compared {@link Token} (ABA-safe across
  * delete→recreate).
+ *
+ * **What a driver must do** — callers rely on each of these, and the registry conformance suite holds every
+ * shipped driver to them:
+ *
+ * - **`create` and `compareAndSwap` are atomic conditional writes.** A `create` over a live row, and a
+ *   `compareAndSwap` whose token is not the stored one, throw {@link WriteConflictError} and change nothing.
+ *   Two racing writers have exactly one winner.
+ * - **Tokens are never reused**, not even across `delete` then `create`: a delete leaves a tombstone (or a
+ *   global counter) so a recreated row always carries a fresh token and a stale holder cannot swap into it.
+ * - **`delete` is idempotent** without an `expected` token: deleting an absent row is a no-op, not an error.
+ *   **With `expected` it is fenced**: it lands only while the row still carries that token, and otherwise throws
+ *   {@link WriteConflictError} and leaves the row.
+ * - **Reads are strongly consistent** (`RegCaps.strongRead`), and `list` yields every existing row,
+ *   `destroyed` tombstones included, with every field (see {@link IRegistryDriver.list}).
+ * - **Never replay a conditional write without telling the replay apart.** A `create` or `compareAndSwap`
+ *   that lands and then loses its response, sent again, finds its own write and would report a conflict.
+ *   Either send each write once, with the backend client's retry off for that request, or recognise your own
+ *   write when the precondition fails by reading an id you stored with it back. The shipped registries do
+ *   one or the other.
+ * - **Raise a transient fault as {@link TransientError}.**
  */
 export interface IRegistryDriver {
   capabilities(): RegCaps;
@@ -405,6 +466,16 @@ export interface IRegistryDriver {
    * paying a `get()` per segment, so a `list()` that drops the field means nothing ever expires, silently.
    */
   list(namespace?: string): AsyncIterable<RegistryRecord>;
-  /** Remove the row (tombstoned for ABA-safety — a later `create` still gets a fresh, greater token). */
-  delete(ref: SegmentRef): Promise<void>;
+  /**
+   * Remove the row (tombstoned for ABA-safety — a later `create` still gets a fresh, greater token).
+   *
+   * Without `expected`, idempotent: deleting an absent row is a no-op.
+   *
+   * With `expected`, the delete is **fenced like a {@link IRegistryDriver.compareAndSwap}**: it lands only while
+   * the row still carries exactly that token, and otherwise — the token differs, or the row is absent or already
+   * deleted — throws {@link WriteConflictError} and leaves the row. Pass the token of the row you read when you
+   * decided to delete it, so a delete that is delayed, replayed, or racing a re-create cannot tombstone a row
+   * created after the decision. A third-party driver that ignores `expected` keeps the unfenced behaviour.
+   */
+  delete(ref: SegmentRef, expected?: Token): Promise<void>;
 }

@@ -359,7 +359,7 @@ describe('retireExpired — faults, races and malformed input', () => {
         return res;
       },
       list: (ns) => w.registry.list(ns),
-      delete: (ref) => w.registry.delete(ref),
+      delete: (ref, expected) => w.registry.delete(ref, expected),
     };
 
     const res = await retireExpired({ ...w.dropDeps, registry }, { now: T0 });
@@ -494,6 +494,65 @@ describe('retireExpired — faults, races and malformed input', () => {
     expect(await w.registry.get({ segment: 'typo' })).toBeNull();
   });
 
+  it('does not tombstone a name re-created between an empty segment’s drop and the removal of its row', async () => {
+    const w = world();
+    await w.store().setRetention({ segment: 'typo' }, { expiresAt: EXPIRED });
+    const registry: IRegistryDriver = {
+      ...w.registry,
+      capabilities: () => w.registry.capabilities(),
+      get: (ref) => w.registry.get(ref),
+      create: (ref, rec) => w.registry.create(ref, rec),
+      list: (ns) => w.registry.list(ns),
+      delete: (ref, expected) => w.registry.delete(ref, expected),
+      compareAndSwap: async (ref, expected, patch) => {
+        const res = await w.registry.compareAndSwap(ref, expected, patch);
+        if (patch.status === 'destroyed') {
+          // The drop's tombstone has landed; a rival removes it and a writer takes the name before the sweep
+          // gets to remove the row it believes is still its own tombstone.
+          await w.registry.delete(ref, res.token);
+          await w.registry.create(ref, { currentGen: 0 });
+        }
+        return res;
+      },
+    };
+
+    await retireExpired({ ...w.dropDeps, registry }, { now: T0 });
+    expect(await w.registry.get({ segment: 'typo' })).toMatchObject({
+      status: 'active',
+      currentGen: 0,
+    });
+  });
+
+  it('does not tombstone a name re-created between the sweep reading its tombstone and deleting it', async () => {
+    const w = world();
+    await w.store().setRetention({ segment: 'typo' }, { expiresAt: EXPIRED });
+    let armed = false;
+    const registry: IRegistryDriver = {
+      capabilities: () => w.registry.capabilities(),
+      create: (ref, rec) => w.registry.create(ref, rec),
+      compareAndSwap: async (ref, expected, patch) => {
+        const res = await w.registry.compareAndSwap(ref, expected, patch);
+        if (patch.status === 'destroyed') armed = true; // the drop's tombstone has landed
+        return res;
+      },
+      list: (ns) => w.registry.list(ns),
+      delete: (ref, expected) => w.registry.delete(ref, expected),
+      get: async (ref) => {
+        const row = await w.registry.get(ref);
+        if (armed && row?.status === 'destroyed') {
+          // The sweep now holds the tombstone it read; a rival removes it and a writer takes the name.
+          armed = false;
+          await w.registry.delete(ref, row.token);
+          await w.registry.create(ref, { currentGen: 0 });
+        }
+        return row;
+      },
+    };
+
+    await retireExpired({ ...w.dropDeps, registry }, { now: T0 });
+    expect(await w.registry.get({ segment: 'typo' })).toMatchObject({ status: 'active' });
+  });
+
   it('survives a malformed retention blob without abandoning the sweep', async () => {
     // `readRetentionPolicy` is called outside the per-segment try, so a stored `retention: null` that threw an
     // untyped TypeError there would abort the fleet sweep, and the healthy expired segment beside it would never
@@ -574,6 +633,44 @@ describe('retireExpired — tombstone purge', () => {
       { segment: 'day', namespace: undefined, action: 'purged-tombstone' },
     ]);
     expect(await w.registry.get({ segment: 'day' })).toBeNull();
+  });
+
+  it('does not delete a row that was purged and re-created since the scan', async () => {
+    // The purge decision (a sweep-written marker, past its grace) is made from the scanned row. A delete that
+    // carries no token would tombstone whatever is under the name by the time it lands, including a segment
+    // created after the purge decision, which is live data.
+    const w = world();
+    await w.load('day', [1]);
+    await w.store().setRetention({ segment: 'day' }, { expiresAt: EXPIRED });
+    await retireExpired(w.dropDeps, { now: T0 });
+
+    let recreated = false;
+    const storage = faultyStorage(w.storage, {
+      list: (ref) => {
+        // The first listing is the sweep proving the tombstone's storage is gone: a rival purges the row and a
+        // writer creates the name anew before the sweep deletes.
+        if (!recreated && ref.segment === 'day') {
+          recreated = true;
+          return (async function* () {
+            const old = await w.registry.get(ref);
+            await w.registry.delete(ref, old!.token);
+            await w.registry.create(ref, { currentGen: 0 });
+            yield* w.storage.list(ref);
+          })();
+        }
+        return w.storage.list(ref);
+      },
+    });
+
+    const res = await retireExpired({ ...w.dropDeps, storage }, { now: T0 + 2 * DAY });
+    expect(res.tombstonesPurged).toBe(0);
+    expect(res.entries).toEqual([
+      { segment: 'day', namespace: undefined, action: 'skipped', reason: 'failed: contended' },
+    ]);
+    expect(await w.registry.get({ segment: 'day' })).toMatchObject({
+      status: 'active',
+      currentGen: 0,
+    });
   });
 
   it('never touches a crypto-shred tombstone that carries no retention policy', async () => {

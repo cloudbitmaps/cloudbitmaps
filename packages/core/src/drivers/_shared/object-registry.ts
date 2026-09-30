@@ -132,6 +132,11 @@ export interface ObjectRegistryStore {
   /**
    * Write one object under a precondition: `'absent'` means create-only, a version means
    * compare-and-swap against exactly that version. A lost race MUST throw {@link WriteConflictError}.
+   *
+   * A store must not replay this write after a lost response without telling the replay apart: the replay meets
+   * the row it just wrote and its precondition fails, which would read as a lost race. Send it once, or store a
+   * write id with the row and treat a conflict whose stored row carries it as success. Retryable faults throw
+   * {@link TransientError}.
    */
   write(key: string, body: Uint8Array, expect: 'absent' | { version: string }): Promise<void>;
   /** Every object key under `prefix`, paginated internally. */
@@ -221,14 +226,22 @@ export class ObjectStoreRegistry implements IRegistryDriver {
     if (page.length > 0) yield* flush(page);
   }
 
-  async delete(ref: SegmentRef): Promise<void> {
+  async delete(ref: SegmentRef, expected?: Token): Promise<void> {
     const key = registryObjectKey(this.prefix, ref);
     // Tombstone (advance the counter) rather than remove the object — keeps the token monotonic for
     // ABA-safety. Retry the read→tombstone on a cross-process race; it converges, then fails typed rather
     // than silently leaving the row live.
     for (let attempt = 0; attempt < MAX_DELETE_ATTEMPTS; attempt++) {
       const current = await this.readRow(key);
-      if (current === null || current.env.deleted) return; // idempotent — already gone
+      if (expected !== undefined) {
+        // Fenced: the row must still carry the token the caller read. Re-checked on every attempt, so a row
+        // that was swapped, or deleted and re-created, between two attempts is refused rather than tombstoned.
+        if (current === null || current.env.deleted || current.env.record.token !== expected) {
+          throw new WriteConflictError(`OCC token mismatch for registry row ${ref.segment}`);
+        }
+      } else if (current === null || current.env.deleted) {
+        return; // idempotent — already gone
+      }
       const token = String(registryCounterOf(current.env.record) + 1);
       const env: RegistryEnvelope = {
         deleted: true,

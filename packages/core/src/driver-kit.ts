@@ -19,6 +19,23 @@
  * that does NOT extend `ObjectStoreRegistry` needs `Token`, `RegCaps`, `RegistryRecord`, `NewRegistryRecord`
  * and `RegistryPatch` to write `IRegistryDriver`'s method signatures, and those come from
  * `@cloudbitmaps/core`'s main entry. The contract is this subpath PLUS those record types.
+ *
+ * WHAT A DRIVER MUST DO. The port doc comments (`IStorageDriver`, `IRegistryDriver`) carry the full list, each with
+ * the caller that depends on it. In short:
+ *
+ *  - Storage: `putImmutable` is write-once and throws `WriteConflictError` on a collision; a missing object makes
+ *    `getRange`/`getTail` throw `NotFoundError`; an out-of-range read throws `ValidationError`; `getTail` returns
+ *    the true total size; `delete` is idempotent; `list` is strongly consistent, read-after-delete.
+ *  - Registry: `create` and `compareAndSwap` are atomic conditional writes that throw `WriteConflictError` when
+ *    they lose; tokens are never reused; `delete` is idempotent, and `delete(ref, expected)` lands only while the
+ *    row still carries `expected`, else it throws `WriteConflictError`; `list` yields tombstones and every field.
+ *  - Either: never replay a conditional write without telling the replay apart (send it once, or recognise your
+ *    own write on the read-back), and raise a transient fault as `TransientError`.
+ *
+ * PORT CHANGES are recorded in the root `CHANGELOG.md`, under **Added**, **Changed** or **Breaking** like any
+ * other. A parameter added to a port method is optional, so an existing driver keeps compiling and keeps its old
+ * behaviour until it implements the parameter: `IRegistryDriver.delete`'s optional expected token is the current
+ * example, and a driver that ignores it deletes unfenced, as before.
  */
 
 // The ports a driver implements, and the brand that marks a pair of halves as a backend. `brandAsBackend` also

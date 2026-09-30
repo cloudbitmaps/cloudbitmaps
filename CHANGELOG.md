@@ -349,6 +349,24 @@ This one changes what an erasure charges its budget for:
 
 ### Added
 
+- **`IRegistryDriver.delete` takes an optional expected token: `delete(ref, expected?)`.** Without it, nothing
+  changes: deleting an absent row is a no-op. With it, the delete lands only while the row still carries that
+  token, and otherwise (another token, or no live row) throws `WriteConflictError` and leaves the row, as a
+  compare-and-swap does. The memory, local-filesystem and `ObjectStoreRegistry` registries, and so the S3, GCS and
+  Azure Blob ones, implement it. **For a third-party registry driver the change is additive:** the parameter is
+  optional, so a driver that ignores it still compiles and keeps the unfenced delete. Implement it to make the library's own deletes safe against a concurrent re-create; the
+  registry conformance suite now holds every registry to it.
+- **The driver ports state the contracts callers rely on, and a conformance suite holds every storage driver to
+  them.** `IStorageDriver` and `IRegistryDriver` now say, in their doc comments, the driver kit's header and the
+  API reference: `putImmutable` is write-once and throws `WriteConflictError` on a collision; a missing object
+  makes `getRange` and `getTail` throw `NotFoundError`; an out-of-range read throws `ValidationError`; `getTail`
+  reports the true total size; `delete` is idempotent; `list` is strongly consistent, read-after-delete; a driver
+  never replays a conditional write without telling the replay apart, by sending it once or by recognising its
+  own write on the read-back; a transient fault is a `TransientError`. The new `storageDriverConformance` suite
+  runs each of these against the memory and local-filesystem drivers in the unit suite and the S3 (MinIO), GCS
+  (fake-gcs-server) and Azure Blob (Azurite) drivers in the integration suite. A registry fixture whose write lands
+  and then fails proves the registry reports that fault and neither retries the write nor reports a conflict.
+
 - **An id-range read: `iterate({ after, through })`, and the same two options on `intersect`, `union`, `andNot` and
   the `*Into` verbs.** A read yields only the ids in `(after, through]`, ascending, and fetches only the chunks the
   range overlaps, on every operand and every `exclude` of a combine, so a keyset page bounded by `through` costs the
@@ -520,6 +538,12 @@ This one changes what an erasure charges its budget for:
 
 ### Fixed
 
+- **The retention sweep's row deletes could tombstone a row created after the sweep decided to delete.** The
+  tombstone purge decided from the row it scanned, which can be minutes old on a large fleet, and then deleted
+  whatever was under the name, so a segment purged and re-created in that window, which is live data, was tombstoned
+  and its name fenced. The purge now deletes with the scanned row's token and reports the entry as
+  `failed: contended` when the row has changed. The removal of the row of a segment that held nothing now reads the
+  row it tombstoned and deletes it only while it is still that `destroyed` row, at that token.
 - **A failed pointer refresh served the old generation, and the key it unwrapped, for as long as the registry
   stayed unreadable.** A reader that could not re-read a segment's pointer kept its reader and stamped it fresh,
   so during a registry outage, or after an access denial, a crypto-shredded or dropped segment could keep

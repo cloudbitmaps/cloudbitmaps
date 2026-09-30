@@ -534,6 +534,41 @@ nothing can compare one. Branding them is you taking that on.
 | `BlobSink` | the sink `putImmutable` hands the writer: the object's bytes arrive through its one method, `write`, and the driver commits them once the writer returns |
 | the typed errors + predicates | `ValidationError` · `WriteConflictError` · `NotFoundError` · `IntegrityError` · `TransientError`, and `isValidationError` · `isWriteConflictError` · `isNotFoundError`. Throw the classes; classify with the predicates, which hold across package copies where `instanceof` does not |
 
+**What a storage driver must do.** Callers rely on each of these, and the conformance suite holds every shipped
+driver to them (`IStorageDriver`'s doc comment states the same list):
+
+- `putImmutable` is write-once and reports a collision as `WriteConflictError`. `load` reads that error as a lost
+  race for the generation number (`superseded`).
+- A missing object makes `getRange` and `getTail` throw `NotFoundError`, never an empty or short result. Heal-forward,
+  `notInCurrent` and a pin's replaced-object check branch on it. A zero-length `getRange` may answer empty without
+  reaching the backend.
+- An out-of-range read, meaning a range past the end or a negative or non-integer offset or length, throws
+  `ValidationError`, never a clamped or short read. `getTail` reports the object's true total size.
+- `delete` is idempotent: deleting an absent key is a no-op.
+- `list` is strongly consistent, read-after-delete: once `delete` resolves, the generation is no longer listed. The
+  erasure's completeness check, `generationsRemaining` and rollback's post-move check prove a deletion by listing.
+- Never replay a conditional write without telling the replay apart. A write that lands and loses its response, sent
+  again, meets its own object and would report a collision. Send each write once, with the client's retry off for
+  that request, or, when the precondition fails, read back an id you stored with the write and treat a match as
+  success.
+- Raise a transient fault as `TransientError`.
+
+**What a registry driver must do.** `create` and `compareAndSwap` are atomic conditional writes that throw
+`WriteConflictError` and change nothing when they lose; tokens are never reused, `delete` then `create` included;
+reads are strongly consistent; `list` yields every existing row, `destroyed` tombstones included, with every field;
+the replay rule above applies to `create` and `compareAndSwap`; a transient fault is a `TransientError`; and
+`delete` is idempotent, with one addition.
+
+**`delete(ref, expected?)` takes an optional expected token.** Without it, deleting an absent row is a no-op, as
+before. With it, the delete is fenced like a compare-and-swap: it lands only while the row still carries that token,
+and otherwise (another token, or no live row) throws `WriteConflictError` and leaves the row. The library passes the
+token of the row it read when it decided to delete, so a delayed or replayed delete, or one racing a re-create,
+cannot tombstone a row created after the decision: the retention sweep's tombstone purge does. A driver that extends
+`ObjectStoreRegistry` gets this for free. **For a third-party registry driver this is an additive port change:** the
+parameter is optional, so a driver that ignores it still compiles and keeps the unfenced behaviour, and callers
+that do not pass it see no change. Implement it to make the library's deletes safe against a concurrent re-create;
+the registry conformance suite's `delete` cases are the test.
+
 **`currentGen` is nullable, and `null` is a value — not a missing field.** A `RegistryRecord` with
 `currentGen: null` says *this segment exists and has no Storage generation yet*: the row `setRetention` mints when a
 policy is recorded **before the first load**, so fleet-wide operations — `checkConsistency`, `eraseNamespace`,

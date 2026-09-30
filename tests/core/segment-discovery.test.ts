@@ -81,7 +81,7 @@ describe('exists()', () => {
       },
       create: (r, rec) => registry.create(r, rec),
       compareAndSwap: (r, t, patch) => registry.compareAndSwap(r, t, patch),
-      delete: (r) => registry.delete(r),
+      delete: (r, expected) => registry.delete(r, expected),
       list: (ns?: string) => registry.list(ns),
     };
     const s = new CloudRoaring({
@@ -167,7 +167,7 @@ describe('segments()', () => {
       get: (r) => registry.get(r),
       create: (r, rec) => registry.create(r, rec),
       compareAndSwap: (r, t, patch) => registry.compareAndSwap(r, t, patch),
-      delete: (r) => registry.delete(r),
+      delete: (r, expected) => registry.delete(r, expected),
       async *list(namespace?: string) {
         for await (const row of registry.list(namespace)) {
           pulled++;

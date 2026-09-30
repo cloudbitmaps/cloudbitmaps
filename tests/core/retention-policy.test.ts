@@ -52,7 +52,7 @@ function wrapRegistry(
       return base.compareAndSwap(ref, expected, patch);
     },
     list: (ns) => base.list(ns),
-    delete: (ref) => base.delete(ref),
+    delete: (ref, expected) => base.delete(ref, expected),
   };
 }
 

@@ -151,11 +151,17 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
     }
   }
 
-  async delete(ref: SegmentRef): Promise<void> {
+  async delete(ref: SegmentRef, expected?: Token): Promise<void> {
     const path = registryRowPath(this.root, ref);
     return this.withRowLock(path, async () => {
       const current = await this.readRow(path);
-      if (current === null || current.deleted) return; // idempotent
+      if (expected !== undefined) {
+        if (current === null || current.deleted || current.record.token !== expected) {
+          throw new WriteConflictError(`OCC token mismatch for registry row ${ref.segment}`);
+        }
+      } else if (current === null || current.deleted) {
+        return; // idempotent
+      }
       // Tombstone (advance the counter) rather than unlink — keeps the token monotonic for ABA-safety.
       const token = String(registryCounterOf(current.record) + 1);
       await this.writeRow(path, true, { ...current.record, token, updatedAt: this.now() });

@@ -9,6 +9,7 @@ import { Writable } from 'node:stream';
 import { Storage } from '@google-cloud/storage';
 import {
   storageChunkSourceConformance,
+  storageDriverConformance,
   registryConformance,
   registryConcurrency,
   CONFORMANCE_SEGMENT,
@@ -117,6 +118,10 @@ const freshDriver = (): GcsStorageDriver =>
   new GcsStorageDriver({ storage, bucket: BUCKET, prefix: `${RUN}/conf/${n++}` });
 
 // The GCS driver must pass the SAME storage-source contract as in-memory + LocalFs + S3.
+// The same IStorageDriver contract memory and LocalFs pass: write-once, typed errors, true tail size, idempotent
+// delete, read-after-delete listing.
+storageDriverConformance('GcsStorageDriver (fake-gcs-server)', freshDriver);
+
 storageChunkSourceConformance('GcsStorageDriver (fake-gcs-server)', async (chunks) => {
   const driver = freshDriver();
   await writeCrbmGeneration(driver, { segment: CONFORMANCE_SEGMENT, generation: 1 }, chunks);
