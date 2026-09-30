@@ -13,8 +13,8 @@ describe('GCS keys', () => {
       '_default/segments/s.0.crbm',
     );
     expect(
-      storageObjectName('cloudroaring', { segment: 'seg1', generation: 42, namespace: 'ns' }),
-    ).toBe('cloudroaring/ns/segments/seg1.42.crbm');
+      storageObjectName('cloudbitmaps', { segment: 'seg1', generation: 42, namespace: 'ns' }),
+    ).toBe('cloudbitmaps/ns/segments/seg1.42.crbm');
   });
 
   it('the segment prefix is the shared listing prefix', () => {

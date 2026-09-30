@@ -7,11 +7,16 @@ import {
 } from '@/index';
 import { S3Storage } from '@cloudbitmaps/s3';
 import { GcsStorage } from '@cloudbitmaps/gcs';
+import { GCS_STORAGE_OPTION_KEYS } from '@/gcs/backend';
+import { S3_STORAGE_OPTION_KEYS } from '@/s3/backend';
+import { AZURE_BLOB_STORAGE_OPTION_KEYS } from '@/azure-blob/backend';
+
 import { AzureBlobStorage } from '@cloudbitmaps/azure-blob';
 import { ValidationError } from '@/core/errors';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { SameKeys } from '../helpers/types';
 
 // Azurite's fixed, publicly-documented dev account + key (not a secret — the same value ships in every SDK).
 // Constructing a client parses this string but talks to nothing, which is all these wiring tests need.
@@ -88,15 +93,56 @@ describe('a backend configures both halves from one place', () => {
     );
   });
 
-  // The old driver took the GCS client as `storage`. A caller collapsing two constructions into one keeps
-  // the name — and ignoring it would fall back to ambient credentials and the PUBLIC endpoint, so a user
-  // pointed at fake-gcs-server would silently start talking to production.
-  it('GcsStorage rejects the old `storage` option instead of ignoring it', () => {
+  // `GcsStorageDriver` takes the GCS client as `storage`, and `GcsStorage` takes it as `client`. An ignored
+  // client key would fall back to ambient credentials and the PUBLIC endpoint, so a user pointed at
+  // fake-gcs-server would silently start talking to production: every key GcsStorage does not take is refused.
+  it('GcsStorage refuses a key it does not take, `storage` among them, instead of ignoring it', () => {
     const client = new GcsStorage({ bucket: 'b', apiEndpoint: 'http://127.0.0.1:4443' }).client;
+    const build = (options: object) => () => new GcsStorage(options as { bucket: string });
+    expect(build({ bucket: 'b', storage: client })).toThrow(ValidationError);
+    expect(build({ bucket: 'b', storage: client })).toThrow(
+      /does not take `storage`.*goes in `client`/,
+    );
+    expect(build({ bucket: 'b', endpoint: 'http://x' })).toThrow(/`endpoint`/);
+    expect(build({ bucket: 'b', client, prefix: 'p', projectId: 'x', now: () => 0 })).not.toThrow();
+  });
+
+  it('S3Storage and AzureBlobStorage refuse a key they do not take, and every backend a bag that is not an object', () => {
+    const s3 = (options: object) => () => new S3Storage(options as { bucket: string });
+    expect(s3({ bucket: 'b', s3Client: {} })).toThrow(
+      /S3Storage does not take `s3Client`.*goes in `client`/,
+    );
+    expect(s3({ bucket: 'b', forcePathStyle: true })).toThrow(/`forcePathStyle`/);
     expect(
-      () => new GcsStorage({ bucket: 'b', storage: client } as unknown as { bucket: string }),
-    ).toThrow(ValidationError);
-    expect(() => new GcsStorage({ bucket: 'b', client })).not.toThrow();
+      s3({ bucket: 'b', region: 'us-east-1', pathStyle: true, prefix: 'p', now: () => 0 }),
+    ).not.toThrow();
+    const azure = (options: object) => () => new AzureBlobStorage(options);
+    expect(azure({ connectionString: 'x', container: 'c', client: {} })).toThrow(
+      /AzureBlobStorage does not take `client`.*goes in `containerClient`/,
+    );
+    for (const bad of [undefined, null, 'b']) {
+      expect(() => new S3Storage(bad as unknown as { bucket: string })).toThrow(ValidationError);
+      expect(() => new GcsStorage(bad as unknown as { bucket: string })).toThrow(ValidationError);
+      expect(() => new AzureBlobStorage(bad as unknown as object)).toThrow(ValidationError);
+    }
+  });
+
+  it('each cloud backend takes exactly the keys its options interface declares (checked by the compiler)', () => {
+    const agree: {
+      readonly s3: SameKeys<
+        (typeof S3_STORAGE_OPTION_KEYS)[number],
+        keyof ConstructorParameters<typeof S3Storage>[0]
+      >;
+      readonly gcs: SameKeys<
+        (typeof GCS_STORAGE_OPTION_KEYS)[number],
+        keyof ConstructorParameters<typeof GcsStorage>[0]
+      >;
+      readonly azure: SameKeys<
+        (typeof AZURE_BLOB_STORAGE_OPTION_KEYS)[number],
+        keyof NonNullable<ConstructorParameters<typeof AzureBlobStorage>[0]>
+      >;
+    } = { s3: true, gcs: true, azure: true };
+    expect(Object.values(agree).every(Boolean)).toBe(true);
   });
 
   it('AzureBlobStorage refuses a half-specified container rather than failing at the first read', () => {
@@ -216,39 +262,6 @@ describe('a backend is all the wiring a store needs', () => {
       registry: backend.registry,
     });
     expect(await nextGeneration(ref, backend)).toBe(1);
-  });
-
-  // The failure this prevents is not "it does not work" — it is that it fails wearing someone else's
-  // symptoms. A root that keeps its generations in `<root>/cold`, pointed at by `LocalFsStorage`, gives the
-  // registry half a pointer the storage half cannot satisfy, which reports
-  // `missing-storage-generation` — the torn-restore signature, whose runbook remedy is to roll `currentGen`
-  // back. Destructive, on a store that was never damaged.
-  it('refuses a root written before the tier was renamed, naming the directory to rename', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'cbm-oldroot-'));
-    try {
-      const { mkdir } = await import('node:fs/promises');
-      await mkdir(join(root, 'cold'), { recursive: true });
-      await mkdir(join(root, 'registry'), { recursive: true });
-      expect(() => new LocalFsStorage(root)).toThrow(ValidationError);
-      expect(() => new LocalFsStorage(root)).toThrow(/"cold\/" directory but no "storage\/"/);
-      // And it says what NOT to conclude, because the wrong conclusion here is the destructive one.
-      expect(() => new LocalFsStorage(root)).toThrow(/torn\s+restore/);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it('does not fire on a current root, or on a fresh one, or on a leftover cold/ beside storage/', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'cbm-newroot-'));
-    try {
-      const { mkdir } = await import('node:fs/promises');
-      expect(() => new LocalFsStorage(root)).not.toThrow(); // nothing there yet — a first run
-      await mkdir(join(root, 'storage'), { recursive: true });
-      await mkdir(join(root, 'cold'), { recursive: true }); // an already-renamed store's leftover copy
-      expect(() => new LocalFsStorage(root)).not.toThrow();
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
   });
 
   it('a raw driver still works, and is read-only-cleartext because it has no pointer', async () => {

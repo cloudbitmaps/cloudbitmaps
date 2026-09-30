@@ -8,9 +8,9 @@
 //
 //   HARD   — always a failure, in any repo, at any time: credentials, private keys, non-noreply email
 //            addresses, and absolute local machine paths. None of these are ever correct to ship.
-//   MIGRATION — expected in the pre-launch repo, forbidden in the curated snapshot: stale references to the
-//            old repo owner/URL, and dangling references to private docs (both the private path prefix AND
-//            bare numbered doc-names, which dangle just as hard without the directory).
+//   MIGRATION — expected in the pre-launch repo, forbidden in the curated snapshot: references to a repo
+//            under the maintainer's own account, and dangling references to private docs (both the private
+//            path prefix AND bare numbered doc-names, which dangle just as hard without the directory).
 //            Informational by default; pass `--snapshot` to make them failures.
 //
 // Usage
@@ -228,7 +228,9 @@ const EMAIL_OK = new RegExp(
 const MIGRATION_EXEMPT = new Set(['scripts/leak-scan.cjs', 'tests/docs/links.test.ts']);
 
 const MIGRATION = [
-  { name: 'stale old-owner repo URL', re: /github\.com\/sharvilk\/cloud-roaring/ },
+  // The project lives under the `cloudbitmaps` org, so a repo under the maintainer's own account is either stale
+  // or private. One rule covers all of them, so this file names none.
+  { name: 'repo under the maintainer account', re: /\bsharvilk\// },
   // Both the full path and the `docs/`-relative form a doc inside `docs/` would use.
   { name: 'private-doc path', re: /(?:docs\/)?internal\/[0-9A-Za-z]/ },
   // Bare doc-names: the internal docs are numbered `NN-NAME.md`, so a citation that dropped the directory
@@ -243,7 +245,6 @@ const MIGRATION = [
   { name: 'bare private-doc name', re: /\b\d{2}-[A-Z][A-Z0-9-]{2,}(?:\.md)?\b/ },
   // The private docs also live in numbered `phases/NN` directories, cited the same dangling way.
   { name: 'private phase-doc reference', re: /\bphases\/\d/ },
-  { name: 'private handbook repo', re: /sharvilk\/meta-standards/ },
 ];
 
 /** Operator-supplied needles. Reported by index and with the match REDACTED — they are secrets themselves. */

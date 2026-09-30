@@ -37,7 +37,7 @@ const RUN =
     : `${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT ?? '1'}`;
 
 const ENDPOINT = process.env.GCS_ENDPOINT ?? 'http://127.0.0.1:4443';
-const BUCKET = 'cloud-roaring-it';
+const BUCKET = 'cloudbitmaps-it';
 const storage = new Storage({ projectId: 'test', apiEndpoint: ENDPOINT });
 
 beforeAll(async () => {

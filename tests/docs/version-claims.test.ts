@@ -111,10 +111,6 @@ const FOREIGN_VERSIONS = new Map<string, string>([
     '24.18.1',
     'the Node version in the benchmarks methodology — a fact about the measurement, not a release',
   ],
-  [
-    '0.0.0',
-    "README's license section: the placeholder published to reserve the unscoped `cloud-roaring` npm name",
-  ],
 ]);
 
 /**

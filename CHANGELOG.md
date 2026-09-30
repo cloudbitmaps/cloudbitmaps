@@ -13,9 +13,10 @@ so, and so do the module headers in the code.
 
 ### Breaking
 
-Each of these makes a call throw where it used to return. The first four each fix a wrong answer, and the entries
-under **Fixed** say what the call returned before. The last two hold a call to a rule the rest of the library
-already kept.
+The first six make a call throw where it used to return. The first four each fix a wrong answer, and the entries
+under **Fixed** say what the call returned before. The next two hold a call to a rule the rest of the library
+already kept. The last five hold the store, the backends and the registry to what the library itself takes and
+writes, and give its errors the library's own brand.
 
 - **A pinned read of a segment whose row is gone or destroyed throws `NotFoundError`**, where it read empty,
   part-way through a call included. Catch it where a pin can outlive its segment: across a `dropSegment`, a
@@ -39,6 +40,30 @@ already kept.
 - **A custom `StorageChunkSource` that lists one chunk key twice is refused with `IntegrityError`** by every read
   that lists a segment's chunks: `iterate`, every combine, and a `count` with no index to sum. A combine used to drop
   the duplicate. The sources the library ships never list a key twice.
+
+These make the library refuse what it used to ignore or accept, so that a wrong input fails where it is written:
+
+- **`new CloudRoaring(options)` refuses every key it does not take**, at the top level and inside `cache`,
+  `encryption`, `retry`, `budget` and `seams`, with a `ValidationError` naming each one and the keys the store or
+  the group takes. It refused a fixed list of spellings before, and ignored any other key. A group that is not an
+  object is refused too — `null`, an array, a Map, a boxed primitive, `encryption: true` — and `false` is taken
+  only by `retry` and `budget`.
+- **`new S3Storage(options)`, `new GcsStorage(options)` and `new AzureBlobStorage(options)` refuse every key they do
+  not take** the same way, and an options bag that is not an object. `GcsStorage` refused only `storage` before,
+  and the other two ignored any key they did not take.
+- **`RegistryStatus` is `'active' | 'destroyed'`.** A stored registry row with another status, a field its record
+  or its envelope does not declare, or no `schemaVersion` is refused on read with `IntegrityError`, and so is every
+  `list()` of a registry that holds one, which the retention sweep, `checkConsistency` and subject erasure run. Every
+  row a store created at `0.10.0` or later writes passes. A row last written before `0.10.0` does not, nor does a
+  tombstone `0.10.0` wrote over one, since the tombstone keeps the row's fields, nor a row a caller set to
+  `compacting` or `erasing` through the registry driver: load such a store's segments into a new one from their
+  source.
+- **`LocalFsStorage` does not look for a `cold/` directory.** A root keeps its generations in `storage/`, and one
+  that holds them anywhere else opens like any other with its generations missing: a read throws `NotFoundError`,
+  and `checkConsistency` reports `missing-storage-generation`.
+- **The error brands are `Symbol.for('cloudbitmaps.error')` and `Symbol.for('cloudbitmaps.error.transient')`.**
+  Upgrade every `@cloudbitmaps` package together: a package from an earlier release brings its own copy of core,
+  and neither your error predicates nor the store's own error handling recognise that copy's errors.
 
 ### Added
 

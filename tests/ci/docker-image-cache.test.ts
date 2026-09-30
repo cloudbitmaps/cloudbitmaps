@@ -71,6 +71,7 @@ case "$1" in
     name="$(cat "$file")"
     [ "$name" = corrupt ] || [ "$name" = partial ] && exit 1
     touch "$STUB/images/$(present "$name")"
+    echo "Loaded image: $name"
     exit 0 ;;
   image)
     [ "$2" = inspect ] || exit 2
@@ -222,7 +223,7 @@ const TAG = 'fsouza/fake-gcs-server:1.52.2';
 const DIGEST = 'cgr.dev/chainguard/minio@sha256:abc';
 /** The part of a cache name that is the image, computed here rather than by the helper under test. */
 const idOf = (image: string) => createHash('sha256').update(image).digest('hex').slice(0, 16);
-const localName = (image: string) => `cloud-roaring-ci.invalid/cache:${idOf(image)}`;
+const localName = (image: string) => `cloudbitmaps-ci.invalid/cache:${idOf(image)}`;
 const tarOf = (w: World, image: string) => join(w.cache, `${idOf(image)}.tar`);
 const pull = (image: string) => `. ${HELPER} && docker_pull_with_backoff '${image}'`;
 const PRUNE = `. ${HELPER} && docker_image_cache_prune`;
@@ -361,7 +362,33 @@ describe('an image CI runs is kept in the Actions cache, and a registry is asked
 
   it('pulls again when the copy loads under a name other than its local one', () => {
     mkdirSync(w.cache, { recursive: true });
-    writeFileSync(tarOf(w, DIGEST), 'cloud-roaring-ci.invalid/cache:ffffffffffffffff');
+    writeFileSync(tarOf(w, DIGEST), 'cloudbitmaps-ci.invalid/cache:ffffffffffffffff');
+    const r = w.run(pull(DIGEST), THIS_MONTH());
+    expect(r.code, r.out).toBe(0);
+    expect(w.pulls()).toEqual([`pull -q ${DIGEST}`]);
+  });
+
+  it("loads a copy saved under an older prefix and this image's own id, without asking the registry", () => {
+    mkdirSync(w.cache, { recursive: true });
+    writeFileSync(tarOf(w, DIGEST), `older-ci.invalid/cache:${idOf(DIGEST)}`);
+    const r = w.run(pull(DIGEST), THIS_MONTH());
+    expect(r.code, r.out).toBe(0);
+    expect(w.pulls()).toEqual([]);
+    expect(w.has(localName(DIGEST))).toBe(true);
+  });
+
+  it('falls back on a copy saved under an older prefix and its own id, when the registry refuses', () => {
+    mkdirSync(w.cache, { recursive: true });
+    writeFileSync(tarOf(w, TAG), `older-ci.invalid/cache:${idOf(TAG)}`);
+    const r = w.run(pull(TAG), { ...OLDER(), STUB_FAIL_PULLS: TAG });
+    expect(r.code, r.out).toBe(0);
+    expect(r.out).toContain('using the copy of');
+    expect(w.has(TAG)).toBe(true);
+  });
+
+  it("still refuses a copy saved under an older prefix and another image's id, and pulls again", () => {
+    mkdirSync(w.cache, { recursive: true });
+    writeFileSync(tarOf(w, DIGEST), `older-ci.invalid/cache:${idOf(TAG)}`);
     const r = w.run(pull(DIGEST), THIS_MONTH());
     expect(r.code, r.out).toBe(0);
     expect(w.pulls()).toEqual([`pull -q ${DIGEST}`]);

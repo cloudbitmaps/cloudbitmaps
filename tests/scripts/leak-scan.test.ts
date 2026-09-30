@@ -107,6 +107,24 @@ describe('leak-scan', () => {
       expect(out).toMatch(/Refusing to certify/);
       expect(status).toBe(2);
     });
+
+    it("refuses a repo under the maintainer's own account, and passes the project's own", () => {
+      // The account is spliced in, so this file does not contain the path it tests for.
+      const needles = { LEAK_SCAN_EXTRA: 'acme-corp' };
+      const personal = scanWith(
+        `// https://github.com/${'sharvilk'}/any-repo\n`,
+        ['--snapshot'],
+        needles,
+      );
+      expect(personal.out).toMatch(/repo under the maintainer account/);
+      expect(personal.status).not.toBe(0);
+      const own = scanWith(
+        '// https://github.com/cloudbitmaps/cloudbitmaps\n',
+        ['--snapshot'],
+        needles,
+      );
+      expect(own.status).toBe(0);
+    });
   });
 
   describe('does NOT flag benign code (a false positive here gets the scanner bypassed)', () => {

@@ -19,8 +19,8 @@
  * `Symbol.for` is identity-stable across copies, bundles and realms, so classify errors with the exported
  * predicates below (never `instanceof`) anywhere an error may cross that boundary.
  */
-const ERROR_BRAND: unique symbol = Symbol.for('cloud-roaring.error');
-const TRANSIENT_BRAND: unique symbol = Symbol.for('cloud-roaring.error.transient');
+const ERROR_BRAND: unique symbol = Symbol.for('cloudbitmaps.error');
+const TRANSIENT_BRAND: unique symbol = Symbol.for('cloudbitmaps.error.transient');
 
 /** Base class for every error CloudRoaring throws. */
 export class CloudRoaringError extends Error {

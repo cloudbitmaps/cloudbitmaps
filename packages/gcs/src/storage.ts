@@ -59,7 +59,7 @@ export interface GcsStorageDriverOptions {
   readonly storage: Storage;
   /** Target bucket (must already exist). */
   readonly bucket: string;
-  /** Optional object-name prefix under which all objects live (e.g. `cloudroaring/`). */
+  /** Optional object-name prefix under which all objects live (e.g. `cloudbitmaps/`). */
   readonly prefix?: string;
   /** Largest object this driver will write/advertise (default = GCS's 5 TiB max). */
   readonly maxObjectBytes?: number;

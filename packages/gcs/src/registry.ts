@@ -44,7 +44,7 @@ export interface GcsRegistryDriverOptions {
   readonly storage: Storage;
   /** Target bucket (must already exist). */
   readonly bucket: string;
-  /** Optional object-name prefix under which all registry objects live (e.g. `cloudroaring/`). */
+  /** Optional object-name prefix under which all registry objects live (e.g. `cloudbitmaps/`). */
   readonly prefix?: string;
   /** Injected clock for `createdAt`/`updatedAt`; defaults to `Date.now`. */
   readonly now?: () => number;

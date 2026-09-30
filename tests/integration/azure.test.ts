@@ -43,7 +43,7 @@ const CONN =
   `DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;` +
   `AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;` +
   `BlobEndpoint=${BLOB_ENDPOINT};`;
-const CONTAINER = 'cloud-roaring-it';
+const CONTAINER = 'cloudbitmaps-it';
 
 const service = BlobServiceClient.fromConnectionString(CONN);
 const container = service.getContainerClient(CONTAINER);

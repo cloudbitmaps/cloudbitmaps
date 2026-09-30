@@ -35,7 +35,7 @@ const RUN =
 // Runs against MinIO from docker-compose (see docker-compose.yml): `docker compose up -d` then
 // `pnpm test:integration`. No real AWS needed.
 const ENDPOINT = process.env.S3_ENDPOINT ?? 'http://127.0.0.1:9000';
-const BUCKET = 'cloud-roaring-it';
+const BUCKET = 'cloudbitmaps-it';
 
 const client = new S3Client({
   endpoint: ENDPOINT,

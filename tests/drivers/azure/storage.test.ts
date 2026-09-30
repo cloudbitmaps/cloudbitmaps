@@ -10,7 +10,7 @@ const fakeContainer = {} as unknown as ContainerClient;
 
 describe('AzureBlobStorageDriver construction', () => {
   it('accepts a clean prefix (or none) and advertises conditional-put + range-read', () => {
-    for (const prefix of [undefined, '', 'cloudroaring', 'a/b/c', '/leading/trailing/']) {
+    for (const prefix of [undefined, '', 'cloudbitmaps', 'a/b/c', '/leading/trailing/']) {
       const driver = new AzureBlobStorageDriver({ containerClient: fakeContainer, prefix });
       const caps = driver.capabilities();
       expect(caps.rangeRead).toBe(true);

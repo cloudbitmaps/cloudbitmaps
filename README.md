@@ -667,5 +667,5 @@ the engineering principles + hard correctness invariants and defers to `CONTRIBU
 
 ## License
 
-**Apache-2.0.** The unscoped `cloud-roaring` name is reserved on npm (a `0.0.0` placeholder) and the
-`@cloudbitmaps` scope is where the packages publish; the name is trademarked at the public launch.
+**Apache-2.0.** The `@cloudbitmaps` scope is where the packages publish, and the CloudBitmaps name is trademarked
+at the public launch.

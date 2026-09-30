@@ -12,7 +12,7 @@
  * `pathStyle` + `credentials` for an S3-compatible store (MinIO, Ceph, R2). Both halves stay reachable as `.storage` and
  * `.registry` for anyone wiring something the facade does not cover.
  */
-import { STORAGE_BACKEND, brandAsBackend } from '@cloudbitmaps/core/driver-kit';
+import { STORAGE_BACKEND, ValidationError, brandAsBackend } from '@cloudbitmaps/core/driver-kit';
 import type {
   IRegistryDriver,
   IStorageDriver,
@@ -52,6 +52,43 @@ export interface S3StorageOptions {
   readonly now?: () => number;
 }
 
+/**
+ * The keys `new S3Storage(options)` takes. Any other is refused by name rather than ignored: an ignored client or
+ * endpoint key builds a client from ambient credentials against the **public** endpoint, and for a store pointed at
+ * MinIO that is production traffic from a wiring typo.
+ */
+export const S3_STORAGE_OPTION_KEYS = [
+  'bucket',
+  'prefix',
+  'client',
+  'region',
+  'endpoint',
+  'pathStyle',
+  'credentials',
+  'now',
+] as const;
+
+/** Refuse an options bag that is not an object, or that holds a key not in `keys`, naming each such key. */
+function refuseUnknown(
+  name: string,
+  options: unknown,
+  keys: readonly string[],
+  hint: string,
+): void {
+  if (options === null || typeof options !== 'object') {
+    throw new ValidationError(
+      `${name} needs an options object — got ${options === null ? 'null' : typeof options}`,
+    );
+  }
+  const unknown = Object.keys(options).filter((k) => !keys.includes(k));
+  if (unknown.length > 0) {
+    const list = (ks: readonly string[]): string => ks.map((k) => `\`${k}\``).join(', ');
+    throw new ValidationError(
+      `${name} does not take ${list(unknown)}. It takes ${list(keys)}; ${hint}.`,
+    );
+  }
+}
+
 export class S3Storage implements StorageBackend {
   /** Cross-bundle brand, stamped non-enumerably in the constructor so a spread cannot carry it. */
   declare readonly [STORAGE_BACKEND]: true;
@@ -61,6 +98,7 @@ export class S3Storage implements StorageBackend {
   readonly client: S3Client;
 
   constructor(options: S3StorageOptions) {
+    refuseUnknown('S3Storage', options, S3_STORAGE_OPTION_KEYS, 'an S3 client goes in `client`');
     this.client =
       options.client ??
       new S3Client({
