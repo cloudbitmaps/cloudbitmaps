@@ -499,7 +499,7 @@ therefore:
 Nothing wraps a write. A conditional put or compare-and-swap that lands and then loses its response would, replayed,
 find its own write already there and report it as a conflict, so the store's writes report a `TransientError` to
 their caller instead, as do its direct registry and bucket reads (`exists`, `segments`, `generations`,
-`getRetention`, `checkConsistency`). To retry a write, re-run the call: a re-run `load` takes a fresh generation
+`getRetention`, `checkConsistency`, and the registry scan `subjectReport` and `exportSegments` start from). To retry a write, re-run the call: a re-run `load` takes a fresh generation
 number and re-reads the row, so once the first attempt has settled it publishes whenever that attempt would have,
 whether or not it landed. Pass it the ids again through a fresh iterator. Each attempt whose object landed takes a
 `keep` slot, so under the default `keep: 1` the re-run collects the generation the segment held before the load;
@@ -546,7 +546,7 @@ Every error this library throws extends `CloudRoaringError`, and each one tells 
 | `CapabilityError` | a driver cannot meet a capability the topology requires — e.g. a Storage driver without range reads. Raised **fail-fast at wiring time**, never mid-operation | use a driver that supports it | no |
 | `BudgetExceededError` | the operation would exceed its per-op denial-of-wallet budget — too many backend requests for one call. Refused **before** fanning out (hard invariant 6). Carries the projected count and the limit, never data | narrow the operation, raise `budget`, or set `budget: false`. If it fires on a normal call, something is wider than you think | no — refused by policy, not by luck |
 | `KeyUnavailableError` | an encrypted segment's DEK cannot be unwrapped: the keystore holds none of the KEKs its wrappings reference — never configured, rotated away without keeping the old key, or lost | restore the KEK. **Without it the data is unreadable**, which is what crypto-shred relies on | no |
-| `TransientError` | a driver-classified transient fault — throttling, a 5xx, a connection reset. The raw SDK error is preserved in `cause` | from a read of segment data, the retry layer already retried it, and reaching you means it kept failing. From a write, or a direct registry or bucket read, it was not retried: re-run the call, which is safe whether or not the first attempt landed; to know whether it did, check `store.generations(ref)` rather than replay the request ([Resilience](#resilience-the-store-wires-this-by-default)) | **yes** — the only class the retry layer retries |
+| `TransientError` | a driver-classified transient fault — throttling, a 5xx, a connection reset. The raw SDK error is preserved in `cause` | from a read of segment data, the retry layer already retried it, and reaching you means it kept failing. From a write, or a direct registry or bucket read, it was not retried: re-run the call. For a `load`, once the first attempt has settled, the re-run publishes whether or not that attempt landed; to know whether it did, check `store.generations(ref)` rather than replay the request ([Resilience](#resilience-the-store-wires-this-by-default)) | **yes** — the only class the retry layer retries |
 | `TimeoutError` | a single attempt exceeded its time budget. Subclass of `TransientError` | as above. Setting a request timeout on your injected client is the recommended way to bound a hang | yes |
 
 Two things worth knowing:

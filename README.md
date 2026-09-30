@@ -189,7 +189,7 @@ CloudBitmaps treats that as normal. Every **read of segment data** automatically
 (throttle / 5xx / dropped connection / request timeout) with bounded exponential backoff + full jitter — on by
 default, tunable, or `retry: false` to defer to your client's own retry. A **write** reports a transient fault to
 you instead, because a conditional write that lands and then loses its response would, replayed, report your own
-write as a conflict. The retry is yours, and it is **safe by construction**: re-run the call with the same ids. A
+write as a conflict. The retry is yours: re-run the call. For a load that is **safe by construction**: pass the same ids again. A
 re-run load takes a fresh generation number and re-reads the row, so once the failed attempt has settled it
 publishes whether or not that attempt landed, and the pointer never moves backwards. If the generation before the
 load must stay a rollback target, re-run with `keep: 2`: an attempt whose object landed takes the default single

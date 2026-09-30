@@ -187,8 +187,8 @@ export interface CloudRoaringOptions {
    * connections) with bounded, jittered exponential backoff (see {@link DEFAULT_RETRY_POLICY}): `has`, `count`,
    * `iterate` and the combines, the `*Into` verbs' reads of their operands included, a pinned handle's reads and
    * `pin()` itself. Writes are not retried, and nor are the calls that read the registry or list the bucket
-   * directly (`exists`, `segments`, `generations`, `getRetention`, `checkConsistency`): they report a transient
-   * fault to their caller, because a conditional write that lands and then loses its response would, replayed,
+   * directly (`exists`, `segments`, `generations`, `getRetention`, `checkConsistency`, and the registry scan
+   * `subjectReport` and `exportSegments` start from): they report a transient fault to their caller, because a conditional write that lands and then loses its response would, replayed,
    * report its own write as a conflict. Pass a partial policy to tune it — anything you leave out keeps its
    * default — or `false` to turn the read retry off (e.g. if your injected client already retries).
    * Deterministic errors (`ValidationError`/`IntegrityError`/`WriteConflictError`/…) are never retried by this

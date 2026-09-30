@@ -533,14 +533,14 @@ latency and a write a re-run, never correctness.
 **Writes are yours to retry.** `load`, the write half of the `*Into` verbs and the lifecycle helpers (`eraseSubject`,
 `dropSegment`, `retireExpired`, `rollback`, …) run over the raw drivers **without** the retry wrapper, on purpose, and
 so do the calls that read the registry or list the bucket directly: `exists`, `segments`, `generations`,
-`getRetention` and `checkConsistency`. A write that lands and then loses its response looks, from the error alone,
+`getRetention` and `checkConsistency`, and the registry scan that `subjectReport` and `exportSegments` start from. A write that lands and then loses its response looks, from the error alone,
 like one that failed, and replaying its conditional put or compare-and-swap would find that write already there and
 report it as a conflict. So a transient fault on a write reaches its caller (as a ledger entry or a throw), and the
 retry is yours: re-run the call.
 
 A re-run `load` takes a fresh generation number and re-reads the row, so once the first attempt has settled it
-publishes whenever that attempt would have, whether or not it landed, under every guard setting and with or without
-a row ([publish is forward-only](#3-loading-a-segment)). Three things to know:
+publishes whenever that attempt would have, whether or not it landed, with the same ids and options, under every
+guard setting and with or without a row ([publish is forward-only](#3-loading-a-segment)). Three things to know:
 
 - **Pass the ids again, fresh.** An iterator the first attempt consumed yields nothing the second time, and an empty
   load can publish: with `allowEmpty: true`, or onto a segment that holds no data.
