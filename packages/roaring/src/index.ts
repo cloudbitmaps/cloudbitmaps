@@ -1799,7 +1799,10 @@ export interface BaseCombineOptions extends IdRange {
  * list costs reads proportional to the audience, not to itself.
  */
 export interface CombineOptions extends BaseCombineOptions {
-  /** Segments whose ids are subtracted from the result. */
+  /**
+   * Segments whose ids are subtracted from the result. An **expired** handle here excludes nothing, in every
+   * combine — it is skipped without being read, exactly as in {@link Segment.andNot}.
+   */
   readonly exclude?: Segment[];
 }
 
@@ -1888,6 +1891,8 @@ const readOptions = (options: BaseCombineOptions): EveryField<BaseCombineOptions
   budget: options.budget,
   allowAbsentOperands: options.allowAbsentOperands,
 });
+
+const NO_SEGMENTS: readonly Segment[] = [];
 
 /** The empty id stream every expired read path returns — allocated once, so an expired read costs nothing. */
 const EMPTY_IDS: AsyncIterable<number> = {
@@ -2191,19 +2196,39 @@ export class Segment {
   }
 
   /**
-   * The options a combine hands the engine, read once, when it is called ({@link readOptions}), with the facade's
-   * `Segment` handles in `exclude` mapped down to the plain refs `core` takes. A method rather than a module function
-   * because `ref` is class-private — the encapsulation is worth more than the free function.
+   * The options a combine hands the engine, read once, when it is called ({@link readOptions}), with the `exclude`
+   * it was given, already reduced to its live handles ({@link liveExcludes}) and mapped down to the plain refs
+   * `core` takes. A method rather than a module function because `ref` is class-private — the encapsulation is
+   * worth more than the free function.
    *
    * Each field is named rather than copied with a rest spread: a rest copy takes only own enumerable properties, so
    * a bound held in a getter or inherited from a prototype was dropped, and the read silently widened to the whole
    * segment.
    */
   private refsIn(
-    options?: CombineOptions | null,
+    options: CombineOptions | null | undefined,
+    exclude: readonly Segment[],
   ): (BaseCombineOptions & { exclude?: SegmentRef[] }) | undefined {
     if (options == null) return undefined;
-    return { ...readOptions(options), exclude: options.exclude?.map((o) => o.ref) };
+    return {
+      ...readOptions(options),
+      exclude: exclude.length > 0 ? exclude.map((o) => o.ref) : undefined,
+    };
+  }
+
+  /**
+   * The handles in `options.exclude` that have not expired. **An expired exclusion excludes nothing**, in every
+   * combine, so it is dropped here, before the engine is asked for anything: it is never fetched, never
+   * checked for absence, and never counted in the pin-consistency check. `exclude` is read once, so a getter sees
+   * one call.
+   *
+   * With no `exclude` this is one property read and a shared empty list, and with none expired it returns the
+   * caller's own array, so the common case allocates nothing.
+   */
+  private liveExcludes(options: CombineOptions | null | undefined): readonly Segment[] {
+    const exclude = options?.exclude;
+    if (exclude == null || exclude.length === 0) return NO_SEGMENTS;
+    return exclude.some((e) => e.expired()) ? exclude.filter((e) => !e.expired()) : exclude;
   }
 
   /**
@@ -2219,13 +2244,14 @@ export class Segment {
     // only in `count()` is what keeps the surface coherent: a segment whose `count()` is 0 must not still
     // contribute members to an intersection.
     if (this.expired() || others.some((o) => o.expired())) return EMPTY_IDS;
+    const exclude = this.liveExcludes(options);
     let engine: SegmentEngine;
     try {
-      engine = this.combineEngine([this, ...others, ...(options?.exclude ?? [])]) ?? this.engine;
+      engine = this.combineEngine([this, ...others, ...exclude]) ?? this.engine;
     } catch (err) {
       return failing(err);
     }
-    return engine.intersect([this.ref, ...others.map((o) => o.ref)], this.refsIn(options));
+    return engine.intersect([this.ref, ...others.map((o) => o.ref)], this.refsIn(options, exclude));
   }
 
   /**
@@ -2286,17 +2312,18 @@ export class Segment {
       // out. `andNot` reads each exclude only where it overlaps, so this is also the cheap spelling.
       // With no exclude it is this segment alone, read as a one-operand union rather than as `iterate()`, so the
       // call's own `budget`, `concurrency` and range apply exactly as they would have to the union.
-      const exclude = options?.exclude ?? [];
+      const exclude = this.liveExcludes(options);
       return exclude.length > 0 ? this.andNot([...exclude], options) : this.union([], options);
     }
     if (live.length !== others.length) return this.union(live, options);
+    const exclude = this.liveExcludes(options);
     let engine: SegmentEngine;
     try {
-      engine = this.combineEngine([this, ...others, ...(options?.exclude ?? [])]) ?? this.engine;
+      engine = this.combineEngine([this, ...others, ...exclude]) ?? this.engine;
     } catch (err) {
       return failing(err);
     }
-    return engine.union([this.ref, ...others.map((o) => o.ref)], this.refsIn(options));
+    return engine.union([this.ref, ...others.map((o) => o.ref)], this.refsIn(options, exclude));
   }
 
   /** Materialize `this ∪ others…` (minus `exclude`) as a **new generation of `dest`** — see {@link intersectInto}. */
@@ -2319,6 +2346,10 @@ export class Segment {
    * overlaps this segment**, so the cost tracks the segment being filtered rather than the size of the
    * suppression list: at most one read per surviving key of `this`, so subtracting a 61,000-chunk global
    * opt-out list from a 40-chunk audience costs at most 40 reads, not 61,000.
+   *
+   * An expired handle in `excludes` excludes nothing, and is skipped without being read; if every one has
+   * expired the result is `this` whole. An expired `this` is empty. `exclude` on `intersect` and `union` follows
+   * the same rule.
    *
    * To filter the *result of an intersection*, do not chain — pass `exclude` to {@link intersect} instead, so
    * the suppression folds into the same pass rather than materializing an intermediate segment first.

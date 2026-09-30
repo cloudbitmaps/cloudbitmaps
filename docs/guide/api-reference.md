@@ -123,7 +123,11 @@ or `encryption.required: true` on a store built from a bare driver, which has no
 `expiresAt` is an absolute epoch-**milliseconds** deadline, declared where the segment is named. Past it, every
 read through **that handle** answers empty — `has` → `false`, `count` → `0`, `iterate` → nothing — as one integer
 compare against the injected clock, with **no I/O, on every backend**. Set algebra stays coherent with it: an
-expired operand makes an `intersect` empty, is dropped from a `union`, and excludes nothing in an `andNot`.
+expired operand makes an `intersect` empty and is dropped from a `union`. **An expired exclusion excludes nothing,
+in every shape** — `andNot`, and `exclude` on `intersect` and `union`, the range read included: it is skipped
+without being read, so an expired exclusion naming a segment that does not exist is not refused as an absent operand.
+An `*Into` that involves an expired handle, an exclusion included, still throws `ValidationError`: it does not
+publish a generation the exclusion did not shape.
 
 It does **not** reclaim the bytes (`retireExpired` does, so `count()` reporting 0 while objects still exist is the
 expected state in that window) and it does **not** apply to other handles — record the policy with
