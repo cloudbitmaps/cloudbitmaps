@@ -7,11 +7,9 @@
  * goes through the tokenless, provenance-signed pipeline in .github/workflows/release.yml — this script is a
  * bootstrap, not a release tool, and it publishes ONLY the names the registry does not already have.
  *
- * It ran once for the whole family at launch, and it runs again whenever a package is ADDED to the family:
- * the storage split introduced @cloudbitmaps/s3, /gcs and /azure-blob into a workspace whose other two
- * packages were already published, and tagging that release without bootstrapping them first would have
- * published core, then failed on the first name with no Trusted Publisher — leaving the registry holding one
- * package of a five-package lockstep release, immutable. The earlier version of this script modelled only
+ * It runs whenever a package is ADDED to the family: tagging a release that carries a new name without
+ * bootstrapping it first would publish core, then fail on the first name with no Trusted Publisher — leaving
+ * the registry holding part of a lockstep release, immutable. The earlier version of this script modelled only
  * "first publish of everything" and refused outright once ANY name existed, which made it useless for
  * exactly the case that needs it most.
  *
@@ -23,8 +21,8 @@
  * The trap that motivated the --tag handling: `npm publish` defaults --tag to `latest` unconditionally and is
  * NOT semver-aware (`npm config get tag` -> latest). "Prereleases aren't installed by default" is a property of
  * range resolution and only holds while `latest` points elsewhere. On a FIRST publish there is nothing else for
- * it to point at, so an untagged 0.1.0-rc.0 becomes `latest` and plain `npm i` serves the throwaway. The
- * dist-tag is therefore derived from the prerelease identifier (0.1.0-rc.0 -> `rc`) rather than left to default.
+ * it to point at, so an untagged 0.10.0-rc.0 becomes `latest` and plain `npm i` serves the throwaway. The
+ * dist-tag is therefore derived from the prerelease identifier (0.10.0-rc.0 -> `rc`) rather than left to default.
  *
  * That is necessary but NOT sufficient, which was established against a real registry rather than assumed: a
  * registry may point `latest` at a package's first version anyway, and `npm dist-tag rm … latest` is refused.
@@ -49,7 +47,7 @@ if (unknown.length > 0) {
   process.exit(2);
 }
 const CONFIRM = argv.includes('--confirm');
-// Escape hatch for the "publish the real 0.1.0 by hand" variant of the bootstrap, which RELEASING.md
+// Escape hatch for the "publish the real release by hand" variant of the bootstrap, which RELEASING.md
 // documents but does not recommend: it trades the provenance attestation on the launch artifact for one
 // fewer version on the registry.
 const ALLOW_RELEASE = argv.includes('--allow-release');

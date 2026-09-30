@@ -11,9 +11,9 @@
  * test before the tag is already pushed. Failing loudly beats emitting an empty file.
  *
  * Usage:
- *   node scripts/changelog-section.cjs 0.1.0
- *   node scripts/changelog-section.cjs v0.1.0     # a leading `v` is accepted (tags carry it)
- *   node scripts/changelog-section.cjs 0.1.0 --file path/to/CHANGELOG.md
+ *   node scripts/changelog-section.cjs 0.10.0
+ *   node scripts/changelog-section.cjs v0.10.0    # a leading `v` is accepted (tags carry it)
+ *   node scripts/changelog-section.cjs 0.10.0 --file path/to/CHANGELOG.md
  */
 const { readFileSync } = require('node:fs');
 const { resolve } = require('node:path');
@@ -31,7 +31,7 @@ const MAX_BODY = 120_000;
 function extractSection(markdown, version) {
   const v = String(version).replace(/^v/, '');
   const lines = markdown.split('\n');
-  // Match `## [0.1.0] - 2026-07-26`, `## [0.1.0]`, or `## 0.1.0` — the brackets are Keep-a-Changelog style
+  // Match `## [0.10.0] - 2026-09-21`, `## [0.10.0]`, or `## 0.10.0` — the brackets are Keep-a-Changelog style
   // but not universal, and a release must not fail over a formatting variant.
   const escaped = v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const heading = new RegExp(`^##\\s+\\[?${escaped}\\]?(\\s|$)`);

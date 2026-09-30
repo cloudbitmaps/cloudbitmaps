@@ -57,9 +57,8 @@ export interface ExportOptions {
   /** Output format; defaults to `'roaring'`. */
   readonly format?: ExportFormat;
   /**
-   * Bitmap codec used to build the exported bitmap for the `'roaring'` format. Optional in the
-   * type so this stays call-compatible public API; a **flavor** package binds it (see `requireCodec`). Not needed
-   * for `'ndjson'`, which streams plain ids.
+   * Bitmap codec that builds the exported bitmap for the `'roaring'` format. Optional in the type; a **flavor**
+   * package binds it (see `requireCodec`). Not needed for `'ndjson'`, which streams plain ids.
    */
   readonly codec?: CodecInterface;
   /** Scope the export to one namespace; omit to export every registered segment. */
@@ -206,7 +205,7 @@ export async function runExport(
   };
 
   for await (const rec of registry.list(options.namespace)) {
-    // A coordination row is not a segment: an unscoped eject would otherwise write one empty file per partition
+    // A due-index pointer row is not a segment: an unscoped eject would otherwise write one empty file per pointer
     // into the portability dump — the artifact whose whole value is being a faithful copy of the user's data.
     if (options.namespace === undefined && isReservedRow(rec)) continue;
     if (rec.status === 'destroyed') continue; // crypto-shredded → bytes unrecoverable; nothing to export

@@ -333,12 +333,11 @@ export async function eraseIdFromSegment(
   const notInCurrent = async (): Promise<EraseIdResult> => {
     // EVERY other generation in the bucket, not just the ones below the pointer.
     //
-    // The bound used to be `< from`, on the reasoning that an object above the pointer is permanently
-    // unreachable: forward-only publishing refuses to regress, so nothing up there could ever become current
-    // again. `rollbackSegment` ended that — an operator can move the pointer back onto any generation still in
-    // the bucket, which makes above-pointer objects reachable data. Reproduced with no race at all: roll back,
-    // then erase, and the erasure reported `'not-member'` — filtered out of the subject ledger entirely, a clean
-    // Art. 17 receipt — while the subject's bit sat in a generation one rollback away from being served again.
+    // The bound is not `< from`. An object above the pointer can be reachable data: after a rollback, the
+    // generations above the pointer include the one it rolled back from, and `rollbackSegment` with
+    // `allowForward` moves the pointer onto it again. With `< from`, a rollback and then an erasure would report
+    // `'not-member'` — filtered out of the subject ledger entirely, a clean Art. 17 receipt — while the subject's
+    // bit sat in a generation one rollback away from being served again, with no race at all.
     const superseded: number[] = [];
     for await (const key of deps.storage.list(ref)) {
       if (key.generation !== from) superseded.push(key.generation);
@@ -441,9 +440,7 @@ export async function eraseIdFromSegment(
   // event while the second one's generation put the FIRST one's id back, deleting the generation that had
   // evidenced its removal. A false Art. 17 receipt is the worst output this module can produce.
   //
-  // `expectFrom` makes the publish land only while the pointer is still exactly `from`. The predecessor
-  // (the removed `compactSegment`) had the same fence as an explicit re-read; it was lost in the move to
-  // `nextGeneration`.
+  // `expectFrom` makes the publish land only while the pointer is still exactly `from`.
   //
   // Reported, not thrown — the caller re-runs against the new generation, which may or may not still hold the id.
   const published = await publishGeneration(deps.registry, key, {

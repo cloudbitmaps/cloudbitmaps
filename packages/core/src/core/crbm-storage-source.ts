@@ -1117,15 +1117,14 @@ export async function publishGeneration(
         //
         // `bulkLoadCrbmGeneration` reads the registry record once, refuses if it is already destroyed, and then
         // spends a KMS call plus a whole object write before getting here — seconds to minutes on a large load.
-        // A `destroySegment` landing inside that window used to be invisible to this function: it compares only
-        // `currentGen`, so it would advance the pointer on a destroyed record, leaving an object encrypted with
-        // the DEK that destroy had just shredded — permanently unreadable, still paid for, and attached to a
-        // segment the registry says was erased.
+        // A check of `currentGen` alone cannot see a `destroySegment` landing inside that window: it would
+        // advance the pointer on a destroyed record, leaving an object encrypted with the DEK that destroy had
+        // just shredded — permanently unreadable, still paid for, and attached to a segment the registry says
+        // was erased.
         //
         // Checking here rather than at the caller is what makes it a fence instead of a second guess: this
         // record was re-read moments ago inside the retry loop, so the check and the CAS that follows it see the
-        // same state. `erasure.ts` notes that coupling the write path to destruction was left as "a later
-        // hardening" — for the publish step, this is it.
+        // same state. This is the publish step's half of coupling the write path to destruction.
         throw new ValidationError(
           `segment "${key.segment}" was destroyed (crypto-shredded) while generation ${key.generation} was ` +
             `being written — refusing to publish it; the written object is unreadable. Use a new segment.`,
@@ -1155,13 +1154,13 @@ export async function publishGeneration(
         // Reaching this branch with a freshly minted DEK means an encrypted generation is being published onto a
         // lineage whose current generation the row already describes — i.e. onto a segment whose existing
         // generations are cleartext. Both ways of resolving that silently are damaging: dropping the wrapping
-        // (what this branch used to do) advances the pointer to an object encrypted under a key that exists
+        // advances the pointer to an object encrypted under a key that exists
         // nowhere, so the data is unrecoverable the moment the call returns; carrying it makes the row advertise
         // encryption over a lineage that still holds readable cleartext objects, which is what makes
         // `destroySegment` emit `segment.erase` — "unreadable everywhere, backups included" — over plaintext.
-        // Two independent reviews reproduced the first one from two different entry points (a re-load with a
-        // keystore newly wired, and an `*Into` on a keystore-wired store whose destination was cleartext), and
-        // it needed no race. So the state is refused before the pointer moves; the object stays an orphan.
+        // Two entry points reach it with no race: a re-load with a keystore newly wired, and an `*Into` on a
+        // keystore-wired store whose destination is cleartext. So the state is refused before the pointer moves;
+        // the object stays an orphan.
         if (options.wrappedDeks !== undefined && options.wrappedDeks.length > 0) {
           throw new ValidationError(
             `publishGeneration: refusing to publish generation ${key.generation} of "${key.segment}" with new ` +
@@ -1217,9 +1216,9 @@ export interface BulkLoadResult {
    * `false` means the object is durable but a **concurrent writer published a higher generation first**, so this
    * one is an orphan that no reader will ever resolve. The write succeeded and the *load* did not: whatever this
    * call was asked to make the segment contain, the segment does not contain. That is not a detail a caller can
-   * be left to infer — a `*Into` materialisation used to report the generation it wrote as "the destination's
-   * new current generation" on exactly this path, which is a plain untruth — so the flag is on the result and the
-   * verbs that promise a published generation check it.
+   * be left to infer — a `*Into` materialisation that reported the generation it wrote as "the destination's new
+   * current generation" on this path would state a plain untruth — so the flag is on the result and the verbs that
+   * promise a published generation check it.
    */
   readonly becameCurrent?: boolean;
 }
@@ -1313,8 +1312,8 @@ export async function bulkLoadCrbmGeneration(
   // function already does. Keeping the inserts synchronous and interrupting them periodically gets the
   // starvation fix without the cost — measured on the per-chunk insert microbenchmark: 88 ms wall against a
   // 92 ms unyielded baseline. The whole-load end-to-end figures are a DIFFERENT experiment and live in
-  // `cooperative.ts`; an earlier version of this comment spliced the two, pairing a 92 ms operation with
-  // 819 ms of starvation, which is impossible on its face.
+  // `cooperative.ts`. Quoting this 92 ms baseline beside that experiment's 450 ms stall would describe a 92 ms
+  // operation with 450 ms of starvation inside it, which is impossible on its face.
   //
   // The yield must be a REAL macrotask. `await Promise.resolve()` is a microtask and never lets I/O run, which
   // is the trap that makes naive "just await something" fixes measure as no change at all.

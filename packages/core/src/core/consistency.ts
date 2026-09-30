@@ -2,15 +2,15 @@
  * Fail-safe cross-store disaster-recovery check. The registry (`currentGen`) and the immutable `.crbm`
  * generations can be restored **independently**, so a failover can recover the registry *ahead of* the storage
  * objects — leaving `currentGen` pointing at a generation whose `.crbm` isn't present yet. That is likelier
- * than it sounds even now that both usually live in one bucket: a restore scoped to a prefix, or replayed
+ * than it sounds even with both in one bucket: a restore scoped to a prefix, or replayed
  * per-object from a version history, recovers the two prefixes at different points. That's a torn restore: reads of the affected segment then throw. This scan
  * detects it up front (run it at startup after a restore) instead of discovering it on the first read.
  *
  * Read-only; bounded fan-out. `destroyed` (crypto-shredded) segments are skipped — their Storage is intentionally
  * gone/unreadable, not a torn restore. A segment whose Storage/registry can't be read this pass is recorded in
  * `errored` (never aborts the scan). Each segment is checked against its **authoritative live pointer** — one
- * strong `registry.get` per segment — never the enumeration snapshot from `registry.list`, which can be
- * eventually-consistent (an unindexed Scan) and lag a recent in-place pointer advance: trusting it would both
+ * strong `registry.get` per segment — never the enumeration snapshot from `registry.list`, which a driver may
+ * serve eventually-consistently and so lag a recent in-place pointer advance: trusting it would both
  * miss a torn *live* generation and cry torn on a generation the pointer has already advanced past (GC'd during
  * the scan). Residual: a load's publish plus a GC landing in the tiny per-segment get→list gap can still yield a
  * transient false positive — run the scan against a quiesced fleet (the documented restore procedure), or re-run
@@ -36,8 +36,8 @@ import type { IStorageDriver, IRegistryDriver, SegmentRef } from './ports';
  */
 // Re-exported from its original home because this module is where the ceiling is documented; the value and the
 // loop that enforces it live in `registry-scan.ts`, shared with the retention sweep. This is an INTERNAL
-// re-export: the name left `@cloudbitmaps/core`'s main entry in 0.10.0 along with the other two defaults, and
-// `MIGRATING.md` tells callers to pass their own `maxScanSegments` rather than read ours.
+// re-export: it is not on `@cloudbitmaps/core`'s main entry, and a caller passes their own `maxScanSegments` rather
+// than read ours.
 export { DEFAULT_MAX_SCAN_SEGMENTS } from './registry-scan';
 const DEFAULT_CHECK_CONCURRENCY = 8;
 
@@ -100,7 +100,7 @@ export async function runConsistencyCheck(
   }
   const maxScanSegments = options.maxScanSegments ?? DEFAULT_MAX_SCAN_SEGMENTS;
   // Bounded enumeration, shared with the retention sweep — see `registry-scan.ts` for why a fleet-wide scan is
-  // drained rather than streamed, and why the ceiling is not optional. This used to be an inline copy of that loop.
+  // drained rather than streamed, and why the ceiling is not optional.
   const recs = await drainRegistry(deps.registry, {
     namespace: options.namespace,
     maxScanSegments,

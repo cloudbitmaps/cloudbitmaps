@@ -453,7 +453,7 @@ describe('calibration reports are held to their evidence', () => {
         'ours $1',
         '#### Detail',
         'still ours $2',
-        '#### The run `2026-07-25-60291` compared',
+        '#### The run `2026-10-01-11111` compared',
         'not ours $3',
         '### Next',
         'not ours $4',

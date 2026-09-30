@@ -150,7 +150,7 @@
         </p>
         <div class="tpanel">
           <div class="tpanel-head">
-            <span class="label">Cost anchors</span><span class="label">estimateCost() + the AWS runs</span>
+            <span class="label">Cost anchors</span><span class="label">estimateCost() + the AWS run</span>
           </div>
           <div class="tscroll">
             <table>
@@ -163,17 +163,6 @@
                 </tr>
               </thead>
               <tbody>
-                <tr>
-                  <td>1M <span class="m">count()</span> calls</td>
-                  <td class="num">$0.14</td>
-                  <td class="from">
-                    Zero payload reads — summed straight from the <span class="m">.crbm</span> index, and exact
-                    rather than estimated. This is the object-store half of the July run: the pointer read that
-                    resolves the segment's current generation was billed to a NoSQL registry that no longer
-                    ships, so it is <strong>not</strong> in this figure.
-                  </td>
-                  <td><span class="status is-shipped">Win</span></td>
-                </tr>
                 <tr>
                   <td>1.2 GiB at rest, no traffic</td>
                   <td class="num">$0.03 /mo</td>
@@ -235,9 +224,9 @@
             </table>
           </div>
           <!-- The baseline's SPEC belongs in the assumptions footnote, because that is what it is: an
-               assumption, and until now the least examinable one on the page. $346 appeared eight times across
-               the site without ever saying what it buys, which makes it unauditable — a reader cannot tell
-               whether the node is sized for this dataset or five times larger than it.
+               assumption, and without its spec the least examinable one on the page. $346 is quoted on most
+               pages of the site, and a figure that never says what it buys is unauditable — a reader cannot
+               tell whether the node is sized for this dataset or five times larger than it.
 
                The instance class and node count come from ONE_REDIS_HA_CLUSTER's own comment in
                core/cost.ts. Its MEMORY is deliberately not stated: that figure would be quoted from memory
@@ -256,7 +245,7 @@
       </section>
 
       <!-- ── PAST THE CROSSOVER ──────────────────────────────────────────────
-           This section exists because the page was publishing a threshold and calling it a verdict.
+           This section exists because a threshold is not a verdict.
 
            Five inputs produce the 329.15 figure, and the table below says which way each one was set rather
            than implying all five are pessimal. Two are (cache off; on-demand GET rates). Three are set in OUR
@@ -489,10 +478,9 @@
            What replaces it is the same list docs/benchmarks.md keeps under "What is still owed" — the honest
            form of a measurement you have not made. That list is the source; this one follows it.
 
-           Rows 01-06 are debts, not results. Row 07 was one until the gate that measures it started RECORDING
-           what it measured; it is now a published ceiling, and it is marked differently so the two kinds are
-           not read as one. Do not re-generalise this comment to "every row is a debt" — that sentence was true
-           when it was written and stopped being true without anything noticing. -->
+           Rows 01-05 are debts, not results. Row 06 is a published ceiling, because the gate that measures it
+           RECORDS what it measured, and it is marked differently so the two kinds are not read as one. Do not
+           generalise this comment to "every row is a debt". -->
       <section id="owed">
         <h2>What is still owed</h2>
         <p class="lede">
@@ -564,10 +552,9 @@
             <span class="rl-what">RSS ceiling</span>
             <span class="rl-fig is-live">384m</span>
             <span class="rl-note">
-              <!-- This row said "owed" while the job that measures it ran green on every PR: the soak inside the
-                   container ran without SOAK_INJECT, so its verdict reached container stdout and nothing else,
-                   and the stage directory is deleted on exit. A measurement nothing records is a measurement
-                   nobody has. `pnpm rss-gate` now writes bench/rss-gate-results.json, which site-figures.cjs
+              <!-- A measurement nothing records is a measurement nobody has: a soak run without SOAK_INJECT
+                   reaches container stdout and nothing else, and the stage directory is deleted on exit.
+                   `pnpm rss-gate` writes bench/rss-gate-results.json, which site-figures.cjs
                    gates this row against.
                    What is published is the CEILING the workload survives, not a reader-RSS number. The ceiling
                    is a property of the workload; an RSS reading is a property of the machine, and publishing
@@ -584,9 +571,8 @@
       </section>
 
       <!-- ── MEMORY AT FLEET SCALE ───────────────────────────────────────────
-           Invariant 6 is "bounded memory & cost, always", and until this section existed the site asserted it
-           without ever printing a memory number. This is the measurement that makes it a claim rather than a
-           promise: the fleet grows a HUNDREDFOLD and the retained heap does not move.
+           Invariant 6 is "bounded memory & cost, always", and without a memory number the site would only assert
+           it. This is the measurement that makes it a claim rather than a promise: the fleet grows a HUNDREDFOLD and the retained heap does not move.
 
            Read the two memory columns together or not at all. Retained heap is the bound — it is a function of
            the reader-cache cap, not of the fleet. Process RSS is NOT the bound and grows, because the harness
@@ -632,9 +618,9 @@
             <span class="rl-mark">03</span>
             <span class="rl-what">What gets worse</span>
             <span class="rl-fig">discovery time</span>
-            <!-- The first draft of this row said only "a cursor would bound it, and has not been built", which
-                 understated what is shipped: the retirement sweep has BOTH a shard filter and an indexed scan
-                 mode, and a reader was left to conclude nothing had been done. But it is worth being exact
+            <!-- "A cursor would bound it, and has not been built" alone would understate what is shipped: the
+                 retirement sweep has BOTH a shard filter and an indexed scan mode, and a reader would conclude
+                 nothing had been done. But it is worth being exact
                  about what each one bounds — the shard filter runs after the registry enumeration, so every
                  worker still reads every row and only the per-segment work is divided. The enumeration is the
                  part still unbounded in the general case, and it is the part the measured 11.6 s is mostly
@@ -773,59 +759,6 @@
           </p>
         </div>
 
-        <!-- ── THE CALIBRATION RECEIPT ──────────────────────────────────────
-             One of the two places on this page pricing a real run's metered requests, rather than what the
-             model says they would be — list prices over counted requests, not an invoice. Tiny sums, and that
-             is the point: it is a receipt, not a headline, and it is what turns "modelled" into "calibrated".
-             Dated and run-identified, because a calibration with no date is a calibration you cannot re-check.
-
-             It is now published as HALF a run. The other half's line items metered a NoSQL delta tier the
-             library no longer has, and the total was a sum over all four terms. Restating either would price a
-             code path a reader cannot take, or print a figure no run produced — so the two S3 rows stand alone
-             and the foot says why. Deleting the whole panel was the alternative and it would have been worse:
-             the object store is now the entire write path and the entire read path, which makes these two rows
-             more load-bearing than they were, not less. -->
-        <div class="tpanel">
-          <div class="tpanel-head">
-            <span class="label">What the metered requests cost · the object-store half</span>
-            <span class="label">2026-07-25 · us-east-1 · run 2026-07-25-60291</span>
-          </div>
-          <div class="tscroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>Term</th>
-                  <th class="num">Billed quantity</th>
-                  <th class="num">Cost</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td>S3 PUT / LIST</td>
-                  <td class="num">22</td>
-                  <td class="num">$0.000110</td>
-                </tr>
-                <tr>
-                  <td>S3 GET</td>
-                  <td class="num">23</td>
-                  <td class="num">$0.000009</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <p class="tpanel-foot">
-            <strong>This is half of a run.</strong> Its other half metered a NoSQL delta tier the library no
-            longer has, so those line items and the rates behind them are not restated here — republishing them
-            would put a price on a code path you cannot take. Nor is a total: the rows above are two terms out
-            of four, and a “total” over a subset is a number no run produced. The harness that produced the run,
-            and its raw artifact, were removed along with the tier they were built to meter, so these two rows
-            <em>are</em> the record. What is left is the object-store half — and the object store is now the
-            whole write path and the whole read path. Its two unit figures, <strong>$0.14</strong> per million
-            <span class="m">count()</span> calls and <strong>$5.88</strong> per million publishes, left the pointer
-            out. The count figure is still the one in <a href="#anchors">the cost anchors</a>; the publish figure
-            is superseded by the single-bucket run above, which measured the pointer too.
-          </p>
-        </div>
       </section>
 
       <!-- ── WHAT THESE DO NOT ESTABLISH ────────────────────────────────────
@@ -837,27 +770,13 @@
         </p>
         <ul class="rowlist">
           <li>
-            <span class="rl-mark">00</span>
-            <span class="rl-what">The July figures predate the single-bucket design</span>
-            <span class="rl-fig">pointer measured since</span>
-            <span class="rl-note">
-              Generation resolution ran against a NoSQL table in the July run, so its figures are the object-store
-              half of that shape. The library now keeps the pointer in the same bucket as the data, and the
-              September run measured what that adds: a load's write and publish is 2 PUT + 3 GET,
-              <strong>$11.20</strong> per million, where the July figure, which could not see the pointer, was
-              <strong>$5.88</strong>. Its <span class="m">count()</span> figure has not been re-measured; read it
-              as the object-store half, without the pointer.
-            </span>
-          </li>
-          <li>
             <span class="rl-mark">01</span>
             <span class="rl-what">Published rates × wire-metered ops — not a cloud bill</span>
             <span class="rl-fig">not the invoice</span>
             <span class="rl-note">
               Request tiers and storage-class transitions are unmeasured, and AWS billing lags hours with no
-              per-run granularity — so the July run tagged its resources and the Cost Explorer comparison
-              followed a day later, rather than being the figure quoted. This is arithmetic over real counts, which is
-              stronger than a model and weaker than an invoice.
+              per-run granularity, so the figure quoted is arithmetic over real counts: stronger than a model,
+              and weaker than an invoice.
             </span>
           </li>
           <li>
@@ -884,8 +803,7 @@
             <span class="rl-what">The intersection window is bounded on local drivers, not on a cloud one</span>
             <span class="rl-fig">2 &times; 8 payloads, any segment size</span>
             <span class="rl-note">
-              This row used to say the window was not soak-tested, because it was not. It is now bounded two
-              ways: a per-commit test counts the chunk payloads actually in flight and holds them at
+              The window is bounded two ways: a per-commit test counts the chunk payloads actually in flight and holds them at
               <strong>concurrency &times; operands</strong> &mdash; <strong>8&times; the chunks gives the same
               peak</strong>, which is the claim that matters, since it is residency not scaling with segment
               size that makes a 2,000-chunk intersection fit in a small runtime. And the long-running soak

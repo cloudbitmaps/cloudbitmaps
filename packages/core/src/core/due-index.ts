@@ -34,10 +34,9 @@
  * - **A stale pointer cannot retire anything.** The sweep re-reads the live segment row before acting (it
  *   already does this — the `policy-changed` skip), so an index row whose policy has since been cleared or
  *   moved is a wasted read and nothing worse.
- * - **A missing pointer cannot lose data.** The full `registry.list()` scan still exists, demoted from the
- *   primary path to a periodic **repair** pass. Anything the index never learned about — a segment written
- *   before the index existed, or one whose name is too long to encode (see {@link canIndex}) — is retired by
- *   that pass instead. Slower, never wrong.
+ * - **A missing pointer cannot lose data.** The full `registry.list()` scan runs as a periodic **repair**
+ *   pass. Anything the index never learned about — a policy whose pointer write failed, or a segment whose
+ *   name is too long to encode (see {@link canIndex}) — is retired by that pass instead. Slower, never wrong.
  *
  * So the index can only make the sweep *cheaper*, never *wronger*, and both drift directions are bounded by
  * machinery that already exists.
@@ -82,8 +81,8 @@ export function isDueIndexRow(record: Pick<RegistryRecord, 'namespace'>): boolea
  * Encode a ref into one index-row name, unambiguously.
  *
  * `${namespaceLength}.${namespace}${segment}` — a decimal length, a dot, then the two parts concatenated. The
- * length prefix is what makes it reversible: every character the grammar allows (`.`, `-`, `_`, `:`, alphanumerics)
- * is legal *inside* a name, so no separator character could ever be unambiguous on its own. Reading the digits
+ * length prefix is what makes it reversible: a name may contain any character, the dot included, so no
+ * separator character could ever be unambiguous on its own. Reading the digits
  * up to the first dot tells the parser exactly where the namespace ends.
  */
 export function encodeDueName(ref: SegmentRef): string {
@@ -92,7 +91,7 @@ export function encodeDueName(ref: SegmentRef): string {
 }
 
 /**
- * Can this ref be indexed at all? False when the encoded name would exceed the grammar's 256-character cap —
+ * Can this ref be indexed at all? False when the encoded name would exceed the 256-character name cap —
  * possible only for a ref whose namespace and segment are together near the limit.
  *
  * **Not indexable is not "not retired".** The repair scan still sees the segment's own row, so the consequence
@@ -130,9 +129,9 @@ export function decodeDueName(name: string): SegmentRef | null {
   const rest = name.slice(dot + 1);
   const namespace = rest.slice(0, nsLength);
   const segment = rest.slice(nsLength);
-  // A pointer to a segment with no name is meaningless — and would round-trip to a ref the grammar rejects.
+  // A pointer to a segment with no name is meaningless — and would round-trip to a ref the validator rejects.
   // This also covers a length prefix larger than the remainder: the slice then consumes everything and leaves
-  // the segment empty, so a separate overflow guard would be unreachable (it was, and was removed).
+  // the segment empty, so a separate overflow guard would be unreachable.
   if (segment.length === 0) return null;
   return namespace.length === 0 ? { segment } : { namespace, segment };
 }

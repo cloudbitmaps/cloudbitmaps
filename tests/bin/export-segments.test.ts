@@ -77,10 +77,10 @@ describe('export-segments CLI', () => {
           .namespace,
       ).toBe('ns');
     });
-    it('ignores an unknown variable rather than failing (CR_EXPORT_SEGMENTS is retired)', () => {
-      // The escape hatch existed for a segment that had no registry row because it was written by `add()`
-      // alone. Every loaded segment publishes a row, so the registry is complete by construction and there is
-      // nothing left for the variable to reach. An operator's stale script must still run.
+    it('ignores a variable it does not read, such as a segment list, rather than failing', () => {
+      // There is no variable naming segments to export: every loaded segment publishes a row, so the registry
+      // is complete by construction and the CLI enumerates it. A variable it does not read must not stop an
+      // operator's script.
       expect(() =>
         parseConfig({ CR_EXPORT_ROOT: '/x', CR_EXPORT_OUT: '/o', CR_EXPORT_SEGMENTS: 'a,ns/b' }),
       ).not.toThrow();
@@ -219,13 +219,12 @@ describe('export-segments CLI', () => {
       expect(mani.failed.map((f) => f.segment)).toEqual(['bad']); // persisted so an operator sees the gap
     });
 
-    it('needs no escape hatch: a segment written without a registry is invisible, and says so', async () => {
-      // What replaced CR_EXPORT_SEGMENTS. A load that passes a registry publishes a row, so the registry is a
-      // complete index of every loaded segment and enumeration cannot miss one. A load that passes NO registry
-      // writes an object nothing points at — the object is still readable by any roaring library (that is the
-      // format's promise), but this CLI enumerates the registry it was given, so such a segment is absent from
-      // the dump rather than silently half-exported. Pinned because it is the one gap the retired variable used
-      // to paper over.
+    it('a segment written without a registry is invisible, and says so', async () => {
+      // A load that passes a registry publishes a row, so the registry is a complete index of every loaded
+      // segment and enumeration cannot miss one. A load that passes NO registry writes an object nothing points
+      // at — the object is still readable by any roaring library (that is the format's promise), but this CLI
+      // enumerates the registry it was given, so such a segment is absent from the dump rather than silently
+      // half-exported. Pinned because it is the one gap enumeration leaves.
       const storage = new LocalFsStorageDriver(join(root, 'storage'));
       const registry = new LocalFsRegistryDriver(join(root, 'registry'));
       await bulkLoadCrbmGeneration(storage, { segment: 'reg', generation: 0 }, [1], { registry });

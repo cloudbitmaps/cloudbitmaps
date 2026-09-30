@@ -35,23 +35,23 @@ function validateGeneration(gen: number | null): void {
 
 /**
  * A patch that *mentions* `currentGen` must give it a real value — `null` to clear the pointer, or a generation.
- * `{ currentGen: undefined }` is refused rather than coerced, and the reason is a regression this check exists to
- * prevent: before `currentGen` was nullable, that patch was a **no-op** (the merge used `??`), so
- * `{ currentGen: maybeUndefined }` — which `strict` alone permits, since `exactOptionalPropertyTypes` is off —
- * left the pointer alone. Under presence-based merging the same call would silently *un-publish* a live segment:
- * every Storage generation goes invisible, and `gcOrphanGenerations` then refuses to collect the objects (no pointer
- * ⇒ nothing to compare against), so they are stranded and billed forever. Fail fast at the boundary instead.
+ * `{ currentGen: undefined }` is refused rather than coerced. `{ currentGen: maybeUndefined }` is what `strict`
+ * alone permits, since `exactOptionalPropertyTypes` is off, and a caller writing it means to leave the pointer
+ * alone. Under presence-based merging the same call would silently *un-publish* a live segment: every Storage
+ * generation goes invisible, and `gcOrphanGenerations` then refuses to collect the objects (no pointer ⇒ nothing
+ * to compare against), so they are stranded and billed forever. Fail fast at the boundary instead.
  */
 function validatePatchGeneration(patch: RegistryPatch): void {
   if (!('currentGen' in patch)) return;
-  // Dropping the old `?? null` is what actually restores the rejection (`validateGeneration(undefined)` fails the
-  // integer test); this branch exists to make the *message* say which value to pass instead, because the generic
-  // "must be a non-negative integer or null" reads like a type error rather than the trap it is.
+  // `validateGeneration(undefined)` fails the integer test on its own, because this check reads the raw patch
+  // before `applyRegistryPatch` turns an undefined `currentGen` into `null`; this branch exists to make the
+  // *message* say which value to pass instead, because the generic "must be a non-negative integer or null"
+  // reads like a type error rather than the trap it is.
   if (patch.currentGen === undefined) {
     throw new ValidationError(
       `currentGen was present in the patch but undefined. Pass \`null\` to clear the pointer (the segment has no ` +
-        `Storage generation), or omit the key to leave it unchanged — an undefined value is refused because it used ` +
-        `to be a no-op and would now un-publish the segment's Storage data.`,
+        `Storage generation), or omit the key to leave it unchanged — an undefined value is refused because it ` +
+        `would un-publish the segment's Storage data.`,
     );
   }
   validateGeneration(patch.currentGen);
@@ -286,11 +286,11 @@ export function assertStoredRecordShape(r: Record<string, unknown>, ctx: string)
     throw new IntegrityError(`registry record has an invalid keyId: ${ctx}`);
   }
   validateWrappedDeks(r.wrappedDeks, true); // invariant 5: reject a corrupt wrapped-DEK list on read-back
-  // The governance blobs are the only fields whose SHAPE was never checked on read-back, and it matters now that
-  // one of them carries semantics: `retention.expiresAt` is read with an `in` test, which throws an untyped
-  // `TypeError` on a stored `null`/string/number. That is reachable — the write boundary only checks
-  // JSON-serializability and size, so `"retention": null` round-trips through every driver from a hand-edit, an
-  // older writer, or a restore — and it would abort a whole fleet retention sweep rather than becoming one
+  // The governance blobs' SHAPE is checked on read-back too, because one of them carries semantics:
+  // `retention.expiresAt` is read with an `in` test, which throws an untyped `TypeError` on a stored
+  // `null`/string/number. That is reachable — the write boundary only checks
+  // JSON-serializability and size, so `"retention": null` round-trips through every driver from a hand-edit,
+  // another writer, or a restore — and it would abort a whole fleet retention sweep rather than becoming one
   // ledger entry. Reject it here, typed, at the trust boundary (invariant 5).
   for (const field of ['retention', 'residency'] as const) {
     const meta = r[field];

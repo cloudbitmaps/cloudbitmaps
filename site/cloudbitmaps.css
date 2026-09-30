@@ -319,8 +319,8 @@ p {
 /* ── inline emphasis ───────────────────────────────────────────────────────
    Emphasis in this language is BRIGHTNESS, not weight. The mono faces run 11.5–13.5px, where bolding
    thickens the stems into mud and reads as *less* prominent than a lift to `--cb-ink` — so emphasis keeps
-   weight 400 and changes colour only. Global on purpose: this previously lived on `.trade-list strong`,
-   and every other emphasis site on the page silently missed it. */
+   weight 400 and changes colour only. Global on purpose: on one component's selector, every other emphasis
+   site on the page would silently miss it. */
 b,
 strong,
 em {
@@ -1624,8 +1624,8 @@ section > .lede {
 
   /* Stacked, the pairs must keep reading as pairs. `.ba-pairs` collapses to one column too, which puts each
      problem immediately above its answer — the source order is already problem, answer, problem, answer. The
-     vertical rule becomes a horizontal one on the answer, so the boundary a reader used to get from the column
-     edge is still there. */
+     vertical rule becomes a horizontal one on the answer, so the boundary a reader gets from the column edge at
+     wider widths is still there. */
   .ba-pairs {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -2535,17 +2535,17 @@ section > .lede {
 /* The counter-case: the point past which you should use something else. A DIFFERENT
    colour, never a quieter one — /benchmarks states that the crossover rows carry the
    same weight as the wins, and a faint verdict chip beside a cyan one would make the
-   page contradict itself in the only place that matters. This shared the research
-   chip's rule until the rename exposed it. */
+   page contradict itself in the only place that matters, so it has a rule of its own
+   rather than the research chip's. */
 .status.is-counter {
   color: var(--cb-cache);
 }
 
 /* ── retry policy, its own axis ───────────────────────────────────────────────
    These three answer "would trying again help?", which is NOT the shipping-status axis above. They get their
-   own modifiers even though two of them resolve to colours already in use, because the alternative is what
-   already went wrong once on this site: is-spec was doing double duty for two unrelated meanings, so restyling
-   it for one silently restyled the other page. A shared hook between unrelated axes is a latent bug, not reuse.
+   own modifiers even though two of them resolve to colours already in use: one hook doing double duty for two
+   unrelated meanings means restyling it for one silently restyles the other page. A shared hook between
+   unrelated axes is a latent bug, not reuse.
 
    is-never is deliberately NEUTRAL rather than cache. "Never retried" is the correct and intended behaviour for a
    corruption or a shredded key — colouring it like a warning would tell the reader something is wrong when the
@@ -3545,8 +3545,8 @@ section > .lede {
   padding: 0;
 }
 
-/* Spacing where the pair now follows the table inside one section — `section`'s own bottom border used
-   to do this, and folding the two together removed it. */
+/* Spacing where the pair follows the table inside one section, which has no bottom border of its own between
+   the two. */
 .trade {
   margin-top: 40px;
 }

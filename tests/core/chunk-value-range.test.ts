@@ -22,9 +22,8 @@ import { collect } from '../helpers/loaded';
 //
 // NOTE ON PLACEMENT. The first attempt put this check inside `SafeBitmap.safeDeserialize` and broke two tests
 // immediately: that is the codec's GENERAL entry point, also used for full-segment exports where u32 values
-// are entirely legitimate. The 16-bit rule belongs where a payload is interpreted AS A CHUNK — which, now that
-// there is one tier, means exactly one place: `SegmentEngine`'s storage-chunk decode (`assertChunkPayloadInRange`).
-// The check moved with the tier; the reason it exists did not.
+// are entirely legitimate. The 16-bit rule belongs where a payload is interpreted AS A CHUNK, which is exactly
+// one place: `SegmentEngine`'s storage-chunk decode (`assertChunkPayloadInRange`).
 const CAP = 1 << 20;
 
 /** A chunk payload carrying an illegal (>16-bit) value, bypassing every writer guard the way corrupt bytes do. */

@@ -52,8 +52,8 @@ export class NotFoundError extends CloudRoaringError {}
 
 /**
  * This build/configuration cannot perform the requested operation, though nothing is malformed. Two uses:
- * (1) **format** — the bytes are well-formed but unreadable here (an unknown `.crbm` major version, an
- * encrypted file before the crypto path exists) — distinct from `IntegrityError` (corruption); and (2)
+ * (1) **format** — the bytes are well-formed but unreadable here (an unknown `.crbm` major version) —
+ * distinct from `IntegrityError` (corruption); and (2)
  * **store configuration** — an operation this store's wiring doesn't support (e.g. a lifecycle helper like
  * `eraseSubject`/`retireExpired` called on a store built without a storage backend). Raised at
  * operation time, before any mutation.
@@ -117,7 +117,7 @@ export class TimeoutError extends TransientError {}
 
 /**
  * Bundle-safe error predicates — use these, not `instanceof`, wherever an error may cross the core↔driver
- * (`./s3` / `./gcs` / `./azure`) boundary (and prefer them in consumer `catch` blocks too, for the same reason). They
+ * package boundary (and prefer them in consumer `catch` blocks too, for the same reason). They
  * match the {@link ERROR_BRAND} registry brand + the runtime `name`, both of which survive separate bundling.
  */
 function hasBrand(err: unknown, brand: symbol): boolean {

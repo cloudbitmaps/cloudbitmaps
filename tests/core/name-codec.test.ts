@@ -10,13 +10,14 @@ import {
 //
 //   1. ROUND-TRIP — decode(encode(n)) === n, so a name read back off storage is the name that went in.
 //   2. INJECTIVITY — a !== b implies encode(a) !== encode(b), so two segments can never claim one key.
-//   3. BACKWARD COMPATIBILITY — every name legal under the old grammar encodes to ITSELF, so no stored key
-//      moves and there is nothing to migrate. This is the property most easily broken by a later edit.
+//   3. PLAIN NAMES STAY LITERAL — a name made only of `[A-Za-z0-9._:-]` that starts with a letter or digit
+//      encodes to ITSELF as an object key, so a bucket reads as the names that made it. This is the property
+//      most easily broken by a later edit.
 
-const OLD_GRAMMAR = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+const PLAIN_NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 
-describe('backward compatibility: the old alphabet is untouched', () => {
-  it('every previously-legal name is its own object key', () => {
+describe('plain names stay literal', () => {
+  it('every plain name is its own object key', () => {
     for (const n of [
       'a',
       'users',
@@ -29,25 +30,24 @@ describe('backward compatibility: the old alphabet is untouched', () => {
       expect(encodeNameForKey(n)).toBe(n);
   });
 
-  it('property: an old-grammar name keeps its PATH too, except the two documented classes', () => {
-    // The claim "no stored key moves" was only ever property-tested on the KEY alphabet; the path side had two
-    // hand-picked cases that happened to avoid the classes that DO move. This asserts the whole old grammar
-    // against what `main` actually wrote, and names the exceptions explicitly rather than letting them hide.
+  it('property: a plain name keeps its PATH too, except the two documented classes', () => {
+    // Hand-picked cases can happen to avoid the classes that ARE escaped on a path. This asserts every plain
+    // name against the colon-only escape, and names the exceptions explicitly rather than letting them hide.
     const DEVICE = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i;
     const moves = (n: string): boolean => DEVICE.test(n.split('.')[0] ?? '') || n.endsWith('.');
     fc.assert(
       fc.property(fc.stringMatching(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,32}$/), (n) => {
-        fc.pre(OLD_GRAMMAR.test(n) && !n.includes('..'));
+        fc.pre(PLAIN_NAME.test(n) && !n.includes('..'));
         if (moves(n)) return; // covered by the explicit list below
-        expect(encodeNameForPath(n)).toBe(LEGACY_PATH(n));
+        expect(encodeNameForPath(n)).toBe(PLAIN_PATH(n));
       }),
       { numRuns: 1000 },
     );
   });
 
-  it('names the exact set whose PATH changes — the breaking half of the upgrade', () => {
-    // These were legal before and are written differently now. On a localfs store they become unreadable
-    // until migrated, which is why they are enumerated here and in the CHANGELOG rather than discovered.
+  it('names the exact set of plain names whose PATH is escaped', () => {
+    // Literal as an object key, escaped as a path component, because each aliases or fails on Windows. They
+    // are enumerated here so a change to either class is a visible edit rather than a discovery.
     for (const n of [
       'con',
       'CON',
@@ -60,20 +60,20 @@ describe('backward compatibility: the old alphabet is untouched', () => {
       'a.',
       'backup.',
     ])
-      expect(encodeNameForPath(n), n).not.toBe(LEGACY_PATH(n));
-    // Everything else in the old grammar is untouched on a path.
+      expect(encodeNameForPath(n), n).not.toBe(PLAIN_PATH(n));
+    // Every other plain name is literal on a path, apart from the colon.
     for (const n of ['users', 'a.b-c_d', 'com0', 'console', 'dedup:2026-08-01'])
-      expect(encodeNameForPath(n), n).toBe(LEGACY_PATH(n));
+      expect(encodeNameForPath(n), n).toBe(PLAIN_PATH(n));
   });
 
-  // What `main` wrote for a path: the colon escape, and nothing else. Inlined rather than imported, because
-  // the point is to compare against a FROZEN historical behaviour, not against whatever the codec does now.
-  const LEGACY_PATH = (n: string): string => n.replaceAll(':', '%3A');
+  // A plain name's path: the colon escape, and nothing else. Inlined rather than imported, because the point
+  // is to compare against a FIXED expectation, not against whatever the codec does now.
+  const PLAIN_PATH = (n: string): string => n.replaceAll(':', '%3A');
 
-  it('property: an old-grammar name is byte-identical as an OBJECT KEY', () => {
+  it('property: a plain name is byte-identical as an OBJECT KEY', () => {
     fc.assert(
       fc.property(fc.stringMatching(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,32}$/), (n) => {
-        fc.pre(OLD_GRAMMAR.test(n));
+        fc.pre(PLAIN_NAME.test(n));
         expect(encodeNameForKey(n)).toBe(n);
       }),
       { numRuns: 500 },
@@ -81,7 +81,22 @@ describe('backward compatibility: the old alphabet is untouched', () => {
   });
 });
 
-describe('names that used to be impossible', () => {
+describe('the key alphabet', () => {
+  it('leaves exactly `[A-Za-z0-9._:-]` literal inside a name, and escapes every other printable ASCII character', () => {
+    // Adding a character to the alphabet moves every segment whose name holds it to a key nothing looks up, so
+    // the alphabet is pinned one character at a time, between two letters so no leading or whole-name rule applies.
+    for (let c = 0x20; c <= 0x7e; c++) {
+      const ch = String.fromCharCode(c);
+      const literal = /[A-Za-z0-9._:-]/.test(ch);
+      const encoded = encodeNameForKey(`a${ch}b`);
+      expect(encoded, JSON.stringify(ch)).toBe(
+        literal ? `a${ch}b` : `a%${c.toString(16).toUpperCase().padStart(2, '0')}b`,
+      );
+    }
+  });
+});
+
+describe('names that need escaping', () => {
   const cases: ReadonlyArray<readonly [string, string]> = [
     ['a/b', 'a%2Fb'],
     ['a\\b', 'a%5Cb'],
@@ -95,7 +110,7 @@ describe('names that used to be impossible', () => {
     ['🎉', '%F0%9F%8E%89'],
     ['_leading', '%5Fleading'], // a LEADING underscore is escaped — see the sentinel test below
     // Control characters: a literal newline breaks the XML an S3 LIST returns, and a NUL truncates a
-    // POSIX path. These were in the old BAD_NAMES and have to land somewhere now that nothing is banned.
+    // POSIX path. Nothing is banned, so each has to land somewhere.
     ['a\tb', 'a%09b'],
     ['a\nb', 'a%0Ab'],
     ['a\u0000b', 'a%00b'],
@@ -109,9 +124,9 @@ describe('names that used to be impossible', () => {
 
 describe('the reserved sentinel stays unreachable', () => {
   it('escapes a leading underscore, so no caller can name the no-namespace sentinel', () => {
-    // `_default` is the physical stand-in for an absent namespace. The old grammar made it unreachable by
-    // banning a leading `_`; dropping the grammar would have let a caller name a namespace `_default` and
-    // resolve to everyone else's un-namespaced data. The encoding restores that by construction.
+    // `_default` is the physical stand-in for an absent namespace. Unescaped, it would let a caller name a
+    // namespace `_default` and resolve to everyone else's un-namespaced data. The encoding rules that out by
+    // construction.
     expect(encodeNameForKey('_default')).toBe('%5Fdefault');
     expect(encodeNameForPath('_default')).toBe('%5Fdefault');
     expect(encodeNameForKey('_default')).not.toBe('_default');
@@ -131,8 +146,9 @@ describe('the filesystem hazards, which are about the whole component', () => {
     expect(decodeNameFromPath(encodeNameForPath('..'))).toBe('..');
   });
 
-  it('defuses Windows reserved device names, which the OLD grammar permitted', () => {
-    // `store.segment('con')` validated cleanly before this change and broke only on a user's Windows box.
+  it('defuses Windows reserved device names', () => {
+    // Opening one addresses a device rather than a file, so `store.segment('con')` would break only on a
+    // user's Windows box.
     for (const n of ['con', 'CON', 'Nul', 'aux', 'prn', 'com1', 'COM9', 'lpt3']) {
       const enc = encodeNameForPath(n);
       expect(enc).not.toBe(n);
@@ -143,8 +159,8 @@ describe('the filesystem hazards, which are about the whole component', () => {
     // ...but a name that merely STARTS with those letters is ordinary.
     for (const n of ['console', 'connection', 'nulls', 'com10', 'lpt', 'com0', 'lpt0'])
       expect(encodeNameForPath(n)).toBe(n);
-    // `com0`/`lpt0` matter in the other direction: they are NOT device names, they WERE legal under the
-    // old grammar, and widening the table to `COM\\d` would move them on disk for no safety gain.
+    // `com0`/`lpt0` matter in the other direction: they are NOT device names, and widening the table to
+    // `COM\\d` would escape two ordinary names on disk for no safety gain.
   });
 
   it('escapes a trailing dot or space, which Windows silently strips', () => {
@@ -167,8 +183,8 @@ describe('the filesystem hazards, which are about the whole component', () => {
 describe('the three properties, over arbitrary strings', () => {
   // `fc.string()` defaults to printable ASCII. Measured over 20,000 draws it produced 95 distinct code points,
   // all U+0020–U+007E: zero non-ASCII, zero control characters, zero surrogate pairs, and a device-name stem
-  // roughly once in 20,000. So the properties below were proving round-trip and injectivity over precisely the
-  // alphabet this change did NOT need to widen — `日本語` and `🎉`, the headline examples, were never drawn.
+  // roughly once in 20,000. Properties over it would prove round-trip and injectivity over printable ASCII
+  // alone — `日本語` and `🎉`, the headline examples, would never be drawn.
   //
   // The unit is therefore explicit, and mixes the characters with special handling, whole device-name tokens
   // (a character-level bias never assembles `com1`), and binary strings for the astral/control cases.

@@ -7,9 +7,9 @@ import { join } from 'node:path';
  * WHY THIS EXISTS. An override is a security claim: *this forced version still works, and it is protecting
  * something*. Both halves rot silently, and both did.
  *
- * `adm-zip` reached the project through `cassandra-driver`, a dependency of a tier removed two releases
- * earlier. The dependency left; the override stayed. SECURITY.md labelled it honestly — "*nothing, now*" —
- * and it still sat in the manifest for two releases, because nothing failed. When a human finally removed it,
+ * `adm-zip` was pinned for a dependency the project no longer had: the dependency left, the override stayed.
+ * SECURITY.md labelled it honestly — "*nothing, now*" — and it still sat in the manifest, because nothing
+ * failed. When a human finally removed it,
  * the same test that condemned it turned out to condemn **four more rows** that were not labelled honestly:
  * `fast-uri` attributed to `ajv` (which is on v6 and uses `uri-js`), `js-yaml` to "the eslint / stryker
  * toolchains" (eslint 10 dropped eslintrc, and stryker is `pnpm dlx`-only so its graph never enters this
@@ -21,7 +21,7 @@ import { join } from 'node:path';
  * no table row without an override.
  *
  * WHAT IT DELIBERATELY DOES NOT DO. It does not judge whether a *version range* is still the right one; only
- * a human reading an advisory can. It answers the cheaper question that had gone unasked for two releases:
+ * a human reading an advisory can. It answers the cheaper question that had gone unasked:
  * is this entry protecting anything at all?
  */
 

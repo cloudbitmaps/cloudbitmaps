@@ -50,11 +50,12 @@ const BAD_NAMES: readonly string[] = [
 ];
 
 /**
- * Names that were ILLEGAL under the old grammar and must now work end to end.
+ * Names a conformant driver MUST accept: a sample of names that start with something other than a letter or digit
+ * or hold a character outside `[A-Za-z0-9._:-]`, plus two plain names that are Windows hazards, a device name and a
+ * trailing dot.
  *
- * This is the more important list. Rejecting these was the bug; accepting them without letting any of them
- * reach a key or a path literally is the fix, so a driver that merely stopped validating would pass the list
- * above and fail here.
+ * This is the more important list. A driver that refused characters it could not store, rather than escaping
+ * them, would pass the list above and fail here.
  */
 const NASTY_NAMES: readonly string[] = [
   'a/b', // would invent hierarchy in an object key
@@ -67,8 +68,8 @@ const NASTY_NAMES: readonly string[] = [
   'a b',
   'a%3Ab', // a name that SPELLS an escape; `%` escaping itself is what keeps this unambiguous
   '100%',
-  'ns#1|seg#2', // the characters the key codec keeps reserved
-  'con', // a Windows device name — the OLD grammar accepted this one and it broke on Windows
+  'ns#1|seg#2', // outside the key alphabet, so escaped like any other such character
+  'con', // a Windows device name — letters only, and it breaks on Windows unless escaped
   'a.', // Windows strips a trailing dot, so this must not collide with `a`
   'user@example.com',
   '\u65e5\u672c\u8a9e',
@@ -124,7 +125,7 @@ export function storageChunkSourceConformance(
       }
     });
 
-    it('accepts every name the old grammar refused, without letting one reach a key literally', async () => {
+    it('accepts a sample of names outside the plain alphabet, and the Windows hazards', async () => {
       const source = await makeSource([{ chunkKey: 0, bitmap: SafeBitmap.fromValues([1]) }]);
       for (const name of NASTY_NAMES) {
         // A miss is fine — the point is that it VALIDATES and resolves rather than throwing ValidationError.
@@ -391,9 +392,8 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       const listed = await drainRecords(d.list());
       expect(listed.map((r) => [r.segment, r.status])).toEqual([[SEG.segment, 'destroyed']]);
 
-      // `{ currentGen: undefined }` type-checks without `exactOptionalPropertyTypes`, and it used to be a no-op
-      // (the merge was `??`). Under presence-based merging it would silently un-publish the segment's Storage data,
-      // so it is refused rather than coerced. Omitting the key is how you leave the pointer alone.
+      // `{ currentGen: undefined }` type-checks without `exactOptionalPropertyTypes`. Under presence-based merging
+      // it would silently un-publish the segment's Storage data, so it is refused rather than coerced. Omitting the key is how you leave the pointer alone.
       const live = makeDriver();
       const { token: t0 } = await live.create(SEG, { currentGen: 3 });
       await expectValidationReject(
@@ -414,8 +414,8 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
     });
 
     // Every registry fixture above is `s:v1`-shaped, and `:` happens to encode to itself — so a driver that
-    // wrote segment names into its key VERBATIM passed this whole suite. `NASTY_NAMES` is the list that
-    // catches that, and until now only the storage-source suite used it. The failure it guards against is
+    // wrote segment names into its key VERBATIM would pass every test above this one. `NASTY_NAMES`, which the
+    // storage-source suite also runs, is what catches it. The failure it guards against is
     // quiet: an unencoded `a/b` writes to a key whose parsed form no longer round-trips, so the segment
     // stays readable through `get` while vanishing from `list` — and from every sweep that drives off it.
     it('round-trips names that need encoding, through create, get AND list', async () => {

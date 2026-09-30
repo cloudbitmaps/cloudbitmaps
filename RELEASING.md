@@ -39,7 +39,7 @@ the right direction for it to fail in — but it is an edit, not nothing.
    moves all five `packages/*/package.json` together, then syncs the `VERSION` constant and refreshes the
    lockfile. They must all match the tag exactly; the workflow globs `packages/*/package.json` and refuses
    the release if any one disagrees, so a missed package costs a failed run rather than a partial publish.
-3. **Tag and push:** `git tag v0.1.0 && git push origin v0.1.0`.
+3. **Tag and push:** `git tag v<version> && git push origin v<version>`, the version the manifests carry.
 4. **Approve the deployment** — the run pauses on the `release` environment. Open the run → _Review
    deployments_ → approve `release`.
 5. It publishes all five packages, tokenlessly, with a signed provenance attestation. `pnpm -r publish`
@@ -123,10 +123,9 @@ A pushed `v*.*.*` tag (or a manual dispatch) starts one gated job that, in order
 
 **The ordering is the design, not an accident.** Everything above the publish is recoverable; the publish is
 not — an npm tarball is immutable outside a 72-hour unpublish window. So every check that can still be *fixed*
-runs before the one step that cannot be undone. (The inverse mistake has already been made here once: the
-GitHub Release object was briefly created before the publish it describes had succeeded, and a run produced a
-release for a version that never reached npm.
-[`tests/ci/release-workflow.test.ts`](tests/ci/release-workflow.test.ts) now asserts this ordering.)
+runs before the one step that cannot be undone. (Creating the GitHub Release before its publish succeeds would
+announce a version that never reached npm;
+[`tests/ci/release-workflow.test.ts`](tests/ci/release-workflow.test.ts) asserts this ordering.)
 
 The workflow also declares `concurrency: cancel-in-progress: false` — the opposite of CI. Cancelling a build is
 free; cancelling a release part-way through leaves npm holding a half-published family — some of the five
@@ -185,9 +184,8 @@ so the hardening below is part of first-publishing one, not an afterthought:
 ## Bootstrapping a name
 
 **Every package name has to be created by hand once, because a Trusted Publisher cannot be bound to a package
-that does not exist yet.** This ran at launch for `@cloudbitmaps/core` and `@cloudbitmaps/roaring`, and it
-runs again **every time a package is added to the family** — the storage split added `@cloudbitmaps/s3`,
-`/gcs` and `/azure-blob` to a workspace whose other two packages were already on npm.
+that does not exist yet.** `pnpm release:bootstrap` runs once for each new package name, **including one added to
+a family whose other packages are already on npm**, and publishes only the names the registry does not have.
 
 > [!WARNING]
 > **Do this before tagging, not after.** The release pipeline is tokenless: it authenticates by OIDC against
@@ -195,7 +193,7 @@ runs again **every time a package is added to the family** — the storage split
 > workspace topologically and stops at the first failure, so tagging with an unbootstrapped name in the tree
 > publishes `@cloudbitmaps/core` at the new version — immutably, outside a 72-hour window — and then dies
 > before the flagship. The family ships in lockstep; that leaves one package of five on the registry with no
-> way back. `release.yml` now refuses the tag rather than starting, but the refusal is a backstop for this
+> way back. `release.yml` refuses the tag rather than starting, but the refusal is a backstop for this
 > procedure, not a replacement for it.
 
 A manual publish carries **no provenance attestation** — provenance attests to a *workflow* identity, and a

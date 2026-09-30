@@ -151,9 +151,9 @@ describe('segments()', () => {
     expect((await drain(s.segments({ namespace: 'acme' }))).map((v) => v.segment)).toEqual(['x']);
     expect((await drain(s.segments())).length).toBe(3);
 
-    // A colon namespace, SCOPED. Colons became legal one commit ago, and the scoped path is the interesting
-    // one: the facade validates through `validateSegmentRef`, and a filesystem driver percent-encodes the
-    // colon on the way to a directory name and has to decode it to answer this.
+    // A colon namespace, SCOPED. The scoped path is the interesting one: the facade validates through
+    // `validateSegmentRef`, and a filesystem driver percent-encodes the colon on the way to a directory name and
+    // has to decode it to answer this.
     await s.load({ segment: 'q', namespace: 'tenant:acme' }, [4]);
     expect((await drain(s.segments({ namespace: 'tenant:acme' }))).map((v) => v.segment)).toEqual([
       'q',

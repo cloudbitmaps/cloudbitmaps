@@ -6,12 +6,10 @@
  * caller's. Every physical boundary escapes what *it* cannot take literally (`core/name-codec.ts`),
  * so `dedup:2026-08-01`, `user@example.com`, `orders/2026`, `日本語` and `100%` are all ordinary names.
  *
- * That replaced a grammar which had banned the colon *by accident rather than by decision*: every dated-bucket
- * example the retention docs published threw, because prose in a fenced block is not run by anything. The
- * grammar also **permitted** names that were genuinely broken — `con`, `nul` and `com1` are Windows device
- * names, and `store.segment('con')` validated cleanly here and failed only on a user's machine. Encoding
- * handles both directions: it stops rejecting what is merely unfamiliar, and starts defusing what is actually
- * dangerous.
+ * A grammar would fail in both directions. It would reject names that are merely unfamiliar, and it would pass
+ * names that are genuinely broken — `con`, `nul` and `com1` are Windows device names made only of letters and
+ * digits, so `store.segment('con')` would validate cleanly and fail only on a user's machine. Encoding handles
+ * both: it accepts what is merely unfamiliar, and defuses what is actually dangerous.
  *
  * What remains is **size** and **representability**, both real constraints rather than tastes.
  *
@@ -34,8 +32,7 @@ const CHUNK_KEY_MAX = 0xffff;
  *
  * S3's limit is 1024 bytes for the WHOLE key, which also carries the caller's prefix, the namespace, a fixed
  * infix (`/segments/`) and the `.<generation>.crbm` suffix. 256 leaves generous room for all of that with both
- * a namespace and a segment at the ceiling, and matches the limit the previous grammar advertised, so no name
- * that was legal before becomes illegal now.
+ * a namespace and a segment at the ceiling.
  */
 export const MAX_NAME_LENGTH = 256;
 

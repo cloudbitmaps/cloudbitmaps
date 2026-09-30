@@ -125,7 +125,8 @@ export async function gcOrphanGenerations(
    *    by token;
    *  - the **ordinary** branch deletes strictly below `cutoff`, so it needs only that the live pointer has not
    *    fallen below `cutoff`. A forward publish moves it up and changes nothing, which is what keeps routine
-   *    collection working on a busy segment; only a purge-and-recreate can move it down.
+   *    collection working on a busy segment. A purge-and-recreate or a `rollbackSegment` can move it down, which
+   *    is why the pointer is re-proved before every delete (below).
    */
   const stillCollectable = async (): Promise<void> => {
     const still = await deps.registry.get(ref);
@@ -160,12 +161,10 @@ export async function gcOrphanGenerations(
   // so the exposure is the whole loop, not that instant. The ordinary branch deletes newest-first, which puts a
   // restarted incarnation's generation 0 LAST — the worst ordering.
   //
-  // Re-proved before EVERY delete, the first included. An earlier version skipped the first on the grounds that
-  // the re-read above had just covered it, which held only while the pointer could not fall: the window between
-  // the re-read and the first delete was one where the pointer could only rise, and a rising pointer only makes
-  // more things collectable. `rollbackSegment` removed that premise — an operator can now move the pointer
-  // *down*, onto a generation this pass has already queued — and reproduced exactly that: a rollback landing in
-  // that window left the pass deleting the live generation before its second iteration noticed anything.
+  // Re-proved before EVERY delete, the first included. The re-read above does not cover the first: a rising
+  // pointer only makes more things collectable, but `rollbackSegment` can move the pointer *down*, onto a
+  // generation this pass has already queued, and a rollback landing between the re-read and the first delete
+  // would leave the pass deleting the live generation before its second iteration noticed anything.
   //
   // Cost is one registry read per object actually deleted, on a path that is already one round trip per object
   // and is never on the read path.

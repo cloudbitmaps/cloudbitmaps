@@ -5,7 +5,7 @@
  * object store, behind one registry pointer per segment. You wire storage **once**, as a single config object:
  * pass a **backend** as `storage` — `S3Storage`, `GcsStorage`, `AzureBlobStorage`, `LocalFsStorage` or
  * `MemoryStorage` — and it carries both halves, the generations and the pointer, from one bucket and one
- * prefix. Add a `keystore` for encryption-at-rest / crypto-shred.
+ * prefix. Add `encryption: { keystore }` for encryption-at-rest / crypto-shred.
  *
  * Two narrower shapes are also accepted for `storage`: a bare {@link IStorageDriver}, which has no pointer and
  * so resolves generations by list-scanning storage (**cleartext and read-only**), and an already-built
@@ -281,8 +281,8 @@ export interface EncryptionOptions {
 /**
  * {@link CloudRoaringOptions.retry} — a partial {@link RetryPolicy} plus the retry callback.
  *
- * Partial on purpose: the flat form this replaces took a **whole** `RetryPolicy`, so tuning one field meant
- * restating all five. Anything omitted here keeps its {@link DEFAULT_RETRY_POLICY} value.
+ * Partial on purpose, so tuning one field does not mean restating all five. Anything omitted here keeps its
+ * {@link DEFAULT_RETRY_POLICY} value.
  */
 export interface RetryOptions extends Partial<RetryPolicy> {
   /** Observability: called before each transient-retry backoff wait. */
@@ -602,7 +602,7 @@ interface LifecycleDeps {
 }
 
 /**
- * Options that moved into a group, and where each one went.
+ * Option spellings the store does not take, and a caller may still pass: each is refused with what to write instead.
  *
  * TypeScript rejects these at the call site, which covers most callers. It does not cover a plain-JS caller, a
  * config object that arrived as JSON, or anything that reached the constructor through an `as` cast — and for
@@ -613,13 +613,13 @@ interface LifecycleDeps {
  * None of those announces itself; each looks like the store simply working.
  */
 /**
- * How a `0.9.x` option is answered: it moved into a group, it was renamed, or it is gone.
+ * How such an option is answered: it is set in a group, it is spelled differently, or the store has no such
+ * option.
  *
- * The category is DATA, not inferred from how the guidance happens to be punctuated. The first version
- * decided by testing whether the replacement text looked like an identifier, which got two entries wrong in
- * opposite directions: `registry` HAS a successor and was announced as "removed", and `cold` → `storage` was
- * announced as "moved into a group" when `storage` is the one required flat option, not a group. A reader
- * told to look in a group that does not exist is the failure this whole guard is about.
+ * The category is DATA, not inferred from how the guidance happens to be punctuated: guessing it from whether the
+ * replacement text looks like an identifier announces `registry`, which has a counterpart, as having none, and
+ * sends `cold` to a group when `storage` is the one required flat option. A reader told to look in a group that
+ * does not exist is the failure this whole guard is about.
  */
 export class CloudRoaring {
   private readonly engine: SegmentEngine;
@@ -640,10 +640,10 @@ export class CloudRoaring {
   private readonly budget: Budget | null;
 
   /**
-   * Refuse an option that moved into a group, naming where it went.
+   * Refuse an option spelling the store does not take, naming what to write instead.
    *
-   * Silently ignoring one would be the exact failure this release exists to remove — see {@link MOVED_OPTIONS}
-   * for why each of these is unsafe to drop rather than merely untidy.
+   * Silently ignoring one is the failure this guards against — see {@link MOVED_OPTIONS} for why each of these is
+   * unsafe to drop rather than merely untidy.
    */
   private static rejectMovedOptions(options: CloudRoaringOptions): void {
     // A nullish or non-object bag never reaches `resolveStorageSource` — the constructor reads
@@ -659,7 +659,7 @@ export class CloudRoaring {
     if (moved.length === 0) return;
     // One clause per kind, so a reader is never sent to a group that will not have their key. The intra-
     // clause separator is ` · ` rather than a comma: the guidance prose contains commas and semicolons of its
-    // own, and "…see MIGRATING.md change 1, `warmReadConsistency` → …" reads as one continued sentence.
+    // own, and a comma-joined list reads as one continued sentence.
     const clause = (kind: MovedOptionKind, one: string, many: string): string | null => {
       const hits = moved.filter(([, , k]) => k === kind);
       if (hits.length === 0) return null;
@@ -673,15 +673,14 @@ export class CloudRoaring {
       return `${hits.length > 1 ? many : one}: ${body}`;
     };
     const parts = [
-      clause('group', 'option moved into a group', 'options moved into groups'),
-      clause('renamed', 'option renamed', 'options renamed'),
-      clause('gone', 'option removed', 'options removed'),
+      clause('group', 'set in a group', 'set in groups'),
+      clause('renamed', 'spelled differently', 'spelled differently'),
+      clause('gone', 'not an option', 'not options'),
     ].filter((c): c is string => c !== null);
     throw new ValidationError(
-      `CloudRoaring ${parts.join('; ')}. ` +
-        'Options are now one required `storage` plus four optional groups — `cache`, `encryption`, ' +
-        '`retry` and `seams`. `metrics` and `budget` are unchanged flat options; leave them as they are. ' +
-        'Full guide: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/MIGRATING.md',
+      `CloudRoaring options ${parts.join('; ')}. ` +
+        'The store takes one required `storage` and four optional groups — `cache`, `encryption`, `retry` ' +
+        'and `seams` — beside the flat `metrics` and `budget`: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/api-reference.md#build-a-store--new-cloudroaringoptions',
     );
   }
 
@@ -703,8 +702,8 @@ export class CloudRoaring {
     // Resilience on by default: wrap the source so transient faults retry with jittered backoff. `false` opts
     // out (e.g. the injected client already retries); a RetryPolicy tunes it.
     if (options.retry !== false) {
-      // The flat form took a WHOLE RetryPolicy, so tuning one field meant restating all five. The grouped form
-      // takes a partial and fills the rest from the default — `{ onRetry }` alone is now a legal, useful value.
+      // The policy is a partial, and the rest is filled from the default — so tuning one field does not mean
+      // restating all five, and `{ onRetry }` alone is a legal, useful value.
       //
       // Field by field with `??`, NOT `{ ...DEFAULT, ...overrides }`. A spread lets a key that is *present with
       // value `undefined`* overwrite the default instead of falling back to it, and `exactOptionalPropertyTypes`
@@ -713,7 +712,8 @@ export class CloudRoaring {
       // takes the `setTimeout(resolve, NaN)` path, which Node coerces to 1 ms, so bounded jittered backoff
       // silently became a ~1 ms hot retry loop with the read still succeeding and the retry metric still
       // emitting. That is the thundering-herd and denial-of-wallet protection gone with nothing to see.
-      // Making the policy a `Partial` is what put this in reach: every one of these was a compile error before.
+      // A `Partial` policy is what puts this in reach: were a whole `RetryPolicy` required, each would be a compile
+      // error.
       const { onRetry: userOnRetry, ...ov } = options.retry ?? {};
       const policy: RetryPolicy = {
         maxAttempts: ov.maxAttempts ?? DEFAULT_RETRY_POLICY.maxAttempts,
@@ -787,7 +787,7 @@ export class CloudRoaring {
       throw new UnsupportedError(
         `${op} needs a storage backend — S3Storage, GcsStorage, AzureBlobStorage, LocalFsStorage or ` +
           `MemoryStorage. A bare IStorageDriver has no generation pointer to publish through, and there is ` +
-          `no longer a separate \`registry\` option to add.`,
+          `no separate \`registry\` option: a backend carries it.`,
       );
     }
     return {
@@ -850,15 +850,14 @@ export class CloudRoaring {
    * the same residual and says so. The failure it leaves is an orphan object, which costs storage until
    * something collects it — deliberately the cheaper side of the trade.
    *
-   * Materialising used to do none of that. It wrote and published in one step, so an empty combine — a typo'd
-   * operand, an `exclude` that swallowed everything, an operand that had not loaded yet — silently replaced
-   * `dest` with an empty generation. That is the same failure `load()`'s guard exists to prevent, on the same
-   * data, and it was reachable without passing any option at all.
+   * Written and published in one step, with no guard, an empty combine — a typo'd operand, an `exclude` that
+   * swallowed everything, an operand that had not loaded yet — would silently replace `dest` with an empty
+   * generation: the same failure `load()`'s guard exists to prevent, on the same data, reachable without passing
+   * any option at all.
    *
-   * **A lost race still throws.** `loadSegment` reports one as `reason: 'superseded'`; the `*Into` verbs have
-   * always thrown {@link WriteConflictError} for it, and a caller who wrote `catch (WriteConflictError)` must
-   * keep working. So that one refusal is translated back into the throw, and `MaterializeResult.reason` never
-   * carries it.
+   * **A lost race throws.** `loadSegment` reports one as `reason: 'superseded'`; the `*Into` verbs throw
+   * {@link WriteConflictError} for it, so a caller can `catch (WriteConflictError)`. That one refusal is
+   * translated into the throw, and `MaterializeResult.reason` never carries it.
    *
    * **A `WriteConflictError` does not by itself mean nothing was published**, and that is worth knowing
    * before you write the retry. `'superseded'` covers four different causes — the write-once PUT collided,
@@ -868,7 +867,7 @@ export class CloudRoaring {
    * successful publish can raise the same error. So: treat it as "re-read the destination and decide",
    * never as "the write did not happen".
    *
-   * **And it still collects nothing**, unlike `load()`. See the `keep` default below.
+   * **And by default it collects nothing**, unlike `load()`. See the `keep` default below.
    */
   private async materialize(
     dest: SegmentRef,
@@ -883,9 +882,10 @@ export class CloudRoaring {
         ...(options?.allowEmpty === undefined ? {} : { allowEmpty: options.allowEmpty }),
         ...(options?.guard === undefined ? {} : { guard: options.guard }),
         // COLLECT NOTHING by default, which `loadSegment` does not — it keeps a grace window of 1 and deletes
-        // the rest. A materialisation has never collected: the guide states "**It deletes nothing.** The
-        // destination's previous generation stays in the bucket until you collect it", and the ownership table
-        // puts that call on the operator. Inheriting `load()`'s collection would have silently deleted the
+        // the rest. By default a materialisation collects nothing: the guide states "**It deletes nothing**,
+        // unlike `load()`. The destination's previous generations stay in the bucket until you collect them", and
+        // the ownership table
+        // puts that call on the operator. Inheriting `load()`'s collection would silently delete the
         // generations an operator's recovery story depends on — `rollbackSegment` refuses a collected target —
         // as a side effect of adding a guard whose entire purpose is preventing data loss. Opt in with `keep`.
         keep: options?.keep ?? KEEP_EVERY_GENERATION,
@@ -913,8 +913,8 @@ export class CloudRoaring {
       // apart: the object either exists as an orphan above the pointer (collected by the next sweep) or was
       // never written at all, because the write-once PUT itself collided. Telling someone to look for an
       // orphan that does not exist is a wasted investigation.
-      // Deliberately does NOT assert which of the four causes it was. The message used to say "a newer
-      // generation was published first", and that is wrong for two of them: a `setRetention` on the
+      // Deliberately does NOT assert which of the four causes it was. "A newer generation was published first"
+      // is wrong for two of them: a `setRetention` on the
       // destination bumps the row's token without publishing anything, and a purge leaves no row at all.
       // Telling an operator to go looking for a newer generation that does not exist costs a real
       // investigation. `size > 0` is the one thing this path can state as fact.
@@ -944,10 +944,10 @@ export class CloudRoaring {
    * **Subject access (GDPR Art. 15 / CCPA right-to-know): which segments is this id a member of?**
    *
    * Enumerates the **registered** segments (via the store's own `registry`) and does a `has(id)` on each — no
-   * drivers to re-pass. Complete only over registered segments (every loaded segment has a row, so register the
-   * registry the loads used). There is deliberately **no `id → segments` reverse index** — that would tax every
-   * load for a rare request; this admin scan is `O(registered segments)` and touches no hot path. Requires a
-   * `registry` in the store config (throws {@link UnsupportedError} otherwise).
+   * drivers to re-pass. Complete only over registered segments (every loaded segment has a row, so build the
+   * store on the backend the loads used). There is deliberately **no `id → segments` reverse index** — that would
+   * tax every load for a rare request; this admin scan is `O(registered segments)` and touches no hot path. Needs
+   * a storage backend (throws {@link UnsupportedError} otherwise).
    */
   async subjectReport(
     id: number,
@@ -968,7 +968,7 @@ export class CloudRoaring {
     // GDPR Art. 15 entry point plausibly wired to end-user traffic, so resident memory must be O(budget), not
     // O(fleet size).
     const recs = await collectWithinBudget(
-      // A subject cannot be in a coordination row, and charging this request's budget for them would refuse a
+      // A subject cannot be in a due-index row, and charging this request's budget for them would refuse a
       // GDPR Art. 15 report for a reason unrelated to the subject.
       excludingReservedRows(registry.list(options.namespace)),
       budget,
@@ -1148,7 +1148,7 @@ export class CloudRoaring {
    * a handle carrying an expired `expiresAt` reads empty by a rule that lives on the handle, not the row.
    *
    * Not a lock: the answer can change the moment it returns. If it has to hold, use the fence built for that —
-   * `load`'s `guard`, or `expectFrom`/`expectToken` on a publish. Needs a `registry`.
+   * `load`'s `guard`, or `expectFrom`/`expectToken` on a publish. Needs a storage backend.
    *
    * ```ts
    * if (!(await store.exists({ segment: 'users' }))) {
@@ -1180,7 +1180,7 @@ export class CloudRoaring {
    *
    * Yields `destroyed` tombstones and rows with `currentGen: null`, because a filtered enumeration that looks
    * complete is worse than an honest one — filter on `status`/`currentGen` yourself, or ask
-   * {@link CloudRoaring.exists} the narrower question. Needs a `registry`.
+   * {@link CloudRoaring.exists} the narrower question. Needs a storage backend.
    *
    * ```ts
    * for await (const s of store.segments({ namespace: 'active-daily' })) {
@@ -1368,8 +1368,8 @@ export class CloudRoaring {
    *
    * A value in the past is legal and means "eligible on the next sweep" — backfilling a policy onto existing
    * buckets is normal. A value below `MIN_EXPIRES_AT_MS` (2001-09-09) is rejected: it is almost certainly epoch
-   * **seconds**, which would read as long-expired and retire the segment on the next pass. Needs a `registry`
-   * in the store config (throws {@link UnsupportedError} otherwise), and refuses a crypto-shredded segment.
+   * **seconds**, which would read as long-expired and retire the segment on the next pass. Needs a storage
+   * backend (throws {@link UnsupportedError} otherwise), and refuses a crypto-shredded segment.
    */
   async setRetention(ref: SegmentRef, policy: RetentionPolicy): Promise<SetRetentionResult> {
     validateSegmentRef(ref);
@@ -1411,7 +1411,7 @@ export class CloudRoaring {
    * ```ts
    * // In your scheduled handler. Start with a preview in a new deployment.
    * const preview = await store.retireExpired({ namespace: 'active-daily', dryRun: true });
-   * console.log(`would retire ${preview.retired} of ${preview.scanned} (limited: ${preview.limited})`);
+   * console.log(`would retire ${preview.wouldRetire} of ${preview.scanned} (limited: ${preview.limited})`);
    *
    * const swept = await store.retireExpired({ namespace: 'active-daily' });
    * for (const e of swept.entries) {
@@ -1615,7 +1615,7 @@ export class CloudRoaring {
       throw new UnsupportedError(
         `${op} needs a storage backend — S3Storage, GcsStorage, AzureBlobStorage, LocalFsStorage or ` +
           `MemoryStorage. A bare IStorageDriver has no generation pointer to publish through, and there is ` +
-          `no longer a separate \`registry\` option to add.`,
+          `no separate \`registry\` option: a backend carries it.`,
       );
     }
     return this.registry;
@@ -1726,12 +1726,11 @@ export interface MaterializeOptions extends CombineOptions {
    *
    * It is on the call rather than on the store because that is where every other auditable operation takes it
    * (`eraseSubject`, `dropSegment`, `retireExpired`): the caller who performs the act decides where the record
-   * goes. Without it a `*Into` was the one write path in the library that could make a generation current and
-   * leave no trace in the compliance trail.
+   * goes. Without it a `*Into` would be the one write path in the library that could make a generation current
+   * and leave no trace in the compliance trail.
    *
-   * It sits HERE rather than on {@link BaseCombineOptions}, where it used to, for the reason this type exists:
-   * the streaming verbs write nothing, so an audit sink on `intersect()` was a parameter that could not do
-   * anything. Same rule, now applied to itself.
+   * It sits HERE rather than on {@link BaseCombineOptions} for the reason this type exists: the streaming verbs
+   * write nothing, so an audit sink on `intersect()` would be a parameter that could not do anything.
    */
   readonly audit?: IAuditSink;
   /**
@@ -1746,9 +1745,9 @@ export interface MaterializeOptions extends CombineOptions {
   /**
    * Generations to keep below the new pointer — see {@link LoadOptions.keep}.
    *
-   * **Defaults to keeping everything**, unlike `load()`, which keeps 1 and collects the rest. A
-   * materialisation has never collected, and an operator's recovery story can depend on that: `rollbackSegment`
-   * refuses a target that has been collected. Pass a number to collect on the way through; `0` keeps only the
+   * **Defaults to keeping everything**, unlike `load()`, which keeps 1 and collects the rest. An operator's
+   * recovery story can depend on a materialisation collecting nothing: `rollbackSegment` refuses a target that
+   * has been collected. Pass a number to collect on the way through; `0` keeps only the
    * generation this call publishes.
    */
   readonly keep?: number;
@@ -1848,8 +1847,8 @@ type Materialize = (
  * **IDs must be integers in `[0, 2^32)`** (dense 32-bit). A non-integer / negative / out-of-range id
  * throws {@link ValidationError}.
  *
- * There is no `add`/`remove` on a handle: data enters a segment as a whole generation (`bulkLoadCrbmGeneration`,
- * or one of the `*Into` verbs), and leaves it the same way (`eraseSubject`, `dropSegment`).
+ * A handle has no per-id write: data enters a segment as a whole generation (`bulkLoadCrbmGeneration`, or one
+ * of the `*Into` verbs), and leaves it the same way (`eraseSubject`, `dropSegment`).
  */
 export class Segment {
   private readonly metricsOn: boolean;
@@ -1977,7 +1976,7 @@ export class Segment {
    * better told than guessed at. Open a handle without `expiresAt` to write, or drop the deadline.
    *
    * (The broader guard — refusing to publish an empty or implausible generation over a non-empty one, with an
-   * `allowEmpty` override — now covers these verbs too: they route through the same guarded write path as
+   * `allowEmpty` override — covers these verbs too: they route through the same guarded write path as
    * {@link CloudRoaring.load}. The two stay separate because they differ in kind. That one is a REPORTED
    * refusal a caller may legitimately override; an expired handle is a wiring mistake, so it THROWS, before
    * any object is written — and `allowEmpty: true` does not reach it.)
@@ -2253,15 +2252,15 @@ export class Segment {
 
 // ---------------------------------------------------------------------------------------------------
 // Re-export the whole codec-agnostic core so `@cloudbitmaps/roaring` stays the one name to know: every driver,
-// error, port, and helper an application needs is reachable from here exactly as it was before the family
-// split. (`@cloudbitmaps/core` arrives transitively — users never install it directly.)
+// error, port, and helper an application needs is reachable from here. (`@cloudbitmaps/core` arrives
+// transitively — users never install it directly.)
 // ---------------------------------------------------------------------------------------------------
 export * from '@cloudbitmaps/core';
 
 // ...with the codec-bound overrides layered on top. These three core entry points need a bitmap codec, which
 // core cannot default (it is codec-agnostic). Re-exporting them EXPLICITLY here shadows the same names from the
-// `export *` above, so every signature stays exactly as it was before the family split — e.g.
-// `bulkLoadCrbmGeneration(driver, key, ids)` still works with no options at all.
+// `export *` above, so an application never passes a codec — e.g. `bulkLoadCrbmGeneration(driver, key, ids)`
+// works with no options at all.
 export { bulkLoadCrbmGeneration, eraseIdFromSegment, loadSegment, runExport } from './codec-bound';
 
 // The roaring codec itself. `SafeBitmap` is public surface (`writeCrbmGeneration` takes them — the seed /

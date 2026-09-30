@@ -38,8 +38,8 @@ export interface CrbmWriterOptions {
   /**
    * Which codec produced the chunk payloads. Defaults to {@link PAYLOAD_CODEC_ROARING_PORTABLE}.
    *
-   * Renamed from `roaringSerializationId` in 0.7.0 — same footer field, same offset and width, generalized
-   * because `.crbm` is a shared container and a second codec is expected before the format freezes.
+   * A codec id rather than a roaring-specific one, because `.crbm` is a shared container and a second codec is
+   * expected before the format freezes.
    */
   readonly payloadCodecId?: number;
   readonly elementWidth?: number;

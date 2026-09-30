@@ -29,7 +29,7 @@ package, the **storage service** is a driver package, and core is what both buil
   (`SafeBitmap`/`roaringCodec`), the `CloudRoaring` facade, and the `export-segments` CLI. Depends on core.
 - **`packages/{s3,gcs,azure-blob}` → `@cloudbitmaps/{s3,gcs,azure-blob}`** — one package per storage
   **service**, each depending on its SDK **for real** rather than as an optional peer. Named by service, not
-  by cloud: an `aws` package would have to carry both the S3 and DynamoDB SDKs, and "azure" is ambiguous
+  by cloud: a cloud's name does not say which storage service a package speaks, and "azure" is ambiguous
   across Blob, Table, Files and Data Lake.
 - **Users install two packages** — `pnpm add @cloudbitmaps/roaring @cloudbitmaps/s3`, the codec they want and
   the storage they have. `@cloudbitmaps/core` arrives **transitively, never installed directly.** Nothing is

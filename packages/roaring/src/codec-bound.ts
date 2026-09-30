@@ -5,9 +5,8 @@
  * that depends on core — a default over there would invert the dependency arrow). But an application using
  * `@cloudbitmaps/roaring` should never have to pass one. So this module re-binds each such entry point with
  * {@link roaringCodec} and the facade re-exports these **explicitly**, which shadows the same names coming from
- * `export * from '@cloudbitmaps/core'` (an explicit export always wins over a star export). Net effect: every
- * call signature is unchanged from before the family split — you can still call
- * `bulkLoadCrbmGeneration(driver, key, ids)` with no options at all.
+ * `export * from '@cloudbitmaps/core'` (an explicit export always wins over a star export). Net effect: an
+ * application calls `bulkLoadCrbmGeneration(driver, key, ids)` with no options at all.
  *
  * A caller who *wants* a different codec passes it explicitly; the binding only fills an absent one — via
  * `?? roaringCodec` rather than spread order, so an explicit `codec: undefined` still gets the binding

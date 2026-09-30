@@ -70,7 +70,7 @@ describe('consistency check bounds its registry scan', () => {
   });
 
   it('defaults to a ceiling generous enough not to bother real fleets', () => {
-    // The compaction docs target 100K+ segment fleets, so the default must sit comfortably above that or it
+    // Fleets of 100K+ segments are the design target, so the default must sit comfortably above that or it
     // becomes a surprise failure for exactly the deployments that need a DR drill most.
     expect(DEFAULT_MAX_SCAN_SEGMENTS).toBeGreaterThan(100_000);
   });

@@ -735,7 +735,7 @@ describe('bench:sizing:check fails what it exists to catch', () => {
     // What it cannot read, it refuses, whether or not a reader would be shown a figure: a number, HTML, an entity, an
     // image, a fence.
     it.each([
-      ['a version', ' From 0.9.x on.', /holds a number, "0\.9\.x"/],
+      ['a version', ' From 2.3.x on.', /holds a number, "2\.3\.x"/],
       ['a year', ' Since December 2020, reads included.', /holds a number, "2020,"/],
       ['a protocol version', ' Over HTTP/2 requests.', /holds a number, "HTTP\/2"/],
       ['a bare address with a digit', ' See https://example.org/a/50 for more.', /holds a number/],
@@ -903,9 +903,12 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       );
       expect(readme).toContain('?logo=npm&label=');
       // A listed phrase is read as written: with its figure in bold it is another phrase, and the listed one is gone.
-      const bolded = readme.replace('LIST bills at 12.5× a GET', 'LIST bills at **12.5×** a GET');
+      const bolded = readme.replace(
+        '65,536-id chunk (6.25% of it)',
+        '65,536-id chunk (**6.25%** of it)',
+      );
       expect(bolded).not.toBe(readme);
-      refused({ [README]: bolded }, /no longer says "LIST bills at 12\.5× a GET"/);
+      refused({ [README]: bolded }, /no longer says "65,536-id chunk \(6\.25% of it\)"/);
       // Nor is it in compatibility forms, which a reader is shown as the same phrase and this reads as another.
       refused(
         { [README]: readme.replace('overlapping in 5% of chunks', 'overlapping in 5％ of chunks') },

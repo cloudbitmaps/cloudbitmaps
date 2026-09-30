@@ -50,7 +50,7 @@ const EXTS = [
  * line cannot see any of it: whether a retired claim is caught then depends on how long the preceding words
  * happen to be, which is not a property anyone controls.
  *
- * `vocabulary-damage.test.ts` learned this first. Carried here, and to `unreleased-install-caveat`. Here it crosses
+ * `vocabulary-damage.test.ts` learned this first, and it is carried here. Here it crosses
  * one line end at most: a sentence does not run on past a blank line, and a gap that did would join two copies of
  * a claim in two paragraphs into one hit.
  */
@@ -1170,7 +1170,7 @@ describe('no document claims behaviour this library has retired', () => {
       '',
       '- the source **pins** it forever', // line 5: bold, and unreleased
       '',
-      '## [0.1.0]',
+      '## [0.10.0]',
       '',
       '- pins forever', // released: history
     ].join('\n');
@@ -1310,7 +1310,7 @@ describe('no document claims behaviour this library has retired', () => {
 
   it("reads a package's changelog as the root one: its released history is not scanned", () => {
     const changelog =
-      '# c\n\n## [Unreleased]\n\n- pins it forever\n\n## [0.1.0]\n\n- pins it forever';
+      '# c\n\n## [Unreleased]\n\n- pins it forever\n\n## [0.10.0]\n\n- pins it forever';
     expect(hitsIn(join('packages', 'core', 'CHANGELOG.md'), changelog)).toHaveLength(1);
   });
 

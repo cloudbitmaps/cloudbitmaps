@@ -219,8 +219,8 @@ describe('a backend is all the wiring a store needs', () => {
   });
 
   // The failure this prevents is not "it does not work" — it is that it fails wearing someone else's
-  // symptoms. A 0.9 store keeps its generations in `<root>/cold`; point `LocalFsStorage` at that root and the
-  // registry half resolves a pointer the storage half cannot satisfy, which reports
+  // symptoms. A root that keeps its generations in `<root>/cold`, pointed at by `LocalFsStorage`, gives the
+  // registry half a pointer the storage half cannot satisfy, which reports
   // `missing-storage-generation` — the torn-restore signature, whose runbook remedy is to roll `currentGen`
   // back. Destructive, on a store that was never damaged.
   it('refuses a root written before the tier was renamed, naming the directory to rename', async () => {
@@ -260,8 +260,8 @@ describe('a backend is all the wiring a store needs', () => {
     const readOnly = new CloudRoaring({ storage: backend.storage });
     expect(await readOnly.segment('s').count()).toBe(1);
     // …and the verbs that must publish through a pointer say so, rather than half-working.
-    // The message must name what to DO, not an option that no longer exists — an earlier version said
-    // "needs a `registry` in the store config", sending the reader to add a key TypeScript rejects.
+    // The message must name what to DO — build the store on a backend — rather than send the reader to add a
+    // `registry` key, which TypeScript rejects.
     await expect(readOnly.dropSegment({ segment: 's' }, { confirmSegment: 's' })).rejects.toThrow(
       /needs a storage backend/,
     );

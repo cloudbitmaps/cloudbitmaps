@@ -28,7 +28,7 @@ export interface Clock {
    * yields to nothing at all, and a co-resident server stays blocked for the loop's full duration. A real yield
    * needs a macrotask. `sleep(1)` is one, but it buys the relief at ~1 ms of dead wall-clock per yield.
    *
-   * **Optional**, so every `Clock` written before this member still satisfies the interface. Callers must
+   * **Optional**, so a minimal `Clock` — `now` and `sleep` alone — still satisfies the interface. Callers must
    * therefore degrade rather than assume: `clock.yieldNow?.() ?? clock.sleep(1)` — correct on any clock, cheap
    * on one that implements this. `core/` cannot supply it itself (it is timer-free, lint-enforced); production
    * wiring backs it with `setImmediate`, and a test can make it a no-op so virtual time is not perturbed

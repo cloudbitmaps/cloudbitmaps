@@ -31,10 +31,10 @@ jobs:
       matrix:
         node: [22, 24]
     steps:
-      # Tags, not just the commit. `tests/docs/previous-release-claims.test.ts` checks the migration guide's
-      # account of the PREVIOUS release against that release, which means reading `v0.9.0` out of git — the
-      # one fact about this repo that is not in the working tree. On the default shallow checkout it cannot,
-      # and it is written to fail loudly rather than pass vacuously, so the tag has to be here.
+      # The whole history, not just the commit. `tests/docs/calibration-reports.test.ts` proves each committed
+      # calibration evidence file was written once and never edited, which means reading the file's history out
+      # of git. On the default shallow checkout it cannot, and it is written to fail loudly rather than pass
+      # vacuously, so the history has to be here.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0

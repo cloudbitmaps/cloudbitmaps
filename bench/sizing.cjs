@@ -1473,7 +1473,6 @@ const GENERATED_PROSE = {
     section: 'Why CloudBitmaps',
     elsewhere: [
       'overlapping in 5% of chunks',
-      'LIST bills at 12.5× a GET',
       '65,536-id chunk (6.25% of it)',
       'about twice the load figure',
     ],

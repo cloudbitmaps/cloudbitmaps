@@ -6,12 +6,12 @@ import { InProcessKeystore } from '@/drivers/crypto';
 import { randomBytes } from 'node:crypto';
 
 // The documented user journey, walked end to end on a REAL filesystem, twice: once with ordinary names and
-// once with names that only became legal when the grammar was removed.
+// once with names that need encoding.
 //
 // Unit tests pin each verb; this pins that the verbs still compose. Nothing here is a new claim — every step
 // is something the guide tells a user to do — so a failure means a FLOW broke, not that a rule changed. The
-// exotic pass matters because the naming change rewrote every key and path builder at once: a driver that
-// encodes on write but not on read-back passes its own tests and fails here, at the seam.
+// exotic pass matters because every key and path builder encodes names: a driver that encodes on write but
+// not on read-back passes its own tests and fails here, at the seam.
 
 let root: string;
 beforeEach(async () => {
@@ -36,7 +36,7 @@ const collect = async (it: AsyncIterable<number>): Promise<number[]> => {
 
 const NAME_SETS = [
   { label: 'ordinary', ns: 'tenant', a: 'users', b: 'churned' },
-  { label: 'newly legal', ns: 'tenant:acme/eu', a: 'users@2026', b: 'churned 100%' },
+  { label: 'encoded', ns: 'tenant:acme/eu', a: 'users@2026', b: 'churned 100%' },
 ] as const;
 
 describe.each(NAME_SETS)('the documented journey — $label names', ({ ns, a, b }) => {

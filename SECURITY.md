@@ -81,13 +81,10 @@ through a package a consumer installs.
 
 **Currently empty.** No advisory is being ignored — every one the gate sees is either fixed or absent.
 
-Three `tar` advisories (`GHSA-23hp-3jrh-7fpw` critical, `GHSA-8x88-c5mf-7j5w` high, `GHSA-w8wr-v893-vjvp`
-moderate) were previously accepted here on reachability grounds: `tar` is pulled in only by `roaring`'s
-**install-time** native-build chain (`@mapbox/node-pre-gyp` → `node-gyp`), which uses it to extract `roaring`'s
-own trusted prebuilt binary, and is never on CloudBitmaps' runtime path. That entry carried an explicit revisit
-condition — *"`tar` ships a fixed release"* — which upstream met, so the ignores were removed and `tar` upgraded
-to a patched release (2026-07-25) rather than left accepted. Reachability is a reason to **not panic**, never a
-reason to stay unpatched when a patch exists.
+`tar` shows the policy at work. It is pulled in only by `roaring`'s **install-time** native-build chain
+(`@mapbox/node-pre-gyp` → `node-gyp`), which uses it to extract `roaring`'s own trusted prebuilt binary, and it is
+never on CloudBitmaps' runtime path, yet it is kept on a patched release: reachability is a reason to **not
+panic**, never a reason to stay unpatched when a patch exists.
 
 **The bar for adding an entry here:** a rationale that names the exact path the advisory would have to travel to
 matter, plus a concrete condition under which the entry gets removed. An accepted advisory with no revisit
@@ -100,17 +97,17 @@ CloudBitmaps is published through a hardened pipeline so that a consumer can ver
 produced the package they installed**. The controls:
 
 - **Build provenance (SLSA).** The [release workflow](.github/workflows/release.yml) publishes with
-  `--provenance` and `NPM_CONFIG_PROVENANCE=true`, set at the call site rather than in the manifests. (It was
-  briefly also `publishConfig.provenance: true`, which is strictly worse: a manifest flag cannot be overridden
-  by the CLI *or* the environment, so it silently made every non-CI publish — the bootstrap and the break-glass
-  path both — abort with `EUSAGE: … not supported for provider: null`. Opting in where provenance is actually
-  achievable keeps the guarantee and drops the trap.) npm records a **signed,
+  `--provenance` and `NPM_CONFIG_PROVENANCE=true`, set at the call site rather than in the manifests. (A
+  manifest's `publishConfig.provenance: true` would be strictly worse: it cannot be overridden by the CLI *or*
+  the environment, so every non-CI publish — the bootstrap and the break-glass path both — would abort with
+  `EUSAGE: … not supported for provider: null`. Opting in where provenance is actually achievable keeps the
+  guarantee without the trap.) npm records a **signed,
   publicly-verifiable attestation** linking the tarball to the exact GitHub Actions workflow, repository, and
   commit that built it, minted via GitHub **OIDC** (the job runs on a GitHub-hosted runner with
   `id-token: write` and no other write scope). Verify an installed copy with **`npm audit signatures`**, or
   read the "Provenance" panel on the package's npm page. A tarball whose provenance doesn't trace to this repo's
   release workflow should be treated as untrusted. A *publicly-verifiable* attestation requires the source repository to
-  be public and the package published under a real version — both true from `0.1.0` onward, so every tarball
+  be public and the package published under a real version — both true of every release, so every tarball
   **published by the release workflow** carries an attestation you can check yourself.
   **One deliberate exception, and it is visible on the registry.** Creating a package name needs a first
   publish, and npm's Trusted Publisher cannot be bound to a name that does not yet exist — so a new name is

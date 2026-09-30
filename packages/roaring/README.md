@@ -79,8 +79,7 @@ $81.60. Writing and publishing a segment is **$11.20 per million**, pointer incl
 lists and collects, is expected at about twice that — against an always-on Redis-HA line of **$346/month,
 standing**, and a modelled **$0.03/month** for 1.2 GiB of segments at rest.
 Request counts are read off the AWS SDK layer rather than estimated from sizes. `count()` on a published
-segment does **0 payload reads**; an older run, which kept the pointer in a NoSQL registry that no longer
-ships, measured it at **$0.14 per million** without the pointer.
+segment does **0 payload reads**.
 
 The trade is stated plainly rather than buried: a membership check that misses the cache costs a ranged GET
 against object storage, where an in-process RAM store costs a memory read. If you need a sub-millisecond p99 on a
@@ -171,14 +170,14 @@ enough for daily buckets. Full walkthrough:
 
 ## No background process, and nothing to seed
 
-There is no daemon, no compaction pass and no lifecycle worker to run: a segment exists once you have loaded a
-generation into it, and the only scheduled work is the retention sweep above (plus `gcOrphanGenerations` if you
-want superseded generations collected sooner than the sweep does it). Pass a **backend** — `S3Storage`,
-`GcsStorage` or `AzureBlobStorage` from the storage package you installed, or `LocalFsStorage` /
-`MemoryStorage` from this one — and you get all of it: generations resolved with one strong read, encrypted
-segments, and the lifecycle helpers. `storage` also accepts a bare driver or a pre-built chunk source for
-read-only wiring, which carries no registry and so offers none of those. There is no separate `registry`
-option any more; passing one is refused by name.
+There is no daemon and no lifecycle worker to run: a segment exists once you have loaded a generation into it,
+and the only scheduled work is the retention sweep above (plus `gcOrphanGenerations` if you want superseded
+generations collected sooner than the sweep does it). Pass a **backend** — `S3Storage`, `GcsStorage` or
+`AzureBlobStorage` from the storage package you installed, or `LocalFsStorage` / `MemoryStorage` from this one —
+and you get all of it: generations resolved with one strong read, encrypted segments, and the lifecycle helpers.
+`storage` also accepts a bare driver or a pre-built chunk source for read-only wiring, which carries no registry
+and so offers none of those. There is no separate `registry` option: the backend carries the registry, and a
+`registry` key is refused by name.
 
 Full README, guides, [benchmarks](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/benchmarks.md) (with
 the method and what the numbers do *not* establish), and the design corpus live in the

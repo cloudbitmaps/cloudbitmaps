@@ -74,8 +74,8 @@ pointer — configured from one bucket and one prefix, which is what makes them 
 | `AzureBlobStorage` | `@cloudbitmaps/azure-blob` | `new AzureBlobStorage({ containerClient })` or `({ connectionString, container })` |
 
 **A backend comes from one of these five classes, or from `createBackend`.** A plain `{ storage, registry }` object is
-refused — it is also the shape of the free functions' deps, so before this it was possible to build a store
-from halves belonging to two *unrelated* stores, which constructed happily and then read as **empty** because
+refused — it is also the shape of the free functions' deps, so accepting it would let a store be built from
+halves belonging to two *unrelated* stores, which would construct happily and then read as **empty** because
 the pointer it consulted lived where nothing had been written.
 
 | function | what it is for |
@@ -276,16 +276,11 @@ wrote) · `BulkLoadResult` (`{ size, sha256, chunkCount, cardinality, becameCurr
 | `budget?` | `BudgetOption` | `{ maxRequests }` or `false` |
 | `seams?` | `SeamOptions` | `clock?` · `rng?` — determinism, for tests and replayable jobs |
 
-**Every 0.9.0 spelling that no longer exists is refused, not ignored**, and the error says which of the
-three things happened to it. Ten **moved into a group** — `cacheMaxChunks`, `cacheTtlMs`, `coldGenTtlMs`,
-`coldReaderCacheMax`, `coldReaderCacheMaxBytes`, `keystore`, `requireEncryption`, `onRetry`, `clock` and `rng`
-(the error names the group each one landed in). Two were **renamed** — `cold` is now `storage`, and `registry`
-is now carried by the backend you pass as `storage`. Five are **gone with the live tier** — `warm`,
-`warmReadConsistency`, `maxWarmScanBytes`, `writeConcurrency` and `occBackoff`; there is no new home for these,
-which is why the error says so outright instead of pointing somewhere plausible. Every one of them is a knob
-whose absence is silent — a dropped `requireEncryption` reads cleartext, a dropped `clock` makes a
-deterministic job non-deterministic — so being ignored would be worse than being rejected. The full
-before/after table is in [`MIGRATING.md`](../../MIGRATING.md).
+**An option spelling the store does not take, and a caller may still pass, is refused rather than ignored**, and
+the error says what to write instead: that it is set in a group (`keystore` is `encryption.keystore`), spelled
+differently (`cold` is `storage`), or not an option at all. Each is a knob whose absence would be silent — a dropped
+`requireEncryption` reads cleartext, a dropped `clock` makes a deterministic job non-deterministic — so being
+ignored would be worse than being rejected.
 
 ### Generation bookkeeping & erasure
 

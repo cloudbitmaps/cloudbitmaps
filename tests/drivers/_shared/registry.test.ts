@@ -150,7 +150,7 @@ describe('registry envelope schema version (format freeze)', () => {
 
   it('rejects null/primitive JSON with a typed IntegrityError, not a TypeError (invariant 5)', () => {
     // `JSON.parse` yields null/primitives for these — the parser must guard before dereferencing, so a
-    // hostile Warm/registry store gets a typed rejection rather than an uncaught TypeError.
+    // hostile registry store gets a typed rejection rather than an uncaught TypeError.
     for (const hostile of ['null', '5', '"x"', 'true', '[]']) {
       expect(() => parseRegistryEnvelope(hostile, 'hostile')).toThrow(IntegrityError);
     }

@@ -55,41 +55,9 @@ const fail = (m) => problems.push(m);
 const results = JSON.parse(fs.readFileSync(RESULTS, 'utf8'));
 const doc = fs.readFileSync(DOC, 'utf8');
 
-/** The part of `text` under the first heading `heading` matches, down to the next heading at its level or above. */
-function sectionOf(text, heading) {
-  const lines = text.split('\n');
-  const at = lines.findIndex((l) => heading.test(l));
-  if (at === -1) return null;
-  const level = /^#+/.exec(lines[at])[0].length;
-  const end = lines.findIndex(
-    (l, i) => i > at && /^#+ /.test(l) && /^#+/.exec(l)[0].length <= level,
-  );
-  return lines.slice(at, end === -1 ? undefined : end).join('\n');
-}
-
-// The July receipt is parsed out of ITS OWN section. The page now reports two runs, and the parsers below took the
-// first match in the whole document — so the newer run's section, written above it, would have been read as the
-// July receipt the moment it used the same phrasing.
-const july = sectionOf(doc, /^#{2,4} The July 2026 run/) ?? '';
-if (july === '') fail('docs/benchmarks.md no longer has its "The July 2026 run" section');
-
-// ── the three unit-economics anchors, parsed out of the docs table ────────────────────────────────────────
-function docAnchor(label) {
-  const re = new RegExp(
-    `\\|[^|\\n]*${label}[^|\\n]*\\|\\s*\\*\\*\\$([\\d.]+) per million\\*\\*`,
-    'i',
-  );
-  const m = re.exec(july);
-  if (!m) {
-    fail(`docs/benchmarks.md no longer states a "per million" cost for ${label}`);
-    return null;
-  }
-  return Number(m[1]);
-}
-// There is no per-id write line any more, and there must not be one: data enters a segment only as a whole
-// generation, so the two operations a reader can be billed for are a read and a publish.
-const countCost = docAnchor('count\\(\\)');
-const publishCost = docAnchor('Segment publish');
+// ── no per-id write is priced ─────────────────────────────────────────────────────────────────────────────
+// There is no per-id write, and no page may price one: data enters a segment only as a whole generation, so the
+// two operations a reader can be billed for are a read and a publish.
 if (/\|[^|\n]*[Ii]ncremental[^|\n]*\|\s*\*\*\$[\d.]+ per million/.test(doc)) {
   fail(
     'docs/benchmarks.md prices an "incremental write" per million — there is no per-id write path; a set ' +
@@ -98,10 +66,8 @@ if (/\|[^|\n]*[Ii]ncremental[^|\n]*\|\s*\*\*\$[\d.]+ per million/.test(doc)) {
 }
 
 // ── latency: deliberately unpublished, and that has to be enforced rather than trusted ────────────────────
-// The p50/p99 figures this gate used to parse came from a run that metered a delta tier the library no longer
-// has, so they are gone from the page. What replaces them is not a looser check but an INVERSE one: the page
-// must not publish a millisecond latency for a read verb until an in-region run measures one. Without this,
-// re-quoting the old numbers is a docs edit that CI would wave through.
+// The page must not publish a millisecond latency for a read verb until an in-region run measures one. Without
+// this, quoting one is a docs edit that CI would wave through.
 const strayLatency = /\|\s*(?:\*\*)?p(?:50|95|99)(?:\*\*)?\s*\|/.exec(doc);
 if (strayLatency) {
   fail(
@@ -140,49 +106,6 @@ if (/prediction lands within ±\d+%/.test(doc)) {
   fail(
     'docs/benchmarks.md states the estimator accuracy as a ±N% band, but the claim is a floor (never cheaper than ' +
       'measured), and a band would publish a weaker claim than the test makes',
-  );
-}
-
-// ── the real-cloud calibration receipt ────────────────────────────────────────────────────────────────────
-// The July run's receipt: list prices over the requests that run metered, rather than what the model predicts —
-// which makes it, with the single-bucket run below, one of the only figures a reader has no way to sanity-check. Every line item, the total, the request count,
-// the date and the run id come out of the docs table. Transcribing a receipt by hand is exactly how a page ends
-// up quoting a number no run produced.
-const calDate = /MEASURED\*\* against real S3[^*]*on \*\*(\d{4}-\d{2}-\d{2})\*\*/.exec(july);
-const calRun = /run id `([\w-]+)`/.exec(july);
-if (!calDate || !calRun)
-  fail('docs/benchmarks.md no longer dates/identifies the AWS calibration run');
-
-// Line items: `| S3 GET | 23 | $0.40/M | $0.000009 |` and the bolded Total row. The `Dynamo` term is still
-// matched below so a re-added NoSQL line item is caught, not quietly published — the driver is gone, but the
-// half-run those figures came from is still the source this page transcribes.
-const calRows = [
-  ...july.matchAll(
-    /^\|\s*(?:\*\*)?([\w /]+?)(?:\*\*)?\s*\|\s*(?:\*\*)?([\d,]+(?: \w+)?)(?:\*\*)?\s*\|[^|\n]*\|\s*(?:\*\*)?(\$[\d.]+)(?:\*\*)?\s*\|$/gm,
-  ),
-]
-  .map((m) => ({ term: m[1].trim(), qty: m[2].trim(), cost: m[3] }))
-  .filter((r) => /Dynamo|S3|Total/i.test(r.term));
-// Two line items, both S3 — the object-store half of the run. The other half metered a delta tier the library
-// no longer has, and its rows are not restated: they would put a price on a code path you cannot take.
-if (calRows.length !== 2) {
-  fail(
-    `docs/benchmarks.md's calibration table parsed to ${calRows.length} rows, expected 2 ` +
-      '(the two S3 line items) — did its shape change?',
-  );
-}
-// And no total, checked rather than assumed. A "total" over two terms of four is a number no run produced, so
-// the page says so in prose; this makes re-adding one a build failure instead of a plausible-looking edit.
-if (calRows.some((r) => /Total/i.test(r.term))) {
-  fail(
-    "docs/benchmarks.md's calibration table publishes a Total — the run's other half is withheld, so a total " +
-      'over the remaining rows would be a figure no run produced',
-  );
-}
-if (calRows.some((r) => /Dynamo/i.test(r.term))) {
-  fail(
-    "docs/benchmarks.md's calibration table restates a DynamoDB line item — those terms metered the removed " +
-      'delta tier; publishing them prices a path the library no longer has',
   );
 }
 
@@ -352,16 +275,6 @@ const atRestShown = atRestExact.toFixed(2); // "0.03"
 if (Number(atRestShown) === 0) fail(`atRest.monthlyUSD (${atRestExact}) rounds to $0.00 at 2dp`);
 
 const anchors = [
-  // The July run's two unit figures, both without the pointer. The publish one is kept as that run's record; the
-  // single-bucket run below measured the pointer too, and its load figure is the one the cost tables now quote.
-  ['July · 1M count() calls', countCost === null ? null : `$${countCost.toFixed(2)}`],
-  // Superseded, so it may appear only where the page says so: the July receipt, on the benchmarks page and in the
-  // doc it is parsed from. Anywhere else it would be quoted as the cost of a publish, which it no longer is.
-  [
-    'July · 1M segment publishes',
-    publishCost === null ? null : `$${publishCost.toFixed(2)}`,
-    { onlyOn: ['site/benchmarks.html', 'docs/benchmarks.md'] },
-  ],
   ['at rest, monthly', `$${atRestShown}`],
   ['at rest, size', `${results.atRest.sizeGiB} GiB`],
   ['at rest, % of Redis', `${results.atRest.pctOfRedis}%`],
@@ -379,19 +292,6 @@ const anchors = [
   ['baseline topology', baselineTopology],
   ['baseline instance class', baselineInstance],
   ['baseline single-node', baseline ? `$${baseline[3]}` : null],
-  ['calibration date', calDate ? calDate[1] : null],
-  ['calibration run id', calRun ? calRun[1] : null],
-  // Every calibration line item and the total, so the receipt cannot be quietly retyped.
-  //
-  // Quantities are only anchored when they are DISCRIMINATING — `2,020 WRU`, `6,355 requests`. The S3 rows'
-  // quantities are the bare strings "22" and "23", which `includes()` would find in almost any page (a year, a
-  // percentage, a pixel value), so anchoring them would add two checks that cannot fail. A gate that always
-  // passes is worse than no gate, because it reports coverage it does not have. The cost column carries those
-  // two rows instead, and every cost is distinctive to six decimal places.
-  ...calRows.flatMap((r) => [
-    ...(/[ ,]/.test(r.qty) ? [[`calibration · ${r.term} qty`, r.qty]] : []),
-    [`calibration · ${r.term} cost`, r.cost],
-  ]),
   // The single-bucket run. Every one is distinctive where it appears, which is what makes it worth anchoring.
   ['single-bucket run id', singleBucketFigure('run id')],
   ['single-bucket · chunks fetched', singleBucketFigure('chunks fetched')],
@@ -467,8 +367,7 @@ const PAGES = [
     mustState: [MEASURED_1M, EXPECTED_1M, WRITE_1M],
   },
   { rel: 'docs/ROADMAP.md', requireAll: false, mustState: [MEASURED_1M, EXPECTED_1M, WRITE_1M] },
-  // The source the July receipt is parsed from is a page too: a wrong figure beside the parsed ones would
-  // otherwise be the one thing in it nothing reads.
+  // The benchmarks doc states money too, and a wrong figure in it would otherwise be the one thing nothing reads.
   { rel: 'docs/benchmarks.md', requireAll: false },
 ];
 
@@ -560,12 +459,6 @@ function quotesTheRun(block) {
   });
 }
 
-// Figures that are only honest beside what they leave out. Both July unit figures were billed without the pointer
-// — its round trip went to a NoSQL table that no longer ships — so wherever one is stated, the pointer has to be
-// named within a sentence or two of it.
-const NEEDS_THE_POINTER = ['$0.14', '$5.88'];
-const NEAR = 280;
-
 for (const page of PAGES) {
   const PAGE_PATH = path.join(ROOT, page.rel);
   let html;
@@ -654,13 +547,7 @@ for (const page of PAGES) {
   }
 
   // 2 · and nothing else that looks like money may appear
-  const allowed = new Set(
-    anchors
-      .filter(
-        ([, v, scope]) => v && (scope?.onlyOn === undefined || scope.onlyOn.includes(page.rel)),
-      )
-      .map(([, v]) => v),
-  );
+  const allowed = new Set(anchors.filter(([, v]) => v).map(([, v]) => v));
   // The page legitimately restates figures owned by other gates; each is listed so that adding one is a
   // deliberate act rather than a silent widening.
   const alsoAllowed = new Set([
@@ -695,12 +582,7 @@ for (const page of PAGES) {
     // values: the run's anchors, merged in plainly, once let "store.load() costs $11.20 per million" pass on every
     // page here, because a plain value passes whatever words stand beside it.
     const otherSources = anchors
-      .filter(
-        ([name, v, scope]) =>
-          v &&
-          !name.startsWith('single-bucket') &&
-          (scope?.onlyOn === undefined || scope.onlyOn.includes(page.rel)),
-      )
+      .filter(([name, v]) => v && !name.startsWith('single-bucket'))
       .map(([, v]) => v);
     const values = calibration.mergeValues(
       singleBucket.pageValues,
@@ -716,22 +598,6 @@ for (const page of PAGES) {
             `"${calibration.normalize(block).slice(0, 140)}…"`,
         );
       }
-    }
-  }
-
-  // 3 · the July figures, only beside the pointer they leave out
-  const flat = visible.replace(/\s+/g, ' ');
-  for (const figure of NEEDS_THE_POINTER) {
-    let at = flat.indexOf(figure);
-    while (at !== -1) {
-      const around = flat.slice(Math.max(0, at - NEAR), at + figure.length + NEAR);
-      if (!/pointer/i.test(around)) {
-        fail(
-          `${page.rel} states ${figure} with no mention of the pointer near it — that figure left the pointer ` +
-            'out, and read on its own it is the cost of a topology that no longer ships',
-        );
-      }
-      at = flat.indexOf(figure, at + figure.length);
     }
   }
 }
@@ -807,16 +673,15 @@ if (singleBucket !== null) {
 // six stale statements while this gate stayed green, and the claim of exclusivity is what stopped anyone
 // looking. A number is only anchored where the gate actually reads it.
 //
-// The tier count is deliberately NOT anchored. Cache RAM over object storage is the architecture — it cannot
-// drift without a rewrite that touches every page and every doc (which is exactly what removing the middle tier
-// took), so a check for it is one that CANNOT FAIL, the same reason the bare "22"/"23" calibration quantities
-// above are left out. The two figures that CAN drift silently while CI stays green are derived below.
+// The tier count is deliberately NOT anchored. Cache RAM over object storage is the architecture — it cannot drift
+// without a rewrite that touches every page and every doc, so a check for it is one that CANNOT FAIL, the same
+// reason the bare "22"/"23" calibration quantities above are left out. The two figures that CAN drift silently
+// while CI stays green are derived below.
 const specAnchors = [];
 {
-  // A backend counts once, whether it stores the chunks or the pointer — which is now the same answer for all
-  // three clouds, since each hosts both. Registry drivers used to be excluded as "a separate axis from the
-  // tiering the page is describing", but with one storage tier left the axis the page describes IS this one:
-  // which services the library can talk to, and that is what the install line advertises.
+  // A backend counts once, whether it stores the chunks or the pointer — the same answer for all three clouds,
+  // since each hosts both. The axis the page describes is which services the library can talk to, and that is
+  // what the install line advertises.
   // `Memory` is the in-process dev/test pair and `Retrying` is a decorator wrapping another driver — neither is
   // a backend a reader could point at.
   const NOT_A_BACKEND = new Set(['memory', 'retrying']);
@@ -854,12 +719,11 @@ const specAnchors = [];
   // Third-party (non-workspace) runtime dependencies, PER PACKAGE. `@cloudbitmaps/*` is ours and is declared
   // `workspace:^`, which is what makes the wording "third-party" true where a bare "runtime dependency" is not.
   //
-  // This used to read `packages/roaring/package.json` alone and compare it against a site-wide badge saying
-  // "1 third-party dependency". That was green and wrong: it answered "how many does the codec have?" while
-  // the badge made a claim about the project, sitting directly under an install line for TWO packages. The
-  // split gave three storage packages a real cloud SDK each, so a reader following that line gets two
-  // third-party deps, not one — and one page stated the badge and "each with its own SDK" in a single
-  // sentence. A derivation narrower than the claim it checks cannot fail when the claim goes wrong.
+  // Reading `packages/roaring/package.json` alone against a site-wide badge saying "1 third-party dependency"
+  // would be green and wrong: it answers "how many does the codec have?" while the badge makes a claim about
+  // the project, sitting directly under an install line for TWO packages. Each storage package carries a real
+  // cloud SDK, so a reader following that line gets two third-party deps, not one. A derivation narrower than
+  // the claim it checks cannot fail when the claim goes wrong.
   // EVERY dependency field, not just `dependencies`. An adversarial review moved an AWS SDK into core's
   // `optionalDependencies` and this gate still certified "zero-dependency core" — and the repo has a
   // deliberate rule that nothing is an optional peer, which makes that the most plausible accidental
@@ -899,11 +763,9 @@ const specAnchors = [];
 
   const homeHtml = fs.readFileSync(path.join(ROOT, 'site', 'index.html'), 'utf8');
 
-  // ── no warm-scan ceiling to publish, and the site must not claim one ───────────────────────────────────
-  // This block used to derive `DEFAULT_MAX_WARM_SCAN_BYTES` and gate the MiB figure /architecture and /usage
-  // quoted for it. Both the constant and the tier it bounded are gone: an intersection's memory is now one
-  // term, the chunk-aligned window, with no per-operand delta snapshot outside it. The check is inverted
-  // rather than deleted — a page that still quotes a warm ceiling is quoting a bound nothing enforces.
+  // ── no scan ceiling on an intersection to publish, and the site must not claim one ─────────────────────
+  // An intersection's memory is one term, the chunk-aligned window, with no per-operand snapshot outside it.
+  // The store has no `maxWarmScanBytes` option, so a page naming one quotes a bound nothing enforces.
   for (const rel of [
     'site/architecture.html',
     'site/usage.html',
@@ -912,14 +774,14 @@ const specAnchors = [];
   ]) {
     const html = fs.readFileSync(path.join(ROOT, rel), 'utf8');
     if (/maxWarmScanBytes/.test(html)) {
-      fail(`${rel} names \`maxWarmScanBytes\` — that option no longer exists`);
+      fail(`${rel} names \`maxWarmScanBytes\` — the store has no such option`);
     }
   }
 
   // ── the encoding benchmark's factors, wherever /flavors/roaring quotes them ─────────────────────────────
-  // That page's table argued adaptivity and offered nothing to check it against — and its "array, bitset and run"
-  // row was not even true of the shipped codec until 0.6.0, because roaring's run form takes an explicit pass
-  // nothing was making. The factors are published now, so they get a source like every other figure here.
+  // That page's table argues adaptivity, and its "array, bitset and run" row is true only because the codec makes
+  // roaring's run form, which takes an explicit pass. The factors are published, so they get a source like every
+  // other figure here.
   //
   // ONE rounding rule, computed here rather than transcribed: >=10x rounds to an integer, below that to 2dp.
   // An ad-hoc mix (543 truncated, 63 rounded up, 1.88 to 2dp) is how a gate ends up encoding a typo as a spec.
@@ -1139,8 +1001,8 @@ const specAnchors = [];
   // switch off is not a requirement, so the list is pinned instead. Adding a page means adding it here,
   // which is a deliberate line in a diff someone reads.
   //
-  // /benchmarks is deliberately absent: its meta line is `Apache-2.0 · v0.9.0 · pre-1.0 · single maintainer`
-  // and has never made a supply-chain claim.
+  // /benchmarks is deliberately absent: its meta line gives the licence, the version, pre-1.0 and a single
+  // maintainer, and makes no supply-chain claim.
   const MUST_CARRY_THE_BADGE = [
     'index.html',
     'architecture.html',
@@ -1162,7 +1024,7 @@ const specAnchors = [];
     if (!/zero-dependency core/i.test(fs.readFileSync(file, 'utf8'))) {
       fail(
         `site/${rel} no longer states \`zero-dependency core\`. Every page carrying the fact strip scopes ` +
-          'its dependency claim: since the split the codec adds `roaring` and each storage package its own ' +
+          'its dependency claim: the codec adds `roaring` and each storage package its own ' +
           'SDK, so an unscoped or absent count is not a smaller claim, it is a wrong one.',
       );
     }

@@ -123,8 +123,7 @@ describe('due index — the drift directions that make it safe', () => {
     await load(SEG, [1, 2, 3]);
     await store.setRetention(SEG, { expiresAt });
 
-    // Delete the pointer, leaving the policy in place — the state of a segment whose policy was written before
-    // the index existed, or whose pointer write failed.
+    // Delete the pointer, leaving the policy in place — the state of a segment whose pointer write failed.
     await registry.delete(dueIndexRef(dueBucket(expiresAt), SEG));
     expect(await pointersIn(registry, dueBucket(expiresAt))).toEqual([]);
 

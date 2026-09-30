@@ -392,7 +392,7 @@ export class CrbmReader {
 
 // Exported for the coverage-guided fuzz harness, which fuzzes the hand-written index parser
 // directly on raw bytes — bypassing the CRC wall that mutational fuzzing can't cross. NOT part of the public
-// API surface (`src/index.ts`); reached only via `src/testing/fuzz-support.ts` → the gitignored `fuzz/build/`.
+// API surface (`src/index.ts`); reached only via `src/testing/fuzz-core.ts` → the gitignored `fuzz/build/`.
 export function parseIndex(
   indexBytes: Uint8Array,
   objectSize: number,

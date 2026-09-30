@@ -22,10 +22,10 @@ import { KeyUnavailableError, ValidationError, BudgetExceededError } from '@/cor
 import type { SegmentRef } from '@/index';
 
 /**
- * The 14 flat options became one required `storage` plus four groups (`cache`, `encryption`, `retry`,
- * `seams`); `metrics` and `budget` stayed flat.
+ * The store takes one required `storage` plus four groups (`cache`, `encryption`, `retry`, `seams`);
+ * `metrics` and `budget` are flat.
  *
- * A regrouping is the kind of change that passes every existing test while quietly doing nothing: wire
+ * A grouped option is the kind of wiring that passes every other test while quietly doing nothing: wire
  * `cache.genTtlMs` to the wrong place and it reverts to the 2 s default, which is what most tests want anyway.
  * So each group is asserted by the **effect** it has, not by reading the field back.
  */
@@ -99,10 +99,8 @@ describe('grouped options reach the thing they configure', () => {
 
   // `reader-cache.test.ts` covers these bounds thoroughly — but it constructs `CrbmStorageChunkSource`
   // DIRECTLY, so it cannot see whether the facade passes the caller's value through. Both mutants survived
-  // the whole suite. That matters more than it looks: `MOVED_OPTIONS`' own comment names this exact failure
-  // as the reason the guard exists ("a dropped readerMaxBytes restores a 64 MiB ceiling someone had
-  // deliberately lowered for a small heap") — the guard protected the OLD spelling while nothing protected
-  // the new one.
+  // the whole suite. That matters more than it looks: a dropped `readerMaxBytes` restores a 64 MiB ceiling
+  // someone had deliberately lowered for a small heap, and nothing else would notice.
   //
   // The effect: one reader, two segments, read alternately. At a ceiling of 1 each read evicts the other's
   // reader and must re-open it with a fresh tail GET; at the default both stay open.
@@ -170,8 +168,8 @@ describe('grouped options reach the thing they configure', () => {
     expect(metrics.snapshot().storage.gets).toBeGreaterThan(0);
   });
 
-  // The flat form took a WHOLE RetryPolicy, so tuning one field meant restating all five — and `onRetry` was a
-  // sibling key, so it could not be given at all without one. Both are now expressible alone.
+  // A partial policy means tuning one field does not mean restating all five, and `onRetry` can be given with
+  // no policy field at all.
   it('`retry` takes a partial policy, and `onRetry` alone is legal', async () => {
     const backend = new MemoryStorage();
     await bulkLoadCrbmGeneration(backend.storage, { ...SEG, generation: 0 }, [1], {

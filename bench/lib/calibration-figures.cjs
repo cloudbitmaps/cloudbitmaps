@@ -1362,7 +1362,7 @@ function paragraphsNaming(doc, runId, aliases = []) {
 
 /**
  * What a markdown page says about a run: its section, and every other paragraph that names it, other runs'
- * sections aside — a paragraph about the July run that mentions the September one is still about July.
+ * sections aside — a paragraph about one run that mentions another is still about the first.
  */
 function claimsAbout(doc, runId, aliases = []) {
   const section = runSection(doc, runId);

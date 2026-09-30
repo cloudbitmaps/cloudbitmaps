@@ -16,8 +16,8 @@ import { collect } from './helpers/loaded';
 
 /**
  * End-to-end: the engine reading a real on-disk `.crbm` generation through `CrbmStorageChunkSource` →
- * `LocalFsStorageDriver`, with the registry pointer on disk too. Exercises the whole persistent stack and proves
- * the engine is unchanged — it just has a persistent storage tier and a persistent pointer now.
+ * `LocalFsStorageDriver`, with the registry pointer on disk too. Exercises the whole persistent stack: the same
+ * engine the in-memory tests drive, over a persistent storage tier and a persistent pointer.
  */
 let root: string;
 

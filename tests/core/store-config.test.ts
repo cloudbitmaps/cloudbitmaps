@@ -111,8 +111,8 @@ describe('CloudRoaring constructor — one config shape (storage: raw driver | s
   });
 
   describe('fail-fast wiring guards', () => {
-    // `registry` is no longer an option — a backend carries its own — so the pairing that used to be rejected
-    // is now unexpressible. What is left to reject is the pair that is still expressible and still inert.
+    // A backend carries its own registry, so the pairing to reject is the one that is expressible and inert:
+    // encryption settings beside a pre-built source, which never reads them.
     it('rejects keystore/requireEncryption paired with a pre-built StorageChunkSource', () => {
       const source = (): MemoryStorageChunkSource => new MemoryStorageChunkSource();
       const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
@@ -177,12 +177,12 @@ describe('CloudRoaring constructor — one config shape (storage: raw driver | s
       }
     });
 
-    // A driver that WRAPS another driver — for auditing, metrics, tenant scoping, client-side encryption —
-    // is the natural thing to build, and now that the tier is called storage the natural name for the field it
-    // wraps is `storage`. Before the brand that made it indistinguishable from a backend, so the store read
-    // straight THROUGH it to the halves and the wrapper's own methods never ran: the layer silently removed,
-    // every answer still correct-looking. The brand settles it — an unbranded object is not a backend, so a
-    // wrapper is unambiguously a driver and actually gets used.
+    // A driver that WRAPS another driver — for auditing, metrics, tenant scoping, client-side encryption — is the
+    // natural thing to build, and since the tier is called storage the natural name for the field it wraps is
+    // `storage`. Without the brand that would make it indistinguishable from a backend, so the store would read
+    // straight THROUGH it to the halves and the wrapper's own methods would never run: the layer silently removed,
+    // every answer still correct-looking. The brand settles it — an unbranded object is not a backend, so a wrapper
+    // is unambiguously a driver and actually gets used.
     it('uses a driver that wraps another, rather than reading through it', async () => {
       const inner = new MemoryStorageDriver();
       await bulkLoadCrbmGeneration(inner, { ...SEG, generation: 0 }, [1, 2, 3]);

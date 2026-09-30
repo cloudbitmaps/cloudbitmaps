@@ -114,53 +114,6 @@ The rest of this guide walks each step in turn.
 > (`eraseSubject`, `dropSegment`, `setRetention`, `retireExpired`, `checkConsistency`, `exportSegments`). Full
 > registry details are in [§5](#5-the-segment-registry-resolving-the-current-generation).
 
-## Upgrading from 0.9.x?
-
-**Eight things changed, and [`MIGRATING.md`](../../MIGRATING.md) walks all of them.** Read it rather than
-this summary if you are actually upgrading — two of the eight do not announce themselves.
-
-**Start there with change 1, the live (warm) tier**, which is gone. It affects every `0.9.x` deployment,
-because the option it removed was required, and it is the only one that can need a design decision rather
-than an edit. **And if your registry is DynamoDB, there is work to do on `0.9.x` before you upgrade at all**
-— `0.10.0` cannot read those rows.
-
-Two of the eight are packaging and are covered there in full — the cloud drivers became their own packages
-(`@cloudbitmaps/roaring/s3` → `@cloudbitmaps/s3`, and note Azure is **`@cloudbitmaps/azure-blob`**), and the
-packages are now ESM-only and need Node ≥ 22.12.
-
-Two more are the constructor changes below. Both **throw with a message naming the fix** rather than being
-ignored, so you will find them the first time you run, not the first time something reads wrong.
-
-The two that stay quiet are the ones to check by hand: the `*Into` verbs now **replace** their destination
-where they used to append to it, and the `cold` → `storage` rename reaches metric names, result fields and
-on-disk paths that nothing type-checks.
-
-1. **The three drivers became one backend.** `new CloudRoaring({ cold: coldDriver, warm: warmDriver, registry })`
-   — where `cold` and `warm` were both required — is now
-   `new CloudRoaring({ storage: new S3Storage({ bucket, prefix }) })`. One class states the location once, so
-   the mismatch that used to answer "empty" — generations at one prefix, the pointer at another — is no longer
-   expressible. Every driver is still exported; if you genuinely want the halves apart —
-   an instrumented driver, or a registry in a database you already run — say so with
-   `createBackend({ storage, registry })`. A plain object literal is refused. `createBackend` cannot verify
-   the two halves agree, so calling it is you taking that on — which is the difference between a decision and
-   the accident it replaces.
-2. **The flat tuning options became four groups** — `cache` · `encryption` · `retry` · `seams`. `metrics`
-   and `budget` are unchanged; both were already single flat options and still take the same value:
-
-   | before | after |
-   |---|---|
-   | `cacheMaxChunks` · `cacheTtlMs` · `coldGenTtlMs` · `coldReaderCacheMax` · `coldReaderCacheMaxBytes` | `cache.maxChunks` · `cache.ttlMs` · `cache.genTtlMs` · `cache.readerMax` · `cache.readerMaxBytes` |
-   | `keystore` · `requireEncryption` | `encryption.keystore` · `encryption.required` |
-   | `onRetry` | `retry.onRetry` |
-   | `clock` · `rng` | `seams.clock` · `seams.rng` |
-
-   `retry` also takes a **partial** policy now, so `retry: { maxAttempts: 6 }` keeps every other field's
-   default instead of requiring all five.
-
-The full upgrade, including the packaging half, is [`MIGRATING.md`](../../MIGRATING.md); the entries with
-their rationale are in
-[`CHANGELOG.md`](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/CHANGELOG.md).
-
 ## 1. The simplest thing: in-memory
 
 A `CloudRoaring` store is wired to one **backend** — the object that knows where the `.crbm` generations go and
@@ -546,7 +499,7 @@ Tune it, or turn it off, per store:
 const store = new CloudRoaring({
   storage, // a backend — S3Storage, GcsStorage, …
   // Tune the policy — it is a PARTIAL, so name only what you are changing. Everything else keeps its
-  // default, and `onRetry` now lives in the same group rather than as a sibling key.
+  // default, and `onRetry` goes in the same group.
   // …or `retry: false` to disable our wrappers entirely (e.g. your client already retries).
   retry: {
     maxAttempts: 6,
@@ -601,15 +554,15 @@ res; // { generation, published, reason?, cardinality, cardinalityBefore, chunkC
 ```
 
 > **An operand that names a segment which does not exist is refused.** `store.segment('global-opt-out')` and
-> `store.segment('global-opt-out', { namespace: 'suppression' })` are **different segments**, and before this was
-> checked the first one resolved to nothing and suppressed nobody — returning the full audience, with no error.
+> `store.segment('global-opt-out', { namespace: 'suppression' })` are **different segments**, and unchecked the
+> first one would resolve to nothing and suppress nobody — returning the full audience, with no error.
 > The dangerous direction is the quiet one: a mistyped *include* collapses an intersect to nothing and you
-> notice; a mistyped *exclude* removes a safeguard and you do not. Both are now a `ValidationError` naming the
+> notice; a mistyped *exclude* removes a safeguard and you do not. Both are a `ValidationError` naming the
 > segment. A segment that **exists and is empty** — a row minted by `setRetention` before its first load — is
 > still fine, because somebody created it deliberately; it is only a name nobody ever created that is refused.
 > Pass `allowAbsentOperands: true` if you mean to combine against a name that may not exist yet.
 
-Three properties, all consequences of "a write is a load":
+Four properties, all consequences of "a write is a load":
 
 - **The destination is superseded, not added to.** `campaign-targets` now holds exactly this result; whatever it
   held before is the previous generation. Re-running a window into the same target each day is therefore correct
@@ -920,9 +873,9 @@ dependency of its own:
 
 ```ts
 import { metrics as otel } from '@opentelemetry/api';
-const meter = otel.getMeter('cloud-roaring');
-const storageBytes = meter.createCounter('cloudroaring.storage.bytes');
-const cacheHits = meter.createCounter('cloudroaring.cache.hits');
+const meter = otel.getMeter('cloudbitmaps');
+const storageBytes = meter.createCounter('cloudbitmaps.storage.bytes');
+const cacheHits = meter.createCounter('cloudbitmaps.cache.hits');
 
 const store = new CloudRoaring({
   storage, // a backend — S3Storage, GcsStorage, …
@@ -1489,7 +1442,7 @@ re-scans the same registry 24 times. Match the cadence to the granularity of you
 want the deletion to feel. A fleet scan is a billed `LIST` over the registry prefix — the
 default `'fleet'` scan costs what the fleet *holds*; `scan: 'index'` reads only the due buckets of the **due
 index** and costs what is *expiring*. The index is a fast path, not the source of truth: each candidate's live
-row is re-read before anything is decided, and a policy written before the index existed has no pointer, so run
+row is re-read before anything is decided, and a policy whose pointer write failed has no pointer, so run
 the `'fleet'` scan periodically as the repair pass (`lookbackBuckets`, default 7, is how many past days a fast
 scan also reads so a sweep that did not run leaves nothing stranded).
 
@@ -1954,9 +1907,9 @@ on an M3 Pro:
 
 The **stall** column is the number that decides whether co-resident work survives, and it is not the same as
 cost. A load yields the event loop periodically, so its ~256 ms is spent in ~19 ms slices with the loop free
-in between — other requests interleave rather than queueing behind the whole load. Before that fix the two
-columns were the same number: a 1M-id load blocked the loop for **450 ms straight**, long enough for a health
-check to time out and the instance to be pulled from its load balancer.
+in between — other requests interleave rather than queueing behind the whole load. Without the yields the two
+columns would be the same number: a 1M-id load would hold the loop for **450 ms straight**, long enough for a
+health check to time out and the instance to be pulled from its load balancer.
 
 Yielding is on by default for `@cloudbitmaps/roaring` users; there is nothing to configure. It needs a `Clock`,
 which the flavor package pre-binds into `bulkLoadCrbmGeneration` and `eraseIdFromSegment`. If you call

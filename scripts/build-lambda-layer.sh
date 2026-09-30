@@ -37,7 +37,8 @@ pnpm build >/dev/null
 # into the layer's node_modules by hand, since the `@cloudbitmaps/core` version pinned in THIS tree is
 # generally not on the registry yet. The three driver packages are deliberately NOT in the layer: a layer exists
 # to hold the expensive native `roaring` addon, and which storage a function talks to is the function's own
-# choice — bundling all three would put every cloud SDK into every deployment, the exact cost the split removed.
+# choice — bundling all three would put every cloud SDK into every deployment, the exact cost separate driver
+# packages exist to avoid.
 PACKDIR="$ROOT/.pack-tmp"
 rm -rf "$PACKDIR" && mkdir -p "$PACKDIR"
 ( cd packages/core    && pnpm pack --pack-destination "$PACKDIR" >/dev/null )

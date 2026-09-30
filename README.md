@@ -205,30 +205,20 @@ data — the topology that ships: 12 loads and 40 cold intersects, all 40 exact.
 | Cold `intersect` of two 500,000-id segments sharing 100 of 1,999 chunks: 206 GETs at the median | **$82.40 / million** | measured requests at list prices | **$346 / month**, standing: one three-node cluster, a fixed reference |
 | The same inside the region, each pointer read once: 204 GETs | $81.60 / million | expected | whether you send traffic or not |
 | Loading a segment: the write and the publish, pointer included | **$11.20 / million** | measured requests at list prices | |
-| `count()` on a published segment (an older run; the pointer is **not** in this figure) | **$0.14 / million** | measured requests at list prices | |
 | 1.2 GiB of segments at rest, no traffic | **$0.03 / month** | modelled | |
 
 Each intersect requested 100 of the 1,999 chunks per segment — the ones the two share — and never requested the
 rest: chunk-skipping, on real S3. `store.load()`, which also lists the segment and collects old generations, is
-about twice the load figure. The `count()` figure comes from an older run, `2026-07-25-60291`, which kept the
-pointer in a NoSQL table the library no longer ships, so it is the object-store half of that shape. The
-[run's report](bench/calibration/2026-09-23-94416.md) explains every figure, and the
-[benchmarks page](docs/benchmarks.md) states exactly what each run did and did not measure.
+about twice the load figure. The [run's report](bench/calibration/2026-09-23-94416.md) explains every figure, and
+the [benchmarks page](docs/benchmarks.md) states exactly what the run did and did not measure.
 
 Request counts are read off the AWS SDK layer, command by command — not estimated from sizes, and not taken
-from the library's own metrics, which cannot see a PUT. The older run also measured the things a cost model can
-only assume: **zero retry billing** (HTTP
-attempts equalled commands), **zero LIST calls** on the read path (LIST bills at 12.5× a GET — a stray
-list-per-read is this design's classic cost blowup), and **23 S3 GETs serving 2,000 reads** as the bounded
-cache did its job.
-
-The older run also exercised an incremental-write path that **no longer exists** (see *Status* below), so its
-write-side line items and its grand total are not quoted here. The loaded store's in-region latency and load
-throughput are the next benchmark pass; the benchmarks page keeps the list of
+from the library's own metrics, which cannot see a PUT. The loaded store's in-region latency and load throughput
+are the next benchmark pass; the benchmarks page keeps the list of
 [what is still owed](docs/benchmarks.md#what-is-still-owed).
 
-**On latency, the honest version:** both runs were driven from outside the region — the newer one's client sat
-83 ms of internet from it, measured rather than inferred — so their timings are network transit. They calibrate
+**On latency, the honest version:** the run was driven from outside the region — its client sat 83 ms of
+internet from it, measured rather than inferred — so its timings are network transit. It calibrates
 **cost**, not in-region latency, and we don't publish an in-region latency figure until an in-region run happens.
 Full numbers, method, and an explicit list of what each run does *not* establish:
 **[benchmarks](docs/benchmarks.md#real-cloud-calibration--aws)**.
@@ -263,7 +253,7 @@ pnpm add @cloudbitmaps/s3        # the storage you actually have — or @cloudbi
 > which is why the floor is 22.12 and not 22 (22.11 throws `ERR_REQUIRE_ESM`). On 22.12 exactly you will also
 > see an `ExperimentalWarning` about loading ES modules from `require()`; it is gone by Node 24.
 >
-> Two things to know before you upgrade:
+> Two things to know if you load it from CommonJS:
 >
 > - **A loader that is not Node's own does not get `require(esm)`**, on any Node version. Two you are likely
 >   to meet:
@@ -294,8 +284,8 @@ no SDK for a service you do not use.
 | `@cloudbitmaps/azure-blob` | `AzureBlobStorage`, `AzureBlobStorageDriver`, `AzureBlobRegistryDriver` | `@azure/storage-blob`, core |
 | `export-segments` (CLI bin, in the flavor) | eject every segment to portable files (`roaring` \| `ndjson`) — your exit path | — |
 
-**Why by service rather than by cloud.** An `@cloudbitmaps/aws` would have to depend on both the S3 SDK and
-the DynamoDB SDK, and "azure" is ambiguous across Blob, Table, Files and Data Lake. `s3` rather than `aws-s3`
+**Why by service rather than by cloud.** Each package speaks one storage service through one SDK, and a
+cloud's name does not say which: "azure" is ambiguous across Blob, Table, Files and Data Lake. `s3` rather than `aws-s3`
 because S3 is a protocol as much as a product — the same package serves R2 and MinIO.
 
 > **Alpine / musl:** `roaring` — `@cloudbitmaps/roaring`'s one third-party dep — ships prebuilt binaries for common **glibc**
@@ -589,8 +579,7 @@ Built in phases, each shipped behind tests and an adversarial review:
 - **M2 — Topology-A (the showcase)** *(complete)*: the S3 storage driver, bulk load, and the chunk-skipping
   intersection engine — the first shippable, the centerpiece.
 - **M3 — durability & compliance** *(complete)*: the segment registry, forward-only publishing, and
-  **encryption-at-rest + crypto-shred**. (A live write tier shipped in this milestone too and has since been
-  removed — see *Where it is headed*.)
+  **encryption-at-rest + crypto-shred**.
 - **M4 — production-grade** *(complete)*: an observability metrics sink, an honest cost estimator, a
   **benchmark-as-test** harness that turns the cost/perf claims into build-breaking CI assertions, a
   **free `count()`** (0 payload reads on a published segment), an **audit sink** (`IAuditSink` — a truthful
@@ -607,9 +596,7 @@ against an emulator, so they are **withdrawn rather than counted**, and the load
 owed list in [`docs/benchmarks.md`](docs/benchmarks.md). The production-readiness re-assessment
 lands at **ready within a validated envelope** (read-mostly / large-fleet / single-tenant / single-region; the
 scale/tenancy deferrals are tracked openly). **Additional storage drivers**: **GCS + Azure
-Blob storage drivers shipped** (the object-store story is complete on AWS + GCP + Azure); the live write tier that
-shipped alongside them in `0.9.x` was removed ahead of `1.0` as the library re-centres on write-once
-generations (see the `CHANGELOG`). Security and supply-chain hardening is in place: npm build
+Blob storage drivers shipped** (the object-store story is complete on AWS + GCP + Azure). Security and supply-chain hardening is in place: npm build
 provenance on every release, SHA-pinned Actions, a hard cgroup-RSS ceiling in CI, a native OS matrix, a
 prebuilt Lambda layer, and continuous coverage-guided fuzzing.
 
@@ -622,10 +609,9 @@ decided.
 That shape is a choice, not a remainder. Every roaring-based engine that needs freshness meets it by
 micro-batching into immutable segments, never by mutating a stored bitmap per call — so immutability is the
 design, and the write-once generation is what makes a read cheap enough to serve from a stateless function.
-Hot-path **reads** are ours; hot-path **writes** belong in RAM, and Redis does that well. A per-call
-`add`/`remove` tier shipped in `0.9.x` and was retired ahead of `1.0` for exactly this reason; it is archived at
-the git tag `archive/live-warm-tier`, and `0.9.x` stays on npm for anyone still on it. If per-call freshness
-returns, it will arrive as immutable delta generations on the same bucket.
+Hot-path **reads** are ours; hot-path **writes** belong in RAM, and Redis does that well. That is why there is no
+per-call `add`/`remove`: if per-call freshness is added, it will arrive as immutable delta generations on the same
+bucket.
 
 Shipped on the loaded store: a single-call `load()` with a guard against an upstream query that returned too
 little, a `rollback()`, `exists()` and `segments()` so the registry answers "what do I have?" instead of you
@@ -633,8 +619,8 @@ keeping a list beside it, a **snapshot handle** so a long export or reconciliati
 than whichever generations were current as it ran, and a curated public surface. The loaded store's own
 benchmarks of in-region latency and load throughput are **owed, not shipped**; the benchmarks page lists
 [what is still owed](docs/benchmarks.md#what-is-still-owed). What the [benchmarks page](docs/benchmarks.md) does
-quote from the cloud is cost: the single-bucket bill of the September 2026 calibration run, pointer included, and
-the S3-side figures of the July 2026 run — both driven from outside the region, so neither carries a latency. Its
+quote from the cloud is cost: the single-bucket bill of the September 2026 calibration run, pointer included,
+driven from outside the region, so it carries no latency. Its
 crossover chart is modelled, its at-scale table is a local-disk run, and its RSS ceiling comes from a local
 container under a hard memory limit — and it labels each as such. The
 public roadmap tracks all of it: [`docs/ROADMAP.md`](docs/ROADMAP.md).
@@ -656,10 +642,6 @@ one package per service. You install one of each axis; core arrives as their dep
   shape, kept in sync with the code by CI. Writing a storage driver? It documents
   [`@cloudbitmaps/core/driver-kit`](docs/guide/api-reference.md#cloudbitmapscoredriver-kit), the declared
   contract a driver package builds against.
-- **[Migrating from 0.9.x](MIGRATING.md)** — eight changes. The live tier's removal touches every `0.9.x`
-  deployment; a DynamoDB registry needs work **before** you upgrade; and two of the eight — the `*Into`
-  verbs now replacing rather than appending, and the renamed metric/result/path strings — change
-  behaviour without raising anything.
 - **[Benchmarks](docs/benchmarks.md)** — the CloudBitmaps-vs-flat-Redis crossover chart + the gated cost/perf anchors.
 - **[Privacy & shared responsibility](PRIVACY.md)** — the trust boundary (you are the controller; nothing is sent to us), the erasure/retention/residency contracts, and a DPIA + Art. 30 template.
 - **[Roadmap](docs/ROADMAP.md)** — what's shipped, the **validated envelope** (what's proven and what isn't), what stands between here and `1.0`, and what we've deliberately said no to.

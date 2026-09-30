@@ -108,20 +108,18 @@
                  "the bitmap engine", which hard-codes one flavor into the product's own pitch — and
                  @cloudbitmaps/core is codec-agnostic. "bitmaps" is the right noun: it is the umbrella
                  name, and Roaring is named as the shipped flavor rather than as the product.
-                 UPDATE 2026-07-31: the reason given here for avoiding "compressed bitmaps" was that it
-                 would exclude the committed bitset flavor. That flavor is now decided against, so the
-                 phrasing survives on a different and better ground — a Roaring chunk stores itself
-                 uncompressed whenever that is smaller, so "compressed" mis-describes our own default.
+                 It avoids "compressed bitmaps" because a Roaring chunk stores itself uncompressed
+                 whenever that is smaller, so "compressed" mis-describes our own default.
 
                  The mechanism clause is the codec-neutral half of the pitch, which is why it leads:
                  /architecture already states that chunk-key skipping does not depend on the codec, so
                  it stays true for every flavor.
 
-                 The old lede's "a billion-id segment costs cents per month" is gone, and deliberately.
-                 It was never a sourced figure — our anchor is 1.2 GiB -> $0.03/mo, and a billion ids
-                 lands anywhere from ~0.12 GiB dense to ~2 GiB sparse, so the price was not pinned to
-                 the quantity. It slipped past site-figures.cjs only because "cents" is not a dollar
-                 amount the money regex can see. Every figure below is a gated anchor.
+                 The lede does not say "a billion-id segment costs cents per month": that is not a sourced
+                 figure — our anchor is 1.2 GiB -> $0.03/mo, and a billion ids lands anywhere from ~0.12 GiB
+                 dense to ~2 GiB sparse, so the price is not pinned to the quantity — and site-figures.cjs
+                 would not catch it, because "cents" is not a dollar amount the money regex can see. Every
+                 figure below is a gated anchor.
 
                  The headline counts SIX calls, and they are the READ surface. A segment changes only by
                  publishing a whole new generation, so there is no `add` or `remove` to count. The
@@ -138,12 +136,12 @@
               that changes: <strong>1.2 GiB</strong> at rest is <strong>$0.03</strong> a month,
               against <strong>$346</strong> for a three-node Redis cluster standing by.
             </p>
-            <!-- "How do I get it" was answered five sections down, in the closing install panel. For a library
-                 that is the first question, so the command moves up here as one line. It stays ONE line on
+            <!-- "How do I get it" is a library's first question, so the command is here as one line as well as
+                 in the closing install panel. It stays ONE line on
                  purpose: the rest of the story (the other two storage packages, and that each brings its own
                  SDK) belongs with the closing panel, and repeating it here would make the hero a second
-                 install section rather than a pointer to one. The command must stay COMPLETE though — an
-                 earlier version showed only the codec, which does not get you a bucket. -->
+                 install section rather than a pointer to one. The command must stay COMPLETE though — the
+                 codec alone does not get you a bucket. -->
             <p class="hero-install">
               <code>npm i @cloudbitmaps/roaring @cloudbitmaps/s3</code>
               <span class="label">A codec and a storage · memory drivers need no setup</span>
@@ -207,12 +205,11 @@
               node
             </p>
             <!-- The headline is the single-bucket run's cold intersect, as measured: the crown-jewel
-                 operation, on the topology that ships, with every request the pointer adds in it. It
-                 replaced the July run's count() figure, which left the pointer out. Its counter-case sits
+                 operation, on the topology that ships, with every request the pointer adds in it. Its counter-case sits
                  right under it, because a per-request bill against a standing one is only half a
                  comparison without the rate at which they cross.
 
-                 The last row replaces the write figure this panel used to headline. A load is the only way
+                 The last row is the price of a load. A load is the only way
                  data enters a segment, so its price is the other half of the bill a reader pays — and it
                  bills per OBJECT, which is why it reads per million rather than per id. It is the write and
                  the publish, pointer included; store.load()'s listings come on top. -->
@@ -393,13 +390,11 @@
                  full-length arguments against ourselves out-weighed the seven bullets opposite. Both
                  items keep their point and lose their elaboration.
 
-                 The p99 item also used to overstate itself: it said "on a working set that fits a bounded
-                 cache", but our cache tier IS in-process RAM, so on a hit there is nothing between us.
-                 The limit is the tail. Its old "10–20× faster" is gone — never a sourced figure — and so
-                 are the p50/p99 milliseconds that replaced it: they were metered on a tier the library no
-                 longer has, and no in-region latency figure is published until an in-region run measures
-                 one. The second item is now the WRITE MODEL rather than a write rate, because a write
-                 rate is not the trade any more: there is no per-id write to run at a rate. -->
+                 The p99 item says the limit is the tail, not the working set: our cache IS in-process
+                 RAM, so on a hit there is nothing between us. It carries no speed-up factor and no
+                 p50/p99 milliseconds, because no in-region latency figure is published until an
+                 in-region run measures one. The second item is the WRITE MODEL rather than a write rate,
+                 because there is no per-id write to run at a rate. -->
             <div class="label is-peer">Use something else when</div>
             <p class="trade-title">You need a sub-millisecond p99.</p>
             <p class="trade-body">
@@ -586,15 +581,12 @@
             </figure>
             <!-- Absorbed from the design's own version of this section. It reads as a spec strip, but it is
                  also load-bearing for the composition: the merged code panel is 17 lines where the old one
-                 was 10, and without this the left column ended 157px short of it. (It was 15 lines until the
-                 load call replaced `addMany`: writing a generation and publishing it is two lines longer than
-                 mutating a segment, and that IS the change.) The dependency count is
+                 was 10, and without this the left column ended 157px short of it. The dependency count is
                  `@cloudbitmaps/core`'s, deliberately: it is the one package every install pulls in, and the
                  only one with nothing behind it. The codec and each storage package add one dependency each,
                  so a project-wide number would be false however it was totalled. The package is NAMED here
                  because this strip is the only place on Home a reader can learn what "core" refers to.
-                 The final section's meta line used to carry these two figures; it no longer does, so each is
-                 stated once. -->
+                 The final section's meta line does not repeat them, so each is stated once. -->
             <p class="keys-stats">
               <span><strong>2</strong> tiers</span>
               <span><strong>4</strong> drivers</span>
@@ -665,11 +657,10 @@
            rather than a design intention. The format row keeps its place unchanged: portability is the one
            property a reader cannot go back and verify later.
 
-           The layout changed too, and not by choice. As two independent lists the columns lined up only where
-           a pair happened to wrap to the same number of lines — row 4 was already 24px out, and rewording made
-           it three rows instead of one. Text tuned to make a layout look aligned comes apart at the next width,
-           font size or zoom level, so the pairing is structural now: one grid, one row per pair. Measured 0px
-           drift on all four pairs at 1024-1600px. -->
+           As two independent lists the columns would line up only where a pair happened to wrap to the same
+           number of lines. Text tuned to make a layout look aligned comes apart at the next width, font size or
+           zoom level, so the pairing is structural: one grid, one row per pair. Measured 0px drift on all four
+           pairs at 1024-1600px. -->
       <section>
         <h2>The hard part is the protocol, not the compression.</h2>
         <p class="lede">
@@ -679,9 +670,9 @@
           actually deletes.
         </p>
         <!-- One grid, not two lists. The section's whole claim is that each left row is the problem its right
-             row solves, and two independent <ul>s could only ever align by coincidence — they were 24px out on
-             row 4 before this rewrite, and rewording pushed three rows out instead of one. A pair that shares a
-             grid row aligns because of how it is built, at any width and any font size.
+             row solves. Two independent <ul>s could only ever align by coincidence, and any rewording pushes rows
+             out of line; a pair that shares a grid row aligns because of how it is built, at any width and any
+             font size.
 
              <dl> rather than divs: these ARE term/description pairs, so a screen reader announces the pairing
              instead of eight unrelated blocks. The column labels sit outside the list because they label the
@@ -768,9 +759,9 @@
       </section>
 
       <!-- ── THE CLOSE ──────────────────────────────────────────────────────
-           The page used to end on a code block, which left a reader who had scrolled the whole way with
-           nowhere obvious to go. Same two-column proportion as the hero, so the page opens and shuts on the
-           same shape. -->
+           The page ends on a way forward rather than a code block, which would leave a reader who had
+           scrolled the whole way with nowhere obvious to go. Same two-column proportion as the hero, so the page
+           opens and shuts on the same shape. -->
       <section>
         <div class="close-grid">
           <div class="close-copy">

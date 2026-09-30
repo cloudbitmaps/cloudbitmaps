@@ -177,7 +177,7 @@ export interface Workload {
    */
   readonly readsPerSec?: number;
   readonly intersectsPerSec?: number;
-  /** CACHE-cache hit rate in `[0, 1]` — hits are free; only misses cost. Default 0. */
+  /** Cache hit rate in `[0, 1]` — hits are free; only misses cost. Default 0. */
   readonly cacheHitRate?: number;
   /**
    * Storage chunks one intersection fetches, summed over its operands: the chunk-skipping survivors. Default 1.

@@ -7,9 +7,9 @@ import { fileURLToPath } from 'node:url';
  * Every name our own `scripts/`, `bench/` and `fuzz/` code imports from a workspace package must actually be
  * exported by it.
  *
- * WHY THIS FILE EXISTS. Curating core's public surface removed `drainRegistry`, `DEFAULT_MAX_SCAN_SEGMENTS`,
- * `CrbmWriter` and `BufferSink`. `packages/roaring` re-exports core with `export *`, so they vanished from the
- * flavor too — and two committed scripts destructure them from exactly there:
+ * WHY THIS FILE EXISTS. `packages/roaring` re-exports core with `export *`, so a name core keeps internal —
+ * `drainRegistry`, `DEFAULT_MAX_SCAN_SEGMENTS`, `CrbmWriter`, `BufferSink` — is absent from the flavor too, and
+ * a script that destructures one from there fails only at runtime. Two committed scripts did:
  *
  *   bench/scale.cjs   → TypeError: drainRegistry is not a function
  *   fuzz/seed-corpus.cjs → TypeError: BufferSink is not a constructor

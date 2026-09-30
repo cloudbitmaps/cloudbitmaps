@@ -16,12 +16,9 @@ import { seedSegment } from './helpers/loaded';
  * *mechanism* the fix guarantees — the default clock's backoff timer stays ref'd — by watching whether `unref`
  * is called on the timer the real backoff creates.
  *
- * WHAT DRIVES THE BACKOFF NOW. This used to inject an optimistic-concurrency conflict on a warm write, because
- * that was the retry loop everyone hit. With the warm tier gone the surviving user of `Clock.sleep` is the
- * driver transient-retry loop (`withRetry`, wrapped around the storage source by default), so the fault injected
- * here is a transient storage read. The mechanism under test is unchanged — it is the same `SystemClock.sleep` —
- * and the reason it matters is if anything sharper: a Lambda whose only pending handle is a retry of the one
- * GET its whole invocation depends on.
+ * WHAT DRIVES THE BACKOFF. The user of `Clock.sleep` is the driver transient-retry loop (`withRetry`, wrapped
+ * around the storage source by default), so the fault injected here is a transient storage read. The reason it
+ * matters is sharp: a Lambda whose only pending handle is a retry of the one GET its whole invocation depends on.
  */
 
 /** A storage source whose first `getChunk` fails transiently, then behaves normally. */

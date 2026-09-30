@@ -15,7 +15,7 @@ export default defineConfig({
     globals: true,
     include: ['tests/integration/**/*.test.ts'],
     // A zero-file sweep is a green light that proves nothing, and this lane is the ONLY place the three
-    // split-out driver packages touch a real backend — everything else mocks the SDK client. A renamed
+    // driver packages touch a real backend — everything else mocks the SDK client. A renamed
     // directory or a glob typo would otherwise start three containers, exercise nothing, and pass.
     passWithNoTests: false,
     // S3/MinIO round-trips + bucket setup need more than the default 5s.
@@ -23,11 +23,12 @@ export default defineConfig({
     hookTimeout: 30_000,
   },
   resolve: {
-    // The test suite lives at the repo root and drives BOTH packages (many tests are white-box across the
-    // facade + core internals), so `@/…` is mapped onto the workspace here — which is why the family split
-    // needed no churn in 100+ test files. Order matters: the two exact matches win over the `@/*` catch-all.
+    // The test suite lives at the repo root and drives every package (many tests are white-box across the
+    // facade + core internals), so `@/…` is mapped onto the workspace here — which is why a test imports a
+    // module by one alias whichever package holds it. Order matters: the exact matches win over the `@/*`
+    // catch-all.
     //   @/index          → the roaring facade (the package entry the tests mean)
-    //   @/roaring-codec  → the roaring codec (was `@/core/bitmap` before the split)
+    //   @/roaring-codec  → the roaring codec
     //   @/*              → @cloudbitmaps/core internals
     alias: [
       { find: /^@\/index$/, replacement: ROARING + '/index.ts' },

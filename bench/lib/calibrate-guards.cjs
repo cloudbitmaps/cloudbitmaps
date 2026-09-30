@@ -2,10 +2,8 @@
 /*
  * The guards that stand between `pnpm calibrate:aws` and someone's cloud bill.
  *
- * These are pure functions with no I/O, for one reason: every one of them was a BUG in the harness this
- * replaces, and the only way to keep a guard honest is to be able to plant its defect in a test and watch it
- * fail. The harness that ran the July 2026 calibration was deleted with the warm tier, and its regression
- * suite went with it — so each is rebuilt from what went wrong, which its comment below records.
+ * These are pure functions with no I/O, for one reason: the only way to keep a guard honest is to be able to
+ * plant its defect in a test and watch it fail. Each guard's comment below says what it prevents.
  *
  * Read `RELEASING.md` for the release pipeline's guards; this file is the money-spending equivalent.
  */

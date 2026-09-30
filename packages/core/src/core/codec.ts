@@ -21,10 +21,9 @@
  * package's own extended value type, not here — the engine never calls them). The one codec-linked concern
  * this seam intentionally leaves in the format layer is the `.crbm` **payload codec id**
  * (`PAYLOAD_CODEC_ROARING_PORTABLE` / `KNOWN_PAYLOAD_CODEC_IDS` in `crbm/format.ts`): it is stamped in the footer
- * and validated on read. That generalization is **done** as of 0.7.0 — the field was `roaringSerializationId`
- * and validated by equality against a single constant, which would have frozen a codec-specific name into the
- * format at `1.0`. It is now a registry the reader checks membership against, so a future codec is a one-line
- * registration rather than a major format version. Still deliberately outside this interface: a codec declares
+ * and validated on read, as membership of a registry rather than equality with one constant, so a codec-specific
+ * name is not frozen into the format at `1.0` and a future codec is a one-line registration rather than a major
+ * format version. Still deliberately outside this interface: a codec declares
  * its bytes, the seam does not.
  */
 

@@ -18,7 +18,7 @@ both and is never installed directly; it contains no cloud SDK at all. Four stor
 (`@cloudbitmaps/s3`, which also serves R2, MinIO, Ceph, Wasabi and B2), GCS (`@cloudbitmaps/gcs`) and Azure
 Blob (`@cloudbitmaps/azure-blob`) as packages of their own, each depending on its cloud SDK for real rather
 than as an optional peer, plus the local filesystem in core's main entry, beside the in-memory drivers for
-development and tests. There are no driver subpaths and nothing is an optional peer. Each of the three clouds hosts both the storage generations
+development and tests. Each of the three clouds hosts both the storage generations
 and the registry, so a deployment needs exactly one cloud account.
 
 A store is wired with ONE backend object — `new CloudRoaring({ storage: new S3Storage({ bucket }) })` — which
@@ -36,8 +36,8 @@ is what `storage` normally takes; a hand-written `{ storage, registry }` object 
 accepts a bare driver, or an already-built StorageChunkSource for advanced reader wiring — both without a
 registry, so the store is read-only and cleartext. To supply a half
 of your own — an instrumented driver, a registry elsewhere — use `createBackend({ storage, registry })`. Nothing mutates a stored bitmap, so a crash before the publish leaves the previous generation
-authoritative, a rerun is idempotent, and there is no partially-visible write. There is no add, addMany,
-remove or claimMany, and no store.compact. `intersectInto`/`unionInto`/`andNotInto` use the same protocol,
+authoritative, a rerun is idempotent, and there is no partially-visible write. There is no per-id write.
+`intersectInto`/`unionInto`/`andNotInto` use the same protocol,
 publishing their result as a new generation of the destination segment — and check the result is plausible
 the same way `load` does: an empty or implausible combine over a non-empty destination is refused
 (`published: false` + `reason`) rather than wiping it, with `allowEmpty`/`guard` to override. Unlike `load`
@@ -54,11 +54,9 @@ AWS SDK layer. With the pointer in the same bucket as the data, the topology tha
 intersect of two 500,000-id segments sharing 100 of their 1,999 chunks made 206 GETs as measured, $82.40 per
 million, requesting only the shared chunks. Inside the region, where each pointer is read once, the same
 intersect is expected at 204 GETs, $81.60 per million. Writing and publishing a segment is 2 PUTs and 3 GETs,
-$11.20 per million, and store.load(), which also lists and collects, is expected at about twice that. An older
-run, which kept the pointer in a NoSQL registry that no longer ships, measured $0.14 per million count()s
-without the pointer. For comparison: an always-on Redis-HA line of $346/month standing, and a modelled
-$0.03/month for 1.2 GiB of segments at rest. Those runs were driven from outside the region, so no latency is
-published. One crossover is published, in GETs: past 329.15 sustained GETs a second, with every read missing the
+$11.20 per million, and store.load(), which also lists and collects, is expected at about twice that. For
+comparison: an always-on Redis-HA line of $346/month standing, and a modelled $0.03/month for 1.2 GiB of segments
+at rest. The run was driven from outside the region, so no latency is published. One crossover is published, in GETs: past 329.15 sustained GETs a second, with every read missing the
 cache, metered GETs pass the standing cluster — a warmer cache moves that line up. For cold intersects of the shape
 above, at 206 GETs each, that line is 1.6 intersects a second.
 
@@ -94,7 +92,7 @@ compression saves.
 
 ## No background process, and nothing to seed
 
-There is no daemon, no compaction pass and no lifecycle worker. A segment exists once a generation has been
+There is no daemon and no lifecycle worker. A segment exists once a generation has been
 loaded into it -- there is no create verb, segment(name) is just a validated address that does no I/O, and
 exists(ref) / segments({namespace}) ask the registry what is there rather than you keeping your own list of
 names beside the store. The only scheduled work is the retention sweep above (plus gcOrphanGenerations, which never
