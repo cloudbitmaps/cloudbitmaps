@@ -128,9 +128,16 @@ bucket.
 |---|---|
 | storage | on return — the generation holding it is deleted, or the wrapped DEK is removed from the segment's current registry row (a crypto-shred is complete once no retained copy of that row holds it, or every KEK that wrapped it is destroyed; see *Erasure vs. backups / WORM* below) |
 | the store whose verb made the call (`eraseSubject`, `dropSegment`, `retireExpired`) | on return — it invalidates what it cached, and its pins then fail |
-| another store, with a registry and a `cache.genTtlMs` above 0 | within `cache.genTtlMs` (default 2 s), when its snapshot re-resolves |
+| another store, with a registry and a `cache.genTtlMs` above 0 | within `cache.genTtlMs` (default 2 s), when its snapshot re-resolves, **while the registry can be read** (see below) |
 | another store with **no registry** (a bare `IStorageDriver`), with `cache: { genTtlMs: 0 }`, or on a storage source built with **no clock** | **no bound** — only when its caches happen to let the segment go, or something tells it |
 | a pinned handle (`seg.pin()`) in another store | **no bound** — until that store's reader cache evicts the pin's reader and its chunk cache evicts the chunks the pin decoded, or something tells it |
+
+**An outage of the registry extends that bound.** A refresh that cannot read the row because of a transient fault
+(throttling, a 5xx, a dropped connection) keeps serving the generation the reader already holds, and the key it
+unwrapped, and asks again 500 ms later, or after `cache.genTtlMs` if that is shorter. So while the registry cannot
+be read, a shred or a drop is not seen, and the store converges within one retry of the registry answering. Any
+other failure of the refresh (an access denial, a row that will not parse) is not ridden out: the read that finds it
+fails with that error, and the reader is dropped with the key it held.
 
 `destroySegment` and `eraseNamespace` are free functions over raw drivers, not verbs of a store, so for them every
 store is another store, one in the same process included.

@@ -270,7 +270,8 @@ process to stop. If you cannot quiesce, re-run the scan to confirm a reported te
 ## Readers still on an old generation
 
 A store that has resolved a segment keeps serving that generation for up to `cache.genTtlMs` (default 2 s) before
-it re-reads the pointer, and decoded chunks sit in the cache for as long as the cache keeps them. After a manual
+it re-reads the pointer (and while the registry cannot be read because of a transient fault, until a retry 500 ms
+apart reaches it), and decoded chunks sit in the cache for as long as the cache keeps them. After a manual
 `currentGen` roll, a long-lived process may therefore keep answering from the generation it resolved *before* the
 roll for that window. After a registry restore, waiting is not enough for any store: restart it, or invalidate the
 restored segments in it, because the restored rows re-issue tokens its caches may already hold (step 9 of the

@@ -238,6 +238,12 @@ export interface CacheOptions {
    * timer; ≤ one registry read per segment per window, opening a new reader only when the generation actually
    * advanced.
    *
+   * **While the registry cannot be read, the bound stretches.** A refresh that fails with a
+   * {@link TransientError} keeps serving the generation the reader holds, and the key it unwrapped, and is tried
+   * again 500 ms later (or after this TTL, if shorter), so the store converges within one retry of the registry
+   * answering. A refresh that fails with anything else, an access denial or a row that will not parse, is not
+   * ridden out: the read that meets it throws that error, and the reader is dropped.
+   *
    * `0` turns this timed refresh off, and so does wiring a bare `IStorageDriver`, which has no registry. That is
    * all it does. The store still moves a segment on to whatever generation is current when its reader cache
    * evicts the segment, when a read has to fetch from a generation a sweep deleted, and when it is invalidated,
@@ -1372,7 +1378,8 @@ export class CloudRoaring {
    * could not remove rather than returning a result that looks like a clean drop.
    *
    * Reads become empty within `cache.genTtlMs` (default 2 s), not instantly: a store that had already read this
-   * segment may answer from its cached generation + cached chunks until that window lapses. A reader that never
+   * segment may answer from its cached generation + cached chunks until that window lapses, or, while the registry
+   * cannot be read because of a transient fault, until a retry 500 ms apart reaches it again. A reader that never
    * touched it sees empty at once. **That bound needs a registry and `cache.genTtlMs > 0`.** A store with no registry
    * (a bare `IStorageDriver`), with `cache.genTtlMs: 0`, or on a storage source built with no clock, has no timed
    * refresh. It notices the drop only when a read has to fetch
