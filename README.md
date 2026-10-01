@@ -23,6 +23,79 @@ Three words appear everywhere:
 - **generation**: one immutable file holding the whole set at one point in time. A load writes a new one.
 - **pointer**: the small record that names a segment's current generation.
 
+## Install & entry points
+
+```bash
+pnpm add @cloudbitmaps/roaring    # the store, with in-memory and local-disk backends
+pnpm add @cloudbitmaps/s3         # the storage you have: or @cloudbitmaps/gcs, or @cloudbitmaps/azure-blob
+```
+
+On pnpm 10 and later, allow the one build script first, or the package throws at `import` while the install exits 0.
+Put this in your `package.json`: `{ "pnpm": { "onlyBuiltDependencies": ["roaring"] } }`. npm and pnpm 9 need nothing
+extra.
+
+**ESM-only, Node ≥ 22.12.** For CommonJS, Jest and TypeScript details, see
+[CommonJS, Jest and TypeScript](docs/guide/getting-started.md#commonjs-jest-and-typescript).
+
+You install two packages: `@cloudbitmaps/roaring` (the store) and one storage package for your cloud. Each storage
+package depends on its cloud SDK, so installing it is the whole step. `@cloudbitmaps/core`, the engine underneath,
+arrives on its own and you never install it.
+
+### First run, in memory
+
+Save this as `first-run.mjs` (the `.mjs` extension allows top-level `await`) and run `node first-run.mjs`:
+
+```js
+import { CloudRoaring, MemoryStorage } from '@cloudbitmaps/roaring';
+
+const store = new CloudRoaring({ storage: new MemoryStorage() });
+
+// A load replaces a segment's contents with the ids you give it.
+await store.load({ segment: 'shoppers' }, [5, 99_999, 1_234_567_890]);
+await store.load({ segment: 'active' }, [5, 7, 1_234_567_890]);
+
+const shoppers = store.segment('shoppers');
+console.log(await shoppers.has(99_999)); // true
+console.log(await shoppers.count()); // 3
+
+const both = [];
+for await (const id of shoppers.intersect([store.segment('active')])) both.push(id);
+console.log(both); // [ 5, 1234567890 ]
+```
+
+It prints `true`, `3`, then `[ 5, 1234567890 ]`. The [getting-started guide](docs/guide/getting-started.md) goes on
+from here.
+
+### The same code on S3
+
+Install `@cloudbitmaps/s3`, give it a bucket, and change one line. Everything after it is unchanged:
+
+```js
+import { S3Storage } from '@cloudbitmaps/s3';
+
+const store = new CloudRoaring({
+  storage: new S3Storage({ bucket: 'my-bitmaps', prefix: 'prod', region: 'us-east-1' }),
+});
+```
+
+It builds its own client from your usual AWS credentials. The bucket must honor conditional writes, as AWS S3 does.
+
+### Which backend
+
+You pass one **backend** as `storage`. It decides where generations and pointers live:
+
+| Backend | Package | Use it for |
+|---|---|---|
+| `MemoryStorage` | `@cloudbitmaps/roaring` | Tests and a first look. Gone when the process exits. |
+| `LocalFsStorage` | `@cloudbitmaps/roaring` | One process on one folder: a laptop or a CI job. |
+| `S3Storage` | `@cloudbitmaps/s3` | Production. The validated one, on AWS S3. It also runs against MinIO, which the tests use, and any S3-compatible service that honors conditional writes. |
+| `GcsStorage` | `@cloudbitmaps/gcs` | Google Cloud Storage. Passes the conformance suites; outside the validated envelope. |
+| `AzureBlobStorage` | `@cloudbitmaps/azure-blob` | Azure Blob Storage. Passes the conformance suites; outside the validated envelope. |
+
+The [validated envelope](docs/ROADMAP.md#the-validated-envelope--whats-proven-and-what-isnt) says what has been
+proven: read-mostly, up to about 100,000 segments, single-tenant and single-region, on S3. Choosing GCS or Azure
+means being an early user.
+
 ## Use it when, and when not
 
 **Use it when:**
@@ -103,79 +176,6 @@ If the library breaks, you are not stuck:
 How this compares with pure Roaring libraries and bitmap databases on lock-in is in
 [Beyond the bill](docs/guide/why-cloudbitmaps.md#beyond-the-bill), and what a raw copy of the bucket holds is in
 [Export your data](docs/guide/export.md#things-to-know).
-
-## Install & entry points
-
-```bash
-pnpm add @cloudbitmaps/roaring    # the store, with in-memory and local-disk backends
-pnpm add @cloudbitmaps/s3         # the storage you have: or @cloudbitmaps/gcs, or @cloudbitmaps/azure-blob
-```
-
-On pnpm 10 and later, allow the one build script first, or the package throws at `import` while the install exits 0.
-Put this in your `package.json`: `{ "pnpm": { "onlyBuiltDependencies": ["roaring"] } }`. npm and pnpm 9 need nothing
-extra.
-
-**ESM-only, Node ≥ 22.12.** For CommonJS, Jest and TypeScript details, see
-[CommonJS, Jest and TypeScript](docs/guide/getting-started.md#commonjs-jest-and-typescript).
-
-You install two packages: `@cloudbitmaps/roaring` (the store) and one storage package for your cloud. Each storage
-package depends on its cloud SDK, so installing it is the whole step. `@cloudbitmaps/core`, the engine underneath,
-arrives on its own and you never install it.
-
-### First run, in memory
-
-Save this as `first-run.mjs` (the `.mjs` extension allows top-level `await`) and run `node first-run.mjs`:
-
-```js
-import { CloudRoaring, MemoryStorage } from '@cloudbitmaps/roaring';
-
-const store = new CloudRoaring({ storage: new MemoryStorage() });
-
-// A load replaces a segment's contents with the ids you give it.
-await store.load({ segment: 'shoppers' }, [5, 99_999, 1_234_567_890]);
-await store.load({ segment: 'active' }, [5, 7, 1_234_567_890]);
-
-const shoppers = store.segment('shoppers');
-console.log(await shoppers.has(99_999)); // true
-console.log(await shoppers.count()); // 3
-
-const both = [];
-for await (const id of shoppers.intersect([store.segment('active')])) both.push(id);
-console.log(both); // [ 5, 1234567890 ]
-```
-
-It prints `true`, `3`, then `[ 5, 1234567890 ]`. The [getting-started guide](docs/guide/getting-started.md) goes on
-from here.
-
-### The same code on S3
-
-Install `@cloudbitmaps/s3`, give it a bucket, and change one line. Everything after it is unchanged:
-
-```js
-import { S3Storage } from '@cloudbitmaps/s3';
-
-const store = new CloudRoaring({
-  storage: new S3Storage({ bucket: 'my-bitmaps', prefix: 'prod', region: 'us-east-1' }),
-});
-```
-
-It builds its own client from your usual AWS credentials. The bucket must honor conditional writes, as AWS S3 does.
-
-### Which backend
-
-You pass one **backend** as `storage`. It decides where generations and pointers live:
-
-| Backend | Package | Use it for |
-|---|---|---|
-| `MemoryStorage` | `@cloudbitmaps/roaring` | Tests and a first look. Gone when the process exits. |
-| `LocalFsStorage` | `@cloudbitmaps/roaring` | One process on one folder: a laptop or a CI job. |
-| `S3Storage` | `@cloudbitmaps/s3` | Production. The validated one, on AWS S3. It also runs against MinIO, which the tests use, and any S3-compatible service that honors conditional writes. |
-| `GcsStorage` | `@cloudbitmaps/gcs` | Google Cloud Storage. Passes the conformance suites; outside the validated envelope. |
-| `AzureBlobStorage` | `@cloudbitmaps/azure-blob` | Azure Blob Storage. Passes the conformance suites; outside the validated envelope. |
-
-The [validated envelope](docs/ROADMAP.md#the-validated-envelope--whats-proven-and-what-isnt) says what has been
-proven: read-mostly, up to about 100,000 segments, single-tenant and single-region, on S3. Choosing GCS or Azure
-means being an early user.
 
 ## The whole surface, in three steps
 
