@@ -57,14 +57,15 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { setImmediate, setTimeout } = require('node:timers');
 
-const ROOT = path.resolve(__dirname, '..');
+// `EVENT_LOOP_ROOT` points `--check` at a copy of the tree, which is how its test mutates the files it reads.
+const ROOT = process.env.EVENT_LOOP_ROOT || path.resolve(__dirname, '..');
 const RESULTS = path.join(ROOT, 'bench/event-loop-results.json');
 const GUIDE = path.join(ROOT, 'docs/guide/getting-started.md');
 const SECTION_START = '## What blocks the event loop, and where to run it';
 const SECTION_END = '## Where next';
 
 const IDS = 1_000_000;
-const TRIALS = int(process.env.EVENT_LOOP_TRIALS, 15);
+const TRIALS = int(process.env.EVENT_LOOP_TRIALS, 20);
 
 function int(v, dflt) {
   const n = Number(v);
@@ -313,9 +314,15 @@ function check() {
       if (!section.includes(text))
         problems.push(`the guide does not name ${what} (${text}) the results were measured on`);
     }
-    if (results.yielded.trials !== results.unyielded.trials || results.yielded.trials < 15) {
+    // The guide's "about N" load average is the one-minute figure at the start of the run.
+    const load = `about ${Math.round(results.env.loadavgStart[0])}`;
+    if (!section.includes(load))
       problems.push(
-        'the results file records fewer than 15 trials, or a different count per variant',
+        `the guide does not say the machine's load average was ${load}, as the results record`,
+      );
+    if (results.yielded.trials !== results.unyielded.trials || results.yielded.trials < 20) {
+      problems.push(
+        'the results file records fewer than 20 trials, or a different count per variant',
       );
     }
   }
@@ -324,6 +331,10 @@ function check() {
   const y = results.yielded;
   const u = results.unyielded;
   for (const [file, text] of [
+    [
+      'packages/core/src/core/cooperative.ts',
+      `**${n(u.wallMs.median)} ms wall, and ${n(u.stallMs.median)} ms during which the event loop did not turn at all** (medians of ${u.trials} fresh-process runs)`,
+    ],
     [
       'packages/core/src/core/cooperative.ts',
       `${n(u.wallMs.median)} ms wall / ${n(u.stallMs.median)} ms blocked unyielded, ${n(y.wallMs.median)} ms / ${n(y.stallMs.median)} ms yielded`,
