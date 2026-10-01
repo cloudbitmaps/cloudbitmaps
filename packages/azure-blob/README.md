@@ -1,35 +1,23 @@
 # @cloudbitmaps/azure-blob
 
-**Azure Blob Storage for [CloudBitmaps](https://github.com/cloudbitmaps/cloudbitmaps).**
+**Azure Blob Storage for [CloudBitmaps](https://github.com/cloudbitmaps/cloudbitmaps).** One container holds your generations and their pointers, so there is
+no second service to run.
 
-> **ESM-only, Node ≥ 22.12.** This package ships as ES modules; there is no CommonJS bundle.
-> `require()` works on Node 22.12+ through `require(esm)`, but a runner with its own CommonJS loader
-> (notably Jest in its default configuration) does not get that and needs `import` instead. On TypeScript,
-> a CommonJS project needs `"module": "nodenext"` or `"node20"`. See the
-> [repository README](https://github.com/cloudbitmaps/cloudbitmaps#install--entry-points) for the details.
+> **ESM-only, Node ≥ 22.12.** Use `import`; for `require()`, Jest and TypeScript, see the
+> [repository README](https://github.com/cloudbitmaps/cloudbitmaps#install--entry-points).
 
-Azure Blob Storage. Write-once rides `If-None-Match: *`, and the registry rides blob ETags, so a deployment runs on **one container alone**.
+> Pre-1.0: the API and the on-disk format can still change. These docs describe `main`, ahead of the npm release.
 
 ## Install
 
 ```bash
 pnpm add @cloudbitmaps/roaring @cloudbitmaps/azure-blob
-# npm i @cloudbitmaps/roaring @cloudbitmaps/azure-blob   # the same, with npm
 ```
 
-> **On pnpm 10+, allow the one build script.** pnpm 10 skips dependency build scripts by default, so
-> the `roaring` native addon never downloads and the package throws at `import` — while the install
-> itself prints a warning and **exits 0**. Add this to your `package.json`, then install:
->
-> ```json
-> { "pnpm": { "onlyBuiltDependencies": ["roaring"] } }
-> ```
->
-> pnpm 9 and npm run it already. [Full symptoms and fixes](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#cannot-find-module-buildreleaseroaringnode-after-a-successful-install).
+On pnpm 10 and later, allow the one build script first, or the package throws at `import` while the install exits 0. Put this in your `package.json`: `{ "pnpm": { "onlyBuiltDependencies": ["roaring"] } }`. npm and pnpm 9 need nothing extra. [Details](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#cannot-find-module-buildreleaseroaringnode-after-a-successful-install).
 
-Two packages: the **codec** you want and the **storage** you have. `@azure/storage-blob` (`^12`) is a real dependency of
-this package, so installing it is the whole step — there is no optional peer to remember. `@cloudbitmaps/core` is one
-too, so the engine lands in your tree without you installing it — you never name it yourself.
+`@azure/storage-blob` (`^12`) is a real dependency of this package, so installing it is the whole step.
+`@cloudbitmaps/core`, the engine underneath, arrives with it and you never name it.
 
 ## Use
 
@@ -46,47 +34,38 @@ const store = new CloudRoaring({
 });
 
 await store.load({ segment: 'active-users' }, [1, 2, 3]);
-const seg = store.segment('active-users');
-await seg.has(2); // true
+await store.segment('active-users').has(2); // true
 ```
 
-`AzureBlobStorage` configures both halves — the immutable generation objects and the registry pointer row — from one set
-of values: a `connectionString` and a `container`, or a container-scoped `containerClient` instead, one or the
-other, and an optional `prefix`. It refuses any other key by name rather than ignoring it, and refuses both forms
-of client at once. Two more options size the staged upload: `blockBytes` (default 8 MiB) is the block size and so
-the peak write memory, and `maxObjectBytes` is the largest blob the backend will write (default `blockBytes` ×
-50,000, about 400 GiB). Raise `maxObjectBytes` and `blockBytes` grows to keep the 50,000-block limit reachable;
-either must be a positive safe integer. See the
-[API reference](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/api-reference.md).
+Any other key is refused by name.
 
-## Retries on writes
+| Option | What it does |
+|---|---|
+| `connectionString` and `container` | build a container client for you |
+| `containerClient` | your own container-scoped client, instead of the two above; giving both is refused |
+| `prefix` | a key prefix for everything this store writes |
+| `blockBytes` | the staged block size (default 8 MiB, which is also the peak write memory) |
+| `maxObjectBytes` | the largest blob (default `blockBytes` × 50,000, about 400 GiB) |
 
-Every request goes through the client's retry policy, which sends a request again after a network error or a 500
-or 503, and that includes the conditional writes: a generation's write-once upload and commit, and the registry's
-create, compare-and-swap and delete, which writes a tombstone. A conditional write that lands and loses its response
-is therefore sent again, meets itself and fails its precondition. Each of these writes carries a random id in the
-blob's metadata (`cbwid`), outside the `.crbm` bytes and outside the registry row's body, and on a conflict the
-driver reads the stored blob back: its own id is a success, and any other, or none, is a `WriteConflictError`. The
-read is made only on a conflict, works with the client you pass, and adds no option. If it fails transiently the
-call throws `TransientError`, and the write may or may not have landed: `store.generations(ref)` lists what the
-container holds, with the current generation marked.
+## Before production
 
-A registry row is overwritten by compare-and-swap, so a writer that swaps in over a write that landed, before the
-read-back, makes that write report `WriteConflictError`. The callers re-read the row on it, and none deletes a
-generation because of it. A generation's `.crbm` blob is never overwritten, so its read-back is definitive. See [the production guide](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md#reliability-retries-backoff--timeouts).
+- **This backend is outside the validated envelope.** It passes the same conformance suites as S3, but the proven
+  scale and the calibration were done on S3. You are an early user.
+- **Grant the container's data permissions.** The library writes blocks, commits block lists, reads blobs and their
+  properties, lists and deletes. `Storage Blob Data Contributor` on the container covers all of them. A connection
+  string carries the account key, which grants far more: prefer a `containerClient` built from a managed identity.
+- **The write-once guarantee rides blob ETags and `If-None-Match: *`**, so nothing else needs enabling.
+- **Never add a lifecycle rule that expires current blobs or the `registry/` prefix.**
+- **A transient failure of a write throws `TransientError`, and the write may or may not have landed.** Re-run the
+  call, or check `store.generations(ref)`. Every write is tagged with a random id and a conflict is settled by reading
+  it back, because the client's own retry has no per-request switch.
 
-## What this package is
-
-These drivers move opaque payload bytes, so they are codec-agnostic: the same package serves every codec
-flavor. That is why storage is a package rather than a subpath of one — as a subpath, each flavor would need a
-re-export barrel per service, and the count would multiply with every codec added.
-
-Built against `@cloudbitmaps/core/driver-kit`, the declared contract for a driver — the same surface a
-third-party driver would use.
+The [production checklist](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md) covers each item.
 
 ## Documentation
 
 - [Getting started](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md)
+- [Before production](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md)
 - [API reference](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/api-reference.md)
 - [Changelog](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/CHANGELOG.md)
 
