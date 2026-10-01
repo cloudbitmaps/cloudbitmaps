@@ -1,412 +1,196 @@
 # Getting started
 
-> **Status: `0.10.0` — pre-1.0.** Everything below is real and tested: it is what the engine actually
-> exposes, covered by the test suite. The API may still change before `1.0`. CloudBitmaps is a **loaded store**:
-> a segment is a series of write-once `.crbm` generations in object storage — **in-memory**, **local-filesystem**,
-> **S3-compatible**, **GCS** or **Azure Blob** — behind one **registry** pointer (memory / LocalFs / S3 /
-> GCS / Azure Blob). You compute a set upstream, **load** it as a generation, and read it — `has`, `count`, `iterate`
-> and chunk-skipping `intersect` — from anywhere, with **automatic retry/backoff on reads**, **encryption-at-rest +
-> crypto-shred**, retention, GDPR erasure, cost reporting and observability around it.
+> **These docs describe `main`, which is ahead of the `0.10.0` release on npm.** CloudBitmaps is pre-1.0 and the API
+> can still change. The docs that match what you get from `npm install` are at the
+> [`v0.10.0` tag](https://github.com/cloudbitmaps/cloudbitmaps/tree/v0.10.0).
 
-> **Two packages to install: a codec and a storage.** Every import below is the real specifier. The codec is
-> `@cloudbitmaps/roaring`, the *roaring flavor* of the `@cloudbitmaps` family — the roaring codec +
-> the `CloudRoaring` facade. The storage you use is the second package — `@cloudbitmaps/s3`,
-> `@cloudbitmaps/gcs` or `@cloudbitmaps/azure-blob` — which depends on its cloud SDK for real, so installing
-> it is the whole step. Both depend on **`@cloudbitmaps/core`**, the codec-agnostic engine, which arrives
-> **transitively**: you never install or name it. Every package needs **Node 22.12 or later**, and ships as ES
-> modules only: `import` it, or `require()` it through Node's `require(esm)`.
+This is the 10-minute path: install, load a set into memory, keep it on disk, load real data, read it, and move
+to a cloud bucket. Each step ends with a link to the page that goes deeper.
 
-> **Every export at a glance:** for the complete list of everything you can import and call (across
-> `@cloudbitmaps/roaring` and the `s3` / `gcs` / `azure-blob` driver packages), see the
-> **[API Reference](api-reference.md)** — it's kept in sync with the code by CI. This guide is the narrated
-> walkthrough of that same surface.
+New to the words? [The words these docs use](#the-words-these-docs-use) is at the bottom of this page.
 
-## The whole surface, in three steps
+## Install
 
-```
-  ┌─ STEP 1 ── pick a backend ────────────────────────────────────────────┐
-  │  MemoryStorage()          LocalFsStorage(root)                        │
-  │  S3Storage({ bucket, prefix })   GcsStorage(…)   AzureBlobStorage(…)  │
-  │                                                                       │
-  │  One object. It derives BOTH halves — where the generations go, and   │
-  │  where the pointer that says which one is current goes — from one     │
-  │  bucket and one prefix.                                               │
-  └───────────────────────────────────────────────────────────────────────┘
-                                    │
-  ┌─ STEP 2 ── build a store ─────────────────────────────────────────────┐
-  │  new CloudRoaring({                                                   │
-  │    storage,                          ← the ONLY required option       │
-  │    cache?, encryption?, retry?, metrics?, budget?, seams?             │
-  │  })                                                                   │
-  └───────────────────────────────────────────────────────────────────────┘
-                                    │
-  ┌─ STEP 3 ── call verbs ────────────────────────────────────────────────┐
-  │                                                                       │
-  │  on the STORE                      on a SEGMENT                       │
-  │  ─────────────                     ──────────────                     │
-  │  load(ref, ids)      ← the write   has(id)      count()   iterate()   │
-  │  segment(name, opts)               intersect()  union()   andNot()    │
-  │  exists()  segments()              intersectInto() unionInto()        │
-  │  generations() rollback()          andNotInto()                       │
-  │  dropSegment() retireExpired()     pin()        ← one fixed instant   │
-  │  setRetention() getRetention()     costReport()                       │
-  │  clearRetention()                                                     │
-  │  eraseSubject() subjectReport()    ← GDPR Art. 17 / Art. 15           │
-  │  checkConsistency() exportSegments()                                  │
-  │  invalidate()  ← forget what this store cached about a segment        │
-  └───────────────────────────────────────────────────────────────────────┘
+In a new folder, run `pnpm init` (or `npm init -y`), then:
+
+```bash
+pnpm add @cloudbitmaps/roaring              # the store; includes in-memory and local-disk backends
+pnpm add @cloudbitmaps/s3                   # only when you move to S3 (or /gcs, or /azure-blob)
 ```
 
-```ts
-import { CloudRoaring } from '@cloudbitmaps/roaring';
-import { S3Storage } from '@cloudbitmaps/s3';
+On pnpm 10 and later, allow the one build script first, or the package throws at `import` while the install exits
+0. Put this in your `package.json`:
 
-const store = new CloudRoaring({ storage: new S3Storage({ bucket: 'bitmaps', prefix: 'prod' }) });
-
-const r = await store.load({ segment: 'vips' }, idsFromWarehouse());
-if (!r.published) console.warn({ reason: r.reason, had: r.cardinalityBefore });
-await store.load({ segment: 'engaged' }, engagedFromWarehouse()); // an operand has to exist: load it first
-
-for await (const id of store.segment('vips').intersect([store.segment('engaged')])) {
-  /* the audience */
-}
+```json
+{ "pnpm": { "onlyBuiltDependencies": ["roaring"] } }
 ```
 
-**A store, a backend and the verbs above are the whole everyday surface.** The registry, the drivers and generation
-numbers exist and are exported; the few free functions that take drivers (a crypto-shred) take
-them from the backend, as `backend.registry` and `backend.storage`, so nothing is configured twice. Everything below
-here is detail.
+npm and pnpm 9 need nothing extra. `@cloudbitmaps/roaring` is the package you import from. It is the "flavor": the
+package that fixes the data format, which is Roaring bitmaps. `@cloudbitmaps/core` is the engine underneath; it
+arrives on its own and you never install or import it.
 
-The rest of this guide walks each step in turn.
+The packages are **ES modules only and need Node 22.12 or later.** Use `import`. `require()` also works on Node
+22.12 and later; the details for CommonJS, Jest and TypeScript are in
+[CommonJS, Jest and TypeScript](#commonjs-jest-and-typescript) at the end of this section.
 
-## What works today
+### CommonJS, Jest and TypeScript
 
-| Capability | Status |
-|---|---|
-| **Load** a segment as an immutable generation from any id stream — array, generator, warehouse cursor (`store.load`) | ✅ |
-| `has` / `count` / `iterate` — `count()` summed from the `.crbm` index with **zero payload reads** | ✅ |
-| **`intersect()`** — chunk-skipping set intersection, streamed; `union()` / `andNot()`; `exclude` folds suppression into the same pass | ✅ |
-| **`intersectInto` / `unionInto` / `andNotInto`** — materialize a result as a **new generation** of another segment | ✅ |
-| In-memory drivers (zero setup) | ✅ |
-| Persistent **local filesystem** drivers (survive restart) | ✅ |
-| **S3-compatible** storage — AWS S3 / MinIO (`@cloudbitmaps/s3`), multipart for large generations | ✅ |
-| **GCS + Azure Blob** storage (`@cloudbitmaps/gcs`, `@cloudbitmaps/azure-blob`) — write-once immutable generations | ✅ |
-| `.crbm` archive read/write + a bounded cache | ✅ |
-| **Automatic retry + backoff** for transient faults on every read that answers a query (on by default) | ✅ |
-| **Segment registry** (memory / LocalFs / **S3** / **GCS** / **Azure Blob** — run on one bucket alone) — one strong read resolves the current generation, no per-read scan | ✅ |
-| **Generation bookkeeping** — a load takes the next generation number itself and collects the objects it superseded (`keep`) | ✅ |
-| **Encryption-at-rest** (AES-256-GCM, BYOK keystore) **+ crypto-shred** (`destroySegment` / `eraseNamespace`) | ✅ |
-| **Observability** — optional metrics sink (`IMetricsSink`): `storage.get` / `cache` / `retry` / `intersect` / `op` events | ✅ |
-| **Audit trail** — optional audit sink (`IAuditSink`): publish / load-refused / rollback / rewrite / erase / dispose / namespace-erase compliance events | ✅ |
-| **Cost estimator** — `CloudRoaring.estimateCost()` (planning) + grounded `segment.costReport()` | ✅ |
-| **Benchmark-as-test** — cost/perf claims are CI-gated; published [crossover chart](../benchmarks.md) | ✅ |
-| **Subject access & erasure** (GDPR Art. 15/17: `subjectReport` / `eraseSubject` — a rewrite, physically gone on return) | ✅ |
-| **Retention** — `setRetention` records a per-segment expiry; `retireExpired` is the sweep you schedule; `dropSegment` reclaims storage | ✅ |
-| **Per-op request budget** — denial-of-wallet ceiling on `count` / `iterate` / the combines / subject scans (on by default) | ✅ |
-| **Cross-store consistency check** (`checkConsistency()`) — [torn-restore](disaster-recovery.md) detection | ✅ |
-| **Export / eject** (`exportSegments` + the `export-segments` CLI) — portable `roaring` / `ndjson` | ✅ |
+- `require('@cloudbitmaps/roaring')` works on Node 22.12 and later through Node's `require(esm)`, which is why the
+  floor is 22.12 and not 22 (22.11 throws `ERR_REQUIRE_ESM`). On 22.12 exactly you also see an
+  `ExperimentalWarning`; it is gone by Node 24. Bundlers are unaffected: esbuild, webpack, rollup and Vite were
+  verified, emitting CommonJS as well as ESM.
+- A loader that is not Node's own does not get `require(esm)`. **Jest** in its default configuration fails with
+  `Must use import to load ES Module`: use Jest's ESM support (`--experimental-vm-modules`) or `import` the
+  package. **Yarn PnP** throws `ERR_REQUIRE_ESM` on any Node version: `import` the package, or use
+  `nodeLinker: node-modules`.
+- A `.ts` file in a CommonJS package needs `"module": "nodenext"` or `"node20"`. `node16` and `node18` report
+  `TS1479` on the import. A project on `moduleResolution: bundler` is unaffected.
+- On Alpine (musl) there is no prebuilt `roaring` binary, so the install compiles it: add a toolchain first
+  (`apk add --no-cache build-base python3`) or use a glibc image such as `node:22-slim`.
 
-### Choosing a registry
+If `import` fails with `Cannot find module './build/Release/roaring.node'`, see
+[Troubleshooting](#cannot-find-module-buildreleaseroaringnode-after-a-successful-install).
 
-> **Every backend ships a registry.** `MemoryStorage`, `LocalFsStorage`, `S3Storage` (`@cloudbitmaps/s3`),
-> `GcsStorage` (`@cloudbitmaps/gcs`) and `AzureBlobStorage` (`@cloudbitmaps/azure-blob`) each carry one. **Each
-> object store can host its own pointer**, so one bucket or one container is the whole deployment — no second
-> service, and for GCS and Azure no second *cloud*. All three ride the same primitive under different names:
-> S3 `If-None-Match`/`If-Match`, GCS `ifGenerationMatch`, Azure `ifNoneMatch`/`ifMatch`.
-> A backend always carries its registry. Only a bare storage driver has none, and a store built on one is
-> **read-only and cleartext**: it list-scans the bucket for the highest generation. Encrypted segments, the `*Into`
-> verbs and every lifecycle helper (`eraseSubject`, `dropSegment`, `setRetention`, `retireExpired`,
-> `checkConsistency`, `exportSegments`) need the registry, so they need a backend. Full registry details are in
-> [the segment registry](#the-segment-registry-resolving-the-current-generation).
+## Your first segment, in memory
 
-## The simplest thing: in-memory
+Save this as `first-run.mjs` (the `.mjs` extension lets it use top-level `await`) and run `node first-run.mjs`:
 
-A `CloudRoaring` store is wired to one **backend** — the object that knows where the `.crbm` generations go and
-where the pointer that says which one is current goes. That is the only required option. A `segment` is one
-named bitmap, and data gets into it **by loading a generation**: `store.load(ref, ids)` writes one immutable
-object and moves the pointer to it. `MemoryStorage` needs no setup — ideal for tests and a first look:
-
-```ts
+```js
 import { CloudRoaring, MemoryStorage } from '@cloudbitmaps/roaring';
 
-// One object carries both halves — where the generations go, and where the pointer goes.
 const store = new CloudRoaring({ storage: new MemoryStorage() });
 
-// Load a generation: any sync or async iterable of ids — an array here, a warehouse cursor in the loading guide.
-await store.load({ segment: 'high-value-shoppers' }, [5, 99_999, 1_234_567_890, 2_000_000_000]);
+// A load replaces a segment's contents with the ids you give it.
+await store.load({ segment: 'shoppers' }, [5, 99_999, 1_234_567_890]);
+await store.load({ segment: 'active' }, [5, 7, 1_234_567_890]);
 
-// Read it.
-const vips = store.segment('high-value-shoppers');
-await vips.has(1_234_567_890); // → true
-await vips.count(); // → 4, summed from the index — no chunk is fetched
-for await (const id of vips.iterate()) {
-  // ascending ids
+const shoppers = store.segment('shoppers');
+console.log(await shoppers.has(99_999)); // true
+console.log(await shoppers.count()); // 3
+
+const both = [];
+for await (const id of shoppers.intersect([store.segment('active')])) both.push(id);
+console.log(both); // [ 5, 1234567890 ]
+```
+
+The output is:
+
+```
+true
+3
+[ 5, 1234567890 ]
+```
+
+What happened:
+
+- `MemoryStorage` is a **backend**: the object that decides where the data lives. This one lives in the process and
+  is gone when it exits.
+- `store.load(ref, ids)` wrote one immutable **generation** holding the whole set, then moved the segment's
+  **pointer** to it. `{ segment: 'shoppers' }` is the **ref**: the name of the segment.
+- `has`, `count` and `intersect` are reads. Ids are integers from 0 up to but not including 2³².
+
+There is no `add` or `remove`. A segment changes only by loading a new generation, which replaces the old one. A
+segment that was never loaded reads as empty (`has` is `false`, `count` is `0`), so there is nothing to create first.
+
+## Keep it on disk
+
+Swap the backend and the data survives a restart:
+
+```js
+import { CloudRoaring, LocalFsStorage } from '@cloudbitmaps/roaring';
+
+const store = new CloudRoaring({ storage: new LocalFsStorage('./.cloudbitmaps') });
+await store.load({ segment: 'active-this-week' }, [1, 2, 3]);
+// A new process that opens the same folder reads the same set.
+```
+
+`LocalFsStorage` is for one process on one folder: two processes on the same folder do not protect each other from
+writing at once. Use it for a laptop, a test or a single CI job. For anything shared, use a bucket.
+
+## Load real data
+
+A load is one call. Give it any iterable of ids, in any order, with duplicates allowed. It can be an array, a
+generator, or a stream from your warehouse:
+
+```js
+import { CloudRoaring, MemoryStorage } from '@cloudbitmaps/roaring';
+
+const store = new CloudRoaring({ storage: new MemoryStorage() });
+
+// Your function: yields the user ids your warehouse query returns.
+async function* idsFromWarehouse() {
+  for (const id of [11, 12, 13]) yield id;
+}
+
+const result = await store.load({ segment: 'audience:active' }, idsFromWarehouse(), {
+  guard: { minRetained: 0.5 }, // refuse a load that would drop more than half the segment
+});
+
+if (!result.published) {
+  console.warn(`load refused: ${result.reason} (${result.cardinalityBefore} -> ${result.cardinality})`);
 }
 ```
 
-IDs are integers in `[0, 2³²)`. Each is split into a 16-bit chunk key + a 16-bit remainder, and a chunk is the unit
-of storage and transfer: `has()` fetches one chunk (or answers from the cache), `count()` fetches none, and
-`intersect()` fetches only the chunks two segments could share.
+Three things to know:
 
-**There is no `add` or `remove` on a segment.** A segment changes by getting a *new generation* — the next load
-supersedes the previous one, an `*Into` verb writes a new generation of its destination ([the `*Into` verbs](loading.md#materializing-the-into-verbs)),
-and a GDPR erasure rewrites the current generation without one id ([erasure](erasure.md#subject-access--erasure-gdpr-art-15--17)).
-A segment that has never been loaded reads as empty — `has(x) → false`, `count() → 0`, `iterate() → []` — without
-throwing, so there is nothing to create before the first load.
+- **Branch on `published`.** A load replaces the segment, so an upstream query that returns too little is a shrink
+  nobody asked for. A refusal is reported in the result, not thrown, so a result you ignore is a load that did
+  nothing. The `guard` says what counts as too little; an empty result over a non-empty segment is always
+  refused unless you pass `allowEmpty: true`. The reasons are listed in
+  [Loading in depth](loading.md#when-a-load-is-refused).
+- **A load is a batch job, not a request handler.** It holds the whole set in memory and uses a core for a moment.
+  Run it from a scheduled job, a queue consumer or a short-lived container, and keep the request path for reads.
+- **There is no `create`.** `store.exists({ segment })` answers "is there data here already?" with one cheap
+  lookup, and `store.segments()` lists what the registry holds. Do not keep your own list of names.
 
-## Persistent: the local filesystem
+Rolling back, how many old generations to keep and the other things a load does are in
+[Loading in depth](loading.md).
 
-Same API, but state lives on disk and survives a restart. Pass a `LocalFsStorage` backend as `storage` — it
-names one root and derives both halves from it, so you wire the location exactly once:
+## Read it
 
-```ts
-import { CloudRoaring, LocalFsStorage } from '@cloudbitmaps/roaring';
+```js
+const shoppers = store.segment('shoppers');
+const active = store.segment('active');
+const optedOut = store.segment('global-opt-out', { namespace: 'suppression' });
 
-// One root: generations under `./.cloudbitmaps/storage`, pointers under `./.cloudbitmaps/registry`.
-const backend = new LocalFsStorage('./.cloudbitmaps');
-const store = new CloudRoaring({ storage: backend, cache: { maxChunks: 1024 } }); // optional cache ceiling
+await shoppers.has(5); // true or false: fetches one chunk
+await shoppers.count(); // the exact size, from the index; fetches no data
 
-await store.load({ segment: 'active-this-week' }, activeUserIds);
-// ...a fresh process pointed at the same dirs reads the same generation — the object and the pointer are durable.
+for await (const id of shoppers.iterate()) {
+  // every id, ascending
+}
+
+// ids in both segments; fetches only the chunks both could contain
+for await (const id of shoppers.intersect([active])) {
+  // ...
+}
+
+// ids in either, and ids in this one but not the other
+for await (const id of shoppers.union([active])) {
+  // ...
+}
+for await (const id of shoppers.andNot([optedOut])) {
+  // ...
+}
+
+// the intersection minus a suppression list, in one pass
+for await (const id of shoppers.intersect([active], { exclude: [optedOut] })) {
+  // ...
+}
+
+// write the result as a new generation of another segment
+const saved = await shoppers.intersectInto(store.segment('campaign-targets'), [active]);
+console.log(saved.cardinality); // how many ids the new generation holds
 ```
 
-> **A root is for one process.** Every instance in a process that names the same root shares one lock per
-> registry row, however the root is spelled (a relative path, a symlink), so a store and a CLI call in that
-> process cannot both advance one row from the same token. Two processes on one root are **not** fenced from each
-> other: the pointer's compare-and-swap is a read-then-rename, and it is only serialized inside the process. Give
-> each process its own root, or use an object-store backend, whose registry is fenced by the store itself.
+Every segment you read, including every `exclude`, must have been loaded: a name that was never loaded is refused,
+so a mistyped suppression list cannot silently suppress nobody. Every option, and the exact meaning of each verb,
+is in the [segment verbs table](api-reference.md#the-segment-verbs-the-90-of-daily-use). How soon a reader sees a
+new load, and how to read one fixed point in time, are in [Reading in depth](reading.md).
 
-> **The `storage` option takes three shapes, and you want the first.** A **backend** (`MemoryStorage`,
-> `LocalFsStorage`, `S3Storage`, `GcsStorage`, `AzureBlobStorage`) carries both halves — the generations and
-> the pointer — from one bucket and one prefix, and is the whole wiring. Below it, a **raw `IStorageDriver`**
-> still works, but it has no pointer, so generations resolve by list-scan: **cleartext and read-only**. Or pass
-> an already-built **`StorageChunkSource`** — a `CrbmStorageChunkSource` you configured with advanced reader
-> options (`tailBytes`, size caps), or one of your own. On
-> that path, configure the registry and keystore **on the source itself**: the store has no `registry` option, and
-> an `encryption.keystore` or `encryption.required: true` beside a pre-built source is rejected as a wiring mistake.
-> The store is then **read-only**: the `*Into` verbs and the lifecycle helpers need the raw driver to write through,
-> and they, like `exists`, `segments`, `subjectReport` and `exportSegments`, throw `UnsupportedError`.
->
-> **`backend.storage` is only the storage half** — a raw driver — so passing it as `storage` constructs without
-> complaint and builds the read-only, cleartext store above rather than a backend's; pass the backend itself. Two
-> wirings are refused at construction, with `CapabilityError`: a driver that cannot serve range reads, and a
-> keystore or `encryption.required: true` on a bare driver, which has no registry to hold wrapped keys.
-
-**A key the store does not take is refused, not ignored.** `new CloudRoaring({ … })` throws `ValidationError` for
-any option it does not take, at the top level or inside a group (`cache.maxChunk`, a `keystore` beside
-`encryption`), naming each one and the keys it does take; a `registry` key is refused the same way, because a
-backend carries it. `S3Storage`, `GcsStorage` and `AzureBlobStorage` refuse an unknown key the same way, so a typo
-in a client or endpoint option cannot quietly build a client against the default endpoint.
-
-## Loading a segment
-
-Loading is covered in [Loading in depth](loading.md).
-
-## Storage on S3 (or any S3-compatible store)
-
-> **If you construct the SDK client yourself, declare the SDK in your own `package.json` too.** The driver
-> package depends on it, so it is in your tree — but importing a package you did not declare is not
-> guaranteed to resolve, and pnpm refuses it by default. You only need this if *your* code names
-> `@aws-sdk/client-s3`, as the snippets below do.
-
-The S3 storage driver is its own package, **`@cloudbitmaps/s3`**, which depends on `@aws-sdk/client-s3` for
-real — so `pnpm add @cloudbitmaps/s3` is the whole step, and nothing pulls that SDK unless you install it.
-You can inject your own `S3Client`, so the driver works against AWS S3, MinIO, or any compatible backend just
-by how you configure the client:
-
-```ts
-import { S3Client } from '@aws-sdk/client-s3';
-import { CloudRoaring } from '@cloudbitmaps/roaring';
-import { S3Storage } from '@cloudbitmaps/s3';
-
-// Bucket and prefix stated ONCE, for both halves. It builds its own client from the ambient credential
-// chain; pass `client` for one the SDK cannot infer, or `endpoint` + `pathStyle` + `credentials` for MinIO/R2
-// (a `client` carries its own, so giving both is refused).
-const backend = new S3Storage({ bucket: 'my-bitmaps', prefix: 'cloudbitmaps', region: 'us-east-1' });
-
-const store = new CloudRoaring({ storage: backend });
-
-// Load a generation straight to S3, then read it through the engine:
-await store.load({ segment: 'active-this-week' }, ids);
-await store.segment('active-this-week').count(); // read from the .crbm index on S3 — no payload GET
-```
-
-It's the same `IStorageDriver` contract as the local-filesystem driver (it passes the identical conformance
-suite), so everything above — reads, `count`, `iterate`, `intersect`, generation pinning — works unchanged.
-Generations are **write-once** (a conditional `If-None-Match:*` PUT; requires a backend that honors it — AWS
-S3 or recent MinIO). Large objects upload via **S3 multipart automatically** — write memory stays
-~one part (default 8 MiB), and the object ceiling defaults to ≈80 GiB (10,000 parts), with write-once preserved
-(conditional `CompleteMultipartUpload`).
-
-The ceiling grows up to S3's 5 TiB through `partBytes` and `maxObjectBytes`, which are options of `S3Storage`:
-
-```ts
-import { CloudRoaring } from '@cloudbitmaps/roaring';
-import { S3Storage } from '@cloudbitmaps/s3';
-
-const store = new CloudRoaring({
-  storage: new S3Storage({
-    bucket: 'my-bitmaps',
-    prefix: 'cloudbitmaps',
-    partBytes: 64 * 1024 * 1024, // 10,000 parts of 64 MiB ≈ 625 GiB
-  }),
-});
-```
-
-A write holds about one part in memory, so a larger part costs the writer that much more.
-
-## The segment registry (resolving the current generation)
-
-Each segment is a series of immutable, generation-numbered `.crbm` objects; reads need to know **which
-generation is current**. Without a registry, the store finds it by *listing* every generation and taking the
-max — one storage scan per segment, cleartext only, and read-only. The **registry** replaces that with a single
-authoritative record (`currentGen`) read once, and it is what every write publishes through:
-
-```ts
-import { CloudRoaring, LocalFsStorage } from '@cloudbitmaps/roaring';
-
-const backend = new LocalFsStorage('./.cloudbitmaps');
-const store = new CloudRoaring({ storage: backend });
-
-// Write the object AND move the pointer, in one call:
-await store.load({ segment: 'active' }, [1, 2, 3]);
-
-// The backend carries the pointer, so the store resolves currentGen with one read (no list-scan):
-await store.segment('active').count(); // → 3, generation resolved from the registry
-```
-
-**The registry half** is a pluggable seam (`IRegistryDriver`), independent of the storage half. There is no
-`registry` option on the store, and **you choose one by choosing a backend**: each brings its own, in the same
-bucket as the generations. A plain `{ storage, registry }` object is refused.
-
-| Backend | Import | Its registry lives |
-| --- | --- | --- |
-| `MemoryStorage` | `@cloudbitmaps/roaring` | in process: tests / dev |
-| `LocalFsStorage` | `@cloudbitmaps/roaring` | under the root's `registry` directory: single node / on-prem, one process on one root; two processes on a root are not fenced |
-| `S3Storage` | `@cloudbitmaps/s3` | **in the same bucket as your storage data — one store, no second service** |
-| `GcsStorage` | `@cloudbitmaps/gcs` | the same, on Google Cloud Storage |
-| `AzureBlobStorage` | `@cloudbitmaps/azure-blob` | the same, on Azure Blob Storage |
-
-The **S3 backend's registry** keeps the current-generation pointer as a tiny object in the *same bucket* as your
-Storage data, using S3's conditional writes (`If-Match`) for the atomic generation swap — so a deployment runs on
-**S3 only**:
-
-```ts
-import { S3Client } from '@aws-sdk/client-s3';
-import { CloudRoaring } from '@cloudbitmaps/roaring';
-import { S3Storage } from '@cloudbitmaps/s3';
-
-const s3 = new S3Client({ region: 'us-east-1' }); // or let S3Storage build one
-const backend = new S3Storage({ bucket: 'my-bitmaps', client: s3 }); // one bucket, no second service
-const store = new CloudRoaring({ storage: backend });
-```
-
-> **The registry reads only rows the library wrote.** Each persisted row is a small JSON object under `registry/`, and one
-> that does not parse as the library's own — hand-edited, written by another tool, a field it does not declare, no
-> `schemaVersion`, a `status` other than `active` or `destroyed` — fails with `IntegrityError` naming the object's
-> key. It fails its own `get` **and every `list()` that reaches it**: its namespace's, and every unscoped one. So one
-> bad object stops `segments()`, the retention sweep, the subject scans and `checkConsistency()` across the fleet,
-> rather than letting them skip a segment whose generations would then look unreferenced. Restore the object to a
-> valid row, or delete it, and enumeration resumes. A row from a newer build, with a higher `schemaVersion`, is
-> refused with `UnsupportedError`.
-
-The record also carries `status` (`active`, or the `destroyed` tombstone a crypto-shred or drop leaves), the
-wrapped data-key(s) of an encrypted segment (see encryption), and the `retention` policy (see retention). `currentGen` can be
-**`null`** — a row `setRetention` minted before the first load — which reads exactly like a segment with no row
-and takes the first publish. A load is how a generation is published, and the pointer only moves forward.
-
-## Production wiring for the cloud drivers
-
-The S3 sections above wired S3. The two remaining clouds — GCS and Azure Blob — follow the same shape: the backend builds its own
-client, or takes one you built. Each hosts **both** the storage tier and the registry, so either one is a complete
-deployment on its own (see [Choosing a registry](#choosing-a-registry)). Each backend refuses an option key it does
-not take, by name, and the error lists the keys it does take.
-
-### GCS — storage + registry (`@cloudbitmaps/gcs`)
-
-```ts
-import { CloudRoaring } from '@cloudbitmaps/roaring';
-import { GcsStorage } from '@cloudbitmaps/gcs';
-
-// Builds its own client from ADC; pass `apiEndpoint` to point at fake-gcs-server locally, or `client` for your own
-// (which carries its own, so giving both is refused).
-const backend = new GcsStorage({ bucket: 'my-bitmaps', prefix: 'cloudbitmaps' });
-const store = new CloudRoaring({ storage: backend }); // one bucket is the whole deployment
-```
-
-> **Checklist.** `@google-cloud/storage` is a real dependency of `@cloudbitmaps/gcs`, not a peer — installing
-> the package installs it. Generations are write-once via `ifGenerationMatch: 0` (both the
-> simple and resumable upload paths), and the registry swaps the pointer with `ifGenerationMatch: <generation>`.
-> A client you built yourself goes in `client`. `@google-cloud/storage` names its client class `Storage`, which reads
-> as this library's word for the durable tier, so `GcsStorage` refuses `storage` as a key: in `CloudRoaring`'s
-> options, `storage` is the backend.
-
-### Azure Blob — storage + registry (`@cloudbitmaps/azure-blob`)
-
-```ts
-import { CloudRoaring } from '@cloudbitmaps/roaring';
-import { AzureBlobStorage } from '@cloudbitmaps/azure-blob';
-
-// Give it a container client, or a connection string + container name and it builds one.
-const backend = new AzureBlobStorage({
-  connectionString: process.env.AZURE_CONN,
-  container: 'bitmaps',
-  prefix: 'cloudbitmaps',
-});
-const store = new CloudRoaring({ storage: backend }); // one container is the whole deployment
-```
-
-> **Checklist.** `@azure/storage-blob` is a real dependency of `@cloudbitmaps/azure-blob`, not a peer.
-> Give it a connection string and a container name, as above, or a container-scoped `ContainerClient` as
-> `containerClient` — one or the other, since both is refused. Generations are
-> write-once via `If-None-Match: '*'`, and the registry swaps the pointer with `If-Match: <etag>`.
-
-Per-backend DR/backup guidance (RPO/RTO, point-in-time recovery, what to snapshot) lives in the
-[disaster-recovery runbook](disaster-recovery.md).
-
-<a id="6-reliability-retries-backoff--timeouts"></a>
-
-Reliability, retries, backoff and timeouts: see [Before production](production.md#reliability-retries-backoff--timeouts).
-
-<a id="135-retention-ttl-and-pruning--what-exists-and-what-doesnt"></a>
-
-Retention, TTL and pruning: see [Retention](retention.md#retention-ttl-and-pruning--what-exists-and-what-doesnt).
-
-## The operations
-
-| Method | Returns | Notes |
-|---|---|---|
-| `has(id)` | `Promise<boolean>` | `ValidationError` if `id ∉ [0, 2³²)`. The cache, else **one** ranged GET of that id's chunk — never budgeted |
-| `count()` | `Promise<number>` | exact cardinality, summed from the `.crbm` index with **zero payload reads** on a loaded segment; `budget`-guarded on a source without an index ([the per-op budget](production.md#cost-ceiling-the-per-op-fan-out-budget)) |
-| `iterate({ after?, through? }?)` | `AsyncIterable<number>` | ascending, one chunk at a time; `budget`-guarded. With a range, only the ids in `(after, through]` and the chunks it overlaps ([Page through a segment](reading.md#page-through-a-segment)) |
-| `intersect(others, { after?, through?, exclude?, concurrency?, budget? })` | `AsyncIterable<number>` | ascending; chunk-skipping. `exclude` subtracts suppression segments **in the same pass** |
-| `union(others, { after?, through?, exclude?, concurrency?, budget? })` | `AsyncIterable<number>` | ascending. The one composite with **no** chunk-skipping — every chunk of every operand is read |
-| `andNot(excludes, { after?, through?, concurrency?, budget? })` | `AsyncIterable<number>` | ascending. Reads all of `this`; each suppression list **only where it overlaps** |
-| `intersectInto` / `unionInto` / `andNotInto` `(dest, …)` | `Promise<MaterializeResult>` | write the result as a **new generation of `dest`** (superseding it, and with a range, holding only the ids inside it) — `{ generation, published, reason?, cardinality, cardinalityBefore, chunkCount, size, collected }`. Needs a backend |
-| `costReport({ workload?, pricing? })` | `Promise<CostReport>` | grounded $ report from this segment's real `.crbm` size ([cost](cost.md#cost-estimate-it-then-ground-it)) |
-
-There is no per-id write on a segment: data enters as a generation — `store.load`
-([loading](loading.md#loading-a-segment)) or an `*Into` verb — and leaves the same way (`eraseSubject`, `dropSegment`).
-
-**Every combine refuses an operand that names no segment** — `this`, every other operand and every `exclude` —
-with `ValidationError` naming it: one that holds no chunks and has no registry row. A mistyped exclude would
-otherwise suppress nobody. Pass `allowAbsentOperands: true` in the combine's options to read such a name as empty
-([the `*Into` verbs](loading.md#materializing-the-into-verbs) has the rule).
-
-**What each combine has to read** — a property of the set operation, not of the implementation:
-
-| | chunks read | can skip? |
-| --- | --- | --- |
-| `intersect` | keys present in **every** operand | yes — the crown jewel |
-| `andNot` (`a \ s`) | every chunk of `a`; `s` **only where it overlaps `a`** | partly |
-| `union` | every chunk of **every** operand | no |
-
-All three are charged against the same per-op budget, so a wide `union` is refused rather than quietly billed.
-To suppress the result of an intersection, pass `exclude` rather than chaining — chaining materializes an
-intermediate segment and reads the suppression list in full.
-
-Failures are **typed errors** (`ValidationError`, `WriteConflictError`, `IntegrityError`, `UnsupportedError`, …),
-never thrown strings — so callers can branch on *why* something failed.
+`intersect` streams ids and holds only a small window of data in memory, so it runs over very large segments in a
+small or serverless process. Suppress with `exclude` instead of chaining: chaining writes an intermediate segment
+and reads the suppression list in full.
 
 ### Coming from Redis bitmaps?
 
@@ -450,46 +234,66 @@ forms of `BITCOUNT` have no equivalent either: this is a set of ids, not an addr
 they get built depends on someone saying they need them. Everything reached through bitmap *operations*
 transfers today; everything reached through the bytes does not.
 
-## Intersecting segments (the crown jewel)
+## Move to S3, GCS or Azure
 
-`intersect` streams the ids present in **every** operand, ascending — and only ever downloads the Storage chunks
-whose 16-bit key appears in *all* of them, so two huge segments that barely overlap transfer almost nothing:
+Install the storage package for your cloud and swap the backend. Nothing else in your code changes:
 
-```ts
-// Every operand is a loaded segment: a combine refuses one that names no segment.
-await store.load({ segment: 'high-value-shoppers' }, shopperIds);
-await store.load({ segment: 'active-this-week' }, activeIds);
-await store.load({ segment: 'opted-in' }, optedInIds);
-await store.load({ namespace: 'suppression', segment: 'global-opt-out' }, optOutIds);
+```js
+import { CloudRoaring } from '@cloudbitmaps/roaring';
+import { S3Storage } from '@cloudbitmaps/s3';
 
-const shoppers = store.segment('high-value-shoppers');
-const active = store.segment('active-this-week');
-
-// stream the ids in BOTH segments
-for await (const id of shoppers.intersect([active])) {
-  /* … */
-}
-
-// more than two: ids in all three
-for await (const id of shoppers.intersect([active, store.segment('opted-in')])) {
-  /* … */
-}
-
-// minus a suppression list, in the same pass — the opt-out list is read only where the intersection survived
-const optOut = store.segment('global-opt-out', { namespace: 'suppression' });
-for await (const id of shoppers.intersect([active], { exclude: [optOut] })) {
-  /* … */
-}
-
-// or materialize the result as a new generation of another segment
-const res = await shoppers.intersectInto(store.segment('campaign-targets'), [active]);
-res.cardinality; // how many ids the new generation holds
+const store = new CloudRoaring({
+  storage: new S3Storage({ bucket: 'my-bitmaps', prefix: 'cloudbitmaps', region: 'us-east-1' }),
+});
 ```
 
-It holds only a bounded window of chunks in memory at a time (tune with `{ concurrency }`), so it runs over
-enormous segments in a small/serverless process. `intersect` is commutative: `a.intersect([b])` ≡
-`b.intersect([a])`. Each operand's generation is resolved once, up front, so a load publishing mid-call cannot
-tear the result.
+```js
+import { GcsStorage } from '@cloudbitmaps/gcs';
+const storage = new GcsStorage({ bucket: 'my-bitmaps', prefix: 'cloudbitmaps' });
+```
+
+```js
+import { AzureBlobStorage } from '@cloudbitmaps/azure-blob';
+const storage = new AzureBlobStorage({
+  connectionString: process.env.AZURE_CONN,
+  container: 'bitmaps',
+  prefix: 'cloudbitmaps',
+});
+```
+
+One bucket (or container) and one prefix is the whole deployment: the generations, the pointers and the wrapped
+keys of encrypted segments all live there. There is no second service to run.
+
+- **S3 needs a service that honors conditional writes** (`If-None-Match: *` and `If-Match`): AWS S3, and MinIO,
+  which the test suite runs against. Another S3-compatible service must honor both headers, or a write-once
+  generation can be overwritten without an error. Check yours.
+- **If you pass your own `client`, use `@aws-sdk/client-s3` 3.645.0 or later.** Older versions silently overwrite an
+  existing object, which loses a published generation. Declare the SDK in your own `package.json` if your code
+  imports it. `S3Storage` builds its own client from the usual credential chain when you do not pass one.
+- **GCS and Azure Blob** pass the same conformance suites as S3 and sit outside the validated envelope, which covers
+  S3 storage only. They are the right choice if you are on that cloud, but you are an early user. The
+  [roadmap](../ROADMAP.md#the-validated-envelope--whats-proven-and-what-isnt) states the exact claim.
+- The options every backend takes, and the option tables per cloud, are in the
+  [API reference](api-reference.md#build-a-store--new-cloudroaringoptions).
+
+## Before production
+
+Moving from a first run to a deployment that other people depend on takes a short checklist: permissions, a bucket
+lifecycle rule, client timeouts, a load schedule, backups. [Before production](production.md) is that checklist,
+one row per item, each linking to the detail.
+
+## When something goes wrong
+
+- **An error from the library.** Every error says whether to fix your call, retry, or look at the data. The
+  [errors table](api-reference.md#errors-typed--you-catch-these) lists each one with what to do.
+- **A load returned `published: false`.** Read `result.reason`:
+  [when a load is refused](loading.md#when-a-load-is-refused).
+- **The install or the first `import` fails**, or Node prints a deprecation warning: see
+  [Troubleshooting](#troubleshooting) below.
+- **Timeouts and retries.** <a id="6-reliability-retries-backoff--timeouts"></a>Reads retry by themselves and writes
+  are yours to re-run: [Reliability](production.md#reliability-retries-backoff--timeouts).
+- **Expiring data.** <a id="135-retention-ttl-and-pruning--what-exists-and-what-doesnt"></a>There is no per-id
+  expiry: [Retention](retention.md#retention-ttl-and-pruning--what-exists-and-what-doesnt).
 
 ## Troubleshooting
 
@@ -571,14 +375,33 @@ that flag, either drop it for the process that loads CloudBitmaps or allow this 
 **What not to do:** `--no-deprecation` silences *every* deprecation warning in your application, including ones
 about your own code. Suppressing a whole diagnostic channel to hide one known-benign line is a bad trade.
 
+## The words these docs use
+
+| Word | What it means |
+|---|---|
+| **segment** | A named set of integer ids. You load it, then read it. |
+| **generation** | One immutable file that holds a whole segment at one point in time. A load writes a new one; nothing is ever edited in place. |
+| **pointer** | The small record that names a segment's current generation. Moving it is what makes a load visible. |
+| **registry** | The place the pointers live: one small row per segment, in the same bucket as the data. |
+| **backend** | What you pass as `storage`: `MemoryStorage`, `LocalFsStorage`, `S3Storage`, `GcsStorage` or `AzureBlobStorage`. It decides where generations and pointers live. |
+| **namespace** | An optional group name for segments, such as a tenant. `{ namespace: 'eu', segment: 'active' }` is a different segment from `{ segment: 'active' }`. |
+| **ref** | The object that names a segment: `{ segment: 'active' }` or `{ namespace, segment }`. |
+| **chunk** | A block of up to 65,536 consecutive ids inside a generation. Reads fetch only the chunks they need. |
+| **cardinality** | How many ids a set holds. |
+| **guard** | The check a load makes before it publishes: it refuses a result that is empty or much smaller than the segment it replaces. |
+| **keep** | How many old generations a load leaves behind for readers still using them. The default, `1`, is right for almost everyone. |
+| **operand** | A segment you combine with another: in `a.intersect([b])`, `b` is an operand. |
+| **exclude** | A segment whose ids are removed from the result of a combine, in the same pass. |
+| **pin** | `segment.pin()` returns a handle that keeps reading the generation that was current when you pinned it. |
+| **tombstone** | The row a dropped or erased segment leaves behind, marking it as gone. |
+| **token** | An opaque value the registry row carries. It changes when the row is replaced, so a write can tell it is talking to the same segment it read. |
+| **fence** | A write that names the generation and token it expects to replace, and is refused if either moved. Loads do this for you. |
+
 ## Where next
 
-- [Roadmap](../ROADMAP.md) — what's shipped, the **validated envelope** (what's proven and what isn't), the
-  path to `1.0`, and what we've deliberately said no to.
-- [API Reference](api-reference.md) — every export, kept in sync with the code by CI.
-- Writing your own storage driver? A shared **conformance suite** (`packages/roaring/src/testing/conformance.ts`) is the bar
-  every driver in this repository passes. It is an internal helper, consumed in-repo through the `@/` alias and
-  not exported as a public `./testing` package subpath, so a driver outside the repository cannot run it; the
-  [driver kit](api-reference.md#driver-kit--what-you-need-to-implement-a-driver) lists the behaviours to reproduce
-  by hand. The suite covers `IStorageDriver` (`storageDriverConformance`) as well as `IRegistryDriver` and
-  `StorageChunkSource`.
+- [Before production](production.md): the checklist.
+- [Loading in depth](loading.md) and [Reading in depth](reading.md).
+- [The guide index](README.md): retention, encryption, erasure, observability, export and disaster recovery.
+- [API reference](api-reference.md): every export, kept in sync with the code by CI.
+- [Roadmap](../ROADMAP.md): what is shipped, the **validated envelope** (what is proven and what is not), and the
+  path to `1.0`.

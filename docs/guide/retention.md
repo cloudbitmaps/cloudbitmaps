@@ -67,7 +67,7 @@ for await (const id of head.union(rest, { allowAbsentOperands: true })) { /* …
 > flat name, finding "every daily bucket" means string-matching instead.
 
 `union` reads every chunk of every operand — it can't skip, and the guide says so in
-[the operations table](getting-started.md#the-operations). If a 7-way union per read is too much, materialize the window with
+[the operations table](api-reference.md#the-segment-verbs-the-90-of-daily-use). If a 7-way union per read is too much, materialize the window with
 `unionInto` — into a dated target, or into one rolling target; either is correct, because an `*Into` verb
 **supersedes** its destination rather than adding to it, so a rolling `active-7d` re-materialized each day holds
 exactly that day's window:

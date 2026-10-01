@@ -2,6 +2,19 @@
 
 How a load works, how generations are kept and collected, how to roll back, and the `*Into` verbs.
 
+## When a load is refused
+
+A load that is refused returns `published: false` and a `reason`. It does not throw. The previous generation stays
+current, and the result still carries the numbers (`cardinality`, `cardinalityBefore`) so you can log what was
+refused.
+
+| `reason` | Means | What to do |
+|---|---|---|
+| `'empty'` | The ids produced nothing, and the segment is not empty. | Usually an upstream query that failed quietly. Fix it and re-run, or pass `allowEmpty: true` if emptying the segment is the point. |
+| `'min-cardinality'` | The set has fewer ids than `guard.minCardinality`. | Check the source. Lower the guard if the smaller set is real. |
+| `'min-retained'` | The set is smaller than `guard.minRetained` times the current segment. | The same: a shrink bigger than you allowed. |
+| `'superseded'` | Another writer got there first: another load took the same generation number, or the segment's row changed while this load was writing. | Re-run the load. |
+
 ## Loading a segment
 
 Loading is **the** write path, and `store.load(ref, ids)` is how you do it:
