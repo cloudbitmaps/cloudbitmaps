@@ -167,6 +167,8 @@ const processLib = require_(join(ROOT, 'bench', 'lib', 'calibrate-process.cjs'))
   }) => string;
   harnessRef: (root: string, env?: Record<string, string | undefined>) => string;
   measuredVersion: (root: string) => string;
+  measuredSdk: (root: string) => { clientS3: string; nodeHttpHandler: string };
+  SDK_DEFAULT_MAX_SOCKETS: number;
   HARNESS_FILES: string[];
   failureOf: (err: unknown) => string | null;
   stopThenTearDown: (i: {
@@ -1376,6 +1378,59 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  // The scratch directory is deleted after the results are copied, so the SDK that produced every latency survives
+  // only in the file. The versions are read from what is installed, the handler from under the client.
+  it('records the SDK client and its HTTP handler, as installed, and the socket cap it leaves alone', () => {
+    const root = mkdtempSync(join(tmpdir(), 'calib-sdk-'));
+    const put = (rel: string, version: string): void => {
+      mkdirSync(join(root, dirname(rel)), { recursive: true });
+      writeFileSync(join(root, rel), JSON.stringify({ version }));
+    };
+    // Run in a process of its own with no NODE_PATH: the test runner sets one that reaches this checkout's own
+    // hoisted packages, which a directory with nothing installed must not find.
+    const sdkIn = (
+      dir: string,
+    ): { out?: { clientS3: string; nodeHttpHandler: string }; error?: string } => {
+      const run = spawnSync(
+        process.execPath,
+        [
+          '-e',
+          `try { process.stdout.write(JSON.stringify({ out: require(${JSON.stringify(
+            join(ROOT, 'bench', 'lib', 'calibrate-process.cjs'),
+          )}).measuredSdk(${JSON.stringify(dir)}) })); } catch (e) { process.stdout.write(JSON.stringify({ error: e.message })); }`,
+        ],
+        { env: { PATH: process.env.PATH ?? '' }, encoding: 'utf8' },
+      );
+      return JSON.parse(run.stdout) as {
+        out?: { clientS3: string; nodeHttpHandler: string };
+        error?: string;
+      };
+    };
+    try {
+      expect(sdkIn(root).error).toMatch(/no @aws-sdk\/client-s3 installed/);
+      put('node_modules/@aws-sdk/client-s3/package.json', '3.1000.0');
+      expect(sdkIn(root).error).toMatch(/no @smithy\/node-http-handler/);
+      put('node_modules/@smithy/node-http-handler/package.json', '4.12.1');
+      expect(sdkIn(root).out).toEqual({ clientS3: '3.1000.0', nodeHttpHandler: '4.12.1' });
+      // The handler is the one under the client, not another at the top: a nested install wins.
+      put(
+        'node_modules/@aws-sdk/client-s3/node_modules/@smithy/node-http-handler/package.json',
+        '4.99.0',
+      );
+      expect(sdkIn(root).out?.nodeHttpHandler).toBe('4.99.0');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+    // This checkout's own install resolves, and the cap is the SDK's default of 50.
+    const real = processLib.measuredSdk(ROOT);
+    expect(real.clientS3).toMatch(/^\d+\.\d+\.\d+/);
+    expect(real.nodeHttpHandler).toMatch(/^\d+\.\d+\.\d+/);
+    expect(processLib.SDK_DEFAULT_MAX_SOCKETS).toBe(50);
+    const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
+    expect(src).toContain('sdk,\n      maxSockets: SDK_DEFAULT_MAX_SOCKETS,');
+    expect(src).toContain('sdk = measuredSdk(ROOT);');
   });
 
   // A run is named dirty by the files it executes. A module the harness requires that the list leaves out could be

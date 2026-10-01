@@ -242,6 +242,11 @@ hang-up on a real pseudo-terminal that is then closed, and the whole path by int
   chunks per operand (about 516 bytes each) plus one 256 KiB read from the end of each object, which fetches the
   footer and index in a single round trip. They are reported apart: the chunk count is the proportional part and
   the tail read is a fixed cost per operand, and a single "fraction fetched" would describe neither.
+- **The SDK that sent the requests.** `measured.sdk` holds the versions of `@aws-sdk/client-s3` and of the HTTP handler
+  under it, read from what is installed (a CloudShell run installs the latest and deletes the scratch directory once the
+  results are copied out), with `maxSockets: 50`, the handler's default, which the harness does not set. It bounds how many
+  requests can really be in flight: an `andNot` keeps 8 keys in flight and fetches every exclude of a key at once, so on its
+  first shared keys it wants more than 50, and its latency is read against that.
 - **What it measured.** The package version, the harness commit (marked `-dirty` when the harness had uncommitted
   edits, since the commit alone would name a harness that did not run), the Node version, and how the timed stores
   were built.

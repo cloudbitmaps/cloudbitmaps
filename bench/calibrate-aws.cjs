@@ -95,6 +95,8 @@ const {
   writeResultsFile,
   harnessRef,
   measuredVersion,
+  measuredSdk,
+  SDK_DEFAULT_MAX_SOCKETS,
 } = require('./lib/calibrate-process.cjs');
 
 const ROOT = resolve(__dirname, '..');
@@ -392,6 +394,7 @@ async function main() {
   // A cleanup needs neither the library nor a projection, so it also runs on a checkout that has not been built.
   let pricing;
   let packageVersion;
+  let sdk;
   let layout;
   let spread = null;
   let sweepLayouts = [];
@@ -403,6 +406,7 @@ async function main() {
     let AWS_US_EAST_1_ONDEMAND;
     ({ AWS_US_EAST_1_ONDEMAND } = await import('@cloudbitmaps/roaring'));
     packageVersion = measuredVersion(ROOT);
+    sdk = measuredSdk(ROOT);
     pricing = AWS_US_EAST_1_ONDEMAND;
     layout = planLayout({ segments: SEGMENTS, idsPerSegment: IDS, ...DEFAULT_LAYOUT });
     // The spread layout has the calibration layout's overlap: the same shared chunks, the same ids in every chunk.
@@ -697,7 +701,16 @@ async function main() {
     // only because the SDK requires one.
     target: REHEARSE ? 'minio (rehearsal — NOT a real cloud measurement)' : 'aws',
     region: REHEARSE ? 'n/a (local container)' : region,
-    measured: { packageVersion, harness: harnessRef(ROOT), node: process.version },
+    measured: {
+      packageVersion,
+      harness: harnessRef(ROOT),
+      node: process.version,
+      // The AWS SDK that sent every request, and the socket cap of its handler, which bounds how many a stage can have
+      // in flight. The cap is the SDK's own default and the harness does not set it.
+      sdk,
+      maxSockets: SDK_DEFAULT_MAX_SOCKETS,
+      maxSocketsSource: 'the SDK default, not set by the harness',
+    },
     pricing: pricing.name,
     workload: {
       segments: SEGMENTS,

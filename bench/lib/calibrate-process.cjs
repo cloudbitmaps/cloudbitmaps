@@ -10,6 +10,7 @@
 const { execFileSync } = require('node:child_process');
 const { mkdirSync, readFileSync, writeFileSync } = require('node:fs');
 const { dirname, join } = require('node:path');
+const { createRequire } = require('node:module');
 const { clearTimeout, setTimeout } = require('node:timers');
 
 const { redact } = require('./calibrate-guards.cjs');
@@ -241,8 +242,41 @@ function measuredVersion(root) {
   );
 }
 
+/** How many sockets the SDK's HTTP handler opens to one host unless told otherwise. The harness does not set it. */
+const SDK_DEFAULT_MAX_SOCKETS = 50;
+
+/**
+ * The versions of the AWS SDK client and of the HTTP handler under it that a run used, read from what is installed
+ * under `root`. The scratch directory a CloudShell run installs into is deleted once the results are copied out, so the
+ * file is the only place they survive; and the handler's socket cap bounds how many requests a stage can really have
+ * in flight, which a latency has to be read against. A directory with neither is refused, as `measuredVersion` does.
+ */
+function measuredSdk(root) {
+  const version = (from, spec) => {
+    let file;
+    try {
+      file = createRequire(from).resolve(`${spec}/package.json`);
+    } catch (err) {
+      if (err?.code === 'MODULE_NOT_FOUND') return null;
+      throw err;
+    }
+    return { file, version: JSON.parse(readFileSync(file, 'utf8')).version };
+  };
+  const client = version(join(root, 'package.json'), '@aws-sdk/client-s3');
+  if (client === null) throw new Error(`no @aws-sdk/client-s3 installed under ${root}`);
+  const handler = version(client.file, '@smithy/node-http-handler');
+  if (handler === null) {
+    throw new Error(
+      `no @smithy/node-http-handler under the @aws-sdk/client-s3 installed in ${root}`,
+    );
+  }
+  return { clientS3: client.version, nodeHttpHandler: handler.version };
+}
+
 module.exports = {
   measuredVersion,
+  measuredSdk,
+  SDK_DEFAULT_MAX_SOCKETS,
   interruptGate,
   isInterruption,
   failureOf,

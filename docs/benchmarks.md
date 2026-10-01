@@ -281,12 +281,12 @@ The loaded store's own measurements are the next benchmark pass. The single-buck
 operands spanning ~2,000 chunks with 100 shared — the chunk-skipping ratio the at-scale section reports, at a quarter
 of its density — and again with the same overlap spread uniformly over each segment's chunks; a sweep over how many
 chunks the operands share; the same intersects answered again from memory, held to no requests at all; `has()` and
-`count()`, cold and then warm; and `andNot` of one segment against ten. Every request the single-bucket topology
+`count()` and `has()`, as a first read, on an open segment and warm; and `andNot` of one segment against ten. Every request the single-bucket topology
 bills, pointer reads and conditional PUTs included, is counted attempt by attempt and by stage. Each intersect must
 return exactly the planned ids or no latency is reported, and each cold one turns off its store's timed pointer
 refresh, so its request count does not move with the network. Every run records its own round-trip floor to the
 region and labels its latency in-region only below 30 ms — a line that keeps another continent out, not a
-neighbouring region, so the raw floor is recorded with it for a reader who wants a stricter one. Its run
+neighbouring region, so the raw floor is recorded with it for a reader who wants a stricter one, and so is the region the shell ran in. Each cold intersect also records how many requests were in flight at once and how many it waited for one after another, and every run records the AWS SDK and handler versions and the handler's socket cap. Its run
 `2026-09-23-94416`, from a laptop, paid the cost side above; it timed a write and a publish rather than
 `store.load()`, and ran on the store's default refresh, which is why its median intersect read each pointer twice. A
 run from AWS CloudShell can pay the rows it measures: in-region intersect and point-read latency, load throughput,
