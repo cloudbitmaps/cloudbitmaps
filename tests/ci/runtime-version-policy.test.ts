@@ -100,11 +100,18 @@ describe('runtime version policy is consistent across every declaration', () => 
     //
     // CHANGELOG.md is deliberately out of scope: its old entries state the floor that was correct when they
     // were written, and rewriting history to match today's number would make it a worse record.
+    const markdownUnder = (dir: string, prefix: string): string[] =>
+      readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+        const rel = `${prefix}/${entry.name}`;
+        if (entry.isDirectory()) return markdownUnder(join(dir, entry.name), rel);
+        return entry.name.endsWith('.md') ? [rel] : [];
+      });
     const DOCS = [
       'README.md',
       'CONTRIBUTING.md',
       'SECURITY.md',
-      'docs/guide/getting-started.md',
+      // Every page under docs/, derived, so a page a split creates is covered on the day it exists.
+      ...markdownUnder(join(ROOT, 'docs'), 'docs'),
       // Every package README, derived: these are npm landing pages, and the one a new package adds is where a
       // wrong floor is cheapest to write and least likely to be noticed.
       ...readdirSync(join(ROOT, 'packages'), { withFileTypes: true })
@@ -112,6 +119,8 @@ describe('runtime version policy is consistent across every declaration', () => 
         .map((e) => `packages/${e.name}/README.md`)
         .sort(),
     ];
+    expect(DOCS).toContain('docs/guide/getting-started.md');
+    expect(DOCS).toContain('docs/guide/production.md');
     // These two must state the floor. If a rewording drops it from EITHER, that is the silent regression this
     // test exists for — a global "something matched somewhere" count would let the README lose its statement
     // entirely and still read 1.
