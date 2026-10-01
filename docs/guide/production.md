@@ -9,6 +9,7 @@ checklist: work down the table, and follow each link for the detail.
 | An abort rule for incomplete uploads is on the bucket | A killed process leaves multipart parts that are billed but invisible | [Bucket lifecycle](#bucket-lifecycle) |
 | Nothing expires current objects or the `registry/` prefix | An expired pointer or generation makes a live segment unreadable | [Bucket lifecycle](#bucket-lifecycle) |
 | Versioning and backups cover the data and the pointers | A restore must bring both back to the same point in time | [Versioning and backups](#versioning-and-backups) |
+| With versioning on, noncurrent versions expire after your restore window | Each generation a load collects is otherwise billed for as long as the bucket keeps it, out of sight | [Bucket lifecycle](#bucket-lifecycle) |
 | The bucket honors conditional writes, and the S3 SDK is 3.645.0 or later | Otherwise a write-once generation can be silently overwritten | [Conditional writes and the S3 SDK](#conditional-writes-and-the-s3-sdk) |
 | Your storage client has a request timeout | The library has none of its own; a hung request hangs the read | [Reliability](#reliability-retries-backoff--timeouts) |
 | Your job re-runs a write after a transient error | Writes are never retried for you | [Reliability](#reliability-retries-backoff--timeouts) |
@@ -60,8 +61,7 @@ Two rules to add, and one to never add.
 **Add: abort incomplete multipart uploads.** A large generation is written as a multipart upload. The library aborts
 it on any error it survives to handle. It cannot abort one whose process no longer exists, so a killed container or
 an out-of-memory exit leaves the parts behind. Those parts are billed and never appear in an object listing, so only
-the bill will tell you. This is the one place cost can build up quietly, and a low idle bill is the point of the
-library. On S3, with a few days as the grace period:
+the bill will tell you. On S3, with a few days as the grace period:
 
 ```json
 {
@@ -78,6 +78,21 @@ library. On S3, with a few days as the grace period:
 
 Applying a lifecycle configuration replaces the bucket's whole configuration, so merge this with any rules you have.
 This rule is for S3. For abandoned uploads on GCS and Azure, check your cloud's lifecycle documentation.
+
+**Add, if versioning is on: expire noncurrent versions.** With versioning on, every generation a load collects stays
+in the bucket as a noncurrent version: billed, and absent from an ordinary listing. A rule that expires noncurrent
+versions after a number of days removes them. A restore to a time `T` needs every object deleted since `T`, so those
+days are also the oldest point you can restore to: set them at or above your restore window
+([the backup checklist](disaster-recovery.md#backup-checklist)). On S3, as a second rule in the same configuration:
+
+```json
+{
+  "ID": "expire-noncurrent-versions",
+  "Status": "Enabled",
+  "Filter": { "Prefix": "" },
+  "NoncurrentVersionExpiration": { "NoncurrentDays": 30 }
+}
+```
 
 **Never: expire current objects.** No rule may delete current generations, and no rule may delete current versions
 under the `registry/` prefix. A deleted pointer row is replaced by a tombstone that keeps the pointer safe against
