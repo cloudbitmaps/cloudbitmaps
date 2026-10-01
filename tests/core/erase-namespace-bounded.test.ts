@@ -1,9 +1,4 @@
-import {
-  BudgetExceededError,
-  MemoryRegistryDriver,
-  ValidationError,
-  eraseNamespace,
-} from '@/index';
+import { BudgetExceededError, MemoryStorage, ValidationError, eraseNamespace } from '@/index';
 import { DEFAULT_MAX_SCAN_SEGMENTS, drainRegistry } from '@/core/registry-scan';
 import type { IRegistryDriver, RegistryRecord } from '@/core/ports';
 
@@ -47,8 +42,8 @@ function listingOf(count: number): {
   return { registry, yielded: () => yielded, touched: () => touched };
 }
 
-async function seeded(count: number): Promise<MemoryRegistryDriver> {
-  const registry = new MemoryRegistryDriver();
+async function seeded(count: number): Promise<IRegistryDriver> {
+  const { registry } = new MemoryStorage();
   for (let i = 0; i < count; i++) {
     await registry.create({ namespace: NS, segment: `s${i}` }, { currentGen: 1 });
   }
