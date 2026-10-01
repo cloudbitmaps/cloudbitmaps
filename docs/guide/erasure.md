@@ -28,8 +28,8 @@ route it to your audit sink. When you pass `audit`, the store also emits a `segm
 Segments the id is not in are not listed.
 
 `eraseSubject` needs a store built on a backend, because it writes generations. `subjectReport` needs one too, for
-the registry it lists. A store missing what a call needs throws `UnsupportedError`: a store built on a pre-built
-`StorageChunkSource` cannot run either. Build it on `MemoryStorage`, `LocalFsStorage`, `S3Storage`, `GcsStorage` or
+the registry it lists. A store missing what a call needs throws `UnsupportedError`: a store built on a bare storage
+driver (`IStorageDriver`) or a pre-built `StorageChunkSource` instead of a backend cannot run either. Build it on `MemoryStorage`, `LocalFsStorage`, `S3Storage`, `GcsStorage` or
 `AzureBlobStorage`.
 
 **What it costs.** `subjectReport` costs one pass over the registered segments. `eraseSubject` costs more: a segment
@@ -93,7 +93,7 @@ no bus, and no connection between two stores that happen to point at the same bu
 | the store that performed the erasure | on return, and its pins then fail |
 | another store, with a registry and a `cache.genTtlMs` above 0 | within `cache.genTtlMs` (default 2 s), while the registry can be read; an outage of the registry stretches it ([how soon a reader sees a new load](reading.md#how-soon-a-reader-sees-a-new-load)) |
 | a pinned handle (`seg.pin()`) in another store | **no bound**: until that store's reader cache evicts the pin's reader and its chunk cache evicts the chunks the pin decoded, or `store.invalidate(ref)` is called there |
-| another store with **no registry** (a bare `IStorageDriver`), with `cache: { genTtlMs: 0 }`, or on a storage source built with **no clock** | **no bound**: only when its caches happen to let the segment go, or something tells it |
+| another store with **no registry** (built on a bare `IStorageDriver` instead of a backend), with `cache: { genTtlMs: 0 }`, or on a pre-built `StorageChunkSource` built with **no clock** | **no bound**: only when its caches happen to let the segment go, or something tells it |
 
 A refresh that fails with anything but a transient fault (an access denial, a row that will not parse) does not keep
 serving: the read that meets it throws, and the reader is dropped with the key it unwrapped.
@@ -101,7 +101,7 @@ serving: the read that meets it throws, and the reader is dropped with the key i
 `cache: { genTtlMs: 0 }` turns the timed refresh off. It is a reasonable setting for a read-only replica of immutable
 data, but a store set that way has no bound on when it observes an erasure or a crypto-shred. `store.invalidate(ref)`
 is the hook, and fanning the reference out to your fleet is yours, because the transport is yours. The same applies to
-`destroySegment` and `eraseNamespace`, which are free functions over raw drivers and invalidate no store: every store
+`destroySegment` and `eraseNamespace`, which are free functions over a backend's `registry` and invalidate no store: every store
 beside them keeps the **unwrapped** key for as long as that table's row for it says. See
 [freshness](reading.md#how-soon-a-reader-sees-a-new-load).
 

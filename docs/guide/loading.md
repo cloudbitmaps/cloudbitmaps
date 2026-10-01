@@ -53,7 +53,7 @@ A refused load also emits `segment.load-refused` to the `audit` sink you pass.
 - invalid options or ids, or a crypto-shredded segment: `ValidationError`;
 - a key the keystore cannot provide: `KeyUnavailableError`;
 - a current generation that will not open when the load reads its size for a guard: `IntegrityError`;
-- a driver failure;
+- a failure from your backend's storage or registry service, such as `TransientError`;
 - a collection pass that could not prove the segment was unchanged: `WriteConflictError`. This can be raised after the
   publish landed, so a throw does not by itself mean the load did not take effect.
 
@@ -344,7 +344,7 @@ generation number lands first, both land and the higher stays current. If the hi
 refused as `superseded`, because a publish never moves the pointer back.
 
 **A crash never moves the pointer.** If the process dies mid-write, the object never completes (every storage driver
-commits atomically: a rename, a conditional PUT, a multipart complete) and the pointer still names the previous
+commits atomically: a hard link, a conditional PUT, a multipart complete) and the pointer still names the previous
 generation, which readers keep serving. A load that dies between the write and the publish leaves an orphan: an object
 that was never current. So does a refused load that finds another write has changed the segment's row, since by then
 its generation number may name a re-created segment's object. Once a generation above the orphan is current, the orphan
@@ -365,7 +365,7 @@ documented outcome.
 most `ceil(genTtlMs ÷ gap between publishes)` publishes can land under any snapshot a read actually uses: one, at the
 2 s default, against any realistic publish cadence. A sixty-second `intersect` does not need a sixty-second window. A
 pinned handle is the exception: it is never re-resolved, so its window is the length of the job it serves. So is a
-store with no timed refresh (no registry, `cache: { genTtlMs: 0 }`, or a storage source built with no clock), whose
+store with no timed refresh (no registry, `cache: { genTtlMs: 0 }`, or a pre-built `StorageChunkSource` built with no clock), whose
 snapshot lasts until an eviction, a read that finds its generation swept, or an invalidation moves it on, however long
 that takes. There no finite `keep` covers it, and the re-read above is the mechanism that keeps it correct.
 

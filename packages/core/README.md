@@ -20,8 +20,8 @@ Depend on `@cloudbitmaps/core` directly only to write a flavor or a driver.
 
 The codec-agnostic cloud engine: a bounded in-memory cache over immutable `.crbm` objects, chunk-skipping
 intersection, the segment registry, the write-once load-and-publish path, generation collection, encryption at rest
-and crypto-shred, erasure by rewrite, retention, and the in-memory and local-filesystem drivers. It has **zero runtime
-dependencies and no cloud SDK**. The cloud drivers are their own packages, built against
+and crypto-shred, erasure by rewrite, retention, and the in-memory and local-filesystem backends. It has **zero runtime
+dependencies and no cloud SDK**. The cloud backends are their own packages, built against
 `@cloudbitmaps/core/driver-kit`, the declared contract a driver depends on. A third-party driver can use it too.
 
 Its main entry is the flavor-author kit: the read engine, the standalone forms of the store's methods (`loadSegment`,

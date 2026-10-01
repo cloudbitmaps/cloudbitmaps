@@ -30,17 +30,17 @@ chunks that can possibly contribute, so intersecting two 2,000,000-id segments t
 and `count()` on a published segment does zero payload reads.
 
 Install two packages: a codec and a storage — `pnpm add @cloudbitmaps/roaring @cloudbitmaps/s3` (or `npm i` the
-same two). `@cloudbitmaps/core` (the codec-agnostic engine, the `.crbm` format and the driver ports) is a
-dependency of both and is never installed directly; it contains no cloud SDK at all. Four storage drivers: S3
+same two). `@cloudbitmaps/core` (the codec-agnostic engine, the `.crbm` format and the storage interfaces) is a
+dependency of both and is never installed directly; it contains no cloud SDK at all. Four storage backends: S3
 (`@cloudbitmaps/s3`, which also serves an S3-compatible store such as R2 or MinIO, given its endpoint, if it
 honours S3's conditional writes; MinIO is the one the integration suite runs against), GCS (`@cloudbitmaps/gcs`)
 and Azure Blob (`@cloudbitmaps/azure-blob`) as packages of their own, each depending on its cloud SDK for real
-rather than as an optional peer, plus the local filesystem and in-memory backends (`LocalFsStorage`, `MemoryStorage`), both from
-`@cloudbitmaps/roaring`, for development and tests. Each of the three clouds hosts both the storage generations and the registry, so a
+rather than as an optional peer, and the local filesystem (`LocalFsStorage`, from `@cloudbitmaps/roaring`, for
+development); plus the in-memory `MemoryStorage`, also from `@cloudbitmaps/roaring`, for tests. Each of the three clouds hosts both the storage generations and the registry, so a
 deployment needs exactly one cloud account.
 
 A store is wired with ONE backend object — `new CloudRoaring({ storage: new S3Storage({ bucket }) })` — which
-carries both halves, the generations and the currentGen pointer, from one bucket and one prefix. MemoryStorage
+carries both the generations and the currentGen pointer, from one bucket and one prefix. MemoryStorage
 and LocalFsStorage come from the flavor's main entry; S3Storage, GcsStorage and AzureBlobStorage from
 `@cloudbitmaps/s3`, `@cloudbitmaps/gcs` and `@cloudbitmaps/azure-blob` respectively. There is no separate
 `registry` option.
@@ -51,11 +51,11 @@ Only by loading a whole new generation. `store.load(ref, ids)` writes one immuta
 plausible (an empty result over a non-empty segment is refused, reported as `published: false` with a `reason`),
 moves the pointer to it by a compare-and-swap fenced on the registry row it read, and collects what the move
 superseded, keeping one generation below the new pointer. It takes an array, a Set or an async cursor. A backend
-(MemoryStorage / LocalFsStorage / S3Storage / GcsStorage / AzureBlobStorage) carries both halves and is what
+(MemoryStorage / LocalFsStorage / S3Storage / GcsStorage / AzureBlobStorage) carries both the generations and the pointer and is what
 `storage` normally takes; a hand-written `{ storage, registry }` object is refused. `storage` also accepts a
-bare driver, which has no registry, so the store is read-only and cleartext; or an already-built
+bare `IStorageDriver` (a storage driver, not a backend), which has no registry, so the store is read-only and cleartext; or an already-built
 StorageChunkSource for advanced reader wiring, which is read-only too and reads with whatever registry and
-keystore it was built with. A driver author who wants halves of their own — an instrumented driver, a registry
+keystore it was built with. A driver author who wants a storage and a registry of their own — an instrumented storage, a registry
 elsewhere — pairs them with `brandAsBackend({ storage, registry })` from `@cloudbitmaps/core/driver-kit`.
 Nothing mutates a stored bitmap, so a crash before the publish leaves the previous generation authoritative, a rerun is idempotent, and there is no partially-visible write. There is
 no per-id write. `intersectInto`/`unionInto`/`andNotInto` use the same protocol, publishing their result as a
@@ -162,7 +162,7 @@ a minor bump until the .crbm format freezes at 1.0.
 - Privacy and erasure: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/PRIVACY.md
 - Benchmarks + method: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/benchmarks.md
 - Site: https://cloudbitmaps.pages.dev/
-- Usage (install, drivers, the API): https://cloudbitmaps.pages.dev/usage
+- Usage (install, backends, the API): https://cloudbitmaps.pages.dev/usage
 - Architecture (generations, the pointer, chunk-skipping, errors): https://cloudbitmaps.pages.dev/architecture
 - Benchmarks (costs, the crossover, what is owed): https://cloudbitmaps.pages.dev/benchmarks
 - Flavors (choose a codec): https://cloudbitmaps.pages.dev/flavors
