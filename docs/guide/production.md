@@ -77,7 +77,7 @@ the bill will tell you. On S3, with a few days as the grace period:
 ```
 
 Applying a lifecycle configuration replaces the bucket's whole configuration, so merge this with any rules you have.
-This rule is for S3. For abandoned uploads on GCS and Azure, check your cloud's lifecycle documentation.
+This rule is for S3. What a dead writer leaves on GCS and Azure Blob, and when each cloud removes it, is in [the backup checklist](disaster-recovery.md#backup-checklist).
 
 **Add, if versioning is on: expire noncurrent versions.** With versioning on, every generation a load collects stays
 in the bucket as a noncurrent version: billed, and absent from an ordinary listing. A rule that expires noncurrent
@@ -126,6 +126,8 @@ and the combines (the `*Into` verbs' reads of their operands included), a pinned
 It is on by default.
 
 ```ts
+import { CloudRoaring } from '@cloudbitmaps/roaring';
+
 const store = new CloudRoaring({ storage: backend }); // reads already retry
 ```
 
@@ -307,7 +309,7 @@ and keep `has`, `count` and `intersect` where the requests are.
 
 ## Deploying to AWS Lambda
 
-CloudBitmaps' crown jewel is serverless chunk-skipping intersection, so Lambda is a first-class target — with
+Serverless chunk-skipping intersection is what CloudBitmaps is for, so Lambda is a first-class target, with
 one thing to know. The bitmap math runs on **`roaring`, a native (C++) addon**, whose install fetches a binary for
 the platform the install runs on. So a `node_modules` installed on a laptop and zipped up does not load on
 Lambda: **install for the target** — Amazon Linux, your function's architecture, its Node version — as any native
