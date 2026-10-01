@@ -95,7 +95,7 @@ another incarnation's bytes. Put the `T` version back there too; `checkConsisten
 would not notice the wrong bytes. Keys that did not exist at `T` can stay: they belong to loads after `T`, which sit
 above the restored pointers (a name purged and loaded anew after `T` can also leave some below one, where the next
 `load`'s collection takes them), or to segments with no row at `T`, which step 4 of the procedure deals with. Reads
-through a backend never see either (a store on a bare `IStorageDriver` is the exception; see
+through a backend never see either (a store built on a bare storage driver, `IStorageDriver`, instead of a backend is the exception; see
 [readers still on an old generation](#readers-still-on-an-old-generation)).
 
 **Bringing back a deleted object undoes the deletion.** When the object is a generation a subject erasure deleted
@@ -143,7 +143,7 @@ you can lose.
       they do not appear in an object listing, so nothing but your bill reveals them.
 - [ ] **Object store, the other backends**: know what a dead writer leaves. None of it is a generation — every
       backend commits an object whole or not at all, so no listing, read or restore ever sees a partial one.
-  - **GCS**: a generation above the driver's threshold (8 MiB by default) is a resumable upload. One its process
+  - **GCS**: a generation above the backend's threshold (8 MiB by default) is a resumable upload. One its process
     abandons never becomes an object (only a completed upload appears in the bucket), and GCS ends the session a
     week after it started.
   - **Azure Blob**: a generation above one block (8 MiB by default) is staged as blocks and committed as one block
@@ -276,13 +276,13 @@ apart reaches it), and decoded chunks sit in the cache for as long as the cache 
 roll for that window. After a registry restore, waiting is not enough for any store: restart it, or invalidate the
 restored segments in it, because the restored rows re-issue tokens its caches may already hold (step 9 of the
 procedure). Some stores need more than waiting after a roll too. One with
-**`cache: { genTtlMs: 0 }`**, or on a storage source built with no clock, has no timed refresh, so nothing bounds how
+**`cache: { genTtlMs: 0 }`**, or on a pre-built `StorageChunkSource` built with no clock, has no timed refresh, so nothing bounds how
 long it keeps the generation it resolved — restart those readers, or `store.invalidate(ref)` the restored segments
 in each, as part of the procedure. One on a bare `IStorageDriver`, with **no registry**, reads no pointer: it lists
 the bucket and serves the newest generation there, whatever the restored pointer says, so while generations above
 the pointer remain, neither a restart nor an invalidation moves it back. Read through a backend, whose reads follow
 the pointer, or, once you are sure the generations above the restored pointer are not wanted, delete those objects
-through the storage driver (`storage.delete({ namespace, segment, generation })` for each; a load's collection never
+through the backend's storage (`backend.storage.delete({ namespace, segment, generation })` for each; a load's collection never
 reaches a generation at or above the pointer), and then restart those readers or invalidate the segments in
 each. A live read on a generation that has since been **deleted** (an `eraseSubject` collects its predecessor on
 return) re-resolves on its next read; that is the documented cost of physical deletion on return, not a fault. A
@@ -340,8 +340,8 @@ segments by design. **The symptom you will actually notice is downstream**, and 
 
 ### Detect
 
-Use the registry driver directly. The store does not expose it; the backend you built the store with does, as
-`backend.registry` (and its storage driver as `backend.storage`), and this is an admin action, not an API. `list()`
+Use the backend's registry directly. The store does not expose it; the backend you built the store with does, as
+`backend.registry` (and its storage as `backend.storage`), and this is an admin action, not an API. `list()`
 carries `status` and `retention` in its projection, so this is one scan, no per-segment reads. It stops at the first
 row it cannot parse; see [a registry row the library did not write](#a-registry-row-the-library-did-not-write).
 
@@ -483,7 +483,7 @@ if (report.errored.length > 0) {
   followed by a GC of the superseded generation — or an `eraseSubject`, which collects its predecessor
   immediately — landing in the tiny per-segment read gap can still yield a transient false positive: run the
   scan quiesced, per the procedure above, or re-run to confirm any reported tear.)
-- **Detection is driver-agnostic.** It relies only on `IStorageDriver.list()` + `IRegistryDriver.get()`, so it
+- **Detection is backend-agnostic.** It relies only on `IStorageDriver.list()` + `IRegistryDriver.get()`, so it
   covers **any** storage backend (S3 / GCS / Azure Blob) with **any** registry backend — nothing about the check is
   backend-specific. What it verifies is **presence**: that each segment's `currentGen` `.crbm` object
   *exists* in storage. It therefore catches the torn / dangling-`currentGen` restore, but **not**:
@@ -602,8 +602,7 @@ on `backend.registry`. Restore a row by copying one of its versions back, never 
 
 ## This runbook is exercised, not just written
 
-`pnpm dr-drill` (`tests/dr-drill.test.ts`) runs this procedure end-to-end against the on-disk `LocalFs` storage
-and registry drivers — it seeds a fleet, takes a coordinated backup, then injects each failure and verifies the
+`pnpm dr-drill` (`tests/dr-drill.test.ts`) runs this procedure end-to-end against the on-disk `LocalFs` backend — it seeds a fleet, takes a coordinated backup, then injects each failure and verifies the
 resolution:
 
 - **Torn restore** (registry recovered ahead of storage) and a **lost `.crbm`** are detected as

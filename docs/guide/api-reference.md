@@ -43,14 +43,14 @@ an application uses, as the next paragraph says:
 CLI (binary):                 export-segments
 ```
 
-Each cloud SDK is a **real dependency** of its driver package, not an optional peer: installing
+Each cloud SDK is a **real dependency** of its backend package, not an optional peer: installing
 `@cloudbitmaps/s3` installs `@aws-sdk/client-s3`, and no install carries an SDK for a service you do not use.
 
 **Where the code actually lives.** The flavor package is the roaring codec (internal, not exported),
 the `CloudRoaring` facade, and the `export-segments` CLI; its main barrel re-exports, by name, the store's
 types, the errors, the backends' shared types and the constants and helpers an application calls, which is why an
 application never needs to name core. What it leaves on core is the engine, the standalone forms of the store's
-methods and the retry and budget internals, for a flavor or driver author. The drivers are codec-agnostic — they move
+methods and the retry and budget internals, for a flavor or driver author. The storage packages are codec-agnostic — they move
 opaque payload bytes — so one package per storage **service** serves every codec, which is what makes adding
 a codec cost nothing on the storage axis. A driver author builds against
 [`@cloudbitmaps/core/driver-kit`](#cloudbitmapscoredriver-kit), and a flavor never re-exports a driver
@@ -66,7 +66,7 @@ package: doing so would put that SDK back into every install.
 what gives one-read generation resolution, encrypted segments, the `*Into` verbs and every lifecycle helper.
 Everything else is optional tuning with sensible defaults — see [`CloudRoaringOptions`](#construction--result-types).
 
-**You pick a backend.** A `StorageBackend` carries both halves — the generations and the
+**You pick a backend.** A `StorageBackend` carries both the generations and the
 pointer — configured from one bucket and one prefix, which is what makes them impossible to mismatch:
 
 | Backend | Import | Construct |
@@ -77,13 +77,13 @@ pointer — configured from one bucket and one prefix, which is what makes them 
 | `GcsStorage` | `@cloudbitmaps/gcs` | `new GcsStorage({ bucket, prefix?, client?, projectId?, apiEndpoint?, maxObjectBytes?, simpleUploadThresholdBytes?, now? })` — `client` or the two settings that build one, and both is refused |
 | `AzureBlobStorage` | `@cloudbitmaps/azure-blob` | `new AzureBlobStorage({ containerClient, prefix?, maxObjectBytes?, blockBytes?, now? })` or `({ connectionString, container, prefix?, maxObjectBytes?, blockBytes?, now? })` — one or the other, and both is refused |
 
-**A backend comes from one of these five classes, or from a class of your own that stamps the brand
+**A backend comes from one of these five classes, or from a class of your own built with the driver kit
 ([driver kit](#driver-kit--what-you-need-to-implement-a-driver)).** A plain `{ storage, registry }` object is
 refused — it is also the shape of the deps of core's standalone functions, so accepting it would let a store be built from
-halves belonging to two *unrelated* stores, which would construct happily and then read as **empty** because
+a storage and a registry belonging to two *unrelated* stores, which would construct happily and then read as **empty** because
 the pointer it consulted lived where nothing had been written.
 
-**The size settings are backend options.** They size the storage half's uploads and are validated where the backend
+**The size settings are backend options.** They size the backend's uploads and are validated where the backend
 is built:
 
 | Backend | Option | Default | What it does |
@@ -95,11 +95,11 @@ is built:
 | `AzureBlobStorage` | `blockBytes` | 8 MiB | staged block size, and so the peak write memory; a positive safe integer |
 | `AzureBlobStorage` | `maxObjectBytes` | `blockBytes` × 50,000 (about 400 GiB at the default) | the largest blob the backend will write and advertise; raise it and `blockBytes` grows so the 50,000-block limit still covers it; a positive safe integer |
 
-Each cloud backend builds its own SDK client unless you pass one. Every backend exposes both halves as `.storage`
+Each cloud backend builds its own SDK client unless you pass one. Every backend exposes its storage and registry as `.storage`
 and `.registry`, and accepts an injected `now` for deterministic tests. The three cloud backends refuse an option
 key they do not take, by name, as the store does.
 
-> **`backend.storage` is not a backend.** It is the storage half alone, a raw `IStorageDriver`. Passed as `storage`,
+> **`backend.storage` is not a backend.** It is the storage alone, without the registry: a raw `IStorageDriver`. Passed as `storage`,
 > it builds a store with no pointer: cleartext and read-only, as the raw-driver paragraph below describes. Pass
 > the backend itself.
 
@@ -110,13 +110,14 @@ Pass a **raw** `IStorageDriver` as `storage` and the store builds the `.crbm` re
 **no registry** — generations then resolve by list-scan, so the store is **cleartext and read-only**; or pass a pre-built `StorageChunkSource` (a
 `CrbmStorageChunkSource` you configured yourself, or one of your own) and it is used as-is — an `encryption.keystore` or
 `encryption.required: true` beside it is then rejected as a wiring mistake (configure them on the source). A store
-built on a pre-built source is **read-only**: the `*Into` verbs and the lifecycle helpers need the raw driver and
+built on a pre-built source is **read-only**: the `*Into` verbs and the lifecycle helpers need a backend and
 throw `UnsupportedError`, and so do the calls that enumerate or read the registry (`exists`, `segments`,
 `subjectReport`, `exportSegments`), since the store holds no registry of its own, even when the source you built
 reads through one.
 
-A driver that cannot serve range reads is refused at construction with `CapabilityError`, and so is a keystore
-or `encryption.required: true` on a store built from a bare driver, which has no registry to hold wrapped keys.
+A storage that cannot serve range reads (none of the five backends above is one; a driver of your own might be) is
+refused at construction with `CapabilityError`, and so is a keystore or `encryption.required: true` on a store built
+on a bare `IStorageDriver` instead of a backend, which has no registry to hold wrapped keys.
 
 ### Get a segment — `store.segment(name, { namespace?, expiresAt? })` → `Segment`
 
@@ -168,7 +169,7 @@ The `store.load` row lists the guards and what throws instead.
 | `seg.has(id)` → `Promise<boolean>` | membership: the cache, else **one** ranged GET of that id's chunk |
 | `seg.count()` → `Promise<number>` | cardinality, summed from the `.crbm` index — **zero payload reads** on a loaded segment. It trusts the index: an open refuses one that is not internally consistent, but a corrupt index that is still consistent yields a wrong count ([What `count()` trusts](reading.md#what-count-trusts)) |
 | `seg.iterate({ after?, through? }?)` → `AsyncIterable<number>` | stream all ids, ascending, one chunk at a time. With `after` / `through`, only the ids in `(after, through]` and the chunks the range overlaps ([paging](reading.md#page-through-a-segment)) |
-| `seg.pin()` → `Promise<Segment>` | **hold this segment at the generation current right now**, for the life of the returned handle, so a long job describes one instant ([pins](reading.md#read-one-fixed-point-in-time)). A hold, not a lease: size `keep` past your longest pinned job. Needs the `.crbm` storage source |
+| `seg.pin()` → `Promise<Segment>` | **hold this segment at the generation current right now**, for the life of the returned handle, so a long job describes one instant ([pins](reading.md#read-one-fixed-point-in-time)). A hold, not a lease: size `keep` past your longest pinned job. Needs a `.crbm` reader: any backend, a bare `IStorageDriver` or a pre-built `CrbmStorageChunkSource` |
 | `seg.intersect([other, …], { after?, through?, concurrency?, budget?, exclude?, allowAbsentOperands? })` → `AsyncIterable<number>` | chunk-skipping intersection, streamed. `exclude` subtracts suppression segments **in the same pass**. `after` / `through` bound the result to `(after, through]` on every operand and every exclude, as on `iterate` |
 | `seg.union([other, …], { after?, through?, concurrency?, budget?, exclude?, allowAbsentOperands? })` → `AsyncIterable<number>` | `this ∪ others`, streamed. The one composite with **no chunk-skipping** — every chunk of every operand is read, or every chunk inside the range when one is given |
 | `seg.andNot([sup, …], { after?, through?, concurrency?, budget?, allowAbsentOperands? })` → `AsyncIterable<number>` | `this \ (sup…)`. Reads all of `this`, or all of it inside the range, but each exclude **only where it overlaps** |
@@ -218,14 +219,14 @@ segment mid-call and how the timed refresh behaves.
 
 ### Standalone functions (imported, called directly)
 
-These take drivers rather than a store, and have no store method: a crypto-shred needs only a registry, so a job
+These take a backend's `registry` rather than a store, and have no store method: a crypto-shred needs only a registry, so a job
 that holds one can run it. Every other verb is a store method; the standalone forms of those are on
 [`@cloudbitmaps/core`](#the-standalone-forms-of-the-stores-methods).
 
 | Call | Does |
 |---|---|
 | `readRetentionPolicy(record.retention)` → `RetentionPolicy \| null \| 'invalid'` | parse a policy out of a row you **already hold** — a fleet sweep over `registry.list()`, where `store.getRetention` would cost a read per segment. The three-way answer is the point: `'invalid'` lets a sweep *report* a malformed row instead of silently reading it as "never expires" or aborting the whole ledger |
-| `destroySegment(ref, { registry }, { confirmSegment, allowCleartext?, audit? })` → `Promise<DestroyResult>` | crypto-shred one whole segment: the key is deleted, so the bytes are unrecoverable everywhere, backups included, and the objects stay in the bucket. A cleartext segment has no key, so without `allowCleartext` the call changes nothing and returns `reason: 'cleartext'`. A free function over raw drivers, so it invalidates no store ([details](encryption.md#erase-a-segment-or-a-namespace-crypto-shred)) |
+| `destroySegment(ref, { registry }, { confirmSegment, allowCleartext?, audit? })` → `Promise<DestroyResult>` | crypto-shred one whole segment: the key is deleted, so the bytes are unrecoverable everywhere, backups included, and the objects stay in the bucket. A cleartext segment has no key, so without `allowCleartext` the call changes nothing and returns `reason: 'cleartext'`. A free function over `backend.registry`, so it invalidates no store ([details](encryption.md#erase-a-segment-or-a-namespace-crypto-shred)) |
 | `eraseNamespace(namespace, { registry }, { confirmNamespace, allowCleartext?, audit?, maxScanSegments? })` → `Promise<{ destroyed: DestroyResult[] }>` | crypto-shred an entire namespace or tenant. It lists the namespace first and stops at `maxScanSegments` (default 250,000) with nothing erased. One `DestroyResult` per segment, with faults recorded rather than thrown, so **inspect it** ([details](encryption.md#erase-a-segment-or-a-namespace-crypto-shred)) |
 | `excludingReservedRows(listing)` | wraps a `registry.list()` stream and drops the bookkeeping rows (the due-index pointers). **Every unscoped fleet-wide enumeration must apply it** — `store.segments` and the sweep already do, so this is for a fleet pass you write yourself |
 
@@ -613,12 +614,12 @@ reports a missing or invalid environment variable with a plain `Error` and exits
 | `ValidationError` | your input is malformed — a bad id, an illegal segment name, an out-of-range option. Raised **before any storage call** | fix the call | no — deterministic |
 | `WriteConflictError` | a write-once generation number was claimed twice, a registry compare-and-swap lost every retry, or generation collection found the segment re-created underneath it (the name now belongs to a different segment) | re-read the pointer and re-derive: re-run the operation (a load takes a fresh generation number) | no — but the *operation* is safe to re-run |
 | `IntegrityError` | bytes from storage are corrupt, oversized, fail a checksum, or fail AEAD authentication; or a registry row is not one the library wrote — not valid JSON, an envelope or record field it does not declare, no `schemaVersion`, a `status` other than `active` or `destroyed` | **investigate** — this says "this data is corrupt", not "try again". It names the chunk, or the row's key. Re-loading the segment from source repairs a generation. A bad row fails its own `get` **and every `list()` that reaches it** — its namespace's, and every unscoped one — so it stops `segments()`, the sweeps, the subject scans and `checkConsistency` across the fleet until the object is restored to a valid row or deleted | no |
-| `NotFoundError` | an object or row the caller named does not exist. Every storage driver, the in-memory one included, throws it for a generation object that is not there; a registry `get` of a missing row returns `null` instead | usually the library handles it internally (a swept generation heals forward). Reaching you means the pointer names an object that is *permanently* absent — a torn restore. See [disaster recovery](disaster-recovery.md) | no |
+| `NotFoundError` | an object or row the caller named does not exist. Every backend, the in-memory one included, throws it for a generation object that is not there; a registry `get` of a missing row returns `null` instead | usually the library handles it internally (a swept generation heals forward). Reaching you means the pointer names an object that is *permanently* absent — a torn restore. See [disaster recovery](disaster-recovery.md) | no |
 | `UnsupportedError` | (a) the bytes are well-formed but this build cannot read them — an unknown `.crbm` major version, or a registry row with a `schemaVersion` newer than this build reads; or (b) this store's wiring cannot perform the operation, e.g. a lifecycle helper on a store built without a backend | wire the store with what the operation needs, or upgrade the library | no |
-| `CapabilityError` | a driver cannot meet a capability the topology requires — a Storage driver without range reads, or a keystore or `encryption.required: true` on a store built from a bare driver, which has no registry. Raised **fail-fast at construction**, never mid-operation | use a driver that supports it, or a backend | no |
+| `CapabilityError` | the storage you passed cannot meet a capability the store requires — a storage without range reads (one of your own; the five backends all serve them), or a keystore or `encryption.required: true` on a store built on a bare `IStorageDriver` instead of a backend, which has no registry. Raised **fail-fast at construction**, never mid-operation | pass a backend, or a storage that supports range reads | no |
 | `BudgetExceededError` | the operation would exceed its per-op denial-of-wallet budget — too many backend requests for one call. Refused **before** fanning out. Carries the projected count and the limit, never data | narrow the operation, raise `budget`, or set `budget: false`. If it fires on a normal call, something is wider than you think | no — refused by policy, not by luck |
 | `KeyUnavailableError` | an encrypted segment's DEK cannot be unwrapped: the keystore holds none of the KEKs its wrappings reference — never configured, rotated away without keeping the old key, or lost | restore the KEK. **Without it the data is unreadable**, which is what crypto-shred relies on | no |
-| `TransientError` | a driver-classified transient fault — throttling, a 5xx, a connection reset. The raw SDK error is preserved in `cause` | from a read of segment data, the retry layer already retried it, and reaching you means it kept failing. From a write, or a direct registry or bucket read, it was not retried: re-run the call. For a `load`, once the first attempt has settled, the re-run publishes whether or not that attempt landed; to know whether it did, check `store.generations(ref)` rather than replay the request ([Resilience](#resilience-the-store-wires-this-by-default)) | **yes** — the only class the retry layer retries |
+| `TransientError` | a transient fault your backend classified (from its storage or registry) — throttling, a 5xx, a connection reset. The raw SDK error is preserved in `cause` | from a read of segment data, the retry layer already retried it, and reaching you means it kept failing. From a write, or a direct registry or bucket read, it was not retried: re-run the call. For a `load`, once the first attempt has settled, the re-run publishes whether or not that attempt landed; to know whether it did, check `store.generations(ref)` rather than replay the request ([Resilience](#resilience-the-store-wires-this-by-default)) | **yes** — the only class the retry layer retries |
 
 Two things worth knowing:
 
@@ -631,10 +632,10 @@ Two things worth knowing:
 **Bundle-safe predicates** — `isCloudRoaringError` · `isWriteConflictError` · `isTransientError` ·
 `isNotFoundError` · `isIntegrityError` · `isValidationError`.
 
-**On an ordinary install, `instanceof` holds everywhere** — across `@cloudbitmaps/roaring`, the driver
+**On an ordinary install, `instanceof` holds everywhere** — across `@cloudbitmaps/roaring`, the backend
 packages and `@cloudbitmaps/core` itself. Every package is published with `@cloudbitmaps/core` left
 **external** rather than bundled in, so your tree has one copy of the error classes and
-`core.ValidationError` and the class an `@cloudbitmaps/s3` driver throws are the same object. Catch them
+`core.ValidationError` and the class `@cloudbitmaps/s3` throws are the same object. Catch them
 however you normally would.
 
 Reach for the predicates where that stops being true, which is not something the library can control:

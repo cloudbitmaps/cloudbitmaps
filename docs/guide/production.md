@@ -360,7 +360,7 @@ package stands:
 **Writes that are tagged instead.** Azure Blob's retry is a policy on the client's pipeline, and a GCS resumable
 upload is a session the SDK retries within, so neither has a per-request switch. Each of their conditional writes
 carries a random id in the object's metadata (`cbwid`), outside the `.crbm` bytes and outside the registry row's body.
-When such a write reports a conflict, the driver reads the stored blob or object back with one metadata request. It
+When such a write reports a conflict, the backend reads the stored blob or object back with one metadata request. It
 reports success when the object carries the write's own id, and `WriteConflictError` otherwise. The read happens only
 on a conflict, works with a client you pass, and adds no option. A read-back that fails transiently throws
 `TransientError`. A generation's `.crbm` object is never overwritten, so its read-back is definitive. A registry row
