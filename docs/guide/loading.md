@@ -22,6 +22,10 @@ if (!r.published) console.warn(`load refused: ${r.reason} (${r.cardinalityBefore
 
 `r` is the result: `{ generation, published, reason?, size, sha256, chunkCount, cardinality, cardinalityBefore, collected }`.
 
+`sha256` is the SHA-256 of the object as stored, and an empty string when another load took the generation number
+first. The library does not keep it or check it on read: reads are checked with CRC32C. Record it if you want an
+end-to-end check of your own.
+
 **Branch on `published`.** A load replaces: whatever the stream contains is what the segment contains afterwards. An
 upstream query that returns fewer rows than usual is a shrink nobody asked for, and an empty one is a wipe. At the
 storage layer both are an ordinary successful write, which is why a load checks its result before it publishes.
@@ -145,7 +149,7 @@ something collects it, still billed. Reads are unaffected, because the pointer a
 symptom of never collecting is a storage bill that never goes down. In a library with no background process, the
 write's own collection does the cleanup. `keep` says how many old generations to leave behind.
 
-**The default, `keep: 1`, is right for almost everyone.** Change it only for one of the situations in this table:
+**The default, `keep: 1`, is right for almost everyone.** `cache.genTtlMs` (2 s by default) is how long a reader may serve the generation it has before it checks for a newer one ([how soon a reader sees a new load](reading.md#how-soon-a-reader-sees-a-new-load)). Change `keep` only for one of the situations in this table:
 
 | your situation | `keep` |
 |---|---|
