@@ -999,6 +999,102 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     }
   });
 
+  // Three refusals the script makes before nvm, npm or any request. Each function is cut out of the script and run
+  // alone, as the committed-id refusal above is, so what is tested is what the script runs.
+  describe('the CloudShell script refuses what would run the wrong thing', () => {
+    const sh = readFileSync(join(ROOT, 'bench', 'calibrate-cloudshell.sh'), 'utf8');
+    const fn = (name: string): string => {
+      const body = new RegExp(`^${name}\\(\\) \\{[\\s\\S]*?^\\}`, 'm').exec(sh)?.[0];
+      expect(body, `the script no longer defines ${name}`).toBeDefined();
+      return body ?? '';
+    };
+    const run = (
+      name: string,
+      env: Record<string, string>,
+      cwd = ROOT,
+    ): ReturnType<typeof spawnSync> =>
+      spawnSync('bash', ['-c', `${fn(name)}\n${name}\necho ran`], {
+        cwd,
+        env: { PATH: process.env.PATH ?? '', ...env },
+        encoding: 'utf8',
+      });
+
+    // `true`, ` 1` and `yes` would otherwise take the run that spends money, with a phrase and a ceiling exported.
+    it('refuses a rehearse flag that is not unset, empty, 0 or 1', () => {
+      for (const bad of ['true', ' 1', 'yes', '01', '1 ', 'on']) {
+        const out = run('refuse_bad_rehearse', { CR_CALIBRATE_REHEARSE: bad });
+        expect(out.status, JSON.stringify(bad)).toBe(2);
+        expect(out.stderr).toMatch(/must be 1 or unset/);
+        expect(out.stdout).not.toContain('ran');
+      }
+      for (const good of [undefined, '', '0', '1']) {
+        const out = run(
+          'refuse_bad_rehearse',
+          good === undefined ? {} : { CR_CALIBRATE_REHEARSE: good },
+        );
+        expect(out.stdout, JSON.stringify(good)).toContain('ran');
+      }
+    });
+
+    it("refuses a shell with no region, and a region other than the shell's", () => {
+      const noRegion = run('refuse_foreign_region', { CR_CALIBRATE_REGION: 'us-east-1' });
+      expect(noRegion.status).toBe(2);
+      expect(noRegion.stderr).toMatch(/exports AWS_REGION/);
+      const other = run('refuse_foreign_region', {
+        AWS_REGION: 'us-east-2',
+        CR_CALIBRATE_REGION: 'us-east-1',
+      });
+      expect(other.status).toBe(2);
+      expect(other.stderr).toMatch(/runs in us-east-2; open CloudShell in us-east-1/);
+      // The shell's own region, asked for or not, is fine.
+      expect(
+        run('refuse_foreign_region', { AWS_REGION: 'us-east-1', CR_CALIBRATE_REGION: 'us-east-1' })
+          .stdout,
+      ).toContain('ran');
+      expect(run('refuse_foreign_region', { AWS_REGION: 'us-east-1' }).stdout).toContain('ran');
+    });
+
+    it('applies both on the run path only, records the shell region, and does it before nvm and npm', () => {
+      const rehearsePath = sh.indexOf('if [ "${CR_CALIBRATE_REHEARSE:-}" = "1" ]; then');
+      const region = sh.indexOf('  refuse_foreign_region\n', rehearsePath);
+      expect(region).toBeGreaterThan(rehearsePath);
+      // Inside the else branch of the rehearse test, so a rehearsal needs no region.
+      expect(sh.slice(rehearsePath, region)).toContain('else');
+      expect(sh.slice(region)).toContain('export CR_CALIBRATE_CLIENT_REGION="$AWS_REGION"');
+      for (const needle of ['\nrefuse_bad_rehearse\n', '  refuse_foreign_region\n']) {
+        expect(sh.indexOf(needle), needle).toBeGreaterThan(-1);
+        expect(sh.indexOf(needle)).toBeLessThan(sh.indexOf('nvm install'));
+        expect(sh.indexOf(needle)).toBeLessThan(sh.indexOf('npm i '));
+      }
+      expect(sh.indexOf('\nrefuse_bad_rehearse\n')).toBeLessThan(sh.indexOf('MODE_FLAG="--run"'));
+      const harness = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
+      expect(harness).toContain('clientRegion: process.env.CR_CALIBRATE_CLIENT_REGION ?? null');
+    });
+
+    it("measures this clone's version unless told otherwise, and says so before installing", () => {
+      const version = (
+        JSON.parse(readFileSync(join(ROOT, 'packages', 'roaring', 'package.json'), 'utf8')) as {
+          version: string;
+        }
+      ).version;
+      const out = spawnSync(
+        'bash',
+        ['-c', `${fn('default_package_version')}\ndefault_package_version`],
+        {
+          cwd: ROOT,
+          env: { PATH: process.env.PATH ?? '' },
+          encoding: 'utf8',
+        },
+      );
+      expect(out.stdout.trim()).toBe(version);
+      expect(sh).toContain(
+        'PKG_VERSION="${CR_CALIBRATE_PACKAGE_VERSION:-$(default_package_version)}"',
+      );
+      expect(sh).not.toContain(':-latest}');
+      expect(sh.indexOf('measuring @cloudbitmaps/roaring')).toBeLessThan(sh.indexOf('npm i '));
+    });
+  });
+
   // What `finish()` does on the way out decides whether a paid run's results survive, so it is run, not read.
   it("the CloudShell script's exit copies every result out, overwrites nothing, and keeps what it cannot copy", () => {
     const sh = readFileSync(join(ROOT, 'bench', 'calibrate-cloudshell.sh'), 'utf8');

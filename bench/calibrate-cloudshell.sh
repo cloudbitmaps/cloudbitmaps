@@ -13,23 +13,58 @@
 #   CR_CALIBRATE_CONFIRM=yes-spend-money CR_CALIBRATE_MAX_USD=0.05 bash bench/calibrate-cloudshell.sh
 #
 # Optional: CR_CALIBRATE_EXPECT_ACCOUNT=<12-digit id> refuses to run anywhere else.
-#           CR_CALIBRATE_PACKAGE_VERSION=0.11.0 pins the release measured (default: latest).
-#           CR_CALIBRATE_REHEARSE=1 runs the same install path against local MinIO, to test this script.
+#           CR_CALIBRATE_PACKAGE_VERSION=0.11.0 overrides the release measured (default: this clone's version).
+#           CR_CALIBRATE_REHEARSE=1 runs the same install path against local MinIO, to test this script. Any
+#           other value than unset, 0 or 1 is refused.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-PKG_VERSION="${CR_CALIBRATE_PACKAGE_VERSION:-latest}"
+# Only unset, empty, 0 or 1 say which target this is. Anything else, `true` or ` 1` or `yes`, would fall through to the
+# run that spends money with a ceiling and a phrase already exported, so it is refused before anything else is read.
+refuse_bad_rehearse() {
+  case "${CR_CALIBRATE_REHEARSE:-}" in
+    '' | 0 | 1) ;;
+    *)
+      echo "cloudshell: CR_CALIBRATE_REHEARSE must be 1 or unset, not \"${CR_CALIBRATE_REHEARSE}\"" >&2
+      exit 2
+      ;;
+  esac
+}
+refuse_bad_rehearse
+
+# The shell must be IN the region measured: a latency taken from another region is labelled in-region by a floor under
+# 30 ms, which a neighbouring region can also make. So the shell's own region, which CloudShell exports, has to exist,
+# and a region asked for has to be it.
+refuse_foreign_region() {
+  if [ -z "${AWS_REGION:-}" ]; then
+    echo "cloudshell: this script is for CloudShell, which exports AWS_REGION; it is not set here" >&2
+    exit 2
+  fi
+  if [ -n "${CR_CALIBRATE_REGION:-}" ] && [ "$CR_CALIBRATE_REGION" != "$AWS_REGION" ]; then
+    echo "cloudshell: this shell runs in ${AWS_REGION}; open CloudShell in ${CR_CALIBRATE_REGION}" >&2
+    exit 2
+  fi
+}
+
+# The release measured is the one this clone's expectations were written for, so a release cut since cannot change
+# what is measured. CR_CALIBRATE_PACKAGE_VERSION overrides it.
+default_package_version() {
+  sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' packages/roaring/package.json | head -n 1
+}
+PKG_VERSION="${CR_CALIBRATE_PACKAGE_VERSION:-$(default_package_version)}"
+if [ -z "$PKG_VERSION" ]; then
+  echo "cloudshell: could not read this clone's version from packages/roaring/package.json" >&2
+  exit 2
+fi
+echo "cloudshell: measuring @cloudbitmaps/roaring and @cloudbitmaps/s3 at ${PKG_VERSION}"
 MODE_FLAG="--run"
 if [ "${CR_CALIBRATE_REHEARSE:-}" = "1" ]; then
   MODE_FLAG="--rehearse"
 else
-  # CloudShell exports AWS_REGION for the region it was opened in. Stating the region twice is deliberate
-  # elsewhere in the harness; here the shell already knows it, and it must be the region the shell runs IN.
-  export CR_CALIBRATE_REGION="${CR_CALIBRATE_REGION:-${AWS_REGION:-}}"
-  if [ -z "$CR_CALIBRATE_REGION" ]; then
-    echo "cloudshell: set CR_CALIBRATE_REGION — AWS_REGION is not exported here" >&2
-    exit 2
-  fi
+  refuse_foreign_region
+  export CR_CALIBRATE_REGION="${CR_CALIBRATE_REGION:-$AWS_REGION}"
+  # Recorded with the results, so the file says which region the shell ran in.
+  export CR_CALIBRATE_CLIENT_REGION="$AWS_REGION"
 fi
 # Which harness ran is part of the result: the numbers mean nothing without the code that produced them. A clone
 # with uncommitted edits to the files this script runs is marked -dirty, because the commit alone would name a harness

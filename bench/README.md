@@ -254,6 +254,13 @@ git clone https://github.com/cloudbitmaps/cloudbitmaps && cd cloudbitmaps
 CR_CALIBRATE_CONFIRM=yes-spend-money CR_CALIBRATE_MAX_USD=0.05 bash bench/calibrate-cloudshell.sh
 ```
 
+Before it installs anything the script refuses three things: a `CR_CALIBRATE_REHEARSE` that is not unset, empty, `0` or
+`1` (any other value would take the run that spends money); a shell with no `AWS_REGION`, which CloudShell exports; and a
+`CR_CALIBRATE_REGION` that is not that region, since a floor under 30 ms cannot tell a neighbouring region from this one.
+The shell's region is recorded with the results as `network.clientRegion`. The release measured is the one this clone's
+`packages/roaring/package.json` names, which its expected counts were written for; `CR_CALIBRATE_PACKAGE_VERSION`
+overrides it, and the script prints the version before it installs.
+
 The script installs Node 22 if CloudShell's is older, installs the **published** `@cloudbitmaps/roaring` and
 `@cloudbitmaps/s3` into a scratch directory, and runs the harness against those — so the figures describe what a
 consumer installs, not a build of this checkout. A finished run's results land in `~/<runId>.json`, and an

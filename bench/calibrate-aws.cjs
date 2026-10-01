@@ -858,6 +858,8 @@ async function main() {
           ? 'in-region'
           : 'REMOTE — latency below is network-dominated',
       inRegionThresholdMs: IN_REGION_FLOOR_MS,
+      // The region the shell ran in, as the CloudShell script states it; null for a run that was not started from it.
+      clientRegion: process.env.CR_CALIBRATE_CLIENT_REGION ?? null,
     };
     log(`network: round-trip floor ${floor.toFixed(1)} ms — ${results.network.client}`);
 
