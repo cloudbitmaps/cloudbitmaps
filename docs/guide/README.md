@@ -6,9 +6,8 @@
 > not take, where `main` refuses them by name. [The changelog](../../CHANGELOG.md#unreleased) lists every difference. The docs that match
 > `npm install` are at the [`v0.10.0` tag](https://github.com/cloudbitmaps/cloudbitmaps/tree/v0.10.0).
 
-User-facing documentation: how to use CloudBitmaps. It describes what is shipped on `main`; the planned work it
-mentions is said there not to be built, and the [roadmap](../ROADMAP.md#planned--exploring) is the whole list. New
-here? Read the [README](../../README.md), then [Getting started](getting-started.md).
+How to use CloudBitmaps. Anything planned says so where it appears, and the [roadmap](../ROADMAP.md#planned--exploring)
+lists all of it. New here? Read the [README](../../README.md), then [Getting started](getting-started.md).
 
 ## Start
 
@@ -27,6 +26,12 @@ here? Read the [README](../../README.md), then [Getting started](getting-started
 - [**Export your data**](export.md): getting every segment out in a portable format.
 - [**Disaster recovery**](disaster-recovery.md): what to back up, the restore procedure, RPO and RTO, and the
   `checkConsistency()` check.
+
+## When something fails
+
+- [**Errors and what to do**](api-reference.md#errors-typed--you-catch-these): every error, what it means, and whether to retry.
+- [**A load was refused**](loading.md#when-a-load-is-refused): each `reason` and what to do.
+- [**Install or import fails**](getting-started.md#troubleshooting): the native addon, and the deprecation warning.
 
 ## Decide
 

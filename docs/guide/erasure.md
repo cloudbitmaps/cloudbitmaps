@@ -91,7 +91,7 @@ no bus, and no connection between two stores that happen to point at the same bu
 |---|---|
 | storage | on return: the generation holding it is deleted |
 | the store that performed the erasure | on return, and its pins then fail |
-| another store, with a registry and a `cache.genTtlMs` above 0 | within `cache.genTtlMs` (default 2 s), while the registry can be read: a transient fault in reading it keeps the store serving what it holds and retries 500 ms later |
+| another store, with a registry and a `cache.genTtlMs` above 0 | within `cache.genTtlMs` (default 2 s), while the registry can be read; an outage of the registry stretches it ([how soon a reader sees a new load](reading.md#how-soon-a-reader-sees-a-new-load)) |
 | a pinned handle (`seg.pin()`) in another store | **no bound**: until that store's reader cache evicts the pin's reader and its chunk cache evicts the chunks the pin decoded, or `store.invalidate(ref)` is called there |
 | another store with **no registry** (a bare `IStorageDriver`), with `cache: { genTtlMs: 0 }`, or on a storage source built with **no clock** | **no bound**: only when its caches happen to let the segment go, or something tells it |
 
