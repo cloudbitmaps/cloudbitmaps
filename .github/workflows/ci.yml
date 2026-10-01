@@ -79,6 +79,10 @@ jobs:
       # which scripts/site-figures.cjs then treats as a source: without this, a stale results.json would vouch for
       # the site. Regenerate with `pnpm bench`.
       - run: pnpm bench:check
+      # bench/event-loop.cjs measured the event-loop figures in the guide's "What blocks the event loop" section and in
+      # two source comments. This fails if any of them is not what bench/event-loop-results.json says. It measures
+      # nothing, since CI hardware is not the hardware that measured; re-measure by hand with `pnpm bench:event-loop`.
+      - run: pnpm bench:event-loop:check
       # The built package must import cleanly under BOTH module systems (guards the roaring CJS→ESM interop).
       - run: node scripts/smoke.cjs
       # Both secret scanners, HERE and not only in the release workflow.

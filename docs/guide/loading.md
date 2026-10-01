@@ -85,7 +85,7 @@ up to one upload part (8 MiB by default); an object that fits in one part goes u
 the whole generation in memory, which suits a batch job and not a request handler.
 
 **A load is a batch job, not a request handler.** It streams the object to the bucket and is CPU-heavy in short bursts
-(serializing about 62,000 chunks for a segment spread across the id space). It yields the event loop periodically, so
+(serializing about 65,000 chunks for a segment spread across the id space). It yields the event loop periodically, so
 it is a well-behaved neighbour, but it still burns a core for a fraction of a second and holds a whole generation in
 RAM. Run it from a job runner, a queue consumer, a scheduled task or a short-lived container, and keep the request
 path for `has`, `count` and `intersect`. See [where to run it](production.md#what-blocks-the-event-loop-and-where-to-run-it).

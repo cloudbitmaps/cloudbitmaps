@@ -112,7 +112,7 @@ is a dependency of both and is never installed directly. The storage drivers are
   genuinely occupies it for a while. It hands the event loop back periodically, so a co-resident server keeps
   answering while a load runs; a test holds a load to yielding. On by default. The guide's
   [what blocks the event loop](guide/production.md#what-blocks-the-event-loop-and-where-to-run-it) has the
-  timings it reports for one machine, which no harness in this repository reproduces yet.
+  timings it reports for one machine, measured by `bench/event-loop.cjs` and checked against its committed results in CI.
 
 ### Security & data protection
 

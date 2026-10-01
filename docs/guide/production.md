@@ -272,22 +272,29 @@ billion members. `maxScanSegments`, an option of `store.retireExpired` (`store.c
 
 Node is single-threaded, so CPU-heavy work stalls **every** other request on that instance. Most of this library
 is network-bound and irrelevant here — a `has()` spends a negligible fraction of its time on bit math — but a
-**load** and an **erasure rewrite** are genuinely CPU-heavy, because each one touches a whole generation. Measured
-on an M3 Pro:
+**load** and an **erasure rewrite** are genuinely CPU-heavy, because each one touches a whole generation.
+Measured on an Apple M3 Pro on 2026-09-30, the median of 20 runs, each in a fresh process:
 
 | path | cost | longest single stall | where it belongs |
 | --- | --- | --- | --- |
-| a load, `store.load()` (1M ids spread across the id space, in-memory storage) | ~405 ms | **~22 ms** (26 ms at worst) | a batch job or worker; survivable off the request path |
+| a load, `store.load()` (1M ids spread across the id space, in-memory storage) | ~526 ms | **~24 ms** (47 ms at worst) | a batch job or worker; survivable off the request path |
 | `eraseSubject` | decodes and re-encodes every chunk of the segment — same order of work as a load | yields on the same cadence | an admin job, never a request handler |
 | `has` / `count` / `intersect` / `union` / `andNot` | microseconds of CPU; dominated by network | — | anywhere |
 
 The **stall** column is the number that decides whether co-resident work survives, and it is not the same as
-cost. A load yields the event loop periodically, so its ~405 ms is spent in slices — the longest ~22 ms in the
-median run and 26 ms in the worst — with the loop free in between: other requests interleave rather than
-queueing behind the whole load. Without a clock to yield
-through, the two columns are the same number: the same 1M-id load holds the loop for **~408 ms straight**, long
-enough for a health check to time out and the instance to be pulled from its load balancer. Both figures are the
-median of seven runs, measured on the same machine.
+cost. A load yields the event loop periodically, so its ~526 ms is spent in slices — the longest ~24 ms in the
+median run and 47 ms in the worst — with the loop free in between: other requests interleave rather than
+queueing behind the whole load. Without a clock to yield through, the two columns are the same number: the same
+1M-id load holds the loop for **~519 ms straight** (median), long enough for a health check to time out and the
+instance to be pulled from its load balancer.
+
+**Read these as a loaded machine's figures.** The machine was not idle: its one-minute load average was about 5
+at the start and the end of the run, so the cost column in particular is likely higher than an idle machine would
+give, and the worst stall is the figure a busy neighbour moves most. The two columns' proportions are the finding.
+The harness, the per-run samples, the Node version and the load averages are in
+[`bench/event-loop-results.json`](../../bench/event-loop-results.json), written by
+[`bench/event-loop.cjs`](../../bench/event-loop.cjs); `pnpm bench:event-loop:check` fails in CI if this section's
+figures are not the ones in that file.
 
 Yielding is on by default for `@cloudbitmaps/roaring` users; there is nothing to configure. It needs a `Clock`,
 which the store passes to its loads and its erasures. If you call
