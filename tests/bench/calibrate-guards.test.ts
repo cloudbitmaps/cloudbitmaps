@@ -1335,8 +1335,30 @@ describe('a rehearsal cannot be committed as the evidence', () => {
         mkdirSync(join(scratch, dirname(rel)), { recursive: true });
         writeFileSync(join(scratch, rel), readFileSync(join(ROOT, rel)));
       }
-      // What `npm i` leaves: the packages and the SDK, resolvable from the scratch directory.
-      symlinkSync(join(ROOT, 'node_modules'), join(scratch, 'node_modules'));
+      // What `npm i` leaves: the SDK as installed, and the published library, which this stands in for with the
+      // checkout's version and the price table's shape. The tests run before the build, so the workspace's own
+      // package has no entry point to import yet; what is under test is what the harness finds here, not the library.
+      mkdirSync(join(scratch, 'node_modules', '@cloudbitmaps', 'roaring'), { recursive: true });
+      symlinkSync(
+        join(ROOT, 'node_modules', '@aws-sdk'),
+        join(scratch, 'node_modules', '@aws-sdk'),
+      );
+      const roaring = JSON.parse(
+        readFileSync(join(ROOT, 'packages', 'roaring', 'package.json'), 'utf8'),
+      ) as { version: string };
+      writeFileSync(
+        join(scratch, 'node_modules', '@cloudbitmaps', 'roaring', 'package.json'),
+        JSON.stringify({
+          name: '@cloudbitmaps/roaring',
+          version: roaring.version,
+          type: 'module',
+          exports: './index.js',
+        }),
+      );
+      writeFileSync(
+        join(scratch, 'node_modules', '@cloudbitmaps', 'roaring', 'index.js'),
+        "export const AWS_US_EAST_1_ONDEMAND = { name: 'aws-us-east-1-ondemand', storage: { getPerMillion: 0.4, putPerMillion: 5 } };\n",
+      );
       const out = spawnSync(process.execPath, ['bench/calibrate-aws.cjs'], {
         cwd: scratch,
         env: {
