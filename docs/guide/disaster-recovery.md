@@ -465,13 +465,11 @@ if (report.errored.length > 0) {
 
 - It needs a **backend** (the same requirement as every lifecycle helper); a store built
   around a pre-wrapped `StorageChunkSource` throws `UnsupportedError` — run it from an admin/ops store wired with
-  a backend. The standalone `runConsistencyCheck({ storage, registry })` is available for out-of-process ops
-  tooling.
+  a backend.
 - It fans out at a bounded `concurrency` (default 8; pass `{ concurrency }`), and can be scoped to one
   `{ namespace }`. It holds the registry listing in memory, and refuses with `BudgetExceededError` past 250,000
   rows rather than materialise a fleet it cannot hold. `store.checkConsistency` takes no option to raise that
-  ceiling, so check a larger fleet one namespace at a time, or run
-  `runConsistencyCheck({ storage, registry }, { maxScanSegments })` over the backend's drivers.
+  ceiling, so check a larger fleet one namespace at a time.
 - **Fault-isolated per segment, not at the listing.** The check first drains `registry.list()` (over the
   namespace, or over every namespace), and a failure there aborts the whole check with that error and no report:
   a list call that fails, or one registry row it cannot parse, which throws `IntegrityError` naming the row's key
@@ -522,9 +520,8 @@ await store.checkConsistency();            // confirm
 available**, a `destroyed` row (a crypto-shred's or a drop's tombstone) throws `ValidationError`, a row that
 changed after `rollback` read it throws `WriteConflictError` and moves nothing, and a target *above* the pointer
 needs an explicit `allowForward: true` — above the pointer is where objects live that may never have been current,
-such as a load that wrote its object and died before the publish. `store.rollback` passes that option through, but
-its declared options type takes only `audit`, so from TypeScript make a forward move with
-`rollbackSegment(ref, n, backend, { allowForward: true, audit })` and then `store.invalidate(ref)`. It deletes
+such as a load that wrote its object and died before the publish. Pass it with `audit` in `store.rollback`'s
+options: `store.rollback(ref, n, { allowForward: true, audit })`. It deletes
 nothing, so the rollback is itself reversible. It records the move as `segment.rollback` on the `audit` sink passed
 to the call, and that event is the only record the library makes of it: with no sink, it records nothing. A
 rollback to the generation already current changes nothing and records nothing.

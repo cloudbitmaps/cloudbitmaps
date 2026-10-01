@@ -9,7 +9,6 @@ import {
   NotFoundError,
   TransientError,
   ValidationError,
-  setSegmentRetention,
 } from '@/index';
 import type { CacheOptions, Clock, IMetricsSink, Segment, SegmentRef } from '@/index';
 import { SegmentEngine } from '@/core/engine';
@@ -20,6 +19,7 @@ import type { PinnedAt } from '@/core/pinned-storage-source';
 import { BoundedLru } from '@/core/lru';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { setSegmentRetention } from '@cloudbitmaps/core';
 
 /**
  * A pinned handle must only ever be handed chunks of the generation it pinned.

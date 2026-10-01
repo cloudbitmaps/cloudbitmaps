@@ -41,8 +41,10 @@ import {
   collectWithinBudget,
   excludingReservedRows,
   dropSegment,
+  eraseIdFromSegment,
   estimateCost,
   groundedReport,
+  loadSegment,
   mapWithConcurrency,
   resolveBudget,
   resolvePerOpBudget,
@@ -97,12 +99,10 @@ import type {
   SegmentRef,
   Workload,
 } from '@cloudbitmaps/core';
-import { eraseIdFromSegment } from './codec-bound';
 // This package's reason to exist: the roaring codec the facade injects into the codec-agnostic engine.
 import { listGenerations, rollbackSegment } from '@cloudbitmaps/core';
 import { listSegments, segmentExists } from '@cloudbitmaps/core';
 import type { SegmentInfo } from '@cloudbitmaps/core';
-import { loadSegment } from './codec-bound';
 import { roaringCodec } from './roaring-codec';
 import { SystemClock } from './system-clock';
 import { OPTION_KEYS, type OptionGroup } from './option-keys';
@@ -159,7 +159,7 @@ export interface CloudRoaringOptions {
    * **Pass the backend itself, not `backend.storage`.** They differ by one property access and the mistake is
    * silent: `storage: backend` is the store, while `storage: backend.storage` hands over the *driver half*
    * alone, which constructs without complaint and gives you a cleartext, read-only store that fails later on
-   * the first write or lifecycle call. The free functions take `backend.storage`; the store takes `backend`.
+   * the first write or lifecycle call. `destroySegment` and `eraseNamespace` take `backend.registry`; the store takes `backend`.
    *
    * Two lower-level shapes stay accepted for wiring the facade does not cover:
    *
@@ -462,7 +462,7 @@ export interface MaterializeResult {
  * Returns the resolved `source` (what the engine reads through) **and** the raw `driver` when one was passed —
  * the store keeps the raw driver so its lifecycle helpers and the `*Into` verbs can write generations without
  * you re-passing drivers. `driver` is `undefined` for a pre-built source (there's no underlying `IStorageDriver` to
- * write through — those callers use the free functions).
+ * write through, so its writes throw {@link UnsupportedError}).
  */
 /**
  * Work out what the caller handed us, and build the read path from it.
@@ -490,7 +490,7 @@ function resolveStorageSource(
   const hasGetChunk = typeof (storage as Partial<StorageChunkSource>).getChunk === 'function';
   const hasPutImmutable = typeof (storage as Partial<IStorageDriver>).putImmutable === 'function';
 
-  // The BRAND decides, not the shape. `{ storage, registry }` is also the shape of the free functions' deps
+  // The BRAND decides, not the shape. `{ storage, registry }` is also the shape of core's free-function deps
   // object, so before the brand any literal satisfied it — including one holding halves from two unrelated
   // stores, which the store accepted and then answered empty for a segment that holds data.
   const isBackend = isStorageBackend(storage);
@@ -788,15 +788,14 @@ export class CloudRoaring {
    * the store to have been constructed with a **backend**, which supplies both halves: an `IStorageDriver` to
    * write generations through (a pre-built `StorageChunkSource` has none) and the registry holding the pointer
    * every write publishes.
-   * Out-of-process callers use the free functions with explicit deps.
    */
   private lifecycleDeps(op: string): LifecycleDeps {
     if (this.storageDriver === undefined) {
       throw new UnsupportedError(
         `${op} needs the store built with a storage backend — S3Storage, GcsStorage, AzureBlobStorage, ` +
           `LocalFsStorage or MemoryStorage. A pre-built StorageChunkSource is read-only: it has no ` +
-          `IStorageDriver underneath to write generations through. Out of process, call the equivalent ` +
-          `free function with explicit deps instead.`,
+          `IStorageDriver underneath to write generations through. Build the store on one of those backend ` +
+          `classes to write.`,
       );
     }
     if (this.registry === undefined) {
@@ -836,16 +835,16 @@ export class CloudRoaring {
         );
       }
     }
-    return new Segment(
-      this.engine,
+    return makeSegment({
+      engine: this.engine,
       ref,
-      this.clock,
-      this.metrics,
-      (dest, ids, op, options) => this.materialize(dest, ids, op, options),
-      (r, e) => this.pinSegment(r, e),
-      (handles) => this.engineForCombine(handles),
+      clock: this.clock,
+      metrics: this.metrics,
+      materialize: (dest, ids, op, options) => this.materialize(dest, ids, op, options),
+      pinned: (r, e) => this.pinSegment(r, e),
+      combineEngine: (handles) => this.engineForCombine(handles),
       expiresAt,
-    );
+    });
   }
 
   /**
@@ -1030,7 +1029,7 @@ export class CloudRoaring {
    * Uses the backend's **own** two halves, so the membership check and the rewrite provably run
    * over the same generation. Requires the store built with a **backend** (throws
    * {@link UnsupportedError} otherwise; a pre-built `StorageChunkSource` store has no `IStorageDriver` to write
-   * through — use the `eraseIdFromSegment` free function there).
+   * through; build the store on a backend instead).
    *
    * **One contract remains** (an integrator obligation the library cannot check): **do not load the segment
    * while erasing from it.** A load that lands after the rewrite carries whatever its source held, and the
@@ -1563,17 +1562,17 @@ export class CloudRoaring {
       fingerprint: at?.fingerprint ?? null,
     };
     const pins = new Map([[segmentKey(ref), pinnedAt]]);
-    return new Segment(
-      this.engineWithPins(pins),
+    return makeSegment({
+      engine: this.engineWithPins(pins),
       ref,
-      this.clock,
-      this.metrics,
-      (dest, ids, op, options) => this.materialize(dest, ids, op, options),
-      (r, e) => this.pinSegment(r, e),
-      (handles) => this.engineForCombine(handles),
+      clock: this.clock,
+      metrics: this.metrics,
+      materialize: (dest, ids, op, options) => this.materialize(dest, ids, op, options),
+      pinned: (r, e) => this.pinSegment(r, e),
+      combineEngine: (handles) => this.engineForCombine(handles),
       expiresAt,
       pinnedAt,
-    );
+    });
   }
 
   /**
@@ -1886,6 +1885,25 @@ type Materialize = (
   options?: MaterializeOptions,
 ) => Promise<MaterializeResult>;
 
+/** What a {@link Segment} is built from: the store's own wiring, which is why a handle is not constructible. */
+interface SegmentParts {
+  engine: SegmentEngine;
+  ref: SegmentRef;
+  clock: Clock;
+  metrics: IMetricsSink;
+  materialize: Materialize;
+  /** Build a pinned twin of this handle — injected so `Segment` stays free of store wiring. */
+  pinned: Pin;
+  combineEngine: CombineEngine;
+  expiresAt?: number;
+  pinnedAt?: PinnedAt;
+}
+
+/** The store's one way to mint a {@link Segment}, bound by the class's static block. */
+let makeSegment: (parts: SegmentParts) => Segment;
+/** True only while {@link makeSegment} is constructing, so a `new Segment(...)` from plain JS is refused. */
+let minting = false;
+
 /**
  * A handle bound to one segment — the read verbs, plus the three `*Into` verbs that write a **new generation**
  * of another segment.
@@ -1898,25 +1916,52 @@ type Materialize = (
  */
 export class Segment {
   private readonly metricsOn: boolean;
+  private readonly engine: SegmentEngine;
+  private readonly ref: SegmentRef;
+  private readonly clock: Clock;
+  private readonly metrics: IMetricsSink;
+  private readonly materialize: Materialize;
+  private readonly pinned: Pin;
+  private readonly combineEngine: CombineEngine;
+  /** Absolute epoch-ms deadline from {@link SegmentOptions.expiresAt}; `undefined` ⇒ this handle never expires. */
+  readonly expiresAt?: number;
+  /**
+   * The generation this handle is held at, when it came from {@link Segment.pin}. Read by the store so a
+   * pinned handle passed as an **operand** is still read at its pin rather than live.
+   */
+  readonly pinnedAt?: PinnedAt;
 
-  constructor(
-    private readonly engine: SegmentEngine,
-    private readonly ref: SegmentRef,
-    private readonly clock: Clock,
-    private readonly metrics: IMetricsSink,
-    private readonly materialize: Materialize,
-    /** Build a pinned twin of this handle — injected so `Segment` stays free of store wiring. */
-    private readonly pinned: Pin,
-    private readonly combineEngine: CombineEngine,
-    /** Absolute epoch-ms deadline from {@link SegmentOptions.expiresAt}; `undefined` ⇒ this handle never expires. */
-    readonly expiresAt?: number,
-    /**
-     * The generation this handle is held at, when it came from {@link Segment.pin}. Read by the store so a
-     * pinned handle passed as an **operand** is still read at its pin rather than live.
-     */
-    readonly pinnedAt?: PinnedAt,
-  ) {
-    this.metricsOn = metrics !== NOOP_METRICS;
+  static {
+    makeSegment = (parts) => {
+      minting = true;
+      try {
+        return new Segment(parts);
+      } finally {
+        minting = false;
+      }
+    };
+  }
+
+  /**
+   * Not constructible: a handle comes from {@link CloudRoaring.segment}, which wires it to the store's engine,
+   * caches and write path. The constructor takes those internals, so it is not part of the surface.
+   */
+  private constructor(parts: SegmentParts) {
+    if (!minting) {
+      throw new ValidationError(
+        'a Segment is not constructed directly; call `store.segment(name)`',
+      );
+    }
+    this.engine = parts.engine;
+    this.ref = parts.ref;
+    this.clock = parts.clock;
+    this.metrics = parts.metrics;
+    this.materialize = parts.materialize;
+    this.pinned = parts.pinned;
+    this.combineEngine = parts.combineEngine;
+    this.expiresAt = parts.expiresAt;
+    this.pinnedAt = parts.pinnedAt;
+    this.metricsOn = parts.metrics !== NOOP_METRICS;
   }
 
   /**
@@ -1993,7 +2038,12 @@ export class Segment {
     return this.pinned(this.ref, this.expiresAt);
   }
 
-  /** This handle's segment, as the cache/pin key — `ref` stays private; the encapsulation is worth the method. */
+  /**
+   * An opaque string that names this handle's segment, namespace included: two handles of one segment have the
+   * same key, a live handle and its pins among them. Use it as a `Map` key or a log field when you track handles
+   * and have not kept the name you made them with. The format is not specified and is not a storage key, so
+   * compare keys, never parse one.
+   */
   key(): string {
     return segmentKey(this.ref);
   }
@@ -2297,13 +2347,138 @@ export class Segment {
 }
 
 // ---------------------------------------------------------------------------------------------------
-// Re-export the whole codec-agnostic core so `@cloudbitmaps/roaring` stays the one name to know: every driver,
-// error, port, and helper an application needs is reachable from here. (`@cloudbitmaps/core` arrives
-// transitively — users never install it directly.)
+// What `@cloudbitmaps/roaring` re-exports from `@cloudbitmaps/core`, by name: the store's verbs' types, the errors,
+// the types its signatures name, the backends' shared types, and the constants and helpers an application calls.
+// An application installs this package and imports from it alone. Flavor and driver authors import everything
+// else (the engine, the free-function forms of the store's methods, the retry and budget internals) from
+// `@cloudbitmaps/core` and `@cloudbitmaps/core/driver-kit`. A name added here is a public name of this package, so
+// add one on purpose: `tests/docs/api-reference-sync.test.ts` fails until the API reference lists it.
 // ---------------------------------------------------------------------------------------------------
-export * from '@cloudbitmaps/core';
-
-// ...with the codec-bound overrides layered on top. These three core entry points need a bitmap codec, which
-// core cannot default (it is codec-agnostic). Re-exporting them EXPLICITLY here shadows the same names from the
-// `export *` above, so an application calls each with no codec at all.
-export { eraseIdFromSegment, loadSegment, runExport } from './codec-bound';
+export {
+  // Backends and their halves
+  MemoryStorage,
+  LocalFsStorage,
+  MemoryStorageDriver,
+  MemoryRegistryDriver,
+  LocalFsStorageDriver,
+  LocalFsRegistryDriver,
+  CrbmStorageChunkSource,
+  createBackend,
+  // Crypto-shred and the retention policy helpers
+  destroySegment,
+  eraseNamespace,
+  excludingReservedRows,
+  readRetentionPolicy,
+  MIN_EXPIRES_AT_MS,
+  // Encryption
+  InProcessKeystore,
+  NodeAead,
+  aadFor,
+  // Errors and their copy-safe predicates
+  CloudRoaringError,
+  ValidationError,
+  WriteConflictError,
+  IntegrityError,
+  NotFoundError,
+  UnsupportedError,
+  CapabilityError,
+  TransientError,
+  KeyUnavailableError,
+  BudgetExceededError,
+  isCloudRoaringError,
+  isWriteConflictError,
+  isTransientError,
+  isNotFoundError,
+  isIntegrityError,
+  isValidationError,
+  // The `.crbm` reader and its blob source
+  CrbmReader,
+  BufferReader,
+  // Metrics, audit and pricing
+  CountingMetricsSink,
+  RecordingAuditSink,
+  DEFAULT_RETRY_POLICY,
+  AWS_US_EAST_1_ONDEMAND,
+  ELASTICACHE_REDIS_US_EAST_1_ONDEMAND,
+  ONE_REDIS_HA_CLUSTER,
+} from '@cloudbitmaps/core';
+export type {
+  Aead,
+  AeadSealed,
+  AuditEvent,
+  BlobReader,
+  BlobSink,
+  Budget,
+  BudgetOption,
+  ChunkRef,
+  Clock,
+  CodecBitmap,
+  CodecInterface,
+  ConsistencyErrorEntry,
+  ConsistencyIssue,
+  ConsistencyReport,
+  CostReport,
+  CrbmCrypto,
+  CrbmReaderOptions,
+  CrbmStorageChunkSourceOptions,
+  DestroyResult,
+  DropResult,
+  EraseDeps,
+  EstimateInput,
+  ExportFailure,
+  ExportFormat,
+  ExportManifest,
+  ExportOptions,
+  ExportSink,
+  ExportWriter,
+  ExportedSegment,
+  GenKey,
+  GenerationEntry,
+  GovernanceMeta,
+  IAuditSink,
+  IKeystore,
+  IMetricsSink,
+  IRegistryDriver,
+  IStorageDriver,
+  IdRange,
+  InProcessKeystoreOptions,
+  LoadGuard,
+  LoadOptions,
+  LoadRefusal,
+  LoadResult,
+  LocalFsRegistryDriverOptions,
+  LocalFsStorageOptions,
+  MemoryRegistryDriverOptions,
+  MemoryStorageOptions,
+  MetricEvent,
+  MetricOpName,
+  MetricsSnapshot,
+  NewRegistryRecord,
+  PinnedAt,
+  PinnedObject,
+  PricingProfile,
+  RedisNodeType,
+  RedisSizing,
+  RegCaps,
+  RegistryPatch,
+  RegistryRecord,
+  RegistryStatus,
+  RetentionPolicy,
+  RetireEntry,
+  RetireExpiredOptions,
+  RetireExpiredResult,
+  RetryPolicy,
+  Rng,
+  RollbackResult,
+  SegmentInfo,
+  SegmentRef,
+  SegmentSize,
+  SegmentSizing,
+  SetRetentionResult,
+  StorageBackend,
+  StorageCaps,
+  StorageChunkSource,
+  Token,
+  Workload,
+  WrappedDek,
+} from '@cloudbitmaps/core';

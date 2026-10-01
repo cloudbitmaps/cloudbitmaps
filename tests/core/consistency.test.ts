@@ -4,11 +4,11 @@ import {
   CrbmStorageChunkSource,
   MemoryStorageDriver,
   MemoryRegistryDriver,
-  runConsistencyCheck,
   UnsupportedError,
 } from '@/index';
 import type { SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { runConsistencyCheck } from '@cloudbitmaps/core';
 
 /** Advance the registry's currentGen WITHOUT writing the matching Storage generation — a torn cross-tier restore. */
 async function tearRestore(registry: MemoryRegistryDriver, ref: SegmentRef): Promise<void> {

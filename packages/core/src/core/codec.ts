@@ -120,7 +120,7 @@ export interface CodecInterface {
  * Why these entry points take `codec?` rather than a required field: `loadSegment` / `eraseIdFromSegment` /
  * `runExport` are call-compatible public API, and core cannot supply a default (the concrete
  * codec lives in a *flavor* package that depends on core — a default here would invert that arrow). A **flavor**
- * package binds the codec for its users (`@cloudbitmaps/roaring` re-exports codec-bound wrappers), so an
+ * package binds the codec for its users (`@cloudbitmaps/roaring`'s store passes its codec to each of these), so an
  * application never reaches this throw; only someone calling `@cloudbitmaps/core` directly — i.e. a flavor or
  * driver author — can, and for them the typed error names exactly what to pass.
  */
@@ -128,8 +128,8 @@ export function requireCodec(codec: CodecInterface | undefined, api: string): Co
   if (codec === undefined) {
     throw new ValidationError(
       `${api} needs a bitmap codec: pass \`codec\`. ` +
-        `@cloudbitmaps/core is codec-agnostic and has no default — install a flavor package, whose ` +
-        `equivalents bind the codec for you.`,
+        `@cloudbitmaps/core is codec-agnostic and has no default. A flavor's store passes its own codec, ` +
+        `so an application calls the store's method instead of this function.`,
     );
   }
   return codec;

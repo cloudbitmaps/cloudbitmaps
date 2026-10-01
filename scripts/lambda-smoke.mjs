@@ -15,13 +15,14 @@ const require = createRequire(import.meta.url);
 async function exercise(label, m) {
   for (const name of [
     'CloudRoaring',
-    'estimateCost',
     'MemoryStorageDriver',
     'MemoryRegistryDriver',
     'MemoryStorage',
   ]) {
     if (m[name] == null) throw new Error(`${label}: missing export ${name}`);
   }
+  if (typeof m.CloudRoaring.estimateCost !== 'function')
+    throw new Error(`${label}: CloudRoaring.estimateCost is missing`);
   // Data enters a loaded store only as a published generation, so the round-trip IS the load: encode the ids
   // into one immutable `.crbm`, publish it, then read it back. The two ids sit in different 16-bit chunks, so
   // chunk routing and the native bitmap both run rather than a single-container no-op.

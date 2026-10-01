@@ -8,8 +8,9 @@
  * facade on top.
  *
  * **You normally install a flavor, not this package** — `pnpm add @cloudbitmaps/roaring` pulls this in
- * transitively and re-exports it, so `@cloudbitmaps/roaring` is the one name to know. Depend on `core`
- * directly only when authoring a new flavor or a driver.
+ * transitively and re-exports, by name, what an application uses, so `@cloudbitmaps/roaring` is the one name to
+ * know. The engine, the standalone forms of the store's methods and the retry and budget internals stay here:
+ * depend on `core` directly only when authoring a new flavor or a driver.
  *
  * Nothing in here may import a flavor package — the dependency arrow is one-way (flavor → core), so core stays
  * publishable on its own and every codec reuses one driver set with zero duplication.
@@ -38,7 +39,8 @@ export type { Token } from './core/ports';
 export { segmentKey } from './core/keys';
 
 // ---------------------------------------------------------------------------------------------------
-// The public surface (an application reaches these through its flavor package, which re-exports them).
+// The public surface. An application reaches most of these through its flavor package, which re-exports the ones it
+// needs by name; the rest of this entry is the flavor-author kit above and the standalone forms of the store's methods.
 // `createBackend` is how a caller supplies a half of its own; `isStorageBackend` tests the brand.
 export { createBackend, isStorageBackend } from './core/ports';
 // ---------------------------------------------------------------------------------------------------
@@ -181,7 +183,7 @@ export type {
 export { DEFAULT_BUDGET } from './core/budget';
 export type { Budget, BudgetOption } from './core/budget';
 
-// Cross-tier DR consistency check: `store.checkConsistency()` (or the free function over your own storage +
+// Cross-tier DR consistency check: `store.checkConsistency()` (or this function over your own storage +
 // registry drivers) detects a torn restore where `currentGen` points at a `.crbm` that isn't present.
 export { runConsistencyCheck } from './core/consistency';
 export type {

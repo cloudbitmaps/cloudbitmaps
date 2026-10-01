@@ -5,7 +5,6 @@ import {
   CloudRoaring,
   CrbmStorageChunkSource,
   IntegrityError,
-  eraseIdFromSegment,
   LocalFsStorageDriver,
   MemoryRegistryDriver,
   createBackend,
@@ -14,6 +13,7 @@ import { SafeBitmap, roaringCodec } from '@/roaring-codec';
 import { verifyGeneration } from '@/core/crbm-storage-source';
 import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { eraseIdFromSegment } from '@cloudbitmaps/core';
 
 const SEG: SegmentRef = { segment: 's' };
 

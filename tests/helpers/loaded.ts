@@ -13,17 +13,12 @@
  *    helpers.
  */
 import { MemoryStorageChunkSource } from './memory-chunk-source';
-import {
-  MemoryStorage,
-  CloudRoaring,
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
-  splitId,
-} from '@/index';
+import { MemoryStorage, CloudRoaring, MemoryStorageDriver, MemoryRegistryDriver } from '@/index';
 import type { CloudRoaringOptions, SegmentRef } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from './bulk-load';
 import type { BulkLoadResult } from './bulk-load';
+import { splitId } from '@cloudbitmaps/core';
 
 /** Normalise a segment name or ref to a ref. */
 export function asRef(seg: string | SegmentRef): SegmentRef {

@@ -90,6 +90,45 @@ const OFF_THE_DRIVER_KIT = [
   'isServerSide',
 ];
 
+/**
+ * Names that left `@cloudbitmaps/roaring` and stay on `@cloudbitmaps/core`, where a flavor or driver author gets
+ * them. Pages and samples legitimately name most of these (the free-function forms, the retry internals), so they
+ * are held to the runtime surface of the flavor only.
+ */
+const OFF_THE_FLAVOR = [
+  'SegmentEngine',
+  'BoundedLru',
+  'safeMetrics',
+  'NOOP_METRICS',
+  'resolveBudget',
+  'resolvePerOpBudget',
+  'collectWithinBudget',
+  'DEFAULT_BUDGET',
+  'checkBudget',
+  'withRetry',
+  'RetryingStorageChunkSource',
+  'groundedReport',
+  'splitId',
+  'mapWithConcurrency',
+  'segmentKey',
+  'isStorageBackend',
+  'PinnedStorageChunkSource',
+  'listGenerations',
+  'rollbackSegment',
+  'segmentExists',
+  'listSegments',
+  'setSegmentRetention',
+  'getSegmentRetention',
+  'clearSegmentRetention',
+  'runConsistencyCheck',
+  'runExport',
+  'dropSegment',
+  'retireExpired',
+  'estimateCost',
+  'loadSegment',
+  'eraseIdFromSegment',
+];
+
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'coverage', '.git', '.worktrees', '.changeset']);
 /** A page is anything a reader opens: markdown, HTML, and the plain-text pages the site serves. */
 const PAGE_EXTS = ['.md', '.html', '.txt'];
@@ -151,9 +190,14 @@ describe('a removed export is named nowhere a reader looks', () => {
     }
     // What replaces them is there, so the check above cannot pass on a barrel that failed to load.
     expect(typeof core.loadSegment).toBe('function');
-    expect(typeof roaring.loadSegment).toBe('function');
     expect(typeof core.RetryingStorageChunkSource).toBe('function');
-    expect(typeof roaring.RetryingStorageChunkSource).toBe('function');
+  });
+
+  it('the flavor exports none of the names that stay on core, and core still exports each', () => {
+    for (const name of OFF_THE_FLAVOR) {
+      expect(name in roaring, `@cloudbitmaps/roaring exports ${name}`).toBe(false);
+      expect(name in core, `@cloudbitmaps/core no longer exports ${name}`).toBe(true);
+    }
   });
 
   it('the driver-kit subpath exports none of the names that left it, and still exports the ones that moved onto it', () => {

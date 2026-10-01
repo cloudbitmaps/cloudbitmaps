@@ -1,7 +1,7 @@
 import { gcOrphanGenerations, nextGeneration } from '@/core/generation-gc';
 import { publishGeneration } from '@/core/crbm-storage-source';
 import { randomBytes } from 'node:crypto';
-import { CloudRoaring, CrbmStorageChunkSource, runConsistencyCheck } from '@/index';
+import { CloudRoaring, CrbmStorageChunkSource } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { KeyUnavailableError } from '@/core/errors';
 import type {
@@ -13,6 +13,7 @@ import type {
 } from '@/index';
 import { collect, loadedStore } from '../helpers/loaded';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { runConsistencyCheck } from '@cloudbitmaps/core';
 
 /**
  * `currentGen: null` — "this segment exists and has **no Storage generation yet**".

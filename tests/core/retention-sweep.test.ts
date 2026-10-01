@@ -8,15 +8,15 @@ import {
   MemoryRegistryDriver,
   MIN_EXPIRES_AT_MS,
   destroySegment,
-  retireExpired,
 } from '@/index';
 import { DEFAULT_RETIRE_LIMIT } from '@/core/retention-sweep';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { BudgetExceededError, UnsupportedError, ValidationError } from '@/core/errors';
-import { clearSegmentRetention } from '@/index';
-import type { DropDeps, RetireEntry, SegmentRef } from '@/index';
+import type { RetireEntry, SegmentRef } from '@/index';
 import type { IStorageDriver, IRegistryDriver } from '@/core/ports';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { retireExpired, clearSegmentRetention } from '@cloudbitmaps/core';
+import type { DropDeps } from '@cloudbitmaps/core';
 
 /**
  * The retention **sweep** — the piece that acts on the policies (`retention-policy.test.ts`).

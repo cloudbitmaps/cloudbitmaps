@@ -57,8 +57,8 @@ export interface ExportOptions {
   /** Output format; defaults to `'roaring'`. */
   readonly format?: ExportFormat;
   /**
-   * Bitmap codec that builds the exported bitmap for the `'roaring'` format. Optional in the type; a **flavor**
-   * package binds it (see `requireCodec`). Not needed for `'ndjson'`, which streams plain ids.
+   * Bitmap codec that builds the exported bitmap for the `'roaring'` format. Optional in the type; a **flavor**'s
+   * store passes its own (see `requireCodec`). Not needed for `'ndjson'`, which streams plain ids.
    */
   readonly codec?: CodecInterface;
   /** Scope the export to one namespace; omit to export every registered segment. */

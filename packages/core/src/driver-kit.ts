@@ -6,10 +6,9 @@
  * object-store registry that gives an S3-shaped service compare-and-swap semantics. A subpath is how a
  * separate package reaches them without reaching into core's source.
  *
- * WHY A SUBPATH AND NOT THE MAIN ENTRY. Two reasons pull the same way. The main entry is what every
- * application imports, and none of them needs `ObjectStoreRegistry` — shrinking
- * that entry to the documented surface is its own piece of work, and widening it here would move in the
- * opposite direction. And a driver's contract deserves to be a deliberate list rather than whatever core
+ * WHY A SUBPATH AND NOT THE MAIN ENTRY. Two reasons pull the same way. The main entry is what a flavor
+ * builds on, and none of it needs `ObjectStoreRegistry`, so widening that entry here would move in the
+ * opposite direction of keeping it to what a flavor uses. And a driver's contract deserves to be a deliberate list rather than whatever core
  * happens to export: everything below is imported by at least one driver or the flavor's export CLI today, so
  * the surface is the real dependency and not a guess. A third-party driver builds against exactly this.
  *

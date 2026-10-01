@@ -4,9 +4,7 @@ import {
   MemoryStorageDriver,
   MIN_EXPIRES_AT_MS,
   destroySegment,
-  clearSegmentRetention,
   readRetentionPolicy,
-  setSegmentRetention,
 } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { UnsupportedError, ValidationError, WriteConflictError } from '@/core/errors';
@@ -14,6 +12,7 @@ import type { SegmentRef } from '@/index';
 import type { IRegistryDriver } from '@/core/ports';
 import { randomBytes } from 'node:crypto';
 import { loadedStore } from '../helpers/loaded';
+import { clearSegmentRetention, setSegmentRetention } from '@cloudbitmaps/core';
 
 /**
  * The retention **policy** — recording *when* a segment becomes eligible for retirement, between the null-gen row
