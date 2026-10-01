@@ -59,6 +59,8 @@
     "prepare": "husky",
     "typecheck:pkgs": "tsc -p packages/core --noEmit && tsc -p packages/roaring --noEmit && tsc -p packages/s3 --noEmit && tsc -p packages/gcs --noEmit && tsc -p packages/azure-blob --noEmit",
     "bench:encoding": "node bench/encoding.cjs",
+    "bench:event-loop": "pnpm run build && node bench/event-loop.cjs",
+    "bench:event-loop:check": "node bench/event-loop.cjs --check",
     "fuzz:install": "pnpm -C fuzz install --ignore-workspace --frozen-lockfile"
   },
   "lint-staged": {
