@@ -1,4 +1,5 @@
-import { CloudRoaring, createBackend } from '@/index';
+import { CloudRoaring } from '@/index';
+import { brandAsBackend } from '@/core/ports';
 import type { SegmentRef } from '@/index';
 import { counting } from '../helpers/counting';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
@@ -57,7 +58,7 @@ describe('subjectReport does not re-resolve a segment whose row has not moved', 
     const registry = counting(w.registry, counts);
     const storage = counting(w.storage, counts);
     const reader = new CloudRoaring({
-      storage: createBackend({ storage, registry }),
+      storage: brandAsBackend({ storage, registry }),
       cache: { genTtlMs: 0 },
     });
 
