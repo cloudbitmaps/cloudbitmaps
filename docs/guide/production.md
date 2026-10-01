@@ -88,7 +88,7 @@ reuse, so expiring the row breaks that. A rule on noncurrent versions only is sa
 
 The data, the pointers and, if you encrypt, the keys are three separate stores, and a restore must bring them back
 at the same point in time. [The disaster-recovery backup checklist](disaster-recovery.md#backup-checklist) says what
-to turn on for each, and [`checkConsistency()`](disaster-recovery.md#disaster-recovery-check-cross-store-consistency)
+to turn on for each, and [`checkConsistency()`](disaster-recovery.md#checkconsistency--verify-before-you-serve-traffic)
 verifies a restore before you serve traffic.
 
 ## Conditional writes and the S3 SDK

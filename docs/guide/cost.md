@@ -1,15 +1,23 @@
-# Cost: estimate it, then ground it
+# Estimate your own cost
 
-Estimating what a workload costs and pricing your real segments.
+[What it costs at your size](sizing.md) prices three example deployments. This page is how to price yours: call
+`CloudRoaring.estimateCost()` with your workload for a plan, or `segment.costReport()` for what a real segment costs.
+The [benchmarks page](../benchmarks.md) charts exactly where pay-per-use beats one Redis-HA cluster, whatever the data
+size, drawn from this same estimator and turned into build-breaking CI assertions, so the numbers cannot drift ahead
+of reality.
 
 ## Cost: estimate it, then ground it
 
-CloudBitmaps can tell you what a workload *will* cost — and, uniquely, what your **real** segments *are*
-costing — because the library owns the storage + cache, so it can ground estimates no external calculator can.
-The model has five terms and no per-id write: object-store **GETs** for point reads; GETs for **intersections**,
-each operand's pointer and index as well as its chunks; the requests of a **load**, the object's write and what
-`store.load()` does around it; the **pointer refresh** a long-lived reader pays; and **storage**. Each request
-count is one the engine is tested to make.
+CloudBitmaps can tell you what a workload will cost, and what your real segments are costing, because the library owns
+the storage and the cache. The model has five terms and no per-id write:
+
+- object-store **GETs** for point reads;
+- GETs for **intersections**, each operand's pointer and index as well as its chunks;
+- the requests of a **load**: the object's write and what `store.load()` does around it;
+- the **pointer refresh** a long-lived reader pays;
+- **storage**.
+
+Each request count is one the engine is tested to make.
 
 **Planning** (pure, no instance needed — sizing, sales, what-if):
 
@@ -133,7 +141,3 @@ on real S3.
 
 **See it at three sizes.** [What it costs at your size](sizing.md) prices a small, a medium and a large deployment
 with this function, term by term, and says where a standing cache still wins.
-
-**See it plotted.** The [benchmarks page](../benchmarks.md) charts exactly where pay-per-use beats one Redis-HA
-cluster, `ONE_REDIS_HA_CLUSTER`, whatever the data size — drawn from this same `CloudRoaring.estimateCost()` and turned into
-build-breaking CI assertions, so the numbers can never drift ahead of reality.
