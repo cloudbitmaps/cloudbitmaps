@@ -56,10 +56,10 @@ there", and `note` says why:
 | `error: <message>`, an `IntegrityError` naming a chunk | That segment is corrupt. The rewrite refused to copy the corruption into a new generation, and no erasure happened on it. | Investigate; re-running will not help. |
 | `error: <message>`, a `WriteConflictError` | The erasure could not remove a generation holding the id and refused to claim it had. Often a rewrite had already published, so part of the work landed (a rollback onto a generation that still holds the id, landing while the rewrite collects, is one way). It also fires on the collect-only path, where nothing is published at all. | See what a re-run reports instead of assuming the job finished. |
 
-A fault can also land after a rewrite published: a storage `delete` fault, a collect that could not prove the segment
-was still the same one, or a generation still holding the id when the bucket is listed at the end (such as a rollback
-target an operator moved the pointer onto mid-collect). The pointer has then moved, and the re-run searches every
-generation in the bucket. It usually reports `erased: true` against the generation it found the id in, and nothing at
+A fault can also land after a rewrite published. Examples are a storage `delete` fault, a collect that could not prove
+the segment was still the same one, and a generation still holding the id when the bucket is listed at the end (such
+as a rollback target an operator moved the pointer onto mid-collect). The pointer has then moved, and the re-run
+searches every generation in the bucket. It usually reports `erased: true` against the generation it found the id in, and nothing at
 all if a racing collector took that generation first (gone, but unreceipted).
 
 Re-running is safe and idempotent: a segment the id is no longer in is simply not listed. But "not listed" is not by

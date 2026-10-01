@@ -62,7 +62,7 @@ no per-id write. `intersectInto`/`unionInto`/`andNotInto` use the same protocol,
 new generation of the destination segment — and check the result is plausible the same way `load` does: an empty
 or implausible combine over a non-empty destination is refused (`published: false` + `reason`) rather than
 wiping it, with `allowEmpty`/`guard` to override. Unlike `load` they collect nothing by default, so a rollback
-target survives a materialisation.
+target survives a materialization.
 
 Every chunk a read fetches is whole and checksum-verified, from one generation, resolved once before any
 fan-out; a long read can move to a newer generation part-way (a `cache.genTtlMs` refresh, an eviction, a sweep,

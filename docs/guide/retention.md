@@ -52,9 +52,9 @@ That is one registry write, and nothing else happens. Nothing is deleted and no 
 create the bucket, not on every load. It is idempotent, so re-running is harmless, but it is a write.
 
 - **`expiresAt` is an absolute instant in epoch milliseconds**, which you compute. A duration would have to be measured
-  from something, and every anchor the library could use is wrong: `updatedAt` and `currentGen` are rewritten by every
-  load, so "expire 30 days after the last write" would push a daily-reloaded bucket's expiry forward on every refresh,
-  and the segment would stay alive because it is being kept fresh. The library stores your instant verbatim and never
+  from something, and every anchor the library could use is wrong. `updatedAt` and `currentGen` are rewritten by every
+  load, so "expire 30 days after the last write" would push a daily-reloaded bucket's expiry forward on every refresh.
+  The segment would stay alive because it is being kept fresh. The library stores your instant verbatim and never
   moves it.
 - **A value that looks like epoch seconds is rejected.** `Date.now() / 1000 + 30 * 86400` is a natural thing to type
   and lands in 1970, already expired. Without the check it would not be an error, it would be a deletion on the next
@@ -277,7 +277,7 @@ Two limits to know before you automate it:
   dropped segment indefinitely: call `store.invalidate(ref)` on it, or restart it.
 
 > ⚠️ **The tempting shortcut breaks reads: an object-store lifecycle rule alone.** It deletes the bytes while the
-> registry still points at them, which is exactly the state [`checkConsistency()`](disaster-recovery.md) reports as
+> registry still points at them. That is exactly the state [`checkConsistency()`](disaster-recovery.md) reports as
 > **`missing-storage-generation`**, the torn-restore failure the disaster-recovery guide says not to serve traffic on.
 >
 > **And it presents intermittently.** A read checks the cache before storage, so cached chunks answer correctly while
@@ -389,9 +389,9 @@ because deleting the row is what makes the name writable again:
 2. **A grace period has passed since that stamp** (default 24 h). While the row exists every writer refuses the
    segment, and that is what stops an in-flight load from resurrecting it.
 3. **Storage is provably empty for it.** If storage still holds a straggler generation, such as a load that was writing
-   when the tombstone landed, the sweep collects it first (the collection takes every generation of a destroyed row,
-   and nothing else would ever run it for a tombstoned segment), then purges. Only if storage still cannot be proven
-   gone does the row stay, with `tombstone-not-empty`: without the row the collection can no longer see the segment at
+   when the tombstone landed, the sweep collects it first, then purges. (The collection takes every generation of a
+   destroyed row, and nothing else would ever run it for a tombstoned segment.) Only if storage still cannot be proven
+   gone does the row stay, with `tombstone-not-empty`. Without the row the collection can no longer see the segment at
    all, and the objects would be billed forever. That reason also covers the case where the collection declined because
    the row changed under it. That is not a storage fault, and the next cycle simply retries.
 

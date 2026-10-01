@@ -349,6 +349,15 @@ This one changes what an erasure charges its budget for:
 
 ### Added
 
+- **The guide is split into topic pages, and getting started is the 10-minute path.** The README leads with what the
+  library is, a plain definition of segment, generation and pointer, a first run on `MemoryStorage` that can be saved
+  and run, and a choice of backend. Getting started goes from install to a bucket, with a glossary. The detail moves
+  to new pages in `docs/guide/`: `production.md` (a before-production checklist, with the permissions the library
+  issues, the bucket lifecycle rules, and a timeout sample that passes the client to `S3Storage`), `loading.md`,
+  `reading.md`, `retention.md`, `encryption.md`, `erasure.md`, `observability.md`, `export.md` and `cost.md`. Each
+  page puts what a user does first and the mechanism last. The package READMEs share one template, and
+  `site/llms.txt` carries a worked example. The docs also say plainly that the `export-segments` command reads a
+  local-filesystem store only, and that an S3, GCS or Azure Blob store exports with `store.exportSegments(sink)`.
 - **`IRegistryDriver.delete` takes an optional expected token: `delete(ref, expected?)`.** Without it, nothing
   changes: deleting an absent row is a no-op. With it, the delete lands only while the row still carries that
   token, and otherwise (another token, or no live row) throws `WriteConflictError` and leaves the row, as a

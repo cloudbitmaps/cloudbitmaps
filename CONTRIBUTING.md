@@ -101,7 +101,7 @@ the ones marked **nothing** fail no gate at all, so this table is the only thing
 | `docker-compose.yml` | the backend's emulator, as a service on a pinned image | a floating tag: `pnpm test` (`tests/ci/compose-images.test.ts`). The service: `pnpm test:integration`, once a test needs it. The CI image pull reads the file, so it needs no edit |
 | `tests/integration/` | a test that runs the conformance suite against that emulator, as `s3.test.ts`, `gcs.test.ts` and `azure.test.ts` do | **nothing** — the package is then never run against a backend |
 | the package's `README.md` · `site/usage.html` | the SDK range the manifest declares, verbatim, in both: the README's statement of it and the site's driver table | `pnpm test`: `tests/docs/sdk-floor-claims.test.ts` compares all three |
-| docs and site | the README install + driver tables, `docs/guide/getting-started.md` wiring, the API reference entry points and export index, the guide index, and every site page that lists the drivers (`grep -rl '@cloudbitmaps/gcs' site` finds them) | the API reference: `pnpm test` (`tests/docs/api-reference-sync.test.ts`). The rest: **nothing** |
+| docs and site | the README install + driver tables, the `docs/guide/` pages that show wiring, the API reference entry points and export index, the guide index, and every site page that lists the drivers (`grep -rl '@cloudbitmaps/gcs' site` finds them) | the API reference: `pnpm test` (`tests/docs/api-reference-sync.test.ts`). The rest: **nothing** |
 | every place that names the SDK roots, if the new SDK is not under `@aws-sdk/`, `aws-sdk`, `@google-cloud/` or `@azure/` | the new root in each eslint `group` list, `SDK_ROOTS` in `scripts/sdk-specifiers.cjs`, `CLOUD_SDK` in `scripts/smoke.cjs`, and the SDK patterns in `tests/docs/issue-template-sync.test.ts` and `tests/docs/sdk-floor-claims.test.ts` | **nothing** — those gates then do not see the package as a driver, so the eslint, issue-template and SDK-range rows above fail nothing either |
 | npm | **bootstrap the package name** before any release can include it — see [`RELEASING.md`](RELEASING.md#bootstrapping-a-name) | the release workflow's registry probe, which refuses the run before its publish step |
 
@@ -238,7 +238,8 @@ root-level project files. What each one is, and when it must be updated:
 
 **When a change ships a user-visible capability or a public-API change — in the same change:**
 
-1. **Guide** — update [`docs/guide/getting-started.md`](docs/guide/getting-started.md); add a how-to when a
+1. **Guide** — update the page the change belongs to (see the [guide index](docs/guide/README.md)), and
+   [`docs/guide/getting-started.md`](docs/guide/getting-started.md) when it changes the first ten minutes; add a how-to when a
    headline capability lands.
 2. **API reference** — a new export **cannot** merge undocumented; CI enforces it.
 3. **README** — refresh the status line / "what works today" / quick taste if the surface moved.

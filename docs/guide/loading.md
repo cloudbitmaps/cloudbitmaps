@@ -127,10 +127,9 @@ for await (const s of store.segments({ namespace: 'active-daily' })) {
   with that error, and calling `segments()` again scans from the start. It yields `destroyed` tombstones and rows with
   no data as they are, rather than quietly filtering them.
 - `exists` answers `false` for a row minted ahead of the first load (`setRetention` does that) and for a `destroyed`
-  tombstone, because a read answers empty in both. Two states answer `true` where a read still gives you nothing, and
-  neither is this call's job: a torn restore (a live pointer whose object was deleted) makes reads throw, which
-  `checkConsistency` is the call for, and a handle with an expired `expiresAt` reads empty by a rule that lives on the
-  handle.
+  tombstone, because a read answers empty in both. Two states answer `true` where a read still gives you nothing, and neither is
+  this call's job. A torn restore (a live pointer whose object was deleted) makes reads throw, which `checkConsistency`
+  is the call for. And a handle with an expired `expiresAt` reads empty by a rule that lives on the handle.
 - `segments()` yields `destroyed` tombstones and rows whose `currentGen` is `null`, because a filtered enumeration that
   looks complete is worse than an honest one. Filter yourself, or ask `exists` the narrower question. Internal
   bookkeeping rows are the one exclusion, and only on an unscoped scan: they live in the reserved `cbm.due.` namespace,
@@ -236,9 +235,10 @@ A crypto-shredded segment throws `ValidationError`, since every generation of it
 generation already current is a reported no-op.
 
 **What happens to the generations above the new pointer.** They stay, which is what makes a rollback reversible. They
-are then above `currentGen`, where collection never looks, so they remain until a load numbers above them (collection
-then keeps the newest `keep` of what is below its pointer), `dropSegment` deletes them, or an erasure deletes them: all
-of them when it rewrites, only those that hold the id when the current generation does not. Rollback is audited as
+are then above `currentGen`, where collection never looks. They remain until one of three things happens. A load
+numbers above them, and collection then keeps the newest `keep` of what is below its pointer. Or `dropSegment` deletes
+them. Or an erasure deletes them: all of them when it rewrites, only those that hold the id when the current
+generation does not. Rollback is audited as
 `segment.rollback`, because every other pointer move can be reconstructed from "a load happened" and this one cannot.
 
 ## Write a result into another segment: the `*Into` verbs

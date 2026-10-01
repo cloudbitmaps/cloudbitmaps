@@ -201,8 +201,8 @@ upstream. It does that without an always-on cluster or a VPC for your functions.
 
 **It is not a drop-in replacement, and the difference is the write model.** Redis mutates one bit in place per
 call; here a segment changes only by getting a **new generation** — you compute the set, load it, and read it.
-There is no per-id write at all, so a `SETBIT` loop has nothing to port to: if your set is defined by a query,
-run the query and load the result; if it is defined by events arriving one at a time, accumulate them in the
+There is no per-id write at all, so a `SETBIT` loop has nothing to port to. If your set is defined by a query,
+run the query and load the result. If it is defined by events arriving one at a time, accumulate them in the
 system that receives them (Redis does that well) and load the set on a cadence.
 
 The *read* side carries over one-for-one:
@@ -221,19 +221,19 @@ The *read* side carries over one-for-one:
 | `EXPIRE key seconds` | `store.setRetention(ref, { expiresAt })` + `store.retireExpired()` | per **segment**, never per id (a bitmap stores ids, not timestamps), and the sweep is **yours to schedule** — this library starts no timer, so it behaves the same in a Lambda and a server. [retention](retention.md#retention-ttl-and-pruning--what-exists-and-what-doesnt) |
 
 You are not giving up the bitmap: each 65,536-id chunk is stored in whichever of Roaring's three encodings is
-smallest for that chunk. Past **4,096 ids** in a chunk (6.25% of it) a flat bit array — a bit per id, as your
-Redis bitmap holds it — beats a sorted list of ids, unless the ids form runs, where a run encoding is smaller
-still: a contiguous range costs a few bytes a chunk. So the bit array is chosen per chunk instead of assumed for all of
-them, and below that threshold you stop paying for the empty span.
-It is the same bitmap but not the same bytes: Redis numbers a byte's bits from the most significant, and Roaring
+smallest for that chunk. Past **4,096 ids** in a chunk (6.25% of it), a flat bit array beats a sorted list of ids.
+That is a bit per id, as your Redis bitmap holds it. If the ids form runs, a run encoding is smaller still: a
+contiguous range costs a few bytes a chunk. So the bit array is chosen per chunk instead of assumed for all of them,
+and below that threshold you stop paying for the empty span.
+
+It is the same bitmap but not the same bytes. Redis numbers a byte's bits from the most significant, and Roaring
 numbers them from the least significant, in 64-bit words.
 
-**What does not carry over: the raw bytes.** A `.crbm` object is not a flat bit array, so anything that reads
-your Redis bitmap's underlying string — a job that `GET`s the key and indexes into it, a byte-for-byte backup,
-another service that already parses that layout — will not read ours. `BITFIELD`, `BITPOS`, and the byte-range
-forms of `BITCOUNT` have no equivalent either: this is a set of ids, not an addressable bit buffer, and
-`BITOP NOT` in particular has nothing to complement against, because there is no bounded universe here, only the
-`u32` id space. Raw bit-position **import** (the migration direction off Redis) and export are not built; whether
+**What does not carry over: the raw bytes.** A `.crbm` object is not a flat bit array. Anything that reads
+your Redis bitmap's underlying string will not read ours: a job that `GET`s the key and indexes into it, a
+byte-for-byte backup, another service that already parses that layout. `BITFIELD`, `BITPOS`, and the byte-range
+forms of `BITCOUNT` have no equivalent either: this is a set of ids, not an addressable bit buffer. `BITOP NOT` in
+particular has nothing to complement against, because there is no bounded universe here, only the `u32` id space. Raw bit-position **import** (the migration direction off Redis) and export are not built; whether
 they get built depends on someone saying they need them. Everything reached through bitmap *operations*
 transfers today; everything reached through the bytes does not.
 

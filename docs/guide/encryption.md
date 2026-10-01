@@ -77,7 +77,7 @@ Both calls are irreversible, so each makes you name the exact segment or namespa
 ```ts
 import { destroySegment, eraseNamespace } from '@cloudbitmaps/roaring';
 
-// Free functions over the registry half of the backend.
+// Free functions over the backend's registry.
 const one = await destroySegment({ segment: 'pii' }, { registry: backend.registry }, { confirmSegment: 'pii' });
 // one.reason is 'cleartext' for a segment with no key to shred: nothing changed (see below).
 

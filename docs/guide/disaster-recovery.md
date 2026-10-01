@@ -40,7 +40,7 @@ A running CloudBitmaps is up to three independent, separately-backed-up systems:
   └─────────────────┘
 ```
 
-There is no mutable tier. Data enters only as a **new generation** — a bulk load, an `*Into` materialisation,
+There is no mutable tier. Data enters only as a **new generation** — a bulk load, an `*Into` materialization,
 a subject-erasure rewrite — written to storage first and then made current by moving the registry pointer with a
 compare-and-swap on the segment's row. So the freshest state of a segment is always *one object plus one pointer*, and the two live in
 different stores.
@@ -186,7 +186,7 @@ makes the coordinated restore point easy to hit rather than something you have t
 ## Restore procedure
 
 1. **Pick one target timestamp** `T` from your coordinated backups.
-2. **Quiesce writers** for the affected segments (below) — loads, `*Into` materialisations, `eraseSubject`, the
+2. **Quiesce writers** for the affected segments (below) — loads, `*Into` materializations, `eraseSubject`, the
    retention sweep.
 3. **Restore storage** to `T` itself — not later: collection since `T` has deleted generations the restored
    registry names. For every storage key whose current version is not the one it held at `T` — deleted since `T`,
@@ -263,7 +263,7 @@ live pointer and then lists its objects, and a load followed by a GC of the supe
 transient false positive. And a manual `currentGen` roll (step 7) under a concurrent loader is a race you do not
 need to think about if the loader is simply not running.
 
-So: pause the calls for the duration. Nothing here is a daemon — a load, a materialisation, an erasure and the
+So: pause the calls for the duration. Nothing here is a daemon — a load, a materialization, an erasure and the
 sweep are all calls your own schedulers make — so "pause" means not invoking them, and there is no background
 process to stop. If you cannot quiesce, re-run the scan to confirm a reported tear before acting on it.
 
@@ -469,7 +469,7 @@ if (report.errored.length > 0) {
   a backend.
 - It fans out at a bounded `concurrency` (default 8; pass `{ concurrency }`), and can be scoped to one
   `{ namespace }`. It holds the registry listing in memory, and refuses with `BudgetExceededError` past 250,000
-  rows rather than materialise a fleet it cannot hold. `store.checkConsistency` takes no option to raise that
+  rows rather than materialize a fleet it cannot hold. `store.checkConsistency` takes no option to raise that
   ceiling, so check a larger fleet one namespace at a time.
 - **Fault-isolated per segment, not at the listing.** The check first drains `registry.list()` (over the
   namespace, or over every namespace), and a failure there aborts the whole check with that error and no report:

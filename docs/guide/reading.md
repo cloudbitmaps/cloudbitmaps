@@ -134,15 +134,18 @@ for await (const id of audience.iterate()) {
 - **A segment with no current generation pins nothing and reads empty.** A pinned segment whose row is later dropped or
   destroyed fails with `NotFoundError` once it must open its object again, rather than going empty part-way through a
   call.
-- **A pin keeps the key its reader unwrapped while that reader stays open, and answers from the chunks it decoded while
-  they stay cached.** Its own store invalidates it on a `load`, a `rollback` or an `*Into` of its segment, a
-  `dropSegment` of its segment, a `retireExpired` whose ledger lists its segment (retired or not; neither of those two
-  on a dry run), and an `eraseSubject` that scans its segment while it is not destroyed. An invalidated pin opens its
-  object again, and fails if that object is gone or replaced, or its row is gone or destroyed. Anything else leaves it
-  as it is. After a `destroySegment` beside its store, or an erasure, a drop or a retirement through another store, in
-  the same process or another, it answers from what it holds until its store's reader cache evicts the pin's reader and
-  the store's chunk cache evicts the chunks the pin decoded, or `store.invalidate(ref)` is called on its store. Where
-  the object it reads has been deleted, a chunk it has not cached fails at once.
+- **A pin answers from what it holds.** It keeps the key its reader unwrapped while that reader stays open, and
+  answers from the chunks it decoded while they stay cached. Its own store invalidates it on a `load`, a `rollback` or an `*Into` of its segment, and on a
+  `dropSegment` of its segment. It also invalidates it on a `retireExpired` whose ledger lists its segment, retired or
+  not, and on an `eraseSubject` that scans its segment while it is not destroyed. A dry run of `dropSegment` or
+  `retireExpired` invalidates nothing. An invalidated pin opens its
+  object again, and fails if that object is gone or replaced, or its row is gone or destroyed.
+
+  Anything else leaves it as it is. After a `destroySegment` beside its store, or an erasure, a drop or a retirement
+  through another store, in the same process or another, it answers from what it holds. That lasts until its store's
+  reader cache evicts the pin's reader and the store's chunk cache evicts the chunks the pin decoded, or until
+  `store.invalidate(ref)` is called on its store. Where the object it reads has been deleted, a chunk it has not cached
+  fails at once.
 - **It needs the `.crbm` storage source** (`UnsupportedError` otherwise).
 
 ## Page through a segment

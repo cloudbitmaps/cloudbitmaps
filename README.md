@@ -169,9 +169,9 @@ means being an early user.
   │  MemoryStorage()          LocalFsStorage(root)                        │
   │  S3Storage({ bucket, prefix })   GcsStorage(…)   AzureBlobStorage(…)  │
   │                                                                       │
-  │  One object. It derives BOTH halves — where the generations go, and   │
-  │  where the pointer that says which one is current goes — from one     │
-  │  bucket and one prefix.                                               │
+  │  One object. It decides where the generations go AND where the        │
+  │  pointer that says which one is current goes, from one bucket and     │
+  │  one prefix.                                                          │
   └───────────────────────────────────────────────────────────────────────┘
                                     │
   ┌─ STEP 2 ── build a store ─────────────────────────────────────────────┐
