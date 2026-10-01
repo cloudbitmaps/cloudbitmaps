@@ -121,6 +121,15 @@ function expectedReads(w) {
   };
 }
 
+/**
+ * What one `store.load()` of a segment's first generation bills, counted by a test against the real registry
+ * protocol: the object, two listings and the pointer are PUT-class, the pointer is read seven times. A multipart
+ * object is a create, its parts and a complete in place of the single PUT.
+ */
+const FIRST_LOAD = Object.freeze({ put: 4, get: 7 });
+const firstLoadRequests = (parts) =>
+  parts === 0 ? { ...FIRST_LOAD } : { put: FIRST_LOAD.put + 1 + parts, get: FIRST_LOAD.get };
+
 module.exports = {
   STAGES,
   DEFAULT_SWEEP,
@@ -129,4 +138,6 @@ module.exports = {
   coldIntersectBound,
   projectStages,
   expectedReads,
+  FIRST_LOAD,
+  firstLoadRequests,
 };

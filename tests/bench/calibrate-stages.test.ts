@@ -6,6 +6,7 @@ import { CloudRoaring } from '@/index';
 import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
 import { CountingObjectStore, counting } from '../helpers/counting';
 import { brandAsBackend } from '@/core/ports';
+import { WriteConflictError } from '@/core/errors';
 import { MemoryStorageDriver } from '@/drivers/memory';
 
 // The stages the harness runs, and what each is allowed to cost. A stage nobody projected would spend money the
@@ -31,6 +32,8 @@ const stages = require_(join(ROOT, 'bench', 'lib', 'calibrate-stages.cjs')) as {
   coldIntersectBound: (k: number) => number;
   projectStages: (w: Plan) => { stages: Record<string, Bound>; total: Bound };
   expectedReads: (w: Plan) => Record<string, number>;
+  FIRST_LOAD: Bound;
+  firstLoadRequests: (parts: number) => Bound;
 };
 type Layout = {
   shared: number;
@@ -60,6 +63,11 @@ const guards = require_(join(ROOT, 'bench', 'lib', 'calibrate-guards.cjs')) as {
   TIMED_STORE: { retry: false; cache: { genTtlMs: number } };
   checkWorkload: (i: Record<string, number>) => void;
   MAX_SEGMENTS: number;
+  firstLoads: () => (segment: string) => void;
+  projectOps: (i: { loads: number; reads: number; chunksPerRead: number; retryBound: number }) => {
+    put: number;
+    get: number;
+  };
 };
 const harnessSrc = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
 
@@ -327,8 +335,12 @@ describe('what the stages request, counted against the engine', () => {
   })();
   const expected = stages.expectedReads(plan());
 
-  it('a cold intersect makes 4 + 2k', async () => {
+  it('a cold intersect makes 4 + 2k, and a first load makes its counted 4 PUT-class and 7 GET', async () => {
     await loaded;
+    expect(stages.FIRST_LOAD).toEqual({ put: 4, get: 7 });
+    expect(stages.firstLoadRequests(0)).toEqual({ put: 4, get: 7 });
+    // A multipart object is a create, its parts and a complete in place of one PUT.
+    expect(stages.firstLoadRequests(2)).toEqual({ put: 7, get: 7 });
     let total = 0;
     for (let i = 0; i < 6; i += 1) {
       const store = new CloudRoaring({ storage: backend, ...guards.TIMED_STORE });
@@ -348,5 +360,62 @@ describe('what the stages request, counted against the engine', () => {
     for (const name of ['intersect']) {
       expect(bounds[name]?.get ?? 0, name).toBeGreaterThanOrEqual(expected[name] ?? Infinity);
     }
+  });
+});
+
+// No stage reloads a segment: the projection bounds a segment's first load. What a reload costs under repeated lost
+// races is counted here, against the real registry protocol, to show why the harness refuses one instead of
+// projecting it.
+describe('a segment is loaded once', () => {
+  it('refuses a second load of a name, before anything is sent, and the harness claims every load through it', () => {
+    const claim = guards.firstLoads();
+    claim('seg-0');
+    claim('seg-1');
+    expect(() => claim('seg-0')).toThrow(/seg-0 was loaded already/);
+    // A claim belongs to its run: a fresh ledger has claimed nothing.
+    expect(() => guards.firstLoads()('seg-0')).not.toThrow();
+    expect(harnessSrc).toContain('const claimFirstLoad = firstLoads();');
+    // The one place the harness loads is the helper that claims first, and nothing else calls the loader.
+    expect(harnessSrc.match(/loader\.load\(/g)?.length).toBe(1);
+    const helper = harnessSrc.slice(harnessSrc.indexOf('const load = async'));
+    expect(helper.indexOf('claimFirstLoad(segment)')).toBeLessThan(helper.indexOf('loader.load('));
+  });
+
+  it("a reload that loses four races makes more requests than a first load's bound, so it is not projected", async () => {
+    const reload = async (lost: number): Promise<{ gets: number; threw: boolean }> => {
+      const calls: Record<string, number> = {};
+      const pointer = new CountingObjectStore(0);
+      const store = new CloudRoaring({
+        storage: brandAsBackend({
+          storage: counting(new MemoryStorageDriver(), calls),
+          registry: new ObjectStoreRegistry(pointer, undefined, () => 0),
+        }),
+      });
+      await store.load({ segment: 's' }, [1, 2, 3]);
+      (pointer as unknown as { lostRaces: number }).lostRaces = lost;
+      pointer.reads = 0;
+      for (const k of Object.keys(calls)) delete calls[k];
+      let threw = false;
+      try {
+        await store.load({ segment: 's' }, [1, 2, 3, 4]);
+      } catch (err) {
+        if (!(err instanceof WriteConflictError)) throw err;
+        threw = true;
+      }
+      // The pointer reads, and the one tail read of the current generation's index.
+      return { gets: pointer.reads + (calls.getTail ?? 0), threw };
+    };
+    const bound = guards.projectOps({
+      loads: 1,
+      reads: 0,
+      chunksPerRead: 0,
+      retryBound: guards.RETRY_BOUND,
+    }).get;
+    expect(bound).toBe(15);
+    // Nothing racing: a reload is the counted eight, one more than a first load's seven.
+    expect(await reload(0)).toEqual({ gets: 8, threw: false });
+    // Four lost publishes, the last attempt winning: sixteen, past the bound of fifteen.
+    expect(await reload(4)).toEqual({ gets: 16, threw: false });
+    expect((await reload(4)).gets).toBeGreaterThan(bound);
   });
 });

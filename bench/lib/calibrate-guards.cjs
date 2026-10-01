@@ -143,6 +143,27 @@ function projectOps({
 }
 
 /**
+ * A claim on each segment's FIRST load, refusing a second.
+ *
+ * The projection bounds a segment's first load: its pointer read seven times with nothing racing it, fifteen at most
+ * when every publish attempt but the last is lost. A reload also opens the current generation's index to count what
+ * it replaces, so at four lost races it makes sixteen GET-class requests against that bound of fifteen, and a load
+ * that collects adds a pointer read more. A stage that loaded a name twice would overspend a projection that said it
+ * was safe, so the harness loads each name once and a repeat is refused before it sends anything.
+ */
+function firstLoads() {
+  const seen = new Set();
+  return (segment) => {
+    if (seen.has(segment)) {
+      throw new Error(
+        `${segment} was loaded already; the projection bounds a segment's first load, and a reload makes more requests`,
+      );
+    }
+    seen.add(segment);
+  };
+}
+
+/**
  * Did the run issue more than its projection?
  *
  * A projection is only a ceiling if the run cannot exceed it. Checking that after the fact is cheap and turns
@@ -627,6 +648,7 @@ module.exports = {
   resolveSize,
   probeMeansAbsent,
   projectOps,
+  firstLoads,
   exceedsProjection,
   breached,
   planLayout,

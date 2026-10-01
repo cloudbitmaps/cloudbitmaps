@@ -50,6 +50,7 @@ const {
   probeMeansAbsent,
   exceedsProjection,
   breached,
+  firstLoads,
   planLayout,
   planSweepLayout,
   layoutIds,
@@ -80,6 +81,7 @@ const {
   coldIntersectGets,
   projectStages,
   expectedReads,
+  firstLoadRequests,
 } = require('./lib/calibrate-stages.cjs');
 const {
   interruptGate,
@@ -118,7 +120,7 @@ const MODE = argv.includes('--cleanup')
 
 // ---- the workload ----------------------------------------------------------------------------------------------
 // Every size is overridable so a run can be made smaller; an explicit 0 really means 0.
-const SEGMENTS = resolveSize(process.env.CR_CALIBRATE_SEGMENTS, 10, 'CR_CALIBRATE_SEGMENTS');
+const SEGMENTS = resolveSize(process.env.CR_CALIBRATE_SEGMENTS, 20, 'CR_CALIBRATE_SEGMENTS');
 const IDS = resolveSize(process.env.CR_CALIBRATE_IDS, 500_000, 'CR_CALIBRATE_IDS');
 const READS = resolveSize(process.env.CR_CALIBRATE_READS, 40, 'CR_CALIBRATE_READS');
 /** The spread layout's segments and cold intersects: the calibration overlap, with the shared chunks scattered. */
@@ -146,7 +148,7 @@ const SWEEP_SEGMENTS = resolveSize(
  * workload's segments are far smaller, so without these a run never exercises multipart at all. These are dense (a
  * bitmap container per chunk, 8 KiB each) and never intersected, so they cannot disturb the intersect workload.
  */
-const LARGE = resolveSize(process.env.CR_CALIBRATE_LARGE, 2, 'CR_CALIBRATE_LARGE');
+const LARGE = resolveSize(process.env.CR_CALIBRATE_LARGE, 5, 'CR_CALIBRATE_LARGE');
 const LARGE_CHUNKS = 1_536; // x 8 KiB bitmap containers ≈ 12 MiB: two 8 MiB parts
 const LARGE_IDS_PER_CHUNK = 8_192; // above roaring's 4,096 array→bitmap threshold, so every container is a bitmap
 const PART_SIZE = 8 * 1024 * 1024; // the S3 driver's default part size
@@ -860,7 +862,7 @@ async function main() {
         record.setup = { ...prepared.record, requests: requestsBetween(s0, s1) };
       }
       results.phases[name] = record;
-      const expected = expectedByStage[name];
+      const expected = name === 'load' ? phase.expected?.get : expectedByStage[name];
       if (expected !== undefined) {
         record.expectedGets = expected;
         if (record.requests.get !== expected) {
@@ -884,7 +886,10 @@ async function main() {
     // `TIMED_STORE` changes nothing a load does: a load reads and writes through the drivers themselves, not the
     // store's retrying, cached read path. It is spread so every store in the harness is built the same way.
     const loader = new CloudRoaring({ storage, ...TIMED_STORE });
+    // The projection bounds a segment's FIRST load, so no segment is loaded twice (`firstLoads` says why).
+    const claimFirstLoad = firstLoads();
     const load = async (segment, ids, count, into) => {
+      claimFirstLoad(segment);
       const before = snap();
       const t0 = process.hrtime.bigint();
       // The whole write path, as a user runs it: the next generation number, the object, the publish, the collection.
@@ -892,6 +897,7 @@ async function main() {
       if (!published) throw new Error(`load of ${segment} was refused: ${reason}`);
       const ms = msSince(t0);
       const after = snap();
+      const sent = requestsBetween(before, after);
       // Two different byte counts, kept apart. What went up is the object AND the pointer's body, since the meter
       // counts every request; the object is what the store holds. Recorded under the object's name, the first
       // would put the pointer's bytes into every figure derived from an object's size.
@@ -903,11 +909,25 @@ async function main() {
         objectBytes: size,
         uploadBytes: uploaded,
         multipart: after.parts > before.parts,
+        // This load's own requests, so each one is priced from what it made and not from a median's guess.
+        put: sent.put,
+        get: sent.get,
+        parts: sent.parts,
         idsPerSec: count / (ms / 1000),
         bytesPerSec: uploaded / (ms / 1000),
       });
       checkCeiling();
     };
+    const perLoad = (xs) =>
+      xs.map((l) => ({
+        segment: l.segment,
+        kind: l.multipart ? 'multipart' : 'single',
+        put: l.put,
+        get: l.get,
+        parts: l.parts,
+        objectBytes: l.objectBytes,
+        uploadBytes: l.uploadBytes,
+      }));
     // Medians per kind of load. A kind with no loads reports `runs: 0` and no figures, rather than zeros.
     const summarise = (xs) =>
       xs.length === 0
@@ -927,24 +947,33 @@ async function main() {
           await load(`seg-${i}`, layoutIds(layout, i), IDS, loads);
         for (let i = 0; i < LARGE; i += 1)
           await load(`large-${i}`, largeIds(), LARGE_CHUNKS * LARGE_IDS_PER_CHUNK, loads);
-        const single = loads.filter((l) => !l.multipart);
-        const multi = loads.filter((l) => l.multipart);
-        if (LARGE > 0 && multi.length === 0) {
+        if (LARGE > 0 && !loads.some((l) => l.multipart)) {
           // Half of the load measurement is void. Say so loudly rather than publish a table with a silent hole.
           console.error(
             'calibrate: WARNING — no load went multipart; the multipart figure is not measured',
           );
         }
+        // What the engine is expected to make for these loads, each by its own parts.
+        const expected = loads.reduce(
+          (acc, l) => {
+            const r = firstLoadRequests(l.multipart ? l.parts : 0);
+            return { put: acc.put + r.put, get: acc.get + r.get };
+          },
+          { put: 0, get: 0 },
+        );
+        const single = loads.filter((l) => !l.multipart);
+        const multi = loads.filter((l) => l.multipart);
         log(
           `load: ${single.length} single-part, ${multi.length} multipart ` +
             `(median ${Math.round(summarise(single).medianIdsPerSec ?? 0)} ids/s single-part)`,
         );
         return {
-          // Which load was timed. The figures code refuses a file that says `store.load()` until it derives that
-          // load's requests, rather than publish them as a write and publish alone.
+          // Which load was timed, and each load's own requests, which the figures code prices from.
           via: 'store.load()',
           singlePart: summarise(single),
           multipart: summarise(multi),
+          perLoad: perLoad(loads),
+          expected,
         };
       },
     });
@@ -1071,6 +1100,7 @@ async function main() {
             span: spread?.span,
             idsPerChunk: spread?.idsPerChunk,
             sharedChunks: plan.spread.sharedChunks,
+            perLoad: perLoad(loads),
           },
         };
       },
@@ -1098,7 +1128,7 @@ async function main() {
           const loads = [];
           for (let i = 0; i < SWEEP_SEGMENTS; i += 1)
             await load(`sweep-${e.k}-${i}`, layoutIds(L, i), L.shared + L.priv, loads);
-          entries.push({ k: e.k });
+          entries.push({ k: e.k, perLoad: perLoad(loads) });
         }
         return { record: { segmentsEach: SWEEP_SEGMENTS, entries } };
       },
