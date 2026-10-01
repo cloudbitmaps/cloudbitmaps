@@ -17,6 +17,7 @@ import { mapWithConcurrency } from './concurrency';
 import { ValidationError, WriteConflictError, isWriteConflictError } from './errors';
 import type { IStorageDriver, IRegistryDriver, SegmentRef } from './ports';
 import { validateUserNamespace, validateUserRef } from './validate';
+import { DEFAULT_MAX_SCAN_SEGMENTS, drainRegistry } from './registry-scan';
 
 export interface EraseDeps {
   readonly registry: IRegistryDriver;
@@ -97,11 +98,22 @@ export async function destroySegment(
 /**
  * Crypto-shred every segment in a namespace. **Irreversible.** `confirmNamespace` must equal `namespace`.
  * Returns a per-segment result (skips cleartext segments unless `allowCleartext`).
+ *
+ * **Bounded.** It lists the whole namespace before it destroys anything, and holds the listing resident, so the
+ * listing is capped at `maxScanSegments` (default {@link DEFAULT_MAX_SCAN_SEGMENTS}, 250,000), the ceiling every
+ * other fleet scan keeps. A namespace over it throws `BudgetExceededError` **before any segment is destroyed**,
+ * never part-way through; raise `maxScanSegments` when the namespace really is that large and the memory is there.
+ * A `maxScanSegments` that is not a finite number >= 1 throws `ValidationError`, again before anything is destroyed.
  */
 export async function eraseNamespace(
   namespace: string,
   deps: EraseDeps,
-  options: { confirmNamespace: string; allowCleartext?: boolean; audit?: IAuditSink },
+  options: {
+    confirmNamespace: string;
+    allowCleartext?: boolean;
+    audit?: IAuditSink;
+    maxScanSegments?: number;
+  },
 ): Promise<{ destroyed: DestroyResult[] }> {
   if (typeof namespace !== 'string' || namespace.length === 0) {
     throw new ValidationError('eraseNamespace: namespace must be a non-empty string');
@@ -112,10 +124,18 @@ export async function eraseNamespace(
       `eraseNamespace: confirmNamespace must equal the namespace "${namespace}" (guard against accidental erasure)`,
     );
   }
-  const refs: SegmentRef[] = [];
-  for await (const rec of deps.registry.list(namespace)) {
-    refs.push({ namespace: rec.namespace, segment: rec.segment });
-  }
+  // The whole listing is drained, and bounded, before the first segment is destroyed: a namespace over the
+  // ceiling is refused with nothing erased, not abandoned part-way through an irreversible loop.
+  const rows = await drainRegistry(deps.registry, {
+    namespace,
+    maxScanSegments: options.maxScanSegments ?? DEFAULT_MAX_SCAN_SEGMENTS,
+    op: 'eraseNamespace',
+    narrowable: false, // already one namespace: the only remedy is a higher ceiling
+  });
+  const refs: SegmentRef[] = rows.map((rec) => ({
+    namespace: rec.namespace,
+    segment: rec.segment,
+  }));
   const audit = safeAudit(options.audit ?? NOOP_AUDIT);
   const destroyed: DestroyResult[] = [];
   let segmentsShredded = 0;

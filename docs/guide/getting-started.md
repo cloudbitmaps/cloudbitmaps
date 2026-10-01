@@ -976,6 +976,11 @@ const { destroyed } = await eraseNamespace('tenant-42', { registry: backend.regi
 for (const r of destroyed) if (!r.destroyed) console.warn(r.segment, r.reason); // still holds data
 ```
 
+`eraseNamespace` lists the whole namespace before it destroys anything, and holds that listing in memory, so it stops
+at the ceiling every other fleet scan keeps: `maxScanSegments`, default 250,000. A namespace over it throws
+`BudgetExceededError` with **nothing erased**; pass a higher `maxScanSegments` when the namespace really is that
+large and the memory is there.
+
 This deletes the segment's wrapped DEK from the registry (a `destroyed` tombstone). The encrypted Storage objects
 are left in place — but with the key gone they're **permanently unreadable, everywhere, including backups**. The
 segment then reads as empty to a store that opens it afresh, and the tombstone is a fence: a load refuses a

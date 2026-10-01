@@ -1,7 +1,7 @@
 /**
  * The one bounded drain of `registry.list()`.
  *
- * `runConsistencyCheck` and `retireExpired` drain through it; `eraseNamespace` enumerates the registry unbounded.
+ * `runConsistencyCheck`, `retireExpired` and `eraseNamespace` drain through it.
  * One copy of the loop, the ceiling constant and the option validation keeps them from drifting apart, and a
  * fleet-wide enumeration is exactly the place where drift between callers costs memory rather than tidiness.
  *
@@ -46,11 +46,20 @@ export async function drainRegistry(
      * Defaults to raising `maxScanSegments`, which is right wherever `op` takes that option itself.
      */
     raise?: string;
+    /**
+     * Whether the caller could scope the scan down to a `namespace`. Defaults to true; `eraseNamespace` is already
+     * one namespace, so it passes false and the refusal does not tell it to narrow what it cannot.
+     */
+    narrowable?: boolean;
   },
 ): Promise<RegistryRecord[]> {
   const { maxScanSegments, op } = options;
   validateMaxScanSegments(maxScanSegments, op);
   const raise = options.raise ?? 'raise `maxScanSegments`';
+  const advice =
+    options.narrowable === false
+      ? `${raise[0]!.toUpperCase()}${raise.slice(1)} if the namespace really is that large and the memory is `
+      : `Narrow it with \`namespace\`, or ${raise} if the fleet really is that large and the memory is `;
   const rows: RegistryRecord[] = [];
   for await (const rec of registry.list(options.namespace)) {
     // A due-index pointer is bookkeeping, not a segment. It lives in a reserved namespace, so an unscoped fleet
@@ -61,8 +70,7 @@ export async function drainRegistry(
     if (rows.length >= maxScanSegments) {
       throw new BudgetExceededError(
         `${op} would enumerate more than ${maxScanSegments} segments — the scan was abandoned there rather than ` +
-          `completed. Narrow it with \`namespace\`, or ${raise} if the fleet really is that large and the memory ` +
-          `is available (a record is a few hundred bytes resident).`,
+          `completed. ${advice}available (a record is a few hundred bytes resident).`,
       );
     }
     rows.push(rec);
