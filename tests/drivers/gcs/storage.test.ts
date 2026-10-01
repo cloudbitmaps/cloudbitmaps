@@ -1,4 +1,4 @@
-import { Writable } from 'node:stream';
+import { PassThrough, Writable } from 'node:stream';
 import type { Storage } from '@google-cloud/storage';
 import { GcsStorageDriver } from '@/gcs/storage';
 import { TransientError, ValidationError, WriteConflictError } from '@/core/errors';
@@ -160,20 +160,25 @@ describe('GcsStorageDriver write-once (fake Storage, emulator-independent)', () 
   });
 });
 
-// The cost model prices a segment's tail read on GCS as two requests (`requestsPerSizedRead: 2`): the metadata for
-// the object's size, then a ranged download, where S3's suffix-range GET is one. Held here against the driver.
+// The cost model prices a segment's tail read on GCS as one request (`requestsPerSizedRead: 1`): a suffix-range GET
+// answers with the tail and the object's size. Held against the driver here, and against hostile responses in
+// tail.test.ts.
 describe('GcsStorageDriver — what a tail read costs', () => {
-  it('makes two requests: the metadata, then the ranged download', async () => {
-    const calls: string[] = [];
+  it('makes one request: a suffix-range GET', async () => {
+    const calls: unknown[] = [];
     const body = new Uint8Array(100).fill(7);
     const file = {
-      getMetadata: async () => {
-        calls.push('getMetadata');
-        return [{ size: String(body.length) }];
-      },
-      download: async (opts: { start: number; end: number }) => {
-        calls.push('download');
-        return [Buffer.from(body.subarray(opts.start, opts.end + 1))];
+      createReadStream: (opts: unknown) => {
+        calls.push(opts);
+        const out = new PassThrough();
+        queueMicrotask(() => {
+          out.emit('response', {
+            statusCode: 206,
+            headers: { 'content-range': 'bytes 60-99/100', 'content-length': '40' },
+          });
+          out.end(Buffer.from(body.subarray(60)));
+        });
+        return out;
       },
     };
     const storage = { bucket: () => ({ file: () => file }) } as unknown as Storage;
@@ -181,6 +186,6 @@ describe('GcsStorageDriver — what a tail read costs', () => {
     const tail = await driver.getTail({ segment: 's', generation: 0 }, 40);
     expect(tail.size).toBe(100);
     expect(tail.bytes.length).toBe(40);
-    expect(calls).toEqual(['getMetadata', 'download']);
+    expect(calls).toEqual([{ end: -40 }]);
   });
 });

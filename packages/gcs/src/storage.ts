@@ -43,6 +43,7 @@ import {
 } from './keys';
 import { isInvalidRange, isNotFound, isPreconditionFailed, isTransient } from './gcs-errors';
 import { saveOnce } from './send-once';
+import { readOnce, singleHeader, type ObjectRead } from './read-once';
 
 /** Default object ceiling: GCS's 5 TiB per-object hard max. Set lower to fail fast on a runaway write. */
 const DEFAULT_MAX_OBJECT_BYTES = 5 * 1024 * 1024 * 1024 * 1024;
@@ -154,21 +155,83 @@ export class GcsStorageDriver implements IStorageDriver {
   async getTail(key: GenKey, maxBytes: number): Promise<{ bytes: Uint8Array; size: number }> {
     const objectName = storageObjectName(this.prefix, key);
     try {
-      // Two round-trips (metadata for the size, then a ranged download) vs S3's one (suffix-range +
-      // Content-Range). This is on the per-*generation* open path, which the reader caches — NOT the per-op cache
-      // path (has/count/intersect) — so it's amortized; collapsing to one RT is a tracked follow-up.
-      const [meta] = await this.file(objectName).getMetadata();
-      const size = Number(meta.size ?? 0);
-      if (!Number.isSafeInteger(size) || size < 0) {
-        throw new ValidationError(`GCS returned an invalid object size: ${String(meta.size)}`);
+      // Nothing to read: only the size is wanted, which the metadata answers in one request.
+      if (maxBytes <= 0) return { bytes: new Uint8Array(0), size: await this.sizeOf(objectName) };
+      if (!Number.isSafeInteger(maxBytes)) {
+        throw new ValidationError(`invalid tail length ${maxBytes}`);
       }
-      if (maxBytes <= 0 || size === 0) return { bytes: new Uint8Array(0), size };
-      const start = Math.max(0, size - maxBytes);
-      const [buf] = await this.file(objectName).download({ start, end: size - 1 });
-      return { bytes: new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength), size };
+      // One request: a suffix range (`Range: bytes=-N`, "the last N bytes") answers with the tail and, in
+      // `Content-Range: bytes a-b/total`, the object's size. An object shorter than N comes back whole.
+      let res;
+      try {
+        res = await readOnce(this.file(objectName), { end: -maxBytes }, maxBytes, () =>
+          this.badTail(key, `the response is longer than the ${maxBytes}B requested`),
+        );
+      } catch (err) {
+        // A zero-byte object has no suffix to satisfy, and a server may refuse the range with a 416. The metadata
+        // settles whether that is an empty object (a valid, empty tail) or a real range fault.
+        if (!isInvalidRange(err)) throw err;
+        const size = await this.sizeOf(objectName);
+        if (size !== 0) throw err;
+        return { bytes: new Uint8Array(0), size };
+      }
+      if (res.bytes.length === 0) {
+        // No bytes came back for a positive request: only an empty object may do that.
+        const size = await this.sizeOf(objectName);
+        if (size !== 0) throw this.badTail(key, `no bytes returned for an object of ${size}B`);
+        return { bytes: res.bytes, size };
+      }
+      return { bytes: res.bytes, size: this.tailSize(res, maxBytes, key) };
     } catch (err) {
       throw this.mapReadError(err, key);
     }
+  }
+
+  /** The object's size from its metadata, validated. */
+  private async sizeOf(objectName: string): Promise<number> {
+    const [meta] = await this.file(objectName).getMetadata();
+    const size = Number(meta.size ?? 0);
+    if (!Number.isSafeInteger(size) || size < 0) {
+      throw new ValidationError(`GCS returned an invalid object size: ${String(meta.size)}`);
+    }
+    return size;
+  }
+
+  /**
+   * The object's total size from a tail response, refused unless every header agrees with the bytes received. A 206
+   * must carry `Content-Range: bytes a-b/total` that names exactly the suffix asked for and exactly the bytes held;
+   * a 200 (a server that ignored the range) is the whole object, and is accepted only when it fits in the request.
+   */
+  private tailSize(res: ObjectRead, maxBytes: number, key: GenKey): number {
+    const received = res.bytes.length;
+    if (res.status === 200) {
+      if (received > maxBytes)
+        throw this.badTail(key, 'whole object returned past the requested length');
+      return received;
+    }
+    if (res.status !== 206) throw this.badTail(key, `unexpected HTTP ${res.status}`);
+    const header = singleHeader(res.headers, 'content-range');
+    const m = header === undefined ? null : /^bytes (\d+)-(\d+)\/(\d+)$/.exec(header);
+    if (m === null) throw this.badTail(key, `Content-Range is missing or malformed`);
+    const [first, last, total] = [Number(m[1]), Number(m[2]), Number(m[3])];
+    if (![first, last, total].every(Number.isSafeInteger)) {
+      throw this.badTail(key, 'Content-Range holds a number that is not a safe integer');
+    }
+    if (
+      last !== total - 1 ||
+      first !== Math.max(0, total - maxBytes) ||
+      last - first + 1 !== received
+    ) {
+      throw this.badTail(
+        key,
+        `Content-Range ${first}-${last}/${total} disagrees with ${received}B received for a ${maxBytes}B tail`,
+      );
+    }
+    return total;
+  }
+
+  private badTail(key: GenKey, why: string): ValidationError {
+    return new ValidationError(`GCS tail read of ${key.segment}.${key.generation} refused: ${why}`);
   }
 
   async delete(key: GenKey): Promise<void> {

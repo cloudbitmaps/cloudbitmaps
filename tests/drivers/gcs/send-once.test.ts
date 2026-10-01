@@ -207,12 +207,26 @@ class StubGcs {
         if (current === undefined || (pinned !== null && Number(pinned) !== current.generation)) {
           return error(404, 'notFound');
         }
+        const suffix = /^bytes=-(\d+)$/.exec(String(req.headers.range ?? ''));
+        if (suffix !== null) {
+          const first = Math.max(0, current.body.length - Number(suffix[1]));
+          return [
+            206,
+            {
+              'content-type': 'application/octet-stream',
+              'content-range': `bytes ${first}-${current.body.length - 1}/${current.body.length}`,
+              'x-goog-generation': String(current.generation),
+            },
+            current.body.subarray(first),
+          ];
+        }
         const range = /^bytes=(\d+)-(\d+)$/.exec(String(req.headers.range ?? ''));
         if (range === null) {
           return [
             200,
             {
               'content-type': 'application/octet-stream',
+              'x-goog-generation': String(current.generation),
               'x-goog-hash': `crc32c=${crc32c(current.body)},md5=${md5(current.body)}`,
             },
             current.body,
