@@ -1673,7 +1673,8 @@ function sectionOf(doc, text, title) {
   // The text of the lines directly above a line, one non-blank run, is what an underline would make a heading of. It
   // is built as the lines go by rather than rescanned for each underline, and what is read from it is kept across a
   // run of underlines in a row: an underline is `=` or `-` and blanks, which names nothing and closes no HTML, so the
-  // text above the next one reads as the text above this one did. A run that alternates a line of text and an underline, with no blank line between, is still read in time quadratic in its length, which no page here holds.
+  // text above the next one reads as the text above this one did. A run that alternates a line of text and an
+  // underline, with no blank line between, is still read in time quadratic in its length, which no page here holds.
   let above = [];
   let aboveNamed = null;
   let underlinesSince = false;
