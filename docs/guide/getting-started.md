@@ -352,7 +352,7 @@ fails your pipeline instead of your first request.
 
 ### `DEP0169 DeprecationWarning: url.parse() behavior is not standardized`
 
-You will see this on stderr the first time the package is loaded:
+A normal install does not print this: Node 22 prints it only under `--pending-deprecation`, and Node 24 only when the code calling `url.parse()` is not under a `node_modules` path, as in a bundle. Where it does appear, it is on stderr, the first time the package is loaded:
 
 ```
 (node:1234) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors
@@ -378,7 +378,7 @@ Specifics, so you can decide whether to care:
   network request happens at load. The vulnerability class that motivated this deprecation — trusting a host
   parsed out of untrusted input — does not apply here.
 
-**The one case where it actually matters.** If you run Node with **`--throw-deprecation`**, warnings become
+**The one case where it actually matters.** Where the warning is printed and you run Node with **`--throw-deprecation`**, warnings become
 thrown errors and **your process will exit non-zero**. The import itself still succeeds — deprecation warnings
 are emitted asynchronously, so the throw lands after the module has loaded — but the process dies. If you use
 that flag, either drop it for the process that loads CloudBitmaps or allow this one deprecation.
