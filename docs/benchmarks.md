@@ -286,7 +286,7 @@ bills, pointer reads and conditional PUTs included, is counted attempt by attemp
 return exactly the planned ids or no latency is reported, and each cold one turns off its store's timed pointer
 refresh, so its request count does not move with the network. Every run records its own round-trip floor to the
 region and labels its latency in-region only below 30 ms — a line that keeps another continent out, not a
-neighbouring region, so the raw floor is recorded with it for a reader who wants a stricter one, and so is the region the shell ran in. Each cold intersect also records how many requests were in flight at once and how many it waited for one after another, and every run records the AWS SDK and handler versions and the handler's socket cap. Its run
+neighbouring region, so the raw floor is recorded with it for a reader who wants a stricter one, and so is the region the shell ran in. A page states a run's latency as in-region only when that region is the bucket's too. Each cold intersect also records how many requests were in flight at once and how many it waited for one after another, and every run records the AWS SDK and handler versions and the handler's socket cap. Its run
 `2026-09-23-94416`, from a laptop, paid the cost side above; it timed a write and a publish rather than
 `store.load()`, and ran on the store's default refresh, which is why its median intersect read each pointer twice. A
 run from AWS CloudShell can pay the rows it measures: in-region intersect and point-read latency, load throughput,

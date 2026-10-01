@@ -263,6 +263,37 @@ describe('a run that timed store.load()', () => {
       ).toMatch(/its andNot stage made 30,210 GET-class requests, not the 30,211 it expected/);
     });
 
+    it('with a stage that records no expected count', () => {
+      expect(
+        refused((r) => {
+          delete (r.phases.andNot as { expectedGets?: number }).expectedGets;
+        }),
+      ).toMatch(/it records no expected count for its andNot stage$/);
+    });
+
+    it('and says every one of them at once, beside a ledger that does not add up', () => {
+      const message = refused((r) => {
+        r.leftovers = ['a bucket teardown could not remove'];
+        r.expectedMissed = ['pointReads has() first read: 3001 GET-class, expected 3000'];
+        r.phases.andNot.expectedGets += 1;
+        r.region = 'us-east-1';
+        r.network.clientRegion = 'us-west-2';
+        r.cost.ops.get += 1;
+        r.cost.ops.byCommand.GetObjectCommand = (r.cost.ops.byCommand.GetObjectCommand ?? 0) + 1;
+        r.cost.getUSD = (r.cost.ops.get * 0.4) / 1e6;
+        r.cost.totalUSD = r.cost.putUSD + r.cost.getUSD;
+      });
+      for (const says of [
+        /stages' requests and the bucket's own do not add up/,
+        /teardown left 1 resource behind/,
+        /it missed an expected count/,
+        /its andNot stage made 30,210 GET-class requests, not the 30,211 it expected/,
+        /it ran from us-west-2, not the bucket's us-east-1/,
+      ]) {
+        expect(message).toMatch(says);
+      }
+    });
+
     it("from a shell in a region other than the bucket's", () => {
       expect(
         refused((r) => {
@@ -286,16 +317,17 @@ describe('a run that timed store.load()', () => {
 // A round-trip floor under 30 ms keeps another continent out, not a neighbouring region, so latency is labelled
 // in-region only when the shell's own region is proven to be the bucket's.
 describe("a run's latency is in-region", () => {
-  const inRegion = (clientRegion: string | null): boolean => {
+  const inRegion = (client: string, clientRegion: string | null): boolean => {
     const run = asRealRun();
     run.region = 'us-east-1';
-    run.network.client = 'in-region';
+    run.network.client = client;
     run.network.clientRegion = clientRegion;
     return !figures.derive(run, SOURCES).remote;
   };
   it("only when its floor is under the line and its shell's region is the bucket's", () => {
-    expect(inRegion('us-east-1')).toBe(true);
-    expect(inRegion(null)).toBe(false);
+    expect(inRegion('in-region', 'us-east-1')).toBe(true);
+    expect(inRegion('in-region', null)).toBe(false);
+    expect(inRegion('REMOTE — latency below is network-dominated', 'us-east-1')).toBe(false);
     expect(figures.derive(asRealRun(), SOURCES).remote).toBe(true);
   });
 });

@@ -381,13 +381,16 @@ function derive(run, src) {
     );
     const missed = run.expectedMissed ?? [];
     check(missed.length === 0, `it missed an expected count: ${missed.join('; ')}`);
+    // Every stage's record exists here: the first refusal above stops a file that lacks one.
     for (const name of STAGES) {
-      const stage = run.phases[name];
-      check(
-        stage?.requests?.get === stage?.expectedGets,
-        `its ${name} stage made ${int(stage?.requests?.get ?? 0)} GET-class requests, not the ` +
-          `${int(stage?.expectedGets ?? 0)} it expected`,
-      );
+      const { requests, expectedGets } = run.phases[name];
+      check(typeof expectedGets === 'number', `it records no expected count for its ${name} stage`);
+      if (typeof expectedGets === 'number') {
+        check(
+          requests.get === expectedGets,
+          `its ${name} stage made ${int(requests.get)} GET-class requests, not the ${int(expectedGets)} it expected`,
+        );
+      }
     }
     const clientRegion = run.network?.clientRegion ?? null;
     check(
