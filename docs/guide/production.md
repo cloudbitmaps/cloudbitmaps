@@ -24,27 +24,18 @@ checklist: work down the table, and follow each link for the detail.
 These lists are derived from the calls each storage package makes. Check them in staging under the identity you will
 run with. A process that only reads can drop the write and delete actions.
 
-**S3.** `s3:GetObject` (also covers the metadata reads), `s3:PutObject` (also covers starting, uploading and
-completing a multipart upload), `s3:DeleteObject`, `s3:AbortMultipartUpload` and `s3:ListBucket`. `s3:ListBucket`
-matters even for readers: without it S3 answers a missing key with `403` instead of `404`, and the library cannot
-list generations.
+**S3.** Five actions, on two resources:
 
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    { "Effect": "Allow", "Action": "s3:ListBucket", "Resource": "arn:aws:s3:::my-bitmaps" },
-    {
-      "Effect": "Allow",
-      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload"],
-      "Resource": "arn:aws:s3:::my-bitmaps/cloudbitmaps/*"
-    }
-  ]
-}
-```
+| Resource | Actions |
+|---|---|
+| The bucket | `s3:ListBucket` |
+| The objects under your `prefix` | `s3:GetObject` (also covers the metadata reads), `s3:PutObject` (also covers starting, uploading and completing a multipart upload), `s3:DeleteObject`, `s3:AbortMultipartUpload` |
 
-The `cloudbitmaps` in the resource is the `prefix` you pass to `S3Storage`. If the bucket encrypts with a KMS key,
-grant that key's use as well.
+In the policy, the bucket is the bucket's ARN, and the objects are that ARN followed by `/`, the `prefix` you pass to
+`S3Storage`, and `/*`. `s3:ListBucket` matters even for readers: without it S3 answers a missing key with `403`
+instead of `404`, and the library cannot list generations.
+
+If the bucket encrypts with a KMS key, grant that key's use as well.
 
 **GCS.** The library creates, reads, lists and deletes objects. `roles/storage.objectAdmin` on the bucket covers all
 four; a custom role needs `storage.objects.create`, `storage.objects.get`, `storage.objects.list` and

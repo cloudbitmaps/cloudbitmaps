@@ -258,7 +258,7 @@ const storage = new AzureBlobStorage({
 One bucket (or container) and one prefix is the whole deployment: the generations, the pointers and the wrapped
 keys of encrypted segments all live there. There is no second service to run.
 
-- **The credentials need five S3 actions**, `s3:ListBucket` among them: [Permissions](production.md#permissions) lists them, with a sample policy.
+- **The credentials need five S3 actions**, `s3:ListBucket` among them: [Permissions](production.md#permissions) lists them, and which resource each one goes on.
 - **S3 needs a service that honors conditional writes** (`If-None-Match: *` and `If-Match`): AWS S3, and MinIO,
   which the test suite runs against. Another S3-compatible service must honor both headers, or a write-once
   generation can be overwritten without an error. Check yours.
