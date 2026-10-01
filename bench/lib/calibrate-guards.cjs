@@ -143,6 +143,27 @@ function projectOps({
 }
 
 /**
+ * A claim on each segment's FIRST load, refusing a second.
+ *
+ * The projection bounds a segment's first load: its pointer read seven times with nothing racing it, fifteen at most
+ * when every publish attempt but the last is lost. A reload also opens the current generation's index to count what
+ * it replaces, so at four lost races it makes sixteen GET-class requests against that bound of fifteen, and a load
+ * that collects adds a pointer read more. A stage that loaded a name twice would overspend a projection that said it
+ * was safe, so the harness loads each name once and a repeat is refused before it sends anything.
+ */
+function firstLoads() {
+  const seen = new Set();
+  return (segment) => {
+    if (seen.has(segment)) {
+      throw new Error(
+        `${segment} was loaded already; the projection bounds a segment's first load, and a reload makes more requests`,
+      );
+    }
+    seen.add(segment);
+  };
+}
+
+/**
  * Did the run issue more than its projection?
  *
  * A projection is only a ceiling if the run cannot exceed it. Checking that after the fact is cheap and turns
@@ -207,17 +228,27 @@ function planLayout({ segments, idsPerSegment, overlap, stride }) {
     if (!Number.isInteger(v) || v < 1) throw new Error(`${k} must be a positive integer, got ${v}`);
   }
   if (!(overlap > 0 && overlap < 1)) throw new Error(`overlap must be in (0, 1), got ${overlap}`);
+  const shared = Math.floor(idsPerSegment * overlap);
+  if (shared === 0) throw new Error(`overlap ${overlap} of ${idsPerSegment} ids shares nothing`);
+  return layoutFromCounts({ segments, shared, priv: idsPerSegment - shared, stride });
+}
+
+/** How many chunks `n` ids placed `stride` apart from id 0 occupy. */
+const chunksFor = (n, stride) => (n === 0 ? 0 : Math.floor(((n - 1) * stride) / CHUNK_SPAN) + 1);
+
+/**
+ * The layout for segments that each hold `shared` ids in a common core and `priv` ids of their own. Both
+ * {@link planLayout}, which takes a share of the segment, and {@link planSweepLayout}, which takes a number of shared
+ * chunks, come here, so every calibration layout is checked the same way.
+ */
+function layoutFromCounts({ segments, shared, priv, stride }) {
   if (stride >= CHUNK_SPAN) {
     throw new Error(
       `stride ${stride} puts every id in its own chunk — nothing would share a chunk`,
     );
   }
-  const shared = Math.floor(idsPerSegment * overlap);
-  if (shared === 0) throw new Error(`overlap ${overlap} of ${idsPerSegment} ids shares nothing`);
-  const priv = idsPerSegment - shared;
-  const chunksFor = (n) => (n === 0 ? 0 : Math.floor(((n - 1) * stride) / CHUNK_SPAN) + 1);
-  const sharedChunks = chunksFor(shared);
-  const privateChunks = chunksFor(priv);
+  const sharedChunks = chunksFor(shared, stride);
+  const privateChunks = chunksFor(priv, stride);
   const bandChunks = privateChunks + 1; // the +1 is the empty chunk that keeps adjacent bands apart
   const firstBandChunk = sharedChunks + 1;
   const totalChunks = firstBandChunk + segments * bandChunks;
@@ -237,22 +268,60 @@ function planLayout({ segments, idsPerSegment, overlap, stride }) {
     { length: segments },
     (_, i) => (firstBandChunk + i * bandChunks) * CHUNK_SPAN,
   );
+  // Each segment's own ids, summed, so a read that returns everything but the shared core can be held to an exact
+  // answer too. Checked against 2^53 as the expected intersection is.
+  const ownSums = bases.map((base) => {
+    const total =
+      BigInt(priv) * BigInt(base) + (BigInt(stride) * BigInt(priv) * BigInt(priv - 1)) / 2n;
+    if (total > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error(
+        "a segment's own ids sum past 2^53 — the exact-content check would be unsound",
+      );
+    }
+    return Number(total);
+  });
   return {
     shared,
+    priv,
     stride,
     sharedChunks,
     privateChunks,
     chunksPerSegment: sharedChunks + privateChunks,
     bases,
+    ownSums,
     expected: { count: shared, sum },
   };
 }
 
+/**
+ * The layout of a sweep over how many chunks the operands share: segments that share exactly `sharedChunks` chunks
+ * and hold `privateIds` ids of their own. The shared core is the fewest ids that fill that many chunks, so the
+ * overlap is the number asked for and not the nearest one the stride allows.
+ */
+function planSweepLayout({ segments, sharedChunks, privateIds, stride }) {
+  for (const [k, v] of Object.entries({ segments, sharedChunks, privateIds, stride })) {
+    if (!Number.isInteger(v) || v < 1) throw new Error(`${k} must be a positive integer, got ${v}`);
+  }
+  if (stride >= CHUNK_SPAN) {
+    throw new Error(
+      `stride ${stride} puts every id in its own chunk — nothing would share a chunk`,
+    );
+  }
+  const shared = Math.ceil(((sharedChunks - 1) * CHUNK_SPAN) / stride) + 1;
+  const layout = layoutFromCounts({ segments, shared, priv: privateIds, stride });
+  if (layout.sharedChunks !== sharedChunks) {
+    throw new Error(
+      `${shared} ids ${stride} apart fill ${layout.sharedChunks} chunks, not the ${sharedChunks} asked for`,
+    );
+  }
+  return layout;
+}
+
 /** The ids of segment `i` under `layout`, ascending. A generator, so no workload is ever materialised twice. */
-function* layoutIds(layout, i, idsPerSegment) {
+function* layoutIds(layout, i) {
   for (let k = 0; k < layout.shared; k += 1) yield k * layout.stride;
   const base = layout.bases[i];
-  for (let k = 0; k < idsPerSegment - layout.shared; k += 1) yield base + k * layout.stride;
+  for (let k = 0; k < layout.priv; k += 1) yield base + k * layout.stride;
 }
 
 /**
@@ -363,6 +432,29 @@ function clientConfigs(base, { adminTimeouts = ADMIN_TIMEOUTS } = {}) {
  * and the run report states it rather than this harness measuring it by accident.
  */
 const TIMED_STORE = Object.freeze({ retry: false, cache: Object.freeze({ genTtlMs: 0 }) });
+
+/**
+ * How long a warm store trusts a pointer, in milliseconds: an hour, far past any stage. A warm read is the one made
+ * from memory, and "within `cache.genTtlMs`" has to hold for the whole stage by construction, since a stage that
+ * outlasted the default 2 s would read each pointer again and the zero it asserts would depend on the clock.
+ */
+const WARM_GEN_TTL_MS = 3_600_000;
+
+/**
+ * How a store is built for the stages that read from memory: its own retry off, as {@link TIMED_STORE}, a pointer
+ * trusted for {@link WARM_GEN_TTL_MS}, and a chunk cache holding `chunks` decoded chunks. The default cache holds
+ * 1,024, and a warm stage over more shared chunks than that would evict and read again, which is a finding about
+ * the cache size and not about a warm read. Never below the default.
+ */
+function warmStore(chunks) {
+  if (!Number.isInteger(chunks) || chunks < 0) {
+    throw new Error(`a warm store's chunk capacity must be a non-negative integer, got ${chunks}`);
+  }
+  return {
+    retry: false,
+    cache: { genTtlMs: WARM_GEN_TTL_MS, maxChunks: Math.max(1_024, chunks) },
+  };
+}
 
 /**
  * Where real runs' evidence lives: one file per run, named by its id.
@@ -495,19 +587,55 @@ const MAX_SEGMENTS = 1000 / 2;
  * Every intersect pairs segment i with segment i + 1, wrapping round. With one segment that is a segment with
  * itself: every chunk is shared, so a run shrunk to one segment — what someone does to make it cheaper — would fetch
  * all 1,999 chunks an intersect, fail its exactness check and overspend its projection before the ceiling check
- * could see it.
+ * could see it. Each set of segments the stages load is held to the same rule, and the stages that read segments
+ * another stage loaded must find enough of them.
+ *
+ * `loaded` is every segment the run loads, the stages' own included: it is what teardown's first listing has to hold.
  */
-function checkWorkload({ segments, largeSegments = 0, reads }) {
-  if (reads > 0 && segments < 2) {
+function checkWorkload({
+  segments,
+  largeSegments = 0,
+  reads,
+  spreadSegments = 0,
+  spreadReads = 0,
+  sweepSegments = 0,
+  sweepEntries = 0,
+  pointSegments = 0,
+  andNotCalls = 0,
+  andNotExcludes = 0,
+}) {
+  const pairs = (n, reading, name, env) => {
+    if (reading > 0 && n < 2) {
+      throw new Error(
+        `${name === '' ? '' : `${name}: `}${n} segment(s) cannot make an intersect of two different segments; set ${env} to at least 2, ` +
+          'or the reads that use them to 0',
+      );
+    }
+  };
+  pairs(segments, reads, '', 'CR_CALIBRATE_SEGMENTS');
+  pairs(spreadSegments, spreadReads, 'spread', 'CR_CALIBRATE_SPREAD_SEGMENTS');
+  pairs(sweepSegments, sweepEntries, 'sweep', 'CR_CALIBRATE_SWEEP_SEGMENTS');
+  if (pointSegments > segments) {
     throw new Error(
-      `${segments} segment(s) cannot make an intersect of two different segments; set CR_CALIBRATE_SEGMENTS to ` +
-        'at least 2, or CR_CALIBRATE_READS to 0',
+      `${pointSegments} point-read segments, but only ${segments} calibration segments to read them from`,
     );
   }
-  if (segments + largeSegments > MAX_SEGMENTS) {
+  if (andNotCalls > 0 && (andNotExcludes < 1 || andNotExcludes + 1 > segments)) {
     throw new Error(
-      `${segments + largeSegments} segments would leave more object versions than teardown's first listing reaches; ` +
-        `load at most ${MAX_SEGMENTS}, counting CR_CALIBRATE_LARGE`,
+      `an andNot of one segment against ${andNotExcludes} others needs ${andNotExcludes + 1} calibration ` +
+        'segments and at least one excluded; set CR_CALIBRATE_SEGMENTS and CR_CALIBRATE_ANDNOT_EXCLUDES, or the ' +
+        'calls to 0',
+    );
+  }
+  const loaded =
+    segments +
+    largeSegments +
+    spreadSegments +
+    (sweepEntries > 0 ? sweepSegments * sweepEntries : 0);
+  if (loaded > MAX_SEGMENTS) {
+    throw new Error(
+      `${loaded} segments would leave more object versions than teardown's first listing reaches; ` +
+        `load at most ${MAX_SEGMENTS}, counting every stage's`,
     );
   }
 }
@@ -573,9 +701,11 @@ module.exports = {
   resolveSize,
   probeMeansAbsent,
   projectOps,
+  firstLoads,
   exceedsProjection,
   breached,
   planLayout,
+  planSweepLayout,
   layoutIds,
   maskAccount,
   redact,
@@ -595,6 +725,8 @@ module.exports = {
   checkRunRegion,
   EVIDENCE_DIR,
   TIMED_STORE,
+  WARM_GEN_TTL_MS,
+  warmStore,
   ADMIN_ATTEMPTS,
   clientConfigs,
   bucketIsGone,

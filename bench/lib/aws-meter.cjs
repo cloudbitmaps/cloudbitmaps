@@ -56,6 +56,12 @@ function newTally() {
     bytesUp: 0,
     bytesDown: 0,
     byCommand: Object.create(null),
+    // Depth, which a count of requests cannot show: how many were in flight at once, and the sum of every request's own
+    // time from send to answer. Their ratio to the wall time says how wide a stage ran, and the wall time over the mean
+    // request is how many requests it waited for one after another.
+    inFlight: 0,
+    peakInFlight: 0,
+    requestMs: 0,
     reads: { whole: { n: 0, bytes: 0 }, suffix: { n: 0, bytes: 0 }, range: { n: 0, bytes: 0 } },
   };
 }
@@ -114,12 +120,20 @@ function meter(client, tally = newTally()) {
       // failed — and each attempt is a billed request.
       const retries = (meta) =>
         Number.isInteger(meta?.attempts) && meta.attempts > 1 ? meta.attempts - 1 : 0;
+      // A request is timed from send to the answer's headers, so a ranged chunk is about the whole request and a large
+      // read is without its body. It is in flight from the send, a wait for a free socket included.
+      tally.inFlight += 1;
+      if (tally.inFlight > tally.peakInFlight) tally.peakInFlight = tally.inFlight;
+      const sentAt = process.hrtime.bigint();
       let result;
       try {
         result = await next(args);
       } catch (err) {
         count(retries(err?.$metadata));
         throw err;
+      } finally {
+        tally.inFlight -= 1;
+        tally.requestMs += Number(process.hrtime.bigint() - sentAt) / 1e6;
       }
       count(retries(result?.output?.$metadata));
       const len = Number(result?.output?.ContentLength);

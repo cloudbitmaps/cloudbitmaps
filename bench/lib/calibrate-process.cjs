@@ -8,8 +8,9 @@
  * second run under a name already taken, and a harness with uncommitted edits recorded as a commit.
  */
 const { execFileSync } = require('node:child_process');
-const { mkdirSync, writeFileSync } = require('node:fs');
-const { dirname } = require('node:path');
+const { mkdirSync, readFileSync, writeFileSync } = require('node:fs');
+const { dirname, join } = require('node:path');
+const { createRequire } = require('node:module');
 const { clearTimeout, setTimeout } = require('node:timers');
 
 const { redact } = require('./calibrate-guards.cjs');
@@ -180,6 +181,20 @@ function writeResultsFile({ file, fallback, text, overwrite = false }) {
 }
 
 /**
+ * A run's results as the text of its file, every fractional number written to nine decimals.
+ *
+ * A ratio or a sum prints with a binary tail of up to 17 digits that no measurement carries, and a tail of exactly 12
+ * is the run of digits the leak scan refuses as a possible account id, so a file could fail it by chance and then
+ * not be committed. Nine decimals is below a nanosecond for a time in milliseconds and a billionth of a dollar for a
+ * cost, so nothing measured is lost.
+ */
+function resultsJson(results) {
+  const round = (_key, v) =>
+    typeof v === 'number' && !Number.isInteger(v) && Number.isFinite(v) ? Number(v.toFixed(9)) : v;
+  return `${JSON.stringify(results, round, 2)}\n`;
+}
+
+/**
  * The files a run from a checkout executes: the harness, the modules it loads, and the packages it loads, which are
  * this checkout's. The figures library in `bench/lib` is not among them; it reads a run's file, and never runs one.
  */
@@ -188,6 +203,8 @@ const HARNESS_FILES = [
   'bench/lib/aws-meter.cjs',
   'bench/lib/calibrate-guards.cjs',
   'bench/lib/calibrate-process.cjs',
+  'bench/lib/calibrate-spread.cjs',
+  'bench/lib/calibrate-stages.cjs',
   'packages',
 ];
 
@@ -214,7 +231,66 @@ function harnessRef(root, env = process.env) {
   }
 }
 
+/**
+ * The version of `@cloudbitmaps/roaring` a run measured: this checkout's own package when the run is from one, and the
+ * installed package when it is from a scratch directory that installed the published ones, as the CloudShell script
+ * does. A directory with neither is refused, since a run that cannot say what it measured has no evidence to write.
+ */
+function measuredVersion(root) {
+  const where = [
+    'packages/roaring/package.json',
+    'node_modules/@cloudbitmaps/roaring/package.json',
+  ];
+  for (const rel of where) {
+    let text;
+    try {
+      text = readFileSync(join(root, rel), 'utf8');
+    } catch (err) {
+      if (err?.code === 'ENOENT') continue;
+      throw err;
+    }
+    return JSON.parse(text).version;
+  }
+  throw new Error(
+    `no @cloudbitmaps/roaring package under ${root}: looked in ${where.join(' and ')}`,
+  );
+}
+
+/** How many sockets the SDK's HTTP handler opens to one host unless told otherwise. The harness does not set it. */
+const SDK_DEFAULT_MAX_SOCKETS = 50;
+
+/**
+ * The versions of the AWS SDK client and of the HTTP handler under it that a run used, read from what is installed
+ * under `root`. The scratch directory a CloudShell run installs into is deleted once the results are copied out, so the
+ * file is the only place they survive; and the handler's socket cap bounds how many requests a stage can really have
+ * in flight, which a latency has to be read against. A directory with neither is refused, as `measuredVersion` does.
+ */
+function measuredSdk(root) {
+  const version = (from, spec) => {
+    let file;
+    try {
+      file = createRequire(from).resolve(`${spec}/package.json`);
+    } catch (err) {
+      if (err?.code === 'MODULE_NOT_FOUND') return null;
+      throw err;
+    }
+    return { file, version: JSON.parse(readFileSync(file, 'utf8')).version };
+  };
+  const client = version(join(root, 'package.json'), '@aws-sdk/client-s3');
+  if (client === null) throw new Error(`no @aws-sdk/client-s3 installed under ${root}`);
+  const handler = version(client.file, '@smithy/node-http-handler');
+  if (handler === null) {
+    throw new Error(
+      `no @smithy/node-http-handler under the @aws-sdk/client-s3 installed in ${root}`,
+    );
+  }
+  return { clientS3: client.version, nodeHttpHandler: handler.version };
+}
+
 module.exports = {
+  measuredVersion,
+  measuredSdk,
+  SDK_DEFAULT_MAX_SOCKETS,
   interruptGate,
   isInterruption,
   failureOf,
@@ -223,6 +299,7 @@ module.exports = {
   holdTerminal,
   silenceTerminal,
   writeResultsFile,
+  resultsJson,
   harnessRef,
   HARNESS_FILES,
 };

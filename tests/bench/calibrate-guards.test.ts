@@ -1,5 +1,13 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -48,6 +56,18 @@ function runHarness(args: string[], env: Record<string, string> = {}) {
   });
 }
 
+type CalibrationLayout = {
+  shared: number;
+  stride: number;
+  sharedChunks: number;
+  privateChunks: number;
+  chunksPerSegment: number;
+  bases: number[];
+  priv: number;
+  ownSums: number[];
+  expected: { count: number; sum: number };
+};
+
 const guards = require_(join(ROOT, 'bench', 'lib', 'calibrate-guards.cjs')) as {
   CONFIRM_PHRASE: string;
   parseCeiling: (raw: unknown) => number;
@@ -72,16 +92,19 @@ const guards = require_(join(ROOT, 'bench', 'lib', 'calibrate-guards.cjs')) as {
     measured: { put: number; get: number },
     projected: { put: number; get: number },
   ) => string[];
-  planLayout: (i: { segments: number; idsPerSegment: number; overlap: number; stride: number }) => {
-    shared: number;
+  planLayout: (i: {
+    segments: number;
+    idsPerSegment: number;
+    overlap: number;
     stride: number;
+  }) => CalibrationLayout;
+  planSweepLayout: (i: {
+    segments: number;
     sharedChunks: number;
-    privateChunks: number;
-    chunksPerSegment: number;
-    bases: number[];
-    expected: { count: number; sum: number };
-  };
-  layoutIds: (layout: unknown, i: number, idsPerSegment: number) => Iterable<number>;
+    privateIds: number;
+    stride: number;
+  }) => CalibrationLayout;
+  layoutIds: (layout: unknown, i: number) => Iterable<number>;
   maskAccount: (account: unknown) => string;
   resultsFile: (
     rehearse: boolean,
@@ -107,6 +130,7 @@ const guards = require_(join(ROOT, 'bench', 'lib', 'calibrate-guards.cjs')) as {
   stampOf: (iso: string) => string;
   EVIDENCE_DIR: string;
   TIMED_STORE: { retry: false; cache: { genTtlMs: number } };
+  warmStore: (chunks: number) => { retry: false; cache: { genTtlMs: number; maxChunks: number } };
   clientConfigs: (
     base: Record<string, unknown>,
     options?: {
@@ -142,6 +166,10 @@ const processLib = require_(join(ROOT, 'bench', 'lib', 'calibrate-process.cjs'))
     overwrite?: boolean;
   }) => string;
   harnessRef: (root: string, env?: Record<string, string | undefined>) => string;
+  resultsJson: (results: unknown) => string;
+  measuredVersion: (root: string) => string;
+  measuredSdk: (root: string) => { clientS3: string; nodeHttpHandler: string };
+  SDK_DEFAULT_MAX_SOCKETS: number;
   HARNESS_FILES: string[];
   failureOf: (err: unknown) => string | null;
   stopThenTearDown: (i: {
@@ -478,7 +506,7 @@ describe('calibrate guards — what a real run is held to', () => {
   describe('planLayout', () => {
     const params = { segments: 3, idsPerSegment: 4_000, overlap: 0.05, stride: 262 };
     const L = guards.planLayout(params);
-    const seg = (i: number): number[] => [...guards.layoutIds(L, i, params.idsPerSegment)];
+    const seg = (i: number): number[] => [...guards.layoutIds(L, i)];
 
     // The claim the harness asserts against a real object store is that ANY pair intersects in exactly
     // `expected` — so check that claim here, in plain JS, over every pair.
@@ -769,6 +797,44 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     }
   });
 
+  // A ratio or a sum prints with a binary tail of up to 17 digits, and one of exactly 12 is a run the leak scan
+  // refuses (see maskAccount above), so every fractional number is written to nine decimals: below a nanosecond for a
+  // time in milliseconds, a billionth of a dollar for a cost.
+  it('writes every fractional number to nine decimals, and leaves integers and the rest alone', () => {
+    const text = processLib.resultsJson({
+      rounds: 18.388563978644598,
+      meanInFlight: 11.129749221924502,
+      sum: 0.1 + 0.2,
+      p50ms: 1059.2655,
+      getUSD: 92948 * 0.4e-6,
+      gets: 92948,
+      bytes: 264765440,
+      nested: [{ fraction: 0.04904532700686635 }, 'text', null, true],
+    });
+    expect(JSON.parse(text)).toEqual({
+      rounds: 18.388563979,
+      meanInFlight: 11.129749222,
+      sum: 0.3,
+      p50ms: 1059.2655,
+      getUSD: 0.0371792,
+      gets: 92948,
+      bytes: 264765440,
+      nested: [{ fraction: 0.049045327 }, 'text', null, true],
+    });
+    expect(text.endsWith('}\n')).toBe(true);
+    expect(text).toContain('\n  "rounds": 18.388563979,');
+    // The harness writes its results through it and nowhere else, and so is the fixture written.
+    const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
+    expect(src).toContain('text: resultsJson(results)');
+    expect(src).not.toContain('JSON.stringify(results');
+    const fixture = readFileSync(
+      join(ROOT, 'tests', 'bench', 'fixtures', 'calibration-rehearsal.json'),
+      'utf8',
+    );
+    expect(fixture.match(/\.\d{10,}/g) ?? []).toEqual([]);
+    expect(processLib.resultsJson(JSON.parse(fixture))).toBe(fixture);
+  });
+
   // Run, not read: a check pointed at the partial file instead of the evidence passes every source-text test here.
   // The refusal comes before the harness imports the library, so it holds on a checkout that has not been built.
   it('refuses a committed run id in projection mode, before it imports anything', () => {
@@ -809,6 +875,11 @@ describe('a rehearsal cannot be committed as the evidence', () => {
         CR_CALIBRATE_SEGMENTS: '498',
         CR_CALIBRATE_LARGE: '2',
         CR_CALIBRATE_READS: '0',
+        CR_CALIBRATE_SPREAD_SEGMENTS: '0',
+        CR_CALIBRATE_SPREAD_READS: '0',
+        CR_CALIBRATE_SWEEP: 'none',
+        CR_CALIBRATE_POINT_SEGMENTS: '0',
+        CR_CALIBRATE_ANDNOT_CALLS: '0',
       }).stderr,
     ).not.toMatch(/teardown's first listing/);
   });
@@ -838,6 +909,55 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     expect(out.stderr).toMatch(/prices for us-east-1 only/);
     const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
     expect(src).toContain('checkRunRegion(region)');
+  });
+
+  // The ceiling is parsed before the confirmation is read, so each refusal is reachable here without the phrase, and a
+  // broken one still stops at the next check: the home is empty, so the run ends at the identity check.
+  it('refuses a real run with no ceiling, and one with no confirmation, in that order and before the library loads', () => {
+    const noCeiling = runHarness(['--run'], { CR_CALIBRATE_REGION: 'us-east-1' });
+    expect(noCeiling.status).toBe(2);
+    expect(noCeiling.stderr).toMatch(/CR_CALIBRATE_MAX_USD is required/);
+    const noPhrase = runHarness(['--run'], {
+      CR_CALIBRATE_REGION: 'us-east-1',
+      CR_CALIBRATE_MAX_USD: '0.05',
+    });
+    expect(noPhrase.status).toBe(2);
+    expect(noPhrase.stderr).toMatch(/set CR_CALIBRATE_CONFIRM=/);
+    const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
+    const run = src.indexOf("if (MODE === 'run') {\n    try {\n      checkRunRegion(region);");
+    expect(run).toBeGreaterThan(-1);
+    const at = (needle: string): number => src.indexOf(needle, run);
+    expect(at('parseCeiling(process.env.CR_CALIBRATE_MAX_USD)')).toBeGreaterThan(-1);
+    expect(at('parseCeiling(process.env.CR_CALIBRATE_MAX_USD)')).toBeLessThan(
+      at('process.env.CR_CALIBRATE_CONFIRM !== CONFIRM_PHRASE'),
+    );
+    expect(at('process.env.CR_CALIBRATE_CONFIRM !== CONFIRM_PHRASE')).toBeLessThan(
+      src.indexOf("await import('@cloudbitmaps/roaring')"),
+    );
+  });
+
+  // CI runs the tests before it builds, so a spawn cannot reach the library import: these two are read, in the order
+  // `main()` does them, rather than run.
+  it('refuses a projection over the ceiling before any client exists, and prints the bill inside the 10 s window', () => {
+    const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
+    const main = src.indexOf('async function main');
+    const at = (needle: string, from = main): number => src.indexOf(needle, from);
+    const preflight = at("if (MODE === 'run') {\n    // The projection is an upper bound");
+    expect(preflight).toBeGreaterThan(-1);
+    const refusal = at('if (breached(priced.totalUSD, ceiling)) {', preflight);
+    expect(refusal).toBeGreaterThan(preflight);
+    expect(refusal).toBeLessThan(at('new s3.S3Client(', preflight));
+    expect(src.slice(refusal, refusal + 400)).toMatch(/refuse\(/);
+    // The window: after the identity line, inside the run-only branch, naming the bill, before anything is created.
+    const identity = at('`identity: account');
+    const window = at("if (MODE === 'run') {\n      // A human check", identity);
+    expect(window).toBeGreaterThan(identity);
+    const sleep = at('await sleep(10_000);', window);
+    expect(sleep).toBeGreaterThan(window);
+    expect(src.slice(window, sleep)).toContain('priced.totalUSD');
+    expect(src.slice(window, sleep)).toContain('ceiling');
+    expect(sleep).toBeLessThan(at('new s3.HeadBucketCommand({ Bucket: bucket })', identity));
+    expect(sleep).toBeLessThan(at('new s3.CreateBucketCommand('));
   });
 
   // The two tests above tie `.gitignore` to `resultsFile()`; these tie the harness and the CloudShell script to it.
@@ -918,6 +1038,102 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     } finally {
       rmSync(clone, { recursive: true, force: true });
     }
+  });
+
+  // Three refusals the script makes before nvm, npm or any request. Each function is cut out of the script and run
+  // alone, as the committed-id refusal above is, so what is tested is what the script runs.
+  describe('the CloudShell script refuses what would run the wrong thing', () => {
+    const sh = readFileSync(join(ROOT, 'bench', 'calibrate-cloudshell.sh'), 'utf8');
+    const fn = (name: string): string => {
+      const body = new RegExp(`^${name}\\(\\) \\{[\\s\\S]*?^\\}`, 'm').exec(sh)?.[0];
+      expect(body, `the script no longer defines ${name}`).toBeDefined();
+      return body ?? '';
+    };
+    const run = (
+      name: string,
+      env: Record<string, string>,
+      cwd = ROOT,
+    ): ReturnType<typeof spawnSync> =>
+      spawnSync('bash', ['-c', `${fn(name)}\n${name}\necho ran`], {
+        cwd,
+        env: { PATH: process.env.PATH ?? '', ...env },
+        encoding: 'utf8',
+      });
+
+    // `true`, ` 1` and `yes` would otherwise take the run that spends money, with a phrase and a ceiling exported.
+    it('refuses a rehearse flag that is not unset, empty, 0 or 1', () => {
+      for (const bad of ['true', ' 1', 'yes', '01', '1 ', 'on']) {
+        const out = run('refuse_bad_rehearse', { CR_CALIBRATE_REHEARSE: bad });
+        expect(out.status, JSON.stringify(bad)).toBe(2);
+        expect(out.stderr).toMatch(/must be 1 or unset/);
+        expect(out.stdout).not.toContain('ran');
+      }
+      for (const good of [undefined, '', '0', '1']) {
+        const out = run(
+          'refuse_bad_rehearse',
+          good === undefined ? {} : { CR_CALIBRATE_REHEARSE: good },
+        );
+        expect(out.stdout, JSON.stringify(good)).toContain('ran');
+      }
+    });
+
+    it("refuses a shell with no region, and a region other than the shell's", () => {
+      const noRegion = run('refuse_foreign_region', { CR_CALIBRATE_REGION: 'us-east-1' });
+      expect(noRegion.status).toBe(2);
+      expect(noRegion.stderr).toMatch(/exports AWS_REGION/);
+      const other = run('refuse_foreign_region', {
+        AWS_REGION: 'us-east-2',
+        CR_CALIBRATE_REGION: 'us-east-1',
+      });
+      expect(other.status).toBe(2);
+      expect(other.stderr).toMatch(/runs in us-east-2; open CloudShell in us-east-1/);
+      // The shell's own region, asked for or not, is fine.
+      expect(
+        run('refuse_foreign_region', { AWS_REGION: 'us-east-1', CR_CALIBRATE_REGION: 'us-east-1' })
+          .stdout,
+      ).toContain('ran');
+      expect(run('refuse_foreign_region', { AWS_REGION: 'us-east-1' }).stdout).toContain('ran');
+    });
+
+    it('applies both on the run path only, records the shell region, and does it before nvm and npm', () => {
+      const rehearsePath = sh.indexOf('if [ "${CR_CALIBRATE_REHEARSE:-}" = "1" ]; then');
+      const region = sh.indexOf('  refuse_foreign_region\n', rehearsePath);
+      expect(region).toBeGreaterThan(rehearsePath);
+      // Inside the else branch of the rehearse test, so a rehearsal needs no region.
+      expect(sh.slice(rehearsePath, region)).toContain('else');
+      expect(sh.slice(region)).toContain('export CR_CALIBRATE_CLIENT_REGION="$AWS_REGION"');
+      for (const needle of ['\nrefuse_bad_rehearse\n', '  refuse_foreign_region\n']) {
+        expect(sh.indexOf(needle), needle).toBeGreaterThan(-1);
+        expect(sh.indexOf(needle)).toBeLessThan(sh.indexOf('nvm install'));
+        expect(sh.indexOf(needle)).toBeLessThan(sh.indexOf('npm i '));
+      }
+      expect(sh.indexOf('\nrefuse_bad_rehearse\n')).toBeLessThan(sh.indexOf('MODE_FLAG="--run"'));
+      const harness = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
+      expect(harness).toContain('clientRegion: process.env.CR_CALIBRATE_CLIENT_REGION ?? null');
+    });
+
+    it("measures this clone's version unless told otherwise, and says so before installing", () => {
+      const version = (
+        JSON.parse(readFileSync(join(ROOT, 'packages', 'roaring', 'package.json'), 'utf8')) as {
+          version: string;
+        }
+      ).version;
+      const out = spawnSync(
+        'bash',
+        ['-c', `${fn('default_package_version')}\ndefault_package_version`],
+        {
+          cwd: ROOT,
+          env: { PATH: process.env.PATH ?? '' },
+          encoding: 'utf8',
+        },
+      );
+      expect(out.stdout.trim()).toBe(version);
+      expect(sh).toContain(
+        'PKG_VERSION="${CR_CALIBRATE_PACKAGE_VERSION:-$(default_package_version)}"',
+      );
+      expect(sh).not.toContain(':-latest}');
+      expect(sh.indexOf('measuring @cloudbitmaps/roaring')).toBeLessThan(sh.indexOf('npm i '));
+    });
   });
 
   // What `finish()` does on the way out decides whether a paid run's results survive, so it is run, not read.
@@ -1142,6 +1358,163 @@ describe('a rehearsal cannot be committed as the evidence', () => {
       expect(copied.has(dep), `${dep} is required and not copied`).toBe(true);
   });
 
+  // The CloudShell script runs the harness from a scratch directory that holds the files it copies and the packages it
+  // installed, and no checkout: no `packages/` directory. The harness has to run there, so this runs it there, in
+  // projection mode, which reads no credential and sends nothing.
+  it('runs from a scratch directory with only the files the CloudShell script copies', () => {
+    const sh = readFileSync(join(ROOT, 'bench', 'calibrate-cloudshell.sh'), 'utf8');
+    const copied = [
+      ...sh.matchAll(/^cp ((?:bench\/[\w./-]+ ?)+) "\$WORK\/(bench\/(?:lib\/)?)"$/gm),
+    ].flatMap((m) => (m[1] ?? '').trim().split(/\s+/));
+    expect(copied).toContain('bench/calibrate-aws.cjs');
+    expect(copied.length).toBeGreaterThanOrEqual(5);
+    const scratch = mkdtempSync(join(tmpdir(), 'calib-scratch-'));
+    try {
+      for (const rel of copied) {
+        mkdirSync(join(scratch, dirname(rel)), { recursive: true });
+        writeFileSync(join(scratch, rel), readFileSync(join(ROOT, rel)));
+      }
+      // What `npm i` leaves: the SDK as installed, and the published library, which this stands in for with the
+      // checkout's version and the price table's shape. The tests run before the build, so the workspace's own
+      // package has no entry point to import yet; what is under test is what the harness finds here, not the library.
+      mkdirSync(join(scratch, 'node_modules', '@cloudbitmaps', 'roaring'), { recursive: true });
+      symlinkSync(
+        join(ROOT, 'node_modules', '@aws-sdk'),
+        join(scratch, 'node_modules', '@aws-sdk'),
+      );
+      const roaring = JSON.parse(
+        readFileSync(join(ROOT, 'packages', 'roaring', 'package.json'), 'utf8'),
+      ) as { version: string };
+      writeFileSync(
+        join(scratch, 'node_modules', '@cloudbitmaps', 'roaring', 'package.json'),
+        JSON.stringify({
+          name: '@cloudbitmaps/roaring',
+          version: roaring.version,
+          type: 'module',
+          exports: './index.js',
+        }),
+      );
+      writeFileSync(
+        join(scratch, 'node_modules', '@cloudbitmaps', 'roaring', 'index.js'),
+        "export const AWS_US_EAST_1_ONDEMAND = { name: 'aws-us-east-1-ondemand', storage: { getPerMillion: 0.4, putPerMillion: 5 } };\n",
+      );
+      const out = spawnSync(process.execPath, ['bench/calibrate-aws.cjs'], {
+        cwd: scratch,
+        env: {
+          PATH: process.env.PATH ?? '',
+          HOME: OFFLINE_HOME,
+          AWS_CONFIG_FILE: join(OFFLINE_HOME, 'no-config'),
+          AWS_SHARED_CREDENTIALS_FILE: join(OFFLINE_HOME, 'no-credentials'),
+          AWS_EC2_METADATA_DISABLED: 'true',
+        },
+        encoding: 'utf8',
+        timeout: 60_000,
+      });
+      expect(out.stderr).toBe('');
+      expect(out.status).toBe(0);
+      expect(out.stdout).toMatch(/PROJECTION ONLY/);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it("says what it measured: the checkout's package, else the installed one, else nothing", () => {
+    const root = mkdtempSync(join(tmpdir(), 'calib-version-'));
+    const put = (rel: string, version: string): void => {
+      mkdirSync(join(root, dirname(rel)), { recursive: true });
+      writeFileSync(join(root, rel), JSON.stringify({ name: '@cloudbitmaps/roaring', version }));
+    };
+    try {
+      expect(() => processLib.measuredVersion(root)).toThrow(/no @cloudbitmaps\/roaring package/);
+      put('node_modules/@cloudbitmaps/roaring/package.json', '0.11.0');
+      expect(processLib.measuredVersion(root)).toBe('0.11.0');
+      put('packages/roaring/package.json', '0.12.0-dev');
+      expect(processLib.measuredVersion(root)).toBe('0.12.0-dev');
+      // A package file that is there and unreadable is an error, not a reason to look elsewhere.
+      writeFileSync(join(root, 'packages', 'roaring', 'package.json'), '{');
+      expect(() => processLib.measuredVersion(root)).toThrow();
+      expect(readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8')).not.toContain(
+        "'packages/roaring/package.json'",
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // The scratch directory is deleted after the results are copied, so the SDK that produced every latency survives
+  // only in the file. The versions are read from what is installed, the handler from under the client.
+  it('records the SDK client and its HTTP handler, as installed, and the socket cap it leaves alone', () => {
+    const root = mkdtempSync(join(tmpdir(), 'calib-sdk-'));
+    const put = (rel: string, version: string): void => {
+      mkdirSync(join(root, dirname(rel)), { recursive: true });
+      writeFileSync(join(root, rel), JSON.stringify({ version }));
+    };
+    // Run in a process of its own with no NODE_PATH: the test runner sets one that reaches this checkout's own
+    // hoisted packages, which a directory with nothing installed must not find.
+    const sdkIn = (
+      dir: string,
+    ): { out?: { clientS3: string; nodeHttpHandler: string }; error?: string } => {
+      const run = spawnSync(
+        process.execPath,
+        [
+          '-e',
+          `try { process.stdout.write(JSON.stringify({ out: require(${JSON.stringify(
+            join(ROOT, 'bench', 'lib', 'calibrate-process.cjs'),
+          )}).measuredSdk(${JSON.stringify(dir)}) })); } catch (e) { process.stdout.write(JSON.stringify({ error: e.message })); }`,
+        ],
+        { env: { PATH: process.env.PATH ?? '' }, encoding: 'utf8' },
+      );
+      return JSON.parse(run.stdout) as {
+        out?: { clientS3: string; nodeHttpHandler: string };
+        error?: string;
+      };
+    };
+    try {
+      expect(sdkIn(root).error).toMatch(/no @aws-sdk\/client-s3 installed/);
+      put('node_modules/@aws-sdk/client-s3/package.json', '3.1000.0');
+      expect(sdkIn(root).error).toMatch(/no @smithy\/node-http-handler/);
+      put('node_modules/@smithy/node-http-handler/package.json', '4.12.1');
+      expect(sdkIn(root).out).toEqual({ clientS3: '3.1000.0', nodeHttpHandler: '4.12.1' });
+      // The handler is the one under the client, not another at the top: a nested install wins.
+      put(
+        'node_modules/@aws-sdk/client-s3/node_modules/@smithy/node-http-handler/package.json',
+        '4.99.0',
+      );
+      expect(sdkIn(root).out?.nodeHttpHandler).toBe('4.99.0');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+    // This checkout's own install resolves, and the cap is the SDK's default of 50.
+    const real = processLib.measuredSdk(ROOT);
+    expect(real.clientS3).toMatch(/^\d+\.\d+\.\d+/);
+    expect(real.nodeHttpHandler).toMatch(/^\d+\.\d+\.\d+/);
+    expect(processLib.SDK_DEFAULT_MAX_SOCKETS).toBe(50);
+    const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
+    expect(src).toContain('sdk,\n      maxSockets: SDK_DEFAULT_MAX_SOCKETS,');
+    expect(src).toContain('sdk = measuredSdk(ROOT);');
+  });
+
+  // A run is named dirty by the files it executes. A module the harness requires that the list leaves out could be
+  // edited without the evidence saying so.
+  it('names every module the harness requires among the files whose edits mark a run dirty', () => {
+    const needed = new Set<string>(['bench/calibrate-aws.cjs']);
+    const visit = (rel: string): void => {
+      const src = readFileSync(join(ROOT, rel), 'utf8');
+      for (const m of src.matchAll(/require\('(\.\.?\/[^']+)'\)/g)) {
+        const dep = join(dirname(rel), m[1] ?? '');
+        if (!needed.has(dep)) {
+          needed.add(dep);
+          visit(dep);
+        }
+      }
+    };
+    visit('bench/calibrate-aws.cjs');
+    for (const file of needed) expect(processLib.HARNESS_FILES, file).toContain(file);
+    const sh = readFileSync(join(ROOT, 'bench', 'calibrate-cloudshell.sh'), 'utf8');
+    const fn = /^harness_ref\(\) \{[\s\S]*?^\}/m.exec(sh)?.[0] ?? '';
+    for (const file of needed) expect(fn, file).toContain(file);
+  });
+
   // Evidence names the harness that ran. A bare commit names one that did not, whenever its files have been edited.
   it('records a harness with uncommitted edits as dirty, from a checkout and from the CloudShell script', () => {
     const sh = readFileSync(join(ROOT, 'bench', 'calibrate-cloudshell.sh'), 'utf8');
@@ -1341,6 +1714,62 @@ describe('the meter counts every attempt the SDK makes, not every send', () => {
       maxAttempts,
     });
 
+  // Depth: a count of requests cannot say how many ran at once. The server holds every answer until sixteen requests
+  // are pending, then answers each after about 20 ms, so a meter that sees depth reads exactly sixteen.
+  it('records the most requests in flight at once, and the time they took between them', async () => {
+    const pending: Array<() => void> = [];
+    const server = createServer((_req, res) => {
+      pending.push(() => {
+        res.writeHead(200, { 'content-length': '0' });
+        res.end();
+      });
+      if (pending.length === 16) {
+        for (const answer of pending.splice(0)) setTimeout(answer, 20);
+      }
+    });
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    const { port } = server.address() as AddressInfo;
+    const client = clientFor(`http://127.0.0.1:${port}`, 1);
+    const tally = meterLib.meter(client) as ReturnType<typeof meterLib.meter> & {
+      inFlight: number;
+      peakInFlight: number;
+      requestMs: number;
+    };
+    try {
+      expect(tally.peakInFlight).toBe(0);
+      await Promise.all(
+        Array.from({ length: 16 }, () => client.send(new s3.HeadBucketCommand({ Bucket: 'b' }))),
+      );
+      expect(tally.peakInFlight).toBe(16);
+      expect(tally.inFlight).toBe(0);
+      expect(tally.get).toBe(16);
+      // Each of the sixteen took at least the 20 ms the server waited.
+      expect(tally.requestMs).toBeGreaterThanOrEqual(16 * 19);
+      // A later read starts its peak afresh, as the harness does before each timed read.
+      tally.peakInFlight = tally.inFlight;
+      expect(tally.peakInFlight).toBe(0);
+    } finally {
+      client.destroy();
+      await new Promise<void>((done) => server.close(() => done()));
+    }
+  });
+
+  it('lowers the in-flight count when a send fails, and counts it as before', async () => {
+    const server = await flakyS3(1);
+    const client = clientFor(server.url, 1);
+    const tally = meterLib.meter(client) as ReturnType<typeof meterLib.meter> & {
+      inFlight: number;
+    };
+    try {
+      await expect(client.send(new s3.HeadBucketCommand({ Bucket: 'b' }))).rejects.toBeDefined();
+      expect(tally.inFlight).toBe(0);
+      expect(tally.get).toBe(1);
+    } finally {
+      client.destroy();
+      await server.close();
+    }
+  });
+
   it('counts a retried request once per attempt', async () => {
     const server = await flakyS3(1);
     const client = clientFor(server.url, 3);
@@ -1475,12 +1904,17 @@ describe('the meter counts every attempt the SDK makes, not every send', () => {
   it('every store the harness times runs with its own retry off, and its pointer refresh off', () => {
     expect(guards.TIMED_STORE.retry).toBe(false);
     expect(guards.TIMED_STORE.cache.genTtlMs).toBe(0);
+    expect(guards.warmStore(0).retry).toBe(false);
     const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
     const built = src.match(/new CloudRoaring\(/g)?.length ?? 0;
-    const timed =
-      src.match(/new CloudRoaring\(\{\s*storage,\s*\.\.\.TIMED_STORE\s*\}\)/g)?.length ?? 0;
-    expect(built).toBe(2);
-    expect(timed).toBe(built);
+    // Every store is built from the timed settings, or from the warm ones, which differ only in trusting the pointer
+    // and holding more chunks.
+    const approved =
+      src.match(
+        /new CloudRoaring\(\{\s*storage,\s*\.\.\.(?:TIMED_STORE|warmStore\([^()]*\)),?\s*\}\)/g,
+      )?.length ?? 0;
+    expect(built).toBeGreaterThanOrEqual(3);
+    expect(approved).toBe(built);
   });
 
   it('counts a request that needed no retry exactly once', async () => {
