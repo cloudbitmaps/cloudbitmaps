@@ -164,9 +164,14 @@ echo "cloudshell: installing the published packages at ${PKG_VERSION}"
 (
   cd "$WORK"
   npm init -y >/dev/null
+  # npm 12 runs a dependency's install script only where the project allows it, and roaring's is the one that fetches
+  # its native binary; without this the install exits 0 and the first import throws. npm 10 and 11 run it anyway.
+  node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json","utf8"));p.allowScripts={roaring:true};fs.writeFileSync("package.json",JSON.stringify(p,null,2))'
   npm i --no-audit --no-fund --loglevel=error \
     "@cloudbitmaps/roaring@${PKG_VERSION}" "@cloudbitmaps/s3@${PKG_VERSION}" \
     @aws-sdk/client-s3 @aws-sdk/client-sts
+  # Fail here, before anything is created or spent, if the native binary did not arrive.
+  node -e 'import("@cloudbitmaps/roaring").catch((e)=>{console.error("cloudshell: @cloudbitmaps/roaring does not load: "+e.message.split("\n")[0]);process.exit(2)})'
 )
 
 rc=0
