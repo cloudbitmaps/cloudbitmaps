@@ -37,7 +37,7 @@ export class SystemClock implements Clock {
    * A long CPU-bound loop in `core/` (bulk-load is the one that matters) periodically hands the loop back so a
    * co-resident HTTP server keeps answering. Measured on the **synthetic yield-primitive benchmark** — a
    * 61,035-iteration loop yielding every 1,024, isolating the primitive rather than timing a real load (the
-   * end-to-end figures are 450 ms → 19 ms; see `cooperative.ts`, which lists all three experiments):
+   * end-to-end figures are 519 ms → 24 ms; see `cooperative.ts`, which lists all three experiments):
    *
    * ```text
    *   no yield         568 ms wall   568.0 ms worst event-loop gap
