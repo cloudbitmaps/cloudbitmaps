@@ -1,7 +1,7 @@
+import { validateSegmentRef } from '@/core/validate';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { validateSegmentRef } from '@/index';
 
 // What a name may be is written down in prose in several places, and prose does not compile. This gate makes
 // every restatement of it agree with the code.

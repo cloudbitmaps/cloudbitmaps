@@ -1,12 +1,7 @@
+import { gcOrphanGenerations } from '@/core/generation-gc';
+import { publishGeneration } from '@/core/crbm-storage-source';
 import { randomBytes } from 'node:crypto';
-import {
-  MemoryStorage,
-  CloudRoaring,
-  CrbmStorageChunkSource,
-  dropSegment,
-  gcOrphanGenerations,
-  publishGeneration,
-} from '@/index';
+import { MemoryStorage, CloudRoaring, CrbmStorageChunkSource, dropSegment } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
 import {
   NotFoundError,

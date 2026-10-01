@@ -1,3 +1,4 @@
+import { publishGeneration } from '@/core/crbm-storage-source';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,7 +7,6 @@ import {
   CrbmStorageChunkSource,
   LocalFsStorageDriver,
   MemoryRegistryDriver,
-  publishGeneration,
 } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
 import type { GenKey, SegmentRef } from '@/index';

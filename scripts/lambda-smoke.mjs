@@ -18,7 +18,7 @@ async function exercise(label, m) {
     'estimateCost',
     'MemoryStorageDriver',
     'MemoryRegistryDriver',
-    'MemoryStorageChunkSource',
+    'MemoryStorage',
   ]) {
     if (m[name] == null) throw new Error(`${label}: missing export ${name}`);
   }

@@ -181,7 +181,7 @@ enough for daily buckets. Full walkthrough:
 
 There is no daemon, no compaction pass and no lifecycle worker to run: a segment exists once you have loaded a
 generation into it, and the only scheduled work is the retention sweep above. A load collects the generations it
-supersedes itself; `gcOrphanGenerations` collects what an `*Into` write, which collects nothing, leaves behind. Pass
+supersedes itself; an `*Into` write collects nothing unless given `keep`, and the next load of its destination collects what it left behind. Pass
 a **backend** — `S3Storage`, `GcsStorage` or `AzureBlobStorage` from the storage package you installed, or
 `LocalFsStorage` / `MemoryStorage` from this one — and you get all of it: generations resolved with one strong read,
 encrypted segments, and the lifecycle helpers. `storage` also accepts a bare driver or a pre-built chunk source for

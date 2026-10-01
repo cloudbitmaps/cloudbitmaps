@@ -3,7 +3,7 @@
  *
  * `core/` is **codec-agnostic**: `SegmentEngine`, the erasure rewrite, and the `.crbm` read/write helpers only ever
  * construct and combine bitmaps through the {@link CodecInterface} factory + the {@link CodecBitmap} value type
- * defined here — never a concrete implementation. The flagship codec is roaring (`roaringCodec`, in
+ * defined here — never a concrete implementation. The flagship codec is roaring (in
  * `@cloudbitmaps/roaring`), and another codec would plug in behind the same seam with zero engine or driver
  * changes. That is the seam's value even with one codec shipped: a plain-bitset flavor was measured and
  * **decided against** (above ~6% density a Roaring chunk already *is* an uncompressed bitset), so the seam is
@@ -31,7 +31,7 @@ import { ValidationError } from './errors';
 
 /**
  * The value type a codec produces — a mutable set of `u32` with set algebra and portable (de)serialization.
- * This is the shape `SafeBitmap` already has; the engine holds these, caches them, and merges tiers with them.
+ * This is the shape the roaring flavor's bitmap already has; the engine holds these, caches them, and merges tiers with them.
  */
 export interface CodecBitmap {
   /** Serialize with the codec's **stable, portable** format (never a frozen/unsafe variant). */
@@ -127,7 +127,7 @@ export interface CodecInterface {
 export function requireCodec(codec: CodecInterface | undefined, api: string): CodecInterface {
   if (codec === undefined) {
     throw new ValidationError(
-      `${api} needs a bitmap codec: pass \`codec\` (e.g. \`roaringCodec\` from @cloudbitmaps/roaring). ` +
+      `${api} needs a bitmap codec: pass \`codec\`. ` +
         `@cloudbitmaps/core is codec-agnostic and has no default — install a flavor package, whose ` +
         `equivalents bind the codec for you.`,
     );

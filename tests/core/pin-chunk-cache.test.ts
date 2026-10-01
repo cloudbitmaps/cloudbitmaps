@@ -1,3 +1,4 @@
+import { gcOrphanGenerations } from '@/core/generation-gc';
 import {
   MemoryStorage,
   CloudRoaring,
@@ -8,7 +9,6 @@ import {
   NotFoundError,
   TransientError,
   ValidationError,
-  gcOrphanGenerations,
   setSegmentRetention,
 } from '@/index';
 import type { CacheOptions, Clock, IMetricsSink, Segment, SegmentRef } from '@/index';

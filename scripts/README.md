@@ -27,7 +27,6 @@ code** — imported or sourced by another script or a test.
 | `dts-specifiers.cjs` | The detector behind "every relative specifier in an emitted `.d.ts` carries its extension" — without one, a consumer's TypeScript cannot resolve the published types. | by other code — `build.mjs`, `smoke.cjs`, and `tests/arch` |
 | `sdk-specifiers.cjs` | The detector behind "the main entry stays SDK-free", one of the hard invariants in `AGENTS.md`. | by other code — `smoke.cjs` and `tests/arch` |
 | `runtime-floor.cjs` | The detectors behind the declared Node floor (`>= 22.12`). A `node-version:` pin in a workflow must resolve at or above it — `22` passes, because it means the latest 22.x; `22.11` does not — and a prose statement of the floor in the docs `tests/ci` reads must state exactly it. `node-version: 22.11`, a quoted `"20"`, a pin with a trailing comment, and phrasings like `Node.js >= 20` are each caught, where a looser pattern passes them green. | by other code — `tests/ci` and `tests/arch` |
-| `sync-version.cjs` | After `changeset version` bumps the five manifests, moves the `VERSION` constant to match. `VERSION` ships as a literal in the published `.d.ts`, so it cannot be read from a manifest at runtime. | by hand — `pnpm version:packages` |
 
 The three detector modules are split out of what uses them — `build.mjs` and `smoke.cjs`, and for the floor, a
 test — so that `tests/arch` can fire each one at planted inputs and watch it catch them. In the words of

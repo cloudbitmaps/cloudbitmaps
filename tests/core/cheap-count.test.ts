@@ -1,9 +1,9 @@
+import { writeCrbmGeneration } from '@/core/crbm-storage-source';
+import { SafeBitmap } from '@/roaring-codec';
 import {
   CountingMetricsSink,
   CrbmStorageChunkSource,
   MemoryStorageDriver,
-  writeCrbmGeneration,
-  SafeBitmap,
   type Clock,
   type StorageChunkSource,
 } from '@/index';

@@ -12,8 +12,8 @@
  * Generations are seeded as bytes the codec under test produced — a chunk of a generation is exactly "what
  * this codec's `serialize()` wrote", so seeding is the whole write side of the seam.
  */
+import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { SegmentEngine } from '@/core/engine';
-import { MemoryStorageChunkSource } from '@/index';
 import type { CodecBitmap, CodecInterface } from '@/core/codec';
 import { IntegrityError } from '@/core/errors';
 import { collect } from '../helpers/loaded';

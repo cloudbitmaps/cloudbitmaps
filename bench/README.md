@@ -107,7 +107,7 @@ constants and the source text:
   cannot list, and in `us-east-1` `CreateBucket` on a bucket you already own returns **200 OK** — so reading 403
   as absent would run the workload inside a real bucket of yours and then delete it on teardown.
 - **The projection is a real upper bound, and every run checks it.** It counts both operands of an intersect, and
-  its retry bound must match the loop in `publishGeneration`: a test reads the loop's number out of the source and
+  its retry bound must match the publish loop in `packages/core/src/core/crbm-storage-source.ts`: a test reads the loop's number out of the source and
   fails if they differ, because a retyped number can be wrong. A load, `store.load()` of a new segment, lists the
   segment twice (to choose the generation number, and to collect after the publish; on S3 a listing bills at the PUT
   rate), and reads the pointer seven times even with nothing racing it, twice more for each publish attempt it loses,

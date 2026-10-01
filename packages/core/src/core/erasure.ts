@@ -8,7 +8,7 @@
  * segment/namespace). A `destroyed` segment reads as empty (its DEK is gone). Only works on an **encrypted**
  * segment; a cleartext segment has no key to shred.
  *
- * The tombstone is also the fence every writer respects: `publishGeneration` and the load refuse
+ * The tombstone is also the fence every writer respects: a load refuses
  * a `destroyed` row, so a load racing an erasure cannot resurrect the segment. A single id's erasure is a different
  * operation — `eraseIdFromSegment` rewrites the generation without it.
  */
@@ -183,7 +183,7 @@ export interface DropResult {
    * Without it, a drop would return `dropped: true` with a populated `generationsDeleted` and no `reason` even
    * when an object holding the **complete set** had just been left in the bucket by a writer that was already
    * mid-write when the tombstone landed (its publish is refused, but the object survives). For a cleartext
-   * segment those bytes are readable — and `gcOrphanGenerations` only collects a destroyed segment's generations
+   * segment those bytes are readable — and the collection only takes a destroyed segment's generations
    * when something runs it. That result would look like a clean drop, and an operator would get no signal to
    * re-run.
    */
@@ -244,8 +244,8 @@ export interface DropResult {
  * **THE ORDER IS THE CONTRACT — registry first, then Storage.**
  *
  * 1. **Registry first.** After the tombstone nothing resolves a generation for this segment, so no reader can
- *    reach for bytes that are about to disappear, and no writer can publish onto it (`publishGeneration` and
- *    the load refuse a `destroyed` row).
+ *    reach for bytes that are about to disappear, and no writer can publish onto it (a
+ *    load refuses a `destroyed` row).
  * 2. **Storage second, best-effort, and re-swept.** Once the pointer is a tombstone the segment resolves as empty,
  *    so a failure part-way through leaves **orphaned bytes, not a wrong answer.** Orphans cost money and are
  *    cleaned up by re-running; a torn pointer costs correctness and is not self-healing. Given the choice, leak
@@ -316,7 +316,7 @@ export async function dropSegment(
   // `missing-storage-generation` state this function exists to PREVENT.
   //
   // So the identity is claimed before anything is deleted. A `destroyed` row is exactly the fence the
-  // writers already respect — `publishGeneration` and the load both refuse one — so creating it
+  // writers already respect — a load refuses one — so creating it
   // converts the race into "the writer is refused and the bytes are collected".
   //
   // Only when Storage actually holds something, though. A drop against a *genuinely* nonexistent segment (the

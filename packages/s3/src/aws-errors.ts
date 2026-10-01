@@ -1,10 +1,9 @@
 /**
- * Shared, SDK-free helpers for classifying AWS-style errors (used by the S3 drivers).
+ * SDK-free helpers for classifying AWS-style errors (used by the S3 drivers).
  *
  * These only read structural shapes an AWS SDK v3 error carries — `name`, `$metadata.httpStatusCode`, a
  * lower-level `code`/`errno`, and the SDK's own `$retryable` marker — so the (subtle, easy-to-get-wrong)
- * transient-vs-fatal decision is unit-testable without a live backend or even the SDK installed. They live
- * under `drivers/_shared` (part of the SDK-free core bundle): a driver may import them; they import no SDK.
+ * transient-vs-fatal decision is unit-testable without a live backend or even the SDK installed. They import no SDK.
  */
 
 export function httpStatus(err: unknown): number | undefined {

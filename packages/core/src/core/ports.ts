@@ -102,7 +102,7 @@ export interface StorageChunkSource {
    * the generation *and* the incarnation of the name it belongs to.
    *
    * {@link StorageChunkSource.currentGeneration} is not enough to key a decoded-chunk cache, and the gap is not
-   * theoretical: `nextGeneration` returns `max(currentGen, highest object) + 1`, so it **restarts at 0** once
+   * theoretical: a load numbers its generation `max(currentGen, highest object) + 1`, so the number **restarts at 0** once
    * a registry row is purged and the bucket emptied. A retired, re-created name therefore serves different
    * data at the same `currentGen`, and a cache keyed on `(segment, chunk, generation)` hands back the previous
    * incarnation's ids — an erased id reappearing, with no read to intercept.
@@ -254,7 +254,7 @@ const STORAGE_BACKEND_BRAND: unique symbol = Symbol.for('cloudbitmaps.storage-ba
  * Where a store keeps everything: the generations, and the pointer saying which one is current.
  *
  * **Branded on purpose.** The two fields alone are not enough to qualify, and that is the whole point. This
- * shape is also {@link LoadDeps}/{@link GenerationDeps}, so before the brand any `{ storage, registry }`
+ * shape is also {@link LoadDeps}, so before the brand any `{ storage, registry }`
  * object literal satisfied it — including one assembling halves from two *unrelated* stores, which the store
  * accepted and then answered **empty** for a segment that holds data, because it read a pointer from a place
  * nothing had ever been written. That is the exact silent-empty failure one-class-per-backend exists to

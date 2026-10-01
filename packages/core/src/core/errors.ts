@@ -100,22 +100,13 @@ export class KeyUnavailableError extends CloudRoaringError {}
  * to log; if you serialize the whole error *chain*, be aware you're including that metadata.
  */
 export class TransientError extends CloudRoaringError {
-  /** A second brand so the whole transient subtree (incl. {@link TimeoutError}) is classifiable cross-bundle. */
+  /** A second brand so a transient fault is classifiable cross-bundle. */
   readonly [TRANSIENT_BRAND] = true as const;
   constructor(message: string, options?: { cause?: unknown }) {
     super(message);
     if (options && 'cause' in options) this.cause = options.cause;
   }
 }
-
-/**
- * A single attempt exceeded its time budget. Subclass of {@link TransientError} so the retry layer treats a
- * timeout as retryable by default — a stalled request often succeeds on a fresh connection. No driver this
- * library ships raises it: a request timeout that one of them recognises is raised as a plain
- * {@link TransientError}. It is here for a driver of your own that wants to tell a timeout apart. Setting a
- * request timeout on your injected client remains the recommended way to bound a hang.
- */
-export class TimeoutError extends TransientError {}
 
 /**
  * Bundle-safe error predicates — use these, not `instanceof`, wherever an error may cross the core↔driver
@@ -138,7 +129,7 @@ export function isWriteConflictError(err: unknown): err is WriteConflictError {
   return isCloudRoaringError(err) && err.name === 'WriteConflictError';
 }
 
-/** A retryable transient infrastructure fault (incl. {@link TimeoutError}). The retry layer keys on this. */
+/** A retryable transient infrastructure fault. The retry layer keys on this. */
 export function isTransientError(err: unknown): err is TransientError {
   return hasBrand(err, TRANSIENT_BRAND);
 }

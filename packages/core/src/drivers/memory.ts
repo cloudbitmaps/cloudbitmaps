@@ -9,12 +9,10 @@ import { createHash } from 'node:crypto';
 import { BufferSink } from '../core/blob';
 import type { BlobSink } from '../core/blob';
 import { NotFoundError, ValidationError, WriteConflictError } from '../core/errors';
-import { chunkRefKey, segmentKey, segmentPrefix } from '../core/keys';
-import { validateChunkRef, validateSegmentRef } from '../core/validate';
+import { segmentKey } from '../core/keys';
+import { validateSegmentRef } from '../core/validate';
 import type {
-  ChunkRef,
   StorageCaps,
-  StorageChunkSource,
   GenKey,
   IStorageDriver,
   IRegistryDriver,
@@ -23,7 +21,6 @@ import type {
   RegistryPatch,
   RegistryRecord,
   SegmentRef,
-  SegmentSize,
   Token,
 } from '../core/ports';
 import {
@@ -32,44 +29,6 @@ import {
   validateNewRegistryRecord,
   validateRegistryPatch,
 } from './_shared/registry';
-
-export class MemoryStorageChunkSource implements StorageChunkSource {
-  private readonly chunks = new Map<string, Uint8Array>();
-
-  async getChunk(ref: ChunkRef): Promise<Uint8Array | null> {
-    validateChunkRef(ref);
-    return this.chunks.get(chunkRefKey(ref)) ?? null;
-  }
-
-  async listChunkKeys(ref: SegmentRef): Promise<number[]> {
-    validateSegmentRef(ref);
-    const prefix = segmentPrefix(ref);
-    const keys: number[] = [];
-    for (const key of this.chunks.keys()) {
-      if (key.startsWith(prefix)) keys.push(Number(key.slice(prefix.length)));
-    }
-    return keys;
-  }
-
-  async sizeOf(ref: SegmentRef): Promise<SegmentSize | null> {
-    validateSegmentRef(ref);
-    const prefix = segmentPrefix(ref);
-    let sizeBytes = 0;
-    let found = false;
-    for (const [key, bytes] of this.chunks) {
-      if (!key.startsWith(prefix)) continue;
-      found = true;
-      sizeBytes += bytes.length;
-    }
-    return found ? { sizeBytes } : null;
-  }
-
-  /** Test/seed helper — populate immutable Storage bytes for a chunk directly (bypassing the `.crbm` format). */
-  seed(ref: ChunkRef, bytes: Uint8Array): void {
-    validateChunkRef(ref); // keep seed symmetric with the validated read path
-    this.chunks.set(chunkRefKey(ref), bytes);
-  }
-}
 
 export interface MemoryRegistryDriverOptions {
   /** Injected clock for `createdAt`/`updatedAt`; defaults to `Date.now` (drivers may use ambient time). */

@@ -32,7 +32,7 @@
  * row and its drop, which then reports the tombstone dropped and stamps it), only after a grace period, and only
  * once Storage is provably empty for it —
  * because deleting the row is what makes the name reusable and takes the segment out of reach of
- * `gcOrphanGenerations`.
+ * the generation collection.
  */
 import { type IAuditSink } from './audit';
 import { BudgetExceededError, ValidationError, isWriteConflictError } from './errors';
@@ -60,7 +60,7 @@ export const DEFAULT_RETIRE_LIMIT = 100;
 /**
  * Default delay before a retirement's own tombstone row is purged: 24 h.
  *
- * The row is a fence — while it exists, `publishGeneration` and the load refuse the segment, so
+ * The row is a fence — while it exists, a load refuses the segment, so
  * a load that was mid-write when the drop landed cannot resurrect it. That window is
  * seconds to minutes in practice; a day of margin costs one tiny row and removes any need to reason about it.
  */
@@ -171,7 +171,7 @@ export type RetireEntry =
        * expiring is the silence that costs a retention commitment.
        * `'limit'` — eligible, but this cycle's `limit` was already spent. Re-run to continue.
        * `'tombstone-not-empty'` — a tombstone whose Storage generations are not gone even after a GC
-       * attempt, so its row is kept: the row is what keeps the segment reachable by `gcOrphanGenerations` and
+       * attempt, so its row is kept: the row is what keeps the segment reachable by the generation collection and
        * refused by every writer. Several causes, all self-healing: the storage really could not be reclaimed,
        * the collection *declined* because the row changed underneath it (`WriteConflictError`, which this
        * sweep swallows deliberately), or this was a `dryRun`, which reports the reason without attempting the

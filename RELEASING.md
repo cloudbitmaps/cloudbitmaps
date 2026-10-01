@@ -41,7 +41,7 @@ change, and the tag goes on the commit that pull request makes on `main`.
    `CHANGELOG.md`, and a [changeset](#the-version-bump) per change that needs one.
 2. **On a `chore/release-<version>` branch, bump every version with one command** — `pnpm version:packages`. It runs
    `changeset version`, which moves all five `packages/*/package.json` together and deletes the changesets it
-   consumed, then syncs the `VERSION` constant and refreshes the lockfile. They must all match the tag exactly;
+   consumed, then refreshes the lockfile. They must all match the tag exactly;
    the workflow globs `packages/*/package.json` and refuses the release if any one disagrees, so a missed
    package costs a failed run rather than a partial publish.
 3. **Cut the changelog section.** Rename `## [Unreleased]` to `## [<version>] — <YYYY-MM-DD>`, the version the
@@ -72,8 +72,7 @@ publish step is the one that cannot be taken back.
 
 ```
 changeset version            # all five manifests move together
-node scripts/sync-version.cjs  # the VERSION constant follows the manifests
-pnpm install --lockfile-only   # the lockfile follows the manifests
+pnpm install --lockfile-only # the lockfile follows the manifests
 ```
 
 **Changesets is used here as a version bumper and nothing else**, and two of its defaults are deliberately
@@ -92,8 +91,7 @@ off. The reasoning lives in [`.changeset/README.md`](.changeset/README.md); the 
 All five packages are a **`fixed` group**, matched by the glob `@cloudbitmaps/*` rather than named
 individually, so a sixth package is covered on the day it is created rather than the day someone remembers
 this file. `tests/index.test.ts` enforces lockstep independently, reading the package list off the
-filesystem, and it fails if the `VERSION` constant lags a bump — which is what makes the sync step above
-provable rather than remembered.
+filesystem, and it fails if any one manifest lags a bump.
 
 Adding a changeset:
 

@@ -1,3 +1,4 @@
+import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { randomBytes } from 'node:crypto';
 import {
   isStorageBackend,
@@ -5,7 +6,6 @@ import {
   MemoryStorage,
   CloudRoaring,
   CrbmStorageChunkSource,
-  MemoryStorageChunkSource,
   MemoryStorageDriver,
   MemoryRegistryDriver,
 } from '@/index';

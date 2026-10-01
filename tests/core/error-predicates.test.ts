@@ -2,7 +2,6 @@ import {
   CloudRoaringError,
   IntegrityError,
   NotFoundError,
-  TimeoutError,
   TransientError,
   ValidationError,
   WriteConflictError,
@@ -71,9 +70,8 @@ describe('error predicates', () => {
     expect(isValidationError(new IntegrityError('x'))).toBe(false);
   });
 
-  it('isTransientError matches TransientError AND its TimeoutError subclass (brand, not name)', () => {
+  it('isTransientError matches a TransientError, by brand', () => {
     expect(isTransientError(new TransientError('x'))).toBe(true);
-    expect(isTransientError(new TimeoutError('x'))).toBe(true); // subclass — name differs, brand carries
     expect(isTransientError(new WriteConflictError('x'))).toBe(false);
   });
 

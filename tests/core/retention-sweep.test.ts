@@ -1,3 +1,4 @@
+import { nextGeneration } from '@/core/generation-gc';
 import { randomBytes } from 'node:crypto';
 import {
   createBackend,
@@ -7,7 +8,6 @@ import {
   MemoryRegistryDriver,
   MIN_EXPIRES_AT_MS,
   destroySegment,
-  nextGeneration,
   retireExpired,
 } from '@/index';
 import { DEFAULT_RETIRE_LIMIT } from '@/core/retention-sweep';

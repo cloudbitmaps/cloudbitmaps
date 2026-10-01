@@ -1,10 +1,5 @@
-import {
-  MemoryStorage,
-  CloudRoaring,
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
-  gcOrphanGenerations,
-} from '@/index';
+import { gcOrphanGenerations } from '@/core/generation-gc';
+import { MemoryStorage, CloudRoaring, MemoryStorageDriver, MemoryRegistryDriver } from '@/index';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { openGenerationReader } from '@/core/crbm-storage-source';
 import { roaringCodec } from '@/roaring-codec';

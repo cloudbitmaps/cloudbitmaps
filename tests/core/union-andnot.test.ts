@@ -1,4 +1,5 @@
-import { BudgetExceededError, CloudRoaring, MemoryStorageChunkSource, type Clock } from '@/index';
+import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
+import { BudgetExceededError, CloudRoaring, type Clock } from '@/index';
 import type { ChunkRef, StorageChunkSource, SegmentRef } from '@/core/ports';
 import { joinId, splitId } from '@/core/bit-route';
 import { collect, loadedStore, seedSegment } from '../helpers/loaded';

@@ -94,7 +94,7 @@ The rest of this guide walks each step in turn.
 | `.crbm` archive read/write + a bounded cache | ✅ |
 | **Automatic retry + backoff** for transient faults on every read of segment data (on by default) | ✅ |
 | **Segment registry** (memory / LocalFs / **S3** / **GCS** / **Azure Blob** — run on one bucket alone) — one strong read resolves the current generation, no per-read scan | ✅ |
-| **Generation bookkeeping** — `nextGeneration` for the number a writer takes next; `gcOrphanGenerations` to collect superseded objects | ✅ |
+| **Generation bookkeeping** — a load takes the next generation number itself and collects the objects it superseded (`keep`) | ✅ |
 | **Encryption-at-rest** (AES-256-GCM, BYOK keystore) **+ crypto-shred** (`destroySegment` / `eraseNamespace`) | ✅ |
 | **Observability** — optional metrics sink (`IMetricsSink`): `storage.get` / `cache` / `retry` / `intersect` / `op` events | ✅ |
 | **Audit trail** — optional audit sink (`IAuditSink`): publish / load-refused / rollback / rewrite / erase / dispose / namespace-erase compliance events | ✅ |
@@ -175,8 +175,8 @@ await store.load({ segment: 'active-this-week' }, activeUserIds);
 > `LocalFsStorage`, `S3Storage`, `GcsStorage`, `AzureBlobStorage`) carries both halves — the generations and
 > the pointer — from one bucket and one prefix, and is the whole wiring. Below it, a **raw `IStorageDriver`**
 > still works, but it has no pointer, so generations resolve by list-scan: **cleartext and read-only**. Or pass
-> an already-built **`StorageChunkSource`** — a `MemoryStorageChunkSource` seeded chunk by chunk
-> in a test, or a `CrbmStorageChunkSource` you configured with advanced reader options (`tailBytes`, size caps). On
+> an already-built **`StorageChunkSource`** — a `CrbmStorageChunkSource` you configured with advanced reader
+> options (`tailBytes`, size caps), or one of your own. On
 > that path, configure the registry and keystore **on the source itself**: the store has no `registry` option, and
 > an `encryption.keystore` or `encryption.required: true` beside a pre-built source is rejected as a wiring mistake.
 > The store is then **read-only**: the `*Into` verbs and the lifecycle helpers need the raw driver to write through,
@@ -316,9 +316,6 @@ quietly filtering them.
 Neither call is a lock: a segment can appear or vanish between the check and whatever you do next. When the
 answer has to *hold*, use the fence built for that — `load`'s `guard` (`minCardinality` / `minRetained`,
 which refuse an implausible result instead of publishing it), or `expectFrom`/`expectToken` on a publish.
-
-For a generation you already hold as bitmaps, the lower-level `writeCrbmGeneration(driver, key, chunks)` takes
-`{ chunkKey, bitmap }` entries directly and does **not** publish — call `publishGeneration(registry, key)` after it.
 
 ### A load is a batch job, not a request handler
 
@@ -480,8 +477,7 @@ three.
 The record also carries `status` (`active`, or the `destroyed` tombstone a crypto-shred or drop leaves), the
 wrapped data-key(s) of an encrypted segment (§9), and the `retention` policy (§13.5). `currentGen` can be
 **`null`** — a row `setRetention` minted before the first load — which reads exactly like a segment with no row
-and takes the first publish. To publish a generation you wrote yourself, call
-`publishGeneration(registry, { segment, generation })` (forward-only — it never regresses the pointer).
+and takes the first publish. A load is how a generation is published, and the pointer only moves forward.
 
 ## Production wiring for the cloud drivers
 
@@ -559,7 +555,7 @@ const store = new CloudRoaring({
 ```
 
 **What's retried vs not.** Only **transient** infrastructure faults are retried — surfaced as
-`TransientError` (with `TimeoutError` a subclass). Deterministic errors are **never** retried (retrying them
+`TransientError`. Deterministic errors are **never** retried (retrying them
 can't help or would be wrong): `ValidationError` (bad input), `IntegrityError` (corrupt bytes),
 `NotFoundError`, and `WriteConflictError` (a write-once generation number was reused, or the registry pointer
 was contended past its own re-read-and-retry loop).
@@ -721,49 +717,47 @@ survived.
 Storage objects are immutable and generation-keyed, so **every write leaves its predecessor in the bucket until
 something collects it**, still billed. Reads are unaffected — the pointer always names a live object — so the
 only symptom of never collecting them is a storage bill that never goes down. Something has to delete them, and
-in a library with no background process that something is a call — the write's own, as the table below says, or
-this one, which an `*Into` leaves to you:
+in a library with no background process that something is the write's own collection, as the table below says:
+`store.load` collects the generations it superseded, and an `*Into` does when you pass `keep`.
 
 ```ts
-import { gcOrphanGenerations } from '@cloudbitmaps/roaring';
-
-// After an *Into: delete every generation below the current one, keeping the newest 1 as a grace window.
-const ref = { segment: 'campaign-targets' };
-const deleted = await gcOrphanGenerations(ref, { storage: backend.storage, registry: backend.registry }, { keep: 1 });
+// An *Into that collects on the way through: deletes every generation below the new one, keeping the newest 1
+// as a grace window. `collected` lists what it deleted.
+const { collected } = await store
+  .segment('campaign-targets')
+  .intersectInto(store.segment('campaign-final'), [store.segment('opted-in')], { keep: 1 });
 ```
 
-What it does, precisely: deletes generations **strictly below `currentGen`**, keeping the most recent `keep` of
-them (default `1`) so a read still fetching from the just-superseded generation need not re-resolve mid-call —
-a window, not a lock, and [sized below](#sizing-keep). It never touches
-the current generation or anything above it (a load that is mid-write), and it deletes nothing while
-`currentGen` is `null` — an object under a pointer-less row is either a load about to publish or an orphan, and
-the two cannot be told apart safely. The one exception: on a `destroyed` segment (a drop or crypto-shred tombstone)
-**every** generation is garbage and all are collected, because no reader can resolve a tombstoned segment.
-A segment can be purged and re-created while a paginated listing is in flight, so **both** branches
-re-read the registry row afterwards and reconcile with it. On a tombstone the row must still be the same
+What the collection does, precisely: it deletes generations **strictly below `currentGen`**, keeping the most
+recent `keep` of them (default `1` for `load`) so a read still fetching from the just-superseded generation need
+not re-resolve mid-call — a window, not a lock, and [sized below](#sizing-keep). `keep` is a non-negative
+integer: a negative, fractional, `NaN` or infinite value is refused with `ValidationError` before anything is
+written. It never touches the current generation or anything above it (a load that is mid-write), and it deletes
+nothing while `currentGen` is `null` — an object under a pointer-less row is either a load about to publish or an
+orphan, and the two cannot be told apart safely. The one exception: on a `destroyed` segment (a drop or
+crypto-shred tombstone) **every** generation is garbage and all are collected, because no reader can resolve a
+tombstoned segment. A segment can be purged and re-created while a paginated listing is in flight, so **both**
+branches re-read the registry row afterwards and reconcile with it. On a tombstone the row must still be the same
 row, compared by its **token**: a generation number is not an identity, and a re-created name can wear the
 very `currentGen` the tombstone held. On the ordinary branch the cutoff becomes the **lower** of the two
-pointers — `nextGeneration` restarts at 0 once a row is purged and the bucket emptied, so a re-created name
+pointers — a load numbers its generation one above the highest of the pointer and any object in the bucket, so
+it restarts at 0 once a row is purged and the bucket emptied, and a re-created name
 wears a *lower* pointer than the one read before the listing, and deleting "everything below it" would take
 the new incarnation's live object. A publish landing mid-listing moves the pointer *forward* and so changes
 nothing, which is what keeps routine collection working on a busy segment.
 
 The row is re-proved before **every** delete, not once after the listing, because the deletes are one round trip
 each. If the segment changed underneath the pass the call **throws `WriteConflictError`** — re-run it, and note
-that a refusal part-way through may already have deleted objects it will now never report. An empty array also
-means one of the two cases that are genuinely nothing to collect — no row at all, or no pointer yet — so an empty
-array is **not** a receipt:
-`eraseIdFromSegment` reads the list as the physical half of its erasure receipt, and checks the **claim** — that
-the generation it needed is gone from the bucket — rather than its own membership in the list, because a
-concurrent collector may have taken it first. One more consequence of the reconcile: `keep` counts distinct generations, not
-listing entries, so a listing that enumerates the same generation twice cannot eat the grace window.
+that a refusal part-way through may already have deleted objects it will now never report. One more consequence of
+the reconcile: `keep` counts distinct generations, not listing entries, so a listing that enumerates the same
+generation twice cannot eat the grace window.
 
-Who calls it today:
+Who runs it today:
 
 | Path | Collects? |
 |---|---|
 | `store.load` | **it does** — collection is part of the call, keeping `keep` generations (default 1) |
-| an `*Into` | **you** — pass `keep` to collect on the way through, or call `gcOrphanGenerations` on your own cadence (right after the call, or a nightly pass). This is the step `store.load` exists to stop you forgetting |
+| an `*Into` | **you** — pass `keep` to collect on the way through; without it nothing is collected, and the next `store.load` of the destination collects everything below its own pointer beyond its `keep`. This is the step `store.load` exists to stop you forgetting |
 | `eraseSubject` / `eraseIdFromSegment` | **yes**, with `keep: 0` — the whole point is that the generation holding the bit does not survive the call. A holder *above* the pointer, which a `rollback` leaves there, is outside collection's range, so the erasure deletes it itself |
 | `retireExpired` | **yes**, for the tombstones it wrote itself — it collects a straggler generation before purging the row. A tombstone a hand-run `dropSegment` or a crypto-shred left is never touched |
 | `dropSegment` | deletes every generation of the segment it drops (and reports any it could not in `generationsRemaining`) |
@@ -974,8 +968,8 @@ for (const r of destroyed) if (!r.destroyed) console.warn(r.segment, r.reason); 
 
 This deletes the segment's wrapped DEK from the registry (a `destroyed` tombstone). The encrypted Storage objects
 are left in place — but with the key gone they're **permanently unreadable, everywhere, including backups**. The
-segment then reads as empty to a store that opens it afresh, and the tombstone is a fence: a load and
-`publishGeneration` refuse a destroyed segment, so a load racing an erasure cannot resurrect it. A store that
+segment then reads as empty to a store that opens it afresh, and the tombstone is a fence: a load refuses a
+destroyed segment, so a load racing an erasure cannot resurrect it. A store that
 already had the segment open is another matter: these are free functions over the registry, so they invalidate no
 store, and one that holds the unwrapped key keeps decrypting with it until it re-resolves the segment — within
 `cache.genTtlMs` (default 2 s) on a store with a registry and a positive TTL — or until `store.invalidate(ref)` is
@@ -1299,7 +1293,7 @@ ledger.erasedFrom; // [{ segment, namespace, erased: true, fromGeneration: 4, ge
 tombstone, so `eraseSubject` does what every other write in the library does: for each registered segment the id
 is a member of, it streams the current generation through — every chunk decoded and re-encoded, the one holding
 the id with that bit cleared — verifies the new object, publishes it **fenced on the generation it streamed**, and then **deletes the
-generation that held the bit** (`gcOrphanGenerations` with `keep: 0`). The bit is physically gone from the
+generation that held the bit** (a collection with `keep: 0`). The bit is physically gone from the
 bucket when the call returns, constant memory, one chunk in flight. Segments the id is not in are not listed.
 
 **Every generation that holds the id goes, not only the current one.** A re-seed that drops someone leaves their
@@ -1349,8 +1343,8 @@ Re-running is safe and idempotent: a segment the id is no longer in is simply no
 not by itself proof the id is gone, because a segment whose **registry row** has been purged is not scanned
 either, and its objects outlive it as orphans. `store.generations(ref)` lists those, since it reads the bucket
 whether or not a row exists, and `store.dropSegment(ref, { confirmSegment })` deletes them, writing a `destroyed`
-row first as it always does, which then fences the name. `store.checkConsistency()` and `gcOrphanGenerations`
-start from the rows, so neither reaches them. **One contract the
+row first as it always does, which then fences the name. `store.checkConsistency()` and the collection a load
+runs start from the rows, so neither reaches them. **One contract the
 library cannot check: do not load the segment while erasing from it.** A load that lands *after* the rewrite
 carries whatever its source held, and the library cannot know that source was meant to exclude the id — quiesce
 loads of the affected segments for the duration, or fix the source first and load after. A writer that lands
@@ -1466,7 +1460,7 @@ you have recorded a policy. Four levers exist, and they answer different questio
 | **`store.retireExpired({ … })`** | enumerates the registry and retires every segment whose recorded `expiresAt` has passed, **through `dropSegment`**. Bounded, previewable, returns a per-segment ledger. You schedule it | **a policy-driven rolling window** — the usual answer, [below](#the-sweep--storeretireexpired) |
 | **`store.dropSegment(ref, { confirmSegment })`** | tombstones the segment, then deletes its Storage generations (re-swept, with any residual reported in `generationsRemaining`). Works on a cleartext segment; on an encrypted one it *also* discards the DEK, so it is a strict superset there. Afterwards the segment **reads as empty** — see the caveat below | **retiring a bucket and reclaiming the storage** |
 | `destroySegment(ref, { registry }, { confirmSegment })` | **crypto-shred**: discards the DEK so the Storage bytes are unreadable *everywhere including backups and WORM* — but leaves the objects in your bucket, still billed. **Requires encryption**: a cleartext segment has no key to shred, and the call leaves it as it is and returns `reason: 'cleartext'` | erasure that must reach immutable copies |
-| `gcOrphanGenerations(ref, { storage, registry }, { keep })` | deletes only **superseded** generations, keeping `keep` as a reader grace window | reclaiming what loads leave behind ([§8](#8-generation-bookkeeping-what-a-load-leaves-behind)), not live data |
+| `store.load(ref, ids, { keep })`, or an `*Into` given `keep` | the write's own collection: deletes only **superseded** generations, keeping `keep` as a reader grace window | reclaiming what loads leave behind ([§8](#8-generation-bookkeeping-what-a-load-leaves-behind)), not live data |
 
 Deleting an object does not reach a noncurrent version, a cross-region replica, or a PITR snapshot; discarding
 the key does. So if your requirement is *"the data must become unreadable"* rather than *"stop paying for it"*,
@@ -1485,8 +1479,8 @@ const ref = { namespace: 'active-daily', segment: oldDay };
 
 // Look before you leap — reports the generations it WOULD delete, changes nothing.
 const preview = await store.dropSegment(ref, { confirmSegment: ref.segment, dryRun: true });
-// `wouldDelete` is unbounded — it lists every generation still in Storage, and a segment reloaded daily without a
-// `gcOrphanGenerations` pass accumulates them. Log the count and a sample, not the whole array.
+// `wouldDelete` is unbounded — it lists every generation still in Storage, and a segment written daily by an `*Into`
+// that is never given `keep` accumulates them. Log the count and a sample, not the whole array.
 const gens = preview.wouldDelete ?? [];
 console.log(`would delete ${gens.length} generation(s): ${gens.slice(0, 10).join(', ')}${gens.length > 10 ? ' …' : ''}`);
 
@@ -1534,7 +1528,7 @@ would take; a retention bug you can read in a log is worth more than one you fin
 `dropSegment` does registry → Storage, and each position is load-bearing:
 
 1. **Registry first.** After the tombstone nothing resolves a generation, so no reader can reach for bytes about
-   to disappear — and no writer can publish onto it: a load and `publishGeneration` both refuse
+   to disappear — and no writer can publish onto it: a load refuses
    a `destroyed` row, so a load racing the drop cannot resurrect the segment.
 2. **Storage second, best-effort, and swept more than once.** Once the pointer is a tombstone the segment reads as
    empty and is *correct*, so a failure part-way through leaks **bytes, not correctness** — and re-running
@@ -1730,9 +1724,9 @@ because deleting the row is what makes the name writable again:
 2. a **grace period** has passed since that stamp (default 24 h). While the row exists every writer refuses the
    segment, and that is what stops an in-flight load from resurrecting it;
 3. Storage is provably empty for it. If Storage still holds a straggler generation — a load that was writing when the
-   tombstone landed — the sweep **collects it first** (`gcOrphanGenerations` takes every generation of a destroyed
-   row, and nothing else would ever call it for a tombstoned segment), then purges. Only if the storage still
-   cannot be proven gone does the row stay, with `tombstone-not-empty`: without the row `gcOrphanGenerations` can
+   tombstone landed — the sweep **collects it first** (the collection takes every generation of a destroyed
+   row, and nothing else would ever run it for a tombstoned segment), then purges. Only if the storage still
+   cannot be proven gone does the row stay, with `tombstone-not-empty`: without the row the collection can
    no longer see the segment at all, and the objects would be billed forever. That reason also covers the case
    where the collection **declined** because the row changed under it — not a storage fault, and the next cycle
    simply retries.
@@ -1854,7 +1848,7 @@ for an `intersect`, the surviving keys × the operands present at each, plus onl
 key, so a large suppression list is not charged for keys it cannot affect. Byte volume needs no separate limit:
 every chunk read is size-capped by the safe deserializer, so bounding the fan-out transitively bounds bytes too.
 `count` on a loaded segment is summed from the `.crbm` index with zero reads, so it only approaches the ceiling on
-a source that can't serve cardinalities (the in-memory `MemoryStorageChunkSource`). Leave it on; lower it on
+a source that can't serve cardinalities. Leave it on; lower it on
 untrusted/multi-tenant surfaces; raise it (or `budget: false`) for trusted bulk jobs.
 
 ## 16. Disaster recovery: check cross-store consistency

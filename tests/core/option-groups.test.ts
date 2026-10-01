@@ -1,3 +1,5 @@
+import { SafeBitmap } from '@/roaring-codec';
+import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { randomBytes } from 'node:crypto';
 import {
   createBackend,
@@ -7,7 +9,6 @@ import {
   MemoryRegistryDriver,
 } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
-import { MemoryStorageChunkSource, SafeBitmap } from '@/index';
 import { TransientError } from '@/core/errors';
 import type {
   ChunkRef,

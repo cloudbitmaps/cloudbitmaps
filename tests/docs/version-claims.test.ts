@@ -4,8 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 // The site's version badge drifts silently.
 //
-// Cutting a release bumps the manifests and the exported `VERSION` constant, which `tests/index.test.ts` holds
-// to them. The site pages carry the same number in two places each, and without this nothing reads them: a page
+// Cutting a release bumps the manifests, which `tests/index.test.ts` holds to one version. The site pages carry the same number in two places each, and without this nothing reads them: a page
 // can go on advertising the release before and nobody would notice — the pages render fine, CI is green, and the
 // only symptom is a visitor being told the current release is one they cannot install the features of.
 //
@@ -376,13 +375,6 @@ describe('site version badges', () => {
         `FOREIGN_VERSIONS exempts ${v}, which is now OUR version — remove the entry`,
       ).not.toBe(version);
     }
-  });
-
-  it('matches the exported VERSION constant, so all three sources agree', async () => {
-    // package.json ↔ VERSION is already pinned by tests/index.test.ts; this closes the triangle so the site
-    // cannot agree with one and disagree with the other.
-    const { VERSION } = (await import('@/index')) as { VERSION: string };
-    expect(VERSION).toBe(version);
   });
 });
 

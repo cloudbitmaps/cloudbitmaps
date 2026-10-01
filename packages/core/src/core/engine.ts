@@ -35,7 +35,7 @@ export interface EngineDeps {
   /**
    * The bitmap codec — **required**. `core/` is codec-agnostic: it can have no default, because the concrete codec
    * lives in a *flavor* package that depends on core (a default here would invert that arrow). A flavor's facade
-   * injects it — `@cloudbitmaps/roaring` passes `roaringCodec` — so applications never see this.
+   * injects it — `@cloudbitmaps/roaring` passes the roaring codec — so applications never see this.
    */
   readonly codec: CodecInterface;
   /** Time source for the `storage.get` latency metric only; defaults to a clock that reads 0. */
@@ -674,8 +674,8 @@ export class SegmentEngine {
    * The cache-key component identifying **which bytes** this op will read: the source's `currentVersion` when
    * it has one, else the generation alone.
    *
-   * The generation alone is not an identity. `nextGeneration` restarts at 0 once a row is purged and the
-   * bucket emptied, so a retired-and-re-created name serves different data at the same `currentGen` — and a
+   * The generation alone is not an identity. A load's generation number restarts at 0 once a row is purged
+   * and the bucket emptied, so a retired-and-re-created name serves different data at the same `currentGen` — and a
    * decoded chunk cached under `(segment, chunk, 0)` is handed straight back to the new incarnation. That is an
    * erased id reappearing with no read to intercept it, which is why this is keyed on the version rather than
    * the number.

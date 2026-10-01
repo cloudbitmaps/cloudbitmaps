@@ -12,10 +12,10 @@
  *    production stores, and the fixture for anything that touches generations, the registry, or the lifecycle
  *    helpers.
  */
+import { MemoryStorageChunkSource } from './memory-chunk-source';
 import {
   MemoryStorage,
   CloudRoaring,
-  MemoryStorageChunkSource,
   MemoryStorageDriver,
   MemoryRegistryDriver,
   splitId,

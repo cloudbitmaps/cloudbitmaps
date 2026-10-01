@@ -39,7 +39,8 @@ import { realpathSync } from 'node:fs';
 import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { CloudRoaring, LocalFsStorage, encodeNameForPath, namespacePathPart } from '../index';
+import { encodeNameForPath, namespacePathPart } from '@cloudbitmaps/core/driver-kit';
+import { CloudRoaring, LocalFsStorage } from '../index';
 import type { ExportFormat, ExportManifest, ExportSink, SegmentRef } from '../index';
 
 export interface ExportConfig {

@@ -7,12 +7,13 @@
  * full read filtered to the range), the reads (only the chunks in range are fetched), and the budget (charged by
  * those chunks alone). Every case runs on a live handle and on a pinned one, which read through different sources.
  */
+import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { CloudRoaring, CountingMetricsSink, MemoryStorage, createBackend } from '@/index';
 import type { CloudRoaringOptions, IdRange, Segment } from '@/index';
 import { BudgetExceededError, IntegrityError, NotFoundError, ValidationError } from '@/core/errors';
-import { MemoryStorageChunkSource, SegmentEngine } from '@/index';
+import { SegmentEngine } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { collect, seedSegment } from '../helpers/loaded';
 import { SafeBitmap } from '@/roaring-codec';

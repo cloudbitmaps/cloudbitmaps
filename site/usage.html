@@ -653,9 +653,9 @@ bill.redisCrossover.readsPerSec;  <span class="c">// against a Redis sized to th
               <span class="rl-fig">$0.03/mo · 1.2 GiB</span>
               <span class="rl-note">
                 A load collects what it supersedes, keeping the newest superseded generation by default as a
-                grace window, so a read still fetching from it saves a round trip. A
-                <span class="m">*Into</span> write collects nothing, and
-                <span class="m">gcOrphanGenerations</span> collects its predecessors. Storage is the only cost
+                grace window, so a read still fetching from it saves a round trip. An
+                <span class="m">*Into</span> write collects nothing unless given
+                <span class="m">keep</span>, and the next load of its destination collects its predecessors. Storage is the only cost
                 of that window. It is not a snapshot facility: no setting here holds a long job on one
                 generation — <span class="m">seg.pin()</span> does.
               </span>

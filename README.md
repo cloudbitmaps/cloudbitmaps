@@ -182,8 +182,8 @@ lifecycle rule expires it, and replicas and backups keep their copies ([`PRIVACY
 details).
 Constant memory (one chunk in flight), and the audit sink gets a `segment.rewrite` receipt naming both
 generations. `dropSegment` retires a whole segment (tombstone, then sweep the objects); `retireExpired` does the
-same for everything whose retention policy has passed. Superseded generations are collected by
-`gcOrphanGenerations`, which never touches the current one.
+same for everything whose retention policy has passed. A `load` collects the generations it superseded, and an
+`*Into` does when given `keep`; neither touches the current generation.
 
 **Encrypted at rest, with real erasure.** Turn on encryption by passing a **keystore** — the storage `.crbm`
 objects (payloads *and* index) are **AES-256-GCM**-encrypted, so a leaked bucket reveals neither ids nor
@@ -383,7 +383,7 @@ deployment (a registry in a database you already run, say):
 
 | Seam | in-memory | local filesystem | cloud |
 |---|---|---|---|
-| **Storage** (the durable base) | `MemoryStorageDriver` · `MemoryStorageChunkSource` | `LocalFsStorageDriver` | `S3StorageDriver` · `GcsStorageDriver` · `AzureBlobStorageDriver` |
+| **Storage** (the durable base) | `MemoryStorageDriver` | `LocalFsStorageDriver` | `S3StorageDriver` · `GcsStorageDriver` · `AzureBlobStorageDriver` |
 | **Registry** (current-gen pointer) | `MemoryRegistryDriver` | `LocalFsRegistryDriver` | `S3RegistryDriver` · `GcsRegistryDriver` · `AzureBlobRegistryDriver` |
 | **Keystore** (optional encryption) | `InProcessKeystore` (BYOK) | ← same | ← same (KMS/Vault adapters are a future package) |
 
@@ -503,7 +503,7 @@ suppress nobody. Pass `allowAbsentOperands: true` when an operand may legitimate
 | `CloudRoaring.estimateCost(input)` | planning estimate (static, no data) |
 
 **Lower-level free functions.** Most of the above is also exported as a standalone function taking explicit
-deps — `loadSegment` (the load), `nextGeneration` / `gcOrphanGenerations` (generation bookkeeping), `eraseIdFromSegment`, `destroySegment` / `eraseNamespace`, `dropSegment`,
+deps — `loadSegment` (the load), `eraseIdFromSegment`, `destroySegment` / `eraseNamespace`, `dropSegment`,
 `setSegmentRetention` / `getSegmentRetention` / `clearSegmentRetention`, and `retireExpired` (the sweep).
 Nothing here schedules itself — run the sweep from a cron, a Lambda on a timer, or a `CronJob`.
 

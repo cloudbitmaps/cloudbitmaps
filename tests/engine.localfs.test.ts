@@ -1,3 +1,4 @@
+import { writeCrbmGeneration } from '@/core/crbm-storage-source';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,7 +8,6 @@ import {
   LocalFsStorageDriver,
   LocalFsRegistryDriver,
   CrbmStorageChunkSource,
-  writeCrbmGeneration,
 } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
 import { splitId } from '@/core/bit-route';

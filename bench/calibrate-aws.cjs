@@ -34,7 +34,7 @@
  * reproduce `us-east-1` answering 200 OK to `CreateBucket` on a bucket you already own. Those meet reality for the
  * first time on a real account, which is why the probe refuses anything but a clean 404.
  */
-const { existsSync } = require('node:fs');
+const { existsSync, readFileSync } = require('node:fs');
 const { resolve } = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { setTimeout: sleep } = require('node:timers/promises');
@@ -305,13 +305,16 @@ async function main() {
 
   // A cleanup needs neither the library nor a projection, so it also runs on a checkout that has not been built.
   let pricing;
-  let VERSION;
+  let packageVersion;
   let layout;
   let ops;
   let priced;
   if (MODE !== 'cleanup') {
     let AWS_US_EAST_1_ONDEMAND;
-    ({ AWS_US_EAST_1_ONDEMAND, VERSION } = await import('@cloudbitmaps/roaring'));
+    ({ AWS_US_EAST_1_ONDEMAND } = await import('@cloudbitmaps/roaring'));
+    packageVersion = JSON.parse(
+      readFileSync(resolve(ROOT, 'packages/roaring/package.json'), 'utf8'),
+    ).version;
     pricing = AWS_US_EAST_1_ONDEMAND;
     layout = planLayout({ segments: SEGMENTS, idsPerSegment: IDS, ...DEFAULT_LAYOUT });
     ({ ops, priced } = projection(pricing, layout));
@@ -561,7 +564,7 @@ async function main() {
     // only because the SDK requires one.
     target: REHEARSE ? 'minio (rehearsal — NOT a real cloud measurement)' : 'aws',
     region: REHEARSE ? 'n/a (local container)' : region,
-    measured: { packageVersion: VERSION, harness: harnessRef(ROOT), node: process.version },
+    measured: { packageVersion, harness: harnessRef(ROOT), node: process.version },
     pricing: pricing.name,
     workload: {
       segments: SEGMENTS,
