@@ -1,5 +1,11 @@
 # Reading in depth
 
+> **These docs describe `main`, which is ahead of the `0.10.0` release on npm.** The library is pre-1.0 and the API
+> can still change. Two differences reach code written from these pages: `0.10.0` has no range reads, so it ignores
+> `after` and `through` and a paging loop gets the whole result on every page, and it ignores most option keys it does
+> not take, where `main` refuses them by name. [The changelog](../../CHANGELOG.md#unreleased) lists every difference. The docs that match
+> `npm install` are at the [`v0.10.0` tag](https://github.com/cloudbitmaps/cloudbitmaps/tree/v0.10.0).
+
 [Getting started](getting-started.md#read-it) shows the read verbs. This page covers what each one reads and costs,
 how soon a reader sees a new load, how to read one fixed point in time, and how to page through a segment. Every
 option of every verb is in the [segment verbs table](api-reference.md#the-segment-verbs-the-90-of-daily-use).

@@ -12,8 +12,10 @@ built on [Roaring Bitmaps](https://roaringbitmap.org/), the compressed-bitmap fo
 and Spark.
 
 > **These docs describe `main`, which is ahead of the `0.10.0` release on npm.** The library is pre-1.0 and the API
-> can still change. The docs that match what `npm install` gives you are at the
-> [`v0.10.0` tag](https://github.com/cloudbitmaps/cloudbitmaps/tree/v0.10.0).
+> can still change. Two differences reach code written from these pages: `0.10.0` has no range reads, so it ignores
+> `after` and `through` and a paging loop gets the whole result on every page, and it ignores most option keys it does
+> not take, where `main` refuses them by name. [The changelog](CHANGELOG.md#unreleased) lists every difference. The docs that match
+> `npm install` are at the [`v0.10.0` tag](https://github.com/cloudbitmaps/cloudbitmaps/tree/v0.10.0).
 
 Three words appear everywhere:
 
