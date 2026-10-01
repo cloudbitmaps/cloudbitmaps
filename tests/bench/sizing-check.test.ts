@@ -1089,8 +1089,6 @@ describe('bench:sizing:check fails what it exists to catch', () => {
         ['<![CDATA[ x ]]>', 'HTML'],
         ['<!X a declaration >', 'HTML'],
         ['<?x an instruction ?>', 'HTML'],
-        ['```text\nx\n```', 'a code fence'],
-        ['- ```text\n  x', 'a code fence'],
       ]) {
         refused(
           {
@@ -1116,6 +1114,81 @@ describe('bench:sizing:check fails what it exists to catch', () => {
         const r = sizingCheck({ [README]: hidden });
         expect(r.code, r.out).not.toBe(0);
       }
+    });
+
+    // Only a fence still open when the heading line is reached can hide it, by showing it as code. One closed before it
+    // hides nothing, and a fence inside a blockquote or a list item ends where that container does, which is before
+    // a heading at the left margin.
+    describe('a code fence above the Why section', () => {
+      const above = (text: string): string =>
+        readme.replace('## Why CloudBitmaps\n', () => `${text}\n\n## Why CloudBitmaps\n`);
+      const FENCE_ABOVE = /holds a code fence above its "Why CloudBitmaps" section/;
+
+      it.each([
+        ['a closed backtick fence', '```text\nx\n```'],
+        ['a closed tilde fence', '~~~text\nx\n~~~'],
+        ['a fence closed by a longer one', '```\nx\n`````'],
+        ['a fence closed by a longer tilde one, with spaces after', '~~~\nx\n~~~~~  '],
+        ['a four-backtick fence holding a three-backtick line', '````\n```\nx\n```\n````'],
+        ['two closed fences', '```\nx\n```\n\n~~~\ny\n~~~'],
+        ['a fence opened and closed indented three spaces', '   ```\nx\n   ```'],
+        [
+          'a fence holding a heading, a quote and a list marker',
+          '```\n## Other\n> - x\n```',
+        ],
+        ['a closer after a line that looks like an opener', '```\n```js\n```'],
+        ['a fence closed inside a blockquote', '> ```\n> x\n> ```'],
+        ['a fence left open in a blockquote, which the heading ends', '> ```\n> x'],
+        ['a fence left open in a list item, which the heading ends', '- ```text\n  x'],
+        ['a tilde fence left open in a nested quote and list', '> - ~~~\n>   x'],
+        ['indented code that looks like a fence', '    ```\n    x'],
+        ['a tab-indented line that looks like a fence', '\t```\n\tx'],
+        ['backticks with a backtick in the info string, which is no fence', '```a`b\nx'],
+        ['a one-line code span of three backticks', '```x```'],
+      ])('passes %s', (_what, text) => {
+        const r = sizingCheck({ [README]: above(text) });
+        expect(r.code, r.out).toBe(0);
+      });
+
+      it.each([
+        ['one never closed', '```text\nx'],
+        ['a tilde one never closed', '~~~\nx'],
+        ['a backtick fence "closed" by tildes', '```\nx\n~~~'],
+        ['a tilde fence "closed" by backticks', '~~~\nx\n```'],
+        ['a fence "closed" by a shorter one', '````\nx\n```'],
+        ['a fence "closed" by a line with text after it', '```\nx\n``` y'],
+        ['a fence "closed" by a line indented four spaces', '```\nx\n    ```'],
+        ['a fence "closed" by a tab-indented line', '```\nx\n\t```'],
+        ['a second fence left open after a closed one', '```\nx\n```\n\n~~~\ny'],
+        ['a tilde fence with a backtick in its info string, which is a fence', '~~~ a`b\nx'],
+        ['a fence opened indented three spaces', '   ```\nx'],
+        [
+          'a fence whose closer is a list continuation it cannot tell from its own',
+          '- a\n\n  ```\n  x\n  ```',
+        ],
+        [
+          'a list item whose fence a left-margin fence ends and opens another',
+          '- a\n  ```\n  x\n```\ny',
+        ],
+        ['a fence that follows a closed one inside a list', '- a\n\n  ```\n  x'],
+      ])('refuses %s', (_what, text) => {
+        refused({ [README]: above(text) }, FENCE_ABOVE);
+      });
+
+      it('still refuses HTML above the section, inside a closed fence or not', () => {
+        for (const text of ['<!-- a note -->', '```\n<b>x</b>\n```', '> <details>\n> x']) {
+          refused({ [README]: above(text) }, /holds HTML above its "Why CloudBitmaps" section/);
+        }
+      });
+
+      it('still refuses a fence inside the section, closed or not', () => {
+        for (const text of ['```\nx\n```', '~~~\nx']) {
+          refused(
+            { [README]: readme.replace('Where it loses:', () => `${text}\n\nWhere it loses:`) },
+            /holds a code fence/,
+          );
+        }
+      });
     });
 
     it.each([['## '], ['## #'], ['## ##'], ['## <!-- -->'], ['## <b></b>'], ['## \u200B']])(

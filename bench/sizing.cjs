@@ -1625,8 +1625,8 @@ const LOOKS_LIKE = Object.fromEntries(
  * line, so the page is held to showing the section there alone: a second copy of the line is refused, and so is any
  * other line that could show as a heading of that title, at another level, with closing hashes or a trailing space,
  * or underlined. The line that ends the section must show some text, or the section a reader sees would run on past
- * this one. The page holds no HTML and no fence above the section or in it, which `proseFigure` refuses, so neither
- * can hide the heading or the line that ends the section.
+ * this one. The page holds no HTML above the section or in it, no fence open where the heading is reached and none in
+ * the section, which `proseFigure` refuses, so none can hide the heading or the line that ends the section.
  */
 function sectionOf(doc, text, title) {
   const heading = `## ${title}`;
@@ -1684,6 +1684,51 @@ function sectionOf(doc, text, title) {
   const offset = (n) => lines.slice(0, n).reduce((sum, line) => sum + line.length + 1, 0);
   return { start: offset(starts[0]), end: next < 0 ? text.length : offset(next) };
 }
+/**
+ * The line that opens a code fence still open at the end of `above`, the lines of a page above a heading at the left
+ * margin, or that may be, and null when every fence above is closed. Only a fence open at the heading can hide it, by
+ * showing it as code. This follows CommonMark's fenced code blocks: a fence opens on three or more backticks or
+ * tildes, indented up to three spaces, and a backtick fence's info string holds no backtick; it closes on a line of the
+ * same character, at least as long, indented up to three spaces and followed by nothing but blanks; and one never
+ * closed runs to the end of its container. A fence inside a blockquote or a list item ends with it, so before a
+ * heading at the left margin, which no container holds, it is closed, and only a fence outside every container is
+ * tracked. A line that starts with `>` or a list marker is in one, and one indented four spaces or more is code
+ * that holds no fence. A line indented one to three spaces after a list item has started may be in the item or
+ * outside it, which this cannot tell without reading the item's width and its lazy lines, so it is read as open:
+ * every such line is refused, and so is anything left unclosed. The item is taken as ended by a blank line and then a
+ * line at the left margin that is no list item, a later end than the true one, never an earlier.
+ */
+function fenceOpenAt(above) {
+  let open = null; // the character, length and line of the fence that is open
+  let inList = false; // a list item may still hold the lines that follow
+  let afterBlank = false;
+  for (const raw of above.split('\n')) {
+    const line = raw.replace(/\r$/, '');
+    if (open !== null) {
+      const close = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
+      if (close !== null && close[1][0] === open.char && close[1].length >= open.length)
+        open = null;
+      continue;
+    }
+    const opener = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(line);
+    if (opener !== null && !(opener[2][0] === '`' && opener[3].includes('`'))) {
+      if (opener[1] !== '' && inList) return line;
+      open = { char: opener[2][0], length: opener[2].length, line };
+      inList = false;
+      afterBlank = false;
+      continue;
+    }
+    if (/^[ \t]*$/.test(line)) {
+      afterBlank = true;
+      continue;
+    }
+    const marker = /^ *(?:[-+*]|\d{1,9}[.)])(?:[ \t]|$)/.test(line);
+    if (marker) inList = true;
+    else if (afterBlank && !/^[ \t]/.test(line)) inList = false;
+    afterBlank = false;
+  }
+  return open === null ? null : open.line;
+}
 /** The first figure in a page's prose that nothing checks, and where it stands, or null. */
 function proseFigure(doc, text) {
   const scope = GENERATED_PROSE[doc];
@@ -1700,19 +1745,23 @@ function proseFigure(doc, text) {
       );
     }
   }
-  // A comment, a block of HTML or a fence opened above the section could hide its heading from a reader, and leave the
-  // top of the section a reader sees to the rule for the rest of the page.
-  for (const [pattern, what] of [
-    [HTML_TEXT, 'HTML'],
-    [FENCE, 'a code fence'],
-  ]) {
-    const m = pattern.exec(blank.slice(0, start));
-    if (m !== null) {
-      throw new Error(
-        `sizing: ${doc} holds ${what} above its "${scope.section}" section, ` +
-          `"${blank.slice(m.index, m.index + 24).split('\n')[0]}", which could hide the section's heading`,
-      );
-    }
+  // A comment or a block of HTML above the section could hide its heading from a reader, and so could a fence still
+  // open where the heading is reached, which shows it as code. Either leaves the top of the section a reader sees to
+  // the rule for the rest of the page.
+  const above = blank.slice(0, start);
+  const html = HTML_TEXT.exec(above);
+  if (html !== null) {
+    throw new Error(
+      `sizing: ${doc} holds HTML above its "${scope.section}" section, ` +
+        `"${above.slice(html.index, html.index + 24).split('\n')[0]}", which could hide the section's heading`,
+    );
+  }
+  const fence = fenceOpenAt(above);
+  if (fence !== null) {
+    throw new Error(
+      `sizing: ${doc} holds a code fence above its "${scope.section}" section, ` +
+        `"${fence.trim().slice(0, 24)}", that is not closed before the section's heading, so could hide it`,
+    );
   }
   const inside = handWrittenFigure(blank.slice(start, end));
   if (inside !== null) {
