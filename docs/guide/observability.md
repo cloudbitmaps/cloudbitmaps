@@ -1,12 +1,15 @@
 # Observability
 
-Metrics and the audit trail.
+Two optional sinks report what the library does: a **metrics sink** for volume and latency, and an **audit sink** for
+compliance-relevant state changes. Both are off by default, both are vendor-neutral, and a throwing sink never breaks
+the operation it observes. For a worked example that routes both to real dashboards, see the
+[dashboards guide](dashboards.md). To turn raw counts into dollars, see [cost](cost.md#cost-estimate-it-then-ground-it).
 
-## Observability: metrics
+## Metrics
 
-CloudBitmaps can report what it's doing — storage GETs and bytes, cache hit rate, retries, intersection efficiency,
-and op latency — through an optional **metrics sink**. It's **off by default** (a no-op — emission is skipped
-entirely when unused); pass one and the library pushes typed events to it:
+CloudBitmaps can report storage GETs and bytes, cache hit rate, retries, intersection efficiency and op latency
+through a **metrics sink**. It is off by default (a no-op: emission is skipped entirely when unused). Pass one and the
+library pushes typed events to it:
 
 ```ts
 import { CloudRoaring, CountingMetricsSink } from '@cloudbitmaps/roaring';
@@ -14,14 +17,15 @@ import { CloudRoaring, CountingMetricsSink } from '@cloudbitmaps/roaring';
 const metrics = new CountingMetricsSink(); // a ready-made tally sink
 const store = new CloudRoaring({ storage: backend, metrics });
 
+await store.load({ segment: 'users' }, [42]);
 await store.segment('users').has(42);
 console.log(metrics.snapshot());
 // { storage: { gets, bytes, totalMs }, cache: { hits, misses }, retries: { transient },
 //   intersect: { calls, fetchedChunks, skippedChunks }, ops: { has, count, intersectInto, unionInto, andNotInto } }
 ```
 
-The library emits **vendor-neutral events** — five kinds — so it isn't coupled to any telemetry system; you map
-the handful you care about:
+The library emits five kinds of vendor-neutral events, so it is not coupled to any telemetry system. You map the
+handful you care about:
 
 | Event | Carries | Fired |
 | --- | --- | --- |
@@ -37,7 +41,7 @@ A quick look in dev is one line:
 const store = new CloudRoaring({ storage: backend, metrics: { onEvent: (e) => console.log(e) } });
 ```
 
-**OpenTelemetry** (or Datadog, CloudWatch, …) is a ~12-line adapter you write — CloudBitmaps adds no telemetry
+**OpenTelemetry** (or Datadog, CloudWatch, ...) is a 12-line adapter you write. CloudBitmaps adds no telemetry
 dependency of its own:
 
 ```ts
@@ -59,8 +63,7 @@ const store = new CloudRoaring({
 });
 ```
 
-Events carry **raw observations** (bytes, counts, ms); turning those into dollars is the cost estimator's job
-(see [cost](cost.md#cost-estimate-it-then-ground-it)). Two things to keep in mind:
+Events carry raw observations (bytes, counts, ms). Two things to keep in mind:
 
 - **`onEvent` runs synchronously on the I/O path** — keep it cheap and non-blocking; offload batching or
   network calls to your own async queue.
@@ -69,28 +72,31 @@ Events carry **raw observations** (bytes, counts, ms); turning those into dollar
   bucket, or scrub inside the sink instead). Events never contain bitmap contents or ids — only names, counts,
   bytes, and timings.
 
-A sink that throws can never break a read — its exceptions are swallowed (best-effort).
+A sink that throws can never break a read: its exceptions are swallowed.
 
 ## Audit trail: security & compliance events
 
-Separate from metrics — which reports *volume* (bytes, latency, hit rate) — the **audit sink** records the
-handful of **compliance-relevant state changes** an auditor cares about: when a segment's data was published or
-a load of it refused, when its pointer was rolled back, and when it was **rewritten**, **erased** or disposed of.
-It's the natural feed for an append-only audit log / SIEM, and doubles as your
-GDPR Art. 30 "record of processing" for the erasure path. Like metrics, it's an injected `IAuditSink`, it's
-**off by default** (a no-op), and a throwing sink can never break the operation it observes.
+Metrics report volume (bytes, latency, hit rate). The **audit sink** records the handful of compliance-relevant state
+changes an auditor cares about: when a segment's data was published or a load of it refused, when its pointer was
+rolled back, and when it was rewritten, erased or disposed of. It is the natural feed for an append-only audit log or
+SIEM, and doubles as your GDPR Art. 30 "record of processing" for the erasure path. Like metrics, it is an injected
+`IAuditSink`, it is off by default (a no-op), and a throwing sink can never break the operation it observes.
 
-Unlike metrics, audit isn't a store-constructor option — the events fire from the **operations that write**,
-which are separate entry points, so you pass `audit` to each: a load (`store.load`), an `*Into`
-materialisation, a rollback (`store.rollback`), an erasure (`store.eraseSubject`), a drop (`store.dropSegment`), a
-crypto-shred (`destroySegment`, `eraseNamespace`) and the retention sweep (`store.retireExpired`):
+Unlike metrics, audit is not a store option. The events fire from the operations that write, which are separate entry
+points, so you pass `audit` to each: a load (`store.load`), an `*Into` materialization, a rollback (`store.rollback`),
+an erasure (`store.eraseSubject`), a drop (`store.dropSegment`), a crypto-shred (`destroySegment`, `eraseNamespace`)
+and the retention sweep (`store.retireExpired`):
 
 ```ts
 import { RecordingAuditSink, destroySegment } from '@cloudbitmaps/roaring';
 
+// Your values: the ids to load and the subject to erase.
+declare const ids: Iterable<number>;
+declare const userId: number;
+
 const audit = new RecordingAuditSink(); // a ready-made in-memory recorder (or bring your own onEvent)
 
-// A generation is published (the segment is encrypted — a keystore is wired on the store, see encryption):
+// A generation is published (the segment is encrypted: a keystore is wired on the store, see encryption):
 await store.load({ segment: 'users' }, ids, { audit });
 // A subject erasure — a rewrite of the current generation without one id:
 await store.eraseSubject(userId, { namespace: 'eu', audit });
@@ -104,7 +110,7 @@ audit.snapshot();
 // (segment.erase fires only for an ENCRYPTED segment — a cleartext tombstone leaves the bytes readable.)
 ```
 
-The events are **vendor-neutral** — seven kinds, each carrying the segment's name and namespace, or, for
+The events are vendor-neutral. There are seven kinds, each carrying the segment's name and namespace, or, for
 `namespace.erase`, the namespace's:
 
 | Event | Fired when | Extra fields |
@@ -117,14 +123,11 @@ The events are **vendor-neutral** — seven kinds, each carrying the segment's n
 | `segment.dispose` | `dropSegment` tombstoned a segment and swept its storage — the weaker, storage-reclamation attestation; an encrypted drop emits **both** this and `segment.erase` | `generationsDeleted` |
 | `namespace.erase` | `eraseNamespace` runs; also one `segment.erase` per segment actually shredded | `segmentsShredded` |
 
-Same two caveats as metrics apply: **`onEvent` runs synchronously** on the operation (keep it cheap; offload
-network writes to your own queue), and **`segment`/`namespace` are your own strings** — treat them as
-potentially-PII when you forward them. Events never contain ids or bitmap contents.
+The same two caveats as metrics apply. **`onEvent` runs synchronously** on the operation, so keep it cheap and offload
+network writes to your own queue. **`segment` and `namespace` are your own strings**, so treat them as potentially PII
+when you forward them. Events never contain ids or bitmap contents.
 
-> **Not yet emitted — KEK rotation.** Rotating the key-encryption key here is *operator-side keystore
-> reconfiguration* (wrappings are key-id-tagged and need no data re-encryption), so there's no library call to
-> hook a `kek.rotate` event onto. Audit key changes at your keystore/KMS layer; a future per-segment
-> `rewrapSegment()` op would add a library-side rotation event.
-
-For a worked example that routes metrics, cost, and audit to real dashboards, see the
-[dashboards guide](./dashboards.md).
+> **Not yet emitted: KEK rotation.** Rotating the key-encryption key is operator-side keystore reconfiguration
+> (wrappings are key-id-tagged and need no data re-encryption), so there is no library call to hook a `kek.rotate`
+> event onto. Audit key changes at your keystore or KMS layer. A future per-segment `rewrapSegment()` would add a
+> library-side rotation event.
