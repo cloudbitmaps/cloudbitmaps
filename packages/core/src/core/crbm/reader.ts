@@ -2,7 +2,7 @@
  * `CrbmReader` — speculative-tail-read reader for one `.crbm` generation.
  *
  * `open()` fetches the object's tail in **one GET** (footer + usually the whole index), verifies the
- * footer/index CRCs, and parses the delta+varint index into a map. `getChunk()` then range-GETs a single
+ * footer/index CRCs, and parses the delta+varint index into parallel typed arrays. `getChunk()` then range-GETs a single
  * payload and verifies its CRC32C **before** any native deserialize — every byte from storage is
  * untrusted.
  *
@@ -41,24 +41,32 @@ import {
   VERSION_MAJOR,
 } from './format';
 
-export interface CrbmIndexEntry {
-  readonly chunkKey: number;
-  readonly offset: number;
-  readonly length: number;
-  readonly cardinality: number;
-  readonly crc32c: number;
+/**
+ * A parsed index as parallel typed arrays, one slot per entry, ascending by key. Typed arrays hold each field at
+ * its own width with no per-entry object, so the retained heap is the arrays' byte length and nothing else.
+ * `cardinalityMinusOne` stores `cardinality - 1` because a chunk's cardinality runs `[1, 65536]` and 65,536 does
+ * not fit a `u16`; an offset is a `f64` because an object past 4 GiB puts a payload beyond a `u32`.
+ */
+export interface ParsedIndex {
+  readonly keys: Uint16Array;
+  readonly cardinalityMinusOne: Uint16Array;
+  readonly lengths: Uint32Array;
+  readonly crcs: Uint32Array;
+  readonly offsets: Float64Array;
+  /** Σ cardinality over every entry. */
+  readonly cardinalitySum: number;
 }
 
 /**
- * Estimated retained JS heap for one parsed index entry, used to weight the reader-cache byte bound
- * ({@link CrbmReader.retainedIndexBytes}). In V8 an entry costs: a `Map` slot (~48–64 B: two pointer slots +
- * hash chaining), the {@link CrbmIndexEntry} object (~40–56 B: header + 5 fields, where `offset`/`crc32c`
- * routinely exceed the 2³¹ SMI range and box as heap doubles, +16 B each), and one `orderedKeys` array slot
- * (~8 B) — realistically ~130–160 B, and rounded up to 160. It is reasoned from V8's object layout, not measured
- * on the heap, so the bound it gives is a proxy: it can count the real heap high or low, and a measurement is owed
- * before it is called exact.
+ * Retained JS heap for one parsed index entry, in bytes: the `u16` key, the `u16` cardinality-minus-one, the `u32`
+ * length, the `u32` CRC and the `f64` offset of {@link ParsedIndex}. It is the exact byte length of the arrays
+ * (checked against the measured heap by a test), and weights the reader-cache byte bound
+ * ({@link CrbmReader.retainedIndexBytes}).
  */
-const RETAINED_BYTES_PER_INDEX_ENTRY = 160;
+export const RETAINED_BYTES_PER_INDEX_ENTRY = 20;
+
+/** The fewest bytes one index record takes: four one-byte varints and the four-byte payload CRC. */
+const MIN_INDEX_RECORD_BYTES = 4 + CRC32C_BYTES;
 
 export interface CrbmReaderOptions {
   /** Speculative tail size in bytes (default 256 KB; clamped up to at least the footer size). */
@@ -139,8 +147,7 @@ export class CrbmReader {
     /** See {@link CrbmReaderOptions.lineage} — carried, never interpreted. */
     readonly lineage: unknown,
     readonly totalCardinality: number,
-    private readonly entries: Map<number, CrbmIndexEntry>,
-    private readonly orderedKeys: number[],
+    private readonly index: ParsedIndex,
     /** True when `open()` satisfied the index from the tail GET alone (no second range read). */
     readonly servedFromTail: boolean,
     /** Set iff the object is encrypted — used to decrypt each chunk payload in {@link getChunk}. */
@@ -164,18 +171,26 @@ export class CrbmReader {
   }
 
   /**
-   * Estimated retained JS heap of this reader's parsed index — the weight the storage reader cache bounds on
-   * (a wide segment's parsed index, not its payloads, dominates the reader's footprint). `entries.size` scales with the number
-   * of resident chunks (≤ 65536), so this is `entries.size × {@link RETAINED_BYTES_PER_INDEX_ENTRY}`.
+   * Retained JS heap of this reader's parsed index — the weight the storage reader cache bounds on (a wide
+   * segment's parsed index, not its payloads, dominates the reader's footprint): the exact byte length of the
+   * arrays that hold it, {@link RETAINED_BYTES_PER_INDEX_ENTRY} per entry.
    */
   get retainedIndexBytes(): number {
-    return this.entries.size * RETAINED_BYTES_PER_INDEX_ENTRY;
+    const { keys, cardinalityMinusOne, lengths, crcs, offsets } = this.index;
+    return (
+      keys.byteLength +
+      cardinalityMinusOne.byteLength +
+      lengths.byteLength +
+      crcs.byteLength +
+      offsets.byteLength
+    );
   }
 
   /** Per-chunk cardinality (`chunkKey → count`) from the parsed index — no payload reads. */
   cardinalities(): Map<number, number> {
+    const { keys, cardinalityMinusOne } = this.index;
     const out = new Map<number, number>();
-    for (const [chunkKey, entry] of this.entries) out.set(chunkKey, entry.cardinality);
+    for (let i = 0; i < keys.length; i++) out.set(keys[i]!, cardinalityMinusOne[i]! + 1);
     return out;
   }
 
@@ -302,7 +317,7 @@ export class CrbmReader {
       : indexBytes;
 
     // Payloads live in [PAYLOAD_START, indexOffset); an encrypted one is at least its nonce and tag.
-    const { entries, orderedKeys, cardinalitySum } = parseIndex(
+    const index = parseIndex(
       indexForParse,
       indexOffset,
       maxPayloadBytes,
@@ -318,14 +333,14 @@ export class CrbmReader {
       }
     } else {
       // Cleartext: the footer total + count must match the index — don't trust the footer blindly.
-      if (entries.size !== chunkCount) {
+      if (index.keys.length !== chunkCount) {
         throw new IntegrityError(
-          `.crbm chunk_count ${chunkCount} != ${entries.size} index entries`,
+          `.crbm chunk_count ${chunkCount} != ${index.keys.length} index entries`,
         );
       }
-      if (cardinalitySum !== totalCardinality) {
+      if (index.cardinalitySum !== totalCardinality) {
         throw new IntegrityError(
-          `.crbm total_cardinality ${totalCardinality} != Σ index cardinality ${cardinalitySum}`,
+          `.crbm total_cardinality ${totalCardinality} != Σ index cardinality ${index.cardinalitySum}`,
         );
       }
     }
@@ -335,9 +350,8 @@ export class CrbmReader {
       size,
       generation,
       options.lineage,
-      cardinalitySum,
-      entries,
-      orderedKeys,
+      index.cardinalitySum,
+      index,
       servedFromTail,
       options.crypto,
       storedFooterCrc,
@@ -346,7 +360,7 @@ export class CrbmReader {
 
   /** Chunk keys present in this generation, ascending. */
   chunkKeys(): number[] {
-    return this.orderedKeys.slice();
+    return Array.from(this.index.keys);
   }
 
   /** Segment cardinality from the footer (no payload reads) — the cheap `count()` path. */
@@ -354,8 +368,23 @@ export class CrbmReader {
     return this.totalCardinality;
   }
 
+  /** The slot holding `chunkKey` (binary search over the ascending keys), or -1 when this generation has none. */
+  private slotOf(chunkKey: number): number {
+    const keys = this.index.keys;
+    let lo = 0;
+    let hi = keys.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >>> 1;
+      const k = keys[mid]!;
+      if (k === chunkKey) return mid;
+      if (k < chunkKey) lo = mid + 1;
+      else hi = mid - 1;
+    }
+    return -1;
+  }
+
   has(chunkKey: number): boolean {
-    return this.entries.has(chunkKey);
+    return this.slotOf(chunkKey) >= 0;
   }
 
   /**
@@ -365,14 +394,16 @@ export class CrbmReader {
    * not mutate it.
    */
   async getChunk(chunkKey: number): Promise<Uint8Array | null> {
-    const e = this.entries.get(chunkKey);
-    if (e === undefined) return null;
+    const slot = this.slotOf(chunkKey);
+    if (slot < 0) return null;
+    const offset = this.index.offsets[slot]!;
+    const length = this.index.lengths[slot]!;
     // Re-validate bounds at read time (defense in depth — a buggy caller or future mutable index path).
-    if (e.offset < PAYLOAD_START || e.offset + e.length > this.objectSize - FOOTER_BYTES) {
+    if (offset < PAYLOAD_START || offset + length > this.objectSize - FOOTER_BYTES) {
       throw new IntegrityError(`chunk ${chunkKey} payload out of bounds`);
     }
-    const bytes = await this.blob.getRange(e.offset, e.length);
-    if (crc32c(bytes) !== e.crc32c) {
+    const bytes = await this.blob.getRange(offset, length);
+    if (crc32c(bytes) !== this.index.crcs[slot]) {
       throw new IntegrityError(`chunk ${chunkKey} payload CRC mismatch`);
     }
     if (this.crypto === undefined) return bytes;
@@ -412,9 +443,17 @@ export function parseIndex(
   payloadEnd: number,
   maxPayloadBytes: number,
   minPayloadBytes = 1,
-): { entries: Map<number, CrbmIndexEntry>; orderedKeys: number[]; cardinalitySum: number } {
-  const entries = new Map<number, CrbmIndexEntry>();
-  const orderedKeys: number[] = [];
+): ParsedIndex {
+  // The arrays are sized from what the index could hold, never from what it claims: every record takes at least
+  // MIN_INDEX_RECORD_BYTES and keys are unique within 16 bits, so a hostile index cannot make this allocate more
+  // than its own bytes (and 65,536 slots) could fill.
+  const capacity = Math.min(0x1_0000, Math.floor(indexBytes.length / MIN_INDEX_RECORD_BYTES));
+  const keys = new Uint16Array(capacity);
+  const cardinalityMinusOne = new Uint16Array(capacity);
+  const lengths = new Uint32Array(capacity);
+  const crcs = new Uint32Array(capacity);
+  const offsets = new Float64Array(capacity);
+  let count = 0;
   let pos = 0;
   let prevKey = 0;
   let prevEnd = PAYLOAD_START;
@@ -423,11 +462,15 @@ export function parseIndex(
   // Parse entries until the index region is exactly consumed (chunk_count is hidden on encrypted objects, so
   // the byte length is the bound — readVarint throws on any overrun, so a malformed index fails cleanly).
   for (let i = 0; pos < indexBytes.length; i++) {
-    const keyDelta = readVarint(indexBytes, pos);
-    const offDelta = readVarint(indexBytes, keyDelta.next);
-    const len = readVarint(indexBytes, offDelta.next);
-    const card = readVarint(indexBytes, len.next);
-    pos = card.next;
+    const keyDeltaRead = readVarint(indexBytes, pos);
+    const offDeltaRead = readVarint(indexBytes, keyDeltaRead.next);
+    const lenRead = readVarint(indexBytes, offDeltaRead.next);
+    const cardRead = readVarint(indexBytes, lenRead.next);
+    const keyDelta = keyDeltaRead.value;
+    const offDelta = offDeltaRead.value;
+    const len = lenRead.value;
+    const card = cardRead.value;
+    pos = cardRead.next;
     if (pos + CRC32C_BYTES > indexBytes.length) {
       throw new IntegrityError('.crbm index truncated (missing payload CRC)');
     }
@@ -439,37 +482,46 @@ export function parseIndex(
       0;
     pos += CRC32C_BYTES;
 
-    const chunkKey = prevKey + keyDelta.value;
-    const offset = prevEnd + offDelta.value;
+    const chunkKey = prevKey + keyDelta;
+    const offset = prevEnd + offDelta;
     // Unsigned deltas mean keys can only stay flat or rise; a 0 delta after the first is a duplicate.
-    if (i > 0 && keyDelta.value === 0) {
+    if (i > 0 && keyDelta === 0) {
       throw new IntegrityError(`.crbm index has a duplicate chunkKey ${chunkKey}`);
     }
     if (chunkKey > 0xffff) throw new IntegrityError(`.crbm chunkKey ${chunkKey} out of range`);
-    if (len.value < minPayloadBytes || len.value > maxPayloadBytes) {
-      throw new IntegrityError(`.crbm chunk ${chunkKey} length ${len.value} invalid`);
+    if (len < minPayloadBytes || len > maxPayloadBytes) {
+      throw new IntegrityError(`.crbm chunk ${chunkKey} length ${len} invalid`);
     }
-    if (card.value < 1 || card.value > MAX_CHUNK_CARDINALITY) {
-      throw new IntegrityError(`.crbm chunk ${chunkKey} cardinality ${card.value} invalid`);
+    if (card < 1 || card > MAX_CHUNK_CARDINALITY) {
+      throw new IntegrityError(`.crbm chunk ${chunkKey} cardinality ${card} invalid`);
     }
     // `offset` cannot start below the preamble: it is the previous payload's end plus an unsigned gap.
-    if (offset + len.value > payloadEnd) {
+    if (offset + len > payloadEnd) {
       throw new IntegrityError(`.crbm chunk ${chunkKey} payload out of bounds`);
     }
 
-    entries.set(chunkKey, {
-      chunkKey,
-      offset,
-      length: len.value,
-      cardinality: card.value,
-      crc32c: crc,
-    });
-    orderedKeys.push(chunkKey);
-    cardinalitySum += card.value;
+    keys[count] = chunkKey;
+    cardinalityMinusOne[count] = card - 1;
+    lengths[count] = len;
+    crcs[count] = crc;
+    offsets[count] = offset;
+    count++;
+    cardinalitySum += card;
     prevKey = chunkKey;
-    prevEnd = offset + len.value;
+    prevEnd = offset + len;
   }
   // The loop ends only when pos === indexBytes.length exactly (each entry consumes a whole record; a partial
   // trailing record makes readVarint or the CRC bound throw), so there are never unconsumed trailing bytes.
-  return { entries, orderedKeys, cardinalitySum };
+  // Trim to the entries parsed, so the arrays' byte length is exactly what the reader retains.
+  if (count === capacity) {
+    return { keys, cardinalityMinusOne, lengths, crcs, offsets, cardinalitySum };
+  }
+  return {
+    keys: keys.slice(0, count),
+    cardinalityMinusOne: cardinalityMinusOne.slice(0, count),
+    lengths: lengths.slice(0, count),
+    crcs: crcs.slice(0, count),
+    offsets: offsets.slice(0, count),
+    cardinalitySum,
+  };
 }

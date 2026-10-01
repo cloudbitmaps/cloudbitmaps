@@ -1,5 +1,6 @@
 import { CrbmStorageChunkSource } from '@/index';
 import type { IStorageDriver } from '@/index';
+import { RETAINED_BYTES_PER_INDEX_ENTRY } from '@/core/crbm/reader';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 
@@ -99,27 +100,26 @@ describe('CrbmStorageChunkSource — bounded reader cache', () => {
 });
 
 describe('CrbmStorageChunkSource — byte-bounded reader cache (second half of the bound)', () => {
-  // Each seeded segment carries [1,2] → one chunk → one parsed index entry (160 B retained, the reader's
-  // RETAINED_BYTES_PER_INDEX_ENTRY). The COUNT bound (`maxOpenSegments`) is set generously so the BYTE bound
+  // Each seeded segment carries [1,2] → one chunk → one parsed index entry (RETAINED_BYTES_PER_INDEX_ENTRY retained). The COUNT bound (`maxOpenSegments`) is set generously so the BYTE bound
   // (`maxOpenIndexBytes`) is the one doing the work: this is what a count-only cache misses (1024 wide indices
   // at several MB each can pin ~GBs, blowing a small heap, while the count is nominally "in bounds"). Two
-  // index entries = 320 B.
+  // index entries = 2 × RETAINED_BYTES_PER_INDEX_ENTRY.
   it('evicts the LRU reader when the parsed-index byte budget binds before the count budget', async () => {
     const registry = new MemoryRegistryDriver({ now: () => 0 });
     const { storage, opens } = countingStorage(new MemoryStorageDriver());
     await seed(storage, registry, SEGS);
 
-    // count cap 100 (never binds); byte cap 320 B holds exactly two 160 B indices.
+    // count cap 100 (never binds); the byte cap holds exactly two one-entry indices.
     const source = new CrbmStorageChunkSource(storage, {
       registry,
       maxOpenSegments: 100,
-      maxOpenIndexBytes: 320,
+      maxOpenIndexBytes: 2 * RETAINED_BYTES_PER_INDEX_ENTRY,
     });
     await source.listChunkKeys({ segment: 's0' });
-    await source.listChunkKeys({ segment: 's1' }); // total 320 B ≤ 320 — both resident
+    await source.listChunkKeys({ segment: 's1' }); // total = the cap — both resident
     expect(opens()).toBe(2);
 
-    // s2 pushes the total to 480 B > 320 → the LRU (s0) is evicted on byte pressure alone.
+    // s2 pushes the total past the cap → the LRU (s0) is evicted on byte pressure alone.
     await source.listChunkKeys({ segment: 's2' });
     expect(opens()).toBe(3);
     await source.listChunkKeys({ segment: 's0' }); // evicted → re-opens (proves the byte bound fired)
@@ -133,7 +133,7 @@ describe('CrbmStorageChunkSource — byte-bounded reader cache (second half of t
     // exceeds the byte budget, TWICE. With the budget ≪ fleet footprint, every segment is byte-evicted before
     // we loop back, so pass 2 re-opens all N (2N total). A byte-unbounded cache keeps them resident ⇒ N.
     const N = 200;
-    const CAP_BYTES = 20 * 160; // ~20 indices resident (160 B each)
+    const CAP_BYTES = 20 * RETAINED_BYTES_PER_INDEX_ENTRY; // ~20 one-entry indices resident
     const registry = new MemoryRegistryDriver({ now: () => 0 });
     const { storage, opens } = countingStorage(new MemoryStorageDriver());
     const fleet = Array.from({ length: N }, (_, i) => `seg${i}`);
