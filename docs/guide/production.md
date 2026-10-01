@@ -21,8 +21,8 @@ checklist: work down the table, and follow each link for the detail.
 
 ## Permissions
 
-The library issues only these calls, so these are the only permissions it needs. A process that only reads can drop
-the write and delete actions.
+These lists are derived from the calls each storage package makes. Check them in staging under the identity you will
+run with. A process that only reads can drop the write and delete actions.
 
 **S3.** `s3:GetObject` (also covers the metadata reads), `s3:PutObject` (also covers starting, uploading and
 completing a multipart upload), `s3:DeleteObject`, `s3:AbortMultipartUpload` and `s3:ListBucket`. `s3:ListBucket`
@@ -165,13 +165,17 @@ const store = new CloudRoaring({ storage: new S3Storage({ bucket: 'my-bitmaps', 
 `@smithy/node-http-handler` comes with the AWS SDK; declare it in your own `package.json` as well, since your code
 imports it. A `client` carries its own region and credentials, so passing `region` or `credentials` beside it is refused.
 
-**Writes are yours to re-run.** `load`, the write half of the `*Into` verbs and the lifecycle helpers
-(`eraseSubject`, `dropSegment`, `retireExpired`, `rollback` and the rest) are not retried. Neither are the calls that
-read the registry or list the bucket directly: `exists`, `segments`, `generations`, `getRetention`, and the registry
-scan that `subjectReport`, `exportSegments` and `checkConsistency` start from. A write that lands and then loses its
-response looks, from the error alone, like a write that failed, and replaying it would find itself already there and
-report a conflict. So a transient fault on a write reaches you, and the retry is yours: run the call again. The
-`retry` option tunes reads only.
+**Writes are yours to re-run.** What is retried for you:
+
+| Calls | Retried for you? |
+|---|---|
+| Reads that answer a query: `has`, `count`, `iterate`, the combines (the `*Into` verbs' reads of their operands included), a pinned handle's reads, and `pin()` | Yes, with backoff; `retry` tunes it |
+| Writes: `load`, the write half of the `*Into` verbs, and the lifecycle helpers (`eraseSubject`, `dropSegment`, `retireExpired`, `rollback` and the rest) | No: run the call again |
+| Registry reads and listings: `exists`, `segments`, `generations`, `getRetention`, and the registry scan that `subjectReport`, `exportSegments` and `checkConsistency` start from | No: call it again |
+
+A write that lands and then loses its response looks, from the error alone, like a write that failed, and replaying it
+would find itself already there and report a conflict. So a transient fault on a write reaches you, and the retry is
+yours.
 
 Re-running a `load` is safe. It takes a fresh generation number and re-reads the pointer, so it publishes whether or
 not the first attempt landed, under every guard setting. Three things to know:
@@ -190,40 +194,14 @@ before the call. A new current generation is a publish that landed. A new one ab
 landed unpublished. While another writer is active on the segment, the listing cannot say whose either one is.
 `generations` is not retried either, so a fault there means asking again.
 
-### How it stays correct
+## Schedule the work
 
-**A fault costs a read some latency and a write a re-run, never correctness.** Generations are write-once, so no
-reader can pick up a half-written object. A publish only moves the pointer forward, and each attempt of its conflict
-loop re-reads the row first, so no publish can move it back. All bytes are checksum-verified before use.
+The library starts no timer, so it behaves the same in a Lambda and on a server. Two things need a schedule from you:
 
-**Your client's own retry, and the writes it does not reach.** Each cloud SDK retries a failed request itself, under
-the store's retry. For a conditional write that retry gives the wrong answer. A write that lands and then loses its
-response is sent again, meets itself, and fails its own precondition, which reads as a lost race for a write that
-won. This covers a generation's write-once put and the registry's create, compare-and-swap and delete (a delete
-writes a tombstone). So the S3 and GCS packages send a conditional write once where the SDK lets them, with its retry
-off for that request alone. The Azure Blob package, whose retry has no per-request switch, tags each write and
-settles a conflict by reading it back. The GCS package does the same for an object above
-`simpleUploadThresholdBytes`, which uploads as a resumable session. The client is otherwise left as it is, a client
-you pass in included, and every other request it makes keeps the SDK's retry rules. A transient failure of a
-conditional write reaches its caller as `TransientError`, and the write may or may not have landed. Where each
-package stands:
-
-| package | conditional writes |
-|---|---|
-| `@cloudbitmaps/s3` | every one is sent once: the write-once `PutObject`, a multipart upload's `CompleteMultipartUpload`, and the registry's create, compare-and-swap and delete |
-| `@cloudbitmaps/gcs` | the registry's writes, and an object up to `simpleUploadThresholdBytes` (8 MiB by default), are each one request, sent once. A larger object is a resumable upload, a session of requests that the SDK retries within, under the client's retry options; it and every Azure Blob write are tagged with a random id in metadata, as described below |
-| `@cloudbitmaps/azure-blob` | sent through the client's retry policy, which sends a request again after a network error or a 500 or 503. Each write is tagged with a random id in blob metadata, and a conflict is settled by reading the stored blob back, as described below |
-
-**Writes that are tagged instead.** Azure Blob's retry is a policy on the client's pipeline, and a GCS resumable
-upload is a session the SDK retries within, so neither has a per-request switch. Each of their conditional writes
-carries a random id in the object's metadata (`cbwid`), outside the `.crbm` bytes and outside the registry row's body.
-When such a write reports a conflict, the driver reads the stored blob or object back with one metadata request. It
-reports success when the object carries the write's own id, and `WriteConflictError` otherwise. The read happens only
-on a conflict, works with a client you pass, and adds no option. A read-back that fails transiently throws
-`TransientError`. A generation's `.crbm` object is never overwritten, so its read-back is definitive. A registry row
-is overwritten by compare-and-swap, so a writer that swaps in over a write that landed, before the read-back, makes
-that write report `WriteConflictError`. The store's callers re-read the row on it, and none deletes a generation
-because of it.
+- **Loads.** Run each `store.load` from a scheduled job or a queue consumer, at the cadence your data needs. A shorter
+  cadence is how you get fresher data. See [Loading in depth](loading.md).
+- **The retention sweep.** If you record expiries with `setRetention`, call `store.retireExpired()` on a schedule.
+  Nothing else removes expired segments. See [Retention](retention.md).
 
 ## Limits: the per-op budget and the memory ceilings
 
@@ -297,15 +275,6 @@ index can be several MB, which is why the reader cache is bounded by bytes as we
 billion members. `maxScanSegments`, an option of `store.retireExpired` (`store.checkConsistency` holds the default of
 250,000), counts segments, not members: 500 audience segments count as 500, whatever their size.
 
-## Schedule the work
-
-The library starts no timer, so it behaves the same in a Lambda and on a server. Two things need a schedule from you:
-
-- **Loads.** Run each `store.load` from a scheduled job or a queue consumer, at the cadence your data needs. A shorter
-  cadence is how you get fresher data. See [Loading in depth](loading.md).
-- **The retention sweep.** If you record expiries with `setRetention`, call `store.retireExpired()` on a schedule.
-  Nothing else removes expired segments. See [Retention](retention.md).
-
 ## What blocks the event loop, and where to run it
 
 Node is single-threaded, so CPU-heavy work stalls **every** other request on that instance. Most of this library
@@ -363,3 +332,38 @@ clone, `pnpm build-lambda-layer` produces `dist-lambda/cloudbitmaps-lambda-layer
 flavor with the addon compiled in an AL2023 container of the machine's own architecture. It is a script in the
 repository, not a published artifact: nothing on npm or on a GitHub release carries it, though a manually
 dispatched CI run can build one and attach it to that run.
+
+## How it stays correct
+
+**A fault costs a read some latency and a write a re-run, never correctness.** Generations are write-once, so no
+reader can pick up a half-written object. A publish only moves the pointer forward, and each attempt of its conflict
+loop re-reads the row first, so no publish can move it back. All bytes are checksum-verified before use.
+
+**Your client's own retry, and the writes it does not reach.** Each cloud SDK retries a failed request itself, under
+the store's retry. For a conditional write that retry gives the wrong answer. A write that lands and then loses its
+response is sent again, meets itself, and fails its own precondition, which reads as a lost race for a write that
+won. This covers a generation's write-once put and the registry's create, compare-and-swap and delete (a delete
+writes a tombstone). So the S3 and GCS packages send a conditional write once where the SDK lets them, with its retry
+off for that request alone. The Azure Blob package, whose retry has no per-request switch, tags each write and
+settles a conflict by reading it back. The GCS package does the same for an object above
+`simpleUploadThresholdBytes`, which uploads as a resumable session. The client is otherwise left as it is, a client
+you pass in included, and every other request it makes keeps the SDK's retry rules. A transient failure of a
+conditional write reaches its caller as `TransientError`, and the write may or may not have landed. Where each
+package stands:
+
+| package | conditional writes |
+|---|---|
+| `@cloudbitmaps/s3` | every one is sent once: the write-once `PutObject`, a multipart upload's `CompleteMultipartUpload`, and the registry's create, compare-and-swap and delete |
+| `@cloudbitmaps/gcs` | the registry's writes, and an object up to `simpleUploadThresholdBytes` (8 MiB by default), are each one request, sent once. A larger object is a resumable upload, a session of requests that the SDK retries within, under the client's retry options; it and every Azure Blob write are tagged with a random id in metadata, as described below |
+| `@cloudbitmaps/azure-blob` | sent through the client's retry policy, which sends a request again after a network error or a 500 or 503. Each write is tagged with a random id in blob metadata, and a conflict is settled by reading the stored blob back, as described below |
+
+**Writes that are tagged instead.** Azure Blob's retry is a policy on the client's pipeline, and a GCS resumable
+upload is a session the SDK retries within, so neither has a per-request switch. Each of their conditional writes
+carries a random id in the object's metadata (`cbwid`), outside the `.crbm` bytes and outside the registry row's body.
+When such a write reports a conflict, the driver reads the stored blob or object back with one metadata request. It
+reports success when the object carries the write's own id, and `WriteConflictError` otherwise. The read happens only
+on a conflict, works with a client you pass, and adds no option. A read-back that fails transiently throws
+`TransientError`. A generation's `.crbm` object is never overwritten, so its read-back is definitive. A registry row
+is overwritten by compare-and-swap, so a writer that swaps in over a write that landed, before the read-back, makes
+that write report `WriteConflictError`. The store's callers re-read the row on it, and none deletes a generation
+because of it.
