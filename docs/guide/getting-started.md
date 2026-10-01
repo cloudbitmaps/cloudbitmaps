@@ -170,6 +170,12 @@ await store.load({ segment: 'active-this-week' }, activeUserIds);
 // ...a fresh process pointed at the same dirs reads the same generation — the object and the pointer are durable.
 ```
 
+> **A root is for one process.** Every instance in a process that names the same root shares one lock per
+> registry row, however the root is spelled (a relative path, a symlink), so a store and a CLI call in that
+> process cannot both advance one row from the same token. Two processes on one root are **not** fenced from each
+> other: the pointer's compare-and-swap is a read-then-rename, and it is only serialized inside the process. Give
+> each process its own root, or use an object-store backend, whose registry is fenced by the store itself.
+
 > **The `storage` option takes three shapes, and you want the first.** A **backend** (`MemoryStorage`,
 > `LocalFsStorage`, `S3Storage`, `GcsStorage`, `AzureBlobStorage`) carries both halves — the generations and
 > the pointer — from one bucket and one prefix, and is the whole wiring. Below it, a **raw `IStorageDriver`**
@@ -422,7 +428,7 @@ bucket as the generations. A plain `{ storage, registry }` object is refused.
 | Backend | Import | Its registry lives |
 | --- | --- | --- |
 | `MemoryStorage` | `@cloudbitmaps/roaring` | in process: tests / dev |
-| `LocalFsStorage` | `@cloudbitmaps/roaring` | under the root's `registry` directory: single node / on-prem |
+| `LocalFsStorage` | `@cloudbitmaps/roaring` | under the root's `registry` directory: single node / on-prem, one process on one root; two processes on a root are not fenced |
 | `S3Storage` | `@cloudbitmaps/s3` | **in the same bucket as your storage data — one store, no second service** |
 | `GcsStorage` | `@cloudbitmaps/gcs` | the same, on Google Cloud Storage |
 | `AzureBlobStorage` | `@cloudbitmaps/azure-blob` | the same, on Azure Blob Storage |

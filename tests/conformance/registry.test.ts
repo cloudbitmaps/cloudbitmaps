@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { registryConformance } from '@/testing/conformance';
+import { registryConformance, registryConcurrency } from '@/testing/conformance';
 import { MemoryRegistryDriver } from '@/drivers/memory';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 
@@ -27,3 +27,13 @@ registryConformance(
   'LocalFsRegistryDriver',
   () => new LocalFsRegistryDriver(join(root, `d${n++}`), { now: ticking() }),
 );
+
+// Two instances over ONE root — the configuration in which a per-instance lock lets both pass the token check.
+let shared = 0;
+registryConcurrency('LocalFsRegistryDriver (two instances, one root)', () => {
+  const dir = join(root, `shared${shared++}`);
+  return [
+    new LocalFsRegistryDriver(dir, { now: ticking() }),
+    new LocalFsRegistryDriver(dir, { now: ticking() }),
+  ];
+});

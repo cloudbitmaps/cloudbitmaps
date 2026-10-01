@@ -5,12 +5,14 @@
  * OCC: the token is a monotonic counter (stringified), advanced on every mutation and
  * even across a `delete` (which **tombstones** rather than unlinks) so a deleted-then-recreated row never
  * re-issues an old token (ABA-safe). Every write is temp → fsync(file) → atomic rename → fsync(dir), and
- * read-modify-write is serialized per row in-process. Drivers do I/O; only `core/` is bound by determinism.
+ * read-modify-write is serialized per row across the whole process (the lock is keyed by the row's resolved
+ * path, so every instance on one root shares it). A root is for one process: two processes on one root are not
+ * fenced. Drivers do I/O; only `core/` is bound by determinism.
  */
 import { constants as FS } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { mkdir, open, readdir, rename, unlink } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { mkdir, open, readdir, realpath, rename, unlink } from 'node:fs/promises';
+import { basename, dirname, join, resolve } from 'node:path';
 import { IntegrityError, ValidationError, WriteConflictError } from '@/core/errors';
 import type {
   IRegistryDriver,
@@ -37,14 +39,44 @@ import { O_NOFOLLOW, fsyncDir, isCode, mapFsError } from './fs-util';
 /** Defensive cap on a single registry file read from storage, before allocation. */
 const DEFAULT_MAX_ROW_BYTES = 1 * 1024 * 1024;
 
+/**
+ * Per-row promise chains, shared by every driver instance in the process and keyed by the row's resolved path,
+ * so two instances on one root (or one root reached through a symlink or a relative path) take one lock. An
+ * entry is deleted when its chain drains, so the map holds only rows with an operation in flight.
+ */
+const rowChains = new Map<string, Promise<unknown>>();
+
+/** Entries in the process-wide row-lock map; the map is empty whenever no registry operation is in flight. */
+export function localFsRowLockCount(): number {
+  return rowChains.size;
+}
+
+/**
+ * The row's identity for locking: the real path of the nearest directory that exists, plus the not-yet-created
+ * tail. Resolving symlinks and relative roots makes every spelling of one row the same key.
+ */
+async function rowLockKey(path: string): Promise<string> {
+  const abs = resolve(path);
+  const tail: string[] = [basename(abs)];
+  let dir = dirname(abs);
+  for (;;) {
+    try {
+      return join(await realpath(dir), ...tail);
+    } catch (err) {
+      const parent = dirname(dir);
+      if (!isCode(err, 'ENOENT') || parent === dir) throw mapFsError(err);
+      tail.unshift(basename(dir));
+      dir = parent;
+    }
+  }
+}
+
 export interface LocalFsRegistryDriverOptions {
   /** Injected clock for `createdAt`/`updatedAt`; defaults to `Date.now`. */
   readonly now?: () => number;
 }
 
 export class LocalFsRegistryDriver implements IRegistryDriver {
-  /** Per-row promise chain — serializes read-modify-write so an in-process CAS never loses an update. */
-  private readonly chain = new Map<string, Promise<unknown>>();
   private readonly now: () => number;
 
   constructor(
@@ -203,17 +235,18 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
     await fsyncDir(dirname(path));
   }
 
-  /** Serialize callbacks for a row path so read-modify-write is atomic in-process. */
-  private withRowLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
-    const prev = this.chain.get(key) ?? Promise.resolve();
+  /** Serialize callbacks for a row so read-modify-write is atomic across every instance in the process. */
+  private async withRowLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
+    const key = await rowLockKey(path);
+    const prev = rowChains.get(key) ?? Promise.resolve();
     const result = prev.then(fn, fn);
     const tail = result.then(
       () => undefined,
       () => undefined,
     );
-    this.chain.set(key, tail);
+    rowChains.set(key, tail);
     void tail.then(() => {
-      if (this.chain.get(key) === tail) this.chain.delete(key);
+      if (rowChains.get(key) === tail) rowChains.delete(key);
     });
     return result;
   }
