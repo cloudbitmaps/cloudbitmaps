@@ -154,6 +154,10 @@ a minor bump until the .crbm format freezes at 1.0.
 - Repository: https://github.com/cloudbitmaps/cloudbitmaps
 - Package (codec): https://www.npmjs.com/package/@cloudbitmaps/roaring
 - Getting-started guide: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md
+- Before production (permissions, lifecycle rules, timeouts): https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md
+- Loading in depth: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/loading.md
+- Reading in depth: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/reading.md
+- Errors and what to do: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/api-reference.md#errors-typed--you-catch-these
 - API reference: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/api-reference.md
 - Privacy and erasure: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/PRIVACY.md
 - Benchmarks + method: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/benchmarks.md

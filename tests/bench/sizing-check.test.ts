@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import * as core from '@cloudbitmaps/core';
 
 /**
- * `pnpm bench:sizing:check` is the gate that holds the sizing guide, the getting-started guide, the explainer, the
+ * `pnpm bench:sizing:check` is the gate that holds the sizing guide, the cost guide, the explainer, the
  * README and the two charts to the estimator, and CI only ever runs it on pages that pass. This holds it to failing: each case edits the pages the way a
  * regression would and expects the check to refuse. It runs the script itself, in-process over the real tree, with
  * the edited pages laid over it and `@cloudbitmaps/core` served from the source the rest of the suite tests, so it

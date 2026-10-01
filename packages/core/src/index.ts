@@ -134,7 +134,7 @@ export type { DropDeps, DropResult, EraseDeps, DestroyResult } from './core/eras
 // Retention policy: record WHEN a segment becomes eligible for retirement. Writer-set absolute epoch-ms — a
 // duration the library derived would be anchored to `updatedAt`/`currentGen`, which every load republishes, so a
 // busy segment would never expire. Nothing here runs on a timer; the sweep is a separate call the operator
-// schedules (see the production guide for where to run it).
+// schedules (see the retention guide for where to run it).
 // `getSegmentRetention(ref)` reads ONE segment's policy and costs a registry read. `readRetentionPolicy(meta)`
 // is the pure parser for a caller who already holds rows — a fleet-wide sweep over `registry.list()`, where
 // per-segment reads would turn one listing into N+1 round trips. It stays exported because `RegistryRecord`
