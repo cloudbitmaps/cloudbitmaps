@@ -1,10 +1,8 @@
 # CloudBitmaps guide
 
-> **These docs describe `main`, which is ahead of the `0.10.0` release on npm.** The library is pre-1.0 and the API
-> can still change. Two differences reach code written from these pages: `0.10.0` has no range reads, so it ignores
-> `after` and `through` and a paging loop gets the whole result on every page, and it ignores most option keys it does
-> not take, where `main` refuses them by name. [The changelog](../../CHANGELOG.md#unreleased) lists every difference. The docs that match
-> `npm install` are at the [`v0.10.0` tag](https://github.com/cloudbitmaps/cloudbitmaps/tree/v0.10.0).
+> **These docs describe `main`.** The library is pre-1.0 and the API can still change. [The changelog](../../CHANGELOG.md#unreleased)
+> lists what `main` has that the latest release does not, and the docs for each release are at its tag, on the
+> [releases page](https://github.com/cloudbitmaps/cloudbitmaps/releases).
 
 How to use CloudBitmaps. Anything planned says so where it appears, and the [roadmap](../ROADMAP.md#planned--exploring)
 lists all of it. New here? Read the [README](../../README.md), then [Getting started](getting-started.md).

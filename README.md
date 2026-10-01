@@ -11,11 +11,9 @@ upstream (a warehouse query, a nightly job), load it, and query it, from a scrip
 built on [Roaring Bitmaps](https://roaringbitmap.org/), the compressed-bitmap format behind Lucene, ClickHouse, Druid
 and Spark.
 
-> **These docs describe `main`, which is ahead of the `0.10.0` release on npm.** The library is pre-1.0 and the API
-> can still change. Two differences reach code written from these pages: `0.10.0` has no range reads, so it ignores
-> `after` and `through` and a paging loop gets the whole result on every page, and it ignores most option keys it does
-> not take, where `main` refuses them by name. [The changelog](CHANGELOG.md#unreleased) lists every difference. The docs that match
-> `npm install` are at the [`v0.10.0` tag](https://github.com/cloudbitmaps/cloudbitmaps/tree/v0.10.0).
+> **These docs describe `main`.** The library is pre-1.0 and the API can still change. [The changelog](CHANGELOG.md#unreleased)
+> lists what `main` has that the latest release does not, and the docs for each release are at its tag, on the
+> [releases page](https://github.com/cloudbitmaps/cloudbitmaps/releases).
 
 Three words appear everywhere:
 
@@ -152,7 +150,8 @@ explains these, S3's request rate and overlap, with the charts; [what it costs a
 
 ## What it costs on real AWS
 
-Run `2026-09-23-94416` drove the packages at `0.10.0` against a real AWS account in `us-east-1`, with the pointer in
+Run [`2026-09-23-94416`](bench/calibration/2026-09-23-94416.md), made on 2026-09-23 on the release then current, drove the
+packages against a real AWS account in `us-east-1`, with the pointer in
 the same bucket as the data. What each operation costs:
 
 | Operation | Cost | Kind |

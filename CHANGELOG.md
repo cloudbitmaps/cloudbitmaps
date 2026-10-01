@@ -11,6 +11,15 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-10-01
+
+Reading by id range, and a store that refuses what it would otherwise get wrong. `iterate`, `intersect`, `union`,
+`andNot` and the `*Into` verbs read an id range `(after, through]` and fetch only the chunks it overlaps, so a large
+segment pages by keyset. The public surface is trimmed to what callers use, a backend class is the one way to build
+storage, and the store and the three cloud backends refuse every option key they do not take. Untrusted bytes get the
+full structural check, a conditional write is sent once or settled by reading it back, and a subject erasure reaches
+every generation that holds the id. Read the Breaking list before upgrading.
+
 ### Breaking
 
 The first changes what two combines return, with no error. The next two narrow what an application sees: `@cloudbitmaps/roaring` exports a list of names in place of all of

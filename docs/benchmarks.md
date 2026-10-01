@@ -72,7 +72,7 @@ with the pointer in the same bucket as the data. It was driven from a laptop out
 ### The single-bucket bill — run `2026-09-23-94416`
 
 > **Measured** against real S3 in `us-east-1` on 2026-09-23 (UTC), from a laptop 83 ms from the region, with the
-> packages at `0.10.0`. The run's report explains every figure, in six sections, each with a diagram:
+> packages of the release then current, which its report names. The run's report explains every figure, in six sections, each with a diagram:
 > [`bench/calibration/2026-09-23-94416.md`](../bench/calibration/2026-09-23-94416.md). The evidence beside it is the
 > harness's own results file. [`tests/docs/calibration-reports.test.ts`](../tests/docs/calibration-reports.test.ts)
 > holds this section and the report to it in both directions: every dollar amount, percentage, duration, byte size
