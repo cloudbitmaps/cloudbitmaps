@@ -3,8 +3,8 @@
 **Google Cloud Storage for [CloudBitmaps](https://github.com/cloudbitmaps/cloudbitmaps).** One bucket holds your generations and their pointers, so there is no
 second service to run.
 
-> **ESM-only, Node ≥ 22.12.** Use `import`; for `require()`, Jest and TypeScript, see the
-> [repository README](https://github.com/cloudbitmaps/cloudbitmaps#install--entry-points).
+> **ESM-only, Node ≥ 22.12.** Use `import`; for `require()`, Jest and TypeScript, see
+> [CommonJS, Jest and TypeScript](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#commonjs-jest-and-typescript).
 
 > Pre-1.0: the API and the on-disk format can still change. These docs describe `main`, ahead of the npm release.
 
@@ -54,7 +54,7 @@ It builds its own client from Application Default Credentials. Any other key is 
 - **A transient failure of a write throws `TransientError`, and the write may or may not have landed.** Re-run the
   call, or check `store.generations(ref)`.
 
-The [production checklist](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md) covers each item.
+The [production checklist](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md) covers each item, and the ones every backend shares: a request timeout on your client, backups of the data and the registry, and a schedule for your loads.
 
 ## Documentation
 

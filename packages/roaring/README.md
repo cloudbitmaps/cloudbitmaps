@@ -4,8 +4,8 @@
 file, then ask `has`, `count`, `iterate`, `intersect`, `union` and `andNot`, with no server or cache to run. Part of
 [CloudBitmaps](https://github.com/cloudbitmaps/cloudbitmaps); this is the package you import from.
 
-> **ESM-only, Node ≥ 22.12.** Use `import`; for `require()`, Jest and TypeScript, see the
-> [repository README](https://github.com/cloudbitmaps/cloudbitmaps#install--entry-points).
+> **ESM-only, Node ≥ 22.12.** Use `import`; for `require()`, Jest and TypeScript, see
+> [CommonJS, Jest and TypeScript](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#commonjs-jest-and-typescript).
 
 > Pre-1.0: the API and the on-disk format can still change. These docs describe `main`, ahead of the npm release.
 
@@ -44,8 +44,8 @@ To persist, pass a different **backend** as `storage`. Nothing else changes:
 | `MemoryStorage` | `@cloudbitmaps/roaring` | tests and a first look |
 | `LocalFsStorage('./.cloudbitmaps')` | `@cloudbitmaps/roaring` | one process on one folder: a laptop or a CI job |
 | `S3Storage({ bucket, prefix })` | `@cloudbitmaps/s3` | production: the validated one |
-| `GcsStorage({ bucket, prefix })` | `@cloudbitmaps/gcs` | Google Cloud Storage; outside the validated envelope |
-| `AzureBlobStorage({ connectionString, container })` | `@cloudbitmaps/azure-blob` | Azure Blob Storage; outside the validated envelope |
+| `GcsStorage({ bucket, prefix })` | `@cloudbitmaps/gcs` | Google Cloud Storage; outside the [validated envelope](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/ROADMAP.md#the-validated-envelope--whats-proven-and-what-isnt) |
+| `AzureBlobStorage({ connectionString, container })` | `@cloudbitmaps/azure-blob` | Azure Blob Storage; outside the [validated envelope](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/ROADMAP.md#the-validated-envelope--whats-proven-and-what-isnt) |
 
 There is no `add` or `remove`: a segment changes only by loading a new generation. A load is a batch job, not a
 request handler. `store.exists(ref)` says whether a segment has been loaded.

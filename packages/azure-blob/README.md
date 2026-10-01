@@ -3,8 +3,8 @@
 **Azure Blob Storage for [CloudBitmaps](https://github.com/cloudbitmaps/cloudbitmaps).** One container holds your generations and their pointers, so there is
 no second service to run.
 
-> **ESM-only, Node ≥ 22.12.** Use `import`; for `require()`, Jest and TypeScript, see the
-> [repository README](https://github.com/cloudbitmaps/cloudbitmaps#install--entry-points).
+> **ESM-only, Node ≥ 22.12.** Use `import`; for `require()`, Jest and TypeScript, see
+> [CommonJS, Jest and TypeScript](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#commonjs-jest-and-typescript).
 
 > Pre-1.0: the API and the on-disk format can still change. These docs describe `main`, ahead of the npm release.
 
@@ -44,7 +44,7 @@ Any other key is refused by name.
 | `connectionString` and `container` | build a container client for you |
 | `containerClient` | your own container-scoped client, instead of the two above; giving both is refused |
 | `prefix` | a key prefix for everything this store writes |
-| `blockBytes` | the staged block size (default 8 MiB, which is also the peak write memory) |
+| `blockBytes` | the staged block size (default 8 MiB; the upload buffers one block at a time) |
 | `maxObjectBytes` | the largest blob (default `blockBytes` × 50,000, about 400 GiB) |
 
 ## Before production
@@ -60,7 +60,7 @@ Any other key is refused by name.
   call, or check `store.generations(ref)`. Every write is tagged with a random id and a conflict is settled by reading
   it back, because the client's own retry has no per-request switch.
 
-The [production checklist](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md) covers each item.
+The [production checklist](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md) covers each item, and the ones every backend shares: a request timeout on your client, backups of the data and the registry, and a schedule for your loads.
 
 ## Documentation
 

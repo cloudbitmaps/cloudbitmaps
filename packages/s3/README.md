@@ -3,8 +3,8 @@
 **S3 storage for [CloudBitmaps](https://github.com/cloudbitmaps/cloudbitmaps).** One bucket holds your generations and their pointers, so there is no second
 service to run.
 
-> **ESM-only, Node ≥ 22.12.** Use `import`; for `require()`, Jest and TypeScript, see the
-> [repository README](https://github.com/cloudbitmaps/cloudbitmaps#install--entry-points).
+> **ESM-only, Node ≥ 22.12.** Use `import`; for `require()`, Jest and TypeScript, see
+> [CommonJS, Jest and TypeScript](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#commonjs-jest-and-typescript).
 
 > Pre-1.0: the API and the on-disk format can still change. These docs describe `main`, ahead of the npm release.
 
@@ -41,7 +41,7 @@ It builds its own client from your usual AWS credentials. Any other key is refus
 | `prefix` | a key prefix for everything this store writes |
 | `client` | your own `S3Client`; it carries its own region, endpoint and credentials |
 | `region`, `endpoint`, `pathStyle`, `credentials` | build a client for you, such as one for MinIO; refused beside `client` |
-| `partBytes`, `maxObjectBytes` | multipart sizing: part size (default 8 MiB, which is also the peak write memory) and the largest object (about 80 GiB by default, up to S3's 5 TiB) |
+| `partBytes`, `maxObjectBytes` | multipart sizing: part size (default 8 MiB; the upload buffers one part at a time) and the largest object (about 80 GiB by default, up to S3's 5 TiB) |
 
 ## Before production
 
@@ -61,7 +61,7 @@ It builds its own client from your usual AWS credentials. Any other key is refus
   call, or check `store.generations(ref)`. The SDK's own retry is off for conditional writes, so a write that landed
   is not reported as a conflict.
 
-The [production checklist](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md) covers each item, with a sample IAM policy.
+The [production checklist](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md) covers each item, with a sample IAM policy, and the ones every backend shares: a request timeout on your client, backups of the data and the registry, and a schedule for your loads.
 
 ## Documentation
 

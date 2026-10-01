@@ -11,8 +11,8 @@ On pnpm 10 and later, allow the one build script first, or the package throws at
 
 Depend on `@cloudbitmaps/core` directly only to write a flavor or a driver.
 
-> **ESM-only, Node ≥ 22.12.** Use `import`; for `require()`, Jest and TypeScript, see the
-> [repository README](https://github.com/cloudbitmaps/cloudbitmaps#install--entry-points).
+> **ESM-only, Node ≥ 22.12.** Use `import`; for `require()`, Jest and TypeScript, see
+> [CommonJS, Jest and TypeScript](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#commonjs-jest-and-typescript).
 
 > Pre-1.0: the API and the on-disk format can still change. These docs describe `main`, ahead of the npm release.
 
