@@ -68,6 +68,14 @@ export const RETAINED_BYTES_PER_INDEX_ENTRY = 20;
 /** The fewest bytes one index record takes: four one-byte varints and the four-byte payload CRC. */
 const MIN_INDEX_RECORD_BYTES = 4 + CRC32C_BYTES;
 
+/**
+ * How many entries `parseIndex` makes room for, from the index's length alone: what its bytes could hold at the
+ * smallest record, and never more than one entry per 16-bit key. A hostile index cannot make the reader allocate more.
+ */
+export function indexCapacity(indexLength: number): number {
+  return Math.min(0x1_0000, Math.floor(indexLength / MIN_INDEX_RECORD_BYTES));
+}
+
 export interface CrbmReaderOptions {
   /** Speculative tail size in bytes (default 256 KB; clamped up to at least the footer size). */
   readonly tailBytes?: number;
@@ -447,7 +455,7 @@ export function parseIndex(
   // The arrays are sized from what the index could hold, never from what it claims: every record takes at least
   // MIN_INDEX_RECORD_BYTES and keys are unique within 16 bits, so a hostile index cannot make this allocate more
   // than its own bytes (and 65,536 slots) could fill.
-  const capacity = Math.min(0x1_0000, Math.floor(indexBytes.length / MIN_INDEX_RECORD_BYTES));
+  const capacity = indexCapacity(indexBytes.length);
   const keys = new Uint16Array(capacity);
   const cardinalityMinusOne = new Uint16Array(capacity);
   const lengths = new Uint32Array(capacity);

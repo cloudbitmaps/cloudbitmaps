@@ -1,5 +1,6 @@
 import { CrbmWriter } from '@/core/crbm/writer';
-import { CrbmReader, parseIndex } from '@/core/crbm/reader';
+import { readFileSync } from 'node:fs';
+import { CrbmReader, indexCapacity, parseIndex } from '@/core/crbm/reader';
 import { BufferSink, BufferReader } from '@/core/blob';
 import { IntegrityError } from '@/core/errors';
 import { PAYLOAD_START } from '@/core/crbm/format';
@@ -45,6 +46,25 @@ describe('parseIndex — a hostile index allocates no more than it holds', () =>
     for (const v of [keyDelta, gap, len, card]) writeVarint(out, v);
     return [...out, 1, 2, 3, 4];
   };
+
+  // The arrays are allocated before a record is read, so their size must come from the index's length and nothing
+  // the index says: at most one entry per 8 bytes, the smallest record, and never more than one per 16-bit key.
+  it('sizes its arrays from the bytes it holds, and never past one entry per key', () => {
+    expect(indexCapacity(0)).toBe(0);
+    expect(indexCapacity(7)).toBe(0);
+    expect(indexCapacity(8)).toBe(1);
+    expect(indexCapacity(800)).toBe(100);
+    expect(indexCapacity(65_536 * 8)).toBe(65_536);
+    expect(indexCapacity(65_536 * 8 + 8)).toBe(65_536);
+    expect(indexCapacity(8 * 1024 * 1024)).toBe(65_536);
+    const src = readFileSync(
+      new URL('../../../packages/core/src/core/crbm/reader.ts', import.meta.url),
+      'utf8',
+    );
+    const body = src.slice(src.indexOf('export function parseIndex('));
+    expect(body).toContain('const capacity = indexCapacity(indexBytes.length);');
+    expect(body.slice(0, body.indexOf('new Uint16Array'))).toContain('indexCapacity(');
+  });
 
   it('refuses a repeated key, however many records follow', () => {
     const bytes = Uint8Array.from([...record(5, 0, 3, 1), ...record(0, 0, 3, 1)]);
