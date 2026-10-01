@@ -11,6 +11,24 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Added
+
+- **The calibration harness runs the stages an in-region run needs.** `pnpm calibrate:aws` now runs seven stages and
+  records each one's own requests by class and by kind of read: loads through `store.load()`, cold intersects over
+  the calibration layout, the same overlap with its shared chunks spread uniformly over each segment (a pure layout
+  from a fixed seed, `bench/lib/calibrate-spread.cjs`), a sweep over how many chunks the operands share
+  (`CR_CALIBRATE_SWEEP`, default 1,000 and 2,000), warm intersects, `has()` and `count()` cold then warm, and `andNot`
+  of one segment against ten. A warm read that makes a request fails its stage. One table names the stages and bounds
+  each (`bench/lib/calibrate-stages.cjs`): the pre-flight projection prints every stage's bound, the finished run is
+  held to each, and a test fails when the harness runs a stage the table does not name. Each load records its own
+  requests, and `bench/lib/calibration-figures.cjs` prices a `store.load()` run from them and from each stage's own
+  counts, refusing a file whose stages do not add up to what was billed.
+
+### Changed
+
+- **The default calibration workload is 20 single-part and 5 multipart loads, and every segment is loaded once.** A
+  segment's first load is what the projection bounds, so the harness refuses to load a name twice.
+
 ## [0.11.0] — 2026-10-01
 
 Reading by id range, and a store that refuses what it would otherwise get wrong. `iterate`, `intersect`, `union`,

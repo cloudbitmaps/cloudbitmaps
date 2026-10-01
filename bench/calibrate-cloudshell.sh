@@ -10,10 +10,10 @@
 # what a consumer actually installs, and CloudShell never needs this repository's toolchain.
 #
 # Usage, from a clone of this repository inside CloudShell:
-#   CR_CALIBRATE_CONFIRM=yes-spend-money CR_CALIBRATE_MAX_USD=0.25 bash bench/calibrate-cloudshell.sh
+#   CR_CALIBRATE_CONFIRM=yes-spend-money CR_CALIBRATE_MAX_USD=0.05 bash bench/calibrate-cloudshell.sh
 #
 # Optional: CR_CALIBRATE_EXPECT_ACCOUNT=<12-digit id> refuses to run anywhere else.
-#           CR_CALIBRATE_PACKAGE_VERSION=0.10.0 pins the release measured (default: latest).
+#           CR_CALIBRATE_PACKAGE_VERSION=0.11.0 pins the release measured (default: latest).
 #           CR_CALIBRATE_REHEARSE=1 runs the same install path against local MinIO, to test this script.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."

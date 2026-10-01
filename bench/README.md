@@ -74,6 +74,26 @@ publishes one of them and lists the other two as owed:
    off (`cache.genTtlMs: 0`). Bytes read out of the region are billed as transfer, which the harness counts and
    does not price.
 
+### The stages
+
+A run is a sequence of stages. Each records the requests it made, by class and by kind of read, beside the bound the
+projection gave it and the exact count the engine is expected to make when nothing races it, from the layout alone
+(`lib/calibrate-stages.cjs` holds both). A stage that misses its expected count says so on the console and in the
+file under `expectedMissed`, and the run carries on, because a count that differs is a finding.
+
+| stage | what it does | requests it is expected to make |
+|---|---|---|
+| `load` | 20 single-part and 5 multipart (two-part) loads through `store.load()`, each recording its own requests | per segment's first load: 4 PUT-class and 7 GET; a multipart object swaps its PUT for a create, its parts and a complete |
+| `intersect` | 40 cold intersects over the calibration layout (100 shared chunks packed at keys 0 to 99), each on a fresh store | 4 + 2k GET each: both pointers, both tails, k chunks from each operand |
+| `spread` | 10 segments of the same overlap with the shared chunks spread uniformly over each segment's chunks from a fixed seed, and 40 cold intersects | the same 4 + 2k, so a difference in latency is the layout's |
+| `sweep` | segments sharing 1,000 chunks (10 intersects) and 2,000 (5), `CR_CALIBRATE_SWEEP` to change the list | 4 + 2k each, at each k |
+| `warm` | the calibration pairs again on one store that trusts its pointers and holds every chunk it read; a priming pass first | the priming pass reads each segment once (a pointer, a tail, the shared chunks); a warm intersect makes none, **and a stage in which one does fails** |
+| `pointReads` | `count()` on 10 segments, then `has()` of one id in every shared chunk of each, cold and then warm | `count()` cold: a pointer and a tail; `has()` cold: one chunk read once its segment is open; warm: none, which fails the stage if not |
+| `andNot` | 10 calls of one calibration segment against 10 others, each on a fresh store | 2 + 2 x 10 + every chunk of the include operand + each exclude's chunks where it overlaps it |
+
+`andNot` reads every chunk of the segment it filters, since any of them can survive, and each exclude only where it
+overlaps, so what it costs scales with the include operand and not with the size of the exclude list.
+
 ### It spends money, so it is hard to run by accident
 
 | mode | what it does |
@@ -87,13 +107,15 @@ A real run needs, separately:
 
 ```
 CR_CALIBRATE_REGION=us-east-1          # never guessed, and us-east-1 only: the one region it has prices for
-CR_CALIBRATE_MAX_USD=0.25              # checked before the run AND during it
+CR_CALIBRATE_MAX_USD=0.05              # checked before the run AND during it
 CR_CALIBRATE_CONFIRM=yes-spend-money   # a typo must not spend money
 CR_CALIBRATE_EXPECT_ACCOUNT=<12 digits> # optional: refuses to run in any other account
 ```
 
 It then prints the account — **last four digits only**, enough to recognise, not enough to be worth pasting — and
-waits ten seconds so you can Ctrl-C before anything is created. The default workload projects to under half a cent.
+waits ten seconds so you can Ctrl-C before anything is created. The default workload's projection, which is an upper
+bound, is under four cents, so a ceiling of five cents holds it with room; `pnpm calibrate:aws` prints each stage's
+bound and the total before anything is created.
 
 ### The guards
 
@@ -108,7 +130,10 @@ constants and the source text:
 - **Only a clean 404 means "the bucket does not exist".** `HeadBucket` answers **403** for a bucket you own but
   cannot list, and in `us-east-1` `CreateBucket` on a bucket you already own returns **200 OK** — so reading 403
   as absent would run the workload inside a real bucket of yours and then delete it on teardown.
-- **The projection is a real upper bound, and every run checks it.** It counts both operands of an intersect, and
+- **The projection covers every stage, and every run checks each one.** One table (`STAGES`) names the stages and one
+  function bounds each, and a test fails when the harness runs a stage the table does not name, or the table names one
+  the harness never runs, so a stage cannot spend money the ceiling never saw. The finished run is held to each
+  stage's bound as well as to the total, so a stage that overspent is named. It counts both operands of an intersect, and
   its retry bound must match the publish loop in `packages/core/src/core/crbm-storage-source.ts`: a test reads the loop's number out of the source and
   fails if they differ, because a retyped number can be wrong. A load, `store.load()` of a new segment, lists the
   segment twice (to choose the generation number, and to collect after the publish; on S3 a listing bills at the PUT
@@ -117,6 +142,13 @@ constants and the source text:
   read per attempt fails it. The workload's client makes one attempt per request, and every attempt teardown's client
   may make is allowed for, so no SDK retry can fall outside it either. After teardown, the run compares what it
   actually issued against what it projected, and flags itself if it went over.
+- **A segment is loaded once.** The projection bounds a segment's first load. A reload also opens the current
+  generation's index, so under four lost races it makes sixteen GET-class requests against that bound of fifteen, and
+  a collecting load reads the pointer once more. The harness claims each name before it loads (`firstLoads`) and
+  refuses a repeat before sending anything.
+- **A warm read that makes a request fails the stage.** Its count is not recorded and compared afterwards: the stage
+  throws, the run keeps what it had finished and exits non-zero. Each warm store trusts its pointer for an hour and
+  holds more chunks than the default cache, so the zero depends on neither the clock nor the cache size.
 - **Evidence is write-once.** A real run's results go to a file named by its run id, and the harness refuses —
   before it reads any credentials, and before it even loads the library — to overwrite one that exists: a second
   run under a published run's id would replace the file its figures are checked against. The id is checked before
@@ -124,7 +156,7 @@ constants and the source text:
   S3 keeps for its own kinds of bucket. Nothing is replaced at the end either: a run whose file appeared while it
   ran, or a retry whose partial name is taken, writes `<runId>.<start>.partial.json` beside it and says so.
 - **The workload fits one teardown listing.** Teardown lists 1,000 object versions a pass and each segment leaves
-  two, so a run loads at most 500 segments. A run of 1,510 segments would leave 20 versions behind after three passes.
+  two, so a run loads at most 500 segments, counting every stage's. A run of 1,510 segments would leave 20 versions behind after three passes.
 - **Teardown empties only a bucket the harness made.** It aborts every upload and deletes every version of every key
   it lists, and `--cleanup` points it at a bucket by name. So before it touches anything it lists every upload and
   every page of versions, up to ten pages, and refuses and reports a bucket holding any key outside `calib/`, the
@@ -191,7 +223,11 @@ hang-up on a real pseudo-terminal that is then closed, and the whole path by int
 - **Exact content.** Every pair of segments shares a planned set of ids, so each intersect must return precisely
   that set — the count *and* the sum — or the run refuses to report a latency.
 - **The published shape.** 500,000-id segments spanning ~2,000 chunks with 100 shared, so the run tests the "100
-  of 2,000 chunks" claim itself; plus two dense segments of ~12 MiB so multipart is actually exercised.
+  of 2,000 chunks" claim itself; plus dense segments of ~12 MiB so multipart is actually exercised.
+- **Each stage's own requests, and each load's.** A load makes pointer reads that the meter files with an intersect's,
+  so a run's totals cannot be divided between stages afterwards. Every stage records its requests as it makes them,
+  every load records its own, and `lib/calibration-figures.cjs` prices each load from its record and refuses a file
+  whose stages do not add up to what was billed.
 - **Chunk reads and the tail read, separately.** Measured request by request, a cold intersect reads exactly 100
   chunks per operand (about 516 bytes each) plus one 256 KiB read from the end of each object, which fetches the
   footer and index in a single round trip. They are reported apart: the chunk count is the proportional part and
@@ -205,7 +241,7 @@ hang-up on a real pseudo-terminal that is then closed, and the whole path by int
 ```
 # in AWS CloudShell, in the region being measured
 git clone https://github.com/cloudbitmaps/cloudbitmaps && cd cloudbitmaps
-CR_CALIBRATE_CONFIRM=yes-spend-money CR_CALIBRATE_MAX_USD=0.25 bash bench/calibrate-cloudshell.sh
+CR_CALIBRATE_CONFIRM=yes-spend-money CR_CALIBRATE_MAX_USD=0.05 bash bench/calibrate-cloudshell.sh
 ```
 
 The script installs Node 22 if CloudShell's is older, installs the **published** `@cloudbitmaps/roaring` and
@@ -226,10 +262,9 @@ results land in `~/calibrate-aws-rehearsal.json`.
 
 Its scope is the three debts above, on one workload shape. Also owed, and **not** in this harness yet:
 
-- **`andNot` with a large `exclude`**, and the `*Into` verbs, which publish their result as a new generation of
-  a destination segment.
-- **Other shapes of intersect** — more than two operands, or a sweep of how many chunks the operands share. It
-  measures one shape, the published one.
+- **The `*Into` verbs**, which publish their result as a new generation of a destination segment.
+- **Other shapes of combine** — an intersect of more than two operands, a union, or an `andNot` with a different
+  include operand. It measures two operands, and one include operand against ten excluded.
 - **Lambda.** CloudShell is a long-lived shell inside the region; a function's cold start and initialisation are
   a separate figure, which needs a run from inside a function.
 

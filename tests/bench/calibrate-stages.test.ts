@@ -72,12 +72,20 @@ const guards = require_(join(ROOT, 'bench', 'lib', 'calibrate-guards.cjs')) as {
   };
   checkWorkload: (i: Record<string, number>) => void;
   MAX_SEGMENTS: number;
+  breached: (spent: number, ceiling: number) => boolean;
   firstLoads: () => (segment: string) => void;
   projectOps: (i: { loads: number; reads: number; chunksPerRead: number; retryBound: number }) => {
     put: number;
     get: number;
   };
 };
+const meterLib = require_(join(ROOT, 'bench', 'lib', 'aws-meter.cjs')) as {
+  priceTally: (
+    t: { put: number; get: number },
+    p: { storage: { putPerMillion: number; getPerMillion: number } },
+  ) => { totalUSD: number };
+};
+
 const harnessSrc = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
 
 /** The harness's default plan, for the calibration layout at 500,000 ids. */
@@ -560,5 +568,69 @@ describe('a segment is loaded once', () => {
     // Four lost publishes, the last attempt winning: sixteen, past the bound of fifteen.
     expect(await reload(4)).toEqual({ gets: 16, threw: false });
     expect((await reload(4)).gets).toBeGreaterThan(bound);
+  });
+});
+
+describe('the ceiling covers every stage', () => {
+  const pricing = { storage: { putPerMillion: 5, getPerMillion: 0.4 } };
+
+  it('prices the default workload under the $0.05 ceiling, with room', () => {
+    const { total } = stages.projectStages(defaultPlan());
+    const usd = meterLib.priceTally(total, pricing).totalUSD;
+    expect(usd).toBeLessThan(0.05);
+    expect(guards.breached(usd, 0.05)).toBe(false);
+  });
+
+  // The budget, derived from the request counts the engine's tests pin: each stage's expected requests, the loads'
+  // counted first-load shape, the bucket's own, and what the run is expected to bill, against what the pre-flight
+  // projection allows. The harness prints the same projection; a change to a stage's requests or bound changes
+  // a figure here, and the table is re-derived before the test is.
+  it("agrees with the budget table: each stage's expected requests, the expected bill, and the bound above it", () => {
+    const w = defaultPlan();
+    const expected = stages.expectedReads(w);
+    expect(expected).toEqual({
+      intersect: 8_160,
+      spread: 8_160,
+      sweep: 40_060,
+      warm: 2_040,
+      pointReads: 1_040,
+      andNot: 30_210,
+    });
+    const single = stages.firstLoadRequests(0);
+    const multi = stages.firstLoadRequests(2);
+    // 20 single-part and 5 two-part loads; the spread stage's 10 segments and the sweep's 3 for each of 2 values.
+    const loads = {
+      put: 20 * single.put + 5 * multi.put,
+      get: 20 * single.get + 5 * multi.get,
+    };
+    expect(loads).toEqual({ put: 115, get: 175 });
+    const setups = 10 + 3 * w.sweep.entries.length;
+    const setup = { put: setups * single.put, get: setups * single.get };
+    expect(setup).toEqual({ put: 64, get: 112 });
+    // The bucket's creation and, in a run with nothing left over, teardown's three listings: of uploads, of versions
+    // while the objects are there, and of versions once they are gone. The probe and the ten round-trip samples are
+    // GET-class.
+    const fixed = { put: 1 + 3, get: 1 + 10 };
+    const get =
+      loads.get + setup.get + Object.values(expected).reduce((n, g) => n + g, 0) + fixed.get;
+    const put = loads.put + setup.put + fixed.put;
+    expect({ put, get }).toEqual({ put: 183, get: 89_968 });
+    const expectedUSD = meterLib.priceTally({ put, get }, pricing).totalUSD;
+    expect(expectedUSD).toBeCloseTo(0.036902, 6);
+    // The bound is above it, and under the ceiling.
+    const bound = meterLib.priceTally(stages.projectStages(w).total, pricing).totalUSD;
+    expect(bound).toBeCloseTo(0.038074, 6);
+    expect(bound).toBeGreaterThan(expectedUSD);
+    expect(bound).toBeLessThan(0.05);
+  });
+
+  it('breaches a ceiling the projection exceeds, so a stage added unprojected cannot hide under it', () => {
+    const w = defaultPlan();
+    const { total } = stages.projectStages(w);
+    const usd = meterLib.priceTally(total, pricing).totalUSD;
+    expect(guards.breached(usd, usd)).toBe(true);
+    // Doubling a stage's work raises the projection by exactly that stage's bound.
+    const bigger = stages.projectStages({ ...w, andNot: { ...w.andNot, calls: 20 } });
+    expect(bigger.total.get - total.get).toBe(stages.projectStages(w).stages.andNot?.get);
   });
 });
