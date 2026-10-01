@@ -80,6 +80,7 @@ const {
   STAGES,
   parseSweep,
   coldIntersectGets,
+  modelRounds,
   projectStages,
   expectedReads,
   firstLoadRequests,
@@ -793,6 +794,7 @@ async function main() {
     suffixBytes: tally.reads.suffix.bytes,
     wholeN: tally.reads.whole.n,
     wholeBytes: tally.reads.whole.bytes,
+    requestMs: tally.requestMs,
   });
   // What was sent between two snapshots, in the shape the meter's own tally has, so a stage's file can be read the
   // way the run's totals are.
@@ -884,6 +886,21 @@ async function main() {
       p99ms: q(xs, 0.99),
     });
     const msSince = (t0) => Number(process.hrtime.bigint() - t0) / 1e6;
+    // The depth of one timed read, from the meter: its peak requests in flight, the sum of its requests' own times, how
+    // many requests on average were in flight over its wall time, and so how many it waited for one after another
+    // (its requests times its wall time over the time they took between them). Each read starts its peak afresh.
+    const startDepth = () => {
+      tally.peakInFlight = tally.inFlight;
+    };
+    const depthOf = (before, after, ms) => {
+      const requestMs = after.requestMs - before.requestMs;
+      return {
+        peakInFlight: tally.peakInFlight,
+        requestMs,
+        meanInFlight: requestMs / ms,
+        rounds: ((after.get - before.get) * ms) / requestMs,
+      };
+    };
 
     // The store a timed read uses, one per intersect so no cache can answer it: its own retry is off and its pointer
     // refresh is off (`TIMED_STORE`). Every store that times a read is built through here or through `warmStore`.
@@ -1035,6 +1052,7 @@ async function main() {
         // intersect takes, so the request count describes the library rather than the network.
         const store = timedStore();
         const before = snap();
+        startDepth();
         const t0 = process.hrtime.bigint();
         let n = 0;
         let sum = 0;
@@ -1060,6 +1078,7 @@ async function main() {
           tailReads: after.suffixN - before.suffixN,
           tailBytes: after.suffixBytes - before.suffixBytes,
           pointerReads: after.wholeN - before.wholeN,
+          ...depthOf(before, after, ms),
         });
         checkCeiling();
       }
@@ -1091,6 +1110,12 @@ async function main() {
         tailReadBytesPerOperand: median(reads.map((r) => r.tailBytes)) / 2,
         pointerReadsPerIntersect: median(reads.map((r) => r.pointerReads)),
         medianGets: median(reads.map((r) => r.gets)),
+        // Depth, measured: requests in flight at once, and how many an intersect waited for one after another, against
+        // the engine's model of a pointer, a tail and a window of chunks at a time.
+        medianPeakInFlight: median(reads.map((r) => r.peakInFlight)),
+        medianMeanInFlight: median(reads.map((r) => r.meanInFlight)),
+        medianRounds: median(reads.map((r) => r.rounds)),
+        modelRounds: modelRounds(sharedChunks),
         expectedGets,
         // Intersects whose request count was not the one the engine is expected to make: zero unless a read found
         // something.
@@ -1354,6 +1379,7 @@ async function main() {
         for (let i = 0; i < ANDNOT_CALLS; i += 1) {
           const store = timedStore();
           const before = snap();
+          startDepth();
           const t0 = process.hrtime.bigint();
           let n = 0;
           let sum = 0;
@@ -1377,6 +1403,7 @@ async function main() {
             chunkReads: after.rangeN - before.rangeN,
             tailReads: after.suffixN - before.suffixN,
             pointerReads: after.wholeN - before.wholeN,
+            ...depthOf(before, after, ms),
           });
           checkCeiling();
         }
@@ -1394,6 +1421,9 @@ async function main() {
           chunkReadsPerCall: median(reads.map((r) => r.chunkReads)),
           tailReadsPerCall: median(reads.map((r) => r.tailReads)),
           pointerReadsPerCall: median(reads.map((r) => r.pointerReads)),
+          medianPeakInFlight: median(reads.map((r) => r.peakInFlight)),
+          medianMeanInFlight: median(reads.map((r) => r.meanInFlight)),
+          medianRounds: median(reads.map((r) => r.rounds)),
           timedStore: TIMED_STORE,
         };
       },

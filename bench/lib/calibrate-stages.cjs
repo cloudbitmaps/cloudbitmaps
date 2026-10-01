@@ -29,6 +29,16 @@ const STAGES = Object.freeze([
   'andNot',
 ]);
 
+/**
+ * How many shared chunks the engine keeps in flight at once, `DEFAULT_INTERSECT_CONCURRENCY` in the engine, each read
+ * from both operands: so 2 x this many requests are in flight, and a cold intersect is expected to be this many
+ * requests deep per window of chunks. A test reads the number out of the engine's source.
+ */
+const ENGINE_WINDOW = 8;
+
+/** The depth the engine is expected to make a cold intersect of `k` shared chunks: a pointer, a tail, then windows. */
+const modelRounds = (k) => 2 + Math.ceil(k / ENGINE_WINDOW);
+
 /** The sweep over how many chunks two segments share, when none is asked for: k and how many intersects at each. */
 const DEFAULT_SWEEP = Object.freeze([
   Object.freeze({ k: 1_000, intersects: 10 }),
@@ -170,6 +180,8 @@ const firstLoadRequests = (parts) =>
 
 module.exports = {
   STAGES,
+  ENGINE_WINDOW,
+  modelRounds,
   DEFAULT_SWEEP,
   parseSweep,
   coldIntersectGets,

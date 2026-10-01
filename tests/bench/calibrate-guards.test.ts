@@ -1502,6 +1502,62 @@ describe('the meter counts every attempt the SDK makes, not every send', () => {
       maxAttempts,
     });
 
+  // Depth: a count of requests cannot say how many ran at once. The server holds every answer until sixteen requests
+  // are pending, then answers each after about 20 ms, so a meter that sees depth reads exactly sixteen.
+  it('records the most requests in flight at once, and the time they took between them', async () => {
+    const pending: Array<() => void> = [];
+    const server = createServer((_req, res) => {
+      pending.push(() => {
+        res.writeHead(200, { 'content-length': '0' });
+        res.end();
+      });
+      if (pending.length === 16) {
+        for (const answer of pending.splice(0)) setTimeout(answer, 20);
+      }
+    });
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    const { port } = server.address() as AddressInfo;
+    const client = clientFor(`http://127.0.0.1:${port}`, 1);
+    const tally = meterLib.meter(client) as ReturnType<typeof meterLib.meter> & {
+      inFlight: number;
+      peakInFlight: number;
+      requestMs: number;
+    };
+    try {
+      expect(tally.peakInFlight).toBe(0);
+      await Promise.all(
+        Array.from({ length: 16 }, () => client.send(new s3.HeadBucketCommand({ Bucket: 'b' }))),
+      );
+      expect(tally.peakInFlight).toBe(16);
+      expect(tally.inFlight).toBe(0);
+      expect(tally.get).toBe(16);
+      // Each of the sixteen took at least the 20 ms the server waited.
+      expect(tally.requestMs).toBeGreaterThanOrEqual(16 * 19);
+      // A later read starts its peak afresh, as the harness does before each timed read.
+      tally.peakInFlight = tally.inFlight;
+      expect(tally.peakInFlight).toBe(0);
+    } finally {
+      client.destroy();
+      await new Promise<void>((done) => server.close(() => done()));
+    }
+  });
+
+  it('lowers the in-flight count when a send fails, and counts it as before', async () => {
+    const server = await flakyS3(1);
+    const client = clientFor(server.url, 1);
+    const tally = meterLib.meter(client) as ReturnType<typeof meterLib.meter> & {
+      inFlight: number;
+    };
+    try {
+      await expect(client.send(new s3.HeadBucketCommand({ Bucket: 'b' }))).rejects.toBeDefined();
+      expect(tally.inFlight).toBe(0);
+      expect(tally.get).toBe(1);
+    } finally {
+      client.destroy();
+      await server.close();
+    }
+  });
+
   it('counts a retried request once per attempt', async () => {
     const server = await flakyS3(1);
     const client = clientFor(server.url, 3);

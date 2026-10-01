@@ -31,6 +31,8 @@ const stages = require_(join(ROOT, 'bench', 'lib', 'calibrate-stages.cjs')) as {
   STAGES: string[];
   DEFAULT_SWEEP: { k: number; intersects: number }[];
   parseSweep: (raw: unknown) => { k: number; intersects: number }[];
+  ENGINE_WINDOW: number;
+  modelRounds: (k: number) => number;
   coldIntersectGets: (k: number) => number;
   coldIntersectBound: (k: number) => number;
   projectStages: (w: Plan) => { stages: Record<string, Bound>; total: Bound };
@@ -204,6 +206,43 @@ describe('the stage table', () => {
       sweep: { ...w.sweep, entries: [...stages.DEFAULT_SWEEP, { k: 500, intersects: 4 }] },
     }).stages.sweep;
     expect(three?.get).toBeGreaterThan(both?.get ?? 0);
+  });
+});
+
+describe('the depth the harness measures', () => {
+  // The window is the engine's, so it is read out of the engine's source and not retyped.
+  it('models the engine: a window of eight chunks, a pointer and a tail first', () => {
+    const src = readFileSync(join(ROOT, 'packages', 'core', 'src', 'core', 'engine.ts'), 'utf8');
+    const window = /const DEFAULT_INTERSECT_CONCURRENCY = (\d+);/.exec(src);
+    expect(window, 'the engine no longer names its window this way').not.toBeNull();
+    expect(stages.ENGINE_WINDOW).toBe(Number(window?.[1]));
+    expect(stages.modelRounds(100)).toBe(2 + 13);
+    expect(stages.modelRounds(1_000)).toBe(2 + 125);
+    expect(stages.modelRounds(2_000)).toBe(2 + 250);
+  });
+
+  it('records peak requests in flight, their summed time and the rounds, for every cold read', () => {
+    expect(harnessSrc).toContain('tally.peakInFlight = tally.inFlight;');
+    expect(harnessSrc).toContain('rounds: ((after.get - before.get) * ms) / requestMs');
+    for (const field of [
+      'medianPeakInFlight',
+      'medianMeanInFlight',
+      'medianRounds',
+      'modelRounds',
+    ]) {
+      expect(harnessSrc, field).toContain(field);
+    }
+    // Both loops that time a cold read start the peak afresh before the clock starts, and record the depth after.
+    const cold = harnessSrc.slice(harnessSrc.indexOf('const coldIntersects = async'));
+    expect(cold.indexOf('startDepth();')).toBeLessThan(
+      cold.indexOf('const t0 = process.hrtime.bigint();'),
+    );
+    expect(cold.indexOf('...depthOf(before, after, ms)')).toBeGreaterThan(-1);
+    const andNot = harnessSrc.slice(harnessSrc.indexOf('for (let i = 0; i < ANDNOT_CALLS'));
+    expect(andNot.indexOf('startDepth();')).toBeLessThan(
+      andNot.indexOf('const t0 = process.hrtime.bigint();'),
+    );
+    expect(andNot).toContain('...depthOf(before, after, ms)');
   });
 });
 
