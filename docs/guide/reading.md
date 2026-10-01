@@ -1,0 +1,224 @@
+# Reading in depth
+
+> **These docs describe `main`, which is ahead of the `0.10.0` release on npm.** The library is pre-1.0 and the API
+> can still change. Two differences reach code written from these pages: `0.10.0` has no range reads, so it ignores
+> `after` and `through` and a paging loop gets the whole result on every page, and it ignores most option keys it does
+> not take, where `main` refuses them by name. [The changelog](../../CHANGELOG.md#unreleased) lists every difference. The docs that match
+> `npm install` are at the [`v0.10.0` tag](https://github.com/cloudbitmaps/cloudbitmaps/tree/v0.10.0).
+
+[Getting started](getting-started.md#read-it) shows the read verbs. This page covers what each one reads and costs,
+how soon a reader sees a new load, how to read one fixed point in time, and how to page through a segment. Every
+option of every verb is in the [segment verbs table](api-reference.md#the-segment-verbs-the-90-of-daily-use).
+
+## Combine segments: intersect, union, andNot
+
+`intersect`, `union` and `andNot` stream ids in ascending order, and each holds only a small window of chunks in
+memory. What each one has to read is a property of the set operation, not of the implementation:
+
+| | chunks read | can skip? |
+| --- | --- | --- |
+| `intersect` | keys present in **every** operand | **yes**: the headline feature |
+| `andNot` (`a \ s`) | every chunk of `a`; `s` **only where it overlaps `a`** | partly, on the suppression side |
+| `union` | every chunk of **every** operand | no: an id in any operand belongs to the result |
+
+All three are charged against the same per-op budget, so a wide `union` is refused rather than quietly billed.
+`intersect` is commutative: `a.intersect([b])` gives the same ids as `b.intersect([a])`.
+
+**To suppress the result of an intersection, pass `exclude`. Do not chain.** `a.intersect([b], { exclude: [s] })`
+folds the subtraction into one pass and reads `s` only at the keys that survived. Writing the intersection to a
+temporary segment and then calling `andNot` makes an intermediate nobody wants, and reads `s` in full.
+
+**Every operand must have been loaded.** A combine refuses an operand that names no segment, `this` and every
+`exclude` included, with a `ValidationError` that names it. Read directly, a segment that was never loaded is empty,
+which is right. As an operand, a mistyped name or a missing `namespace` would contribute nothing and look correct,
+and as an `exclude` it would suppress nobody and return the whole audience. Pass `allowAbsentOperands: true` when an
+operand may legitimately not exist yet. A segment loaded with no ids, or one that only has a retention policy, counts
+as existing.
+
+**To keep a result, use the `*Into` verbs.** `intersectInto`, `unionInto` and `andNotInto` write the result as a new
+generation of another segment. See [Loading in depth](loading.md#write-a-result-into-another-segment-the-into-verbs).
+
+## What a read costs
+
+- **`count()` reads no payload.** It is summed from the `.crbm` index. A cold count is a pointer read and one tail
+  read, which brings the index (a second read for an index larger than the tail read). A reader that already has the
+  segment open re-reads only the pointer, at most once each `cache.genTtlMs`. So counting a ten-million-id segment
+  makes the same requests as counting a thousand, while its index fits that one tail read. The sum is the index's own
+  word: see [What `count()` trusts](#what-count-trusts).
+- **`has()` comes from memory once warm.** A `has()` whose chunk is in the cache makes no request, beyond at most one
+  pointer read per segment each `cache.genTtlMs` (2 s by default) for as long as the reader cache keeps the segment
+  open.
+- **`intersect` skips.** Two 2,000,000-id segments that share 100 of their 2,000 chunks intersect by fetching only the
+  shared chunks. The [at-scale benchmark](../benchmarks.md#at-scale--measured-1k--10k--100k-segments) measured it at
+  24.6 ms, on in-memory storage on an Apple M3 Pro, so that figure times the engine and not object storage.
+- **A `has()` that misses the cache is a ranged GET against object storage.** If you need sub-millisecond answers on
+  a working set that fits a bounded cache, an in-process store is the right tool.
+
+What a load costs is on the [benchmarks page](../benchmarks.md#real-cloud-calibration--aws), and
+[what it costs at your size](sizing.md) prices whole deployments.
+
+## What `count()` trusts
+
+`count()` answers from the `.crbm` index: it sums the per-chunk cardinalities the index records and decodes no
+payload, which is what makes it cheap. Opening a generation checks the index once, and refuses with `IntegrityError`
+an index that is not internally consistent:
+
+- every chunk key in range and ascending;
+- every cardinality in `1..65536`;
+- every payload inside the payload region;
+- on an unencrypted object, the footer's chunk count and total cardinality equal to what the index holds.
+
+A corrupt index that is still internally consistent yields a wrong count, with no error. `iterate()` and the combines
+decode the payloads, whose structure is checked. The same index supplies `load`'s `cardinalityBefore` and the chunk
+keys an `intersect` plans its fetches from. Where an exact answer matters more than the request count, `iterate()` the
+segment and count what it yields.
+
+## How soon a reader sees a new load
+
+**A reader sees a new generation within `cache.genTtlMs`, 2000 ms by default.** After a load publishes, a reader may
+serve the previous generation for up to that long, then switches. No restart is needed. This is the one place the
+bound is stated; other pages link here.
+
+- **Fresher reads:** lower `cache.genTtlMs`. It costs more registry reads.
+- **Fewer registry reads:** raise it, and accept a little more staleness.
+- **`cache.genTtlMs: 0` turns the timed refresh off.** The store then re-resolves a segment only when its reader
+  cache evicts it, when a read has to fetch from a generation a sweep deleted, or when it is invalidated: by this
+  store's own `load`, `rollback`, `eraseSubject` or `*Into` writes, or by `store.invalidate(ref)`. Another process's
+  load then reaches it with no bound at all. Use `0` only for a store that never needs to see another process's
+  loads.
+- **An outage of the registry stretches the bound.** A refresh that fails with a transient fault (throttling, a 5xx, a
+  dropped connection) keeps serving the generation the reader holds, and retries 500 ms later (or after the TTL, if
+  that is shorter). The store converges within one retry of the registry answering. A refresh that fails with anything
+  else, such as an access denial or a row that will not parse, is not ridden out: the call that meets it throws that
+  error, and the next read resolves the segment afresh.
+- **`store.invalidate(ref)` forgets what this store derived about a segment**: its open reader and the key that reader
+  unwrapped, its decoded chunks, and those of every pin of the segment, so its next read resolves the current
+  generation afresh. It does no I/O. The store's own writes (`load`, `rollback`, the `*Into` verbs, `eraseSubject`,
+  `dropSegment`, `retireExpired`) do this for themselves. Call it for what they cannot see: a `destroySegment` or
+  `eraseNamespace` beside the store, or another process's publish, erasure or drop, when your own fan-out delivers
+  the news.
+- **Without a registry** (a bare storage driver, which is read-only and cleartext), a store finds the generation by
+  listing the bucket when it opens a segment, and keeps it until the reader cache evicts the segment, a read finds it
+  swept, or it is invalidated.
+
+**A long call can describe two instants.** Within one read, such as one `count` or one `intersect`, the generation is
+resolved once, before any chunk is fetched, and every chunk is a whole, checksum-verified chunk of one generation. A
+load landing mid-call never tears a chunk. But a long call can read its later chunks from another generation if it
+straddles a TTL boundary, if the reader cache evicts the segment mid-call, if a sweep collects the generation it was
+reading, or if the store invalidates the segment. Its answer then describes two instants. `dropSegment` and `retireExpired` invalidate too: a read of a segment that then no longer resolves ends rather than moves on, and a read of one `retireExpired` lists but leaves live moves on. [Pin the segment](#read-one-fixed-point-in-time)
+when that matters.
+
+## Read one fixed point in time
+
+`seg.pin()` returns a handle held at the generation that is current right now, for the life of the handle. A long
+export, reconciliation or send then describes one instant instead of whichever generations happened to be current as
+it ran. An ordinary handle re-resolves on `cache.genTtlMs`; a pinned one does not.
+
+```ts
+const audience = await store.segment('active-30d').pin();
+for await (const id of audience.iterate()) {
+  // every id of one generation, however long this takes
+}
+```
+
+- **A pin covers one segment.** `snap.intersect([other])` reads `snap` at its pin and `other` live. Pin each segment to
+  hold a whole query. A pinned handle used as an operand is still read at its pin.
+- **A pin is a hold, not a lease.** Nothing stops a collection (a load's `keep`, an erasure, the retention sweep) from
+  deleting the generation underneath you. A pinned read deliberately does not heal forward, because silently serving
+  a different generation is what a pin exists to prevent. It fails with `NotFoundError` instead, for any chunk it must
+  fetch from a generation that has since been collected. Chunks it already cached still answer.
+- **Size `keep` for your longest pinned job:** keep more generations than the loads that can land on the segment while
+  the job runs. See [Generations and `keep`](loading.md#generations-and-keep). An erasure collects the generation it rewrote whatever
+  `keep` says.
+
+### How a pin stays correct
+
+- **A pin costs a generation number, not a retained index.** The pinned reader lives in the same bounded LRU as every
+  other reader. Its decoded chunks share the store's chunk cache and its bound, under keys of their own that no live
+  read writes. So a pin is never handed a chunk a live read fetched from another generation, and it pays one GET for a
+  chunk a live read of its generation already cached.
+- **One call reads a segment at one generation.** A combine that holds the same segment at two generations is refused
+  with `ValidationError` when it is read, as a combine's other errors are. That covers pins of two generations, pins of
+  one generation number in two incarnations of its name, and a pin beside a live handle of the same segment.
+  Materialize one side first with `intersectInto(dest, [])`. Two pins of one object combine freely, and an `*Into` of a
+  combine that is refused throws before it reads anything.
+- **A pin is safe across a re-creation.** `pin()` records the pinned object's size and footer checksum. If the segment
+  is purged and loaded again, which starts the new segment at generation 0 again, the pin never reads the new
+  segment: what it has already read still answers, and anything it would have to fetch fails with `NotFoundError`, with
+  or without a registry. An object of another size counts as another object, damaged or not. A replacement it has
+  found is remembered, so later reads fail with no request, until the store forgets it. `store.invalidate(ref)` does
+  that, and so does a later `pin()` of the same version that opens the pinned object again. The store remembers at most
+  `cache.readerMax` of them. So once a restore puts the object back, invalidate its store: the pin then reads it
+  again, and a pin taken after that reads the object then stored as its generation.
+- **`pin()` opens its reader as it pins.** With a registry, pins of one generation taken while its row is unchanged
+  share that reader while the store keeps it open, pins taken at the same moment included. Only the first costs a tail
+  read, and a key unwrap for an encrypted segment, even if it is never read. Without a registry, every `pin()` lists the
+  segment's objects and makes the tail read. `pin()` and every pinned read are retried as the store's reads are.
+- **A segment with no current generation pins nothing and reads empty.** A pinned segment whose row is later dropped or
+  destroyed fails with `NotFoundError` once it must open its object again, rather than going empty part-way through a
+  call.
+- **A pin answers from what it holds.** It keeps the key its reader unwrapped while that reader stays open, and
+  answers from the chunks it decoded while they stay cached. Its own store invalidates it on a `load`, a `rollback` or an `*Into` of its segment, and on a
+  `dropSegment` of its segment. It also invalidates it on a `retireExpired` whose ledger lists its segment, retired or
+  not, and on an `eraseSubject` that scans its segment while it is not destroyed. A dry run of `dropSegment` or
+  `retireExpired` invalidates nothing. An invalidated pin opens its
+  object again, and fails if that object is gone or replaced, or its row is gone or destroyed.
+
+  Anything else leaves it as it is. After a `destroySegment` beside its store, or an erasure, a drop or a retirement
+  through another store, in the same process or another, it answers from what it holds. That lasts until its store's
+  reader cache evicts the pin's reader and the store's chunk cache evicts the chunks the pin decoded, or until
+  `store.invalidate(ref)` is called on its store. Where the object it reads has been deleted, a chunk it has not cached
+  fails at once.
+- **It needs the `.crbm` storage source** (`UnsupportedError` otherwise).
+
+## Page through a segment
+
+`iterate` and every combine take a range: `after` and `through` yield only the ids in `(after, through]`, and fetch
+only the chunks the range overlaps. That is keyset paging: each page asks for the ids after the last one the page
+before it ended on, so no page walks from the first id. Give each page both bounds.
+
+```ts
+// Your functions: each yields or consumes ids.
+declare const activeIds: Iterable<number>;
+declare const euIds: Iterable<number>;
+declare const optOutIds: Iterable<number>;
+declare function send(page: number[]): Promise<void>;
+
+// All three are loaded segments: an operand that names no segment is refused.
+await store.load({ segment: 'active-30d' }, activeIds);
+await store.load({ segment: 'zone-eu' }, euIds);
+await store.load({ namespace: 'suppression', segment: 'global-opt-out' }, optOutIds);
+
+// The audience is held at one generation for the whole send; the zone and the opt-out list are read live, page by
+// page, so an opt-out that lands mid-send applies to the pages after it.
+const audience = await store.segment('active-30d').pin();
+const zone = store.segment('zone-eu');
+const optOut = store.segment('global-opt-out', { namespace: 'suppression' });
+
+// One streamed pass finds the window ends: every 1,000th id, then the end of the id space.
+const ends: number[] = [];
+let n = 0;
+for await (const id of audience.iterate()) if (++n % 1_000 === 0) ends.push(id);
+ends.push(4_294_967_295);
+
+// Each window is an independent page, so workers can take them in any order. The first leaves `after` out, which
+// is the only way to include id 0.
+let after: number | undefined;
+for (const through of ends) {
+  const page: number[] = [];
+  for await (const id of audience.intersect([zone], { after, through, exclude: [optOut] })) page.push(id);
+  await send(page);
+  after = through;
+}
+```
+
+The range applies to every operand and every `exclude`, and a pinned operand is read at its pin. Each bound is an
+integer in `0..4294967295`, or the stream throws `ValidationError` when first read. `after >= through` reads nothing,
+so a cursor that reaches the end of its window needs no special case.
+
+**Cost.** The per-op budget is charged once, before the first fetch, for every chunk in the range, so a page with
+`after` alone is charged to the end of the segment however early it stops. A combine also fetches ahead: it starts
+`concurrency` chunk keys at once (8 by default), and one more each time it yields a key's ids, on every segment it
+reads. A page that stops early has already fetched up to `concurrency` keys past the one holding its last id. Those
+chunks land in the chunk cache, where the next page usually finds them. `iterate` fetches one chunk at a time and
+nothing ahead.

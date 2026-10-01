@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const FILES = [
   'bench/event-loop-results.json',
-  'docs/guide/getting-started.md',
+  'docs/guide/production.md',
   'packages/core/src/core/cooperative.ts',
   'packages/roaring/src/system-clock.ts',
 ];
@@ -58,7 +58,7 @@ describe('bench:event-loop:check', () => {
 
   it('fails on a guide figure that is not the results', () => {
     const d = copy();
-    edit(d, 'docs/guide/getting-started.md', /~\d+ ms/, '~1 ms');
+    edit(d, 'docs/guide/production.md', /~\d+ ms/, '~1 ms');
     expect(check(d).status).toBe(1);
   });
 
@@ -86,7 +86,7 @@ describe('bench:event-loop:check', () => {
     const d = copy();
     edit(
       d,
-      'docs/guide/getting-started.md',
+      'docs/guide/production.md',
       '## What blocks the event loop, and where to run it',
       '## Elsewhere',
     );
@@ -95,7 +95,7 @@ describe('bench:event-loop:check', () => {
 
   it('fails when the guide drops the load average the results record', () => {
     const d = copy();
-    edit(d, 'docs/guide/getting-started.md', /load average was about \d+/, 'load average was low');
+    edit(d, 'docs/guide/production.md', /load average was about \d+/, 'load average was low');
     expect(check(d).status).toBe(1);
   });
 });

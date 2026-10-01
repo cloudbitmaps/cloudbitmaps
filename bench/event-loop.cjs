@@ -60,9 +60,9 @@ const { setImmediate, setTimeout } = require('node:timers');
 // `EVENT_LOOP_ROOT` points `--check` at a copy of the tree, which is how its test mutates the files it reads.
 const ROOT = process.env.EVENT_LOOP_ROOT || path.resolve(__dirname, '..');
 const RESULTS = path.join(ROOT, 'bench/event-loop-results.json');
-const GUIDE = path.join(ROOT, 'docs/guide/getting-started.md');
+const GUIDE = path.join(ROOT, 'docs/guide/production.md');
 const SECTION_START = '## What blocks the event loop, and where to run it';
-const SECTION_END = '## Where next';
+const SECTION_END = '## Deploying to AWS Lambda';
 
 const IDS = 1_000_000;
 const TRIALS = int(process.env.EVENT_LOOP_TRIALS, 20);

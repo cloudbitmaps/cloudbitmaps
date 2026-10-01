@@ -115,7 +115,7 @@ export {
 
 // Encryption-at-rest: the injected crypto seams (`core/`, crypto-free) + the default in-process AES-256-GCM
 // implementation (`node:crypto`, outside core). KMS/Vault adapters are future optional packages against
-// `IKeystore`. See the getting-started "Encryption" section for key-management guidance.
+// `IKeystore`. See the encryption guide for key-management guidance.
 export type { Aead, AeadSealed, IKeystore, WrappedDek, CrbmCrypto } from './core/crypto';
 // The AAD builder. NOT for an `Aead` implementor — they are handed the associated data. This is for the
 // other seam: `CrbmCrypto` requires an `aadFor` member, and `CrbmReader.open` takes one, so tooling that reads an
@@ -134,7 +134,7 @@ export type { DropDeps, DropResult, EraseDeps, DestroyResult } from './core/eras
 // Retention policy: record WHEN a segment becomes eligible for retirement. Writer-set absolute epoch-ms — a
 // duration the library derived would be anchored to `updatedAt`/`currentGen`, which every load republishes, so a
 // busy segment would never expire. Nothing here runs on a timer; the sweep is a separate call the operator
-// schedules (see the getting-started "Retention" section for where to run it).
+// schedules (see the retention guide for where to run it).
 // `getSegmentRetention(ref)` reads ONE segment's policy and costs a registry read. `readRetentionPolicy(meta)`
 // is the pure parser for a caller who already holds rows — a fleet-wide sweep over `registry.list()`, where
 // per-segment reads would turn one listing into N+1 round trips. It stays exported because `RegistryRecord`
@@ -220,7 +220,7 @@ export { BufferReader } from './core/blob';
 export type { BlobReader, BlobSink } from './core/blob';
 
 // Observability: the injected metrics seam + a no-op default + a counting sink. Emit typed events
-// (storage/cache/retry/intersect/op) to your stack; see the getting-started "Observability" section.
+// (storage/cache/retry/intersect/op) to your stack; see the observability guide.
 export { NOOP_METRICS, CountingMetricsSink } from './core/metrics';
 export type { IMetricsSink, MetricEvent, MetricOpName, MetricsSnapshot } from './core/metrics';
 

@@ -3,12 +3,9 @@
 Three illustrative deployments, small, medium and large, priced by the library's own `estimateCost()` at AWS
 `us-east-1` on-demand rates, and set against the Redis that would hold each one's data.
 
-**The workloads are made up; the arithmetic is not.** Each workload is a guess at what a typical deployment of
-that size looks like, not anyone's measured system. Every figure below that comes from the model, the prices or the
-library's defaults is generated from them, and `pnpm bench:sizing:check` fails CI when a generated figure and its
-source disagree, so when any of them changes, the page is regenerated rather than edited. What the estimator counts
-is held by tests to the requests the engine makes; [§11 of the guide](getting-started.md#what-each-term-counts) says
-what each term counts.
+**The answer is in [the monthly bill](#the-monthly-bill): each deployment's bill, term by term, beside the Redis that
+would hold its data.** The workloads are made up; the arithmetic is not. Each workload is a guess at what a typical
+deployment of that size looks like, not anyone's measured system. To price your own, see [Price your own](#price-your-own).
 
 **There is no latency on this page.** The loaded read path has not been timed inside a region yet, so how fast
 these deployments would answer is not published; the [benchmarks page](../benchmarks.md#what-is-still-owed) keeps
@@ -195,8 +192,8 @@ report.assumptions.notes; // what it modeled, and what it did not
 <!-- SIZING:SAMPLE:END -->
 
 Every report says what it modeled and what it left out: which Redis it priced and why, loads or the refresh when you
-did not size them, and more hot segments than a reader keeps open by default. [§11 of the
-guide](getting-started.md#11-cost-estimate-it-then-ground-it) has the whole model, and `segment.costReport()` prices a
+did not size them, and more hot segments than a reader keeps open by default. [the cost
+guide](cost.md#cost-estimate-it-then-ground-it) has the whole model, and `segment.costReport()` prices a
 real segment at its measured size and the store's own `cache.genTtlMs`.
 
 ## What this page does not establish
@@ -214,3 +211,8 @@ real segment at its measured size and the store's own `cache.genTtlMs`.
 - **What running Redis takes besides its price.** The comparison is CloudBitmaps' bill for the workload against a
   Redis sized to hold the data, not to its request rate; nor does it price the operations, the failovers or the speed
   of either.
+
+**How the figures are kept honest.** Every figure on this page that comes from the model, the prices or the library's
+defaults is generated from them, and `pnpm bench:sizing:check` fails CI when a generated figure and its source
+disagree, so when any of them changes, the page is regenerated rather than edited. What the estimator counts is held by
+tests to the requests the engine makes; [the cost guide](cost.md#what-each-term-counts) says what each term counts.

@@ -5,6 +5,24 @@
 > of an always-on cache, with the familiar bitmap API: `has`, `count`, `iterate`, `intersect`, `union`,
 > `andNot`. Ids are unsigned 32-bit integers.
 
+## A first example
+
+Save as a `.mjs` file (the packages are ESM-only, Node 22.12 or later) after `pnpm add @cloudbitmaps/roaring`:
+
+```js
+import { CloudRoaring, MemoryStorage } from '@cloudbitmaps/roaring';
+
+// For S3 instead: import { S3Storage } from '@cloudbitmaps/s3'; storage: new S3Storage({ bucket: 'my-bitmaps' })
+const store = new CloudRoaring({ storage: new MemoryStorage() });
+
+await store.load({ segment: 'shoppers' }, [5, 99_999, 1_234_567_890]); // a load replaces the segment
+await store.load({ segment: 'active' }, [5, 7, 1_234_567_890]);
+
+const shoppers = store.segment('shoppers');
+console.log(await shoppers.has(99_999), await shoppers.count()); // true 3
+for await (const id of shoppers.intersect([store.segment('active')])) console.log(id); // 5, then 1234567890
+```
+
 CloudBitmaps maps each 16-bit Roaring chunk onto pluggable cloud storage: an in-process LRU cache over a storage
 tier of write-once `.crbm` generations, with one small registry row per segment saying which generation is
 current. The distinguishing capability is **serverless chunk-skipping intersection**: `A ∩ B` fetches only the
@@ -17,8 +35,8 @@ dependency of both and is never installed directly; it contains no cloud SDK at 
 (`@cloudbitmaps/s3`, which also serves an S3-compatible store such as R2 or MinIO, given its endpoint, if it
 honours S3's conditional writes; MinIO is the one the integration suite runs against), GCS (`@cloudbitmaps/gcs`)
 and Azure Blob (`@cloudbitmaps/azure-blob`) as packages of their own, each depending on its cloud SDK for real
-rather than as an optional peer, plus the local filesystem in core's main entry, beside the in-memory drivers
-for development and tests. Each of the three clouds hosts both the storage generations and the registry, so a
+rather than as an optional peer, plus the local filesystem and in-memory backends (`LocalFsStorage`, `MemoryStorage`), both from
+`@cloudbitmaps/roaring`, for development and tests. Each of the three clouds hosts both the storage generations and the registry, so a
 deployment needs exactly one cloud account.
 
 A store is wired with ONE backend object — `new CloudRoaring({ storage: new S3Storage({ bucket }) })` — which
@@ -44,7 +62,7 @@ no per-id write. `intersectInto`/`unionInto`/`andNotInto` use the same protocol,
 new generation of the destination segment — and check the result is plausible the same way `load` does: an empty
 or implausible combine over a non-empty destination is refused (`published: false` + `reason`) rather than
 wiping it, with `allowEmpty`/`guard` to override. Unlike `load` they collect nothing by default, so a rollback
-target survives a materialisation.
+target survives a materialization.
 
 Every chunk a read fetches is whole and checksum-verified, from one generation, resolved once before any
 fan-out; a long read can move to a newer generation part-way (a `cache.genTtlMs` refresh, an eviction, a sweep,
@@ -136,6 +154,10 @@ a minor bump until the .crbm format freezes at 1.0.
 - Repository: https://github.com/cloudbitmaps/cloudbitmaps
 - Package (codec): https://www.npmjs.com/package/@cloudbitmaps/roaring
 - Getting-started guide: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md
+- Before production (permissions, lifecycle rules, timeouts): https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md
+- Loading in depth: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/loading.md
+- Reading in depth: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/reading.md
+- Errors and what to do: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/api-reference.md#errors-typed--you-catch-these
 - API reference: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/api-reference.md
 - Privacy and erasure: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/PRIVACY.md
 - Benchmarks + method: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/benchmarks.md

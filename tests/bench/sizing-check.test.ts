@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import * as core from '@cloudbitmaps/core';
 
 /**
- * `pnpm bench:sizing:check` is the gate that holds the sizing guide, the getting-started guide, the explainer, the
+ * `pnpm bench:sizing:check` is the gate that holds the sizing guide, the cost guide, the explainer, the
  * README and the two charts to the estimator, and CI only ever runs it on pages that pass. This holds it to failing: each case edits the pages the way a
  * regression would and expects the check to refuse. It runs the script itself, in-process over the real tree, with
  * the edited pages laid over it and `@cloudbitmaps/core` served from the source the rest of the suite tests, so it
@@ -16,7 +16,7 @@ const SCRIPT = join(ROOT, 'bench', 'sizing.cjs');
 // Resolves as the script would, so a module it requires beside itself is found where it lives.
 const requireFromScript = createRequire(SCRIPT);
 const SIZING = 'docs/guide/sizing.md';
-const GUIDE = 'docs/guide/getting-started.md';
+const GUIDE = 'docs/guide/cost.md';
 const page = (rel: string): string => readFileSync(join(ROOT, rel), 'utf8');
 
 function deepFreeze<T>(value: T): T {
@@ -290,7 +290,6 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       for (const text of [
         ' See [what S3 sends](https://docs.aws.amazon.com/AmazonS3/latest/userguide/EventNotifications.html).',
         ' See [the storage classes](https://aws.amazon.com/s3/storage-classes/).',
-        ' [§11 of the guide](getting-started.md#11-cost-estimate-it-then-ground-it) has the model.',
       ]) {
         const r = sizingCheck({ [WHY]: intoWhy(text) });
         expect(r.code, r.out).toBe(0);
@@ -298,9 +297,9 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       for (const text of [
         ' See [AWS](https://aws.amazon.com/?off=20%).',
         ' See [the guide](getting-started.md#12-other).',
-        ' See [the guide](getting-started.md#11-cost-estimate-it-then-ground-it#2).',
-        ' It is getting-started.md#11-cost-estimate-it-then-ground-it.',
-        ' See (getting-started.md#11-cost-estimate-it-then-ground-it).',
+        ' See [the storage classes](https://aws.amazon.com/s3/storage-classes/#2).',
+        ' It is https://aws.amazon.com/s3/storage-classes/.',
+        ' See (https://aws.amazon.com/s3/storage-classes/).',
         ' See [the prices](https://aws.amazon.com/s3/pricing/).',
         ' See [the guide](https://docs.aws.amazon.com/AmazonS3/latest/userguide/optimizing-performance.html).',
       ]) {
@@ -729,7 +728,7 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       ['ids are 32-bits'],
       ['a 128-bit id'],
       ['us-east-1 prices'],
-      ['[§12 of the guide](getting-started.md#what-each-term-counts)'],
+      ['[§12 of the guide](cost.md#what-each-term-counts)'],
       ['§11 a month'],
       ['3.4 billion customers'],
       ['1-2 billion customers'],
@@ -748,10 +747,6 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       ['an engine', " V8's heap holds the index."],
       ['the width of an id', ' Its ids are 32-bit; 64-bit ids need a new format.'],
       ['the ids a chunk holds', ' A chunk holds up to 65,536 ids.'],
-      [
-        'a section of the guide',
-        ' [§11 of the\nguide](getting-started.md#11-cost-estimate-it-then-ground-it) has more.',
-      ],
       ['"S3 times out"', ' If S3 times out, the reader retries.'],
       ['a service as the subject of "times"', ' S3 times each request from its first byte.'],
       ['"double as", which is a use', ' It can double as a lock.'],
@@ -892,10 +887,10 @@ describe('bench:sizing:check fails what it exists to catch', () => {
         {
           [README]: readme.replace(
             '## Your data stays yours',
-            '## Your data stays yours\n\nOn-demand Redis costs about twice the load figure.',
+            '## Your data stays yours\n\nTwo segments overlapping in 5% of chunks.',
           ),
         },
-        /"twice the load", outside its "Why CloudBitmaps" section/,
+        /"5%", outside its "Why CloudBitmaps" section/,
       );
       // Shares are read in any case, as they are written and with their tags taken out.
       for (const [line, figure] of [
@@ -940,11 +935,11 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       expect(readme).toContain('?logo=npm&label=');
       // A listed phrase is read as written: with its figure in bold it is another phrase, and the listed one is gone.
       const bolded = readme.replace(
-        '65,536-id chunk (6.25% of it)',
-        '65,536-id chunk (**6.25%** of it)',
+        'overlapping in 5% of chunks',
+        'overlapping in **5%** of chunks',
       );
       expect(bolded).not.toBe(readme);
-      refused({ [README]: bolded }, /no longer says "65,536-id chunk \(6\.25% of it\)"/);
+      refused({ [README]: bolded }, /no longer says "overlapping in 5% of chunks"/);
       // Nor is it in compatibility forms, which a reader is shown as the same phrase and this reads as another.
       refused(
         { [README]: readme.replace('overlapping in 5% of chunks', 'overlapping in 5％ of chunks') },
@@ -1247,7 +1242,7 @@ describe('bench:sizing:check fails what it exists to catch', () => {
     ])('fails a page that spells an image path %s with an entity', (image) => {
       refused(
         { [GUIDE]: intoGuide(`<img alt="a chart" src="../../${image}">`) },
-        /getting-started\.md holds an entity/,
+        /cost\.md holds an entity/,
       );
     });
 
@@ -1272,10 +1267,7 @@ describe('bench:sizing:check fails what it exists to catch', () => {
         ['It is 9&#48; here.', '&#48'],
       ];
       for (const [text, entity] of decoded) {
-        refused(
-          { [GUIDE]: intoGuide(text) },
-          new RegExp(`getting-started\\.md holds an entity, "${entity}"`),
-        );
+        refused({ [GUIDE]: intoGuide(text) }, new RegExp(`cost\\.md holds an entity, "${entity}"`));
       }
     });
 

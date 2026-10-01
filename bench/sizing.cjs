@@ -1471,11 +1471,7 @@ const GENERATED_PROSE = {
   'docs/guide/sizing.md': null,
   'README.md': {
     section: 'Why CloudBitmaps',
-    elsewhere: [
-      'overlapping in 5% of chunks',
-      '65,536-id chunk (6.25% of it)',
-      'about twice the load figure',
-    ],
+    elsewhere: ['overlapping in 5% of chunks'],
   },
 };
 for (const doc of Object.keys(GENERATED_PROSE)) {
@@ -1526,14 +1522,12 @@ const HAND_WRITTEN_TOKENS = [
   token(String.raw`\bV8(?:'s)?\b`), // an engine's
   token(String.raw`\bids are 32-bit\b|\b64-bit ids\b`), // an id's width
   token(String.raw`\b65,536 ids\b`), // the ids a chunk holds
-  token(String.raw`§11 of the\s+guide\b`), // a section of the guide
   token(String.raw`\b1\.2 billion customers\b`), // the README's example of a set too large for one machine's memory
   // Link targets, which a reader is not shown, each whole: any other target is read like the text around it.
   token(
     String.raw`\]\(https:\/\/docs\.aws\.amazon\.com\/AmazonS3\/latest\/userguide\/EventNotifications\.html\)`,
   ),
   token(String.raw`\]\(https:\/\/aws\.amazon\.com\/s3\/storage-classes\/\)`),
-  token(String.raw`\]\(getting-started\.md#11-cost-estimate-it-then-ground-it\)`),
 ];
 const MARKER_TEXT = /<!-- SIZING:[A-Z][A-Z0-9_]*:(?:START|END) -->/g;
 /** HTML: a tag, a comment, a declaration or a processing instruction opening, or a comment or CDATA closing. */

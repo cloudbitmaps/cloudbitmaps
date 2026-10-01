@@ -11,8 +11,8 @@ different screens — don't collapse them into one:
 
 All three are **off by default**, **vendor-neutral** (CloudBitmaps ships no telemetry dependency — you write a
 short adapter), and **exception-safe** (a throwing sink can never break a read, a load, or a lifecycle op). This
-guide shows a worked adapter for each. The observability, cost and audit sections of
-[getting-started](./getting-started.md) carry the API reference.
+guide shows a worked adapter for each. The [observability](./observability.md) and [cost](./cost.md) guides
+carry the API reference.
 
 ---
 
@@ -228,7 +228,7 @@ retention/lifecycle trail. Never substitute one for another.
 
 > **KEK rotation is not in this stream** — rotating the key-encryption key is operator-side keystore
 > reconfiguration (no library call to hook). Audit it at your KMS/keystore layer. See the audit section of
-> [getting-started](./getting-started.md).
+> [observability](./observability.md).
 
 ---
 

@@ -1,0 +1,369 @@
+# Before production
+
+A first run on `MemoryStorage` needs none of this. A deployment that other people depend on does. This page is the
+checklist: work down the table, and follow each link for the detail.
+
+| Check | Why it matters | Where |
+|---|---|---|
+| Permissions are granted for the actions the library issues | A missing action fails a load or, on S3, turns a missing pointer into a `403` | [Permissions](#permissions) |
+| An abort rule for incomplete uploads is on the bucket | A killed process leaves multipart parts that are billed but invisible | [Bucket lifecycle](#bucket-lifecycle) |
+| Nothing expires current objects or the `registry/` prefix | An expired pointer or generation makes a live segment unreadable | [Bucket lifecycle](#bucket-lifecycle) |
+| Versioning and backups cover the data and the pointers | A restore must bring both back to the same point in time | [Versioning and backups](#versioning-and-backups) |
+| With versioning on, noncurrent versions expire after your restore window | Each generation a load collects is otherwise billed for as long as the bucket keeps it, out of sight | [Bucket lifecycle](#bucket-lifecycle) |
+| The bucket honors conditional writes, and the S3 SDK is 3.645.0 or later | Otherwise a write-once generation can be silently overwritten | [Conditional writes and the S3 SDK](#conditional-writes-and-the-s3-sdk) |
+| Your storage client has a request timeout | The library has none of its own; a hung request hangs the read | [Reliability](#reliability-retries-backoff--timeouts) |
+| Your job re-runs a write after a transient error | Writes are never retried for you | [Reliability](#reliability-retries-backoff--timeouts) |
+| You know the request budget and the memory ceilings | A runaway call is refused, not billed | [Limits](#limits-the-per-op-budget-and-the-memory-ceilings) |
+| The keystore is backed up, if you encrypt | Losing the key makes the data permanently unreadable | [Encryption](encryption.md#before-you-encrypt) |
+| Metrics and audit sinks are wired to your stack | Both are off by default | [Observability](observability.md) |
+| Loads and the retention sweep are scheduled | Nothing in the library runs on a timer | [Schedule the work](#schedule-the-work) |
+| Loads run off the request path, on a runtime with the native addon | A load uses a core and holds a whole segment in memory | [Where to run it](#what-blocks-the-event-loop-and-where-to-run-it) |
+
+## Permissions
+
+These lists are derived from the calls each storage package makes. Check them in staging under the identity you will
+run with. A process that only reads can drop the write and delete actions.
+
+**S3.** Five actions, on two resources:
+
+| Resource | Actions |
+|---|---|
+| The bucket | `s3:ListBucket` |
+| The objects under your `prefix` | `s3:GetObject` (also covers the metadata reads), `s3:PutObject` (also covers starting, uploading and completing a multipart upload), `s3:DeleteObject`, `s3:AbortMultipartUpload` |
+
+In the policy, the bucket is the bucket's ARN, and the objects are that ARN followed by `/`, the `prefix` you pass to
+`S3Storage`, and `/*`. `s3:ListBucket` matters even for readers: without it S3 answers a missing key with `403`
+instead of `404`, and the library cannot list generations.
+
+If the bucket encrypts with a KMS key, grant that key's use as well.
+
+**GCS.** The library creates, reads, lists and deletes objects. `roles/storage.objectAdmin` on the bucket covers all
+four; a custom role needs `storage.objects.create`, `storage.objects.get`, `storage.objects.list` and
+`storage.objects.delete`. Credentials come from Application Default Credentials unless you pass a `client`.
+
+**Azure Blob.** It writes blocks, commits block lists, reads blobs and their properties, lists and deletes. The
+`Storage Blob Data Contributor` role on the container covers all of them. A connection string carries the account
+key, which grants far more: prefer a `containerClient` built from a managed identity.
+
+## Bucket lifecycle
+
+Two rules to add, and one to never add.
+
+**Add: abort incomplete multipart uploads.** A large generation is written as a multipart upload. The library aborts
+it on any error it survives to handle. It cannot abort one whose process no longer exists, so a killed container or
+an out-of-memory exit leaves the parts behind. Those parts are billed and never appear in an object listing, so only
+the bill will tell you. On S3, with a few days as the grace period:
+
+```json
+{
+  "Rules": [
+    {
+      "ID": "abort-incomplete-multipart",
+      "Status": "Enabled",
+      "Filter": { "Prefix": "" },
+      "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 3 }
+    }
+  ]
+}
+```
+
+Applying a lifecycle configuration replaces the bucket's whole configuration, so merge this with any rules you have.
+This rule is for S3. What a dead writer leaves on GCS and Azure Blob, and when each cloud removes it, is in [the backup checklist](disaster-recovery.md#backup-checklist).
+
+**Add, if versioning is on: expire noncurrent versions.** With versioning on, every generation a load collects stays
+in the bucket as a noncurrent version: billed, and absent from an ordinary listing. A rule that expires noncurrent
+versions after a number of days removes them. A restore to a time `T` needs every object deleted since `T`, so those
+days are also the oldest point you can restore to: set them at or above your restore window
+([the backup checklist](disaster-recovery.md#backup-checklist)). On S3, as a second rule in the same configuration:
+
+```json
+{
+  "ID": "expire-noncurrent-versions",
+  "Status": "Enabled",
+  "Filter": { "Prefix": "" },
+  "NoncurrentVersionExpiration": { "NoncurrentDays": 30 }
+}
+```
+
+**Never: expire current objects.** No rule may delete current generations, and no rule may delete current versions
+under the `registry/` prefix. A deleted pointer row is replaced by a tombstone that keeps the pointer safe against
+reuse, so expiring the row breaks that. A rule on noncurrent versions only is safe, and is the optional recipe in
+[the disaster-recovery guide](disaster-recovery.md#optional-make-a-shred-durable-with-a-registry-expiry-rule).
+
+## Versioning and backups
+
+The data, the pointers and, if you encrypt, the keys are three separate stores, and a restore must bring them back
+at the same point in time. [The disaster-recovery backup checklist](disaster-recovery.md#backup-checklist) says what
+to turn on for each, and [`checkConsistency()`](disaster-recovery.md#checkconsistency--verify-before-you-serve-traffic)
+verifies a restore before you serve traffic.
+
+## Conditional writes and the S3 SDK
+
+The library's guarantee that a generation is write-once rests on conditional writes: `If-None-Match: *` for a new
+object and `If-Match` for the pointer.
+
+- **The bucket must honor them.** AWS S3 does, and the test suite runs against MinIO. Another S3-compatible service
+  that ignores the headers turns write-once into overwrite, so check yours before you depend on it. GCS and Azure
+  Blob use their own equivalents (`ifGenerationMatch`; `If-None-Match` and `If-Match`).
+- **Use `@aws-sdk/client-s3` 3.645.0 or later if you pass your own `client`.** Measured against MinIO, 3.640.0
+  silently overwrites an existing object, which loses a published generation without an error. `@cloudbitmaps/s3`
+  never resolves its own SDK below the floor. If your own code imports the SDK, to build that `client`, add it to your own `package.json` too: pnpm does not let your code import a dependency of a dependency.
+
+## Reliability: retries, backoff & timeouts
+
+**Reads retry by themselves.** Cloud storage throttles, returns 5xx and drops connections. Every read that answers a
+query retries those transient faults with bounded exponential backoff and full jitter: `has`, `count`, `iterate`
+and the combines (the `*Into` verbs' reads of their operands included), a pinned handle's reads, and `pin()` itself.
+It is on by default.
+
+```ts
+import { CloudRoaring } from '@cloudbitmaps/roaring';
+
+const store = new CloudRoaring({ storage: backend }); // reads already retry
+```
+
+Tune the policy, or turn it off. The policy is partial, so name only what you change; `onRetry` goes in the same group:
+
+```ts
+const store = new CloudRoaring({
+  storage: backend, // an S3Storage, GcsStorage, ...
+  retry: {
+    maxAttempts: 6,
+    onRetry: ({ attempt, delayMs }) => log.warn({ attempt, delayMs }, 'retrying transient fault'),
+  },
+  // or `retry: false` when your client already retries
+});
+```
+
+Only transient faults (they surface as `TransientError`) are retried. Errors that retrying cannot fix are never
+retried: `ValidationError`, `IntegrityError`, `NotFoundError` and `WriteConflictError`.
+
+**Set a timeout on your storage client.** The library has no timeout of its own, because one would abandon requests
+that are in flight. A timeout on your client turns a hung read into a transient fault that is retried. Build the
+client with the timeout and pass it to the backend:
+
+```ts
+import { S3Client } from '@aws-sdk/client-s3';
+import { NodeHttpHandler } from '@smithy/node-http-handler';
+import { CloudRoaring } from '@cloudbitmaps/roaring';
+import { S3Storage } from '@cloudbitmaps/s3';
+
+const client = new S3Client({
+  region: 'us-east-1',
+  requestHandler: new NodeHttpHandler({ requestTimeout: 3_000, connectionTimeout: 1_000 }),
+});
+const store = new CloudRoaring({ storage: new S3Storage({ bucket: 'my-bitmaps', client }) });
+```
+
+`@smithy/node-http-handler` comes with the AWS SDK; declare it in your own `package.json` as well, since your code
+imports it. A `client` carries its own region and credentials, so passing `region` or `credentials` beside it is refused.
+
+**Writes are yours to re-run.** What is retried for you:
+
+| Calls | Retried for you? |
+|---|---|
+| Reads that answer a query: `has`, `count`, `iterate`, the combines (the `*Into` verbs' reads of their operands included), a pinned handle's reads, and `pin()` | Yes, with backoff; `retry` tunes it |
+| Writes: `load`, the write half of the `*Into` verbs, and the lifecycle helpers (`eraseSubject`, `dropSegment`, `retireExpired`, `rollback` and the rest) | No: run the call again |
+| Registry reads and listings: `exists`, `segments`, `generations`, `getRetention`, and the registry scan that `subjectReport`, `exportSegments` and `checkConsistency` start from | No: call it again |
+
+A write that lands and then loses its response looks, from the error alone, like a write that failed, and replaying it
+would find itself already there and report a conflict. So a transient fault on a write reaches you, and the retry is
+yours.
+
+Re-running a `load` is safe. It takes a fresh generation number and re-reads the pointer, so it publishes whether or
+not the first attempt landed, under every guard setting. Three things to know:
+
+- **Pass the ids again, fresh.** An iterator the first attempt used up yields nothing the second time, and an empty
+  load can publish: with `allowEmpty: true`, or onto a segment that holds no data.
+- **A late write reads as a lost race.** A request that timed out on your client can still land while the re-run is
+  under way, and the re-run then reports `superseded`. On a `superseded` right after a transient fault, check before
+  you re-derive, and run the load again if your ids are not current.
+- **Every attempt that landed takes a `keep` slot.** The default `keep: 1` then collects the generation the segment
+  held before the load. To keep that one as a rollback or pin target, pass a `keep` one above the number of attempts
+  that landed: `keep: 2` after one. See [Generations and `keep`](loading.md#generations-and-keep).
+
+To learn whether an attempt landed, check instead of replaying: compare `store.generations(ref)` with what it listed
+before the call. A new current generation is a publish that landed. A new one above the current is an object that
+landed unpublished. While another writer is active on the segment, the listing cannot say whose either one is.
+`generations` is not retried either, so a fault there means asking again.
+
+## Schedule the work
+
+The library starts no timer, so it behaves the same in a Lambda and on a server. Two things need a schedule from you:
+
+- **Loads.** Run each `store.load` from a scheduled job or a queue consumer, at the cadence your data needs. A shorter
+  cadence is how you get fresher data. See [Loading in depth](loading.md).
+- **The retention sweep.** If you record expiries with `setRetention`, call `store.retireExpired()` on a schedule.
+  Nothing else removes expired segments. See [Retention](retention.md).
+
+## Limits: the per-op budget and the memory ceilings
+
+Two separate limits protect you. It helps to know which one you hit.
+
+| | `budget` | the memory ceilings |
+| --- | --- | --- |
+| bounds | **cost**: backend requests a single operation may fan out into | **memory**: what a process holds resident, whatever the segments' size |
+| knobs | `budget: { maxRequests }`; `false` disables it | `cache.maxChunks` (decoded cached chunks, default 1024) · `cache.readerMax` / `cache.readerMaxBytes` (open `.crbm` indices, default 1024 / 64 MiB) · the combines' `concurrency` window · the per-chunk decode cap. **`budget: false` lifts none of them.** |
+| covers | `count` · `iterate` · the combines · `subjectReport` · `eraseSubject` | every read, on every backend |
+
+### The request budget
+
+On a shared or serverless backend, one runaway call can quietly run up a large bill: an `intersect` over two enormous
+barely-overlapping segments, a wide `union`, or a fleet-wide `eraseSubject`. The library caps the number of backend
+calls one operation may fan out to and throws `BudgetExceededError` instead of running away. The cap is on by default
+at 1,000,000 units. Lower it on untrusted or multi-tenant surfaces. Raise it, or pass `budget: false`, for trusted
+bulk jobs.
+
+```ts
+import { CloudRoaring, BudgetExceededError } from '@cloudbitmaps/roaring';
+
+// set your own store-wide ceiling:
+const store = new CloudRoaring({ storage: backend, budget: { maxRequests: 50_000 } });
+await store.load({ segment: 'huge' }, hugeIds);
+await store.load({ segment: 'other' }, otherIds);
+
+try {
+  for await (const id of store.segment('huge').intersect([store.segment('other')])) {
+    /* ... */
+  }
+} catch (e) {
+  if (e instanceof BudgetExceededError) {
+    // the operation would have fanned out past the ceiling; it was refused before doing the work
+  }
+}
+```
+
+The operations that take options (the combines, `subjectReport`, `eraseSubject`) accept a per-call override. A
+partial override inherits the store ceiling; it never resets it to the default:
+
+```ts
+// tighten or lift the ceiling for one call:
+await store.subjectReport(userId, { namespace: 'eu', budget: { maxRequests: 5_000 } });
+for await (const _ of store.segment('huge').intersect([store.segment('other')], { budget: false })) {
+  // a trusted batch job: no ceiling for this call
+}
+```
+
+The ceiling is checked once, before the fan-out, against work whose size is already known, so it adds nothing to the
+hot path. `has` is a single call and is never budgeted. The units are the chunk reads the operation will actually
+issue. For an `intersect` that is the surviving keys times the operands present at each, plus only those excludes
+that hold the key, so a large suppression list is not charged for keys it cannot affect. Bytes need no separate
+limit, because every chunk read is size-capped by the safe deserializer. `count` on a loaded segment reads the
+index with zero requests, so it approaches the ceiling only on a source that cannot serve cardinalities.
+
+`eraseSubject` charges one unit per registered segment, and one for each generation it opens beyond the one the
+row names. Only the enumeration can refuse the whole call. A segment that runs the budget out during the scan is
+listed in the ledger with `erased: false` and an `error:` note, before anything of it is deleted, and the scan carries
+on. Re-run with a higher `budget` to finish those segments. The ledger of the erasures that did happen is never lost.
+
+### The memory ceilings
+
+`intersect`'s budget is a product (surviving keys times operands), while its memory is a window
+(`concurrency × operands × chunk`) that does not depend on segment size. A request budget cannot express a memory
+bound, and `budget: false` ("I know my fan-out") must not silently also mean "unbounded RAM". A wide segment's parsed
+index can be several MB, which is why the reader cache is bounded by bytes as well as by count. Lower
+`cache.readerMaxBytes` for a memory-tight deployment, such as a 128 MB Lambda that reads across many wide segments.
+
+**Neither limits how many ids a segment can hold.** A segment holds up to the full 32-bit id space, about 4.29
+billion members. `maxScanSegments`, an option of `store.retireExpired` (`store.checkConsistency` holds the default of
+250,000), counts segments, not members: 500 audience segments count as 500, whatever their size.
+
+## What blocks the event loop, and where to run it
+
+Node is single-threaded, so CPU-heavy work stalls **every** other request on that instance. Most of this library
+is network-bound and irrelevant here — a `has()` spends a negligible fraction of its time on bit math — but a
+**load** and an **erasure rewrite** are genuinely CPU-heavy, because each one touches a whole generation.
+Measured on an Apple M3 Pro on 2026-09-30, the median of 20 runs, each in a fresh process:
+
+| path | cost | longest single stall | where it belongs |
+| --- | --- | --- | --- |
+| a load, `store.load()` (1M ids spread across the id space, in-memory storage) | ~526 ms | **~24 ms** (47 ms at worst) | a batch job or worker; survivable off the request path |
+| `eraseSubject` | decodes and re-encodes every chunk of the segment — same order of work as a load | yields on the same cadence | an admin job, never a request handler |
+| `has` / `count` / `intersect` / `union` / `andNot` | microseconds of CPU; dominated by network | — | anywhere |
+
+The **stall** column is the number that decides whether co-resident work survives, and it is not the same as
+cost. A load yields the event loop periodically, so its ~526 ms is spent in slices — the longest ~24 ms in the
+median run and 47 ms in the worst — with the loop free in between: other requests interleave rather than
+queueing behind the whole load. Without a clock to yield through, the two columns are the same number: the same
+1M-id load holds the loop for **~519 ms straight** (median), long enough for a health check to time out and the
+instance to be pulled from its load balancer.
+
+**Read these as a loaded machine's figures.** The machine was not idle: its one-minute load average was about 5
+at the start and the end of the run, so the cost column in particular is likely higher than an idle machine would
+give, and the worst stall is the figure a busy neighbour moves most. The two columns' proportions are the finding.
+The harness, the per-run samples, the Node version and the load averages are in
+[`bench/event-loop-results.json`](../../bench/event-loop-results.json), written by
+[`bench/event-loop.cjs`](../../bench/event-loop.cjs); `pnpm bench:event-loop:check` fails in CI if this section's
+figures are not the ones in that file.
+
+Yielding is on by default for `@cloudbitmaps/roaring` users; there is nothing to configure. It needs a `Clock`,
+which the store passes to its loads and its erasures. If you call
+`@cloudbitmaps/core` directly, pass one (`clock`) or the work runs uninterrupted.
+
+**The rule:** anything that touches a whole generation belongs out of the request path. Yielding makes a load a
+well-behaved neighbour, not a cheap one — it still burns a core for a fraction of a second, holds the whole
+generation in memory, and streams a multipart upload. Use a job runner, a queue consumer, or a short-lived task —
+and keep `has`, `count` and `intersect` where the requests are.
+
+## Deploying to AWS Lambda
+
+Serverless chunk-skipping intersection is what CloudBitmaps is for, so Lambda is a first-class target, with
+one thing to know. The bitmap math runs on **`roaring`, a native (C++) addon**, whose install fetches a binary for
+the platform the install runs on. So a `node_modules` installed on a laptop and zipped up does not load on
+Lambda: **install for the target** — Amazon Linux, your function's architecture, its Node version — as any native
+addon needs. `roaring` publishes no prebuilt binary for Linux on arm64, so on a Graviton function the addon
+compiles from source during that install, which needs a C/C++ toolchain. This is a one-time build step, not a
+per-invocation cost. Every CloudBitmaps package needs Node 22.12 or later, so the function runs on `nodejs22.x`
+or a later runtime.
+
+Pick whichever you already use:
+
+- **`sam build --use-container`** (or `--use-container` on your framework) — builds deps inside an Amazon
+  Linux image matching the runtime, so `roaring` is installed for the target. The simplest path.
+- **Container image Lambda** — `FROM public.ecr.aws/lambda/nodejs:22`, add a build toolchain
+  (`dnf install -y gcc-c++ make python3`), `npm ci`, deploy the image.
+- **A Lambda layer** — build `node_modules` once in an Amazon Linux 2023 container and ship it as a layer,
+  reused across functions.
+
+Match the **arch** (`arm64` Graviton vs `x86_64`) and **Node version** of your function when you build. Our
+CI proves this path end-to-end with a `pnpm lambda-smoke` gate (builds `roaring` from source in an AL2023
+container and loads the package under both ESM and CJS). The repository can also build a layer for you: from a
+clone, `pnpm build-lambda-layer` produces `dist-lambda/cloudbitmaps-lambda-layer.zip`, holding core and the roaring
+flavor with the addon compiled in an AL2023 container of the machine's own architecture. It is a script in the
+repository, not a published artifact: nothing on npm or on a GitHub release carries it, though a manually
+dispatched CI run can build one and attach it to that run.
+
+## How it stays correct
+
+**A fault costs a read some latency and a write a re-run, never correctness.** Generations are write-once, so no
+reader can pick up a half-written object. A publish only moves the pointer forward, and each attempt of its conflict
+loop re-reads the row first, so no publish can move it back. All bytes are checksum-verified before use.
+
+**Your client's own retry, and the writes it does not reach.** Each cloud SDK retries a failed request itself, under
+the store's retry. For a conditional write that retry gives the wrong answer. A write that lands and then loses its
+response is sent again, meets itself, and fails its own precondition, which reads as a lost race for a write that
+won. This covers a generation's write-once put and the registry's create, compare-and-swap and delete (a delete
+writes a tombstone). So the S3 and GCS packages send a conditional write once where the SDK lets them, with its retry
+off for that request alone. The Azure Blob package, whose retry has no per-request switch, tags each write and
+settles a conflict by reading it back. The GCS package does the same for an object above
+`simpleUploadThresholdBytes`, which uploads as a resumable session. The client is otherwise left as it is, a client
+you pass in included, and every other request it makes keeps the SDK's retry rules. A transient failure of a
+conditional write reaches its caller as `TransientError`, and the write may or may not have landed. Where each
+package stands:
+
+| package | conditional writes |
+|---|---|
+| `@cloudbitmaps/s3` | every one is sent once: the write-once `PutObject`, a multipart upload's `CompleteMultipartUpload`, and the registry's create, compare-and-swap and delete |
+| `@cloudbitmaps/gcs` | the registry's writes, and an object up to `simpleUploadThresholdBytes` (8 MiB by default), are each one request, sent once. A larger object is a resumable upload, a session of requests that the SDK retries within, under the client's retry options; it and every Azure Blob write are tagged with a random id in metadata, as described below |
+| `@cloudbitmaps/azure-blob` | sent through the client's retry policy, which sends a request again after a network error or a 500 or 503. Each write is tagged with a random id in blob metadata, and a conflict is settled by reading the stored blob back, as described below |
+
+**Writes that are tagged instead.** Azure Blob's retry is a policy on the client's pipeline, and a GCS resumable
+upload is a session the SDK retries within, so neither has a per-request switch. Each of their conditional writes
+carries a random id in the object's metadata (`cbwid`), outside the `.crbm` bytes and outside the registry row's body.
+When such a write reports a conflict, the driver reads the stored blob or object back with one metadata request. It
+reports success when the object carries the write's own id, and `WriteConflictError` otherwise. The read happens only
+on a conflict, works with a client you pass, and adds no option. A read-back that fails transiently throws
+`TransientError`. A generation's `.crbm` object is never overwritten, so its read-back is definitive. A registry row
+is overwritten by compare-and-swap, so a writer that swaps in over a write that landed, before the read-back, makes
+that write report `WriteConflictError`. The store's callers re-read the row on it, and none deletes a generation
+because of it.

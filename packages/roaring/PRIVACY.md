@@ -175,7 +175,7 @@ single-subject erasure is a rewrite (`eraseSubject`), while crypto-shred (`destr
 handles segment/tenant-level erasure and is the only erasure that reaches immutable backups / WORM copies of the
 objects — once no copy of the segment's registry row still holds its wrapped key, or every KEK that wrapped it
 is destroyed (below). And a
-**materialised segment** (`intersectInto` / `unionInto` / `andNotInto`) is a point-in-time snapshot of its
+**materialized segment** (`intersectInto` / `unionInto` / `andNotInto`) is a point-in-time snapshot of its
 inputs: erasing a subject from a source does not touch a destination computed earlier — which is exactly why
 `eraseSubject` scans *every* registered segment, destinations included, rather than erasing per source. What that
 costs is one unit of the per-op `budget` for each segment, and one more for each generation it opens in a segment
@@ -227,7 +227,7 @@ to run, and the deletion is ours to perform correctly.** Practical patterns:
   policy above retire the oldest wholesale — turning retention into cheap whole-segment disposal, not per-bit aging.
 - **A reload is the per-id retention.** Since a segment's content is whatever its last load said, ageing members
   out *within* a segment is a matter of loading the next generation from a source that no longer includes them.
-  The registry row's `retention` is untouched by a load, an `*Into` materialisation or an erasure rewrite, so the
+  The registry row's `retention` is untouched by a load, an `*Into` materialization or an erasure rewrite, so the
   `expiresAt` you set stays put across all of them.
 - Surface segment age and size so unbounded growth is visible, not silent. The **metrics sink** carries neither (its `storage.get` events count the bytes of each read, not a segment's size).
   `seg.count()` gives a segment's cardinality; `seg.costReport()` prices its current generation's measured size
@@ -276,7 +276,7 @@ So the two are complements, not alternatives: **`dropSegment` for "stop paying f
 > shortens is the history a registry restore picks from, and the time a crypto-shred takes to complete (above).
 
 Full detail, including the dated-bucket pattern and the pitfalls, is in the retention section of the
-[guide](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md).
+[retention guide](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/retention.md).
 
 ## Legal hold
 
@@ -366,7 +366,7 @@ Map CloudBitmaps' processing onto the categories a record of processing needs:
 
 | Art. 30 field | CloudBitmaps mapping |
 |---|---|
-| Categories of processing | storage of set-membership; set intersection (incl. materialised results); loading of generations; caching |
+| Categories of processing | storage of set-membership; set intersection (incl. materialized results); loading of generations; caching |
 | Categories of data subjects / data | your IDs' subjects; membership (possibly special-category) |
 | Recipients | none external to your infrastructure (no sub-processor) |
 | Transfers | any cross-region driver/compute topology *you* configure |
@@ -375,5 +375,5 @@ Map CloudBitmaps' processing onto the categories a record of processing needs:
 
 ---
 
-**See also:** the [getting-started guide](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md) (its encryption/crypto-shred, metrics,
-audit, and subject access & erasure sections) and the [dashboards guide](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/dashboards.md).
+**See also:** the [encryption](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/encryption.md), [observability](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/observability.md) (metrics and
+audit) and [erasure](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/erasure.md) guides, and the [dashboards guide](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/dashboards.md).

@@ -1,197 +1,109 @@
 # @cloudbitmaps/roaring
 
-> **ESM-only, Node ≥ 22.12.** This package ships as ES modules; there is no CommonJS bundle.
-> `require()` works on Node 22.12+ through `require(esm)`, but a runner with its own CommonJS loader
-> (notably Jest in its default configuration) does not get that and needs `import` instead. On TypeScript,
-> a CommonJS project needs `"module": "nodenext"` or `"node20"`. See the
-> [repository README](https://github.com/cloudbitmaps/cloudbitmaps#install--entry-points) for the details.
+**Large sets of integer ids, stored in your own object storage and read from anywhere.** Load a set as one immutable
+file, then ask `has`, `count`, `iterate`, `intersect`, `union` and `andNot`, with no server or cache to run. Part of
+[CloudBitmaps](https://github.com/cloudbitmaps/cloudbitmaps); this is the package you import from.
 
+> **ESM-only, Node ≥ 22.12.** Use `import`; for `require()`, Jest and TypeScript, see
+> [CommonJS, Jest and TypeScript](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#commonjs-jest-and-typescript).
 
-**Distributed, cloud-native Roaring Bitmaps.** Query and intersect large sets of 32-bit integer ids straight out
-of object storage — a bounded RAM cache over immutable `.crbm` objects in your own bucket — at a fraction of an
-always-on cache, with the familiar bitmap API: `has`, `count`, `iterate`, `intersect`, `union`, `andNot`.
+> Pre-1.0: the API and the on-disk format can still change. These docs describe `main`, ahead of the npm release.
 
-This is the **flagship flavor** of the [CloudBitmaps](https://github.com/cloudbitmaps/cloudbitmaps) family: the
-roaring codec (CRoaring, via `roaring`) plus the `CloudRoaring` facade, on top of the codec-agnostic
-[`@cloudbitmaps/core`](https://www.npmjs.com/package/@cloudbitmaps/core) engine, which is a dependency of
-this package and of the storage package you pair it with — so you never install or name core yourself. This
-package exports what an application uses: the store, the errors, the types its signatures name, and the constants
-and helpers a user calls. The engine and the standalone forms of the store's methods are on core, for someone
-writing a flavor or a driver.
+## Install
 
 ```bash
-pnpm add @cloudbitmaps/roaring @cloudbitmaps/s3   # the codec, and the storage you have
-# npm i @cloudbitmaps/roaring @cloudbitmaps/s3     # the same, with npm
+pnpm add @cloudbitmaps/roaring              # the store, with in-memory and local-disk backends
+pnpm add @cloudbitmaps/s3                   # the storage you have: or @cloudbitmaps/gcs, or @cloudbitmaps/azure-blob
 ```
 
-> **On pnpm 10+, allow the one build script.** pnpm 10 skips dependency build scripts by default, so
-> the `roaring` native addon never downloads and the package throws at `import` — while the install
-> itself prints a warning and **exits 0**. Add this to your `package.json`, then install:
->
-> ```json
-> { "pnpm": { "onlyBuiltDependencies": ["roaring"] } }
-> ```
->
-> pnpm 9 and npm run it already. [Full symptoms and fixes](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#cannot-find-module-buildreleaseroaringnode-after-a-successful-install).
+On pnpm 10 and later, allow the one build script first, or the package throws at `import` while the install exits 0. Put this in your `package.json`: `{ "pnpm": { "onlyBuiltDependencies": ["roaring"] } }`. npm and pnpm 9 need nothing extra. [Details](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#cannot-find-module-buildreleaseroaringnode-after-a-successful-install).
 
-```ts
-import { CloudRoaring } from '@cloudbitmaps/roaring';
-import { S3Storage } from '@cloudbitmaps/s3';
+## Use
+
+No setup needed: `MemoryStorage` keeps everything in the process, which is right for a first look and for tests.
+Save this as `first-run.mjs` and run it with `node`:
+
+```js
+import { CloudRoaring, MemoryStorage } from '@cloudbitmaps/roaring';
+
+const store = new CloudRoaring({ storage: new MemoryStorage() });
+
+await store.load({ segment: 'shoppers' }, [5, 99_999, 1_234_567_890]); // a load replaces the segment
+await store.load({ segment: 'active' }, [5, 7, 1_234_567_890]);
+
+const shoppers = store.segment('shoppers');
+console.log(await shoppers.has(99_999)); // true
+console.log(await shoppers.count()); // 3
+for await (const id of shoppers.intersect([store.segment('active')])) console.log(id); // 5, then 1234567890
 ```
 
-Install the storage you have alongside this: **`@cloudbitmaps/s3`** (AWS S3, or an S3-compatible store that
-honours conditional writes — `If-None-Match` and `If-Match` — which the tests run against MinIO),
-**`@cloudbitmaps/gcs`** or **`@cloudbitmaps/azure-blob`**. Each depends on its cloud SDK for real, so nothing
-is an optional peer and no install carries an SDK you do not use. Ships one CLI: `export-segments`.
+To persist, pass a different **backend** as `storage`. Nothing else changes:
 
-## The model in one paragraph
+| Backend | From | Use it for |
+|---|---|---|
+| `MemoryStorage` | `@cloudbitmaps/roaring` | tests and a first look |
+| `LocalFsStorage('./.cloudbitmaps')` | `@cloudbitmaps/roaring` | one process on one folder: a laptop or a CI job |
+| `S3Storage({ bucket, prefix })` | `@cloudbitmaps/s3` | production: the validated one |
+| `GcsStorage({ bucket, prefix })` | `@cloudbitmaps/gcs` | Google Cloud Storage; outside the [validated envelope](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/ROADMAP.md#the-validated-envelope--whats-proven-and-what-isnt) |
+| `AzureBlobStorage({ connectionString, container })` | `@cloudbitmaps/azure-blob` | Azure Blob Storage; outside the [validated envelope](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/ROADMAP.md#the-validated-envelope--whats-proven-and-what-isnt) |
 
-A segment is a set of **write-once `.crbm` generations** in your bucket behind one small registry row saying which
-generation is current. Data gets in by **loading** a new generation — you compute the set upstream (a warehouse
-query, a batch job, a combine of other segments) and `store.load` streams it into a single immutable object,
-checks the result is plausible, then advances the pointer forward-only. Nothing mutates a stored bitmap, so a crash before the publish
-leaves the previous generation authoritative, a rerun is idempotent, and there is no partially-visible write.
-Reads (`has`, `count`, `iterate`, `intersect`, `union`, `andNot`) see one whole, checksum-verified generation.
+There is no `add` or `remove`: a segment changes only by loading a new generation. A load is a batch job, not a
+request handler. `store.exists(ref)` says whether a segment has been loaded.
 
-```ts
-// One bucket is the whole deployment: the generations and the pointer, stated once.
-const backend = new S3Storage({ bucket: 'bitmaps', region: 'us-east-1' });
+## Options
 
-const store = new CloudRoaring({ storage: backend });
+`new CloudRoaring({ storage, ...options })`. Only `storage` is required. A key the store does not take is refused by
+name.
 
-// One call is the whole write path: write the object, check it, move the pointer, collect the old generation.
-await store.load({ segment: 'high-value' }, idsFromWarehouse());
-// A combine refuses an operand that names no segment, so the other two are loaded as well.
-await store.load({ segment: 'eu-residents' }, euResidentIds());
-await store.load({ segment: 'opted-out' }, optedOutIds());
+| Option | What it holds |
+|---|---|
+| `storage` (required) | a backend (see above) |
+| `cache` | `maxChunks`, `genTtlMs` (how soon a reader sees a new load, default 2000 ms), `readerMax`, `readerMaxBytes` |
+| `encryption` | `{ keystore, required }`: encrypt segments at rest with your own key |
+| `retry` | tune the retry of reads, or `false` to turn it off |
+| `metrics` | a metrics sink; off by default |
+| `budget` | `{ maxRequests }` or `false`: the per-call request ceiling |
+| `seams` | `{ clock, rng }`: determinism, for tests |
 
-const seg = store.segment('high-value');
+## What it costs
 
-await seg.has(1_234_567_890); // one chunk — from the cache after the first read
-await seg.count(); // exact, and summed from the index with 0 payload reads
-for await (const id of seg.intersect([store.segment('eu-residents')], { exclude: [store.segment('opted-out')] })) {
-  /* streamed ascending; only the chunks that can contribute are ever fetched */
-}
-```
+Measured against real S3 in `us-east-1`, with the pointer in the same bucket as the data: the median cold `intersect`
+of two 500,000-id segments sharing 100 of their 1,999 chunks made 206 GETs, **$82.40 per million**, requesting only
+the shared chunks. Inside the region it is expected at 204 GETs, $81.60 per million. Writing and publishing a segment
+is **$11.20 per million**, pointer included, from its measured requests at list prices. `count()` reads no payload.
 
-`intersectInto`, `unionInto` and `andNotInto` write the result as a **new generation of the destination** rather
-than streaming it to you, using the same write-once-then-publish protocol.
+The trade is stated plainly. A membership check that misses the cache costs a ranged GET against object storage,
+where an in-process store costs a memory read. If you need sub-millisecond answers on a working set that fits a
+bounded cache, use Redis. [The benchmarks](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/benchmarks.md)
+give the method and what the numbers do not establish.
 
-## Measured on real S3, and what is modelled
+## Before production
 
-Benchmarked against **real** S3 in `us-east-1`, not an emulator, with the pointer in the same bucket as the
-data: the median cold `intersect` of two 500,000-id segments sharing 100 of their 1,999 chunks made 206 GETs as
-measured, **$82.40 per million**, requesting only the shared chunks; inside the region it is expected at 204 GETs,
-$81.60. Writing and publishing a segment is **$11.20 per million**, pointer included, from its measured requests at
-list prices, and `store.load()`, which also lists and collects, is expected at about twice that — against an
-always-on Redis-HA line of **$346/month, standing**, a list price, and a modelled **$0.03/month** for 1.2 GiB of
-segments at rest.
-Request counts are read off the AWS SDK layer rather than estimated from sizes. `count()` on a published
-segment does **0 payload reads**.
+- Grant the permissions the library issues and add a lifecycle rule to abort incomplete uploads.
+- Use a bucket that honors conditional writes, and `@aws-sdk/client-s3` 3.645.0 or later if you pass your own S3 client.
+- Set a request timeout on your storage client. Reads retry by themselves; a write that fails transiently is yours to re-run.
+- Back up the registry with the data, and the keystore too if you encrypt. If you lose the key, the data is gone.
+- Schedule your loads, and `retireExpired` if you use retention. Run loads off the request path.
 
-The trade is stated plainly rather than buried: a membership check that misses the cache costs a ranged GET
-against object storage, where an in-process RAM store costs a memory read. If you need a sub-millisecond p99 on a
-working set that fits a bounded cache, use Redis. If your sets are large, mostly read, and shouldn't pay
-for a standing Redis cluster to keep them warm, use this.
+The [production checklist](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md) covers each item.
 
 ## Coming from Redis bitmaps?
 
-**A durable home for set-shaped work** — audiences, dedup, suppression, membership, eligibility — where the sets
-are large, mostly read, must survive a restart, and are **computed in batches** upstream. You are not giving up
-the bitmap either: past **4,096 ids** in a 65,536-id chunk — 6.25% of it — Roaring stores that chunk as a flat
-bit array, a bit per id as your Redis bitmap holds it, unless its ids form runs, which a run encoding stores in a
-few bytes. It just stops paying for the chunks you never wrote to.
+`GETBIT` is `has`, `BITCOUNT` is `count`, and `BITOP AND` / `OR` / `DIFF` are `intersect` / `union` / `andNot`, with
+`intersectInto`, `unionInto` and `andNotInto` publishing the result as a new generation. `EXPIRE` becomes
+`setRetention` plus a `retireExpired` sweep you schedule, per segment, never per id. `SETBIT` has no equivalent:
+there is no per-id write. Build the set upstream and load it, and do not loop one id at a time. Remove one id
+everywhere with `eraseSubject`, a rewrite for compliance, not a hot-path verb. This is not a drop-in replacement, and
+what does not carry over is the write model and the raw bytes: `exportSegments` writes portable Roaring and ndjson, not Redis's layout. [The full mapping](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#coming-from-redis-bitmaps)
+says what else differs.
 
-The read side carries over one-for-one:
+## Documentation
 
-| Redis | Here |
-|---|---|
-| `GETBIT` | `has(id)` |
-| `BITCOUNT` | `count()` — exact, served from the index with no payload reads |
-| `BITOP AND` / `OR` / `DIFF` | `intersect` / `union` / `andNot` — streamed, and `intersect` skips chunks that cannot contribute. `intersectInto` / `unionInto` / `andNotInto` publish the result as a new generation of the destination |
-| `SETBIT` | **no equivalent — there is no per-id write.** Build the set upstream and load it; remove one id everywhere with `eraseSubject` (a generation rewrite for compliance, not a hot-path verb) |
-| `EXPIRE` | **`setRetention(ref, { expiresAt })` + `retireExpired()`** — a per-segment expiry the writer sets, and a sweep **you** schedule (this library starts no timer, so it works the same in a Lambda and a server). No per-**id** TTL: a bitmap stores ids, not timestamps |
+- [Getting started](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md)
+- [Before production](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md)
+- [API reference](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/api-reference.md)
+- [Changelog](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/CHANGELOG.md)
+- [Privacy and shared responsibility](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/PRIVACY.md)
+## License
 
-**It is not a drop-in replacement, and the difference is the write model.** Redis mutates one bit in place per
-call; here a segment changes only by getting a new generation. So a `SETBIT` loop has nothing to port to: if your
-set is defined by a query, run the query and load the result; if it is defined by events arriving one at a time,
-accumulate them where they arrive (Redis is good at that) and load the set on a cadence. A load bills per
-**object**, not per id — ten million ids are a handful of PUTs.
-
-**What does not carry over: the raw bytes.** A `.crbm` object is not a flat bit array, so anything reading your
-Redis bitmap's underlying string — a job that `GET`s the key and indexes into it, a byte-for-byte backup — will
-not read ours. `BITFIELD`, `BITPOS`, `BITOP NOT` and byte-range `BITCOUNT` have no equivalent either: this is a
-set of ids, not an addressable bit buffer, and `NOT` in particular has no bounded universe to complement against.
-Raw bit-position import/export is unbuilt;
-[say so in an issue](https://github.com/cloudbitmaps/cloudbitmaps/issues) if you need it, because that is what
-decides whether it gets built.
-
-## Compliance is built in, not bolted on
-
-- `subjectReport(id, { namespace })` — which segments an id is in (GDPR Art. 15). Ids share one space across
-  namespaces, so both calls take a `namespace`, or `{ allNamespaces: true }` for the whole fleet, and throw
-  without either.
-- `eraseSubject(id, { namespace })` — rewrites every segment holding the id without it and deletes every
-  generation that held the bit, including one a `rollback` left above the pointer, so it is **physically gone from
-  the bucket when the call returns**; you get an erasure ledger back and a `segment.rewrite` audit event per segment
-  it had to rewrite (Art. 17; an id found only outside the current generation is collected rather than rewritten,
-  so that one is attested by the ledger entry alone).
-- `destroySegment` / `eraseNamespace` — **crypto-shred**: drop the segment's wrapped data key so its encrypted
-  bytes are unreadable *everywhere, including backups*.
-- `dropSegment(ref, { confirmSegment, dryRun })` — retire a segment and reclaim its storage.
-- `exists(ref)` — whether this segment's pointer resolves a generation, as one registry read. There is no
-  `create`: `segment(name)` is a validated address and does no I/O, so a name can never collide. Not the
-  same as `count() > 0` — a segment loaded with no ids exists and counts zero.
-- `segments({ namespace })` — everything the registry holds, streamed, so you do not keep your own list of
-  segment names beside the store. An admin/dashboard call, not a request-path one.
-- `checkConsistency()` — after a restore, verify every pointer's object is actually present.
-- `exportSegments(sink, { format })` — eject every segment to portable `roaring` or `ndjson`. Your exit path.
-
-## Retiring data: a per-segment expiry, and a sweep you schedule
-
-A **segment** can expire; an individual **id** cannot (a bitmap stores ids, not `(id, timestamp)` pairs — a
-timestamp per id costs more than the compression saves).
-
-```ts
-const DAY = 86_400_000;
-const ref = { namespace: 'active-daily', segment: '2026-08-05' };
-
-await store.setRetention(ref, { expiresAt: Date.now() + 30 * DAY }); // once, when you create the bucket
-```
-
-`expiresAt` is an absolute instant **you** compute, not a duration derived from anything observed: every load
-rewrites the basis such a duration would use, so "30 days since the last write" would keep a busy bucket alive
-precisely *because* it is being refreshed. `getRetention` reads the policy back and `clearRetention` cancels it.
-
-Then, from whatever schedule your deployment already has — an EventBridge rule, a Kubernetes `CronJob`, `cron`, a
-queue job — run the sweep. **This library starts no background timer**, deliberately: the same code has to behave
-identically in a Lambda, an edge isolate and a long-lived server, and a timer that only works in one of those is
-worse than none.
-
-```ts
-const swept = await store.retireExpired({ namespace: 'active-daily' });
-for (const e of swept.entries) if (e.action === 'skipped') console.warn(e.segment, e.reason);
-if (swept.limited) scheduleAnotherPassSoon(); // the per-cycle cap deferred some; re-run
-```
-
-Each retirement goes through `dropSegment`, so the registry → object-store ordering is one implementation rather
-than two. The sweep is bounded (`limit`, default 100), previewable (`dryRun`), and returns a per-segment ledger
-rather than throwing — a fault on one segment must not decide the fate of the other ninety-nine. Once a day is
-enough for daily buckets. Full walkthrough:
-[getting-started §13.5](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#135-retention-ttl-and-pruning--what-exists-and-what-doesnt).
-
-## No background process, and nothing to seed
-
-There is no daemon, no compaction pass and no lifecycle worker to run: a segment exists once you have loaded a
-generation into it, and the only scheduled work is the retention sweep above. A load collects the generations it
-supersedes itself; an `*Into` write collects nothing unless given `keep`, and the next load of its destination collects what it left behind. Pass
-a **backend** — `S3Storage`, `GcsStorage` or `AzureBlobStorage` from the storage package you installed, or
-`LocalFsStorage` / `MemoryStorage` from this one — and you get all of it: generations resolved with one strong read,
-encrypted segments, and the lifecycle helpers. `storage` also accepts a bare driver or a pre-built chunk source for
-read-only wiring. A bare driver carries no registry; a pre-built source can read through one of its own, but the
-store cannot write or enumerate through it, so neither offers the lifecycle helpers. There is no separate
-`registry` option: the backend carries the registry, and the store refuses any key it does not take, by name.
-
-The full README, guides and [benchmarks](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/benchmarks.md)
-(with the method and what the numbers do *not* establish) live in the
-[repository](https://github.com/cloudbitmaps/cloudbitmaps). Licensed Apache-2.0.
+Apache-2.0
