@@ -1731,14 +1731,17 @@ function sectionOf(doc, text, title) {
  * that holds no fence. A line indented one to three spaces after a list item has started may be in the item or
  * outside it, which this cannot tell without reading the item's width and its lazy lines, so it is read as open:
  * every such line is refused, and so is anything left unclosed. The item is taken as ended by a blank line and then a
- * line at the left margin that is no list item, a later end than the true one, never an earlier.
+ * line at the left margin that is no list item, a later end than the true one, never an earlier. Lines end as
+ * CommonMark ends them, at a carriage return and line feed, a carriage return alone, or a line feed, and a byte order
+ * mark that begins the page is dropped, as a renderer drops it.
+ *
+ * It returns the opening line and whether the refusal is the list's, as `{ line, inList }`, or null.
  */
 function fenceOpenAt(above) {
   let open = null; // the character, length and line of the fence that is open
   let inList = false; // a list item may still hold the lines that follow
   let afterBlank = false;
-  for (const raw of above.split('\n')) {
-    const line = raw.replace(/\r$/, '');
+  for (const line of above.replace(/^\uFEFF/, '').split(/\r\n|\r|\n/)) {
     if (open !== null) {
       const close = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
       if (close !== null && close[1][0] === open.char && close[1].length >= open.length)
@@ -1747,7 +1750,7 @@ function fenceOpenAt(above) {
     }
     const opener = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(line);
     if (opener !== null && !(opener[2][0] === '`' && opener[3].includes('`'))) {
-      if (opener[1] !== '' && inList) return line;
+      if (opener[1] !== '' && inList) return { line, inList: true };
       open = { char: opener[2][0], length: opener[2].length, line };
       inList = false;
       afterBlank = false;
@@ -1762,7 +1765,7 @@ function fenceOpenAt(above) {
     else if (afterBlank && !/^[ \t]/.test(line)) inList = false;
     afterBlank = false;
   }
-  return open === null ? null : open.line;
+  return open === null ? null : { line: open.line, inList: false };
 }
 /** The first figure in a page's prose that nothing checks, and where it stands, or null. */
 function proseFigure(doc, text) {
@@ -1795,7 +1798,11 @@ function proseFigure(doc, text) {
   if (fence !== null) {
     throw new Error(
       `sizing: ${doc} holds a code fence above its "${scope.section}" section, ` +
-        `"${fence.trim().slice(0, 24)}", that is not closed before the section's heading, so could hide it`,
+        `"${fence.line.trim().slice(0, 24)}", ` +
+        (fence.inList
+          ? 'indented inside a list item, which this check cannot place: write it at the left margin, or move ' +
+            "the list below the section, so it cannot hide the section's heading"
+          : "that is not closed before the section's heading, so could hide it"),
     );
   }
   const inside = handWrittenFigure(blank.slice(start, end));

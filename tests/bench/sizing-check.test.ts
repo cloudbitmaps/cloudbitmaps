@@ -1172,6 +1172,26 @@ describe('bench:sizing:check fails what it exists to catch', () => {
         refused({ [README]: above(text) }, FENCE_ABOVE);
       });
 
+      it('ends a line as CommonMark does, at a carriage return alone too, and drops a leading byte order mark', () => {
+        const cr = String.fromCharCode(13);
+        refused({ [README]: above(['x', '```', 'y'].join(cr)) }, FENCE_ABOVE);
+        const closed = sizingCheck({ [README]: above(['x', '```', 'y\n```'].join(cr)) });
+        expect(closed.code, closed.out).toBe(0);
+        refused({ [README]: '\uFEFF~~~~\n' + readme }, FENCE_ABOVE);
+      });
+
+      it('says why it refuses a fence indented inside a list item, which it cannot place, and passes it at the margin', () => {
+        const step = '1. Install:\n\n   ```sh\n   pnpm add x\n   ```';
+        refused(
+          { [README]: above(step) },
+          /indented inside a list item, which this check cannot place: write it at the left margin/,
+        );
+        const margin = sizingCheck({ [README]: above('1. Install:\n\n```sh\npnpm add x\n```') });
+        expect(margin.code, margin.out).toBe(0);
+        // An open fence is worded as one.
+        refused({ [README]: above('```sh\nx') }, /that is not closed before the section's heading/);
+      });
+
       it('still refuses HTML above the section, inside a closed fence or not', () => {
         for (const text of ['<!-- a note -->', '```\n<b>x</b>\n```', '> <details>\n> x']) {
           refused({ [README]: above(text) }, /holds HTML above its "Why CloudBitmaps" section/);
@@ -1216,18 +1236,18 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       it.each([
         [
           'a long word before the first digit of a page that is all generated',
-          5000,
+          10_000,
           (n: number) => ({
             [WHY_PAGE]: why.replace('has the rest.', () => `has the rest. ${'a'.repeat(n)} x 1`),
           }),
         ],
         [
           'a heading line with a long run of blanks and hashes',
-          6000,
+          12_000,
           (n: number) => rest(`## x ${' #'.repeat(n / 2)}x`),
         ],
-        ['a run of underlines', 1000, (n: number) => rest(`x\n${'=\n'.repeat(n / 2)}`)],
-        ['a run of dashes', 1000, (n: number) => rest(`x\n${'- \n'.repeat(n / 2)}`)],
+        ['a run of underlines', 2000, (n: number) => rest(`x\n${'=\n'.repeat(n / 2)}`)],
+        ['a run of dashes', 2000, (n: number) => rest(`x\n${'- \n'.repeat(n / 2)}`)],
         [
           'fences, one after another, above the section',
           6000,
