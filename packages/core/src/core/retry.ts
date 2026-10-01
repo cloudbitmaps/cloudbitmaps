@@ -54,7 +54,10 @@ export interface RetryDeps {
   readonly rng: Rng;
   /** Override which errors are retryable. Default: any {@link TransientError}. */
   readonly isRetryable?: (err: unknown) => boolean;
-  /** Optional hook (observability) fired before each backoff wait. `attempt` is 1-based (the one that failed). */
+  /**
+   * Optional hook (observability) fired before each backoff wait. `attempt` is 1-based (the one that failed).
+   * Best-effort: an error it throws is swallowed, so it can neither stop the retry nor change the error thrown.
+   */
   readonly onRetry?: (info: { attempt: number; delayMs: number; err: unknown }) => void;
 }
 
@@ -104,7 +107,12 @@ export async function withRetry<T>(
       lastErr = err;
       if (attempt >= attempts || !retryable(err)) throw err;
       const delayMs = applyJitter(policy, backoffDelayMs(policy, attempt), deps.rng);
-      deps.onRetry?.({ attempt, delayMs, err });
+      try {
+        deps.onRetry?.({ attempt, delayMs, err });
+      } catch {
+        // Observability is best-effort, as for a metrics sink (`safeMetrics`): a throwing hook must neither abort
+        // the retry nor replace the operation's error with its own. This module has no sink to report it to.
+      }
       await deps.clock.sleep(delayMs);
     }
   }
