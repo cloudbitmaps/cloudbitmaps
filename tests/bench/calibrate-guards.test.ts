@@ -870,6 +870,55 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     expect(src).toContain('checkRunRegion(region)');
   });
 
+  // The ceiling is parsed before the confirmation is read, so each refusal is reachable here without the phrase, and a
+  // broken one still stops at the next check: the home is empty, so the run ends at the identity check.
+  it('refuses a real run with no ceiling, and one with no confirmation, in that order and before the library loads', () => {
+    const noCeiling = runHarness(['--run'], { CR_CALIBRATE_REGION: 'us-east-1' });
+    expect(noCeiling.status).toBe(2);
+    expect(noCeiling.stderr).toMatch(/CR_CALIBRATE_MAX_USD is required/);
+    const noPhrase = runHarness(['--run'], {
+      CR_CALIBRATE_REGION: 'us-east-1',
+      CR_CALIBRATE_MAX_USD: '0.05',
+    });
+    expect(noPhrase.status).toBe(2);
+    expect(noPhrase.stderr).toMatch(/set CR_CALIBRATE_CONFIRM=/);
+    const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
+    const run = src.indexOf("if (MODE === 'run') {\n    try {\n      checkRunRegion(region);");
+    expect(run).toBeGreaterThan(-1);
+    const at = (needle: string): number => src.indexOf(needle, run);
+    expect(at('parseCeiling(process.env.CR_CALIBRATE_MAX_USD)')).toBeGreaterThan(-1);
+    expect(at('parseCeiling(process.env.CR_CALIBRATE_MAX_USD)')).toBeLessThan(
+      at('process.env.CR_CALIBRATE_CONFIRM !== CONFIRM_PHRASE'),
+    );
+    expect(at('process.env.CR_CALIBRATE_CONFIRM !== CONFIRM_PHRASE')).toBeLessThan(
+      src.indexOf("await import('@cloudbitmaps/roaring')"),
+    );
+  });
+
+  // CI runs the tests before it builds, so a spawn cannot reach the library import: these two are read, in the order
+  // `main()` does them, rather than run.
+  it('refuses a projection over the ceiling before any client exists, and prints the bill inside the 10 s window', () => {
+    const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
+    const main = src.indexOf('async function main');
+    const at = (needle: string, from = main): number => src.indexOf(needle, from);
+    const preflight = at("if (MODE === 'run') {\n    // The projection is an upper bound");
+    expect(preflight).toBeGreaterThan(-1);
+    const refusal = at('if (breached(priced.totalUSD, ceiling)) {', preflight);
+    expect(refusal).toBeGreaterThan(preflight);
+    expect(refusal).toBeLessThan(at('new s3.S3Client(', preflight));
+    expect(src.slice(refusal, refusal + 400)).toMatch(/refuse\(/);
+    // The window: after the identity line, inside the run-only branch, naming the bill, before anything is created.
+    const identity = at('`identity: account');
+    const window = at("if (MODE === 'run') {\n      // A human check", identity);
+    expect(window).toBeGreaterThan(identity);
+    const sleep = at('await sleep(10_000);', window);
+    expect(sleep).toBeGreaterThan(window);
+    expect(src.slice(window, sleep)).toContain('priced.totalUSD');
+    expect(src.slice(window, sleep)).toContain('ceiling');
+    expect(sleep).toBeLessThan(at('new s3.HeadBucketCommand({ Bucket: bucket })', identity));
+    expect(sleep).toBeLessThan(at('new s3.CreateBucketCommand('));
+  });
+
   // The two tests above tie `.gitignore` to `resultsFile()`; these tie the harness and the CloudShell script to it.
   // Without them, a hard-coded path in the harness — the exact regression this block exists for — passes every
   // test here.

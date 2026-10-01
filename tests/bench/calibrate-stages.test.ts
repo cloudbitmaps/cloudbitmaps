@@ -571,6 +571,44 @@ describe('a segment is loaded once', () => {
   });
 });
 
+// A rehearsal's ceiling is infinite, so no MinIO pass can show a ceiling check missing from a sending loop. Each loop
+// that sends is read here, and must check the ceiling after the send it awaits.
+describe('the ceiling is checked inside every loop that sends', () => {
+  // The loops in source order; a loop's slice runs to the next one's anchor.
+  const anchors = [
+    'const load = async',
+    'const coldIntersects = async',
+    'const p0 = snap();',
+    'const timedCalls = async',
+    'for (let i = 0; i < ANDNOT_CALLS',
+  ];
+  const at = anchors.map((a) => harnessSrc.indexOf(a));
+
+  it('finds every loop, in order', () => {
+    for (const [i, a] of anchors.entries()) expect(at[i], a).toBeGreaterThan(-1);
+    expect([...at].sort((x, y) => x - y)).toEqual(at);
+  });
+
+  it.each(anchors.map((a, i) => [a, i] as const))(
+    '%s awaits a send and then checks',
+    (anchor, i) => {
+      const end = at[i + 1] ?? harnessSrc.indexOf('results.partial = false;');
+      const loop = harnessSrc.slice(at[i], end);
+      const check = loop.indexOf('checkCeiling();');
+      expect(check, `${anchor} no longer checks the ceiling`).toBeGreaterThan(-1);
+      expect(loop.slice(0, check)).toMatch(/await /);
+    },
+  );
+
+  it('prices what the meter has counted, and stops at the ceiling', () => {
+    const body = harnessSrc.slice(harnessSrc.indexOf('const checkCeiling = () => {'));
+    const closure = body.slice(0, body.indexOf('};'));
+    expect(closure).toContain('priceTally(tally, pricing).totalUSD');
+    expect(closure).toContain('breached(spent, ceiling)');
+    expect(closure).toMatch(/throw new Error\(/);
+  });
+});
+
 describe('the ceiling covers every stage', () => {
   const pricing = { storage: { putPerMillion: 5, getPerMillion: 0.4 } };
 

@@ -376,13 +376,15 @@ async function main() {
     } catch (err) {
       refuse(err.message);
     }
-    if (process.env.CR_CALIBRATE_CONFIRM !== CONFIRM_PHRASE) {
-      refuse(`set CR_CALIBRATE_CONFIRM=${CONFIRM_PHRASE} to authorise a run that spends money`);
-    }
+    // The ceiling is parsed before the confirmation is read: both are inputs alone, and this order lets a test reach
+    // each refusal without ever holding the phrase.
     try {
       ceiling = parseCeiling(process.env.CR_CALIBRATE_MAX_USD);
     } catch (err) {
       refuse(err.message);
+    }
+    if (process.env.CR_CALIBRATE_CONFIRM !== CONFIRM_PHRASE) {
+      refuse(`set CR_CALIBRATE_CONFIRM=${CONFIRM_PHRASE} to authorise a run that spends money`);
     }
   }
 
@@ -646,6 +648,9 @@ async function main() {
     );
     if (MODE === 'run') {
       // A human check that works even without a pin. Confirm the last four digits are the account you meant.
+      log(
+        `projected $${priced.totalUSD.toFixed(6)} (an upper bound) against the $${ceiling} ceiling`,
+      );
       log('Ctrl-C within 10 s to abort — nothing has been created yet.');
       await sleep(10_000);
     }
