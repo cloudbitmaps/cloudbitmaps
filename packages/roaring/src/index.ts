@@ -2067,7 +2067,7 @@ export class Segment {
    * **It is a hold, not a lease.** Nothing here stops a collection deleting the generation underneath
    * you: a pinned read deliberately does **not** heal forward, because silently serving a different generation
    * is the one thing a pin exists to prevent, so it fails instead. Size `keep` to cover your longest pinned
-   * job — see [Sizing `keep`](../../docs/guide/loading.md#sizing-keep) — or take the pin on a segment
+   * job — see [Generations and `keep`](../../docs/guide/loading.md#generations-and-keep) — or take the pin on a segment
    * you are not collecting.
    *
    * A segment with no current generation pins nothing and reads empty, exactly as it would unpinned. A pinned

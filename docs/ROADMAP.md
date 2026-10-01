@@ -358,7 +358,7 @@ Saying no is part of the design:
   needs a snapshot handle (above), and a window merely wide enough to hope with is a different, weaker promise
   wearing the same words. The cost side — generations piling up because nothing collects them — is what `keep`
   is for; sizing it is in the
-  [guide](guide/loading.md#sizing-keep).
+  [guide](guide/loading.md#generations-and-keep).
 - **Per-id TTL.** A bitmap stores ids, not `(id, timestamp)` pairs; a timestamp per id costs 4–8 bytes each and
   takes the compression the whole design exists for. Not deferred — incompatible with the data model.
 - **A hosted/managed CloudBitmaps service.** Never — this is a library. Your data stays in your account, in
