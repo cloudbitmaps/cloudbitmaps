@@ -32,6 +32,10 @@ type Run = {
   runId: string;
   mode: string;
   target: string;
+  region: string;
+  leftovers?: string[];
+  expectedMissed?: string[];
+  network: { client: string; clientRegion: string | null };
   cost: {
     putUSD: number;
     getUSD: number;
@@ -44,14 +48,16 @@ type Run = {
     };
   };
   phases: {
-    load: { via: string; perLoad: LoadRecord[]; requests: Requests };
+    load: { via: string; perLoad: LoadRecord[]; requests: Requests; expectedGets: number };
     intersect: { requests: Requests; runs: number };
     warm: { warmGets: number };
+    andNot: { requests: Requests; expectedGets: number };
     [stage: string]: unknown;
   };
   projectedStages: Record<string, { put: number; get: number }>;
 };
 type Figures = {
+  remote: boolean;
   loadVia: string | null;
   getsPerLoad: number;
   getsPerMultipart: number;
@@ -120,6 +126,7 @@ describe('a run that timed store.load()', () => {
     const extra = 2 * singles.length;
     for (const l of singles) l.get += 2;
     run.phases.load.requests.get += extra;
+    run.phases.load.expectedGets += extra;
     run.cost.ops.get += extra;
     run.cost.ops.byCommand.GetObjectCommand =
       (run.cost.ops.byCommand.GetObjectCommand ?? 0) + extra;
@@ -230,6 +237,72 @@ describe('a run that timed store.load()', () => {
       ).toMatch(/does not price/);
     });
 
+    // What the run itself reports as wrong is refused, not read past: it is evidence of a run that did not go the way
+    // the stage table says, however well its ledger reconciles.
+    it('with anything teardown left behind', () => {
+      expect(
+        refused((r) => {
+          r.leftovers = ['a bucket teardown could not remove'];
+        }),
+      ).toMatch(/teardown left 1 resource behind/);
+    });
+
+    it('with an expected count it missed', () => {
+      expect(
+        refused((r) => {
+          r.expectedMissed = ['pointReads has() first read: 3001 GET-class, expected 3000'];
+        }),
+      ).toMatch(/it missed an expected count: pointReads has\(\) first read/);
+    });
+
+    it('with a stage whose requests are not the ones it expected', () => {
+      expect(
+        refused((r) => {
+          r.phases.andNot.expectedGets += 1;
+        }),
+      ).toMatch(/its andNot stage made 30,210 GET-class requests, not the 30,211 it expected/);
+    });
+
+    it('with a stage that records no expected count', () => {
+      expect(
+        refused((r) => {
+          delete (r.phases.andNot as { expectedGets?: number }).expectedGets;
+        }),
+      ).toMatch(/it records no expected count for its andNot stage$/);
+    });
+
+    it('and says every one of them at once, beside a ledger that does not add up', () => {
+      const message = refused((r) => {
+        r.leftovers = ['a bucket teardown could not remove'];
+        r.expectedMissed = ['pointReads has() first read: 3001 GET-class, expected 3000'];
+        r.phases.andNot.expectedGets += 1;
+        r.region = 'us-east-1';
+        r.network.clientRegion = 'us-west-2';
+        r.cost.ops.get += 1;
+        r.cost.ops.byCommand.GetObjectCommand = (r.cost.ops.byCommand.GetObjectCommand ?? 0) + 1;
+        r.cost.getUSD = (r.cost.ops.get * 0.4) / 1e6;
+        r.cost.totalUSD = r.cost.putUSD + r.cost.getUSD;
+      });
+      for (const says of [
+        /stages' requests and the bucket's own do not add up/,
+        /teardown left 1 resource behind/,
+        /it missed an expected count/,
+        /its andNot stage made 30,210 GET-class requests, not the 30,211 it expected/,
+        /it ran from us-west-2, not the bucket's us-east-1/,
+      ]) {
+        expect(message).toMatch(says);
+      }
+    });
+
+    it("from a shell in a region other than the bucket's", () => {
+      expect(
+        refused((r) => {
+          r.region = 'us-east-1';
+          r.network.clientRegion = 'us-west-2';
+        }),
+      ).toMatch(/it ran from us-west-2, not the bucket's us-east-1/);
+    });
+
     it('and a run that lists no upload for a load is refused too', () => {
       expect(
         refused((r) => {
@@ -238,5 +311,23 @@ describe('a run that timed store.load()', () => {
         }),
       ).toMatch(/recorded uploads/);
     });
+  });
+});
+
+// A round-trip floor under 30 ms keeps another continent out, not a neighbouring region, so latency is labelled
+// in-region only when the shell's own region is proven to be the bucket's.
+describe("a run's latency is in-region", () => {
+  const inRegion = (client: string, clientRegion: string | null): boolean => {
+    const run = asRealRun();
+    run.region = 'us-east-1';
+    run.network.client = client;
+    run.network.clientRegion = clientRegion;
+    return !figures.derive(run, SOURCES).remote;
+  };
+  it("only when its floor is under the line and its shell's region is the bucket's", () => {
+    expect(inRegion('in-region', 'us-east-1')).toBe(true);
+    expect(inRegion('in-region', null)).toBe(false);
+    expect(inRegion('REMOTE — latency below is network-dominated', 'us-east-1')).toBe(false);
+    expect(figures.derive(asRealRun(), SOURCES).remote).toBe(true);
   });
 });

@@ -21,8 +21,10 @@
  * exact real run whose parts reconcile: the per-command counts sum to the billed classes, each class's price
  * reproduces its recorded cost, the chunk and tail reads match the planned layout and the library's tail size, the
  * median intersect's GETs are its chunk, tail and pointer reads, the bytes read back and sent up sum to their
- * parts, and the uncategorised reads divide evenly across the loads. A figure derived from a file that fails any of
- * those would be about a run that did not happen the way it says.
+ * parts, and the uncategorised reads divide evenly across the loads. A run that timed `store.load()` is also refused
+ * for what it reports as wrong itself: leftovers, a missed expected count, a stage off its expected requests, or a
+ * shell in another region than the bucket's. A figure derived from a file that fails any of those would be about a
+ * run that did not happen the way it says.
  *
  * WHAT THE REVERSE CHECK CAN AND CANNOT SEE. It reads a figure by its unit, or by the noun it counts, and accepts it
  * only at the precision it is written. A value the evidence holds is not enough where the same number could make
@@ -369,6 +371,32 @@ function derive(run, src) {
       run.phases.warm.warmGets === 0 && run.phases.warm.exact === true,
       'its warm intersects are not recorded as exact and at no requests',
     );
+    // What the run itself reports as wrong is refused, not read past, however well its ledger reconciles: anything
+    // teardown left behind, a count the engine was expected to make and did not, a stage whose requests are not the
+    // ones it expected, and a shell that says it ran in another region than the bucket's.
+    const left = run.leftovers ?? [];
+    check(
+      left.length === 0,
+      `teardown left ${left.length} resource${left.length === 1 ? '' : 's'} behind`,
+    );
+    const missed = run.expectedMissed ?? [];
+    check(missed.length === 0, `it missed an expected count: ${missed.join('; ')}`);
+    // Every stage's record exists here: the first refusal above stops a file that lacks one.
+    for (const name of STAGES) {
+      const { requests, expectedGets } = run.phases[name];
+      check(typeof expectedGets === 'number', `it records no expected count for its ${name} stage`);
+      if (typeof expectedGets === 'number') {
+        check(
+          requests.get === expectedGets,
+          `its ${name} stage made ${int(requests.get)} GET-class requests, not the ${int(expectedGets)} it expected`,
+        );
+      }
+    }
+    const clientRegion = run.network?.clientRegion ?? null;
+    check(
+      clientRegion === null || clientRegion === run.region,
+      `it ran from ${clientRegion}, not the bucket's ${run.region}`,
+    );
     for (const [name, record] of [
       ['spread', run.phases.spread],
       ...(run.phases.sweep?.entries ?? []).map((e) => [`sweep k = ${e.k}`, e]),
@@ -519,7 +547,9 @@ function derive(run, src) {
     packageVersion: run.measured.packageVersion,
     harness: run.measured.harness,
     node: run.measured.node,
-    remote: !/^in-region/.test(run.network.client),
+    // A floor under the line keeps another continent out, not a neighbouring region, so a run's latency is in-region
+    // only when its shell's own region is the bucket's as well.
+    remote: !(/^in-region/.test(run.network.client) && run.network.clientRegion === run.region),
     workload: { ...w, sharedIds: layout.shared, overlap: DEFAULT_LAYOUT.overlap },
     intersects: it.runs,
     chunksPerOperand,
