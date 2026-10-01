@@ -37,7 +37,7 @@ function deserialize(bytes: Uint8Array): void {
 
 /** The index-parser target's contract: raw index bytes → self-consistent entries or a typed error. */
 function parseRawIndex(bytes: Uint8Array): void {
-  parseIndex(bytes, 1 << 24, MAX_BYTES); // fixed generous objectSize, matching fuzz/targets/crbm-index.mjs
+  parseIndex(bytes, 1 << 24, MAX_BYTES); // fixed generous payload-region end, matching fuzz/targets/crbm-index.mjs
 }
 
 /** The `.crbm` reader target's contract: open → getChunk → safeDeserialize. */

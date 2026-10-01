@@ -209,6 +209,10 @@ export class SegmentEngine {
    * Cardinality. When the Storage source can serve per-chunk cardinality from its `.crbm` index (the `.crbm`
    * source can), the count is summed from the index with **zero payload reads**. A source without that
    * capability (the in-memory source) falls back to fetching every chunk.
+   *
+   * The index sum is trusted, not confirmed: the reader checked the index for internal consistency when it opened
+   * the object, and a corrupt index that is still internally consistent yields a wrong count. `iterate()` and the
+   * combines decode the payloads.
    */
   async count(seg: SegmentRef): Promise<number> {
     const cardinalities = this.storage.cardinalities ? await this.storage.cardinalities(seg) : null;

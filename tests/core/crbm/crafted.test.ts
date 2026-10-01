@@ -17,6 +17,17 @@ import {
   VERSION_MINOR,
 } from '@/core/crbm/format';
 import { IntegrityError, UnsupportedError } from '@/core/errors';
+import { randomBytes } from 'node:crypto';
+import { aadFor } from '@/core/crypto';
+import type { CrbmCrypto } from '@/core/crypto';
+import { NodeAead } from '@/drivers/crypto';
+import {
+  AEAD_NONCE_BYTES,
+  AEAD_TAG_BYTES,
+  DEFAULT_MAX_PAYLOAD_BYTES,
+  FLAG_ENCRYPTED,
+  MAX_CHUNK_CARDINALITY,
+} from '@/core/crbm/format';
 
 interface RawEntry {
   keyDelta: number;
@@ -36,6 +47,10 @@ function assembleCrbm(opts: {
   rawEntries: RawEntry[];
   generation?: number;
   totalCardinality?: number;
+  /** Footer `chunk_count`; defaults to the number of entries (or 0 on an encrypted object). */
+  chunkCount?: number;
+  /** Seal the index and set the encrypted flag, as the writer does. */
+  crypto?: CrbmCrypto;
   /** Footer format fields — default to the valid v1 values; override to forge an unsupported generation. */
   elementWidth?: number;
   payloadCodecId?: number;
@@ -51,7 +66,9 @@ function assembleCrbm(opts: {
     indexArr.push(e.crc & 0xff, (e.crc >>> 8) & 0xff, (e.crc >>> 16) & 0xff, (e.crc >>> 24) & 0xff);
     derivedTotal += e.cardinality;
   }
-  const index = Uint8Array.from(indexArr);
+  const plainIndex = Uint8Array.from(indexArr);
+  const sealed = opts.crypto?.aead.seal(plainIndex, opts.crypto.aadFor('index'));
+  const index = sealed === undefined ? plainIndex : sealed.ciphertext;
   const indexOffset = PAYLOAD_START + opts.payloadRegion.length;
   const total = new Uint8Array(indexOffset + index.length + FOOTER_BYTES);
 
@@ -66,7 +83,15 @@ function assembleCrbm(opts: {
   view.setBigUint64(FOOTER.indexOffset, BigInt(indexOffset), true);
   view.setBigUint64(FOOTER.indexLength, BigInt(index.length), true);
   view.setUint32(FOOTER.indexCrc32c, crc32c(index), true);
-  view.setUint32(FOOTER.flags, FLAG_LITTLE_ENDIAN, true);
+  view.setUint32(
+    FOOTER.flags,
+    FLAG_LITTLE_ENDIAN | (sealed === undefined ? 0 : FLAG_ENCRYPTED),
+    true,
+  );
+  if (sealed !== undefined) {
+    footer.set(sealed.nonce, FOOTER.indexNonce);
+    footer.set(sealed.tag, FOOTER.indexTag);
+  }
   view.setUint16(
     FOOTER.payloadCodecId,
     opts.payloadCodecId ?? PAYLOAD_CODEC_ROARING_PORTABLE,
@@ -77,8 +102,13 @@ function assembleCrbm(opts: {
   footer[FOOTER.versionMajor] = VERSION_MAJOR;
   footer[FOOTER.versionMinor] = VERSION_MINOR;
   view.setBigUint64(FOOTER.generation, BigInt(opts.generation ?? 1), true);
-  view.setUint32(FOOTER.chunkCount, opts.rawEntries.length, true);
-  view.setBigUint64(FOOTER.totalCardinality, BigInt(opts.totalCardinality ?? derivedTotal), true);
+  const hidden = sealed !== undefined; // an encrypted footer zeroes both
+  view.setUint32(FOOTER.chunkCount, opts.chunkCount ?? (hidden ? 0 : opts.rawEntries.length), true);
+  view.setBigUint64(
+    FOOTER.totalCardinality,
+    BigInt(opts.totalCardinality ?? (hidden ? 0 : derivedTotal)),
+    true,
+  );
   view.setUint32(FOOTER.footerCrc32c, crc32c(footer.subarray(0, FOOTER_CRC_COVERAGE)), true);
   footer.set(MAGIC, FOOTER.endMagic);
   return total;
@@ -315,5 +345,198 @@ describe('crafted (hostile) index — reader-side guards', () => {
     const size = String(bytes.length);
     const shorter = new Uint8Array(Number(size.slice(0, -1))); // 194 bytes pinned, 19 bytes now
     expect(await CrbmReader.sameObject(new BufferReader(shorter), pinned)).toBe(false);
+  });
+});
+
+// An index is checked for internal consistency when it is parsed, because `count()` and the other reads that answer
+// from the index alone decode no payload: what the index records is what they report.
+describe('index consistency — refused at open, before any payload is read', () => {
+  const payload = Uint8Array.of(1, 2, 3, 4, 5, 6);
+  const first = {
+    keyDelta: 0,
+    offDelta: 0,
+    length: 4,
+    cardinality: 2,
+    crc: crc32c(payload.subarray(0, 4)),
+  };
+  const second = {
+    keyDelta: 3,
+    offDelta: 0,
+    length: 2,
+    cardinality: 1,
+    crc: crc32c(payload.subarray(4)),
+  };
+  const valid = (over: Partial<Parameters<typeof assembleCrbm>[0]> = {}): Uint8Array =>
+    assembleCrbm({ payloadRegion: payload, rawEntries: [first, second], ...over });
+
+  /** Opens with a tail that holds only the footer, so the index is the one range read an open makes. */
+  async function openCounting(
+    bytes: Uint8Array,
+  ): Promise<{ error: unknown; reads: Array<[number, number]> }> {
+    const inner = new BufferReader(bytes);
+    const reads: Array<[number, number]> = [];
+    const blob = {
+      getRange: (offset: number, length: number) => {
+        reads.push([offset, length]);
+        return inner.getRange(offset, length);
+      },
+      getTail: (maxBytes: number) => inner.getTail(maxBytes),
+    };
+    try {
+      await CrbmReader.open(blob, { tailBytes: FOOTER_BYTES });
+      return { error: undefined, reads };
+    } catch (error) {
+      return { error, reads };
+    }
+  }
+
+  const indexRead = (bytes: Uint8Array): [number, number] => {
+    const view = new DataView(bytes.buffer, bytes.byteOffset + bytes.length - FOOTER_BYTES);
+    return [
+      Number(view.getBigUint64(FOOTER.indexOffset, true)),
+      Number(view.getBigUint64(FOOTER.indexLength, true)),
+    ];
+  };
+
+  it('opens a consistent object, and its count is the sum of what the index records', async () => {
+    const reader = await open(valid());
+    expect(reader.count()).toBe(3);
+    expect([...reader.cardinalities()]).toEqual([
+      [0, 2],
+      [3, 1],
+    ]);
+    const counted = await openCounting(valid());
+    expect(counted.error).toBeUndefined();
+    expect(counted.reads).toEqual([indexRead(valid())]); // the index and nothing else
+  });
+
+  const refused: Array<[string, () => Uint8Array, RegExp]> = [
+    [
+      'a chunk key that repeats',
+      () => valid({ rawEntries: [first, { ...second, keyDelta: 0 }] }),
+      /duplicate chunkKey/,
+    ],
+    [
+      'a chunk key past 0xffff',
+      () => valid({ rawEntries: [{ ...first, keyDelta: 0x1_0000 }, second] }),
+      /chunkKey .* out of range/,
+    ],
+    [
+      'a cardinality of 0',
+      () => valid({ rawEntries: [{ ...first, cardinality: 0 }, second] }),
+      /cardinality 0 invalid/,
+    ],
+    [
+      'a cardinality above 65536',
+      () => valid({ rawEntries: [{ ...first, cardinality: MAX_CHUNK_CARDINALITY + 1 }, second] }),
+      /cardinality 65537 invalid/,
+    ],
+    [
+      'a payload length of 0',
+      () => valid({ rawEntries: [{ ...first, length: 0 }, second] }),
+      /length 0 invalid/,
+    ],
+    [
+      'a payload length above the cap',
+      () => valid({ rawEntries: [{ ...first, length: DEFAULT_MAX_PAYLOAD_BYTES + 1 }, second] }),
+      /length \d+ invalid/,
+    ],
+    [
+      'a payload that runs past the payload region, into the index',
+      // The region holds 6 bytes; the second payload claims 40, which still ends inside the object.
+      () => valid({ rawEntries: [first, { ...second, length: 40 }] }),
+      /payload out of bounds/,
+    ],
+    [
+      'a payload that starts past the payload region',
+      () => valid({ rawEntries: [first, { ...second, offDelta: 1 }] }),
+      /payload out of bounds/,
+    ],
+    [
+      'a footer chunk_count above the entries',
+      () => valid({ chunkCount: 3 }),
+      /chunk_count 3 != 2/,
+    ],
+    [
+      'a footer chunk_count below the entries',
+      () => valid({ chunkCount: 1 }),
+      /chunk_count 1 != 2/,
+    ],
+    [
+      'a footer total_cardinality above the sum',
+      () => valid({ totalCardinality: 4 }),
+      /total_cardinality 4 != /,
+    ],
+    [
+      'a footer total_cardinality below the sum',
+      () => valid({ totalCardinality: 2 }),
+      /total_cardinality 2 != /,
+    ],
+  ];
+
+  it.each(refused)(
+    'refuses %s with an IntegrityError and reads nothing but the index',
+    async (_what, make, message) => {
+      const bytes = make();
+      await expect(open(bytes)).rejects.toBeInstanceOf(IntegrityError);
+      await expect(open(bytes)).rejects.toThrow(message);
+      const counted = await openCounting(bytes);
+      expect(counted.error).toBeInstanceOf(IntegrityError);
+      expect(counted.reads).toEqual([indexRead(bytes)]);
+    },
+  );
+
+  it('refuses an index whose last record is cut short, with its own CRC and the footer CRC re-forged to match', async () => {
+    const [offset, length] = indexRead(valid());
+    const cut = Uint8Array.from(valid());
+    const view = new DataView(cut.buffer, cut.length - FOOTER_BYTES);
+    view.setBigUint64(FOOTER.indexLength, BigInt(length - 2), true);
+    view.setUint32(FOOTER.indexCrc32c, crc32c(cut.subarray(offset, offset + length - 2)), true);
+    const footer = cut.subarray(cut.length - FOOTER_BYTES);
+    view.setUint32(FOOTER.footerCrc32c, crc32c(footer.subarray(0, FOOTER_CRC_COVERAGE)), true);
+    await expect(open(cut)).rejects.toThrow(/index truncated|varint truncated/);
+  });
+
+  describe('an encrypted object', () => {
+    const dek = randomBytes(32);
+    const crypto: CrbmCrypto = {
+      aead: new NodeAead(dek),
+      aadFor: (scope) => aadFor({ segment: 'crafted' }, 1, scope),
+    };
+    const framed = (length: number): Uint8Array => randomBytes(length);
+    const FRAME = AEAD_NONCE_BYTES + AEAD_TAG_BYTES;
+    const sealed = (
+      length: number,
+      over: Partial<Parameters<typeof assembleCrbm>[0]> = {},
+    ): Uint8Array => {
+      const region = framed(length);
+      return assembleCrbm({
+        payloadRegion: region,
+        rawEntries: [{ keyDelta: 0, offDelta: 0, length, cardinality: 5, crc: crc32c(region) }],
+        crypto,
+        ...over,
+      });
+    };
+    const openSealed = (bytes: Uint8Array): Promise<CrbmReader> =>
+      CrbmReader.open(new BufferReader(bytes), { crypto });
+
+    it('opens, and counts what its decrypted index records', async () => {
+      const reader = await openSealed(sealed(FRAME + 3));
+      expect(reader.count()).toBe(5);
+    });
+
+    it('refuses a payload too short to hold its nonce and tag', async () => {
+      await expect(openSealed(sealed(FRAME - 1))).rejects.toBeInstanceOf(IntegrityError);
+      await expect(openSealed(sealed(FRAME - 1))).rejects.toThrow(/length 27 invalid/);
+    });
+
+    it('refuses a footer that reveals a count or a total', async () => {
+      await expect(openSealed(sealed(FRAME + 3, { chunkCount: 1 }))).rejects.toBeInstanceOf(
+        IntegrityError,
+      );
+      await expect(openSealed(sealed(FRAME + 3, { totalCardinality: 5 }))).rejects.toBeInstanceOf(
+        IntegrityError,
+      );
+    });
   });
 });
