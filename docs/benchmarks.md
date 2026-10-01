@@ -280,8 +280,8 @@ The loaded store's own measurements are the next benchmark pass. The single-buck
 `store.load()`, single-part and multipart, each load's own requests recorded; cold `A ∩ B` latency for two 500,000-id
 operands spanning ~2,000 chunks with 100 shared — the chunk-skipping ratio the at-scale section reports, at a quarter
 of its density — and again with the same overlap spread uniformly over each segment's chunks; a sweep over how many
-chunks the operands share; the same intersects answered again from memory, held to no requests at all; `has()` and
-`count()` and `has()`, as a first read, on an open segment and warm; and `andNot` of one segment against ten. Every request the single-bucket topology
+chunks the operands share; the same intersects answered again from memory, held to no requests at all; `count()` and
+`has()` as a first read, `has()` on a segment already open, and both again warm; and `andNot` of one segment against ten. Every request the single-bucket topology
 bills, pointer reads and conditional PUTs included, is counted attempt by attempt and by stage. Each intersect must
 return exactly the planned ids or no latency is reported, and each cold one turns off its store's timed pointer
 refresh, so its request count does not move with the network. Every run records its own round-trip floor to the
