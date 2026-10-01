@@ -94,7 +94,7 @@ The [production checklist](https://github.com/cloudbitmaps/cloudbitmaps/blob/mai
 `setRetention` plus a `retireExpired` sweep you schedule, per segment, never per id. `SETBIT` has no equivalent:
 there is no per-id write. Build the set upstream and load it, and do not loop one id at a time. Remove one id
 everywhere with `eraseSubject`, a rewrite for compliance, not a hot-path verb. This is not a drop-in replacement, and
-what does not carry over is the write model and the raw bytes. [The full mapping](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#coming-from-redis-bitmaps)
+what does not carry over is the write model and the raw bytes: `exportSegments` writes portable Roaring and ndjson, not Redis's layout. [The full mapping](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#coming-from-redis-bitmaps)
 says what else differs.
 
 ## Documentation
