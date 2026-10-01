@@ -98,8 +98,9 @@ If the library breaks, you are not stuck:
 - **A bad load cannot destroy the last good one.** Generations are write-once and checksummed, and corruption is rejected, never served as a wrong answer. A bad load writes a new bad generation; the previous one is intact and you can [roll the pointer back](docs/guide/loading.md#roll-back-a-segment).
 - **You can leave.** `store.exportSegments(sink)` writes every segment's current generation to portable `roaring` or `ndjson`. The `export-segments` command does the same for a local-filesystem store only; for S3, GCS or Azure, call `exportSegments` in code. See [Export your data](docs/guide/export.md).
 
-The honest caveats, and how this compares with pure Roaring libraries and bitmap databases on lock-in, are in
-[What it saves, and where it doesn't](docs/guide/why-cloudbitmaps.md#where-it-loses).
+How this compares with pure Roaring libraries and bitmap databases on lock-in is in
+[Beyond the bill](docs/guide/why-cloudbitmaps.md#beyond-the-bill), and what a raw copy of the bucket holds is in
+[Export your data](docs/guide/export.md#things-to-know).
 
 ## Install & entry points
 

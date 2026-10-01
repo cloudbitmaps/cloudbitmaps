@@ -85,6 +85,12 @@ const ids = RoaringBitmap32.deserialize(
 
 ## Things to know
 
+- **A copy of the bucket is not an export.** A raw copy holds every generation in the bucket, including ones that were
+  never current. A cleartext segment's `.crbm` objects wrap standard portable Roaring chunks that any Roaring library
+  reads, but which generation is current is recorded only in the segment's registry row, in CloudBitmaps' own format,
+  and the highest generation in the bucket is not always the current one: a load that died before it published, and a
+  rollback, leave objects above the pointer. An encrypted segment's objects also need the wrapped key in its registry
+  row and your KEK. `exportSegments` reads each segment's current generation and decrypts it, so it is the route to use.
 - **It needs a store built on a backend**, for the registry. Otherwise it throws `UnsupportedError`. Every loaded
   segment has a registry row (the publish writes it), so the registry is complete by construction. Build the store on
   the backend the loads used.
