@@ -450,7 +450,7 @@ async function main() {
               .join(', ')
               .concat(` (${SWEEP_SEGMENTS} segments each)`),
       warm: `${READS} repeats of the calibration pairs from memory, asserted at 0 GET`,
-      pointReads: `has() on every shared chunk of ${POINT_SEGMENTS} segments, and count(), cold then warm`,
+      pointReads: `count() cold and warm on ${POINT_SEGMENTS} segments, then has() on every shared chunk: open segment, warm, first read`,
       andNot: `${ANDNOT_CALLS} calls, one segment against ${ANDNOT_EXCLUDES}`,
     };
     for (const name of STAGES) {
@@ -1427,6 +1427,8 @@ async function main() {
           gets: fresh.reduce((n, g) => n + g, 0),
           expectedGets: 3 * pairs.length,
           offExpected: fresh.filter((g) => g !== 3).length,
+          // Each first read's own count, so a run that misses 3 shows which reads differed and by how much.
+          getsPerRead: fresh,
           store: TIMED_STORE,
           ...spreadOf(firstMs),
         };

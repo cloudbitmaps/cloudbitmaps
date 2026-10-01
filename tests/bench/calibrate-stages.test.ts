@@ -432,6 +432,7 @@ describe('a stage that reads from memory', () => {
     expect(first).toContain('checkCeiling();');
     const record = points.slice(points.indexOf('const firstRead = {'));
     expect(record).toContain('offExpected: fresh.filter((g) => g !== 3).length');
+    expect(record).toContain('getsPerRead: fresh');
     expect(record).toContain('store: TIMED_STORE');
     for (const phase of ['countCold', 'countWarm', 'openSegment', 'hasWarm']) {
       const from = points.indexOf(`const ${phase} = {`);
