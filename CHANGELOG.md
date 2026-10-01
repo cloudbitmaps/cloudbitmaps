@@ -11,6 +11,14 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+## [0.11.1] — 2026-10-01
+
+The package READMEs on npm say how to install on npm 12. npm 12 runs a dependency's install script only where the
+project allows it, and `roaring`'s is the one that fetches its native binary, so a plain `npm i` installed a package
+whose first `import` throws. The code in every package is unchanged from 0.11.0: only each package's README and its
+version moved. Of the entries below, the install docs are the packages' change; the rest is repository work on the
+calibration harness, outside the packages.
+
 ### Added
 
 - **The calibration figures refuse a run for what it reports as wrong itself.** A run that timed `store.load()` is
