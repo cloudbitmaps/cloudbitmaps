@@ -213,13 +213,6 @@ export interface RetireExpiredResult {
 }
 
 /**
- * Retire every segment whose retention policy has expired, and clean up the tombstones earlier sweeps left.
- *
- * Returns a ledger; **never throws for a per-segment fault** (those become entries). It does throw for a bad
- * argument, and for a fleet larger than `maxScanSegments` — a scan that cannot be held in memory is a fail-loud
- * condition, not a partial result to be mistaken for a complete sweep.
- */
-/**
  * How many past buckets an index scan reads besides the current one. A week: long enough that a weekend outage
  * or a paused schedule recovers on its own, short enough that a cycle is eight list calls rather than hundreds.
  */
@@ -289,6 +282,13 @@ async function forgetDuePointer(
   }
 }
 
+/**
+ * Retire every segment whose retention policy has expired, and clean up the tombstones earlier sweeps left.
+ *
+ * Returns a ledger; **never throws for a per-segment fault** (those become entries). It does throw for a bad
+ * argument, and for a fleet larger than `maxScanSegments` — a scan that cannot be held in memory is a fail-loud
+ * condition, not a partial result to be mistaken for a complete sweep.
+ */
 export async function retireExpired(
   deps: DropDeps,
   options: RetireExpiredOptions,

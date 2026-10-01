@@ -538,6 +538,11 @@ This one changes what an erasure charges its budget for:
 
 ### Fixed
 
+- **A rollback whose undo failed said the pointer "could NOT be put back", which it could not know.** When the
+  target generation was collected while the pointer moved, the rollback swaps the pointer back and throws. If
+  that swap threw, the message stated that the pointer still named the missing generation, but a swap that
+  applied and lost its response also throws, and then the pointer is already back. The message now says the pointer
+  *may* still name it, and the recovery guide says to check which generation is current before acting.
 - **An erasure whose sweep of the other generations found an object gone threw a bare `NotFoundError` where the
   pointer had moved.** When the id was not in the current generation, the sweep's rejection bypassed the handler
   that re-reads the row and reports `reason: 'superseded'`, so a storage driver that signals a missing object

@@ -149,6 +149,38 @@ describe('rollbackSegment', () => {
     );
   });
 
+  it('does not claim the pointer was left on the collected generation when the undo landed and lost its response', async () => {
+    // The undo is a swap like any other, and a swap can apply and still throw — a response lost on the way back. The
+    // rollback cannot tell that from a swap that never applied, so what it reports has to hold for both: here the
+    // pointer IS back where it was, and a message saying it could not be put back would be false.
+    const w = world();
+    for (const ids of [[1], [2], [3]]) await loadSegment(SEG, ids, w.load, { keep: 9 });
+
+    let swaps = 0;
+    const flaky = new Proxy(w.registry, {
+      get(t, p, rx) {
+        if (p !== 'compareAndSwap') return Reflect.get(t, p, rx) as unknown;
+        const inner = Reflect.get(t, p, rx) as (...a: never[]) => Promise<unknown>;
+        return async (...args: never[]) => {
+          const out = await inner.apply(w.registry, args);
+          swaps += 1;
+          if (swaps === 1) await w.storage.delete({ ...SEG, generation: 0 }); // collected while the pointer moved
+          if (swaps === 2) throw new Error('response lost'); // the undo applied, and its answer never arrived
+          return out;
+        };
+      },
+    }) as typeof w.registry;
+
+    const err = await rollbackSegment(SEG, 0, { ...w.deps, registry: flaky }).catch(
+      (e: unknown) => e,
+    );
+
+    expect(err).toBeInstanceOf(NotFoundError);
+    expect((await w.registry.get(SEG))!.currentGen).toBe(2); // the undo did land
+    expect((err as Error).message).not.toMatch(/could NOT be put back/);
+    expect((err as Error).message).toMatch(/may still name 0/);
+  });
+
   it('refuses a generation that is not in the bucket, and names what is', async () => {
     const w = world();
     for (const ids of [[1], [2]]) await loadSegment(SEG, ids, w.load, { keep: 0 });

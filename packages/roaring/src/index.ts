@@ -12,7 +12,9 @@
  * {@link StorageChunkSource} for advanced reader options you configure yourself.
  *
  * **Data gets in by loading a generation**, never by mutating one: `store.load()` streams a set of ids into one
- * immutable object and publishes it forward-only. Every other write in the library is a load in
+ * immutable object and advances the segment's pointer to it. The pointer only moves forward, so a load out-raced by
+ * a newer generation reports `superseded` instead of landing, and so does one that read the row when the row has
+ * changed since. Every other write in the library is a load in
  * disguise — `intersectInto`/`unionInto`/`andNotInto` write a new generation of their destination, and
  * `eraseSubject` rewrites a generation without one id. Reads (`has`/`count`/`iterate`/`intersect`/`union`/`andNot`)
  * see whole, checksum-verified generations and nothing else.
@@ -2277,7 +2279,8 @@ export class Segment {
   /**
    * Materialize `this ∩ others…` (minus `exclude`) as a **new generation of `dest`** — `dest`'s previous contents
    * are superseded, not added to. Streaming + bounded-memory; the result is one immutable object published
-   * forward-only, so readers of `dest` see either the old generation or the new one, never a partial. Needs the
+   * as a load is (the pointer advances to it, fenced on the row), so readers of `dest` see either the old generation
+   * or the new one, never a partial. Needs the
    * store built with a backend (throws {@link UnsupportedError} otherwise).
    *
    * **An empty result does NOT overwrite a non-empty destination.** A combine that comes out empty is far more

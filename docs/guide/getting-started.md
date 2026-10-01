@@ -252,10 +252,11 @@ load advance the registry pointer — a compare-and-swap that never moves backwa
 second load is simply a newer identical generation. Run two loads of one segment at once and at most one of them
 lands, and the other reports `published: false` with `reason: 'superseded'`. If both took the same generation
 number, the second to write it is refused by the write-once put and writes nothing; if not, the publish that lands
-second finds the row changed since its load read it. Neither may land: a load that won the number can still be
-refused by its guard. The one exception is a segment with no row yet, loaded with `allowEmpty: true` and no
-`guard.minRetained`: neither load read anything to fence on, so both can publish, in number order, and the higher
-stays current.
+second finds the row changed since its load read it, or finds a row where its load read none, and is refused. A load
+that won the number can still be refused by its guard. The one exception is a segment with no row yet, loaded with
+`allowEmpty: true` and no `guard.minRetained`: neither load read anything to fence on, so each is a forward-only
+publish. If the lower generation number lands first, both land and the higher stays current; if the higher lands
+first, the lower is refused as `superseded`, because a publish never moves the pointer back.
 
 **A crash never moves the pointer.** If the process dies mid-write, the object never completes (every storage driver
 commits atomically — a rename, a conditional PUT, a multipart complete) and the pointer still names the previous

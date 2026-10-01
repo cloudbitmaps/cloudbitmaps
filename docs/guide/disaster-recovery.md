@@ -531,8 +531,9 @@ rollback to the generation already current changes nothing and records nothing.
 collection can take a generation below the pointer between the listing and the move. If the target has gone, it
 moves the pointer back and throws `NotFoundError` saying `the pointer was put back`. If moving it back fails too
 (the row changed again, or the registry write failed), it throws `NotFoundError` saying
-`the pointer could NOT be put back: it still names <n>`. Then the segment points at a generation that is not
-there, the torn state this section resolves, unless the write that beat the undo moved the pointer elsewhere.
+`the move back failed, so the pointer may still name <n>`. It says "may" because a write that landed and lost its
+response reads as a failure: the pointer may already be back, or moved elsewhere by the write that beat the undo,
+or still on the missing generation, the torn state this section resolves.
 Check with `store.generations(ref)`, which marks the current generation, and `checkConsistency()`; roll back again
 to a generation it lists, or restore the object. Neither failure records `segment.rollback` — the event is emitted
 only once the pointer is on the target — so keep the error with your incident record.
