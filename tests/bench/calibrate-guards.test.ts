@@ -797,9 +797,9 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     }
   });
 
-  // A ratio's binary tail runs to 17 digits, and a run of digits that long is what a scan for identifiers looks for:
-  // a results file that tripped one could not be committed. So every fractional number is written to nine decimals,
-  // which is below a nanosecond for a time in milliseconds and a billionth of a dollar for a cost.
+  // A ratio or a sum prints with a binary tail of up to 17 digits, and one of exactly 12 is a run the leak scan
+  // refuses (see maskAccount above), so every fractional number is written to nine decimals: below a nanosecond for a
+  // time in milliseconds, a billionth of a dollar for a cost.
   it('writes every fractional number to nine decimals, and leaves integers and the rest alone', () => {
     const text = processLib.resultsJson({
       rounds: 18.388563978644598,

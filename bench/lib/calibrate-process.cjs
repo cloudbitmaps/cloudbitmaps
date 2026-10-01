@@ -183,9 +183,10 @@ function writeResultsFile({ file, fallback, text, overwrite = false }) {
 /**
  * A run's results as the text of its file, every fractional number written to nine decimals.
  *
- * A ratio's binary tail runs to 17 digits, and a run of digits that long is what a scan for identifiers looks for, so
- * a file could fail the scan by chance and then not be committed. Nine decimals is below a nanosecond for a time in
- * milliseconds and a billionth of a dollar for a cost, so nothing measured is lost.
+ * A ratio or a sum prints with a binary tail of up to 17 digits that no measurement carries, and a tail of exactly 12
+ * is the run of digits the leak scan refuses as a possible account id, so a file could fail it by chance and then
+ * not be committed. Nine decimals is below a nanosecond for a time in milliseconds and a billionth of a dollar for a
+ * cost, so nothing measured is lost.
  */
 function resultsJson(results) {
   const round = (_key, v) =>
