@@ -525,9 +525,9 @@ npm audit signatures</code></pre>
           A backend carries the immutable generation objects <em>and</em> the pointer row, from one bucket and
           one prefix — so a deployment names one service, not two. Anything with a cheap ranged read and a
           write-once put can serve as storage; anything with a cheap compare-and-swap can serve as the pointer;
-          each of the four below does both. Need them apart?
-          <span class="m">createBackend({ storage, registry })</span> still composes a storage driver and a registry
-          driver by hand. Each
+          each of the four below does both. A driver author who needs halves of their
+          own pairs them with <span class="m">brandAsBackend({ storage, registry })</span> from
+          <span class="m">@cloudbitmaps/core/driver-kit</span>. Each
           backend's SDK is a <strong>real dependency</strong> of its own package — install only the storage you
           use.
         </p>

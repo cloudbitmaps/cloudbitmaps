@@ -3,7 +3,6 @@ import { writeCrbmGeneration } from '@/core/crbm-storage-source';
 import {
   CloudRoaring,
   CountingMetricsSink,
-  MemoryStorageDriver,
   CrbmStorageChunkSource,
   AWS_US_EAST_1_ONDEMAND,
   ONE_REDIS_HA_CLUSTER,
@@ -13,6 +12,7 @@ import {
 import { joinId } from '@/core/bit-route';
 import { collect, loadedStore, seededStore } from '../helpers/loaded';
 import { estimateCost } from '@cloudbitmaps/core';
+import { MemoryStorageDriver } from '@/drivers/memory';
 
 /**
  * Benchmark-as-test anchors. These are the **defensible-floor** cost/perf claims turned into CI

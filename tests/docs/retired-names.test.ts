@@ -4,6 +4,9 @@ import { fileURLToPath } from 'node:url';
 import * as core from '@cloudbitmaps/core';
 import * as driverKit from '@cloudbitmaps/core/driver-kit';
 import * as roaring from '@/index';
+import * as s3 from '@cloudbitmaps/s3';
+import * as gcs from '@cloudbitmaps/gcs';
+import * as azureBlob from '@cloudbitmaps/azure-blob';
 
 /**
  * Names the library does not export stay out of it: out of both packages' runtime surface, and out of every
@@ -35,6 +38,46 @@ const GENERATION_INSTEAD =
 /** What a reader who wanted a driver's internal helper uses instead: there is none, the drivers own them. */
 const DRIVER_INTERNAL_INSTEAD = 'nothing: it is internal to the driver packages';
 
+/**
+ * What a reader who wanted a half of a backend uses instead. The halves are internal: an application gets both from
+ * one backend class, with the size settings as that class's options, and a driver author pairs halves of their own
+ * with `brandAsBackend`.
+ */
+const HALVES_INSTEAD =
+  'a backend class (`MemoryStorage`, `LocalFsStorage`, `S3Storage`, `GcsStorage`, `AzureBlobStorage`), which builds ' +
+  'both halves and takes the size settings as its own options; a driver author pairs halves of their own with `brandAsBackend` from `@cloudbitmaps/core/driver-kit`';
+
+/** The halves and their options types, by package. */
+const HALVES: Readonly<Record<string, readonly string[]>> = {
+  '@cloudbitmaps/core': [
+    'MemoryStorageDriver',
+    'MemoryRegistryDriver',
+    'MemoryRegistryDriverOptions',
+    'LocalFsStorageDriver',
+    'LocalFsRegistryDriver',
+    'LocalFsRegistryDriverOptions',
+    'createBackend',
+  ],
+  '@cloudbitmaps/s3': [
+    'S3StorageDriver',
+    'S3StorageDriverOptions',
+    'S3RegistryDriver',
+    'S3RegistryDriverOptions',
+  ],
+  '@cloudbitmaps/gcs': [
+    'GcsStorageDriver',
+    'GcsStorageDriverOptions',
+    'GcsRegistryDriver',
+    'GcsRegistryDriverOptions',
+  ],
+  '@cloudbitmaps/azure-blob': [
+    'AzureBlobStorageDriver',
+    'AzureBlobStorageDriverOptions',
+    'AzureBlobRegistryDriver',
+    'AzureBlobRegistryDriverOptions',
+  ],
+};
+
 /** Each removed name, what a reader uses instead, and whether any code may still name it. */
 const RETIRED: ReadonlyArray<{ name: string; instead: string; code?: true }> = [
   {
@@ -63,6 +106,9 @@ const RETIRED: ReadonlyArray<{ name: string; instead: string; code?: true }> = [
   { name: 'isSdkRetryable', instead: DRIVER_INTERNAL_INSTEAD },
   { name: 'isNetworkOrTimeout', instead: DRIVER_INTERNAL_INSTEAD },
   { name: 'isServerSide', instead: DRIVER_INTERNAL_INSTEAD },
+  ...Object.values(HALVES)
+    .flat()
+    .map((name) => ({ name, instead: HALVES_INSTEAD })),
 ];
 
 /**
@@ -188,8 +234,22 @@ describe('a removed export is named nowhere a reader looks', () => {
       expect(name in core, `@cloudbitmaps/core exports ${name}`).toBe(false);
       expect(name in roaring, `@cloudbitmaps/roaring exports ${name}`).toBe(false);
     }
+    // The halves left every package that had exported them, and `createBackend` with them.
+    const packages: Record<string, object> = {
+      '@cloudbitmaps/core': core,
+      '@cloudbitmaps/s3': s3,
+      '@cloudbitmaps/gcs': gcs,
+      '@cloudbitmaps/azure-blob': azureBlob,
+    };
+    for (const [pkg, names] of Object.entries(HALVES)) {
+      for (const name of names)
+        expect(name in (packages[pkg] ?? {}), `${pkg} exports ${name}`).toBe(false);
+    }
     // What replaces them is there, so the check above cannot pass on a barrel that failed to load.
     expect(typeof core.loadSegment).toBe('function');
+    expect(typeof core.MemoryStorage).toBe('function');
+    expect(typeof s3.S3Storage).toBe('function');
+    expect(typeof driverKit.brandAsBackend).toBe('function');
     expect(typeof core.RetryingStorageChunkSource).toBe('function');
   });
 
@@ -207,6 +267,36 @@ describe('a removed export is named nowhere a reader looks', () => {
     for (const name of ['validateSegmentRef', 'encodeNameForPath', 'namespacePathPart']) {
       expect(typeof (driverKit as Record<string, unknown>)[name], name).toBe('function');
     }
+  });
+
+  // A runtime check cannot see a type, and an options type is one: read each entry's declared exports from its
+  // barrel, so a half's options type cannot come back through `export type` unnoticed.
+  it('no barrel declares one of the halves, their options types, or createBackend', () => {
+    const barrels: Record<string, string> = {
+      '@cloudbitmaps/core': 'core',
+      '@cloudbitmaps/roaring': 'roaring',
+      '@cloudbitmaps/s3': 's3',
+      '@cloudbitmaps/gcs': 'gcs',
+      '@cloudbitmaps/azure-blob': 'azure-blob',
+    };
+    const all = Object.values(HALVES).flat();
+    for (const [entry, dir] of Object.entries(barrels)) {
+      const src = readFileSync(join(ROOT, 'packages', dir, 'src', 'index.ts'), 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/\/\/.*$/gm, '');
+      expect(
+        retiredNames(
+          src,
+          all.map((name) => ({ name })),
+        ),
+        `${entry} declares one`,
+      ).toEqual([]);
+    }
+    const kit = readFileSync(
+      join(ROOT, 'packages', 'core', 'src', 'driver-kit.ts'),
+      'utf8',
+    ).replace(/\/\/.*$/gm, '');
+    expect(retiredNames(kit, [{ name: 'createBackend' }])).toEqual([]);
   });
 
   it('reads the pages, so the check below cannot pass vacuously', () => {

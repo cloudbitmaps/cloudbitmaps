@@ -279,6 +279,39 @@ describe('AzureBlobStorage (Azurite) — the backend builds its own container cl
     expect(await store.segment('via-backend').count()).toBe(2);
     expect(await backend.registry.get({ segment: 'via-backend' })).not.toBeNull();
   });
+
+  // The size settings are options of the backend, and reach the storage half that writes the blobs. A block of
+  // 8 bytes puts every real generation on the staged path; a ceiling of 16 bytes refuses one.
+  it('takes blockBytes and maxObjectBytes and loads a generation through the staged path', async () => {
+    const backend = new AzureBlobStorage({
+      connectionString: CONN,
+      container: CONTAINER,
+      prefix: `${RUN}/backend-blocks/${n++}`,
+      blockBytes: 8,
+      maxObjectBytes: 1 << 20,
+    });
+    expect(backend.storage.capabilities().maxObjectBytes).toBe(1 << 20);
+    const store = new CloudRoaring({ storage: backend });
+    const ids = Array.from({ length: 2000 }, (_, i) => i * 3);
+    expect((await store.load({ segment: 'sized' }, ids)).published).toBe(true);
+    expect(await store.segment('sized').count()).toBe(2000);
+    expect(await store.segment('sized').has(5997)).toBe(true);
+  });
+
+  it('refuses a generation past maxObjectBytes, and a setting that is not a positive integer', async () => {
+    const options = { connectionString: CONN, container: CONTAINER };
+    const backend = new AzureBlobStorage({
+      ...options,
+      prefix: `${RUN}/backend-ceiling/${n++}`,
+      maxObjectBytes: 16,
+    });
+    const store = new CloudRoaring({ storage: backend });
+    await expect(store.load({ segment: 'sized' }, [1, 2, 3])).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    expect(await store.exists({ segment: 'sized' })).toBe(false);
+    expect(() => new AzureBlobStorage({ ...options, blockBytes: 0 })).toThrow(ValidationError);
+  });
 });
 
 // A conditional write that lands and loses its response is sent again by the client's retry policy, meets its own

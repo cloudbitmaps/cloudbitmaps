@@ -5,11 +5,12 @@ import { publishGeneration } from '@/core/crbm-storage-source';
 import { rollbackSegment } from '@/core/rollback';
 import { IntegrityError, ValidationError, WriteConflictError } from '@/core/errors';
 import { InProcessKeystore } from '@/drivers/crypto';
-import { createBackend, CloudRoaring } from '@/index';
+import { CloudRoaring } from '@/index';
 import type { ChunkRef, IRegistryDriver, IStorageDriver, IKeystore, SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { collect, loadedStore, seedSegment } from '../helpers/loaded';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { brandAsBackend } from '@/core/ports';
 
 /**
  * The two fences that stand between the write-once protocol and a wrong answer, plus three guards. None of the
@@ -475,7 +476,7 @@ describe('a materialisation reports whether it actually landed', () => {
       },
     };
     const store = new CloudRoaring({
-      storage: createBackend({ storage: storage, registry: w.registry }),
+      storage: brandAsBackend({ storage: storage, registry: w.registry }),
       retry: false,
     });
 

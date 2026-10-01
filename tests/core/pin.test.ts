@@ -1,17 +1,12 @@
 import { gcOrphanGenerations } from '@/core/generation-gc';
 import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
-import {
-  createBackend,
-  MemoryStorage,
-  CloudRoaring,
-  InProcessKeystore,
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
-} from '@/index';
+import { MemoryStorage, CloudRoaring, InProcessKeystore } from '@/index';
 import { destroySegment } from '@/core/erasure';
 import { NotFoundError, UnsupportedError } from '@/core/errors';
 import type { SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { brandAsBackend } from '@/core/ports';
+import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 
 /**
  * A pin exists so a long job describes one instant. The obvious shape for it — a `Segment` over a
@@ -167,7 +162,7 @@ describe('pin holds one segment at one generation', () => {
     } as unknown as MemoryStorageDriver;
 
     const store = new CloudRoaring({
-      storage: createBackend({ storage, registry }),
+      storage: brandAsBackend({ storage, registry }),
       retry: false,
       cache: { readerMax: 1 },
     });

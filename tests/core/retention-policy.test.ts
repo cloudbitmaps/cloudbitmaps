@@ -1,7 +1,6 @@
 import {
   CloudRoaring,
   CrbmStorageChunkSource,
-  MemoryStorageDriver,
   MIN_EXPIRES_AT_MS,
   destroySegment,
   readRetentionPolicy,
@@ -13,6 +12,7 @@ import type { IRegistryDriver } from '@/core/ports';
 import { randomBytes } from 'node:crypto';
 import { loadedStore } from '../helpers/loaded';
 import { clearSegmentRetention, setSegmentRetention } from '@cloudbitmaps/core';
+import { MemoryStorageDriver } from '@/drivers/memory';
 
 /**
  * The retention **policy** — recording *when* a segment becomes eligible for retirement, between the null-gen row

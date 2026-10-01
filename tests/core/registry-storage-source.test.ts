@@ -2,15 +2,12 @@ import { publishGeneration } from '@/core/crbm-storage-source';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  CloudRoaring,
-  CrbmStorageChunkSource,
-  LocalFsStorageDriver,
-  MemoryRegistryDriver,
-} from '@/index';
+import { CloudRoaring, CrbmStorageChunkSource } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
 import type { GenKey, SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
+import { MemoryRegistryDriver } from '@/drivers/memory';
 
 const SEG: SegmentRef = { segment: 's' };
 

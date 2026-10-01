@@ -6,10 +6,11 @@
  * being safe to add a second index at all.
  */
 import { describe, expect, it } from 'vitest';
-import { MemoryRegistryDriver, type SegmentRef } from '@/index';
+import { type SegmentRef } from '@/index';
 import { drainRegistry } from '@/core/registry-scan';
 import { dueBucket, dueIndexRef, dueNamespace } from '@/core/due-index';
 import { loadedStore } from '../helpers/loaded';
+import type { IRegistryDriver } from '@/core/ports';
 
 const DAY = 86_400_000;
 const T0 = 1_754_000_000_000;
@@ -28,7 +29,7 @@ async function harness() {
 }
 
 /** Every pointer currently in one bucket. */
-async function pointersIn(registry: MemoryRegistryDriver, bucket: number): Promise<string[]> {
+async function pointersIn(registry: IRegistryDriver, bucket: number): Promise<string[]> {
   const rows = await drainRegistry(registry, {
     namespace: dueNamespace(bucket),
     maxScanSegments: 1000,

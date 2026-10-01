@@ -7,17 +7,13 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-  AWS_US_EAST_1_ONDEMAND,
-  CloudRoaring,
-  MemoryStorage,
-  MemoryStorageDriver,
-  createBackend,
-} from '@/index';
+import { AWS_US_EAST_1_ONDEMAND, CloudRoaring, MemoryStorage } from '@/index';
 import { WriteConflictError } from '@/core/errors';
 import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
 import { CountingObjectStore, counting } from '../helpers/counting';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { brandAsBackend } from '@/core/ports';
+import { MemoryStorageDriver } from '@/drivers/memory';
 
 // Guards on a script that spends real money against a real cloud account. Each case below plants the defect its
 // guard prevents, because a guard nobody can plant a defect against is decoration.
@@ -423,7 +419,7 @@ describe('calibrate guards — what a real run is held to', () => {
       const calls: Record<string, number> = {};
       const pointer = new CountingObjectStore(lostRaces);
       const store = new CloudRoaring({
-        storage: createBackend({
+        storage: brandAsBackend({
           storage: counting(new MemoryStorageDriver(), calls),
           registry: new ObjectStoreRegistry(pointer, undefined, () => 0),
         }),
@@ -1560,7 +1556,7 @@ describe("a cold intersect's request count does not depend on the network", () =
     ): Promise<{ ids: number[]; pointerReads: number }> => {
       pointerReads = 0;
       const store = new CloudRoaring({
-        storage: createBackend({ storage, registry }),
+        storage: brandAsBackend({ storage, registry }),
         ...options,
         seams: { clock },
       });
@@ -1590,7 +1586,7 @@ describe('what a load requests: store.load()', () => {
     const storageCalls: Record<string, number> = {};
     const pointer = new CountingObjectStore(0);
     const store = new CloudRoaring({
-      storage: createBackend({
+      storage: brandAsBackend({
         storage: counting(new MemoryStorageDriver(), storageCalls),
         registry: new ObjectStoreRegistry(pointer, undefined, () => 0),
       }),

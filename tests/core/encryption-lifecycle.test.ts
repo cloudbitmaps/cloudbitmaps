@@ -1,14 +1,7 @@
 import { nextGeneration } from '@/core/generation-gc';
 import { publishGeneration } from '@/core/crbm-storage-source';
 import { randomBytes } from 'node:crypto';
-import {
-  CloudRoaring,
-  CrbmStorageChunkSource,
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
-  destroySegment,
-  eraseNamespace,
-} from '@/index';
+import { CloudRoaring, CrbmStorageChunkSource, destroySegment, eraseNamespace } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { roaringCodec } from '@/roaring-codec';
 import { KeyUnavailableError, ValidationError, WriteConflictError } from '@/core/errors';
@@ -16,6 +9,7 @@ import type { IKeystore, SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { eraseIdFromSegment } from '@cloudbitmaps/core';
 import type { EraseIdDeps } from '@cloudbitmaps/core';
+import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 
 const SEG: SegmentRef = { segment: 's' };
 const k = (): Uint8Array => randomBytes(32);

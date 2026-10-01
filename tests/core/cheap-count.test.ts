@@ -3,12 +3,12 @@ import { SafeBitmap } from '@/roaring-codec';
 import {
   CountingMetricsSink,
   CrbmStorageChunkSource,
-  MemoryStorageDriver,
   type Clock,
   type StorageChunkSource,
 } from '@/index';
 import { joinId } from '@/core/bit-route';
 import { collect, loadedStore, seededStore } from '../helpers/loaded';
+import { MemoryStorageDriver } from '@/drivers/memory';
 
 /**
  * Cheap count: `count()` sums per-chunk cardinality straight from the `.crbm` index — zero payload reads on a

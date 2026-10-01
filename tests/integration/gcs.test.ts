@@ -375,4 +375,42 @@ describe('GcsStorage (fake-gcs-server) — the backend builds its own client', (
     expect(await store.segment('via-backend').count()).toBe(2);
     expect(await backend.registry.get({ segment: 'via-backend' })).not.toBeNull();
   });
+
+  // The size settings are options of the backend, and reach the storage half that writes the objects. A
+  // threshold of 8 bytes puts every real generation on the resumable path; a ceiling of 16 bytes refuses one.
+  it('takes simpleUploadThresholdBytes and loads a generation through the resumable path', async () => {
+    const prefix = `${RUN}/backend-threshold/${n++}`;
+    const backend = new GcsStorage({
+      bucket: BUCKET,
+      prefix,
+      projectId: 'test',
+      apiEndpoint: ENDPOINT,
+      simpleUploadThresholdBytes: 8,
+    });
+    const store = new CloudRoaring({ storage: backend });
+    const ids = Array.from({ length: 2000 }, (_, i) => i * 3);
+    expect((await store.load({ segment: 'sized' }, ids)).published).toBe(true);
+    expect(await store.segment('sized').count()).toBe(2000);
+    expect(await store.segment('sized').has(5997)).toBe(true);
+    // A resumable upload tags its object with a write id in custom metadata; a simple upload does not.
+    const [files] = await storage.bucket(BUCKET).getFiles({ prefix });
+    const [meta] = await files[0]!.getMetadata();
+    expect((meta.metadata as { cbwid?: string } | undefined)?.cbwid).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  it('takes maxObjectBytes, advertises it, and refuses a generation past it', async () => {
+    const backend = new GcsStorage({
+      bucket: BUCKET,
+      prefix: `${RUN}/backend-ceiling/${n++}`,
+      projectId: 'test',
+      apiEndpoint: ENDPOINT,
+      maxObjectBytes: 16,
+    });
+    expect(backend.storage.capabilities().maxObjectBytes).toBe(16);
+    const store = new CloudRoaring({ storage: backend });
+    await expect(store.load({ segment: 'sized' }, [1, 2, 3])).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    expect(await store.exists({ segment: 'sized' })).toBe(false);
+  });
 });

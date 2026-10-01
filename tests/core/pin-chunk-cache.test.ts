@@ -2,7 +2,6 @@ import { gcOrphanGenerations } from '@/core/generation-gc';
 import {
   MemoryStorage,
   CloudRoaring,
-  createBackend,
   CrbmStorageChunkSource,
   InProcessKeystore,
   IntegrityError,
@@ -20,6 +19,7 @@ import { BoundedLru } from '@/core/lru';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { setSegmentRetention } from '@cloudbitmaps/core';
+import { brandAsBackend } from '@/core/ports';
 
 /**
  * A pinned handle must only ever be handed chunks of the generation it pinned.
@@ -660,7 +660,7 @@ describe('a pin knows its object on any store, and fails rather than tear', () =
     });
     const clock = manualClock();
     const store = new CloudRoaring({
-      storage: createBackend({
+      storage: brandAsBackend({
         storage: counted(backend.storage, 'storage', calls),
         registry: counted(backend.registry, 'registry', calls),
       }),
@@ -896,7 +896,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
     });
     const calls: string[] = [];
     const store = new CloudRoaring({
-      storage: createBackend({
+      storage: brandAsBackend({
         storage: counted(backend.storage, 'storage', calls),
         registry: backend.registry,
       }),
@@ -930,7 +930,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
     });
     const calls: string[] = [];
     const store = new CloudRoaring({
-      storage: createBackend({
+      storage: brandAsBackend({
         storage: counted(backend.storage, 'storage', calls),
         registry: backend.registry,
       }),
@@ -946,7 +946,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
     const w = await purgeable(OLD);
     const calls: string[] = [];
     const store = new CloudRoaring({
-      storage: createBackend({
+      storage: brandAsBackend({
         storage: counted(w.backend.storage, 'storage', calls),
         registry: counted(w.backend.registry, 'registry', calls),
       }),
@@ -978,7 +978,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
     });
     const calls: string[] = [];
     const store = new CloudRoaring({
-      storage: createBackend({
+      storage: brandAsBackend({
         storage: counted(storage, 'storage', calls),
         registry: counted(registry, 'registry', calls),
       }),
@@ -1017,7 +1017,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
     });
     const calls: string[] = [];
     const store = new CloudRoaring({
-      storage: createBackend({
+      storage: brandAsBackend({
         storage: counted(storage, 'storage', calls),
         registry: counted(registry, 'registry', calls),
       }),
@@ -1060,7 +1060,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
     const w = await purgeable(OLD);
     const calls: string[] = [];
     const store = new CloudRoaring({
-      storage: createBackend({
+      storage: brandAsBackend({
         storage: counted(w.backend.storage, 'storage', calls),
         registry: counted(w.backend.registry, 'registry', calls),
       }),
@@ -1109,7 +1109,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
     const w = await purgeable(OLD);
     const calls: string[] = [];
     const store = new CloudRoaring({
-      storage: createBackend({
+      storage: brandAsBackend({
         storage: counted(w.backend.storage, 'storage', calls),
         registry: counted(w.backend.registry, 'registry', calls),
       }),
@@ -1540,7 +1540,7 @@ describe('what a pin found out about its object, and how it forgets', () => {
     const backend = new MemoryStorage();
     const calls: string[] = [];
     const store = new CloudRoaring({
-      storage: createBackend({
+      storage: brandAsBackend({
         storage: counted(backend.storage, 'storage', calls),
         registry: counted(backend.registry, 'registry', calls),
       }),
@@ -1667,7 +1667,7 @@ describe('what a pin found out about its object, and how it forgets', () => {
     });
     const calls: string[] = [];
     const store = new CloudRoaring({
-      storage: createBackend({
+      storage: brandAsBackend({
         storage: counted(backend.storage, 'storage', calls),
         registry: counted(backend.registry, 'registry', calls),
       }),

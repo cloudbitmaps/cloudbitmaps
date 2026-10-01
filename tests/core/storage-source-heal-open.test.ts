@@ -1,19 +1,15 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  CloudRoaring,
-  CrbmStorageChunkSource,
-  IntegrityError,
-  LocalFsStorageDriver,
-  MemoryRegistryDriver,
-  createBackend,
-} from '@/index';
+import { CloudRoaring, CrbmStorageChunkSource, IntegrityError } from '@/index';
 import { SafeBitmap, roaringCodec } from '@/roaring-codec';
 import { verifyGeneration } from '@/core/crbm-storage-source';
 import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { eraseIdFromSegment } from '@cloudbitmaps/core';
+import { brandAsBackend } from '@/core/ports';
+import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
+import { MemoryRegistryDriver } from '@/drivers/memory';
 
 const SEG: SegmentRef = { segment: 's' };
 
@@ -137,7 +133,7 @@ describe('CrbmStorageChunkSource heals a generation swept before the reader open
       await storage.delete({ ...SEG, generation: 0 });
     });
 
-    const store = new CloudRoaring({ storage: createBackend({ storage, registry }) });
+    const store = new CloudRoaring({ storage: brandAsBackend({ storage, registry }) });
     await expect(store.segment('s').has(3)).resolves.toBe(true); // generation 1 holds it
   });
 });
@@ -303,7 +299,7 @@ describe("a generation's footer must name the generation it is stored as", () =>
 
   it('refuses it in the load guard, which reads the current generation before a load replaces it', async () => {
     const { storage, registry } = await misfiled(0, 1);
-    const store = new CloudRoaring({ storage: createBackend({ storage, registry }) });
+    const store = new CloudRoaring({ storage: brandAsBackend({ storage, registry }) });
     await expect(store.load(SEG, [1, 2, 3])).rejects.toThrow(IntegrityError);
     expect((await registry.get(SEG))!.currentGen).toBe(1); // nothing was published over it
   });

@@ -26,7 +26,7 @@
  *   new CloudRoaring({ storage: new S3Storage({ bucket }) })
  *
  * One backend object, not a driver pair. Assembling `{ storage, registry }` by hand is refused with a
- * `ValidationError` that names `createBackend` as the way to supply a half of your own.
+ * `ValidationError` that names the backend classes.
  *
  * Config is read from the environment (12-factor-friendly):
  *   CR_EXPORT_ROOT       (required) — the local-filesystem root holding storage/ registry/

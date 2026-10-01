@@ -1,14 +1,10 @@
-import {
-  createBackend,
-  MemoryStorage,
-  CloudRoaring,
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
-} from '@/index';
+import { MemoryStorage, CloudRoaring } from '@/index';
 import { setSegmentRetention } from '@/core/retention';
 import { ValidationError } from '@/core/errors';
 import type { SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { brandAsBackend } from '@/core/ports';
+import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 
 /**
  * A segment that resolves to nothing is ambiguous in a way that matters only as an **operand**.
@@ -128,7 +124,7 @@ describe('a combine refuses an operand that names a segment which does not exist
     }) as unknown as MemoryRegistryDriver;
 
     const store = new CloudRoaring({
-      storage: createBackend({ storage: real, registry: counting }),
+      storage: brandAsBackend({ storage: real, registry: counting }),
       cache: { genTtlMs: 0 },
     });
     const audience = store.segment('active-30d', { namespace: 'audiences' });

@@ -1,6 +1,8 @@
-import { MemoryStorage, CloudRoaring, MemoryStorageDriver, MemoryRegistryDriver } from '@/index';
+import { MemoryStorage, CloudRoaring } from '@/index';
 import type { SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { MemoryStorageDriver } from '@/drivers/memory';
+import type { IRegistryDriver, IStorageDriver } from '@/core/ports';
 
 /**
  * A generation number is not an identity. `nextGeneration` returns `max(currentGen, highest object) + 1`, so it
@@ -28,8 +30,8 @@ async function collect(it: AsyncIterable<number>): Promise<number[]> {
 
 /** Retire the segment completely (objects deleted, row purged) and re-load the same name. */
 async function reincarnate(
-  storage: MemoryStorageDriver,
-  registry: MemoryRegistryDriver,
+  storage: IStorageDriver,
+  registry: IRegistryDriver,
   ids: readonly number[],
 ): Promise<void> {
   for await (const k of storage.list(REF)) await storage.delete(k);

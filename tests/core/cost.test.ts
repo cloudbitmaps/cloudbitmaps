@@ -5,9 +5,7 @@ import {
   AWS_US_EAST_1_ONDEMAND,
   ELASTICACHE_REDIS_US_EAST_1_ONDEMAND,
   ONE_REDIS_HA_CLUSTER,
-  MemoryStorageDriver,
   CrbmStorageChunkSource,
-  createBackend,
   ValidationError,
   type CostReport,
   type PricingProfile,
@@ -19,6 +17,8 @@ import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
 import { CountingObjectStore, counting } from '../helpers/counting';
 import { seededStore } from '../helpers/loaded';
 import { estimateCost } from '@cloudbitmaps/core';
+import { brandAsBackend } from '@/core/ports';
+import { MemoryStorageDriver } from '@/drivers/memory';
 
 /**
  * The cost model of a loaded store. There is no per-id write term — data arrives only as a generation, so the
@@ -1243,7 +1243,7 @@ describe('the estimator counts the requests the engine makes', () => {
     const storage = counting(new MemoryStorageDriver(), calls);
     const registry = new ObjectStoreRegistry(pointer, undefined, () => 0);
     const open = (extra: object = {}) =>
-      new CloudRoaring({ storage: createBackend({ storage, registry }), ...extra });
+      new CloudRoaring({ storage: brandAsBackend({ storage, registry }), ...extra });
     const reset = () => {
       for (const k of Object.keys(calls)) delete calls[k];
       pointer.reads = 0;

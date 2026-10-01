@@ -65,9 +65,10 @@ export interface GcsStorageDriverOptions {
   readonly bucket: string;
   /** Optional object-name prefix under which all objects live (e.g. `cloudbitmaps/`). */
   readonly prefix?: string;
-  /** Largest object this driver will write/advertise (default = GCS's 5 TiB max). */
+  /** Largest object this driver will write/advertise (default = GCS's 5 TiB max). Must be a positive safe integer. */
   readonly maxObjectBytes?: number;
-  /** Bytes at/under which a single non-resumable upload is used instead of a resumable stream (default 8 MiB). */
+  /** Bytes at/under which a single non-resumable upload is used instead of a resumable stream (default 8 MiB).
+   * Must be a positive safe integer. */
   readonly simpleUploadThresholdBytes?: number;
 }
 
@@ -82,6 +83,16 @@ export class GcsStorageDriver implements IStorageDriver {
     this.storage = options.storage;
     this.bucket = options.bucket;
     this.prefix = normalizeGcsPrefix(options.prefix);
+    // Fail fast at the boundary: `??` only guards `undefined`, so NaN, 0, a negative or a fraction would otherwise
+    // reject every write (cap) or corrupt the upload-path choice (threshold).
+    for (const [name, value] of [
+      ['maxObjectBytes', options.maxObjectBytes],
+      ['simpleUploadThresholdBytes', options.simpleUploadThresholdBytes],
+    ] as const) {
+      if (value !== undefined && (!Number.isSafeInteger(value) || value < 1)) {
+        throw new ValidationError(`${name} must be a positive safe integer; got ${value}`);
+      }
+    }
     this.maxObjectBytes = options.maxObjectBytes ?? DEFAULT_MAX_OBJECT_BYTES;
     this.threshold = options.simpleUploadThresholdBytes ?? DEFAULT_UPLOAD_THRESHOLD_BYTES;
   }

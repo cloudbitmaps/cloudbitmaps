@@ -1,5 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { CreateBucketCommand, ListBucketsCommand, S3Client } from '@aws-sdk/client-s3';
+import {
+  CreateBucketCommand,
+  HeadObjectCommand,
+  ListBucketsCommand,
+  S3Client,
+} from '@aws-sdk/client-s3';
 import {
   storageChunkSourceConformance,
   registryConformance,
@@ -9,6 +14,7 @@ import {
 import { S3StorageDriver } from '@/s3/storage';
 import { S3Storage } from '@cloudbitmaps/s3';
 import { S3RegistryDriver } from '@/s3/registry';
+import { storageObjectKey } from '@/s3/keys';
 import { CrbmStorageChunkSource, writeCrbmGeneration } from '@/core/crbm-storage-source';
 import { CloudRoaring } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
@@ -221,5 +227,58 @@ describe('S3Storage (MinIO) — the backend builds its own client', () => {
     expect(await store.segment('via-backend').has(200_000)).toBe(true);
     // The pointer resolves, which is the half that silently reads empty when the two are mismatched.
     expect(await storage.registry.get({ segment: 'via-backend' })).not.toBeNull();
+  });
+
+  // The size settings are options of the backend, and reach the storage half that writes the objects.
+  const minio = (
+    prefix: string,
+    sizes: { partBytes?: number; maxObjectBytes?: number },
+  ): S3Storage =>
+    new S3Storage({
+      bucket: BUCKET,
+      prefix,
+      endpoint: ENDPOINT,
+      pathStyle: true,
+      region: 'us-east-1',
+      credentials: { accessKeyId: 'minioadmin', secretAccessKey: 'minioadmin' },
+      ...sizes,
+    });
+
+  it('takes partBytes and loads a generation of more than one part through multipart', async () => {
+    const FIVE_MIB = 5 * 1024 * 1024;
+    const prefix = `${RUN}/backend-parts/${n++}`;
+    const backend = minio(prefix, { partBytes: FIVE_MIB });
+    expect(backend.storage.capabilities().maxObjectBytes).toBe(FIVE_MIB * 10_000);
+    const store = new CloudRoaring({ storage: backend });
+    // Every 16th id fills each 16-bit chunk with 4,096 ids, stored as an 8 KiB array: about 6.4 MiB in all, which
+    // is one 5 MiB part and a remainder.
+    const count = 3_200_000;
+    const ids = Array.from({ length: count }, (_, i) => i * 16);
+    expect((await store.load({ segment: 'sized' }, ids)).published).toBe(true);
+    const seg = store.segment('sized');
+    expect(await seg.count()).toBe(count);
+    expect(await seg.has((count - 1) * 16)).toBe(true);
+    expect(await seg.has(1)).toBe(false);
+    // A multipart object's ETag carries its part count (`<md5>-<parts>`), where a single PUT's is a bare md5: the
+    // object is larger than one 5 MiB part and smaller than the 8 MiB default, so only the option puts it here.
+    const head = await client.send(
+      new HeadObjectCommand({
+        Bucket: BUCKET,
+        Key: storageObjectKey(prefix, { segment: 'sized', generation: 0 }),
+      }),
+    );
+    expect(head.ContentLength).toBeGreaterThan(FIVE_MIB);
+    expect(head.ContentLength).toBeLessThan(8 * 1024 * 1024);
+    expect(head.ETag).toMatch(/-2"$/);
+  }, 120_000);
+
+  it('takes maxObjectBytes, advertises it, and refuses a generation past it', async () => {
+    const backend = minio(`${RUN}/backend-ceiling/${n++}`, { maxObjectBytes: 16 });
+    expect(backend.storage.capabilities().maxObjectBytes).toBe(16);
+    const store = new CloudRoaring({ storage: backend });
+    await expect(store.load({ segment: 'sized' }, [1, 2, 3])).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    expect(await store.exists({ segment: 'sized' })).toBe(false);
   });
 });

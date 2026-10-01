@@ -3,11 +3,12 @@ import { loadSegment } from '@/core/load';
 import { openGenerationReader } from '@/core/crbm-storage-source';
 import { ValidationError } from '@/core/errors';
 import { InProcessKeystore } from '@/drivers/crypto';
-import { MemoryStorageDriver, MemoryRegistryDriver, RecordingAuditSink } from '@/index';
+import { RecordingAuditSink } from '@/index';
 import type { IStorageDriver, SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { setSegmentRetention } from '@/core/retention';
+import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 
 /**
  * `loadSegment` — replace a segment's contents with one immutable generation.

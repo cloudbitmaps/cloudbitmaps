@@ -10,7 +10,7 @@
  */
 import { join } from 'node:path';
 import { brandAsBackend, STORAGE_BACKEND } from '@/core/ports';
-import type { StorageBackend } from '@/core/ports';
+import type { IRegistryDriver, IStorageDriver, StorageBackend } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from './memory';
 import { LocalFsStorageDriver } from './localfs/storage';
 import { LocalFsRegistryDriver } from './localfs/registry';
@@ -29,8 +29,8 @@ export interface MemoryStorageOptions {
 export class MemoryStorage implements StorageBackend {
   /** Cross-bundle brand, stamped non-enumerably in the constructor so a spread cannot carry it. */
   declare readonly [STORAGE_BACKEND]: true;
-  readonly storage: MemoryStorageDriver;
-  readonly registry: MemoryRegistryDriver;
+  readonly storage: IStorageDriver;
+  readonly registry: IRegistryDriver;
 
   constructor(options: MemoryStorageOptions = {}) {
     this.storage = new MemoryStorageDriver();
@@ -55,8 +55,8 @@ export interface LocalFsStorageOptions {
 export class LocalFsStorage implements StorageBackend {
   /** Cross-bundle brand, stamped non-enumerably in the constructor so a spread cannot carry it. */
   declare readonly [STORAGE_BACKEND]: true;
-  readonly storage: LocalFsStorageDriver;
-  readonly registry: LocalFsRegistryDriver;
+  readonly storage: IStorageDriver;
+  readonly registry: IRegistryDriver;
 
   constructor(
     readonly root: string,
