@@ -413,6 +413,37 @@ describe('a stage that reads from memory', () => {
     expect(warm).toMatch(/throw new Error\(\s*`warm intersect/);
   });
 
+  // The three phases are kept apart: a has() on the store count() opened, a has() as a store's first read, and the
+  // warm repeat, each with its own count and its own store recorded.
+  it('keeps the open-segment and first-read phases apart, each with its count and its store', () => {
+    const points = stageSource('pointReads');
+    const open = points.slice(
+      points.indexOf('const openSegment = {'),
+      points.indexOf('const hasWarm = {'),
+    );
+    expect(open).toContain('counted.segment(name).has(id)');
+    expect(open).not.toContain('timedStore()');
+    const first = points.slice(
+      points.indexOf('const fresh = [];'),
+      points.indexOf('const firstRead = {'),
+    );
+    expect(first).toContain('const store = timedStore();');
+    expect(first).toContain('store.segment(name).has(id)');
+    expect(first).toContain('checkCeiling();');
+    const record = points.slice(points.indexOf('const firstRead = {'));
+    expect(record).toContain('offExpected: fresh.filter((g) => g !== 3).length');
+    expect(record).toContain('store: TIMED_STORE');
+    for (const phase of ['countCold', 'countWarm', 'openSegment', 'hasWarm']) {
+      const from = points.indexOf(`const ${phase} = {`);
+      expect(from, phase).toBeGreaterThan(-1);
+      expect(points.slice(from, from + 700), phase).toContain('store: pointConfig');
+      expect(points.slice(from, from + 700), phase).toContain('expectedGets');
+    }
+    for (const name of ['count() first read', 'has() on an open segment', 'has() first read']) {
+      expect(points).toContain(`softCheck('${name}'`);
+    }
+  });
+
   it('fails the stage when a warm point read makes a request', () => {
     const points = stageSource('pointReads');
     expect(points).toContain("mustMake('a warm count()', countWarm, 0)");
@@ -503,15 +534,17 @@ describe('what the stages request, counted against the engine', () => {
     for (let i = 0; i < 6; i += 1) expect(await countOf(() => pair(i))).toBe(0);
   });
 
-  it('point reads open each segment once, and a warm read makes none', async () => {
+  it('point reads: a first count() is 2, a has() on an open segment is 1, and a first has() is 3', async () => {
     await loaded;
     const names = ['seg-0', 'seg-1', 'seg-2', 'seg-3'];
     const counted = new CloudRoaring({ storage: backend, ...guards.warmStore(1_024) });
     let total = 0;
     for (const name of names) {
-      total += await countOf(async () => {
+      const first = await countOf(async () => {
         expect(await counted.segment(name).count()).toBe(20_000);
       });
+      expect(first, 'a first count() is a pointer and a tail').toBe(2);
+      total += first;
     }
     for (let i = 0; i < 20; i += 1) {
       expect(
@@ -520,14 +553,32 @@ describe('what the stages request, counted against the engine', () => {
     }
     const idIn = (c: number): number => Math.ceil((c * 65_536) / stride) * stride;
     const ids = Array.from({ length: layout.sharedChunks }, (_, c) => idIn(c));
-    const probed = new CloudRoaring({ storage: backend, ...guards.warmStore(1_024) });
-    const has = async (): Promise<void> => {
-      for (const name of names)
-        for (const id of ids) expect(await probed.segment(name).has(id)).toBe(true);
-    };
-    total += await countOf(has);
+    // On the store count() opened, each has() is exactly one ranged read: the index was read, no chunk was.
+    for (const name of names) {
+      for (const id of ids) {
+        const gets = await countOf(async () => {
+          expect(await counted.segment(name).has(id)).toBe(true);
+        });
+        expect(gets, 'a has() on an open segment is one chunk read').toBe(1);
+        total += gets;
+      }
+    }
+    // On a store of its own it is a pointer, a tail and a chunk.
+    for (const name of names) {
+      for (const id of ids) {
+        const fresh = new CloudRoaring({ storage: backend, ...guards.TIMED_STORE });
+        const gets = await countOf(async () => {
+          expect(await fresh.segment(name).has(id)).toBe(true);
+        });
+        expect(gets, 'a first has() is a pointer, a tail and a chunk').toBe(3);
+        total += gets;
+      }
+    }
     expect(total).toBe(expected.pointReads);
-    expect(await countOf(has)).toBe(0);
+    // And repeated on the open store, none.
+    for (const name of names)
+      for (const id of ids)
+        expect(await countOf(async () => void (await counted.segment(name).has(id)))).toBe(0);
   });
 
   it('an andNot reads every chunk of the include operand and each exclude where it overlaps', async () => {
@@ -619,6 +670,7 @@ describe('the ceiling is checked inside every loop that sends', () => {
     'const coldIntersects = async',
     'const p0 = snap();',
     'const timedCalls = async',
+    'const fresh = [];',
     'for (let i = 0; i < ANDNOT_CALLS',
   ];
   const at = anchors.map((a) => harnessSrc.indexOf(a));
@@ -670,7 +722,7 @@ describe('the ceiling covers every stage', () => {
       spread: 8_160,
       sweep: 40_060,
       warm: 2_040,
-      pointReads: 1_040,
+      pointReads: 4_020,
       andNot: 30_210,
     });
     const single = stages.firstLoadRequests(0);
@@ -691,12 +743,12 @@ describe('the ceiling covers every stage', () => {
     const get =
       loads.get + setup.get + Object.values(expected).reduce((n, g) => n + g, 0) + fixed.get;
     const put = loads.put + setup.put + fixed.put;
-    expect({ put, get }).toEqual({ put: 183, get: 89_968 });
+    expect({ put, get }).toEqual({ put: 183, get: 92_948 });
     const expectedUSD = meterLib.priceTally({ put, get }, pricing).totalUSD;
-    expect(expectedUSD).toBeCloseTo(0.036902, 6);
+    expect(expectedUSD).toBeCloseTo(0.038094, 6);
     // The bound is above it, and under the ceiling.
     const bound = meterLib.priceTally(stages.projectStages(w).total, pricing).totalUSD;
-    expect(bound).toBeCloseTo(0.038074, 6);
+    expect(bound).toBeCloseTo(0.039662, 6);
     expect(bound).toBeGreaterThan(expectedUSD);
     expect(bound).toBeLessThan(0.05);
   });

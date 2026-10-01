@@ -88,8 +88,18 @@ file under `expectedMissed`, and the run carries on, because a count that differ
 | `spread` | 10 segments of the same overlap with the shared chunks spread uniformly over each segment's chunks from a fixed seed, and 40 cold intersects | the same 4 + 2k, so a difference in latency is the layout's |
 | `sweep` | segments sharing 1,000 chunks (10 intersects) and 2,000 (5), `CR_CALIBRATE_SWEEP` to change the list | 4 + 2k each, at each k |
 | `warm` | the calibration pairs again on one store that trusts its pointers and holds every chunk it read; a priming pass first | the priming pass reads each segment once (a pointer, a tail, the shared chunks); a warm intersect makes none, **and a stage in which one does fails** |
-| `pointReads` | `count()` on 10 segments, then `has()` of one id in every shared chunk of each, cold and then warm | `count()` cold: a pointer and a tail; `has()` cold: one chunk read once its segment is open; warm: none, which fails the stage if not |
+| `pointReads` | three phases, each with its own count and the store it ran on: `count()` on 10 segments (a first read); `has()` of one id in every shared chunk of each, on the store `count()` opened (an open segment, no chunk cached); and the same pairs once more, each on a fresh store (a first read); then the open-segment reads repeated warm | `count()` first read: a pointer and a tail; `has()` on an open segment: exactly one chunk read; `has()` first read: a pointer, a tail and a chunk, exactly 3; warm: none, which fails the stage if not. A cold phase that differs is recorded under `expectedMissed` and the run carries on |
 | `andNot` | 10 calls of one calibration segment against 10 others, each on a fresh store | 2 + 2 x 10 + every chunk of the include operand + each exclude's chunks where it overlaps it |
+
+**Depth.** A count of requests does not say how many ran at once, so the meter also keeps the requests in flight, their
+peak, and the sum of every request's own time (sent to answered; a request is timed to its headers, so a chunk is about
+the whole request and the 256 KiB tail is without its body). Each cold intersect and each `andNot` call starts its peak
+afresh and records `peakInFlight`, `meanInFlight` (the summed request time over the wall time) and `rounds`: its
+requests times its wall time over the summed request time, which is how many it waited for one after another. The stage
+record carries their medians as `medianPeakInFlight`, `medianMeanInFlight` and `medianRounds`, beside `modelRounds`, the
+engine's model of 2 + ⌈k / 8⌉ for a pointer, a tail and a window of 8 chunks at a time. A peak of 16 is the window,
+8 chunks each read from both operands; rounds above the model with a mean in flight under 16 is a slow request holding
+the window. In flight counts requests the library issued, including any waiting for a free socket.
 
 `andNot` reads every chunk of the segment it filters, since any of them can survive, and each exclude only where it
 overlaps, so what it costs scales with the include operand and not with the size of the exclude list.

@@ -1,13 +1,13 @@
 {
   "note": "Written by bench/calibrate-aws.cjs. A real run's evidence is write-once: a new run gets a new id.",
-  "runId": "2026-10-01-86e47",
-  "startedAt": "2026-10-01T13:11:57.480Z",
+  "runId": "2026-10-01-aa150",
+  "startedAt": "2026-10-01T14:13:49.032Z",
   "mode": "rehearse",
   "target": "minio (rehearsal — NOT a real cloud measurement)",
   "region": "n/a (local container)",
   "measured": {
     "packageVersion": "0.11.0",
-    "harness": "98e3a07-dirty",
+    "harness": "e8e25f6-dirty",
     "node": "v24.18.1"
   },
   "pricing": "aws-us-east-1-ondemand",
@@ -69,7 +69,7 @@
   },
   "projected": {
     "put": 364,
-    "get": 90636
+    "get": 94606
   },
   "projectedStages": {
     "load": {
@@ -94,7 +94,7 @@
     },
     "pointReads": {
       "put": 0,
-      "get": 1060
+      "get": 5030
     },
     "andNot": {
       "put": 0,
@@ -107,15 +107,15 @@
       "via": "store.load()",
       "singlePart": {
         "runs": 20,
-        "medianIdsPerSec": 8637225.772832187,
-        "medianBytesPerSec": 18177024.36447379,
+        "medianIdsPerSec": 8499498.529586755,
+        "medianBytesPerSec": 17887194.655515324,
         "medianObjectBytes": 1052088,
         "medianUploadBytes": 1052250
       },
       "multipart": {
         "runs": 5,
-        "medianIdsPerSec": 19712191.56222097,
-        "medianBytesPerSec": 19775185.480870996,
+        "medianIdsPerSec": 19108222.771010872,
+        "medianBytesPerSec": 19169286.596764807,
         "medianObjectBytes": 12622960,
         "medianUploadBytes": 12623123
       },
@@ -377,15 +377,19 @@
       "runs": 40,
       "cold": true,
       "exact": true,
-      "p50ms": 101.950209,
-      "p95ms": 171.36075,
-      "p99ms": 183.130792,
+      "p50ms": 97.588208,
+      "p95ms": 192.676208,
+      "p99ms": 193.922334,
       "chunksFetchedPerOperand": 100,
       "chunksPerSegment": 1999,
       "payloadFraction": 0.04904532700686635,
       "tailReadBytesPerOperand": 262144,
       "pointerReadsPerIntersect": 2,
       "medianGets": 204,
+      "medianPeakInFlight": 16,
+      "medianMeanInFlight": 11.162730931930346,
+      "medianRounds": 18.302610530273142,
+      "modelRounds": 15,
       "expectedGets": 8160,
       "offExpected": 0,
       "timedStore": {
@@ -420,14 +424,18 @@
       "runs": 40,
       "cold": true,
       "exact": true,
-      "p50ms": 95.075,
-      "p95ms": 128.528209,
-      "p99ms": 140.663083,
+      "p50ms": 100.124125,
+      "p95ms": 150.566834,
+      "p99ms": 167.107792,
       "chunksFetchedPerOperand": 100,
       "chunksPerSegment": 1999,
       "tailReadBytesPerOperand": 262144,
       "pointerReadsPerIntersect": 2,
       "medianGets": 204,
+      "medianPeakInFlight": 16,
+      "medianMeanInFlight": 11.282892529631342,
+      "medianRounds": 18.08553987084058,
+      "modelRounds": 15,
       "expectedGets": 8160,
       "offExpected": 0,
       "timedStore": {
@@ -586,14 +594,18 @@
           "runs": 10,
           "cold": true,
           "exact": true,
-          "p50ms": 896.054417,
-          "p95ms": 960.442334,
-          "p99ms": 960.442334,
+          "p50ms": 871.454541,
+          "p95ms": 920.792541,
+          "p99ms": 920.792541,
           "chunksFetchedPerOperand": 1000,
           "chunksPerSegment": 2899,
           "tailReadBytesPerOperand": 262144,
           "pointerReadsPerIntersect": 2,
           "medianGets": 2004,
+          "medianPeakInFlight": 16,
+          "medianMeanInFlight": 11.961804615321686,
+          "medianRounds": 168.8048095994578,
+          "modelRounds": 127,
           "expectedGets": 2004,
           "offExpected": 0,
           "timedStore": {
@@ -609,14 +621,18 @@
           "runs": 5,
           "cold": true,
           "exact": true,
-          "p50ms": 1720.802708,
-          "p95ms": 1824.180833,
-          "p99ms": 1824.180833,
+          "p50ms": 1689.398792,
+          "p95ms": 1766.12525,
+          "p99ms": 1766.12525,
           "chunksFetchedPerOperand": 2000,
           "chunksPerSegment": 3899,
           "tailReadBytesPerOperand": 262144,
           "pointerReadsPerIntersect": 2,
           "medianGets": 4004,
+          "medianPeakInFlight": 16,
+          "medianMeanInFlight": 11.99336265728869,
+          "medianRounds": 333.85132380422607,
+          "modelRounds": 252,
           "expectedGets": 4004,
           "offExpected": 0,
           "timedStore": {
@@ -745,9 +761,9 @@
       "exact": true,
       "warmGets": 0,
       "n": 40,
-      "p50ms": 4.262875,
-      "p95ms": 4.785666,
-      "p99ms": 4.792542,
+      "p50ms": 4.426916,
+      "p95ms": 4.82625,
+      "p99ms": 4.9205,
       "priming": {
         "requests": {
           "put": 0,
@@ -808,56 +824,103 @@
         "cold": {
           "gets": 20,
           "n": 10,
-          "p50ms": 4.062375,
-          "p95ms": 7.095542,
-          "p99ms": 7.095542
+          "p50ms": 4.049958,
+          "p95ms": 7.569958,
+          "p99ms": 7.569958,
+          "expectedGets": 20,
+          "store": {
+            "retry": false,
+            "cache": {
+              "genTtlMs": 3600000,
+              "maxChunks": 2000
+            }
+          }
         },
         "warm": {
           "gets": 0,
           "n": 1000,
-          "p50ms": 0.1115,
-          "p95ms": 0.125041,
-          "p99ms": 0.16925
+          "p50ms": 0.115417,
+          "p95ms": 0.130375,
+          "p99ms": 0.193917,
+          "expectedGets": 0,
+          "store": {
+            "retry": false,
+            "cache": {
+              "genTtlMs": 3600000,
+              "maxChunks": 2000
+            }
+          }
         }
       },
       "has": {
-        "cold": {
-          "gets": 1020,
+        "openSegment": {
+          "gets": 1000,
           "n": 1000,
-          "p50ms": 1.243958,
-          "p95ms": 2.28925,
-          "p99ms": 5.249667
+          "p50ms": 1.260791,
+          "p95ms": 1.893958,
+          "p99ms": 4.158792,
+          "expectedGets": 1000,
+          "store": {
+            "retry": false,
+            "cache": {
+              "genTtlMs": 3600000,
+              "maxChunks": 2000
+            }
+          }
+        },
+        "firstRead": {
+          "gets": 3000,
+          "expectedGets": 3000,
+          "offExpected": 0,
+          "store": {
+            "retry": false,
+            "cache": {
+              "genTtlMs": 0
+            }
+          },
+          "n": 1000,
+          "p50ms": 4.17225,
+          "p95ms": 6.094958,
+          "p99ms": 8.685542
         },
         "warm": {
           "gets": 0,
           "n": 1000,
-          "p50ms": 0.002375,
-          "p95ms": 0.003041,
-          "p99ms": 0.004459
+          "p50ms": 0.002792,
+          "p95ms": 0.003708,
+          "p99ms": 0.005583,
+          "expectedGets": 0,
+          "store": {
+            "retry": false,
+            "cache": {
+              "genTtlMs": 3600000,
+              "maxChunks": 2000
+            }
+          }
         }
       },
       "requests": {
         "put": 0,
-        "get": 1040,
+        "get": 4020,
         "bytesUp": 0,
-        "bytesDown": 5762100,
+        "bytesDown": 265960050,
         "parts": 0,
         "reads": {
           "whole": {
-            "n": 20,
-            "bytes": 3220
+            "n": 1010,
+            "bytes": 162610
           },
           "suffix": {
-            "n": 20,
-            "bytes": 5242880
+            "n": 1010,
+            "bytes": 264765440
           },
           "range": {
-            "n": 1000,
-            "bytes": 516000
+            "n": 2000,
+            "bytes": 1032000
           }
         }
       },
-      "expectedGets": 1040
+      "expectedGets": 4020
     },
     "andNot": {
       "runs": 10,
@@ -865,13 +928,16 @@
       "excludes": 10,
       "includeChunks": 1999,
       "n": 10,
-      "p50ms": 1480.667375,
-      "p95ms": 1627.684833,
-      "p99ms": 1627.684833,
+      "p50ms": 1467.5425,
+      "p95ms": 1744.981208,
+      "p99ms": 1744.981208,
       "medianGets": 3021,
       "chunkReadsPerCall": 2999,
       "tailReadsPerCall": 11,
       "pointerReadsPerCall": 11,
+      "medianPeakInFlight": 80,
+      "medianMeanInFlight": 16.925435925800173,
+      "medianRounds": 178.86605801061714,
       "timedStore": {
         "retry": false,
         "cache": {
@@ -903,25 +969,25 @@
     }
   },
   "network": {
-    "rttFloorMs": 1.201125,
-    "rttMedianMs": 1.464167,
+    "rttFloorMs": 1.256167,
+    "rttMedianMs": 1.494166,
     "client": "local container",
     "inRegionThresholdMs": 30
   },
   "cost": {
     "putUSD": 0.000915,
-    "getUSD": 0.035987200000000004,
-    "totalUSD": 0.0369022,
+    "getUSD": 0.0371792,
+    "totalUSD": 0.0380942,
     "ops": {
       "put": 183,
-      "get": 89968,
+      "get": 92948,
       "free": 2,
       "bytesUp": 105409501,
-      "bytesDown": 135117516,
+      "bytesDown": 395315466,
       "byCommand": {
         "HeadBucketCommand": 11,
         "CreateBucketCommand": 1,
-        "GetObjectCommand": 89957,
+        "GetObjectCommand": 92937,
         "ListObjectsV2Command": 82,
         "PutObjectCommand": 77,
         "CreateMultipartUploadCommand": 5,
@@ -932,21 +998,24 @@
         "DeleteObjectsCommand": 1,
         "DeleteBucketCommand": 1
       },
+      "inFlight": 0,
+      "peakInFlight": 80,
+      "requestMs": 566968.6754120088,
       "reads": {
         "whole": {
-          "n": 422,
-          "bytes": 68636
+          "n": 1412,
+          "bytes": 228026
         },
         "suffix": {
-          "n": 340,
-          "bytes": 89128960
+          "n": 1330,
+          "bytes": 348651520
         },
         "range": {
-          "n": 88990,
-          "bytes": 45919920
+          "n": 89990,
+          "bytes": 46435920
         }
       }
     }
   },
-  "elapsedMs": 49239
+  "elapsedMs": 53515
 }

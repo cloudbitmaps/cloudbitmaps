@@ -93,7 +93,7 @@ const coldIntersectBound = (k) => 2 * (3 + k);
  *   w.spread           { segments, reads, sharedChunks }             cold intersects, spread layout
  *   w.sweep            { segments, entries: [{ k, intersects }] }    each entry has `segments` loaded of its own
  *   w.warm             { segments, sharedChunks }                    one priming pass over `segments` segments
- *   w.pointReads       { segments, sharedChunks }                    a cold `count()` and a cold `has()` per chunk
+ *   w.pointReads       { segments, sharedChunks }                    `count()`, then `has()` per chunk, open and first read
  *   w.andNot           { calls, excludes, includeChunks, sharedChunks }
  *   w.retryBound, w.fixedPuts, w.fixedGets
  */
@@ -129,12 +129,11 @@ function projectStages(w) {
     get: w.warm.segments * (3 + w.warm.sharedChunks),
   };
 
-  // A cold `count()` and a cold `has()` for every shared chunk of every segment, each segment opened by its first
-  // read: a pointer, a tail, and a chunk read for each `has()`. The warm repeats are held to none.
-  stages.pointReads = {
-    put: 0,
-    get: 2 * w.pointReads.segments * 3 + w.pointReads.segments * w.pointReads.sharedChunks,
-  };
+  // A `count()` opening each segment (a pointer, a tail, one more for an index longer than the tail), a `has()` of every
+  // shared chunk on those open segments (one chunk read each), and a `has()` of every shared chunk as the first read of
+  // a store of its own (a pointer, a tail, a chunk, and the one more). The warm repeats are held to none.
+  const sc = w.pointReads.segments * w.pointReads.sharedChunks;
+  stages.pointReads = { put: 0, get: 3 * w.pointReads.segments + 5 * sc };
 
   // Every operand opened, every chunk of the include operand read, and each exclude's chunks where it overlaps it.
   const a = w.andNot;
@@ -162,9 +161,9 @@ function expectedReads(w) {
     sweep: w.sweep.entries.reduce((n, e) => n + e.intersects * coldIntersectGets(e.k), 0),
     // Each segment once: a pointer, a tail and the shared chunks. The timed warm intersects make none.
     warm: w.warm.segments * (2 + w.warm.sharedChunks),
-    // `count()` opens a segment: a pointer and a tail. A `has()` on a store that has not opened it does the same,
-    // then reads one chunk; on one that has, only the chunk.
-    pointReads: 2 * w.pointReads.segments * 2 + w.pointReads.segments * w.pointReads.sharedChunks,
+    // `count()` opens a segment: a pointer and a tail. A `has()` on an open segment is one chunk read, and the first
+    // `has()` on a store of its own is a pointer, a tail and a chunk.
+    pointReads: 2 * w.pointReads.segments + 4 * w.pointReads.segments * w.pointReads.sharedChunks,
     andNot: a.calls * (2 * (1 + a.excludes) + a.includeChunks + a.excludes * a.sharedChunks),
   };
 }

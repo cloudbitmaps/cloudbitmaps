@@ -1287,15 +1287,30 @@ async function main() {
       },
     });
 
-    // ---- point reads: has() and count(), cold and then warm ------------------------------------------------------
-    // One id from each shared chunk of each segment, so each has() is one chunk read once its segment is open. The
-    // stores trust their pointers for the stage, so a segment is opened once, by the first read that reaches it.
+    // ---- point reads: count() and has(), three ways ---------------------------------------------------------------
+    // One id from each shared chunk of each segment. `count()` first opens each segment on a store: a pointer and a tail.
+    // Then, on that same store, every `has()` is one chunk read: the segment is open and the chunk is not cached
+    // (`openSegment`), and repeated they are none (`warm`). And for the first read the plan names, each of the same
+    // pairs is read once more on a store of its own, which makes a pointer, a tail and a chunk read (`firstRead`).
     await stage('pointReads', {
       run: async () => {
         if (POINT_SEGMENTS === 0) return { segments: 0 };
         const names = calibrationNames.slice(0, POINT_SEGMENTS);
+        const chunks = layout.sharedChunks;
+        const pointConfig = warmStore(2 * POINT_SEGMENTS * chunks);
         const point = () =>
-          new CloudRoaring({ storage, ...warmStore(2 * POINT_SEGMENTS * layout.sharedChunks) });
+          new CloudRoaring({ storage, ...warmStore(2 * POINT_SEGMENTS * chunks) });
+        // A phase is held to its count softly (a cold one that differs is a finding, and must not abort the stages
+        // after it) and a warm one hard (a request from memory fails the stage).
+        const softCheck = (name, gets, expected) => {
+          if (gets === expected) return;
+          (results.expectedMissed ??= []).push(
+            `pointReads ${name}: ${gets} GET-class, expected ${expected}`,
+          );
+          console.error(
+            `calibrate: EXPECTED COUNT MISSED — pointReads ${name} made ${gets} GET-class requests, expected ${expected}`,
+          );
+        };
         const timedCalls = async (calls, check) => {
           const ms = [];
           const g0 = snap().get;
@@ -1313,27 +1328,38 @@ async function main() {
             throw new Error(`${name} made ${phase.gets} GET-class requests; expected ${gets}`);
           }
         };
+        const counts = (got) => {
+          if (got !== IDS) throw new Error(`count() returned ${got}; expected ${IDS}`);
+        };
+        const present = (got) => {
+          if (got !== true) throw new Error('has() of a shared id returned false');
+        };
         // count(): cardinality from the index, so a segment's first read is its pointer and its tail and nothing else.
         const counted = point();
-        const countCold = await timedCalls(
-          names.map((name) => () => counted.segment(name).count()),
-          (got) => {
-            if (got !== IDS) throw new Error(`count() returned ${got}; expected ${IDS}`);
-          },
-        );
-        const countWarm = await timedCalls(
-          Array.from(
-            { length: layout.sharedChunks * POINT_SEGMENTS },
-            (_, i) => () => counted.segment(names[i % names.length]).count(),
-          ),
-          (got) => {
-            if (got !== IDS) throw new Error(`count() returned ${got}; expected ${IDS}`);
-          },
-        );
+        const countCold = {
+          ...(await timedCalls(
+            names.map((name) => () => counted.segment(name).count()),
+            counts,
+          )),
+          expectedGets: 2 * POINT_SEGMENTS,
+          store: pointConfig,
+        };
+        softCheck('count() first read', countCold.gets, countCold.expectedGets);
+        const countWarm = {
+          ...(await timedCalls(
+            Array.from(
+              { length: chunks * POINT_SEGMENTS },
+              (_, i) => () => counted.segment(names[i % names.length]).count(),
+            ),
+            counts,
+          )),
+          expectedGets: 0,
+          store: pointConfig,
+        };
         mustMake('a warm count()', countWarm, 0);
         // has(): the first id of each shared chunk, present in every segment.
         const idIn = (c) => Math.ceil((c * CHUNK_SPAN) / layout.stride) * layout.stride;
-        const ids = Array.from({ length: layout.sharedChunks }, (_, c) => idIn(c));
+        const ids = Array.from({ length: chunks }, (_, c) => idIn(c));
         for (const id of ids) {
           if (id >= layout.shared * layout.stride || id >>> 16 !== Math.floor(id / CHUNK_SPAN)) {
             throw new Error(
@@ -1341,23 +1367,64 @@ async function main() {
             );
           }
         }
-        const probed = point();
-        const calls = names.flatMap((name) => ids.map((id) => () => probed.segment(name).has(id)));
-        const present = (got) => {
-          if (got !== true) throw new Error('has() of a shared id returned false');
+        const pairs = names.flatMap((name) => ids.map((id) => [name, id]));
+        // On the store count() opened: every has() is one ranged read.
+        const openSegment = {
+          ...(await timedCalls(
+            pairs.map(
+              ([name, id]) =>
+                () =>
+                  counted.segment(name).has(id),
+            ),
+            present,
+          )),
+          expectedGets: pairs.length,
+          store: pointConfig,
         };
-        const hasCold = await timedCalls(calls, present);
-        const hasWarm = await timedCalls(calls, present);
+        softCheck('has() on an open segment', openSegment.gets, openSegment.expectedGets);
+        const hasWarm = {
+          ...(await timedCalls(
+            pairs.map(
+              ([name, id]) =>
+                () =>
+                  counted.segment(name).has(id),
+            ),
+            present,
+          )),
+          expectedGets: 0,
+          store: pointConfig,
+        };
         mustMake('a warm has()', hasWarm, 0);
+        // The first read of a segment: each pair on a store of its own. A pointer, a tail and a chunk.
+        const fresh = [];
+        const firstMs = [];
+        for (const [name, id] of pairs) {
+          const store = timedStore();
+          const g0 = snap().get;
+          const t0 = process.hrtime.bigint();
+          const got = await store.segment(name).has(id);
+          firstMs.push(msSince(t0));
+          present(got);
+          fresh.push(snap().get - g0);
+          checkCeiling();
+        }
+        const firstRead = {
+          gets: fresh.reduce((n, g) => n + g, 0),
+          expectedGets: 3 * pairs.length,
+          offExpected: fresh.filter((g) => g !== 3).length,
+          store: TIMED_STORE,
+          ...spreadOf(firstMs),
+        };
+        softCheck('has() first read', firstRead.gets, firstRead.expectedGets);
         log(
-          `  has() ${calls.length} cold p50 ${hasCold.p50ms.toFixed(2)} ms, warm p50 ${hasWarm.p50ms.toFixed(2)} ms; ` +
-            `count() cold p50 ${countCold.p50ms.toFixed(2)} ms`,
+          `  has() on an open segment p50 ${openSegment.p50ms.toFixed(2)} ms, first read p50 ${firstRead.p50ms.toFixed(2)} ms, ` +
+            `warm p50 ${hasWarm.p50ms.toFixed(2)} ms; count() first read p50 ${countCold.p50ms.toFixed(2)} ms`,
         );
         return {
           segments: POINT_SEGMENTS,
-          sharedChunks: layout.sharedChunks,
+          sharedChunks: chunks,
           count: { cold: countCold, warm: countWarm },
-          has: { cold: hasCold, warm: hasWarm },
+          has: { openSegment, firstRead, warm: hasWarm },
         };
       },
     });
