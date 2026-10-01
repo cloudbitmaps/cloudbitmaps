@@ -111,7 +111,7 @@ is a dependency of both and is never installed directly. The storage drivers are
 - **A co-operative bulk-load.** Node has one thread, and building a generation is the one operation here that
   genuinely occupies it for a while. It hands the event loop back periodically, so a co-resident server keeps
   answering while a load runs; a test holds a load to yielding. On by default. The guide's
-  [what blocks the event loop](guide/getting-started.md#what-blocks-the-event-loop-and-where-to-run-it) has the
+  [what blocks the event loop](guide/production.md#what-blocks-the-event-loop-and-where-to-run-it) has the
   timings it reports for one machine, which no harness in this repository reproduces yet.
 
 ### Security & data protection
@@ -358,7 +358,7 @@ Saying no is part of the design:
   needs a snapshot handle (above), and a window merely wide enough to hope with is a different, weaker promise
   wearing the same words. The cost side — generations piling up because nothing collects them — is what `keep`
   is for; sizing it is in the
-  [guide](guide/getting-started.md#sizing-keep).
+  [guide](guide/loading.md#sizing-keep).
 - **Per-id TTL.** A bitmap stores ids, not `(id, timestamp)` pairs; a timestamp per id costs 4–8 bytes each and
   takes the compression the whole design exists for. Not deferred — incompatible with the data model.
 - **A hosted/managed CloudBitmaps service.** Never — this is a library. Your data stays in your account, in

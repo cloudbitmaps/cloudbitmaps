@@ -178,7 +178,7 @@ Each retirement goes through `dropSegment`, so the registry → object-store ord
 than two. The sweep is bounded (`limit`, default 100), previewable (`dryRun`), and returns a per-segment ledger
 rather than throwing — a fault on one segment must not decide the fate of the other ninety-nine. Once a day is
 enough for daily buckets. Full walkthrough:
-[getting-started §13.5](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#135-retention-ttl-and-pruning--what-exists-and-what-doesnt).
+[the retention guide](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/retention.md#retention-ttl-and-pruning--what-exists-and-what-doesnt).
 
 ## No background process, and nothing to seed
 

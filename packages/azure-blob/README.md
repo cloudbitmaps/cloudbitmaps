@@ -73,7 +73,7 @@ container holds, with the current generation marked.
 
 A registry row is overwritten by compare-and-swap, so a writer that swaps in over a write that landed, before the
 read-back, makes that write report `WriteConflictError`. The callers re-read the row on it, and none deletes a
-generation because of it. A generation's `.crbm` blob is never overwritten, so its read-back is definitive. See [the getting-started guide](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#6-reliability-retries-backoff--timeouts).
+generation because of it. A generation's `.crbm` blob is never overwritten, so its read-back is definitive. See [the production guide](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md#reliability-retries-backoff--timeouts).
 
 ## What this package is
 

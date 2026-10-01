@@ -11,8 +11,8 @@
  * Two caveats for sink authors: `onEvent` runs **synchronously on the I/O path**, so keep it cheap and
  * non-blocking (offload batching/network to your own async queue); and `segment`/`namespace` are
  * caller-controlled strings that may be PII and are **unbounded-cardinality** — do not map them to
- * per-series metric labels unless they're known low-cardinality and PII-free. See the getting-started
- * "Observability" section.
+ * per-series metric labels unless they're known low-cardinality and PII-free. See the observability
+ * guide.
  */
 
 /** The segment operations that emit an `op` latency event (timed with the injected clock, at the facade). */

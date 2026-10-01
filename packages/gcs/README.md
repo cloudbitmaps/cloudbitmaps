@@ -70,7 +70,7 @@ client you pass, and adds no option.
 
 A transient failure of a single-request write, or of the read-back, throws `TransientError`, and the write may or may not have landed:
 `store.generations(ref)` lists what the bucket holds, with the current generation marked. See
-[the getting-started guide](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#6-reliability-retries-backoff--timeouts).
+[the production guide](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md#reliability-retries-backoff--timeouts).
 
 ## What this package is
 

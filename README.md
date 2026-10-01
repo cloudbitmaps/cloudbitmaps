@@ -211,7 +211,7 @@ load must stay a rollback target, re-run with `keep: 2`: an attempt whose object
 slot. To learn whether it landed, check `store.generations(ref)` rather than replay the request. All tier bytes are
 checksum-verified (and AEAD-authenticated when encrypted) before use, so corruption is rejected rather than returned
 as a wrong answer. Set a request timeout on your injected storage client (a timed-out read is retried as transient);
-see the [getting-started guide](docs/guide/getting-started.md#6-reliability-retries-backoff--timeouts) for tuning.
+see the [production guide](docs/guide/production.md#reliability-retries-backoff--timeouts) for tuning.
 
 ## What it costs — measured on real AWS
 

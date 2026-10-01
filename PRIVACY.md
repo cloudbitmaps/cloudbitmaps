@@ -272,7 +272,7 @@ So the two are complements, not alternatives: **`dropSegment` for "stop paying f
 > shortens is the history a registry restore picks from, and the time a crypto-shred takes to complete (above).
 
 Full detail, including the dated-bucket pattern and the pitfalls, is in the retention section of the
-[guide](docs/guide/getting-started.md).
+[retention guide](docs/guide/retention.md).
 
 ## Legal hold
 
@@ -371,5 +371,5 @@ Map CloudBitmaps' processing onto the categories a record of processing needs:
 
 ---
 
-**See also:** the [getting-started guide](docs/guide/getting-started.md) (its encryption/crypto-shred, metrics,
-audit, and subject access & erasure sections) and the [dashboards guide](docs/guide/dashboards.md).
+**See also:** the [encryption](docs/guide/encryption.md), [observability](docs/guide/observability.md) (metrics and
+audit) and [erasure](docs/guide/erasure.md) guides, and the [dashboards guide](docs/guide/dashboards.md).

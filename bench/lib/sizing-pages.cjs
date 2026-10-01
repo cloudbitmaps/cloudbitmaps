@@ -24,7 +24,7 @@ const DOCS = {
     'PREFIX',
     'SAMPLE',
   ],
-  'docs/guide/getting-started.md': ['GUIDE_EXAMPLE', 'COMPARES', 'GUIDE_LEANINGS', 'ONE_CLUSTER'],
+  'docs/guide/cost.md': ['GUIDE_EXAMPLE', 'COMPARES', 'GUIDE_LEANINGS', 'ONE_CLUSTER'],
   'docs/guide/why-cloudbitmaps.md': [
     'WHY_DEPLOYMENTS',
     'WHY_LEANINGS',

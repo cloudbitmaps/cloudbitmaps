@@ -123,7 +123,7 @@ instead for the pointer refresh: at most one GET per segment every 2 s while the
 **`estimateCost()` counts what this run's bill counted**: each cold operand's pointer and tail read, which prices
 this run's intersect at 204 GETs (**expected**); what `store.load()` adds to its object's write; and the pointer
 refresh, for the segments a long-lived reader keeps reading. The
-[guide](guide/getting-started.md#what-each-term-counts) says what each term counts.
+[guide](guide/cost.md#what-each-term-counts) says what each term counts.
 
 ## At scale — measured (1K → 10K → 100K segments)
 
@@ -312,4 +312,4 @@ pnpm rss-gate      # the same soak under a hard cgroup --memory ceiling (needs D
 
 The formulas are in `packages/core/src/core/cost.ts` — every rate, the crossover derivation and what each term
 does and does not model are stated there — and the
-[getting-started guide](guide/getting-started.md) covers the estimator API.
+[cost guide](guide/cost.md) covers the estimator API.

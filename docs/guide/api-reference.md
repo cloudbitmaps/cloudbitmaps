@@ -167,7 +167,7 @@ The `store.load` row lists the guards and what throws instead.
 |---|---|
 | `seg.has(id)` → `Promise<boolean>` | membership: the cache, else **one** ranged GET of that id's chunk |
 | `seg.count()` → `Promise<number>` | exact cardinality, summed from the `.crbm` index — **zero payload reads** on a loaded segment |
-| `seg.iterate({ after?, through? }?)` → `AsyncIterable<number>` | stream all ids, ascending, one chunk at a time. With a range, only the ids in `(after, through]`, fetching only the chunks the range overlaps: keyset paging, where `after` is where the page before ended (see [Page through a segment](getting-started.md#page-through-a-segment)). The per-op budget is charged once, before the first fetch, for every chunk in the range, so with `after` alone it is charged to the end of the segment; give a page `through`. Each bound is optional and an integer in `0..4294967295`, or the stream throws `ValidationError` when first read; `after >= through` reads nothing. On a pinned handle it reads the pinned generation, and fails with `NotFoundError` for a chunk it must fetch from a generation since collected |
+| `seg.iterate({ after?, through? }?)` → `AsyncIterable<number>` | stream all ids, ascending, one chunk at a time. With a range, only the ids in `(after, through]`, fetching only the chunks the range overlaps: keyset paging, where `after` is where the page before ended (see [Page through a segment](reading.md#page-through-a-segment)). The per-op budget is charged once, before the first fetch, for every chunk in the range, so with `after` alone it is charged to the end of the segment; give a page `through`. Each bound is optional and an integer in `0..4294967295`, or the stream throws `ValidationError` when first read; `after >= through` reads nothing. On a pinned handle it reads the pinned generation, and fails with `NotFoundError` for a chunk it must fetch from a generation since collected |
 | `seg.pin()` → `Promise<Segment>` | **hold this segment at the generation current right now**, for the life of the returned handle — so a long export, reconciliation or send describes **one instant** instead of whichever generations happened to be current as it ran. An ordinary handle re-resolves on `cache.genTtlMs`; a pinned one does not. Only *this* segment is pinned: `snap.intersect([other])` reads `snap` at its pin and `other` live, so pin each segment to hold a whole query — and a pinned handle used as an operand is still read at its pin, never live. **A hold, not a lease**: nothing stops a collection (a `load`'s `keep`, an erasure, the retention sweep) deleting the generation underneath you, and a pinned read deliberately does *not* heal forward (silently serving a different generation is what a pin exists to prevent), so it fails instead — size `keep` past your longest pinned job. The pinned reader lives in the same bounded LRU as every other, so a pin costs a generation number, not a retained index. Its decoded chunks share the store's chunk cache and its bound under keys of their own, which no live read writes: a pin is never handed a chunk a live read fetched from another generation, and pays one GET for a chunk a live read of its generation already cached. One call reads a segment at one generation, so a combine that holds the same segment at two — pins of two generations, pins of one generation number in two incarnations of its name, or a pin and a live handle — is refused with `ValidationError` when it is read, as a combine's other errors are: materialise one side first with `intersectInto(dest, [])`. Two pins of one object combine freely, and an `*Into` of a combine that is refused throws before it reads anything. **Safe across a re-creation**: `pin()` records the pinned object's size and footer checksum, so a pin held while its segment is purged and loaded again — which starts the new segment at generation 0 again — never reads the new segment: what it has already read still answers, and anything it would have to fetch fails with `NotFoundError`, as a swept pin's does, with or without a registry. An object of another size counts as another object, damaged or not. A replacement it has found is remembered, so later reads fail with no request, until the store forgets it: `store.invalidate(ref)` on its store does, as does a later `pin()` of the same version that opens the pinned object again, and the store remembers at most `cache.readerMax` of them. So once a restore puts the object back, invalidate its store: the pin then reads it again, and a pin taken after that reads the object then stored as its generation. `pin()` opens its reader as it pins: with a registry, pins of one generation taken while its row is unchanged share that reader while the store keeps it open, pins taken at the same moment included, so only the first costs a tail read, and a key unwrap for an encrypted segment, even if it is never read; without one, every `pin()` lists the segment's objects and makes the tail read. It and every pinned read are retried as the store's reads are. A segment with no current generation pins nothing and reads empty. A pinned segment whose row is later dropped or destroyed fails with `NotFoundError` once it must open its object again, rather than go empty part-way through a call. **A pin keeps the key its reader unwrapped while that reader stays open, and answers from the chunks it decoded while they stay cached**. Its own store invalidates it on a `load`, a `rollback` or an `*Into` of its segment, a `dropSegment` of its segment, a `retireExpired` whose ledger lists its segment, retired or not (neither of those two on a dry run), and an `eraseSubject` that scans its segment while it is not destroyed; an invalidated pin opens its object again, and fails if that object is gone or replaced, or its row is gone or destroyed. Anything else leaves it as it is: after a `destroySegment` beside its store, or an erasure, a drop or a retirement through another store, in the same process or another, it answers from what it holds until its store's reader cache evicts the pin's reader and the store's chunk cache evicts the chunks the pin decoded, or `store.invalidate(ref)` is called on its store; where the object it reads has been deleted, by an erasure, a drop or a sweep, a chunk it has not cached fails at once. Needs the `.crbm` storage source (`UnsupportedError` otherwise) |
 | `seg.intersect([other, …], { after?, through?, concurrency?, budget?, exclude?, allowAbsentOperands? })` → `AsyncIterable<number>` | **the crown jewel** — chunk-skipping intersection, streamed. `exclude` subtracts suppression segments **in the same pass**. `after` / `through` bound the result to `(after, through]` on every operand and every exclude, as on `iterate` |
 | `seg.union([other, …], { after?, through?, concurrency?, budget?, exclude?, allowAbsentOperands? })` → `AsyncIterable<number>` | `this ∪ others`, streamed. The one composite with **no chunk-skipping** — every chunk of every operand is read, or every chunk inside the range when one is given |
@@ -333,8 +333,8 @@ loadsPerMonth?, requestsPerLoad?, hotSegments?, readerProcesses?, genTtlMs? }`; 
 compares against, with the last of `assumptions.notes` saying how it was priced; and
 `redisCrossover.readsPerSec` is the sustained read rate at which pay-per-use passes it, net of storage and the pointer
 refresh (≈329 reads/s against `ONE_REDIS_HA_CLUSTER` with a 0% cache-hit rate). What each term counts is in the
-[guide](getting-started.md#what-each-term-counts), and what the verdict compares against
-[beside it](getting-started.md#what-it-compares-against). `MetricOpName` is `'has' | 'count' | 'intersectInto' | 'unionInto' | 'andNotInto'`;
+[guide](cost.md#what-each-term-counts), and what the verdict compares against
+[beside it](cost.md#what-it-compares-against). `MetricOpName` is `'has' | 'count' | 'intersectInto' | 'unionInto' | 'andNotInto'`;
 `MetricsSnapshot` is `{ storage, cache, retries: { transient }, intersect, ops }`.
 
 ### The storage interfaces (used to type `storage` / `registry`)
@@ -604,7 +604,7 @@ pass a `keep` one above the number of attempts that landed to keep it. A write t
 started, makes the re-run report `superseded`. To learn whether an attempt landed, check rather than replay the
 request: compare `store.generations(ref)`, which lists what the bucket holds with the current generation marked,
 with what it listed before the call. The guide's
-[§6](getting-started.md#6-reliability-retries-backoff--timeouts) walks through each case.
+[Reliability](production.md#reliability-retries-backoff--timeouts) walks through each case.
 
 ### Crypto seams
 
@@ -763,7 +763,7 @@ Each conditional write the backend makes — the write-once `PutObject`, a multi
 the registry's create, compare-and-swap and delete, which writes a tombstone — is sent once, with the SDK's retry off for that request alone, whether
 the client is one you passed or one `S3Storage` built. Every other request keeps the client's retry. A transient
 failure of a conditional write throws `TransientError`, and the write may or may not have landed
-([why](getting-started.md#6-reliability-retries-backoff--timeouts)).
+([why](production.md#reliability-retries-backoff--timeouts)).
 
 ### `@cloudbitmaps/gcs`
 
@@ -779,7 +779,7 @@ around it, so a transient failure throws `TransientError` and the write may or m
 is a resumable upload, a session of requests that the SDK retries within, under the client's retry options: it
 carries a random id in the object's metadata, and a `412` on its commit reads the stored object back, so an object
 that carries its own id is a success and any other a `WriteConflictError`
-([why](getting-started.md#6-reliability-retries-backoff--timeouts)).
+([why](production.md#reliability-retries-backoff--timeouts)).
 
 ### `@cloudbitmaps/azure-blob`
 
@@ -791,7 +791,7 @@ run on **one container alone**: compare-and-swap rides blob conditions (`ifNoneM
 `ifMatch: <etag>` to swap), so no second service is needed to hold the `currentGen` pointer. Every request goes
 through the client's retry policy, the conditional writes included. Each conditional write carries a random id in
 the blob's metadata, and a conflict reads the stored blob back, so a blob that carries its own id is a success and
-any other a `WriteConflictError` ([why](getting-started.md#6-reliability-retries-backoff--timeouts)).
+any other a `WriteConflictError` ([why](production.md#reliability-retries-backoff--timeouts)).
 
 ## Keeping this in sync
 

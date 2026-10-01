@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
  *
  * WHY THIS EXISTS. Several surfaces promise a complete list. `site/architecture.html` says "Every change of state
  * is an audit event beside it:", `docs/guide/dashboards.md` introduces "what lands in the log" the same way, and the
- * getting-started guide's table of kinds, the API reference's compliance-trail row and both copies of the privacy
+ * observability guide's table of kinds, the API reference's compliance-trail row and both copies of the privacy
  * note, the one npm ships included, each list them. A list in any of them that names five of the seven kinds reads as
  * complete, and leaving out `segment.rollback` or `segment.load-refused` is not cosmetic.
  *
@@ -34,7 +34,7 @@ const ENUMERATING_PAGES = [
   join('packages', 'roaring', 'PRIVACY.md'),
   join('docs', 'guide', 'api-reference.md'),
   join('docs', 'guide', 'dashboards.md'),
-  join('docs', 'guide', 'getting-started.md'),
+  join('docs', 'guide', 'observability.md'),
   join('site', 'architecture.html'),
 ] as const;
 

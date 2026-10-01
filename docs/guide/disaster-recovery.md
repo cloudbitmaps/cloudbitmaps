@@ -23,6 +23,7 @@ catches a torn restore before it bites.
 - [Encryption & DR](#encryption--dr)
 - [What a restore does and does not bring back](#what-a-restore-does-and-does-not-bring-back)
 - [Not shipped: rebuilding the registry from storage](#not-shipped-rebuilding-the-registry-from-storage)
+- [Disaster recovery: check cross-store consistency](#disaster-recovery-check-cross-store-consistency)
 
 ## The stores you must protect
 
@@ -621,7 +622,7 @@ resolution:
 
 ## Encryption & DR
 
-If encryption-at-rest is on (see the encryption section of [getting-started](getting-started.md)), the
+If encryption-at-rest is on (see the [encryption guide](encryption.md)), the
 **keystore is a first-class DR asset**: a `.crbm` cannot be decrypted from storage alone. The object carries no key
 material and no key reference (its footer's 16-byte `key_id` field is written as zeros); the KEKs live in the
 keystore, and the wrapped per-segment DEKs live in the segment's registry row. So:
@@ -721,3 +722,37 @@ its reserved field is 2 bytes, and its 16-byte `key_id` field, written as zeros,
 would also change the crypto-shred model, since shredding would then have to delete the storage objects too, not
 just the key. The capability is listed on the [roadmap](../ROADMAP.md). **Back up the registry and keystore** —
 they are not reconstructable from storage alone.
+
+## Disaster recovery: check cross-store consistency
+
+CloudBitmaps spans two independent stores — the **object store** (storage `.crbm` generations) and the **registry**
+(which generation is current per segment). A restore that brings them back at **different points in time** can
+leave the registry pointing at a storage generation that wasn't restored (its `currentGen` names a `.crbm` that
+isn't there) — a torn restore that otherwise surfaces only as a failed read, much later. `checkConsistency()`
+detects it up front:
+
+```ts
+const report = await store.checkConsistency();          // scan every registered segment
+// { checked: 1284, inconsistent: [], errored: [] }      // healthy
+
+if (report.inconsistent.length > 0) {
+  // [{ segment, namespace?, currentGen, issue: 'missing-storage-generation' }, …]
+  // → the registry is ahead of the object store: restore the missing generations,
+  //   or roll the registry back to a generation that exists.
+}
+if (report.errored.length > 0) {
+  // [{ segment, namespace?, error }, …] — couldn't be read this pass (a partial/transient object store
+  // mid-restore is exactly when this runs). Not proof of a tear: re-run once the store is fully available.
+}
+```
+
+Run it **after any restore** and as a periodic health check. It needs a **backend** (same
+requirement as the other lifecycle helpers; throws `UnsupportedError` otherwise) and fans out at a bounded
+`concurrency` (default 8). It holds the registry rows it enumerates resident, at most **250,000**, and past that
+throws `BudgetExceededError` rather than report a partial scan as a whole one. `store.checkConsistency` takes no
+ceiling of its own: narrow the scan with `namespace`, and check a larger fleet one namespace at a time. It visits
+registry rows, so objects whose row is gone are not in its report; `store.generations(ref)` lists those. A single unreadable segment never aborts the scan — it lands in `errored` so you still
+get the full picture; and each segment is checked against its authoritative **live** pointer (a strong read), not
+the enumeration snapshot, so a concurrent load that advanced the generation during the scan isn't misreported as
+a tear. See the [disaster-recovery runbook](disaster-recovery.md) for the full restore procedure, RPO/RTO
+guidance, and why the registry must be point-in-time-recoverable alongside the object store.

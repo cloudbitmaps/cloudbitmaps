@@ -16,7 +16,7 @@ const SCRIPT = join(ROOT, 'bench', 'sizing.cjs');
 // Resolves as the script would, so a module it requires beside itself is found where it lives.
 const requireFromScript = createRequire(SCRIPT);
 const SIZING = 'docs/guide/sizing.md';
-const GUIDE = 'docs/guide/getting-started.md';
+const GUIDE = 'docs/guide/cost.md';
 const page = (rel: string): string => readFileSync(join(ROOT, rel), 'utf8');
 
 function deepFreeze<T>(value: T): T {
@@ -290,7 +290,6 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       for (const text of [
         ' See [what S3 sends](https://docs.aws.amazon.com/AmazonS3/latest/userguide/EventNotifications.html).',
         ' See [the storage classes](https://aws.amazon.com/s3/storage-classes/).',
-        ' [§11 of the guide](getting-started.md#11-cost-estimate-it-then-ground-it) has the model.',
       ]) {
         const r = sizingCheck({ [WHY]: intoWhy(text) });
         expect(r.code, r.out).toBe(0);
@@ -298,9 +297,9 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       for (const text of [
         ' See [AWS](https://aws.amazon.com/?off=20%).',
         ' See [the guide](getting-started.md#12-other).',
-        ' See [the guide](getting-started.md#11-cost-estimate-it-then-ground-it#2).',
-        ' It is getting-started.md#11-cost-estimate-it-then-ground-it.',
-        ' See (getting-started.md#11-cost-estimate-it-then-ground-it).',
+        ' See [the storage classes](https://aws.amazon.com/s3/storage-classes/#2).',
+        ' It is https://aws.amazon.com/s3/storage-classes/.',
+        ' See (https://aws.amazon.com/s3/storage-classes/).',
         ' See [the prices](https://aws.amazon.com/s3/pricing/).',
         ' See [the guide](https://docs.aws.amazon.com/AmazonS3/latest/userguide/optimizing-performance.html).',
       ]) {
@@ -729,7 +728,7 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       ['ids are 32-bits'],
       ['a 128-bit id'],
       ['us-east-1 prices'],
-      ['[§12 of the guide](getting-started.md#what-each-term-counts)'],
+      ['[§12 of the guide](cost.md#what-each-term-counts)'],
       ['§11 a month'],
       ['3.4 billion customers'],
       ['1-2 billion customers'],
@@ -748,10 +747,6 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       ['an engine', " V8's heap holds the index."],
       ['the width of an id', ' Its ids are 32-bit; 64-bit ids need a new format.'],
       ['the ids a chunk holds', ' A chunk holds up to 65,536 ids.'],
-      [
-        'a section of the guide',
-        ' [§11 of the\nguide](getting-started.md#11-cost-estimate-it-then-ground-it) has more.',
-      ],
       ['"S3 times out"', ' If S3 times out, the reader retries.'],
       ['a service as the subject of "times"', ' S3 times each request from its first byte.'],
       ['"double as", which is a use', ' It can double as a lock.'],
@@ -1247,7 +1242,7 @@ describe('bench:sizing:check fails what it exists to catch', () => {
     ])('fails a page that spells an image path %s with an entity', (image) => {
       refused(
         { [GUIDE]: intoGuide(`<img alt="a chart" src="../../${image}">`) },
-        /getting-started\.md holds an entity/,
+        /cost\.md holds an entity/,
       );
     });
 
@@ -1272,10 +1267,7 @@ describe('bench:sizing:check fails what it exists to catch', () => {
         ['It is 9&#48; here.', '&#48'],
       ];
       for (const [text, entity] of decoded) {
-        refused(
-          { [GUIDE]: intoGuide(text) },
-          new RegExp(`getting-started\\.md holds an entity, "${entity}"`),
-        );
+        refused({ [GUIDE]: intoGuide(text) }, new RegExp(`cost\\.md holds an entity, "${entity}"`));
       }
     });
 

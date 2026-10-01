@@ -86,7 +86,7 @@ export interface LoadOptions {
    * and pay a re-resolve. A wider window costs storage, and it is what a pinned handle needs: a pin is never
    * re-resolved, so a chunk a pinned read has not fetched fails with `NotFoundError` once its generation is
    * collected. Keep at least one generation for every one that can be written above the pinned one while your
-   * longest pinned job runs, on every writer that loads the segment — see "Sizing `keep`" in the getting-started
+   * longest pinned job runs, on every writer that loads the segment — see "Sizing `keep`" in the loading
    * guide.
    */
   readonly keep?: number;
