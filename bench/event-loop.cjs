@@ -6,8 +6,8 @@
  * The guide tells a reader that a load of 1M ids spread across the id space costs a few hundred milliseconds, that
  * it hands the event loop back in slices so the longest single stall is a small fraction of that, and that the same
  * load with no clock to yield through holds the loop for its whole duration. Those are claims about a co-resident
- * server's health checks, and without a recorded run they stand on a figure typed once and never re-checked: the
- * first version of this table was wrong in both directions, and its worst case was worse than stated.
+ * server's health checks, and without a recorded run they stand on a figure typed once and never re-checked,
+ * which drifts in either direction, and a worst case is the figure most likely to be stated too kindly.
  *
  * WHAT IS MEASURED
  *
@@ -161,6 +161,15 @@ function runChild(variant) {
   return JSON.parse(line.slice('EVENT_LOOP_RESULT:'.length));
 }
 
+/** `JSON.stringify` with each array of numbers on one line, which is how `pnpm format` lays the file out. */
+function formatResults(results) {
+  const json = JSON.stringify(results, null, 2).replace(
+    /\[\s*(-?[\d.]+(?:,\s*-?[\d.]+)*)\s*\]/g,
+    (_, nums) => `[${nums.replace(/\s*,\s*/g, ', ')}]`,
+  );
+  return json + '\n';
+}
+
 function median(xs) {
   const s = [...xs].sort((a, b) => a - b);
   const m = s.length >> 1;
@@ -251,7 +260,7 @@ function parent() {
     `  load average 1/5/15 min: start ${loadStart.map(round1)}  end ${loadEnd.map(round1)}\n`,
   );
   if (process.env.EVENT_LOOP_INJECT === '1') {
-    fs.writeFileSync(RESULTS, JSON.stringify(results, null, 2) + '\n');
+    fs.writeFileSync(RESULTS, formatResults(results));
     console.log(
       '  wrote bench/event-loop-results.json — now update the guide to match, and run --check',
     );
@@ -309,6 +318,25 @@ function check() {
         'the results file records fewer than 15 trials, or a different count per variant',
       );
     }
+  }
+  // The two source comments that quote the same end-to-end run must agree with it too: they ship in the package.
+  const n = (x) => Math.round(x);
+  const y = results.yielded;
+  const u = results.unyielded;
+  for (const [file, text] of [
+    [
+      'packages/core/src/core/cooperative.ts',
+      `${n(u.wallMs.median)} ms wall / ${n(u.stallMs.median)} ms blocked unyielded, ${n(y.wallMs.median)} ms / ${n(y.stallMs.median)} ms yielded`,
+    ],
+    [
+      'packages/roaring/src/system-clock.ts',
+      `end-to-end figures are ${n(u.stallMs.median)} ms \u2192 ${n(y.stallMs.median)} ms`,
+    ],
+  ]) {
+    // The comments wrap, so compare with whitespace and comment stars collapsed.
+    const src = fs.readFileSync(path.join(ROOT, file), 'utf8').replace(/\s*\n\s*\*?\s*/g, ' ');
+    if (!src.includes(text))
+      problems.push(`${file} does not quote "${text}" from bench/event-loop-results.json`);
   }
   if (problems.length) {
     console.error('bench:event-loop:check FAILED:\n  - ' + problems.join('\n  - '));

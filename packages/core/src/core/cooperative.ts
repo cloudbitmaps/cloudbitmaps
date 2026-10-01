@@ -3,8 +3,8 @@
  *
  * Everything this library does on the hot read path is small. Bulk-load is the exception: it is the one place
  * where a single call legitimately occupies the CPU for hundreds of milliseconds, and Node has exactly one thread
- * to occupy. Measured on a 1M-id load, 62,455 chunks: **442 ms wall, and 450 ms during which the event loop did
- * not turn at all**. Wire that to a request handler and every other in-flight request on the instance — health
+ * to occupy. Measured on a 1M-id load of 65,536 chunks onto in-memory storage, on a loaded Apple M3 Pro: **518 ms
+ * wall, and 519 ms during which the event loop did not turn at all** (medians of 20 fresh-process runs). Wire that to a request handler and every other in-flight request on the instance — health
  * checks included — waits out the whole load.
  *
  * The fix is not to make the work asynchronous. That was measured too, and it is a 7x *regression*: handing each
@@ -29,7 +29,7 @@
  * baseline, with the worst event-loop gap down from 568 ms to 13.8 ms.
  *
  * **Three experiments, three sets of numbers — do not mix them.** (a) The end-to-end 1M-id bulk load:
- * 442 ms wall / 450 ms blocked unyielded, 256 ms / 19 ms yielded. (b) This synthetic yield-primitive comparison:
+ * 518 ms wall / 519 ms blocked unyielded, 526 ms / 24 ms yielded. (b) This synthetic yield-primitive comparison:
  * 568 ms / 568 ms unyielded, 569 ms / 13.8 ms with `setImmediate`. (c) A per-chunk insert microbenchmark:
  * 92 ms sync versus 636 ms via the threadpool. Quoting a baseline from one against a result from another describes
  * work none of them did, such as a 92 ms operation with 450 ms of starvation inside it.
