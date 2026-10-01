@@ -2370,3 +2370,69 @@ describe('teardown — what counts as done', () => {
     expect(armed).toBeLessThan(src.indexOf('new s3.CreateBucketCommand', main));
   });
 });
+
+// CloudShell ships Node 20, so a first run there is the one that takes the nvm branch, and every local rehearsal,
+// on a newer Node, skips it. nvm is not written for `set -eu`: sourcing `nvm.sh` returns 3 while no default Node is
+// installed, and under `set -e` that ended the script at "installing Node 22 with nvm", without a word. This runs
+// the script's own bootstrap under its own shell options, against an `nvm.sh` that behaves the same way.
+describe("the CloudShell script's Node bootstrap", () => {
+  const sh = readFileSync(join(ROOT, 'bench', 'calibrate-cloudshell.sh'), 'utf8');
+  const from = sh.indexOf('node_ok() {');
+  const to = sh.indexOf('\nWORK=', from);
+  const bootstrap = sh.slice(from, to);
+
+  const run = (nvmInstallFails: boolean) => {
+    const dir = mkdtempSync(join(tmpdir(), 'calib-nvm-'));
+    try {
+      // A `node` that is too old until `nvm use 22` puts a newer one first on PATH.
+      const old = join(dir, 'old');
+      const v22 = join(dir, 'v22');
+      mkdirSync(old);
+      mkdirSync(v22);
+      writeFileSync(join(old, 'node'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+      writeFileSync(join(v22, 'node'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      mkdirSync(join(dir, '.nvm'));
+      writeFileSync(
+        join(dir, '.nvm', 'nvm.sh'),
+        [
+          'nvm() {',
+          '  case "$1" in',
+          `    install) return ${nvmInstallFails ? 1 : 0} ;;`,
+          `    use) PATH="${v22}:$PATH"; export PATH; return 0 ;;`,
+          '  esac',
+          '}',
+          // What the real nvm.sh does at the end when no default version is installed yet.
+          'return 3',
+          '',
+        ].join('\n'),
+      );
+      const script = join(dir, 'bootstrap.sh');
+      writeFileSync(script, `set -euo pipefail\n${bootstrap}\necho "bootstrap: node is ready"\n`, {
+        mode: 0o755,
+      });
+      return spawnSync('bash', [script], {
+        env: { PATH: `${old}:/usr/bin:/bin`, HOME: dir },
+        encoding: 'utf8',
+        timeout: 30_000,
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it('carries on past nvm.sh returning non-zero, and uses the Node it installed', () => {
+    expect(from).toBeGreaterThan(-1);
+    expect(to).toBeGreaterThan(from);
+    const out = run(false);
+    expect(out.stdout).toContain('installing Node 22 with nvm');
+    expect(out.stdout).toContain('bootstrap: node is ready');
+    expect(out.status).toBe(0);
+  });
+
+  it('stops with a message, not in silence, when nvm cannot install Node', () => {
+    const out = run(true);
+    expect(out.status).toBe(2);
+    expect(out.stderr).toMatch(/still no Node >= 22\.12/);
+    expect(out.stdout).not.toContain('bootstrap: node is ready');
+  });
+});

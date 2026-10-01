@@ -112,11 +112,18 @@ if ! node_ok; then
   echo "cloudshell: installing Node 22 with nvm (the packages require Node >= 22.12)"
   export NVM_DIR="$HOME/.nvm"
   [ -s "$NVM_DIR/nvm.sh" ] || curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+  # nvm is not written for `set -eu`: sourcing nvm.sh returns 3 while no default Node is installed, which under `set -e`
+  # ended this script here without a word. So nvm runs with both off, and what it did is checked by hand.
+  set +eu
   # shellcheck source=/dev/null
   . "$NVM_DIR/nvm.sh"
-  nvm install 22 >/dev/null
-  nvm use 22 >/dev/null
-  node_ok || { echo "cloudshell: still no Node >= 22.12 — install it by hand, then re-run" >&2; exit 2; }
+  nvm install 22 >/dev/null && nvm use 22 >/dev/null
+  nvm_rc=$?
+  set -eu
+  if [ "$nvm_rc" -ne 0 ] || ! node_ok; then
+    echo "cloudshell: still no Node >= 22.12 (nvm exited ${nvm_rc}) — install it by hand, then re-run" >&2
+    exit 2
+  fi
 fi
 
 WORK="$(mktemp -d)"
