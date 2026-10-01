@@ -40,15 +40,41 @@ export function isInvalidRange(err: unknown): boolean {
   return httpStatus(err) === 416;
 }
 
+/** The statuses the SDK's own retry predicate retries (`RETRYABLE_ERR_FN_DEFAULT` in `@google-cloud/storage`). */
+const SDK_RETRIED_STATUSES = [408, 429, 500, 502, 503, 504];
+
+/** The connection faults the same predicate names, matched on a lower-cased code or reason as it does. */
+function isSdkConnectionProblem(reason: string): boolean {
+  return (
+    reason.includes('eai_again') ||
+    reason === 'econnreset' ||
+    reason === 'unexpected connection closure' ||
+    reason === 'epipe' ||
+    reason === 'socket connection timeout'
+  );
+}
+
 /**
- * A fault the SDK retries on its own for a download: a request timeout (408), throttling (429), any 5xx, or a dropped
- * connection (including a stale keep-alive socket, which Node reports as `socket hang up`). Never 404, 412 or 416.
+ * Whether the driver retries a failed download: exactly what the SDK's own retry would have retried, and nothing
+ * else, since the driver retries downloads in its place. The statuses 408, 429, 500, 502, 503 and 504, as a number or a
+ * string `code`, and the connection faults the SDK names, in `code` or in any `errors[].reason`. A 404, 412, 416 or
+ * 403, a 501 or 505, and every other answer reach the caller on the first attempt.
  */
 export function isDownloadRetryable(err: unknown): boolean {
-  if (isPreconditionFailed(err) || isNotFound(err) || isInvalidRange(err)) return false;
-  if (httpStatus(err) === 408) return true;
-  if (isTransient(err)) return true;
-  return /socket hang up/i.test((err as { message?: unknown } | null)?.message?.toString() ?? '');
+  if (err === null || typeof err !== 'object') return false;
+  const e = err as { code?: unknown; errors?: unknown };
+  if (typeof e.code === 'number' && SDK_RETRIED_STATUSES.includes(e.code)) return true;
+  if (typeof e.code === 'string') {
+    if (SDK_RETRIED_STATUSES.map(String).includes(e.code)) return true;
+    if (isSdkConnectionProblem(e.code.toLowerCase())) return true;
+  }
+  if (Array.isArray(e.errors)) {
+    for (const inner of e.errors as Array<{ reason?: unknown } | null>) {
+      const reason = inner?.reason?.toString().toLowerCase();
+      if (reason !== undefined && isSdkConnectionProblem(reason)) return true;
+    }
+  }
+  return false;
 }
 
 /**
