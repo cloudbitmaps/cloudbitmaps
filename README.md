@@ -28,9 +28,9 @@ pnpm add @cloudbitmaps/roaring    # the store, with in-memory and local-disk bac
 pnpm add @cloudbitmaps/s3         # the storage you have: or @cloudbitmaps/gcs, or @cloudbitmaps/azure-blob
 ```
 
-On pnpm 10 and later, allow the one build script first, or the package throws at `import` while the install exits 0.
-Put this in your `package.json`: `{ "pnpm": { "onlyBuiltDependencies": ["roaring"] } }`. npm and pnpm 9 need nothing
-extra.
+On npm 12 and pnpm 10 and later, allow `roaring`'s one install script first, or the install exits 0 and the package
+throws at `import`. Put this in your `package.json`: `{ "allowScripts": { "roaring": true }, "pnpm": { "onlyBuiltDependencies": ["roaring"] } }`.
+npm 11 runs the script but warns until you allow it the same way; pnpm 9 needs nothing extra.
 
 **ESM-only, Node ≥ 22.12.** For CommonJS, Jest and TypeScript details, see
 [CommonJS, Jest and TypeScript](docs/guide/getting-started.md#commonjs-jest-and-typescript).
