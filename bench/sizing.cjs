@@ -1471,11 +1471,7 @@ const GENERATED_PROSE = {
   'docs/guide/sizing.md': null,
   'README.md': {
     section: 'Why CloudBitmaps',
-    elsewhere: [
-      'overlapping in 5% of chunks',
-      '65,536-id chunk (6.25% of it)',
-      'about twice the load figure',
-    ],
+    elsewhere: ['overlapping in 5% of chunks'],
   },
 };
 for (const doc of Object.keys(GENERATED_PROSE)) {

@@ -87,6 +87,7 @@ What happened:
   is gone when it exits.
 - `store.load(ref, ids)` wrote one immutable **generation** holding the whole set, then moved the segment's
   **pointer** to it. `{ segment: 'shoppers' }` is the **ref**: the name of the segment.
+- Building a store does no I/O, so it is free to do in every job.
 - `has`, `count` and `intersect` are reads. Ids are integers from 0 up to but not including 2³².
 
 There is no `add` or `remove`. A segment changes only by loading a new generation, which replaces the old one. A
@@ -224,6 +225,8 @@ smallest for that chunk. Past **4,096 ids** in a chunk (6.25% of it) a flat bit 
 Redis bitmap holds it — beats a sorted list of ids, unless the ids form runs, where a run encoding is smaller
 still: a contiguous range costs a few bytes a chunk. So the bit array is chosen per chunk instead of assumed for all of
 them, and below that threshold you stop paying for the empty span.
+It is the same bitmap but not the same bytes: Redis numbers a byte's bits from the most significant, and Roaring
+numbers them from the least significant, in 64-bit words.
 
 **What does not carry over: the raw bytes.** A `.crbm` object is not a flat bit array, so anything that reads
 your Redis bitmap's underlying string — a job that `GET`s the key and indexes into it, a byte-for-byte backup,

@@ -887,10 +887,10 @@ describe('bench:sizing:check fails what it exists to catch', () => {
         {
           [README]: readme.replace(
             '## Your data stays yours',
-            '## Your data stays yours\n\nOn-demand Redis costs about twice the load figure.',
+            '## Your data stays yours\n\nTwo segments overlapping in 5% of chunks.',
           ),
         },
-        /"twice the load", outside its "Why CloudBitmaps" section/,
+        /"5%", outside its "Why CloudBitmaps" section/,
       );
       // Shares are read in any case, as they are written and with their tags taken out.
       for (const [line, figure] of [
@@ -935,11 +935,11 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       expect(readme).toContain('?logo=npm&label=');
       // A listed phrase is read as written: with its figure in bold it is another phrase, and the listed one is gone.
       const bolded = readme.replace(
-        '65,536-id chunk (6.25% of it)',
-        '65,536-id chunk (**6.25%** of it)',
+        'overlapping in 5% of chunks',
+        'overlapping in **5%** of chunks',
       );
       expect(bolded).not.toBe(readme);
-      refused({ [README]: bolded }, /no longer says "65,536-id chunk \(6\.25% of it\)"/);
+      refused({ [README]: bolded }, /no longer says "overlapping in 5% of chunks"/);
       // Nor is it in compatibility forms, which a reader is shown as the same phrase and this reads as another.
       refused(
         { [README]: readme.replace('overlapping in 5% of chunks', 'overlapping in 5％ of chunks') },
