@@ -218,8 +218,8 @@ them would make your dashboard over-attest.**
 > of a retirement whose drop found no Storage generation to delete and left none behind, since that row would only
 > fence the name. The `segment.dispose` above is the receipt for the data (for such a retirement it carries
 > `generationsDeleted: 0`); the row removal is not separately attested. If your controls treat the presence of a
-> `destroyed` row as the attestation, `purgeTombstones: false` keeps the first kind and not the second: the sweep
-> deletes the second kind's row whatever that option says.
+> `destroyed` row as the attestation, pass `purgeTombstones: false`: the sweep then deletes neither kind. The
+> second kind's row stays, stamped like the first, until a sweep with purging on deletes it.
 
 A **cleartext** `dropSegment` emits only `segment.dispose`. An **encrypted** one emits **both**, because both
 things genuinely happened. So: count `segment.erase` for an Art. 17 destruction claim (on the terms in its row

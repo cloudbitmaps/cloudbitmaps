@@ -1488,8 +1488,9 @@ export class CloudRoaring {
    * first, since nothing else ever would for a tombstoned segment. Attribution is a **positive marker the sweep
    * stamps on its own retirements**, not an inference from "destroyed + an expired policy": a crypto-shred leaves
    * `retention` untouched, so setting a policy and then honouring a right-to-erasure request mid-window produces
-   * exactly that row, and deleting it would destroy the Art. 17 attestation and un-fence the name. Pass
-   * `purgeTombstones: false` to keep every tombstone.
+   * exactly that row, and deleting it would destroy the Art. 17 attestation and un-fence the name. By default a
+   * segment that held nothing has its row deleted in the pass that retires it, since that row would only fence the name.
+   * Pass `purgeTombstones: false` to keep every tombstone, that row included.
    *
    * Needs the store built with a **backend** (throws {@link UnsupportedError} otherwise),
    * because retiring a segment deletes its storage objects. `now` defaults to the store's clock.

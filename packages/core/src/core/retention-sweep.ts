@@ -116,11 +116,14 @@ export interface RetireExpiredOptions {
   readonly lookbackBuckets?: number;
   /**
    * Whether to delete the tombstone rows this sweep's own past retirements left (default `true`). Set `false` to
-   * keep them — the right choice if something outside this library treats the presence of a `destroyed` row as an
-   * attestation — with one exception this option does not govern: a retirement whose drop found no Storage
-   * generation to delete and left none behind has its row deleted by the same pass, whatever this says, since that
-   * tombstone would do nothing but fence the name against every writer. What records that retirement is its ledger entry, and
-   * its `segment.dispose` event (`generationsDeleted: 0`) when an `audit` sink is passed.
+   * keep every one of them — the right choice if something outside this library treats the presence of a
+   * `destroyed` row as an attestation. That includes the row of a retirement whose drop found no Storage
+   * generation to delete and left none behind: with the default that row is deleted in the same pass, since it
+   * would do nothing but fence the name against every writer, and with `false` it stays, stamped like any other
+   * of this sweep's tombstones, so a later sweep with purging on deletes it once `tombstoneGraceMs` has passed.
+   * While it stays, it fences the name like every kept tombstone. What records a retirement either way is its
+   * ledger entry, and its `segment.dispose` event (`generationsDeleted: 0` for an empty one) when an `audit` sink
+   * is passed.
    *
    * Two knobs rather than one `number | 'never'`, deliberately: `0` would have had to mean "purge immediately"
    * here while `cache.genTtlMs: 0` in this same library means "never refresh on a timer", and one option whose
@@ -483,11 +486,20 @@ export async function retireExpired(
       // purpose. Best-effort and unconditional on `scan`: a fleet sweep retires index-pointed segments too, and
       // leaving their pointers behind would make a later index scan re-read segments that no longer exist.
       await forgetDuePointer(deps.registry, ref, livePolicy.expiresAt);
-      if (result.generationsDeleted.length === 0 && result.generationsRemaining.length === 0) {
+      if (
+        purgeTombstones &&
+        result.generationsDeleted.length === 0 &&
+        result.generationsRemaining.length === 0
+      ) {
         // The segment really held nothing, so `dropSegment` has just written a tombstone for a name that was
         // empty. Left in place that row FENCES the name against every writer — and `setRetention` will mint a
         // row for any name, including a typo'd one, so this is reachable from a single mistake. Nothing
         // existed, so there is nothing a delete could resurrect: remove the row instead of bricking the name.
+        //
+        // **Only while `purgeTombstones` is on.** `false` is the caller asking for every row of this sweep's
+        // retirements to stay, this one included; it falls through to the stamp below, so a later sweep with
+        // purging on can still delete it after the grace window (an empty segment is trivially fully reclaimed).
+        // Nothing re-processes it meanwhile: a `destroyed` row is skipped before any policy is read.
         //
         // **Both halves of the predicate are load-bearing.** `generationsDeleted: []` alone does NOT mean the
         // segment was empty — it is equally what a segment whose every `storage.delete` threw produces, because
@@ -502,8 +514,15 @@ export async function retireExpired(
         // keeps its tombstone, so reads stay refused, and the tombstone-purge pass above re-sweeps it with
         // `gcOrphanGenerations` (which takes every generation of a destroyed row) and purges the row once it is
         // genuinely empty. The residual is visible in this entry's `result.generationsRemaining` meanwhile.
-        await deps.registry.delete(ref).catch(() => undefined);
-        continue;
+        //
+        // **A delete that fails falls through to the stamp as well.** Left unstamped, the row is indistinguishable
+        // from a crypto-shred's tombstone, which no sweep may ever delete, so one transient registry fault would
+        // keep a fenced name for good. Stamped, it is this sweep's own tombstone, and a later sweep purges it.
+        const deleted = await deps.registry.delete(ref).then(
+          () => true,
+          () => false,
+        );
+        if (deleted) continue;
       }
       // Stamp the tombstone as OURS, so a later sweep may purge the row (see the attribution note above). A
       // failure here only means the row is never auto-purged — never data loss — so it is best-effort.
