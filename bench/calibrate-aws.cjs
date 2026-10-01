@@ -48,10 +48,10 @@ const {
   parseCeiling,
   resolveSize,
   probeMeansAbsent,
-  projectOps,
   exceedsProjection,
   breached,
   planLayout,
+  planSweepLayout,
   layoutIds,
   maskAccount,
   redact,
@@ -73,6 +73,14 @@ const {
   MAX_LISTING_PAGES,
   leftoversHint,
 } = require('./lib/calibrate-guards.cjs');
+const { planSpread, spreadIds } = require('./lib/calibrate-spread.cjs');
+const {
+  STAGES,
+  parseSweep,
+  coldIntersectGets,
+  projectStages,
+  expectedReads,
+} = require('./lib/calibrate-stages.cjs');
 const {
   interruptGate,
   failureOf,
@@ -113,6 +121,25 @@ const MODE = argv.includes('--cleanup')
 const SEGMENTS = resolveSize(process.env.CR_CALIBRATE_SEGMENTS, 10, 'CR_CALIBRATE_SEGMENTS');
 const IDS = resolveSize(process.env.CR_CALIBRATE_IDS, 500_000, 'CR_CALIBRATE_IDS');
 const READS = resolveSize(process.env.CR_CALIBRATE_READS, 40, 'CR_CALIBRATE_READS');
+/** The spread layout's segments and cold intersects: the calibration overlap, with the shared chunks scattered. */
+const SPREAD_SEGMENTS = resolveSize(
+  process.env.CR_CALIBRATE_SPREAD_SEGMENTS,
+  10,
+  'CR_CALIBRATE_SPREAD_SEGMENTS',
+);
+const SPREAD_READS = resolveSize(
+  process.env.CR_CALIBRATE_SPREAD_READS,
+  40,
+  'CR_CALIBRATE_SPREAD_READS',
+);
+/** The spread layout's seed. Fixed, so a rehearsal and a real run read the same keys. */
+const SPREAD_SEED = 1;
+/** How many segments each overlap in the sweep loads for itself; its intersects pair them in turn. */
+const SWEEP_SEGMENTS = resolveSize(
+  process.env.CR_CALIBRATE_SWEEP_SEGMENTS,
+  3,
+  'CR_CALIBRATE_SWEEP_SEGMENTS',
+);
 /**
  * Segments large enough to be uploaded MULTIPART — the other half of "load throughput, single-part and
  * multipart". The S3 driver uses a single conditional PUT for anything that fits one 8 MiB part, and the intersect
@@ -158,24 +185,36 @@ function largePartsBound() {
 }
 
 /**
- * The run's worst case, in requests and dollars. It is checked against the ceiling before anything is created, and
- * the run is checked against it after teardown — so it has to be an upper bound, not an estimate.
+ * What each stage loads and reads, from the layouts: the one input both the projection and the stages' own
+ * expectations are computed from.
  */
-function projection(pricing, layout) {
-  const ops = projectOps({
-    loads: SEGMENTS,
-    largeLoads: LARGE,
-    partsPerLargeLoad: largePartsBound(),
-    reads: READS,
-    operandsPerRead: 2,
-    chunksPerRead: layout.sharedChunks,
+function planWorkload({ layout, spread, sweep }) {
+  const sharedChunks = layout.sharedChunks;
+  return {
+    loads: { segments: SEGMENTS, largeSegments: LARGE, partsBound: largePartsBound() },
+    intersect: { reads: READS, sharedChunks },
+    spread: {
+      segments: spread === null ? 0 : SPREAD_SEGMENTS,
+      reads: spread === null ? 0 : SPREAD_READS,
+      sharedChunks: spread === null ? 0 : spread.sharedChunks,
+    },
+    sweep: { segments: SWEEP_SEGMENTS, entries: sweep },
     retryBound: RETRY_BOUND,
     // The probe HEAD and the round-trip samples, one attempt each; the bucket's creation; and teardown's listings
     // at every attempt its retrying client may make (see TEARDOWN_PUTS).
     fixedGets: 1 + RTT_SAMPLES,
     fixedPuts: 1 /* CreateBucket */ + TEARDOWN_PUTS,
-  });
-  return { ops, priced: priceTally({ put: ops.put, get: ops.get }, pricing) };
+  };
+}
+
+/**
+ * The run's worst case, in requests and dollars: every stage's bound, and the fixed requests. It is checked against
+ * the ceiling before anything is created, and the run is checked against it after teardown — so it has to be an upper
+ * bound, not an estimate.
+ */
+function projection(pricing, workload) {
+  const { stages, total } = projectStages(workload);
+  return { ops: total, stages, priced: priceTally({ put: total.put, get: total.get }, pricing) };
 }
 
 /**
@@ -236,10 +275,21 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
 async function main() {
   // Everything that can be refused from the inputs alone is refused first, before the library is even imported, so a
   // refusal holds on a checkout that has not been built and costs nothing to test.
+  let sweep = [];
   try {
     // A cleanup loads nothing, so no workload setting can refuse it.
-    if (MODE !== 'cleanup')
-      checkWorkload({ segments: SEGMENTS, largeSegments: LARGE, reads: READS });
+    if (MODE !== 'cleanup') {
+      sweep = parseSweep(process.env.CR_CALIBRATE_SWEEP);
+      checkWorkload({
+        segments: SEGMENTS,
+        largeSegments: LARGE,
+        reads: READS,
+        spreadSegments: SPREAD_SEGMENTS,
+        spreadReads: SPREAD_READS,
+        sweepSegments: SWEEP_SEGMENTS,
+        sweepEntries: sweep.length,
+      });
+    }
   } catch (err) {
     refuse(err.message);
   }
@@ -307,7 +357,11 @@ async function main() {
   let pricing;
   let packageVersion;
   let layout;
+  let spread = null;
+  let sweepLayouts = [];
+  let plan;
   let ops;
+  let stageBounds;
   let priced;
   if (MODE !== 'cleanup') {
     let AWS_US_EAST_1_ONDEMAND;
@@ -317,16 +371,55 @@ async function main() {
     ).version;
     pricing = AWS_US_EAST_1_ONDEMAND;
     layout = planLayout({ segments: SEGMENTS, idsPerSegment: IDS, ...DEFAULT_LAYOUT });
-    ({ ops, priced } = projection(pricing, layout));
+    // The spread layout has the calibration layout's overlap: the same shared chunks, the same ids in every chunk.
+    if (SPREAD_SEGMENTS > 0) {
+      spread = planSpread({
+        segments: SPREAD_SEGMENTS,
+        sharedChunks: layout.sharedChunks,
+        privateChunks: layout.privateChunks,
+        idsPerChunk: Math.max(1, Math.round(IDS / layout.chunksPerSegment)),
+        stride: DEFAULT_LAYOUT.stride,
+        seed: SPREAD_SEED,
+      });
+    }
+    sweepLayouts = sweep.map((e) =>
+      planSweepLayout({
+        segments: SWEEP_SEGMENTS,
+        sharedChunks: e.k,
+        privateIds: layout.priv,
+        stride: DEFAULT_LAYOUT.stride,
+      }),
+    );
+    plan = planWorkload({ layout, spread, sweep });
+    ({ ops, stages: stageBounds, priced } = projection(pricing, plan));
   }
 
   if (MODE === 'project') {
     log('PROJECTION ONLY — nothing created, no credentials read.\n');
     console.log(
-      `  workload     ${SEGMENTS} x ${IDS} ids (${layout.chunksPerSegment} chunks each, ${layout.sharedChunks} shared)`,
+      `  workload     ${SEGMENTS} x ${IDS} ids (${layout.chunksPerSegment} chunks each, ${layout.sharedChunks} shared)` +
+        ` + ${LARGE} multipart segments of ${LARGE_CHUNKS} dense chunks`,
     );
+    const rows = {
+      load: `${SEGMENTS + LARGE} loads through store.load()`,
+      intersect: `${READS} cold intersects, k = ${layout.sharedChunks}`,
+      spread: `${plan.spread.segments} segments, ${plan.spread.reads} cold intersects, k = ${plan.spread.sharedChunks} spread over ${spread?.span ?? 0} keys`,
+      sweep:
+        sweep.length === 0
+          ? 'none'
+          : sweep
+              .map((e) => `${e.intersects} at k = ${e.k}`)
+              .join(', ')
+              .concat(` (${SWEEP_SEGMENTS} segments each)`),
+    };
+    for (const name of STAGES) {
+      const b = stageBounds[name];
+      console.log(
+        `  ${name.padEnd(11)} ${String(b.put).padStart(4)} PUT-class ${String(b.get).padStart(7)} GET-class  ${rows[name]}`,
+      );
+    }
     console.log(
-      `               + ${LARGE} multipart segments of ${LARGE_CHUNKS} dense chunks, ${READS} cold intersects`,
+      `  fixed        ${String(plan.fixedPuts).padStart(4)} PUT-class ${String(plan.fixedGets).padStart(7)} GET-class  bucket, probe, round-trip samples, teardown`,
     );
     console.log(
       `  projected    ${ops.put} PUT-class, ${ops.get} GET-class — an upper bound, checked after the run`,
@@ -575,8 +668,11 @@ async function main() {
       largeChunks: LARGE_CHUNKS,
       largeIdsPerSegment: LARGE_CHUNKS * LARGE_IDS_PER_CHUNK,
       coldIntersects: READS,
+      // Everything every stage loads and reads, as the projection was computed from it.
+      plan,
     },
     projected: ops,
+    projectedStages: stageBounds,
     partial: true,
     phases: {},
   };
@@ -622,6 +718,16 @@ async function main() {
       ops: { ...tally, byCommand: { ...tally.byCommand } },
     };
     const over = exceedsProjection(tally, ops);
+    // Each stage against its own bound too, so a stage that overspent is named even when the run as a whole did not.
+    for (const name of STAGES) {
+      const record = results.phases[name];
+      if (record === undefined) continue;
+      const used = {
+        put: record.requests.put + (record.setup?.requests.put ?? 0),
+        get: record.requests.get + (record.setup?.requests.get ?? 0),
+      };
+      for (const m of exceedsProjection(used, stageBounds[name])) over.push(`${name}: ${m}`);
+    }
     if (over.length > 0) {
       // The projection is only a ceiling if the run cannot exceed it. It just did, so the next change is to the
       // projection — before this harness is trusted with another pre-flight check.
@@ -647,6 +753,21 @@ async function main() {
     suffixN: tally.reads.suffix.n,
     suffixBytes: tally.reads.suffix.bytes,
     wholeN: tally.reads.whole.n,
+    wholeBytes: tally.reads.whole.bytes,
+  });
+  // What was sent between two snapshots, in the shape the meter's own tally has, so a stage's file can be read the
+  // way the run's totals are.
+  const requestsBetween = (a, b) => ({
+    put: b.put - a.put,
+    get: b.get - a.get,
+    bytesUp: b.up - a.up,
+    bytesDown: b.down - a.down,
+    parts: b.parts - a.parts,
+    reads: {
+      whole: { n: b.wholeN - a.wholeN, bytes: b.wholeBytes - a.wholeBytes },
+      suffix: { n: b.suffixN - a.suffixN, bytes: b.suffixBytes - a.suffixBytes },
+      range: { n: b.rangeN - a.rangeN, bytes: b.rangeBytes - a.rangeBytes },
+    },
   });
   // A value the run actually observed, never an interpolation: for an even count, the upper of the two middles.
   const median = (xs) => {
@@ -710,24 +831,72 @@ async function main() {
         throw new Error(`spend ceiling breached mid-run: $${spent.toFixed(6)} >= $${ceiling}`);
     };
 
+    // A value the run observed at index floor(N·p): the same upper rule as `median`, and one rank above textbook
+    // nearest-rank when N·p is whole. With 40 reads, p99 is simply the slowest and p95 the second slowest: read
+    // them as that, not as a tail estimate a sample this small cannot give.
+    const q = (xs, p) => {
+      const s = [...xs].sort((x, y) => x - y);
+      return s[Math.min(s.length - 1, Math.floor(s.length * p))];
+    };
+    const msSince = (t0) => Number(process.hrtime.bigint() - t0) / 1e6;
+
+    // The store a timed read uses, one per intersect so no cache can answer it: its own retry is off and its pointer
+    // refresh is off (`TIMED_STORE`). Every store that times a read is built through here or through `warmStore`.
+    const timedStore = () => new CloudRoaring({ storage, ...TIMED_STORE });
+
+    // ---- the stages ---------------------------------------------------------------------------------------------------
+    // Each stage records the requests it made, by class and by kind of read, beside what the engine is expected to
+    // make and what the projection allows. `setup` is what a stage loads for itself, kept apart from what it times.
+    const expectedByStage = expectedReads(plan);
+    const stage = async (name, { setup, run }) => {
+      if (!STAGES.includes(name)) throw new Error(`${name} is not a stage the projection covers`);
+      const s0 = snap();
+      const prepared = setup === undefined ? undefined : await setup();
+      const s1 = snap();
+      const phase = await run(prepared);
+      const s2 = snap();
+      const record = { ...phase, requests: requestsBetween(s1, s2) };
+      if (prepared !== undefined) {
+        record.setup = { ...prepared.record, requests: requestsBetween(s0, s1) };
+      }
+      results.phases[name] = record;
+      const expected = expectedByStage[name];
+      if (expected !== undefined) {
+        record.expectedGets = expected;
+        if (record.requests.get !== expected) {
+          (results.expectedMissed ??= []).push(
+            `${name}: ${record.requests.get} GET-class, expected ${expected}`,
+          );
+          console.error(
+            `calibrate: EXPECTED COUNT MISSED — ${name} made ${record.requests.get} GET-class requests, ` +
+              `the engine is expected to make ${expected}`,
+          );
+        }
+      }
+      log(
+        `${name}: ${record.requests.put} PUT-class + ${record.requests.get} GET-class` +
+          (expected === undefined ? '' : ` (expected ${expected} GET-class)`),
+      );
+      return record;
+    };
+
     // ---- load throughput: single-part and multipart ---------------------------------------------------------------
     // `TIMED_STORE` changes nothing a load does: a load reads and writes through the drivers themselves, not the
     // store's retrying, cached read path. It is spread so every store in the harness is built the same way.
     const loader = new CloudRoaring({ storage, ...TIMED_STORE });
-    const loads = [];
-    const load = async (segment, ids, count) => {
+    const load = async (segment, ids, count, into) => {
       const before = snap();
       const t0 = process.hrtime.bigint();
       // The whole write path, as a user runs it: the next generation number, the object, the publish, the collection.
       const { size, published, reason } = await loader.load({ segment }, ids);
       if (!published) throw new Error(`load of ${segment} was refused: ${reason}`);
-      const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+      const ms = msSince(t0);
       const after = snap();
       // Two different byte counts, kept apart. What went up is the object AND the pointer's body, since the meter
       // counts every request; the object is what the store holds. Recorded under the object's name, the first
       // would put the pointer's bytes into every figure derived from an object's size.
       const uploaded = after.up - before.up;
-      loads.push({
+      into.push({
         segment,
         ids: count,
         ms,
@@ -739,10 +908,6 @@ async function main() {
       });
       checkCeiling();
     };
-    for (let i = 0; i < SEGMENTS; i += 1) await load(`seg-${i}`, layoutIds(layout, i, IDS), IDS);
-    for (let i = 0; i < LARGE; i += 1)
-      await load(`large-${i}`, largeIds(), LARGE_CHUNKS * LARGE_IDS_PER_CHUNK);
-
     // Medians per kind of load. A kind with no loads reports `runs: 0` and no figures, rather than zeros.
     const summarise = (xs) =>
       xs.length === 0
@@ -754,109 +919,213 @@ async function main() {
             medianObjectBytes: median(xs.map((l) => l.objectBytes)),
             medianUploadBytes: median(xs.map((l) => l.uploadBytes)),
           };
-    results.phases.load = {
-      // Which load was timed. The figures code refuses a file that says `store.load()` until it derives that
-      // load's requests, rather than publish them as a write and publish alone.
-      via: 'store.load()',
-      singlePart: summarise(loads.filter((l) => !l.multipart)),
-      multipart: summarise(loads.filter((l) => l.multipart)),
-    };
-    if (LARGE > 0 && results.phases.load.multipart.runs === 0) {
-      // Half of the load measurement is void. Say so loudly rather than publish a table with a silent hole.
-      console.error(
-        'calibrate: WARNING — no load went multipart; the multipart figure is not measured',
-      );
-    }
-    log(
-      `load: ${results.phases.load.singlePart.runs} single-part, ${results.phases.load.multipart.runs} multipart ` +
-        `(median ${Math.round(results.phases.load.singlePart.medianIdsPerSec ?? 0)} ids/s single-part)`,
-    );
+
+    await stage('load', {
+      run: async () => {
+        const loads = [];
+        for (let i = 0; i < SEGMENTS; i += 1)
+          await load(`seg-${i}`, layoutIds(layout, i), IDS, loads);
+        for (let i = 0; i < LARGE; i += 1)
+          await load(`large-${i}`, largeIds(), LARGE_CHUNKS * LARGE_IDS_PER_CHUNK, loads);
+        const single = loads.filter((l) => !l.multipart);
+        const multi = loads.filter((l) => l.multipart);
+        if (LARGE > 0 && multi.length === 0) {
+          // Half of the load measurement is void. Say so loudly rather than publish a table with a silent hole.
+          console.error(
+            'calibrate: WARNING — no load went multipart; the multipart figure is not measured',
+          );
+        }
+        log(
+          `load: ${single.length} single-part, ${multi.length} multipart ` +
+            `(median ${Math.round(summarise(single).medianIdsPerSec ?? 0)} ids/s single-part)`,
+        );
+        return {
+          // Which load was timed. The figures code refuses a file that says `store.load()` until it derives that
+          // load's requests, rather than publish them as a write and publish alone.
+          via: 'store.load()',
+          singlePart: summarise(single),
+          multipart: summarise(multi),
+        };
+      },
+    });
+    const objectBytes = results.phases.load.singlePart.medianObjectBytes ?? Number.NaN;
 
     // ---- cold intersects: every one fetches from the object store -------------------------------------------------
     // A FRESH store per intersect, so no cache can answer it. With one store reused, most intersects after the
     // first pass are served from memory, and the latency distribution mixes cache hits with object-store fetches
-    // into a single, meaningless p50.
-    const reads = [];
-    for (let i = 0; i < READS; i += 1) {
-      const a = `seg-${i % SEGMENTS}`;
-      const b = `seg-${(i + 1) % SEGMENTS}`;
-      // No retry of the store's own inside the timed window, and each pointer read exactly once however long the
-      // intersect takes, so the request count describes the library rather than the network. `TIMED_STORE` says why.
-      const store = new CloudRoaring({ storage, ...TIMED_STORE });
-      const before = snap();
-      const t0 = process.hrtime.bigint();
-      let n = 0;
-      let sum = 0;
-      for await (const id of store.segment(a).intersect([store.segment(b)])) {
-        n += 1;
-        sum += id;
+    // into a single, meaningless p50. Pairs are segment i with segment i + 1, round the set.
+    const coldIntersects = async ({ names, count, expected, label }) => {
+      const reads = [];
+      for (let i = 0; i < count; i += 1) {
+        const a = names[i % names.length];
+        const b = names[(i + 1) % names.length];
+        // No retry of the store's own inside the timed window, and each pointer read exactly once however long the
+        // intersect takes, so the request count describes the library rather than the network.
+        const store = timedStore();
+        const before = snap();
+        const t0 = process.hrtime.bigint();
+        let n = 0;
+        let sum = 0;
+        for await (const id of store.segment(a).intersect([store.segment(b)])) {
+          n += 1;
+          sum += id;
+        }
+        const ms = msSince(t0);
+        const after = snap();
+        // EXACT content, not a plausible count. Every pair intersects in precisely the planned ids, so anything else
+        // from a real object store is a real finding about the read path — torn, partial or wrong.
+        if (n !== expected.count || sum !== expected.sum) {
+          throw new Error(
+            `${label} intersect ${a} ∩ ${b} returned ${n} ids (sum ${sum}); expected exactly ${expected.count} ` +
+              `(sum ${expected.sum}). A read that is not exact must not produce a latency figure.`,
+          );
+        }
+        reads.push({
+          ms,
+          gets: after.get - before.get,
+          chunkReads: after.rangeN - before.rangeN,
+          chunkBytes: after.rangeBytes - before.rangeBytes,
+          tailReads: after.suffixN - before.suffixN,
+          tailBytes: after.suffixBytes - before.suffixBytes,
+          pointerReads: after.wholeN - before.wholeN,
+        });
+        checkCeiling();
       }
-      const ms = Number(process.hrtime.bigint() - t0) / 1e6;
-      const after = snap();
-      // EXACT content, not a plausible count. Every pair intersects in precisely the planned ids, so anything else
-      // from a real object store is a real finding about the read path — torn, partial or wrong.
-      if (n !== layout.expected.count || sum !== layout.expected.sum) {
-        throw new Error(
-          `intersect ${a} ∩ ${b} returned ${n} ids (sum ${sum}); expected exactly ${layout.expected.count} ` +
-            `(sum ${layout.expected.sum}). A read that is not exact must not produce a latency figure.`,
+      return reads;
+    };
+    // The figures of a set of cold intersects. Two operands, so per-operand figures are half the per-intersect ones.
+    const describeReads = (reads, { sharedChunks, chunksPerSegment, withPayload = false }) => {
+      if (reads.length === 0) return { runs: 0 };
+      const ms = reads.map((r) => r.ms);
+      const expectedGets = coldIntersectGets(sharedChunks);
+      return {
+        runs: reads.length,
+        cold: true,
+        exact: true,
+        p50ms: q(ms, 0.5),
+        p95ms: q(ms, 0.95),
+        p99ms: q(ms, 0.99),
+        chunksFetchedPerOperand: median(reads.map((r) => r.chunkReads)) / 2,
+        chunksPerSegment,
+        // The published claim: payload bytes fetched as a share of the two objects. The tail read is NOT in it.
+        ...(withPayload
+          ? { payloadFraction: median(reads.map((r) => r.chunkBytes)) / (2 * objectBytes) }
+          : {}),
+        // Reported apart, because it is a fixed cost per operand rather than a share of the data: the reader
+        // takes a generous tail so the footer and index arrive in one round trip. On a ~1 MB segment it is a
+        // large fraction of the bytes; on a large one it is noise. Inside the region S3 bills a read by the
+        // request and not by the byte, so there it adds a request, not a meaningful cost; read from outside the
+        // region, its bytes are transfer out.
+        tailReadBytesPerOperand: median(reads.map((r) => r.tailBytes)) / 2,
+        pointerReadsPerIntersect: median(reads.map((r) => r.pointerReads)),
+        medianGets: median(reads.map((r) => r.gets)),
+        expectedGets,
+        // Intersects whose request count was not the one the engine is expected to make: zero unless a read found
+        // something.
+        offExpected: reads.filter((r) => r.gets !== expectedGets).length,
+        // How the timed stores were built, because the request count depends on it: on the default pointer
+        // refresh a slow intersect reads each pointer again.
+        timedStore: TIMED_STORE,
+      };
+    };
+    const summarising = (it) => {
+      if (it.runs > 0) {
+        log(
+          `  ${it.runs} cold, all exact — p50 ${it.p50ms.toFixed(1)} ms, p99 ${it.p99ms.toFixed(1)} ms; ` +
+            `${it.chunksFetchedPerOperand} of ${it.chunksPerSegment} chunks per operand, median ${it.medianGets} GETs`,
         );
       }
-      reads.push({
-        ms,
-        gets: after.get - before.get,
-        chunkReads: after.rangeN - before.rangeN,
-        chunkBytes: after.rangeBytes - before.rangeBytes,
-        tailReads: after.suffixN - before.suffixN,
-        tailBytes: after.suffixBytes - before.suffixBytes,
-        pointerReads: after.wholeN - before.wholeN,
-      });
-      checkCeiling();
-    }
-    // The value at index floor(N·p) — the same upper rule as `median`, and one rank above textbook nearest-rank
-    // when N·p is whole. With the default 40 reads, p99 is simply the slowest read and p95 the second slowest:
-    // read them as that, not as a tail estimate a sample this small cannot give.
-    const q = (xs, p) => {
-      const s = [...xs].sort((x, y) => x - y);
-      return s[Math.min(s.length - 1, Math.floor(s.length * p))];
+      return it;
     };
-    const ms = reads.map((r) => r.ms);
-    const objectBytes = results.phases.load.singlePart.medianObjectBytes ?? Number.NaN;
-    const chunkReads = median(reads.map((r) => r.chunkReads));
-    results.phases.intersect =
-      reads.length === 0
-        ? { runs: 0 }
-        : {
-            runs: reads.length,
-            cold: true,
-            exact: true,
-            p50ms: q(ms, 0.5),
-            p95ms: q(ms, 0.95),
-            p99ms: q(ms, 0.99),
-            // Two operands, so per-operand figures are half the per-intersect ones.
-            chunksFetchedPerOperand: chunkReads / 2,
-            chunksPerSegment: layout.chunksPerSegment,
-            // The published claim: payload bytes fetched as a share of the two objects. The tail read is NOT in it.
-            payloadFraction: median(reads.map((r) => r.chunkBytes)) / (2 * objectBytes),
-            // Reported apart, because it is a fixed cost per operand rather than a share of the data: the reader
-            // takes a generous tail so the footer and index arrive in one round trip. On a ~1 MB segment it is a
-            // large fraction of the bytes; on a large one it is noise. Inside the region S3 bills a read by the
-            // request and not by the byte, so there it adds a request, not a meaningful cost; read from outside the
-            // region, its bytes are transfer out.
-            tailReadBytesPerOperand: median(reads.map((r) => r.tailBytes)) / 2,
-            pointerReadsPerIntersect: median(reads.map((r) => r.pointerReads)),
-            medianGets: median(reads.map((r) => r.gets)),
-            // How the timed stores were built, because the request count depends on it: on the default pointer
-            // refresh a slow intersect reads each pointer again.
-            timedStore: TIMED_STORE,
-          };
-    if (reads.length > 0) {
-      const it = results.phases.intersect;
-      log(
-        `intersect: ${reads.length} cold, all exact — p50 ${it.p50ms.toFixed(1)} ms, p99 ${it.p99ms.toFixed(1)} ms; ` +
-          `${it.chunksFetchedPerOperand} of ${it.chunksPerSegment} chunks per operand ` +
-          `(${(100 * it.payloadFraction).toFixed(1)}% of payload) + a ${Math.round(it.tailReadBytesPerOperand / 1024)} KiB tail read each`,
-      );
-    }
+
+    const calibrationNames = Array.from({ length: SEGMENTS }, (_, i) => `seg-${i}`);
+    await stage('intersect', {
+      run: async () =>
+        summarising(
+          describeReads(
+            await coldIntersects({
+              names: calibrationNames,
+              count: READS,
+              expected: layout.expected,
+              label: 'calibration-layout',
+            }),
+            {
+              sharedChunks: layout.sharedChunks,
+              chunksPerSegment: layout.chunksPerSegment,
+              withPayload: true,
+            },
+          ),
+        ),
+    });
+
+    // ---- the spread layout: the same overlap, the shared chunks scattered over each segment -----------------------
+    await stage('spread', {
+      setup: async () => {
+        const loads = [];
+        for (let i = 0; i < plan.spread.segments; i += 1)
+          await load(`spread-${i}`, spreadIds(spread, i), spread.idsPerSegment, loads);
+        return {
+          record: {
+            segments: plan.spread.segments,
+            seed: SPREAD_SEED,
+            span: spread?.span,
+            idsPerChunk: spread?.idsPerChunk,
+            sharedChunks: plan.spread.sharedChunks,
+          },
+        };
+      },
+      run: async () =>
+        spread === null
+          ? { runs: 0 }
+          : summarising(
+              describeReads(
+                await coldIntersects({
+                  names: Array.from({ length: plan.spread.segments }, (_, i) => `spread-${i}`),
+                  count: plan.spread.reads,
+                  expected: spread.expected,
+                  label: 'spread-layout',
+                }),
+                { sharedChunks: spread.sharedChunks, chunksPerSegment: spread.chunksPerSegment },
+              ),
+            ),
+    });
+
+    // ---- the overlap sweep: how the bill and the depth grow with the chunks two segments share -------------------
+    await stage('sweep', {
+      setup: async () => {
+        const entries = [];
+        for (const [e, L] of sweep.map((entry, j) => [entry, sweepLayouts[j]])) {
+          const loads = [];
+          for (let i = 0; i < SWEEP_SEGMENTS; i += 1)
+            await load(`sweep-${e.k}-${i}`, layoutIds(L, i), L.shared + L.priv, loads);
+          entries.push({ k: e.k });
+        }
+        return { record: { segmentsEach: SWEEP_SEGMENTS, entries } };
+      },
+      run: async () => {
+        const entries = [];
+        for (const [e, L] of sweep.map((entry, j) => [entry, sweepLayouts[j]])) {
+          log(`sweep k = ${e.k}:`);
+          entries.push({
+            k: e.k,
+            intersects: e.intersects,
+            ...summarising(
+              describeReads(
+                await coldIntersects({
+                  names: Array.from({ length: SWEEP_SEGMENTS }, (_, i) => `sweep-${e.k}-${i}`),
+                  count: e.intersects,
+                  expected: L.expected,
+                  label: `sweep k = ${e.k}`,
+                }),
+                { sharedChunks: L.sharedChunks, chunksPerSegment: L.chunksPerSegment },
+              ),
+            ),
+          });
+        }
+        return { entries };
+      },
+    });
+
     results.partial = false;
     running = false;
     workFinished = true;

@@ -48,6 +48,17 @@ function runHarness(args: string[], env: Record<string, string> = {}) {
   });
 }
 
+type CalibrationLayout = {
+  shared: number;
+  stride: number;
+  sharedChunks: number;
+  privateChunks: number;
+  chunksPerSegment: number;
+  bases: number[];
+  priv: number;
+  expected: { count: number; sum: number };
+};
+
 const guards = require_(join(ROOT, 'bench', 'lib', 'calibrate-guards.cjs')) as {
   CONFIRM_PHRASE: string;
   parseCeiling: (raw: unknown) => number;
@@ -72,16 +83,19 @@ const guards = require_(join(ROOT, 'bench', 'lib', 'calibrate-guards.cjs')) as {
     measured: { put: number; get: number },
     projected: { put: number; get: number },
   ) => string[];
-  planLayout: (i: { segments: number; idsPerSegment: number; overlap: number; stride: number }) => {
-    shared: number;
+  planLayout: (i: {
+    segments: number;
+    idsPerSegment: number;
+    overlap: number;
     stride: number;
+  }) => CalibrationLayout;
+  planSweepLayout: (i: {
+    segments: number;
     sharedChunks: number;
-    privateChunks: number;
-    chunksPerSegment: number;
-    bases: number[];
-    expected: { count: number; sum: number };
-  };
-  layoutIds: (layout: unknown, i: number, idsPerSegment: number) => Iterable<number>;
+    privateIds: number;
+    stride: number;
+  }) => CalibrationLayout;
+  layoutIds: (layout: unknown, i: number) => Iterable<number>;
   maskAccount: (account: unknown) => string;
   resultsFile: (
     rehearse: boolean,
@@ -478,7 +492,7 @@ describe('calibrate guards — what a real run is held to', () => {
   describe('planLayout', () => {
     const params = { segments: 3, idsPerSegment: 4_000, overlap: 0.05, stride: 262 };
     const L = guards.planLayout(params);
-    const seg = (i: number): number[] => [...guards.layoutIds(L, i, params.idsPerSegment)];
+    const seg = (i: number): number[] => [...guards.layoutIds(L, i)];
 
     // The claim the harness asserts against a real object store is that ANY pair intersects in exactly
     // `expected` — so check that claim here, in plain JS, over every pair.
@@ -809,6 +823,9 @@ describe('a rehearsal cannot be committed as the evidence', () => {
         CR_CALIBRATE_SEGMENTS: '498',
         CR_CALIBRATE_LARGE: '2',
         CR_CALIBRATE_READS: '0',
+        CR_CALIBRATE_SPREAD_SEGMENTS: '0',
+        CR_CALIBRATE_SPREAD_READS: '0',
+        CR_CALIBRATE_SWEEP: 'none',
       }).stderr,
     ).not.toMatch(/teardown's first listing/);
   });
@@ -1140,6 +1157,27 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     expect(needed.size).toBeGreaterThanOrEqual(3);
     for (const dep of needed)
       expect(copied.has(dep), `${dep} is required and not copied`).toBe(true);
+  });
+
+  // A run is named dirty by the files it executes. A module the harness requires that the list leaves out could be
+  // edited without the evidence saying so.
+  it('names every module the harness requires among the files whose edits mark a run dirty', () => {
+    const needed = new Set<string>(['bench/calibrate-aws.cjs']);
+    const visit = (rel: string): void => {
+      const src = readFileSync(join(ROOT, rel), 'utf8');
+      for (const m of src.matchAll(/require\('(\.\.?\/[^']+)'\)/g)) {
+        const dep = join(dirname(rel), m[1] ?? '');
+        if (!needed.has(dep)) {
+          needed.add(dep);
+          visit(dep);
+        }
+      }
+    };
+    visit('bench/calibrate-aws.cjs');
+    for (const file of needed) expect(processLib.HARNESS_FILES, file).toContain(file);
+    const sh = readFileSync(join(ROOT, 'bench', 'calibrate-cloudshell.sh'), 'utf8');
+    const fn = /^harness_ref\(\) \{[\s\S]*?^\}/m.exec(sh)?.[0] ?? '';
+    for (const file of needed) expect(fn, file).toContain(file);
   });
 
   // Evidence names the harness that ran. A bare commit names one that did not, whenever its files have been edited.

@@ -188,6 +188,8 @@ const HARNESS_FILES = [
   'bench/lib/aws-meter.cjs',
   'bench/lib/calibrate-guards.cjs',
   'bench/lib/calibrate-process.cjs',
+  'bench/lib/calibrate-spread.cjs',
+  'bench/lib/calibrate-stages.cjs',
   'packages',
 ];
 
