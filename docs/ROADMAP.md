@@ -209,7 +209,7 @@ ships, with the pointer in the same bucket as the data: what a cold intersect an
 measured internet transit, and in-region latency is [owed](benchmarks.md#what-is-still-owed) rather than published. What is **not** yet measured is the
 rest of the loaded store's own shape — load throughput, `intersect` and `*Into` latency — and those are owed
 before `1.0`; until they exist this page quotes no number for them. RSS under a soak is measured and published
-as a ceiling. Benchmark numbers come with their methodology: the benchmarks page and each run's report say,
+as a ceiling. There is no stress, tail-latency or chaos harness for the loaded store. Benchmark numbers come with their methodology: the benchmarks page and each run's report say,
 section by section, whether a figure is measured, derived, modelled or expected, and laptop and emulator numbers
 are labelled as such.
 

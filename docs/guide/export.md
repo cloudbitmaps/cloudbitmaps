@@ -27,9 +27,7 @@ const sink: ExportSink = {
     await mkdir(dir, { recursive: true });
     const file = await open(path, 'w');
     return {
-      write: async (bytes) => {
-        await file.write(bytes);
-      },
+      write: (bytes) => file.appendFile(bytes), // writes every byte; file.write() may write fewer
       close: () => file.close(), // commit: called once, only when every byte was written
       abort: async () => {
         await file.close(); // discard a partial file so a truncated one never looks complete
