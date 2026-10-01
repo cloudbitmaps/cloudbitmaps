@@ -1,25 +1,13 @@
-import {
-  CloudRoaring,
-  MemoryRegistryDriver,
-  MemoryStorageDriver,
-  ValidationError,
-  clearSegmentRetention,
-  createBackend,
-  destroySegment,
-  dropSegment,
-  eraseIdFromSegment,
-  eraseNamespace,
-  getSegmentRetention,
-  listGenerations,
-  listSegments,
-  loadSegment,
-  retireExpired,
-  rollbackSegment,
-  runConsistencyCheck,
-  runExport,
-  segmentExists,
-  setSegmentRetention,
-} from '@/index';
+import { CloudRoaring, MemoryStorage, ValidationError } from '@/index';
+import { clearSegmentRetention, getSegmentRetention, setSegmentRetention } from '@/core/retention';
+import { destroySegment, dropSegment, eraseNamespace } from '@/core/erasure';
+import { eraseIdFromSegment } from '@/core/erase-id';
+import { listGenerations, rollbackSegment } from '@/core/rollback';
+import { listSegments, segmentExists } from '@/core/discover';
+import { loadSegment } from '@/core/load';
+import { retireExpired } from '@/core/retention-sweep';
+import { runConsistencyCheck } from '@/core/consistency';
+import { runExport } from '@/export/index';
 import { validateSegmentRef } from '@/driver-kit';
 import { isDueIndexRow, dueNamespace } from '@/core/due-index';
 import {
@@ -51,9 +39,9 @@ const BAD: SegmentRef = { namespace: RESERVED, segment: 's' };
 const FUTURE = Date.now() + 30 * DAY;
 
 function world() {
-  const storage = new MemoryStorageDriver();
-  const registry = new MemoryRegistryDriver();
-  const store = new CloudRoaring({ storage: createBackend({ storage, registry }), retry: false });
+  const backend = new MemoryStorage();
+  const { storage, registry } = backend;
+  const store = new CloudRoaring({ storage: backend, retry: false });
   return { storage, registry, store, deps: { storage, registry } };
 }
 
