@@ -2189,7 +2189,16 @@ export class Segment {
     if (this.expired()) return Promise.resolve(false);
     return this.timed('has', () => this.engine.has(this.ref, id));
   }
-  /** Cardinality — summed from the `.crbm` index with **zero payload reads** on a loaded segment. */
+  /**
+   * Cardinality — summed from the `.crbm` index with **zero payload reads** on a loaded segment.
+   *
+   * What this trusts: the answer is the sum of the per-chunk cardinalities the index records, and no payload is
+   * decoded to confirm it. The index is checked for internal consistency when the object is opened (each key in
+   * range and ascending, each cardinality in `1..65536`, each payload inside the payload region, and, on an
+   * unencrypted object, the footer's chunk count and total agreeing with the index), and a corrupt index that is
+   * still internally consistent yields a wrong count. `iterate()` and the combines decode the payloads, whose
+   * structure is checked.
+   */
   count(): Promise<number> {
     if (this.expired()) return Promise.resolve(0);
     return this.timed('count', () => this.engine.count(this.ref));

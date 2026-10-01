@@ -301,10 +301,12 @@ export class CrbmReader {
         )
       : indexBytes;
 
+    // Payloads live in [PAYLOAD_START, indexOffset); an encrypted one is at least its nonce and tag.
     const { entries, orderedKeys, cardinalitySum } = parseIndex(
       indexForParse,
-      size,
+      indexOffset,
       maxPayloadBytes,
+      encrypted ? AEAD_NONCE_BYTES + AEAD_TAG_BYTES : 1,
     );
     if (encrypted) {
       // Footer count/cardinality are zeroed on an encrypted object; the decrypted index is authoritative (and
@@ -393,10 +395,23 @@ export class CrbmReader {
 // Exported for the coverage-guided fuzz harness, which fuzzes the hand-written index parser
 // directly on raw bytes — bypassing the CRC wall that mutational fuzzing can't cross. NOT part of the public
 // API surface (`src/index.ts`); reached only via `src/testing/fuzz-core.ts` → the gitignored `fuzz/build/`.
+//
+// This is where an index is checked for internal consistency, once per open: `count()` and every other read that
+// answers from the index alone trust what it records without decoding a payload. Every entry's key is in range
+// and strictly above the last; its cardinality is in `[1, 65536]`; its payload is non-empty (at least
+// `minPayloadBytes`), within `maxPayloadBytes`, and lies inside the payload region `[PAYLOAD_START, payloadEnd)`.
+// Offsets are stored as unsigned gaps after the previous payload, so payloads ascend and never overlap by
+// construction. `open` then holds the sum and the count to the footer's, where the footer records them.
+//
+// Not checked here, because the format does not record enough: an encrypted footer hides the count and the total
+// (the index's AEAD tag stands in for them), and a cardinality is not compared with its payload, since only the
+// codec can read a payload, and no read compares them afterwards: a payload whose bits disagree with its entry's
+// cardinality decodes to what it holds, and `count()` still reports the entry's.
 export function parseIndex(
   indexBytes: Uint8Array,
-  objectSize: number,
+  payloadEnd: number,
   maxPayloadBytes: number,
+  minPayloadBytes = 1,
 ): { entries: Map<number, CrbmIndexEntry>; orderedKeys: number[]; cardinalitySum: number } {
   const entries = new Map<number, CrbmIndexEntry>();
   const orderedKeys: number[] = [];
@@ -431,13 +446,14 @@ export function parseIndex(
       throw new IntegrityError(`.crbm index has a duplicate chunkKey ${chunkKey}`);
     }
     if (chunkKey > 0xffff) throw new IntegrityError(`.crbm chunkKey ${chunkKey} out of range`);
-    if (len.value === 0 || len.value > maxPayloadBytes) {
+    if (len.value < minPayloadBytes || len.value > maxPayloadBytes) {
       throw new IntegrityError(`.crbm chunk ${chunkKey} length ${len.value} invalid`);
     }
     if (card.value < 1 || card.value > MAX_CHUNK_CARDINALITY) {
       throw new IntegrityError(`.crbm chunk ${chunkKey} cardinality ${card.value} invalid`);
     }
-    if (offset < PAYLOAD_START || offset + len.value > objectSize - FOOTER_BYTES) {
+    // `offset` cannot start below the preamble: it is the previous payload's end plus an unsigned gap.
+    if (offset + len.value > payloadEnd) {
       throw new IntegrityError(`.crbm chunk ${chunkKey} payload out of bounds`);
     }
 

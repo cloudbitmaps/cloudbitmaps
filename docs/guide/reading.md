@@ -43,7 +43,8 @@ generation of another segment. See [Loading in depth](loading.md#write-a-result-
 - **`count()` reads no payload.** It is summed from the `.crbm` index. A cold count is a pointer read and one tail
   read, which brings the index (a second read for an index larger than the tail read). A reader that already has the
   segment open re-reads only the pointer, at most once each `cache.genTtlMs`. So counting a ten-million-id segment
-  makes the same requests as counting a thousand, while its index fits that one tail read.
+  makes the same requests as counting a thousand, while its index fits that one tail read. The sum is the index's own
+  word: see [What `count()` trusts](#what-count-trusts).
 - **`has()` comes from memory once warm.** A `has()` whose chunk is in the cache makes no request, beyond at most one
   pointer read per segment each `cache.genTtlMs` (2 s by default) for as long as the reader cache keeps the segment
   open.
@@ -55,6 +56,22 @@ generation of another segment. See [Loading in depth](loading.md#write-a-result-
 
 What a load costs is on the [benchmarks page](../benchmarks.md#real-cloud-calibration--aws), and
 [what it costs at your size](sizing.md) prices whole deployments.
+
+## What `count()` trusts
+
+`count()` answers from the `.crbm` index: it sums the per-chunk cardinalities the index records and decodes no
+payload, which is what makes it cheap. Opening a generation checks the index once, and refuses with `IntegrityError`
+an index that is not internally consistent:
+
+- every chunk key in range and ascending;
+- every cardinality in `1..65536`;
+- every payload inside the payload region;
+- on an unencrypted object, the footer's chunk count and total cardinality equal to what the index holds.
+
+A corrupt index that is still internally consistent yields a wrong count, with no error. `iterate()` and the combines
+decode the payloads, whose structure is checked. The same index supplies `load`'s `cardinalityBefore` and the chunk
+keys an `intersect` plans its fetches from. Where an exact answer matters more than the request count, `iterate()` the
+segment and count what it yields.
 
 ## How soon a reader sees a new load
 

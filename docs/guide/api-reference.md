@@ -166,7 +166,7 @@ The `store.load` row lists the guards and what throws instead.
 | Call | Does |
 |---|---|
 | `seg.has(id)` → `Promise<boolean>` | membership: the cache, else **one** ranged GET of that id's chunk |
-| `seg.count()` → `Promise<number>` | exact cardinality, summed from the `.crbm` index — **zero payload reads** on a loaded segment |
+| `seg.count()` → `Promise<number>` | cardinality, summed from the `.crbm` index — **zero payload reads** on a loaded segment. It trusts the index: an open refuses one that is not internally consistent, but a corrupt index that is still consistent yields a wrong count ([What `count()` trusts](reading.md#what-count-trusts)) |
 | `seg.iterate({ after?, through? }?)` → `AsyncIterable<number>` | stream all ids, ascending, one chunk at a time. With `after` / `through`, only the ids in `(after, through]` and the chunks the range overlaps ([paging](reading.md#page-through-a-segment)) |
 | `seg.pin()` → `Promise<Segment>` | **hold this segment at the generation current right now**, for the life of the returned handle, so a long job describes one instant ([pins](reading.md#read-one-fixed-point-in-time)). A hold, not a lease: size `keep` past your longest pinned job. Needs the `.crbm` storage source |
 | `seg.intersect([other, …], { after?, through?, concurrency?, budget?, exclude?, allowAbsentOperands? })` → `AsyncIterable<number>` | chunk-skipping intersection, streamed. `exclude` subtracts suppression segments **in the same pass**. `after` / `through` bound the result to `(after, through]` on every operand and every exclude, as on `iterate` |
