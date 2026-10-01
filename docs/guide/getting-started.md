@@ -149,8 +149,12 @@ Rolling back, how many old generations to keep and the other things a load does 
 
 ## Read it
 
+Add this to the end of `first-run.mjs`:
+
 ```js
-const shoppers = store.segment('shoppers');
+// Continues first-run.mjs: store and shoppers are from there. Load the suppression list first:
+await store.load({ namespace: 'suppression', segment: 'global-opt-out' }, [7]);
+
 const active = store.segment('active');
 const optedOut = store.segment('global-opt-out', { namespace: 'suppression' });
 
@@ -184,8 +188,10 @@ const saved = await shoppers.intersectInto(store.segment('campaign-targets'), [a
 console.log(saved.cardinality); // how many ids the new generation holds
 ```
 
-Every segment you read, including every `exclude`, must have been loaded: a name that was never loaded is refused,
-so a mistyped suppression list cannot silently suppress nobody. Every option, and the exact meaning of each verb,
+Every segment a combine reads has to exist: the one you call it on, every operand and every `exclude`. A combine
+throws `ValidationError` for a name that does not, so a mistyped suppression list cannot silently suppress nobody;
+pass `allowAbsentOperands: true` when one may legitimately not exist yet. A direct read is different: `has`, `count`
+and `iterate` of a segment that was never loaded answer empty. Every option, and the exact meaning of each verb,
 is in the [segment verbs table](api-reference.md#the-segment-verbs-the-90-of-daily-use). How soon a reader sees a
 new load, and how to read one fixed point in time, are in [Reading in depth](reading.md).
 
