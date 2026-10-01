@@ -27,28 +27,11 @@ On pnpm 10 and later, allow the one build script first, or the package throws at
 { "pnpm": { "onlyBuiltDependencies": ["roaring"] } }
 ```
 
-npm and pnpm 9 need nothing extra. `@cloudbitmaps/roaring` is the package you import from. It is the "flavor": the
-package that fixes the data format, which is Roaring bitmaps. `@cloudbitmaps/core` is the engine underneath; it
-arrives on its own and you never install or import it.
+npm and pnpm 9 need nothing extra. `@cloudbitmaps/roaring` is the package you import from. `@cloudbitmaps/core` is the
+engine underneath; it arrives on its own and you never install or import it.
 
-The packages are **ES modules only and need Node 22.12 or later.** Use `import`. `require()` also works on Node
-22.12 and later; the details for CommonJS, Jest and TypeScript are in
-[CommonJS, Jest and TypeScript](#commonjs-jest-and-typescript) at the end of this section.
-
-### CommonJS, Jest and TypeScript
-
-- `require('@cloudbitmaps/roaring')` works on Node 22.12 and later through Node's `require(esm)`, which is why the
-  floor is 22.12 and not 22 (22.11 throws `ERR_REQUIRE_ESM`). On 22.12 exactly you also see an
-  `ExperimentalWarning`; it is gone by Node 24. Bundlers are unaffected: esbuild, webpack, rollup and Vite were
-  verified, emitting CommonJS as well as ESM.
-- A loader that is not Node's own does not get `require(esm)`. **Jest** in its default configuration fails with
-  `Must use import to load ES Module`: use Jest's ESM support (`--experimental-vm-modules`) or `import` the
-  package. **Yarn PnP** throws `ERR_REQUIRE_ESM` on any Node version: `import` the package, or use
-  `nodeLinker: node-modules`.
-- A `.ts` file in a CommonJS package needs `"module": "nodenext"` or `"node20"`. `node16` and `node18` report
-  `TS1479` on the import. A project on `moduleResolution: bundler` is unaffected.
-- On Alpine (musl) there is no prebuilt `roaring` binary, so the install compiles it: add a toolchain first
-  (`apk add --no-cache build-base python3`) or use a glibc image such as `node:22-slim`.
+The packages are **ES modules only and need Node 22.12 or later.** Use `import`. `require()` works too, on the same
+Node versions: [CommonJS, Jest and TypeScript](#commonjs-jest-and-typescript) has the details.
 
 If `import` fails with `Cannot find module './build/Release/roaring.node'`, see
 [Troubleshooting](#cannot-find-module-buildreleaseroaringnode-after-a-successful-install).
@@ -386,6 +369,21 @@ that flag, either drop it for the process that loads CloudBitmaps or allow this 
 
 **What not to do:** `--no-deprecation` silences *every* deprecation warning in your application, including ones
 about your own code. Suppressing a whole diagnostic channel to hide one known-benign line is a bad trade.
+
+### CommonJS, Jest and TypeScript
+
+- `require('@cloudbitmaps/roaring')` works on Node 22.12 and later through Node's `require(esm)`, which is why the
+  floor is 22.12 and not 22 (22.11 throws `ERR_REQUIRE_ESM`). On 22.12 exactly you also see an
+  `ExperimentalWarning`; it is gone by Node 24. Bundlers are unaffected: esbuild, webpack, rollup and Vite were
+  verified, emitting CommonJS as well as ESM.
+- A loader that is not Node's own does not get `require(esm)`. **Jest** in its default configuration fails with
+  `Must use import to load ES Module`: use Jest's ESM support (`--experimental-vm-modules`) or `import` the
+  package. **Yarn PnP** throws `ERR_REQUIRE_ESM` on any Node version: `import` the package, or use
+  `nodeLinker: node-modules`.
+- A `.ts` file in a CommonJS package needs `"module": "nodenext"` or `"node20"`. `node16` and `node18` report
+  `TS1479` on the import. A project on `moduleResolution: bundler` is unaffected.
+- On Alpine (musl) there is no prebuilt `roaring` binary, so the install compiles it: add a toolchain first
+  (`apk add --no-cache build-base python3`) or use a glibc image such as `node:22-slim`.
 
 ## The words these docs use
 
