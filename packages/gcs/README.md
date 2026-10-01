@@ -51,11 +51,15 @@ It builds its own client from Application Default Credentials. Any other key is 
   `roles/storage.objectAdmin` covers all four.
 - **The write-once guarantee rides GCS preconditions** (`ifGenerationMatch`), so nothing else needs enabling.
 - **Never add a lifecycle rule that expires current objects or the `registry/` prefix.**
-- **Reads are retried by the library, not by the SDK.** In `@google-cloud/storage` 8.x, a download the SDK retries after
-  a 503 or 429 can crash the process with `ERR_STREAM_UNABLE_TO_PIPE`, thrown outside any promise, even though the
-  retried request succeeded. The client `GcsStorage` builds therefore sends each download once and throws
-  `TransientError`, which the store's read retry runs again. Its other requests keep the SDK's retries. **A client you
-  pass as `client` is used as it is, so build it with `retryOptions: { autoRetry: false }`.**
+- **The SDK does not retry downloads; the driver does.** In `@google-cloud/storage` 7.x and 8.x (checked on 7.22.0 and
+  8.1.0), a download the SDK retries after any status it retries (408, 429 or 5xx) can crash the process with
+  `ERR_STREAM_UNABLE_TO_PIPE`, thrown outside any promise, even though the retried request succeeded. The client
+  `GcsStorage` builds therefore sends each download once, and the driver runs a download again itself, up to three
+  more times with backoff, after a reset connection, a 408, a 429 or a 5xx, and after nothing else. That holds for every
+  caller, including a store built with `retry: false`. The client's other requests (uploads, listings, metadata reads,
+  deletes) keep the SDK's retries. **A client you pass as `client` is used as it is, so build it with
+  `retryOptions: { autoRetry: false }`.** That also turns off the SDK's retries of listings, metadata reads, deletes and
+  resumable uploads on that client, which the library does not retry; the client `GcsStorage` builds keeps them.
 - **A transient failure of a write throws `TransientError`, and the write may or may not have landed.** Re-run the
   call, or check `store.generations(ref)`.
 

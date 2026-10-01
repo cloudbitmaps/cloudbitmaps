@@ -43,6 +43,7 @@ import {
 import type { ObjectRegistryStore, ObjectRow } from '@cloudbitmaps/core/driver-kit';
 import type { Storage } from '@google-cloud/storage';
 import { isNotFound, isPreconditionFailed, isTransient } from './gcs-errors';
+import { retryDownload } from './download-retry';
 import { saveOnce } from './send-once';
 
 export interface GcsRegistryDriverOptions {
@@ -99,7 +100,7 @@ class GcsStore implements ObjectRegistryStore {
     try {
       // Pin the download to the generation we just measured, so a concurrent overwrite between the two calls
       // cannot hand us bytes that do not match the fence we are about to compare-and-swap against.
-      const [buf] = await this.downloadable(key, generation).download();
+      const [buf] = await retryDownload(() => this.downloadable(key, generation).download());
       return { bytes: new Uint8Array(buf), version: generation };
     } catch (err) {
       // A 404 on the PINNED download does not mean the object is gone — it means the generation we pinned

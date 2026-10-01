@@ -42,6 +42,7 @@ import {
   segmentObjectPrefix,
 } from './keys';
 import { isInvalidRange, isNotFound, isPreconditionFailed, isTransient } from './gcs-errors';
+import { retryDownload } from './download-retry';
 import { saveOnce } from './send-once';
 
 /** Default object ceiling: GCS's 5 TiB per-object hard max. Set lower to fail fast on a runaway write. */
@@ -63,7 +64,8 @@ export interface GcsStorageDriverOptions {
   readonly storage: Storage;
   /**
    * The client the downloads go through; `storage` when absent. `GcsStorage` passes one built with the SDK's request
-   * retries off, because a download the SDK retries can crash the process (see `readClientFor` in `backend.ts`).
+   * retries off (the read client built in its constructor), because a download the SDK retries can crash the process;
+   * the driver retries a download itself instead.
    */
   readonly readStorage?: Storage;
   /** Target bucket (must already exist). */
@@ -147,10 +149,9 @@ export class GcsStorageDriver implements IStorageDriver {
     const objectName = storageObjectName(this.prefix, key);
     try {
       // GCS `end` is inclusive.
-      const [buf] = await this.downloadable(objectName).download({
-        start: offset,
-        end: offset + length - 1,
-      });
+      const [buf] = await retryDownload(() =>
+        this.downloadable(objectName).download({ start: offset, end: offset + length - 1 }),
+      );
       // A short read means the range ran past EOF — treat as out-of-bounds, never a partial result.
       if (buf.length !== length) {
         throw new ValidationError(
@@ -176,7 +177,9 @@ export class GcsStorageDriver implements IStorageDriver {
       }
       if (maxBytes <= 0 || size === 0) return { bytes: new Uint8Array(0), size };
       const start = Math.max(0, size - maxBytes);
-      const [buf] = await this.downloadable(objectName).download({ start, end: size - 1 });
+      const [buf] = await retryDownload(() =>
+        this.downloadable(objectName).download({ start, end: size - 1 }),
+      );
       return { bytes: new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength), size };
     } catch (err) {
       throw this.mapReadError(err, key);

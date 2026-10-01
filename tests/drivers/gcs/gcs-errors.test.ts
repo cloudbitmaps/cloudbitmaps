@@ -1,4 +1,10 @@
-import { isInvalidRange, isNotFound, isPreconditionFailed, isTransient } from '@/gcs/gcs-errors';
+import {
+  isDownloadRetryable,
+  isInvalidRange,
+  isNotFound,
+  isPreconditionFailed,
+  isTransient,
+} from '@/gcs/gcs-errors';
 
 /** GCS carries the HTTP status on `err.code` (number) or `err.response.status`; sockets use a string code. */
 const apiErr = (code: number) => ({ code });
@@ -20,6 +26,16 @@ describe('GCS error classification', () => {
   it('416 = out-of-range (never a transient)', () => {
     expect(isInvalidRange(apiErr(416))).toBe(true);
     expect(isTransient(apiErr(416))).toBe(false);
+  });
+
+  it('a download is retried after what the SDK retries, and after nothing else', () => {
+    for (const c of [408, 429, 500, 503]) expect(isDownloadRetryable(apiErr(c))).toBe(true);
+    expect(isDownloadRetryable(netErr('ECONNRESET'))).toBe(true);
+    expect(isDownloadRetryable(new Error('socket hang up'))).toBe(true);
+    for (const c of [400, 401, 403, 404, 412, 416])
+      expect(isDownloadRetryable(apiErr(c))).toBe(false);
+    expect(isDownloadRetryable(new Error('boom'))).toBe(false);
+    expect(isDownloadRetryable(null)).toBe(false);
   });
 
   it('429 + any 5xx + dropped sockets are transient', () => {

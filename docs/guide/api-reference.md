@@ -754,10 +754,12 @@ failure of a conditional write throws `TransientError`, and the write may or may
 also sidesteps a confusing collision: `@google-cloud/storage` calls its client class `Storage`, which reads as
 this library's word for the durable tier, so the backend takes it as `client`.
 
-The client the backend builds sends each download once, because in `@google-cloud/storage` 8.x a download the SDK
-retries can crash the process with `ERR_STREAM_UNABLE_TO_PIPE`; the transient fault reaches the store as
-`TransientError`, and the store's read retry runs the read again. Its other requests keep the SDK's retries. A `client`
-you pass is used as given, so build it with `retryOptions: { autoRetry: false }`
+The client the backend builds sends each download once, because in `@google-cloud/storage` 7.x and 8.x (checked on 7.22.0
+and 8.1.0) a download the SDK retries after any status it retries (408, 429 or 5xx) can crash the process with
+`ERR_STREAM_UNABLE_TO_PIPE`. The driver retries a download itself, up to three more times with backoff, after a reset
+connection, a 408, a 429 or a 5xx, and after nothing else; what still fails is a `TransientError`. Its other requests keep
+the SDK's retries. A `client` you pass is used as given, so build it with `retryOptions: { autoRetry: false }`, which also
+turns off the SDK's retries of listings, metadata reads, deletes and resumable uploads on that client
 ([why](production.md#reliability-retries-backoff--timeouts)).
 
 The registry lets a GCS deployment run on **one bucket

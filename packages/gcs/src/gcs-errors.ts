@@ -41,14 +41,26 @@ export function isInvalidRange(err: unknown): boolean {
 }
 
 /**
- * A transient GCS fault that is safe to retry: throttling (429), any 5xx, or a dropped/timed-out socket.
+ * A fault the SDK retries on its own for a download: a request timeout (408), throttling (429), any 5xx, or a dropped
+ * connection (including a stale keep-alive socket, which Node reports as `socket hang up`). Never 404, 412 or 416.
+ */
+export function isDownloadRetryable(err: unknown): boolean {
+  if (isPreconditionFailed(err) || isNotFound(err) || isInvalidRange(err)) return false;
+  if (httpStatus(err) === 408) return true;
+  if (isTransient(err)) return true;
+  return /socket hang up/i.test((err as { message?: unknown } | null)?.message?.toString() ?? '');
+}
+
+/**
+ * A transient GCS fault that is safe to retry: throttling (429), a request timeout (408), any 5xx, or a dropped/timed-out socket.
  * Excludes the deterministic, caller-meaningful outcomes (412/404/416) — those must never be reclassified as
  * a blind transient (a retried doomed conditional write would just fail again, and mask an OCC conflict).
  */
 export function isTransient(err: unknown): boolean {
   if (isPreconditionFailed(err) || isNotFound(err) || isInvalidRange(err)) return false;
   const status = httpStatus(err);
-  if (status === 429 || (status !== undefined && status >= 500 && status < 600)) return true;
+  if (status === 408 || status === 429 || (status !== undefined && status >= 500 && status < 600))
+    return true;
   const net = networkCode(err);
   return (
     net === 'ECONNRESET' ||
