@@ -30,6 +30,14 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **The install docs said npm needs nothing extra; npm 12 blocks `roaring`'s install script.** On npm 12 a plain
+  `npm i @cloudbitmaps/roaring` exits 0 with the native binary missing, and the first `import` throws
+  `Cannot find module './build/Release/roaring.node'`, as pnpm 10 does. The README, the getting-started guide and
+  every package README now give one `package.json` block for both clients,
+  `{ "allowScripts": { "roaring": true }, "pnpm": { "onlyBuiltDependencies": ["roaring"] } }`, and say that npm 11
+  runs the script but warns until it is allowed the same way. The troubleshooting entry covers npm 12's
+  `npm install-scripts approve roaring`, which records the approval but runs nothing, so `npm rebuild roaring`
+  follows it.
 - **The calibration harness runs from the CloudShell script's scratch directory.** It read the version it measured from
   `packages/roaring/package.json`, which a scratch directory that installed the published packages does not have, so
   `bash bench/calibrate-cloudshell.sh` stopped with `ENOENT` before it did anything. It now reads the installed
