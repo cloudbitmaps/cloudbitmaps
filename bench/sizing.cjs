@@ -1612,14 +1612,37 @@ function handWrittenFigure(text) {
     what: 'a character other than plain ASCII, § or —',
   };
 }
-/** The run of non-space characters around `at`, which is how a number is written. */
-const numberAt = (s, at) => /\S*$/.exec(s.slice(0, at))[0] + /^\S*/.exec(s.slice(at))[0];
+/**
+ * The run of non-space characters around `at`, which is how a number is written. It walks out from `at` rather than
+ * matching `\S*$` against the text before it, which would try every start inside a long run and so take time
+ * quadratic in the run.
+ */
+function numberAt(s, at) {
+  let from = at;
+  while (from > 0 && !/\s/.test(s[from - 1])) from--;
+  let to = at;
+  while (to < s.length && !/\s/.test(s[to])) to++;
+  return s.slice(from, to);
+}
 /** Cyrillic and Greek letters that look like a Latin one, as the Latin one. */
 const LOOKS_LIKE = Object.fromEntries(
   [...'аaвbеeкkмmнhоoрpсcтtуyхxіiјjѕsԁdӏlɡgαaβbεeιiκkνvοoρpτtυuχx'.matchAll(/(.)(.)/gu)].map(
     (m) => [m[1], m[2]],
   ),
 );
+/**
+ * What an ATX heading line shows as its text, or null when the line is none: up to six `#` after a blockquote's `>`
+ * and indentation, then a blank and the text with its closing `#`s and blanks taken off. It is read by hand, since the
+ * regular expression for it backtracks over a long run of blanks and `#`s and takes time quadratic in the line.
+ */
+function atxText(line) {
+  const head = /^[ \t>]*#{1,6}/.exec(line);
+  if (head === null) return null;
+  let to = line.length;
+  while (to > head[0].length && /[ \t#]/.test(line[to - 1])) to--;
+  const text = line.slice(head[0].length, to);
+  return /^[ \t]/.test(line.slice(head[0].length)) ? text.replace(/^[ \t]+/, '') : null;
+}
 /**
  * Where a section runs in `text`: from its `## ` heading to the next line that starts one. It is read from that one
  * line, so the page is held to showing the section there alone: a second copy of the line is refused, and so is any
@@ -1647,23 +1670,34 @@ function sectionOf(doc, text, title) {
       );
     }
   }
+  // The text of the lines directly above a line, one non-blank run, is what an underline would make a heading of. It
+  // is built as the lines go by rather than rescanned for each underline, and what is read from it is kept across a
+  // run of underlines in a row: an underline is `=` or `-` and blanks, which names nothing and closes no HTML, so the
+  // text above the next one reads as the text above this one did. A run that alternates a line of text and an underline, with no blank line between, is still read in time quadratic in its length, which no page here holds.
+  let above = [];
+  let aboveNamed = null;
+  let underlinesSince = false;
   lines.forEach((line, n) => {
-    if (line === heading) return;
-    const atx = /^[ \t>]*#{1,6}(?:[ \t]+(.*?))?[ \t#]*$/.exec(line);
-    let underlined = null;
-    if (/^[ \t>]*(?:=+|-+)[ \t]*$/.test(line)) {
-      const above = [];
-      for (let k = n - 1; k >= 0 && lines[k].trim() !== ''; k--)
-        above.unshift(lines[k].replace(/^[ \t>]*/, ''));
-      underlined = above.join(' ');
-    }
-    for (const shown of [atx?.[1], underlined]) {
-      if (shown != null && named(shown) === wanted) {
+    const isUnderline = /^[ \t>]*(?:=+|-+)[ \t]*$/.test(line);
+    if (line !== heading) {
+      const atx = atxText(line);
+      if (isUnderline && (aboveNamed === null || !underlinesSince)) {
+        aboveNamed = named(above.join(' '));
+        underlinesSince = true;
+      }
+      if ((atx !== null && named(atx) === wanted) || (isUnderline && aboveNamed === wanted)) {
         throw new Error(
           `sizing: ${doc} line ${n + 1} could show as the heading of its "${title}" section, which is read from ` +
             `"${heading}" alone — write that line, and no other heading of the title`,
         );
       }
+    }
+    if (line.trim() === '') {
+      above = [];
+      aboveNamed = null;
+    } else {
+      above.push(line.replace(/^[ \t>]*/, ''));
+      if (!isUnderline) underlinesSince = false;
     }
   });
   const starts = lines.flatMap((line, n) => (line === heading ? [n] : []));

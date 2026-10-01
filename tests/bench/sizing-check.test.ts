@@ -1132,10 +1132,7 @@ describe('bench:sizing:check fails what it exists to catch', () => {
         ['a four-backtick fence holding a three-backtick line', '````\n```\nx\n```\n````'],
         ['two closed fences', '```\nx\n```\n\n~~~\ny\n~~~'],
         ['a fence opened and closed indented three spaces', '   ```\nx\n   ```'],
-        [
-          'a fence holding a heading, a quote and a list marker',
-          '```\n## Other\n> - x\n```',
-        ],
+        ['a fence holding a heading, a quote and a list marker', '```\n## Other\n> - x\n```'],
         ['a closer after a line that looks like an opener', '```\n```js\n```'],
         ['a fence closed inside a blockquote', '> ```\n> x\n> ```'],
         ['a fence left open in a blockquote, which the heading ends', '> ```\n> x'],
@@ -1188,6 +1185,84 @@ describe('bench:sizing:check fails what it exists to catch', () => {
             /holds a code fence/,
           );
         }
+      });
+    });
+
+    // A scan that is linear in the page takes eight times as long on eight times the text; one that rescans for each
+    // match takes sixty-four. The best of a few runs, and a margin of three, keep a slow or busy machine from failing
+    // a linear scan, and a floor keeps a scan too quick to time from failing at all.
+    describe('reads a page in time linear in its size', () => {
+      const best = (pages: Record<string, string>): number => {
+        let least = Infinity;
+        for (let i = 0; i < 3; i++) {
+          const started = performance.now();
+          sizingCheck(pages);
+          least = Math.min(least, performance.now() - started);
+        }
+        return least;
+      };
+      const SMALL = 8;
+      const why = page('docs/guide/why-cloudbitmaps.md');
+      const WHY_PAGE = 'docs/guide/why-cloudbitmaps.md';
+      const rest = (text: string): Record<string, string> => ({
+        [README]: readme.replace(
+          '## Your data stays yours',
+          () => `## Your data stays yours\n\n${text}\n`,
+        ),
+      });
+      const aboveWhy = (text: string): Record<string, string> => ({
+        [README]: readme.replace('## Why CloudBitmaps\n', () => `${text}\n\n## Why CloudBitmaps\n`),
+      });
+      it.each([
+        [
+          'a long word before the first digit of a page that is all generated',
+          5000,
+          (n: number) => ({
+            [WHY_PAGE]: why.replace('has the rest.', () => `has the rest. ${'a'.repeat(n)} x 1`),
+          }),
+        ],
+        [
+          'a heading line with a long run of blanks and hashes',
+          6000,
+          (n: number) => rest(`## x ${' #'.repeat(n / 2)}x`),
+        ],
+        ['a run of underlines', 1000, (n: number) => rest(`x\n${'=\n'.repeat(n / 2)}`)],
+        ['a run of dashes', 1000, (n: number) => rest(`x\n${'- \n'.repeat(n / 2)}`)],
+        [
+          'fences, one after another, above the section',
+          6000,
+          (n: number) => aboveWhy('```\n~~~\n'.repeat(n / 8)),
+        ],
+        [
+          'list items, one after another, above the section',
+          6000,
+          (n: number) => aboveWhy('- a\n'.repeat(n / 4)),
+        ],
+        ['digits, in the rest of the README', 12_500, (n: number) => rest('1'.repeat(n))],
+      ] as Array<[string, number, (n: number) => Record<string, string>]>)(
+        'for %s',
+        (_what, size, build) => {
+          const small = best(build(size));
+          const big = best(build(size * SMALL));
+          expect(big).toBeLessThan(3 * SMALL * Math.max(small, 20));
+        },
+      );
+
+      // A page read in one section order must not be slow in another: the same text, with the section that holds the
+      // fences first and last.
+      it('takes as long to read the README with its code first as with its code last', () => {
+        const install = /## Install & entry points[\s\S]*?(?=\n## The whole surface)/.exec(
+          readme,
+        )![0];
+        const without = readme.replace(install, '');
+        const last = without.replace('## How it works', () => `${install}\n## How it works`);
+        expect(last).not.toBe(readme);
+        const digits = '1'.repeat(100_000);
+        const into = (text: string): string =>
+          text.replace('## Your data stays yours', () => `## Your data stays yours\n\n${digits}\n`);
+        const first = best({ [README]: into(readme) });
+        const later = best({ [README]: into(last) });
+        expect(Math.max(first, later)).toBeLessThan(5 * Math.max(Math.min(first, later), 20));
       });
     });
 
