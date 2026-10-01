@@ -162,7 +162,7 @@ a minor bump until the .crbm format freezes at 1.0.
 - Privacy and erasure: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/PRIVACY.md
 - Benchmarks + method: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/benchmarks.md
 - Site: https://cloudbitmaps.pages.dev/
-- Usage (install, drivers, the API): https://cloudbitmaps.pages.dev/usage
+- Usage (install, backends, the API): https://cloudbitmaps.pages.dev/usage
 - Architecture (generations, the pointer, chunk-skipping, errors): https://cloudbitmaps.pages.dev/architecture
 - Benchmarks (costs, the crossover, what is owed): https://cloudbitmaps.pages.dev/benchmarks
 - Flavors (choose a codec): https://cloudbitmaps.pages.dev/flavors

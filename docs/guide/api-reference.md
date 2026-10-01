@@ -77,7 +77,7 @@ pointer — configured from one bucket and one prefix, which is what makes them 
 | `GcsStorage` | `@cloudbitmaps/gcs` | `new GcsStorage({ bucket, prefix?, client?, projectId?, apiEndpoint?, maxObjectBytes?, simpleUploadThresholdBytes?, now? })` — `client` or the two settings that build one, and both is refused |
 | `AzureBlobStorage` | `@cloudbitmaps/azure-blob` | `new AzureBlobStorage({ containerClient, prefix?, maxObjectBytes?, blockBytes?, now? })` or `({ connectionString, container, prefix?, maxObjectBytes?, blockBytes?, now? })` — one or the other, and both is refused |
 
-**A backend comes from one of these five classes, or from a class of your own built with the driver kit
+**A backend comes from one of these five classes, or from a class of your own that calls `brandAsBackend` from the driver kit
 ([driver kit](#driver-kit--what-you-need-to-implement-a-driver)).** A plain `{ storage, registry }` object is
 refused — it is also the shape of the deps of core's standalone functions, so accepting it would let a store be built from
 a storage and a registry belonging to two *unrelated* stores, which would construct happily and then read as **empty** because

@@ -344,7 +344,7 @@ generation number lands first, both land and the higher stays current. If the hi
 refused as `superseded`, because a publish never moves the pointer back.
 
 **A crash never moves the pointer.** If the process dies mid-write, the object never completes (every storage driver
-commits atomically: a rename, a conditional PUT, a multipart complete) and the pointer still names the previous
+commits atomically: a hard link, a conditional PUT, a multipart complete) and the pointer still names the previous
 generation, which readers keep serving. A load that dies between the write and the publish leaves an orphan: an object
 that was never current. So does a refused load that finds another write has changed the segment's row, since by then
 its generation number may name a re-created segment's object. Once a generation above the orphan is current, the orphan

@@ -275,8 +275,8 @@ apart reaches it), and decoded chunks sit in the cache for as long as the cache 
 `currentGen` roll, a long-lived process may therefore keep answering from the generation it resolved *before* the
 roll for that window. After a registry restore, waiting is not enough for any store: restart it, or invalidate the
 restored segments in it, because the restored rows re-issue tokens its caches may already hold (step 9 of the
-procedure). Some stores need more than waiting after a roll too. One with
-**`cache: { genTtlMs: 0 }`**, or on a pre-built `StorageChunkSource` built with no clock, has no timed refresh, so nothing bounds how
+procedure). Some stores need more than waiting after a roll too. One with no registry (built on a bare
+`IStorageDriver`), with **`cache: { genTtlMs: 0 }`**, or on a pre-built `StorageChunkSource` built with no clock, has no timed refresh, so nothing bounds how
 long it keeps the generation it resolved — restart those readers, or `store.invalidate(ref)` the restored segments
 in each, as part of the procedure. One on a bare `IStorageDriver`, with **no registry**, reads no pointer: it lists
 the bucket and serves the newest generation there, whatever the restored pointer says, so while generations above
@@ -602,7 +602,7 @@ on `backend.registry`. Restore a row by copying one of its versions back, never 
 
 ## This runbook is exercised, not just written
 
-`pnpm dr-drill` (`tests/dr-drill.test.ts`) runs this procedure end-to-end against the on-disk `LocalFs` backend — it seeds a fleet, takes a coordinated backup, then injects each failure and verifies the
+`pnpm dr-drill` (`tests/dr-drill.test.ts`) runs this procedure end-to-end against the on-disk `LocalFs` storage and registry, wired as a backend — it seeds a fleet, takes a coordinated backup, then injects each failure and verifies the
 resolution:
 
 - **Torn restore** (registry recovered ahead of storage) and a **lost `.crbm`** are detected as
