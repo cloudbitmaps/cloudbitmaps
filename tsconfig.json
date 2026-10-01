@@ -8,6 +8,7 @@
       "@/index": ["./packages/roaring/src/index.ts"],
       "@/roaring-codec": ["./packages/roaring/src/roaring-codec.ts"],
       "@/option-keys": ["./packages/roaring/src/option-keys.ts"],
+      "@/reserved-namespace": ["./packages/roaring/src/reserved-namespace.ts"],
       "@/system-clock": ["./packages/roaring/src/system-clock.ts"],
       "@/testing/*": ["./packages/roaring/src/testing/*"],
       "@/portable/*": ["./packages/roaring/src/portable/*"],

@@ -31,6 +31,7 @@
 import { ValidationError, WriteConflictError, isWriteConflictError } from './errors';
 import { canIndex, dueBucket, dueIndexRef } from './due-index';
 import type { GovernanceMeta, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
+import { validateUserRef } from './validate';
 
 /** The key the policy is stored under inside the row's `retention` metadata. */
 const EXPIRES_AT = 'expiresAt';
@@ -135,6 +136,7 @@ export async function getSegmentRetention(
   ref: SegmentRef,
   deps: RetentionDeps,
 ): Promise<RetentionPolicy | null | 'invalid'> {
+  validateUserRef(ref);
   const record = await deps.registry.get(ref);
   if (record === null || record.status === 'destroyed') return null;
   return readRetentionPolicy(record.retention);
@@ -206,6 +208,7 @@ export async function setSegmentRetention(
   deps: RetentionDeps,
   policy: RetentionPolicy,
 ): Promise<SetRetentionResult> {
+  validateUserRef(ref);
   validateRetentionPolicy(policy);
   const base = { segment: ref.segment, namespace: ref.namespace };
   /** The bucket this segment was already in, if any — its pointer has to be removed when the expiry moves. */
@@ -261,6 +264,7 @@ export async function clearSegmentRetention(
   ref: SegmentRef,
   deps: RetentionDeps,
 ): Promise<boolean> {
+  validateUserRef(ref);
   for (let attempt = 0; attempt < RETENTION_CAS_ATTEMPTS; attempt += 1) {
     const record = await deps.registry.get(ref);
     if (record === null) return false; // nothing to clear — and creating a row to say so would be litter

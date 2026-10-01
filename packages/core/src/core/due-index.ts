@@ -20,6 +20,9 @@
  *   cbm.due.20357  ─►  … day 20,357
  * ```
  *
+ * The prefix `cbm.due.` is declared once, as `RESERVED_NAMESPACE_PREFIX` in `validate.ts`: the validator refuses it in
+ * any name an application passes in, and this module writes and recognises its rows by it.
+ *
  * A day index rather than a formatted date, because `core/` reads no ambient time and formatting a date would
  * drag in a calendar (and a timezone question) for no benefit. `Math.floor(expiresAt / 86_400_000)` is total,
  * reversible and has no edge cases.
@@ -42,11 +45,13 @@
  * machinery that already exists.
  */
 import { ValidationError } from './errors';
-import { MAX_NAME_LENGTH, encodedNameLength } from './validate';
+import {
+  MAX_NAME_LENGTH,
+  RESERVED_NAMESPACE_PREFIX,
+  encodedNameLength,
+  isReservedNamespace,
+} from './validate';
 import type { RegistryRecord, SegmentRef } from './ports';
-
-/** Namespace prefix for due-index rows. */
-export const DUE_NAMESPACE_PREFIX = 'cbm.due.';
 
 /** Bucket width. One day: small enough that a cycle reads little, coarse enough that the index stays tiny. */
 export const DUE_BUCKET_MS = 86_400_000;
@@ -69,12 +74,12 @@ export function dueBucket(expiresAt: number): number {
 
 /** The namespace holding one bucket's pointers. */
 export function dueNamespace(bucket: number): string {
-  return `${DUE_NAMESPACE_PREFIX}${bucket}`;
+  return `${RESERVED_NAMESPACE_PREFIX}${bucket}`;
 }
 
 /** Is this record a due-index pointer rather than a segment? */
 export function isDueIndexRow(record: Pick<RegistryRecord, 'namespace'>): boolean {
-  return record.namespace !== undefined && record.namespace.startsWith(DUE_NAMESPACE_PREFIX);
+  return isReservedNamespace(record.namespace);
 }
 
 /**

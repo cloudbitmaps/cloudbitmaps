@@ -103,6 +103,7 @@ import type {
 import { listGenerations, rollbackSegment } from '@cloudbitmaps/core';
 import { listSegments, segmentExists } from '@cloudbitmaps/core';
 import type { SegmentInfo } from '@cloudbitmaps/core';
+import { refuseReservedNamespace } from './reserved-namespace';
 import { roaringCodec } from './roaring-codec';
 import { SystemClock } from './system-clock';
 import { OPTION_KEYS, type OptionGroup } from './option-keys';
@@ -132,6 +133,9 @@ function validateConcurrency(concurrency: number | undefined): void {
  * the accidental default on a shared store.
  */
 function requireScope(options: { namespace?: string; allNamespaces?: boolean }, op: string): void {
+  // A scope names a namespace like a ref does, and these two scans read the registry themselves rather than
+  // through a core function that refuses it.
+  refuseReservedNamespace(options.namespace);
   if (options.namespace === undefined && options.allNamespaces !== true) {
     throw new ValidationError(
       `${op} scans the global id space across all namespaces — pass an explicit \`namespace\`, ` +
@@ -821,6 +825,7 @@ export class CloudRoaring {
   segment(name: string, options?: SegmentOptions): Segment {
     const ref: SegmentRef = { segment: name, namespace: options?.namespace };
     validateSegmentRef(ref);
+    refuseReservedNamespace(ref.namespace);
     const expiresAt = options?.expiresAt;
     if (expiresAt !== undefined) {
       // Fail at the handle, not at the first read that silently returns nothing. The floor is the same one
@@ -1219,7 +1224,10 @@ export class CloudRoaring {
    */
   segments(options: { namespace?: string } = {}): AsyncIterable<SegmentInfo> {
     if (options.namespace !== undefined) {
+      // Synchronously, at the call, where `listSegments` (an async generator, which refuses the reserved
+      // namespace too for a direct caller) would only throw at the first iteration.
       validateSegmentRef({ segment: 'x', namespace: options.namespace });
+      refuseReservedNamespace(options.namespace);
     }
     return listSegments(this.requireRegistry('segments'), options);
   }
@@ -1538,6 +1546,7 @@ export class CloudRoaring {
    */
   invalidate(ref: SegmentRef): void {
     validateSegmentRef(ref);
+    refuseReservedNamespace(ref.namespace);
     this.engine.invalidate(ref);
   }
 

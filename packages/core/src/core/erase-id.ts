@@ -89,7 +89,7 @@ import {
 } from './errors';
 import { gcOrphanGenerations, nextGeneration } from './generation-gc';
 import type { GenKey, IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
-import { validateSegmentRef } from './validate';
+import { validateUserRef } from './validate';
 
 const DEFAULT_MAX_BITMAP_BYTES = 1 << 20;
 
@@ -201,7 +201,7 @@ export async function eraseIdFromSegment(
   deps: EraseIdDeps,
   options: { audit?: IAuditSink } = {},
 ): Promise<EraseIdResult> {
-  validateSegmentRef(ref);
+  validateUserRef(ref);
   const { chunkKey, remainder } = splitId(id); // validates the u32 range
   const codec = requireCodec(deps.codec, 'eraseIdFromSegment');
   const maxBytes = deps.maxBitmapBytes ?? DEFAULT_MAX_BITMAP_BYTES;

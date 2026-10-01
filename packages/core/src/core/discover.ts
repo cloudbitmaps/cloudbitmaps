@@ -12,7 +12,7 @@
  */
 import type { IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
 import { excludingReservedRows } from './registry-scan';
-import { validateSegmentRef } from './validate';
+import { validateUserNamespace, validateUserRef } from './validate';
 
 /** One segment the registry knows about. */
 export interface SegmentInfo extends SegmentRef {
@@ -51,7 +51,7 @@ export interface SegmentInfo extends SegmentRef {
  * has to hold, use the fences that exist for it — `load`'s guard, or `expectFrom`/`expectToken` on a publish.
  */
 export async function segmentExists(ref: SegmentRef, registry: IRegistryDriver): Promise<boolean> {
-  validateSegmentRef(ref);
+  validateUserRef(ref);
   const record = await registry.get(ref);
   return record !== null && record.status !== 'destroyed' && record.currentGen !== null;
 }
@@ -88,8 +88,7 @@ export async function* listSegments(
   // Validated here rather than only at the facade: this is a public export of `@cloudbitmaps/core`, and its
   // sibling `segmentExists` validates. Without it a typo'd or externally-supplied tenant id reads as "this
   // tenant has no segments" — an empty result is the most dangerous possible answer to a malformed question.
-  if (options.namespace !== undefined)
-    validateSegmentRef({ segment: 'x', namespace: options.namespace });
+  if (options.namespace !== undefined) validateUserNamespace(options.namespace);
   const raw = registry.list(options.namespace);
   const source = options.namespace === undefined ? excludingReservedRows(raw) : raw;
   for await (const record of source) {

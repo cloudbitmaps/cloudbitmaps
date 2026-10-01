@@ -15,6 +15,17 @@ import type { WrappedDek } from './crypto';
 /** Opaque optimistic-concurrency token — unique per write, compared by equality only. */
 export type Token = string;
 
+/**
+ * The address of one segment: a `namespace` and a `segment` name, both any non-empty string of at most 256
+ * characters once encoded for storage. Omitting the namespace addresses a different segment from one that names it.
+ *
+ * **A namespace starting with `cbm.due.` is reserved**, and every call of the store, and of the free functions
+ * behind it, that takes a ref or a `namespace` option throws `ValidationError` for one. The library keeps the due
+ * index there (one pointer row per expiring segment), and every fleet-wide scan skips those rows as bookkeeping, so a
+ * segment in such a namespace would be invisible to an erasure, a consistency check, an export and a retention sweep.
+ * A driver takes the prefix, since the due index's own rows go through it. Only that exact prefix is reserved:
+ * `cbm.dueX` and `cbmdue.eu` are ordinary namespaces, and a segment name is never restricted.
+ */
 export interface SegmentRef {
   readonly namespace?: string;
   readonly segment: string;

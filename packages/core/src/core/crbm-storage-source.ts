@@ -35,7 +35,7 @@ import { splitId } from './bit-route';
 import { segmentKey } from './keys';
 import { aadFor } from './crypto';
 import type { CrbmCrypto, IKeystore, WrappedDek } from './crypto';
-import { validateChunkRef, validateSegmentRef } from './validate';
+import { validateChunkRef, validateUserRef } from './validate';
 import type {
   ChunkRef,
   StorageChunkSource,
@@ -657,7 +657,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     generation: number,
     held?: PinnedObject,
   ): Promise<Uint8Array | null> {
-    validateSegmentRef(ref);
+    validateUserRef(ref);
     const reader = await this.readerAt(ref, generation, held?.version, held?.fingerprint);
     if (reader === null) return null;
     const fingerprint = held?.fingerprint;
@@ -741,7 +741,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     generation: number,
     held?: PinnedObject,
   ): Promise<number[]> {
-    validateSegmentRef(ref);
+    validateUserRef(ref);
     const reader = await this.readerAt(ref, generation, held?.version, held?.fingerprint);
     return reader === null ? [] : reader.chunkKeys();
   }
@@ -755,7 +755,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     generation: number,
     held?: PinnedObject,
   ): Promise<ReadonlyMap<number, number> | null> {
-    validateSegmentRef(ref);
+    validateUserRef(ref);
     const reader = await this.readerAt(ref, generation, held?.version, held?.fingerprint);
     return reader === null ? null : reader.cardinalities();
   }
@@ -766,7 +766,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     generation: number,
     held?: PinnedObject,
   ): Promise<SegmentSize | null> {
-    validateSegmentRef(ref);
+    validateUserRef(ref);
     const reader = await this.readerAt(ref, generation, held?.version, held?.fingerprint);
     return reader === null ? null : { sizeBytes: reader.sizeBytes };
   }
@@ -878,12 +878,12 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   }
 
   async listChunkKeys(ref: SegmentRef): Promise<number[]> {
-    validateSegmentRef(ref);
+    validateUserRef(ref);
     return this.withFreshSnapshot(ref, (reader) => reader.chunkKeys(), []);
   }
 
   async sizeOf(ref: SegmentRef): Promise<SegmentSize | null> {
-    validateSegmentRef(ref);
+    validateUserRef(ref);
     return this.withFreshSnapshot<SegmentSize | null>(
       ref,
       (reader) => ({ sizeBytes: reader.sizeBytes }),
@@ -892,7 +892,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   }
 
   async cardinalities(ref: SegmentRef): Promise<ReadonlyMap<number, number> | null> {
-    validateSegmentRef(ref);
+    validateUserRef(ref);
     return this.withFreshSnapshot<ReadonlyMap<number, number> | null>(
       ref,
       (reader) => reader.cardinalities(),

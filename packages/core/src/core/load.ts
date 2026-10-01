@@ -37,7 +37,7 @@ import {
 } from './errors';
 import { gcOrphanGenerations, nextGeneration } from './generation-gc';
 import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef, Token } from './ports';
-import { validateSegmentRef } from './validate';
+import { validateUserRef } from './validate';
 
 /** What {@link loadSegment} needs: the objects, the pointer, the codec, and key material if encrypted. */
 export interface LoadDeps {
@@ -194,7 +194,7 @@ export async function loadSegment(
   deps: LoadDeps,
   options: LoadOptions = {},
 ): Promise<LoadResult> {
-  validateSegmentRef(ref);
+  validateUserRef(ref);
   // Before any round trip: a core caller that forgot the codec learns it from this call's name, not the loader's.
   requireCodec(deps.codec, 'loadSegment');
   const keep = options.keep ?? 1;

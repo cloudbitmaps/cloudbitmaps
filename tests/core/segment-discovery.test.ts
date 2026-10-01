@@ -222,7 +222,7 @@ describe('segments()', () => {
     expect(listed.some((v) => (v.namespace ?? '').startsWith('cbm.due.'))).toBe(false);
   });
 
-  it('still shows reserved rows to a caller who scopes to them deliberately', async () => {
+  it('refuses a caller who scopes to the reserved namespace, rather than listing the bookkeeping rows', async () => {
     // Hold the registry so the test can discover the due-index namespace rather than hardcode a bucket
     // number, which is clock-dependent.
     const registry = new MemoryRegistryDriver();
@@ -237,11 +237,8 @@ describe('segments()', () => {
     const dueNamespace = raw.find((r) => (r.namespace ?? '').startsWith('cbm.due.'))?.namespace;
     expect(dueNamespace).toBeDefined(); // the fixture must actually have produced one
 
-    // The exclusion is for the UNSCOPED fleet scan only. Naming the namespace is an explicit request, and the
-    // retention sweep's own diagnostics depend on being able to make it.
-    const reserved = await drain(s.segments({ namespace: dueNamespace }));
-    expect(reserved).toHaveLength(1);
-    expect(reserved[0]?.namespace).toBe(dueNamespace);
+    // The namespace is the library's own, so naming it is refused rather than listing the pointer rows.
+    expect(() => s.segments({ namespace: dueNamespace })).toThrow(ValidationError);
   });
 
   it('validates a namespace rather than silently scanning everything', async () => {
