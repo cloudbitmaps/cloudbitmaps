@@ -97,7 +97,7 @@ If the library breaks, you are not stuck:
 
 - **It is a library, not a service.** Your data lives in your bucket, your account or your filesystem. CloudBitmaps never sees it, and you are the data controller (see [`PRIVACY.md`](PRIVACY.md)).
 - **The files are an open format.** Each `.crbm` object is a documented container with a footer index and CRC32C checksums, wrapping standard Roaring serialization that every Roaring library (Java, Go, Python, C++, Rust, C#) reads.
-- **A bad load cannot destroy the last good one.** Generations are write-once and checksummed, and corruption is rejected, never served as a wrong answer. A bad load writes a new bad generation; the previous one is intact and you can [roll the pointer back](docs/guide/loading.md#roll-back-a-segment).
+- **A bad load does not overwrite the last good one.** Generations are write-once and checksummed, and corruption is rejected, never served as a wrong answer. A bad load writes a new generation, and the previous one stays in the bucket for you to [roll the pointer back](docs/guide/loading.md#roll-back-a-segment) to. Under the default `keep: 1` it stays only until the next load, so roll back before you load again, or raise [`keep`](docs/guide/loading.md#generations-and-keep).
 - **You can leave.** `store.exportSegments(sink)` writes every segment's current generation to portable `roaring` or `ndjson`. The `export-segments` command does the same for a local-filesystem store only; for S3, GCS or Azure, call `exportSegments` in code. See [Export your data](docs/guide/export.md).
 
 How this compares with pure Roaring libraries and bitmap databases on lock-in is in
@@ -169,7 +169,7 @@ You pass one **backend** as `storage`. It decides where generations and pointers
 |---|---|---|
 | `MemoryStorage` | `@cloudbitmaps/roaring` | Tests and a first look. Gone when the process exits. |
 | `LocalFsStorage` | `@cloudbitmaps/roaring` | One process on one folder: a laptop or a CI job. |
-| `S3Storage` | `@cloudbitmaps/s3` | Production. The validated one. Also MinIO, and any S3-compatible service that honors conditional writes. |
+| `S3Storage` | `@cloudbitmaps/s3` | Production. The validated one, on AWS S3. It also runs against MinIO, which the tests use, and any S3-compatible service that honors conditional writes. |
 | `GcsStorage` | `@cloudbitmaps/gcs` | Google Cloud Storage. Passes the conformance suites; outside the validated envelope. |
 | `AzureBlobStorage` | `@cloudbitmaps/azure-blob` | Azure Blob Storage. Passes the conformance suites; outside the validated envelope. |
 
@@ -253,7 +253,7 @@ bitmap of up to 65,536 ids, and it is the unit of storage and transfer: you neve
 
 - **Storage** holds immutable, generation-keyed `.crbm` objects, each with a footer index that makes `count()` and single-chunk reads cheap.
 - **The registry** is one small row per segment saying which generation is current. A load moves it by compare-and-swap, and it is the only thing a write changes.
-- **The cache** is a bounded in-memory LRU of decoded chunks, keyed by generation, so it never serves stale bytes.
+- **The cache** is a bounded in-memory LRU of decoded chunks, keyed by generation, so a new generation misses it instead of being answered with the old one's bytes. A reader moves to a new generation within [`cache.genTtlMs`](docs/guide/reading.md#how-soon-a-reader-sees-a-new-load), 2 s by default.
 
 **Intersection.** To find the ids in both of two huge segments, CloudBitmaps reads the two small chunk indexes,
 aligns their keys, and fetches only the chunks present in both. Two 100 MB segments overlapping in 5% of chunks
