@@ -48,13 +48,12 @@ Where each piece sits today:
 | `exists()` + `segments()` | **shipped** — `exists()` is one point read of the registry, and `segments()` streams the registry's own enumeration, namespace-scoped, admin-path. Neither is inferred from `count()`, which cannot tell *never loaded* from *loaded and empty*, and neither needs a list of names kept beside the store |
 | Extending the load guard to the `*Into` verbs | **shipped** — a materialization routes through the same guarded write path as `load()`, so an empty or implausible combine is refused (`published: false` + `reason`) instead of replacing `dest`. `allowEmpty: true` publishes an empty result where emptying the destination is the intent; `guard: { minCardinality, minRetained }` adds the plausibility bounds, judged against what `dest` held |
 | A snapshot handle, so a long job reads one instant | **shipped** — `segment.pin()` resolves the generation once and holds it, so an export or a reconciliation describes a single instant. Only that segment is pinned; an ordinary handle still re-resolves on `cache.genTtlMs` |
-| Id-range reads for keyset paging — `iterate({ after, through })` and the same bounds on every combine | **in the next release after `0.10.0`** — built and tested, and in no published version yet. Yields only the ids in `(after, through]` and fetches only the chunks the range overlaps |
+| Id-range reads for keyset paging — `iterate({ after, through })` and the same bounds on every combine | **shipped** in `0.11.0`. Yields only the ids in `(after, through]` and fetches only the chunks the range overlaps |
 | A public docs + site pass leading with the loaded store's strengths | **shipped** |
 | WASM CRoaring research | **after** the loaded store |
 
 **What is next:** the in-region calibration run, which measures load throughput, intersect latency and what
-`store.load()` costs on S3 from inside the region, and the next release after `0.10.0`, which carries the id-range
-read. [On the way to 1.0](#on-the-way-to-10) lists everything that stands before `1.0`.
+`store.load()` costs on S3 from inside the region. [On the way to 1.0](#on-the-way-to-10) lists everything that stands before `1.0`.
 
 Current install and publish status lives in the [README](../README.md) — this page deliberately doesn't
 restate it, so the two can't drift. You install **one codec flavor plus the one storage package you need**,
@@ -83,7 +82,7 @@ is a dependency of both and is never installed directly. The storage drivers are
   RAM wants the external-merge bulk load listed under [Planned](#planned--exploring).
 - **Chunk-skipping intersection** — `intersect` aligns on chunk keys and fetches only the chunks present in
   *every* operand, with bounded read concurrency and a bounded streaming window.
-- **Id-range reads for keyset paging**, in the next release after `0.10.0` and in no published version yet —
+- **Id-range reads for keyset paging** —
   `iterate`, and every combine, take `after` / `through` and yield only the ids in `(after, through]`, fetching
   only the chunks the range overlaps, on a live or a pinned handle.
 - **Composable set reads** — `union`, `andNot`, and an `exclude` option on `intersect` that folds suppression
