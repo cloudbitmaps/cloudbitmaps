@@ -11,6 +11,18 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Changed
+
+- **GCS reads a registry pointer and a generation's tail in one request each, where it made two.** A pointer read was
+  a metadata request and then a download pinned to the generation it named; a tail read was a metadata request for the
+  size and then a ranged download. The pointer read is now one GET, taking the version fence from `x-goog-generation`
+  and capping the length before it buffers; the tail read is one suffix-range GET (`Range: bytes=-N`), taking the
+  object's size from `Content-Range`, and an object shorter than the range comes back whole. Both refuse a header that
+  is missing, malformed or at odds with the bytes received. A pointer read can no longer lose its generation to a
+  concurrent write between its two requests. The bytes read, the errors raised and the registry's behaviour are
+  unchanged. GCS now costs what S3 does per sized read, so `storage.requestsPerSizedRead: 2` in a pricing profile is
+  for Azure Blob alone; leave it at its default of 1 for GCS.
+
 ## [0.11.1] — 2026-10-01
 
 The package READMEs on npm say how to install on npm 12. npm 12 runs a dependency's install script only where the

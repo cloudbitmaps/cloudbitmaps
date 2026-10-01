@@ -56,7 +56,7 @@ Every number above is turned into a **deterministic, build-breaking CI assertion
 - **The estimator counts what the engine sends** — a cold intersect's pointer and index reads for each operand before
   its chunks, what `store.load()` adds to a load's object write, and at most one pointer read per hot segment per
   `cache.genTtlMs`. A test drives the real engine over the single-bucket registry protocol and holds each count to
-  the requests it makes, on S3's request shape; GCS and Azure Blob make two requests for a pointer or a tail read,
+  the requests it makes, on S3's request shape, which GCS shares; Azure Blob makes two requests for a pointer or a tail read,
   which the pricing profile's `requestsPerSizedRead` carries. A fleet of readers pays the refresh once per reader,
   which `readerProcesses` carries. And it still quotes low where it cannot see: more hot segments than a reader
   keeps open (1,024 by default), which re-opens them as it reads them; the index every reader opens again after

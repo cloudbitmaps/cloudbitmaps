@@ -26,8 +26,8 @@
  * one alone under-quotes a load by more than half and leaves out a pointer read and an index read for every
  * operand.
  *
- * The counts are S3's, and one reader process's. On GCS and Azure Blob a read that needs the object's size — a
- * pointer read, and a segment's tail read — is two requests, the metadata and then the bytes, which
+ * The counts are S3's (and GCS's), and one reader process's. On Azure Blob a read that needs the object's size — a
+ * pointer read, and a segment's tail read — is two requests, the properties and then the bytes, which
  * {@link PricingProfile} carries as `requestsPerSizedRead`. A fleet of reader processes pays the pointer refresh
  * once per process, which {@link Workload.readerProcesses} carries. Where the model still quotes low is listed on
  * {@link Workload.hotSegments} and {@link Workload.chunksPerIntersect}.
@@ -59,8 +59,8 @@ export interface PricingProfile {
     readonly storagePerGiBMonth: number;
     /**
      * Requests one read costs when it needs the object's size first: a pointer read, and a segment's tail read.
-     * Default **1**, S3's, whose suffix-range GET returns the size with the bytes. **2** on GCS and Azure Blob,
-     * which read the metadata and then the bytes. A chunk read knows its range, and is one request everywhere.
+     * Default **1**, S3's, whose suffix-range GET returns the size with the bytes. **2** on Azure Blob,
+     * which reads the properties and then the bytes; GCS answers in one request, like S3. A chunk read knows its range, and is one request everywhere.
      */
     readonly requestsPerSizedRead?: number;
   };

@@ -782,7 +782,7 @@ function render() {
     `    hotSegments: ${medium.hotPerProcess}, // in each reader process…`,
     `    readerProcesses: ${medium.readerProcesses}, // …of ${medium.readerProcesses}`,
     '  },',
-    "  // pricing: your region's rates; on GCS or Azure Blob, set storage.requestsPerSizedRead to 2.",
+    "  // pricing: your region's rates; on Azure Blob, set storage.requestsPerSizedRead to 2.",
     '});',
     `report.monthlyUSD.total; // ${usd(price(medium).monthlyUSD.total)}, the medium deployment above`,
     `report.redisBaseline; // ${usd(redisOf(medium).monthlyUSD)} a month: ${estimatorWords(price(medium)).cluster}`,

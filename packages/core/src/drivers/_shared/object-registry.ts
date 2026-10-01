@@ -89,11 +89,11 @@ const LIST_READ_CONCURRENCY = 16;
  * This is deliberately **neither** of the two things it superficially resembles. It is not absence: the row
  * is very likely still live, just one version further on. And it is not a write conflict: the caller may be
  * a read-only `get()`, which has nothing to conflict with. Either is an easy misreading for a store that reads a
- * row in two calls, as the GCS and Azure Blob stores do, which is why the signal is part of the port rather than
+ * row in two calls, as the Azure Blob store does, which is why the signal is part of the port rather than
  * left to each store's judgement. {@link ObjectStoreRegistry} answers it the only way that is correct for every
  * caller: it reads again.
  *
- * Stores whose read is atomic (S3 serves bytes and `ETag` from one `GetObject`) can never raise it.
+ * Stores whose read is atomic (S3 serves bytes and `ETag` from one `GetObject`, GCS bytes and `generation` from one GET) can never raise it.
  */
 export class ObjectVersionRaced extends Error {
   constructor(objectKey: string) {
