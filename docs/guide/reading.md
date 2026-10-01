@@ -97,7 +97,7 @@ bound is stated; other pages link here.
   `dropSegment`, `retireExpired`) do this for themselves. Call it for what they cannot see: a `destroySegment` or
   `eraseNamespace` beside the store, or another process's publish, erasure or drop, when your own fan-out delivers
   the news.
-- **Without a registry** (a bare storage driver, which is read-only and cleartext), a store finds the generation by
+- **Without a registry** (a store built on a bare storage driver, `IStorageDriver`, instead of a backend, which is read-only and cleartext), a store finds the generation by
   listing the bucket when it opens a segment, and keeps it until the reader cache evicts the segment, a read finds it
   swept, or it is invalidated.
 
@@ -169,7 +169,8 @@ for await (const id of audience.iterate()) {
   reader cache evicts the pin's reader and the store's chunk cache evicts the chunks the pin decoded, or until
   `store.invalidate(ref)` is called on its store. Where the object it reads has been deleted, a chunk it has not cached
   fails at once.
-- **It needs the `.crbm` storage source** (`UnsupportedError` otherwise).
+- **It needs a `.crbm` reader**: a backend does, and so does a bare `IStorageDriver` or a pre-built
+  `CrbmStorageChunkSource`. Any other pre-built `StorageChunkSource` throws `UnsupportedError`.
 
 ## Page through a segment
 

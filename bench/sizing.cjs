@@ -713,7 +713,7 @@ function render() {
   const multipart = PROFILES.filter((p) => writeRequests(p.segmentBytes) > 1).map(
     (p) =>
       `The ${p.id} deployment's ${bytes(p.segmentBytes)} segments load as ${int(Math.ceil(p.segmentBytes / S3_PART_BYTES))}-part ` +
-      `uploads, ${int(writeRequests(p.segmentBytes))} PUT-class requests each, since the S3 driver uploads in ` +
+      `uploads, ${int(writeRequests(p.segmentBytes))} PUT-class requests each, since the S3 backend uploads in ` +
       `${mib(S3_PART_BYTES)} parts.`,
   );
   const shape =

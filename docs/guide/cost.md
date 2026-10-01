@@ -135,7 +135,7 @@ it is a property of three inputs, and of the data size, which sets the Redis:
 requests, the metadata and then the bytes, where S3's suffix-range GET is one. Set
 `storage.requestsPerSizedRead: 2` in your pricing profile and the model doubles those reads; chunk reads stay one
 request each. Each count above is held to the engine by a test that counts its requests, on S3's request shape, and
-the drivers' own tests pin the two requests GCS and Azure make, so the model moves when the engine does. The
+the GCS and Azure backends' own tests pin the two requests each makes, so the model moves when the engine does. The
 [benchmarks page](../benchmarks.md#the-single-bucket-bill--run-2026-09-23-94416) has the request shapes measured
 on real S3.
 

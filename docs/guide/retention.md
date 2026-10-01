@@ -209,7 +209,7 @@ the key does. So if your requirement is "the data must become unreadable" rather
 once.
 
 `store.dropSegment` needs a store built on a **backend**, because it has to list and delete generations, which a
-pre-built `StorageChunkSource` cannot do. Without one you get an `UnsupportedError`.
+pre-built `StorageChunkSource` cannot do, and to update the registry row, which a bare `IStorageDriver` lacks. Without one you get an `UnsupportedError`.
 
 ```ts
 // Your value: the name of the daily segment you want to retire.
