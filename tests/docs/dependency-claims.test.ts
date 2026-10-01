@@ -85,7 +85,7 @@ const SCOPED_STRONG = /@cloudbitmaps\/\w|CRoaring|roaring-node/i;
  * attached to the claim.
  *
  * WHY THE DISTINCTION. Accepted anywhere in the ±160 window, these would excuse the very badge this gate
- * refuses. Every hero and footer strip on the site reads `Apache-2.0 · v0.10.0 · zero-dependency core · 4
+ * refuses. Every hero and footer strip on the site reads `Apache-2.0 · v<version> · zero-dependency core · 4
  * storage drivers`; drop `· 1 third-party dependency ·` into the middle of one and the bare `core` thirty
  * characters to its left would excuse it. The claim says "the project", the scoping word belongs to a
  * different item in the same list, and a gate that accepts the word anywhere passes over that exact string
