@@ -161,6 +161,7 @@ describe('a run that timed store.load()', () => {
     expect(loadRows.every((r) => r.label === 'derived')).toBe(true);
     expect(f.shapes).toContainEqual([4, 7]);
     expect(f.shapes).toContainEqual([7, 7]);
+    expect(f.stageLedger.warm?.get).toBe(f.stageLedger.warm?.expectedGets);
   });
 
   describe('is refused when it does not reconcile', () => {
@@ -211,6 +212,14 @@ describe('a run that timed store.load()', () => {
           r.cost.totalUSD = r.cost.putUSD + r.cost.getUSD;
         }),
       ).toMatch(/stages' requests and the bucket's own do not add up/);
+    });
+
+    it('with a warm intersect that made a request', () => {
+      expect(
+        refused((r) => {
+          r.phases.warm.warmGets = 1;
+        }),
+      ).toMatch(/warm intersects are not recorded as exact and at no requests/);
     });
 
     it('with a load stage that timed something other than store.load()', () => {

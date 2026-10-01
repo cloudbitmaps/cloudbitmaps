@@ -19,7 +19,7 @@
 const { projectOps } = require('./calibrate-guards.cjs');
 
 /** Every stage, in the order the harness runs them. */
-const STAGES = Object.freeze(['load', 'intersect', 'spread', 'sweep']);
+const STAGES = Object.freeze(['load', 'intersect', 'spread', 'sweep', 'warm']);
 
 /** The sweep over how many chunks two segments share, when none is asked for: k and how many intersects at each. */
 const DEFAULT_SWEEP = Object.freeze([
@@ -74,6 +74,7 @@ const coldIntersectBound = (k) => 2 * (3 + k);
  *   w.intersect        { reads, sharedChunks }                       cold intersects, calibration layout
  *   w.spread           { segments, reads, sharedChunks }             cold intersects, spread layout
  *   w.sweep            { segments, entries: [{ k, intersects }] }    each entry has `segments` loaded of its own
+ *   w.warm             { segments, sharedChunks }                    one priming pass over `segments` segments
  *   w.retryBound, w.fixedPuts, w.fixedGets
  */
 function projectStages(w) {
@@ -102,6 +103,12 @@ function projectStages(w) {
     { put: 0, get: 0 },
   );
 
+  // The priming pass reads each segment once, cold; the timed intersects after it are held to none.
+  stages.warm = {
+    put: 0,
+    get: w.warm.segments * (3 + w.warm.sharedChunks),
+  };
+
   const put = Object.values(stages).reduce((n, s) => n + s.put, 0) + w.fixedPuts;
   const getSum = Object.values(stages).reduce((n, s) => n + s.get, 0) + w.fixedGets;
   // Reads are projected at least as high as writes, as `projectOps` does: every write path reads before it writes.
@@ -118,6 +125,8 @@ function expectedReads(w) {
     intersect: w.intersect.reads * coldIntersectGets(w.intersect.sharedChunks),
     spread: w.spread.reads * coldIntersectGets(w.spread.sharedChunks),
     sweep: w.sweep.entries.reduce((n, e) => n + e.intersects * coldIntersectGets(e.k), 0),
+    // Each segment once: a pointer, a tail and the shared chunks. The timed warm intersects make none.
+    warm: w.warm.segments * (2 + w.warm.sharedChunks),
   };
 }
 

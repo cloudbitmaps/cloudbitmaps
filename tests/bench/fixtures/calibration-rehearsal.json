@@ -1,13 +1,13 @@
 {
   "note": "Written by bench/calibrate-aws.cjs. A real run's evidence is write-once: a new run gets a new id.",
-  "runId": "2026-10-01-764ec",
-  "startedAt": "2026-10-01T13:07:05.096Z",
+  "runId": "2026-10-01-921a0",
+  "startedAt": "2026-10-01T13:08:36.611Z",
   "mode": "rehearse",
   "target": "minio (rehearsal — NOT a real cloud measurement)",
   "region": "n/a (local container)",
   "measured": {
     "packageVersion": "0.11.0",
-    "harness": "3ee69c6-dirty",
+    "harness": "97b8079-dirty",
     "node": "v24.18.1"
   },
   "pricing": "aws-us-east-1-ondemand",
@@ -48,6 +48,10 @@
           }
         ]
       },
+      "warm": {
+        "segments": 20,
+        "sharedChunks": 100
+      },
       "retryBound": 5,
       "fixedGets": 11,
       "fixedPuts": 16
@@ -55,7 +59,7 @@
   },
   "projected": {
     "put": 364,
-    "get": 57196
+    "get": 59256
   },
   "projectedStages": {
     "load": {
@@ -73,6 +77,10 @@
     "sweep": {
       "put": 48,
       "get": 40180
+    },
+    "warm": {
+      "put": 0,
+      "get": 2060
     }
   },
   "partial": false,
@@ -81,15 +89,15 @@
       "via": "store.load()",
       "singlePart": {
         "runs": 20,
-        "medianIdsPerSec": 7793558.972660539,
-        "medianBytesPerSec": 16401544.857964104,
+        "medianIdsPerSec": 8237034.438283179,
+        "medianBytesPerSec": 17334838.97536695,
         "medianObjectBytes": 1052088,
         "medianUploadBytes": 1052250
       },
       "multipart": {
         "runs": 5,
-        "medianIdsPerSec": 19338521.514460053,
-        "medianBytesPerSec": 19400321.302030526,
+        "medianIdsPerSec": 19283222.95474241,
+        "medianBytesPerSec": 19344846.02563674,
         "medianObjectBytes": 12622960,
         "medianUploadBytes": 12623123
       },
@@ -351,9 +359,9 @@
       "runs": 40,
       "cold": true,
       "exact": true,
-      "p50ms": 111.946833,
-      "p95ms": 133.962375,
-      "p99ms": 164.169,
+      "p50ms": 110.628959,
+      "p95ms": 159.449875,
+      "p99ms": 223.197208,
       "chunksFetchedPerOperand": 100,
       "chunksPerSegment": 1999,
       "payloadFraction": 0.04904532700686635,
@@ -394,9 +402,9 @@
       "runs": 40,
       "cold": true,
       "exact": true,
-      "p50ms": 106.7345,
-      "p95ms": 136.486542,
-      "p99ms": 149.459667,
+      "p50ms": 107.402917,
+      "p95ms": 182.108667,
+      "p99ms": 215.769458,
       "chunksFetchedPerOperand": 100,
       "chunksPerSegment": 1999,
       "tailReadBytesPerOperand": 262144,
@@ -560,9 +568,9 @@
           "runs": 10,
           "cold": true,
           "exact": true,
-          "p50ms": 1039.027333,
-          "p95ms": 1170.345125,
-          "p99ms": 1170.345125,
+          "p50ms": 1089.517208,
+          "p95ms": 1158.0625,
+          "p99ms": 1158.0625,
           "chunksFetchedPerOperand": 1000,
           "chunksPerSegment": 2899,
           "tailReadBytesPerOperand": 262144,
@@ -583,9 +591,9 @@
           "runs": 5,
           "cold": true,
           "exact": true,
-          "p50ms": 1950.218834,
-          "p95ms": 2123.004833,
-          "p99ms": 2123.004833,
+          "p50ms": 2090.09375,
+          "p95ms": 2223.34575,
+          "p99ms": 2223.34575,
           "chunksFetchedPerOperand": 2000,
           "chunksPerSegment": 3899,
           "tailReadBytesPerOperand": 262144,
@@ -713,28 +721,89 @@
         }
       },
       "expectedGets": 40060
+    },
+    "warm": {
+      "runs": 40,
+      "exact": true,
+      "warmGets": 0,
+      "n": 40,
+      "p50ms": 4.422666,
+      "p95ms": 4.824875,
+      "p99ms": 4.903792,
+      "priming": {
+        "requests": {
+          "put": 0,
+          "get": 2040,
+          "bytesUp": 0,
+          "bytesDown": 6278110,
+          "parts": 0,
+          "reads": {
+            "whole": {
+              "n": 20,
+              "bytes": 3230
+            },
+            "suffix": {
+              "n": 20,
+              "bytes": 5242880
+            },
+            "range": {
+              "n": 2000,
+              "bytes": 1032000
+            }
+          }
+        }
+      },
+      "store": {
+        "retry": false,
+        "cache": {
+          "genTtlMs": 3600000,
+          "maxChunks": 4000
+        }
+      },
+      "requests": {
+        "put": 0,
+        "get": 2040,
+        "bytesUp": 0,
+        "bytesDown": 6278110,
+        "parts": 0,
+        "reads": {
+          "whole": {
+            "n": 20,
+            "bytes": 3230
+          },
+          "suffix": {
+            "n": 20,
+            "bytes": 5242880
+          },
+          "range": {
+            "n": 2000,
+            "bytes": 1032000
+          }
+        }
+      },
+      "expectedGets": 2040
     }
   },
   "network": {
-    "rttFloorMs": 1.071625,
-    "rttMedianMs": 1.501667,
+    "rttFloorMs": 1.160041,
+    "rttMedianMs": 1.512,
     "client": "local container",
     "inRegionThresholdMs": 30
   },
   "cost": {
     "putUSD": 0.000915,
-    "getUSD": 0.022671200000000002,
-    "totalUSD": 0.0235862,
+    "getUSD": 0.0234872,
+    "totalUSD": 0.0244022,
     "ops": {
       "put": 183,
-      "get": 56678,
+      "get": 58718,
       "free": 2,
       "bytesUp": 105409501,
-      "bytesDown": 78743906,
+      "bytesDown": 85022016,
       "byCommand": {
         "HeadBucketCommand": 11,
         "CreateBucketCommand": 1,
-        "GetObjectCommand": 56667,
+        "GetObjectCommand": 58707,
         "ListObjectsV2Command": 82,
         "PutObjectCommand": 77,
         "CreateMultipartUploadCommand": 5,
@@ -747,19 +816,19 @@
       },
       "reads": {
         "whole": {
-          "n": 272,
-          "bytes": 44466
+          "n": 292,
+          "bytes": 47696
         },
         "suffix": {
-          "n": 190,
-          "bytes": 49807360
+          "n": 210,
+          "bytes": 55050240
         },
         "range": {
-          "n": 56000,
-          "bytes": 28892080
+          "n": 58000,
+          "bytes": 29924080
         }
       }
     }
   },
-  "elapsedMs": 34946
+  "elapsedMs": 37588
 }

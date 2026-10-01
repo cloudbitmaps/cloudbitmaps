@@ -121,6 +121,7 @@ const guards = require_(join(ROOT, 'bench', 'lib', 'calibrate-guards.cjs')) as {
   stampOf: (iso: string) => string;
   EVIDENCE_DIR: string;
   TIMED_STORE: { retry: false; cache: { genTtlMs: number } };
+  warmStore: (chunks: number) => { retry: false; cache: { genTtlMs: number; maxChunks: number } };
   clientConfigs: (
     base: Record<string, unknown>,
     options?: {
@@ -1513,12 +1514,17 @@ describe('the meter counts every attempt the SDK makes, not every send', () => {
   it('every store the harness times runs with its own retry off, and its pointer refresh off', () => {
     expect(guards.TIMED_STORE.retry).toBe(false);
     expect(guards.TIMED_STORE.cache.genTtlMs).toBe(0);
+    expect(guards.warmStore(0).retry).toBe(false);
     const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
     const built = src.match(/new CloudRoaring\(/g)?.length ?? 0;
-    const timed =
-      src.match(/new CloudRoaring\(\{\s*storage,\s*\.\.\.TIMED_STORE\s*\}\)/g)?.length ?? 0;
-    expect(built).toBe(2);
-    expect(timed).toBe(built);
+    // Every store is built from the timed settings, or from the warm ones, which differ only in trusting the pointer
+    // and holding more chunks.
+    const approved =
+      src.match(
+        /new CloudRoaring\(\{\s*storage,\s*\.\.\.(?:TIMED_STORE|warmStore\([^()]*\)),?\s*\}\)/g,
+      )?.length ?? 0;
+    expect(built).toBeGreaterThanOrEqual(3);
+    expect(approved).toBe(built);
   });
 
   it('counts a request that needed no retry exactly once', async () => {

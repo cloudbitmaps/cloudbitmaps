@@ -61,6 +61,7 @@ const {
   checkRunId,
   checkRunRegion,
   TIMED_STORE,
+  warmStore,
   clientConfigs,
   bucketIsGone,
   uploadIsGone,
@@ -201,6 +202,8 @@ function planWorkload({ layout, spread, sweep }) {
       sharedChunks: spread === null ? 0 : spread.sharedChunks,
     },
     sweep: { segments: SWEEP_SEGMENTS, entries: sweep },
+    // The warm stage repeats the calibration intersects' pairs, which touch this many segments.
+    warm: { segments: READS === 0 ? 0 : Math.min(SEGMENTS, READS + 1), sharedChunks },
     retryBound: RETRY_BOUND,
     // The probe HEAD and the round-trip samples, one attempt each; the bucket's creation; and teardown's listings
     // at every attempt its retrying client may make (see TEARDOWN_PUTS).
@@ -413,6 +416,7 @@ async function main() {
               .map((e) => `${e.intersects} at k = ${e.k}`)
               .join(', ')
               .concat(` (${SWEEP_SEGMENTS} segments each)`),
+      warm: `${READS} repeats of the calibration pairs from memory, asserted at 0 GET`,
     };
     for (const name of STAGES) {
       const b = stageBounds[name];
@@ -840,6 +844,12 @@ async function main() {
       const s = [...xs].sort((x, y) => x - y);
       return s[Math.min(s.length - 1, Math.floor(s.length * p))];
     };
+    const spreadOf = (xs) => ({
+      n: xs.length,
+      p50ms: q(xs, 0.5),
+      p95ms: q(xs, 0.95),
+      p99ms: q(xs, 0.99),
+    });
     const msSince = (t0) => Number(process.hrtime.bigint() - t0) / 1e6;
 
     // The store a timed read uses, one per intersect so no cache can answer it: its own retry is off and its pointer
@@ -1153,6 +1163,69 @@ async function main() {
           });
         }
         return { entries };
+      },
+    });
+
+    // ---- warm intersects: one store answers the calibration pairs again from memory ------------------------------
+    // The store trusts each pointer for the whole stage and holds every shared chunk it reads (`warmStore`), so a read
+    // after the priming pass has nothing to fetch. A warm intersect that makes a request FAILS the stage: a
+    // regression that re-reads must not pass with a slower number.
+    await stage('warm', {
+      run: async () => {
+        if (READS === 0) return { runs: 0 };
+        const store = new CloudRoaring({
+          storage,
+          ...warmStore(2 * plan.warm.segments * plan.warm.sharedChunks),
+        });
+        const pair = async (i) => {
+          const a = calibrationNames[i % calibrationNames.length];
+          const b = calibrationNames[(i + 1) % calibrationNames.length];
+          let n = 0;
+          let sum = 0;
+          for await (const id of store.segment(a).intersect([store.segment(b)])) {
+            n += 1;
+            sum += id;
+          }
+          if (n !== layout.expected.count || sum !== layout.expected.sum) {
+            throw new Error(
+              `warm intersect ${a} ∩ ${b} returned ${n} ids (sum ${sum}); expected exactly ` +
+                `${layout.expected.count} (sum ${layout.expected.sum})`,
+            );
+          }
+          return `${a} ∩ ${b}`;
+        };
+        // The priming pass reads each segment once, cold, and is counted: it is what the warm reads then spare.
+        const p0 = snap();
+        for (let i = 0; i < READS; i += 1) {
+          await pair(i);
+          checkCeiling();
+        }
+        const priming = requestsBetween(p0, snap());
+        const ms = [];
+        for (let i = 0; i < READS; i += 1) {
+          const before = snap();
+          const t0 = process.hrtime.bigint();
+          const which = await pair(i);
+          const took = msSince(t0);
+          const after = snap();
+          if (after.get !== before.get || after.put !== before.put) {
+            throw new Error(
+              `warm intersect ${which} made ${after.get - before.get} GET-class and ${after.put - before.put} ` +
+                'PUT-class requests; a warm intersect makes none, so a read that goes back to the store is a failure ' +
+                'to be found, not a slower number',
+            );
+          }
+          ms.push(took);
+        }
+        log(`  ${READS} warm, all exact, 0 requests — p50 ${q(ms, 0.5).toFixed(2)} ms`);
+        return {
+          runs: READS,
+          exact: true,
+          warmGets: 0,
+          ...spreadOf(ms),
+          priming: { requests: priming },
+          store: warmStore(2 * plan.warm.segments * plan.warm.sharedChunks),
+        };
       },
     });
 

@@ -419,6 +419,30 @@ function clientConfigs(base, { adminTimeouts = ADMIN_TIMEOUTS } = {}) {
  * and the run report states it rather than this harness measuring it by accident.
  */
 const TIMED_STORE = Object.freeze({ retry: false, cache: Object.freeze({ genTtlMs: 0 }) });
+
+/**
+ * How long a warm store trusts a pointer, in milliseconds: an hour, far past any stage. A warm read is the one made
+ * from memory, and "within `cache.genTtlMs`" has to hold for the whole stage by construction, since a stage that
+ * outlasted the default 2 s would read each pointer again and the zero it asserts would depend on the clock.
+ */
+const WARM_GEN_TTL_MS = 3_600_000;
+
+/**
+ * How a store is built for the stages that read from memory: its own retry off, as {@link TIMED_STORE}, a pointer
+ * trusted for {@link WARM_GEN_TTL_MS}, and a chunk cache holding `chunks` decoded chunks. The default cache holds
+ * 1,024, and a warm stage over more shared chunks than that would evict and read again, which is a finding about
+ * the cache size and not about a warm read. Never below the default.
+ */
+function warmStore(chunks) {
+  if (!Number.isInteger(chunks) || chunks < 0) {
+    throw new Error(`a warm store's chunk capacity must be a non-negative integer, got ${chunks}`);
+  }
+  return {
+    retry: false,
+    cache: { genTtlMs: WARM_GEN_TTL_MS, maxChunks: Math.max(1_024, chunks) },
+  };
+}
+
 /**
  * Where real runs' evidence lives: one file per run, named by its id.
  *
@@ -672,6 +696,8 @@ module.exports = {
   checkRunRegion,
   EVIDENCE_DIR,
   TIMED_STORE,
+  WARM_GEN_TTL_MS,
+  warmStore,
   ADMIN_ATTEMPTS,
   clientConfigs,
   bucketIsGone,

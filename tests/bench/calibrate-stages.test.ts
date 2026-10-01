@@ -20,6 +20,7 @@ type Plan = {
   intersect: { reads: number; sharedChunks: number };
   spread: { segments: number; reads: number; sharedChunks: number };
   sweep: { segments: number; entries: { k: number; intersects: number }[] };
+  warm: { segments: number; sharedChunks: number };
   retryBound: number;
   fixedPuts: number;
   fixedGets: number;
@@ -61,6 +62,11 @@ const guards = require_(join(ROOT, 'bench', 'lib', 'calibrate-guards.cjs')) as {
   }) => Layout;
   layoutIds: (layout: Layout, i: number) => Iterable<number>;
   TIMED_STORE: { retry: false; cache: { genTtlMs: number } };
+  WARM_GEN_TTL_MS: number;
+  warmStore: (chunks: number) => {
+    retry: false;
+    cache: { genTtlMs: number; maxChunks: number };
+  };
   checkWorkload: (i: Record<string, number>) => void;
   MAX_SEGMENTS: number;
   firstLoads: () => (segment: string) => void;
@@ -83,6 +89,7 @@ function defaultPlan(): Plan {
     intersect: { reads: 40, sharedChunks: layout.sharedChunks },
     spread: { segments: 10, reads: 40, sharedChunks: layout.sharedChunks },
     sweep: { segments: 3, entries: stages.DEFAULT_SWEEP },
+    warm: { segments: 20, sharedChunks: layout.sharedChunks },
     retryBound: guards.RETRY_BOUND,
     fixedPuts: 16,
     fixedGets: 11,
@@ -131,6 +138,7 @@ describe('the stage table', () => {
       intersect: { ...w.intersect, reads: 0 },
       spread: { ...w.spread, segments: 0, reads: 0 },
       sweep: { ...w.sweep, entries: [] },
+      warm: { ...w.warm, segments: 0 },
     });
     expect(loadsOnly.total.get).toBeGreaterThanOrEqual(loadsOnly.total.put);
   });
@@ -296,6 +304,33 @@ describe('the workload the stages need', () => {
   });
 });
 
+describe('a stage that reads from memory', () => {
+  it('trusts its pointer for the whole stage, holds the chunks it reads, and has its own retry off', () => {
+    const store = guards.warmStore(10);
+    expect(store.retry).toBe(false);
+    expect(store.cache.genTtlMs).toBe(guards.WARM_GEN_TTL_MS);
+    expect(guards.WARM_GEN_TTL_MS).toBeGreaterThanOrEqual(60 * 60 * 1000);
+    // Never below the default cache, and as large as asked above it.
+    expect(store.cache.maxChunks).toBe(1_024);
+    expect(guards.warmStore(4_000).cache.maxChunks).toBe(4_000);
+    expect(() => guards.warmStore(-1)).toThrow(/capacity/);
+  });
+
+  // The source of one stage: from its call to the next stage's, or to the end of the stages.
+  const stageSource = (name: string): string => {
+    const from = harnessSrc.indexOf(`await stage('${name}'`);
+    const rest = harnessSrc.slice(from + 1);
+    const next = rest.search(/\n {4}await stage\(|\n {4}results\.partial = false;/);
+    return rest.slice(0, next);
+  };
+
+  it('fails the stage, and not just the figure, when a warm read makes a request', () => {
+    const warm = stageSource('warm');
+    expect(warm).toContain('if (after.get !== before.get || after.put !== before.put) {');
+    expect(warm).toMatch(/throw new Error\(\s*`warm intersect/);
+  });
+});
+
 // The engine's own requests, counted the way the load stage's are: against local drivers and the real registry
 // protocol. What the stages' formulas say a read makes is what the engine makes, on a layout small enough to run
 // here; the rehearsal then holds the harness to the same formulas on S3's request shape.
@@ -326,6 +361,8 @@ describe('what the stages request, counted against the engine', () => {
   const plan = (): Plan => ({
     ...defaultPlan(),
     intersect: { reads: 6, sharedChunks: layout.sharedChunks },
+    // Six pairs, each a segment and the next: seven segments.
+    warm: { segments: 7, sharedChunks: layout.sharedChunks },
   });
   const loaded = (async () => {
     const loader = new CloudRoaring({ storage: backend, ...guards.TIMED_STORE });
@@ -355,9 +392,24 @@ describe('what the stages request, counted against the engine', () => {
     expect(stages.coldIntersectGets(layout.sharedChunks)).toBe(4 + 2 * layout.sharedChunks);
   });
 
+  it('a warm store reads each segment once and then nothing', async () => {
+    await loaded;
+    const store = new CloudRoaring({ storage: backend, ...guards.warmStore(1_024) });
+    const pair = async (i: number): Promise<void> => {
+      const n = await drain(
+        store.segment(`seg-${i}`).intersect([store.segment(`seg-${(i + 1) % 14}`)]),
+      );
+      expect(n).toBe(layout.expected.count);
+    };
+    let priming = 0;
+    for (let i = 0; i < 6; i += 1) priming += await countOf(() => pair(i));
+    expect(priming).toBe(expected.warm);
+    for (let i = 0; i < 6; i += 1) expect(await countOf(() => pair(i))).toBe(0);
+  });
+
   it('projects each of these above what it counted', () => {
     const bounds = stages.projectStages(plan()).stages;
-    for (const name of ['intersect']) {
+    for (const name of ['intersect', 'warm']) {
       expect(bounds[name]?.get ?? 0, name).toBeGreaterThanOrEqual(expected[name] ?? Infinity);
     }
   });

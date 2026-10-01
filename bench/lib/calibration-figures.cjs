@@ -363,6 +363,10 @@ function derive(run, src) {
         n('UploadPartCommand') === sumOf(loadRecords, 'parts'),
       'its PUT-class commands are not what its loads make: the object or its parts, two listings and the pointer',
     );
+    check(
+      run.phases.warm.warmGets === 0 && run.phases.warm.exact === true,
+      'its warm intersects are not recorded as exact and at no requests',
+    );
     for (const [name, record] of [
       ['spread', run.phases.spread],
       ...(run.phases.sweep?.entries ?? []).map((e) => [`sweep k = ${e.k}`, e]),
