@@ -18,9 +18,14 @@ so, and so do the module headers in the code.
   row. `iterate` (with or without a range) now keeps up to 8 chunk fetches open ahead of the one it is yielding, and
   still yields every id in ascending order. The window opens 1, 2, 4, 8 wide, so a read the caller stops after a few
   ids has fetched a handful of chunks past where it stopped (none, if it stops in the first chunk), and an error in a
-  later chunk surfaces only when the read reaches that chunk. `count` takes the storage path only for a chunk source
-  that cannot serve cardinalities from an index. The request total, the per-op budget, the one-generation-per-read
-  rule and the memory ceiling (at most 8 decoded chunks held ahead) are unchanged, and there is no new option.
+  later chunk surfaces only when the read reaches that chunk. `count` takes the storage path only for a custom chunk
+  source that cannot serve cardinalities from an index; the shipped backends serve them, so their `count` reads no
+  payload and is unchanged. The request total, the per-op budget and the memory ceiling (at most 8 decoded chunks held
+  ahead) are unchanged, and there is no new option. A read still resolves one generation before it fetches, but a
+  segment that re-resolves mid-read (a TTL boundary, an eviction, a sweep, an invalidation such as the store's own
+  `eraseSubject`) now leaves up to 8 chunks already requested from the earlier generation, where a one-at-a-time read
+  left only the chunk it was on; `intersect` has always read ahead this way. A fetch started ahead is not cancelled
+  when the caller stops.
   Measured against an in-memory source with 10 ms of added latency per chunk read, 500 chunks, load average about 6.5:
   `iterate` 5.93 s to 0.77 s, `count` 5.92 s to 0.75 s; per-id cost on a warm segment is unchanged (about 180 ns an
   id before and after).

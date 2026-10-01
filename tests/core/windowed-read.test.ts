@@ -17,6 +17,12 @@ const K = 65_536;
 const WINDOW = 8;
 const IDS_PER_CHUNK = 3;
 
+/**
+ * Wait until every queued microtask has run. The engine schedules nothing but promises (`core/` may not touch a
+ * timer), and a `setImmediate` callback runs only once the microtask queue is empty, so one is enough.
+ */
+const quiesce = (): Promise<void> => new Promise<void>((r) => setImmediate(r));
+
 interface Held {
   readonly key: number;
   readonly settle: () => void;
@@ -31,6 +37,15 @@ class HeldChunkSource extends MemoryStorageChunkSource {
   peak = 0;
   /** Chunk keys whose read rejects instead of resolving. */
   failing = new Set<number>();
+  /** Chunk keys the source reports as holding no bytes, though it lists them. */
+  absent = new Set<number>();
+  /** How many times a read asked which bytes it is reading. */
+  versionReads = 0;
+
+  currentVersion(): Promise<string | null> {
+    this.versionReads += 1;
+    return Promise.resolve('v1');
+  }
 
   override getChunk(ref: ChunkRef): Promise<Uint8Array | null> {
     this.requested.push(ref.chunkKey);
@@ -41,7 +56,8 @@ class HeldChunkSource extends MemoryStorageChunkSource {
         key: ref.chunkKey,
         settle: () => {
           this.inFlight -= 1;
-          super.getChunk(ref).then(resolve, reject);
+          if (this.absent.has(ref.chunkKey)) resolve(null);
+          else super.getChunk(ref).then(resolve, reject);
         },
         fail: (error) => {
           this.inFlight -= 1;
@@ -54,31 +70,37 @@ class HeldChunkSource extends MemoryStorageChunkSource {
   /** Let the event loop run to quiescence, then settle the oldest open read; repeat until `done` is true. */
   async run(done: () => boolean): Promise<void> {
     while (!done()) {
-      for (let i = 0; i < 25; i++) await Promise.resolve();
+      await quiesce();
       const next = this.held.shift();
       if (next === undefined) {
         if (done()) return;
-        await new Promise<void>((r) => setImmediate(r));
         continue;
       }
       if (this.failing.has(next.key)) next.fail(new Error(`chunk ${next.key} failed`));
       else next.settle();
     }
-    for (let i = 0; i < 25; i++) await Promise.resolve();
+    await quiesce();
     // Whatever a stopped read left open is settled too, so a rejection in it has landed before the test ends.
     for (const rest of this.held.splice(0)) {
       if (this.failing.has(rest.key)) rest.fail(new Error(`chunk ${rest.key} failed`));
       else rest.settle();
     }
-    for (let i = 0; i < 25; i++) await Promise.resolve();
+    await quiesce();
   }
 }
+
+/**
+ * The three ids of chunk `k`. Each chunk's are different (`k` is in the low bits), so a chunk handed back in the
+ * wrong slot yields ids that are not in `ids`, and an out-of-order read cannot pass for an ordered one.
+ */
+const idsOf = (k: number): number[] =>
+  Array.from({ length: IDS_PER_CHUNK }, (_, r) => k * K + r * 100 + k);
 
 /** `chunks` chunks, keys 0..chunks-1, each holding three ids; the ids ascending. */
 function build(chunks: number) {
   const storage = new HeldChunkSource();
   const ids: number[] = [];
-  for (let k = 0; k < chunks; k++) for (let r = 0; r < IDS_PER_CHUNK; r++) ids.push(k * K + r * 10);
+  for (let k = 0; k < chunks; k++) ids.push(...idsOf(k));
   seedSegment(storage, 'a', ids);
   const engine = new SegmentEngine({ storage, codec: roaringCodec });
   return { storage, engine, ids };
@@ -191,13 +213,56 @@ describe('iterate fetches through a bounded, ordered window', () => {
     expect(storage.requested).toHaveLength(25);
     expect(new Set(storage.requested).size).toBe(25);
   });
+
+  it('asks which bytes it is reading once per read, not once per chunk', async () => {
+    const { storage, engine } = build(40);
+    await drive(storage, async () => {
+      for await (const id of engine.iterate({ segment: 'a' })) void id;
+    });
+    expect(storage.versionReads).toBe(1);
+  });
+
+  it('a segment of fewer chunks than the window reads each once and yields them in order', async () => {
+    const { storage, engine, ids } = build(3);
+    const got = await drive(storage, async () => {
+      const out: number[] = [];
+      for await (const id of engine.iterate({ segment: 'a' })) out.push(id);
+      return out;
+    });
+    expect(got).toEqual(ids);
+    expect(storage.requested).toEqual([0, 1, 2]);
+    expect(storage.peak).toBeLessThanOrEqual(3);
+  });
+
+  it('a listed chunk the source holds no bytes for is skipped, and the chunks after it still arrive in order', async () => {
+    const { storage, engine, ids } = build(12);
+    storage.absent.add(4);
+    const got = await drive(storage, async () => {
+      const out: number[] = [];
+      for await (const id of engine.iterate({ segment: 'a' })) out.push(id);
+      return out;
+    });
+    expect(got).toEqual(ids.filter((id) => Math.floor(id / K) !== 4));
+    expect(storage.requested).toEqual([...Array(12).keys()]);
+  });
+
+  it('a segment with no chunks yields nothing and reads nothing', async () => {
+    const { storage, engine } = build(0);
+    const got = await drive(storage, async () => {
+      const out: number[] = [];
+      for await (const id of engine.iterate({ segment: 'a' })) out.push(id);
+      return out;
+    });
+    expect(got).toEqual([]);
+    expect(storage.requested).toEqual([]);
+  });
 });
 
 describe('iterate over a range uses the same window', () => {
   it('keeps up to 8 reads open over the chunks in range, and trims the edges', async () => {
     const { storage, engine, ids } = build(40);
-    const after = 5 * K + 10; // keeps the last two ids of chunk 5
-    const through = 30 * K + 10; // keeps the first two ids of chunk 30
+    const after = 5 * K + 50; // keeps the last two ids of chunk 5
+    const through = 30 * K + 150; // keeps the first two ids of chunk 30
     const got = await drive(storage, async () => {
       const out: number[] = [];
       for await (const id of engine.iterate({ segment: 'a' }, { after, through })) out.push(id);
@@ -212,10 +277,10 @@ describe('iterate over a range uses the same window', () => {
   it('stops after its first id having fetched one chunk, and surfaces an error only at its chunk', async () => {
     const { storage, engine } = build(40);
     const first = await drive(storage, async () => {
-      for await (const id of engine.iterate({ segment: 'a' }, { after: 3 * K })) return id;
+      for await (const id of engine.iterate({ segment: 'a' }, { after: 3 * K + 3 })) return id;
       return null;
     });
-    expect(first).toBe(3 * K + 10); // chunk 3's id at 3K is excluded: `after` is exclusive
+    expect(first).toBe(3 * K + 103); // chunk 3's id at 3K+3 is excluded: `after` is exclusive
     expect(storage.requested).toEqual([3]);
 
     const second = build(40);
@@ -238,6 +303,16 @@ describe('iterate over a range uses the same window', () => {
     expect(out).toEqual(second.ids.filter((id) => id > 3 * K && id < 9 * K));
     expect(unhandled).toEqual([]);
   });
+
+  it('asks which bytes it is reading once per read', async () => {
+    const { storage, engine } = build(40);
+    await drive(storage, async () => {
+      for await (const id of engine.iterate({ segment: 'a' }, { after: 2 * K, through: 30 * K })) {
+        void id;
+      }
+    });
+    expect(storage.versionReads).toBe(1);
+  });
 });
 
 describe('count on the storage path uses a window of 8', () => {
@@ -248,6 +323,22 @@ describe('count on the storage path uses a window of 8', () => {
     expect(storage.peak).toBe(WINDOW);
     expect(storage.requested).toHaveLength(40);
     expect(new Set(storage.requested).size).toBe(40);
+    expect(storage.versionReads).toBe(1);
+  });
+
+  it('opens every read at once when the segment has fewer chunks than the window', async () => {
+    const { storage, engine, ids } = build(3);
+    const total = await drive(storage, () => engine.count({ segment: 'a' }));
+    expect(total).toBe(ids.length);
+    expect(storage.peak).toBe(3);
+    expect(storage.requested).toEqual([0, 1, 2]);
+  });
+
+  it('counts a listed chunk the source holds no bytes for as empty', async () => {
+    const { storage, engine, ids } = build(12);
+    storage.absent.add(4);
+    const total = await drive(storage, () => engine.count({ segment: 'a' }));
+    expect(total).toBe(ids.length - IDS_PER_CHUNK);
   });
 
   it('fails with the first error and leaves no unhandled rejection', async () => {

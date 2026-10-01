@@ -101,9 +101,12 @@ bound is stated; other pages link here.
 
 **A long call can describe two instants.** Within one read, such as one `count` or one `intersect`, the generation is
 resolved once, before any chunk is fetched, and every chunk is a whole, checksum-verified chunk of one generation. A
-load landing mid-call never tears a chunk. But a long call can read its later chunks from another generation if it
-straddles a TTL boundary, if the reader cache evicts the segment mid-call, if a sweep collects the generation it was
-reading, or if the store invalidates the segment. Its answer then describes two instants. `dropSegment` and `retireExpired` invalidate too: a read of a segment that then no longer resolves ends rather than moves on, and a read of one `retireExpired` lists but leaves live moves on. [Pin the segment](#read-one-fixed-point-in-time)
+load landing mid-call never tears a chunk. But a long call can read the chunks it requests after one of these from
+another generation: if it straddles a TTL boundary, if the reader cache evicts the segment mid-call, if a sweep
+collects the generation it was reading, or if the store invalidates the segment. And because a read requests ahead of
+the chunk it is on, the chunks it had already requested are still the earlier generation's: up to 8, the one it is on
+included, for `iterate` and `count`, and up to `concurrency` keys for a combine. Its answer then describes two
+instants. `dropSegment` and `retireExpired` invalidate too: a read of a segment that then no longer resolves ends rather than moves on, and a read of one `retireExpired` lists but leaves live moves on. [Pin the segment](#read-one-fixed-point-in-time)
 when that matters.
 
 ## Read one fixed point in time
@@ -223,4 +226,6 @@ chunks land in the chunk cache, where the next page usually finds them. `iterate
 that opens 1, 2, 4, then 8 fetches wide: a page that stops in its first chunk has fetched that chunk alone, and one
 that stops later has fetched at most 7 chunks past the one it stopped in. A full read keeps 8 fetches open where it
 kept one, so a cold segment reads up to about 8 times faster when the storage round trip dominates; the number of
-requests is the same.
+requests is the same. A fetch already started is not cancelled when the caller stops: it finishes, lands in the chunk
+cache and is metered, and on a source that retries a transient failure, its retries run to their limit after the
+caller has gone.

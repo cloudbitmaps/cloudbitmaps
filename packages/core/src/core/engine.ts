@@ -372,7 +372,7 @@ export class SegmentEngine {
    * up front (before the fan-out) and threaded into every chunk read, so a concurrent load can't corrupt or tear
    * the result — every chunk read is a whole, checksum-verified, immutable generation. The edge a *long* call can
    * hit is invariant 3's: if it straddles a mid-call `cache.genTtlMs` boundary and a load has published, an
-   * operand's not-yet-read chunks may re-resolve forward to the newer generation (a generation hop within one long
+   * operand's not-yet-requested chunks may re-resolve forward to the newer generation (a generation hop within one long
    * call) — the call never crashes or returns a torn object, but may mix generations. Three things hop it without
    * waiting for the TTL, so a shorter call can meet them too: **the reader cache evicting an operand mid-call**
    * (`maxOpenSegments`), whose re-read re-resolves fresh; a sweep deleting the generation it was reading, which
