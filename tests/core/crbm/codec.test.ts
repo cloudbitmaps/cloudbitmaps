@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { CrbmWriter } from '@/core/crbm/writer';
 import { CrbmReader } from '@/core/crbm/reader';
 import { BufferSink, BufferReader } from '@/core/blob';
@@ -11,6 +12,9 @@ import {
   PAYLOAD_START,
 } from '@/core/crbm/format';
 import { IntegrityError, UnsupportedError, ValidationError } from '@/core/errors';
+import { aadFor } from '@/core/crypto';
+import type { CrbmCrypto } from '@/core/crypto';
+import { NodeAead } from '@/drivers/crypto';
 
 interface Chunk {
   chunkKey: number;
@@ -225,5 +229,41 @@ describe('reader hardening', () => {
     for (const k of full.chunkKeys()) {
       expect([...(await straddle.getChunk(k))!]).toEqual([...(await full.getChunk(k))!]);
     }
+  });
+});
+
+// Every rule `parseIndex` holds an index to is one the writer keeps, at the edges of the format: nothing the
+// writer produces may be refused when it is opened.
+describe('what the writer writes always opens', () => {
+  const crypto: CrbmCrypto = {
+    aead: new NodeAead(randomBytes(32)),
+    aadFor: (scope) => aadFor({ segment: 'edge' }, 1, scope),
+  };
+  const sealedBuild = async (chunks: Chunk[]): Promise<Uint8Array> => {
+    const sink = new BufferSink();
+    const writer = new CrbmWriter(sink, { generation: 1, crypto });
+    for (const c of chunks) await writer.addChunk(c.chunkKey, c.payload, c.cardinality);
+    await writer.finish();
+    return sink.bytes();
+  };
+  const all65536: Chunk[] = Array.from({ length: 65_536 }, (_, chunkKey) => ({
+    chunkKey,
+    payload: Uint8Array.of(chunkKey & 0xff),
+    cardinality: chunkKey === 65_535 ? 65_536 : 1,
+  }));
+  const shapes: Array<[string, Chunk[], number]> = [
+    ['an empty segment', [], 0],
+    ['one chunk of one byte', [{ chunkKey: 7, payload: Uint8Array.of(1), cardinality: 1 }], 1],
+    ['a full chunk', [{ chunkKey: 0, payload: Uint8Array.of(1, 2), cardinality: 65_536 }], 65_536],
+    ['65,536 chunks', all65536, 65_535 + 65_536],
+  ];
+
+  it.each(shapes)('opens %s, unencrypted and encrypted', async (_what, chunks, total) => {
+    const plain = await CrbmReader.open(new BufferReader(await build(chunks)));
+    expect(plain.chunkKeys()).toEqual(chunks.map((c) => c.chunkKey));
+    expect(plain.count()).toBe(total);
+    const sealed = await CrbmReader.open(new BufferReader(await sealedBuild(chunks)), { crypto });
+    expect(sealed.chunkKeys()).toEqual(chunks.map((c) => c.chunkKey));
+    expect(sealed.count()).toBe(total);
   });
 });

@@ -18,10 +18,10 @@ core's, and a `Segment` can no longer be constructed. The four after them remove
 nothing in the library would still call, the second takes names off the public entries or moves them to the package
 that uses them, and the third and fourth remove the retrying driver wrappers and the bulk loader. The two after those
 make a backend class the one way an application builds its storage: the size settings move onto the backend options,
-and the separate storage and registry halves and `createBackend` are no longer exported. The ninth makes
+and the separate storage and registry halves and `createBackend` are no longer exported. The tenth makes
 the collection refuse a `keep` it used to accept. The next twelve make a call throw where it used to return: seven of
 them fix a wrong answer, and the entries under **Fixed** say what the call returned before; one changes when a pin fails;
-three hold a call to a rule the rest of the library already kept; the last of the eleven refuses a namespace the library keeps for its own
+three hold a call to a rule the rest of the library already kept; the last of the twelve refuses a namespace the library keeps for its own
 rows, and says in its own entry what the call returned before. The six after them hold the store, the backends and the registry to what the library itself takes and writes, stop
 checking for a local store's older directory layout, and give its errors the library's own brand. The two after them
 change what `estimateCost()` compares with and what a `CostReport` carries. The last holds `eraseSubject` to its
@@ -208,7 +208,8 @@ budget for the generations it opens.
   of the payload region, into the index, and an encrypted object's entry whose payload is too short to hold its
   nonce and tag. `count()` summed such an index and returned; a read of the chunk failed later, on its checksum or
   its authentication tag. Nothing the library writes has either shape, so a segment it loaded reads as it did. To move
-  past one, roll the segment back to an earlier generation that opens, or load it again.
+  past one, roll the segment back to an earlier generation that opens, or load with `allowEmpty: true` and no
+  `guard.minRetained`, which then does not read the current generation; a default load fails its guard.
 - **A combine whose other operands have all expired checks its own segment as every combine does.**
   `seg.union([expired])` and `seg.andNot([expired])` read `seg` alone, and now refuse a `seg` that names no segment
   with `ValidationError`, as `seg.union([live])` already did, where they returned no ids; `allowAbsentOperands: true`
@@ -547,7 +548,7 @@ This one changes what an erasure charges its budget for:
 
 - **`count()` answers from the index, and an open did not check every rule the index must keep.** The per-chunk
   cardinalities the `.crbm` index records are summed with no payload decoded, so a corrupt index changes the answer
-  where `iterate()` and the combines, which decode the payloads, would refuse it. An open already refused a key that
+  where `iterate()` and the combines, which decode the payloads, return what the payloads hold. An open already refused a key that
   repeats, falls out of order or passes `0xffff`, a cardinality outside `1..65536`, an empty or oversized payload,
   and, on an unencrypted object, a footer chunk count or total that disagrees with the index. It now also refuses an
   entry whose payload runs into the index rather than ending where the index starts, and an encrypted entry too short

@@ -101,7 +101,8 @@ segments into this and the library breaks, am I stuck?* Short answer — **no** 
   generation-numbered; the registry's `currentGen` pointer is the only thing that makes one "live." The worst a
   bad load can do is write a *new* bad generation — the previous one is intact, and you roll the pointer
   back. Every chunk, index and footer carries a **CRC32C that is verified before the bytes reach the
-  deserializer**, so corruption is **detected and rejected, never served as a wrong answer**. A write also
+  deserializer**, so corruption is **detected and rejected before it is decoded**. The one answer taken from the index alone,
+  `count()`, is checked for internal consistency but not against the payloads. A write also
   returns the object's **SHA-256** for you to record if you want an end-to-end check of your own — but be
   clear on the scope: that digest is *not* stored by the library and *not* re-checked on read. The read-path
   integrity guarantee is the CRC32C.
@@ -209,8 +210,8 @@ re-run load takes a fresh generation number and re-reads the row, so once the fa
 publishes whether or not that attempt landed, and the pointer never moves backwards. If the generation before the
 load must stay a rollback target, re-run with `keep: 2`: an attempt whose object landed takes the default single
 slot. To learn whether it landed, check `store.generations(ref)` rather than replay the request. All tier bytes are
-checksum-verified (and AEAD-authenticated when encrypted) before use, so corruption is rejected rather than returned
-as a wrong answer. Set a request timeout on your injected storage client (a timed-out read is retried as transient);
+checksum-verified (and AEAD-authenticated when encrypted) before use, so corruption is rejected rather than decoded
+(`count()` answers from the index alone and cannot confirm its sum against the payloads). Set a request timeout on your injected storage client (a timed-out read is retried as transient);
 see the [getting-started guide](docs/guide/getting-started.md#6-reliability-retries-backoff--timeouts) for tuning.
 
 ## What it costs — measured on real AWS

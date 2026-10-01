@@ -405,7 +405,8 @@ export class CrbmReader {
 //
 // Not checked here, because the format does not record enough: an encrypted footer hides the count and the total
 // (the index's AEAD tag stands in for them), and a cardinality is not compared with its payload, since only the
-// codec can read a payload. A payload that disagrees with its entry is caught when it is decoded.
+// codec can read a payload, and no read compares them afterwards: a payload whose bits disagree with its entry's
+// cardinality decodes to what it holds, and `count()` still reports the entry's.
 export function parseIndex(
   indexBytes: Uint8Array,
   payloadEnd: number,
