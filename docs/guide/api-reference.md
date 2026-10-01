@@ -586,6 +586,14 @@ therefore:
 - keep `status: 'active'` meaningful for such a row: a null pointer is a **live** segment, not a tombstone;
 - yield `destroyed` tombstones from `list()` — the sweep can only purge a row it can see.
 
+**How the store treats your driver's errors.** Throw `TransientError` for your backend's retryable faults: the
+store's read retry rides them out, and a write's caller can tell them from a deterministic failure. A registry's `get`
+is held to the same rule. A pointer refresh rides out only a `TransientError`, so a custom registry that throws a
+plain `Error` for an outage makes the read that meets it fail. The store wraps the source it reads through, a
+`StorageChunkSource` you pass as `storage` included, so do not wrap one before handing it over: that multiplies each
+read's attempts. A call of your own is yours to retry: loop over it, and back off before the next attempt when
+`isTransientError(err)` is true.
+
 ### Resilience (the store wires this by default)
 
 | Symbol | What it does |
