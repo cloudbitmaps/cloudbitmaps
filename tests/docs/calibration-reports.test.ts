@@ -545,10 +545,11 @@ describe('calibration reports are held to their evidence', () => {
     });
   });
 
-  // The harness now times `store.load()`, whose requests this derivation does not price. Its next file must be
-  // refused, loudly, rather than derive a write and publish's figures from a different load.
-  describe('a run that timed store.load()', () => {
-    it('is refused until the derivation prices that load', () => {
+  // A run that timed `store.load()` records its loads' and every stage's own requests, and is priced from those
+  // (tests/bench/calibration-figures-store-load.test.ts). A file that says it timed `store.load()` and records none
+  // of them is refused, rather than priced as a write and publish.
+  describe('a run that says it timed store.load()', () => {
+    it('is refused when it records no requests of its own', () => {
       const file = EVIDENCE.find((e) => e.includes('2026-09-23-94416'));
       expect(file).toBeDefined();
       if (file === undefined) return;
@@ -556,7 +557,9 @@ describe('calibration reports are held to their evidence', () => {
       expect(() => figures.derive(run, SOURCES)).not.toThrow();
       const later = structuredClone(run);
       later.phases.load.via = 'store.load()';
-      expect(() => figures.derive(later, SOURCES)).toThrow(/timed store\.load\(\)/);
+      expect(() => figures.derive(later, SOURCES)).toThrow(
+        /records no requests for its load stage/,
+      );
     });
   });
 

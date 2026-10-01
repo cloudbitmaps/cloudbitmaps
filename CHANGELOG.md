@@ -11,6 +11,23 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Added
+
+- **The calibration harness runs the stages an in-region run needs.** `pnpm calibrate:aws` now runs seven stages and
+  records each one's own requests by class and by kind of read: loads through `store.load()`, cold intersects over
+  the calibration layout, the same overlap with its shared chunks spread uniformly over each segment (a pure layout
+  from a fixed seed, `bench/lib/calibrate-spread.cjs`), a sweep over how many chunks the operands share
+  (`CR_CALIBRATE_SWEEP`, default 1,000 and 2,000), warm intersects, `count()` and `has()` as a first read, `has()` on a
+  segment already open, both again warm, and `andNot` of one segment against ten. A warm read that makes a request fails its stage. One table names the stages and bounds
+  each (`bench/lib/calibrate-stages.cjs`): the pre-flight projection prints every stage's bound, the finished run is
+  held to each, and a test fails when the harness runs a stage the table does not name. Each load records its own
+  requests, and `bench/lib/calibration-figures.cjs` prices a `store.load()` run from them and from each stage's own
+  counts, refusing a file whose stages do not add up to what was billed.
+- **The calibration harness measures how deep each cold read ran, and what it ran on.** Each cold intersect and each
+  `andNot` call records the requests in flight at their peak, the mean in flight, and how many it waited for one after
+  another, beside the engine's model of that, so a latency can be read against the number of round trips behind it.
+  Every run also records the AWS SDK and HTTP handler versions and the handler's socket cap.
+
 ### Fixed
 
 - **The install docs said npm needs nothing extra; npm 12 blocks `roaring`'s install script.** On npm 12 a plain
@@ -21,6 +38,25 @@ so, and so do the module headers in the code.
   runs the script but warns until it is allowed the same way. The troubleshooting entry covers npm 12's
   `npm install-scripts approve roaring`, which records the approval but runs nothing, so `npm rebuild roaring`
   follows it.
+- **The calibration harness runs from the CloudShell script's scratch directory.** It read the version it measured from
+  `packages/roaring/package.json`, which a scratch directory that installed the published packages does not have, so
+  `bash bench/calibrate-cloudshell.sh` stopped with `ENOENT` before it did anything. It now reads the installed
+  package's version there and the checkout's own from a checkout, and a test runs the harness, in projection mode,
+  from a directory holding only the files the script copies.
+- **The CloudShell script installs a working `roaring` on npm 12, and refuses a run it cannot label.** npm 12 runs a
+  dependency's install script only where the project allows it, and `roaring`'s is the one that fetches its native
+  binary, so the scratch install exited 0 and the first import threw. The script now allows it, and stops before
+  creating anything if the addon still does not load. It also refuses a shell that does not say which region it runs in,
+  a requested region other than the shell's own, and a rehearse flag other than `1`, and it measures the release this
+  clone's expectations were written for unless `CR_CALIBRATE_PACKAGE_VERSION` names another.
+
+### Changed
+
+- **Calibration results files carry every fractional number to nine decimals.** That is below a nanosecond for a time
+  in milliseconds and a billionth of a dollar for a cost. A ratio's binary tail otherwise runs to 17 digits, and one of
+  exactly 12 is a run the leak scan refuses, so a file could not be committed by chance.
+- **The default calibration workload is 20 single-part and 5 multipart loads, and every segment is loaded once.** A
+  segment's first load is what the projection bounds, so the harness refuses to load a name twice.
 
 ## [0.11.0] — 2026-10-01
 
