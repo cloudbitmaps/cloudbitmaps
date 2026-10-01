@@ -275,6 +275,7 @@ const storage = new AzureBlobStorage({
 One bucket (or container) and one prefix is the whole deployment: the generations, the pointers and the wrapped
 keys of encrypted segments all live there. There is no second service to run.
 
+- **The credentials need five S3 actions**, `s3:ListBucket` among them: [Permissions](production.md#permissions) lists them, with a sample policy.
 - **S3 needs a service that honors conditional writes** (`If-None-Match: *` and `If-Match`): AWS S3, and MinIO,
   which the test suite runs against. Another S3-compatible service must honor both headers, or a write-once
   generation can be overwritten without an error. Check yours.
@@ -399,13 +400,17 @@ about your own code. Suppressing a whole diagnostic channel to hide one known-be
 | **ref** | The object that names a segment: `{ segment: 'active' }` or `{ namespace, segment }`. |
 | **chunk** | A block of up to 65,536 consecutive ids inside a generation. Reads fetch only the chunks they need. |
 | **cardinality** | How many ids a set holds. |
-| **guard** | The check a load makes before it publishes: it refuses a result that is empty or much smaller than the segment it replaces. |
+| **guard** | The `guard` option of a load, such as `{ minRetained: 0.5 }`: it refuses a result smaller than you allow instead of publishing it. Without one, a load still refuses an empty result over a non-empty segment. |
 | **keep** | How many old generations a load leaves behind for readers still using them. The default, `1`, is right for almost everyone. |
 | **operand** | A segment you combine with another: in `a.intersect([b])`, `b` is an operand. |
 | **exclude** | A segment whose ids are removed from the result of a combine, in the same pass. |
+| **combine** | `intersect`, `union` or `andNot`: a read that combines a segment with others. Each has an `*Into` twin that writes the result as a new generation of another segment. |
+| **collect** | Delete old generations that a newer one has superseded. A load does it as its last step and leaves `keep` of them. |
+| **`cache.genTtlMs`** | How long a reader may keep serving the generation it has before it checks for a newer one: 2 s by default. See [how soon a reader sees a new load](reading.md#how-soon-a-reader-sees-a-new-load). |
+| **sweep** | `store.retireExpired()`, which you schedule: it retires the segments whose recorded expiry has passed. |
 | **pin** | `segment.pin()` returns a handle that keeps reading the generation that was current when you pinned it. |
-| **tombstone** | The row a dropped or erased segment leaves behind, marking it as gone. |
-| **token** | An opaque value the registry row carries. It changes when the row is replaced, so a write can tell it is talking to the same segment it read. |
+| **tombstone** | The row a dropped or crypto-shredded segment leaves behind, marking it as gone. |
+| **token** | An opaque value the registry row carries. Every write to the row changes it, so a write can tell whether the row moved since it read it. |
 | **fence** | A write that names the generation and token it expects to replace, and is refused if either moved. Loads do this for you. |
 
 ## Where next
