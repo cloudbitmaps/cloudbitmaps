@@ -126,8 +126,8 @@ Three things to know:
   [Loading in depth](loading.md#when-a-load-is-refused).
 - **A load is a batch job, not a request handler.** It holds the whole set in memory and uses a core for a moment.
   Run it from a scheduled job, a queue consumer or a short-lived container, and keep the request path for reads.
-- **There is no `create`.** `store.exists({ segment })` answers "is there data here already?" with one cheap
-  lookup, and `store.segments()` lists what the registry holds. Do not keep your own list of names.
+- **There is no `create`.** `store.exists({ segment })` answers "has this segment been loaded?" with one registry
+  read, and `store.segments()` lists what the registry holds. Do not keep your own list of names.
 
 Rolling back, how many old generations to keep and the other things a load does are in
 [Loading in depth](loading.md).
@@ -224,8 +224,8 @@ numbers them from the least significant, in 64-bit words.
 your Redis bitmap's underlying string will not read ours: a job that `GET`s the key and indexes into it, a
 byte-for-byte backup, another service that already parses that layout. `BITFIELD`, `BITPOS`, and the byte-range
 forms of `BITCOUNT` have no equivalent either: this is a set of ids, not an addressable bit buffer. `BITOP NOT` in
-particular has nothing to complement against, because there is no bounded universe here, only the `u32` id space. Raw bit-position **import** (the migration direction off Redis) and export are not built; whether
-they get built depends on someone saying they need them. Everything reached through bitmap *operations*
+particular has nothing to complement against, because there is no bounded universe here, only the `u32` id space. Import from Redis's raw bit layout (the migration direction off Redis), and export to it, are not built; whether
+they get built depends on someone saying they need them. [`exportSegments`](export.md) writes portable Roaring and ndjson, not that layout. Everything reached through bitmap *operations*
 transfers today; everything reached through the bytes does not.
 
 ## Move to S3, GCS or Azure
@@ -249,7 +249,7 @@ const storage = new GcsStorage({ bucket: 'my-bitmaps', prefix: 'cloudbitmaps' })
 ```js
 import { AzureBlobStorage } from '@cloudbitmaps/azure-blob';
 const storage = new AzureBlobStorage({
-  connectionString: process.env.AZURE_CONN,
+  connectionString: process.env.AZURE_STORAGE_CONNECTION_STRING,
   container: 'bitmaps',
   prefix: 'cloudbitmaps',
 });
@@ -263,8 +263,7 @@ keys of encrypted segments all live there. There is no second service to run.
   which the test suite runs against. Another S3-compatible service must honor both headers, or a write-once
   generation can be overwritten without an error. Check yours.
 - **If you pass your own `client`, use `@aws-sdk/client-s3` 3.645.0 or later.** Older versions silently overwrite an
-  existing object, which loses a published generation. Declare the SDK in your own `package.json` if your code
-  imports it. `S3Storage` builds its own client from the usual credential chain when you do not pass one.
+  existing object, which loses a published generation. If your own code imports the SDK, to build that `client`, add it to your own `package.json` too: pnpm does not let your code import a dependency of a dependency. `S3Storage` builds its own client from the usual credential chain when you do not pass one.
 - **GCS and Azure Blob** pass the same conformance suites as S3 and sit outside the validated envelope, which covers
   S3 storage only. They are the right choice if you are on that cloud, but you are an early user. The
   [roadmap](../ROADMAP.md#the-validated-envelope--whats-proven-and-what-isnt) states the exact claim.

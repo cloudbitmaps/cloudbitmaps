@@ -116,7 +116,7 @@ object and `If-Match` for the pointer.
   Blob use their own equivalents (`ifGenerationMatch`; `If-None-Match` and `If-Match`).
 - **Use `@aws-sdk/client-s3` 3.645.0 or later if you pass your own `client`.** Measured against MinIO, 3.640.0
   silently overwrites an existing object, which loses a published generation without an error. `@cloudbitmaps/s3`
-  never resolves its own SDK below the floor. Declare the SDK in your own `package.json` if your code imports it.
+  never resolves its own SDK below the floor. If your own code imports the SDK, to build that `client`, add it to your own `package.json` too: pnpm does not let your code import a dependency of a dependency.
 
 ## Reliability: retries, backoff & timeouts
 
