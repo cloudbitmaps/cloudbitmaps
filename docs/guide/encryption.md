@@ -101,6 +101,11 @@ crypto-shreds an encrypted segment and deletes its objects.
   `{ destroyed: false, cryptoShredded: false, reason: 'cleartext' }` instead of throwing. `eraseNamespace` leaves such
   segments as they are and reports each the same way. `allowCleartext: true` tombstones them anyway, which stops them
   resolving but leaves their bytes readable in the bucket. `dropSegment` is the call that deletes them.
+- **`destroySegment` reports why it did nothing.** `reason` is `'cleartext'` for a segment with no key, `'absent'` for no
+  row, and `'already'` for a tombstone.
+- **`eraseNamespace` returns one `DestroyResult` per segment** and records per-segment faults instead of throwing:
+  `reason: 'contended'` or `` `failed: ...` ``, with `destroyed: false`, means the segment still holds data. Inspect
+  them. A `maxScanSegments` that is not a finite number of at least 1 throws `ValidationError`.
 - **`eraseNamespace` lists the whole namespace before it destroys anything**, and holds the listing in memory, so it
   stops at the ceiling every fleet scan keeps: `maxScanSegments`, default 250,000. A namespace over it throws
   `BudgetExceededError` with nothing erased. Pass a higher `maxScanSegments` when the namespace really is that large.

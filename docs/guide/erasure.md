@@ -56,6 +56,12 @@ there", and `note` says why:
 | `error: <message>`, an `IntegrityError` naming a chunk | That segment is corrupt. The rewrite refused to copy the corruption into a new generation, and no erasure happened on it. | Investigate; re-running will not help. |
 | `error: <message>`, a `WriteConflictError` | The erasure could not remove a generation holding the id and refused to claim it had. Often a rewrite had already published, so part of the work landed (a rollback onto a generation that still holds the id, landing while the rewrite collects, is one way). It also fires on the collect-only path, where nothing is published at all. | See what a re-run reports instead of assuming the job finished. |
 
+A fault can also land after a rewrite published: a storage `delete` fault, a collect that could not prove the segment
+was still the same one, or a generation still holding the id when the bucket is listed at the end (such as a rollback
+target an operator moved the pointer onto mid-collect). The pointer has then moved, and the re-run searches every
+generation in the bucket. It usually reports `erased: true` against the generation it found the id in, and nothing at
+all if a racing collector took that generation first (gone, but unreceipted).
+
 Re-running is safe and idempotent: a segment the id is no longer in is simply not listed. But "not listed" is not by
 itself proof the id is gone. A segment whose registry row was purged is not scanned either, and its objects outlive it
 as orphans. `store.generations(ref)` lists those, since it reads the bucket whether or not a row exists, and
@@ -141,3 +147,28 @@ purged mid-rewrite is left out of the ledger, as a fresh call would leave it out
   `error: ...` note.
 - In the last instant before a delete, a rollback onto the generation being deleted leaves the pointer on a missing
   object, which `checkConsistency()` reports.
+
+**The result of erasing one segment.** `eraseSubject` runs `eraseIdFromSegment` (on `@cloudbitmaps/core`, for flavor and
+driver authors) over every registered segment, and each ledger entry is that function's result.
+
+- `erased: true` means no generation of the segment holds the id, checked by listing the bucket and reading what is
+  left. Otherwise `reason` is `'absent'`, `'destroyed'`, `'no-generation'`, `'not-member'` (no generation in the bucket
+  holds it) or `'superseded'`.
+- `'superseded'` means another writer moved the pointer off `fromGeneration` while the call was in flight: a load,
+  another erasure, or a rollback. It means this call did not erase the id, not that the id is still there. Re-run, and
+  if a racing erasure of the same id got there first, the re-run reports `'not-member'`.
+- A racing erasure collects with `keep: 0`, so it can delete the generation this call was streaming or the object it had
+  just written. The reason is read off the row, so a row tombstoned mid-rewrite reports `'destroyed'` and one purged by
+  the retention sweep reports `'absent'`.
+- A `NotFoundError` is raised only when the pointer still names the missing object, the forbidden
+  `missing-storage-generation` state, which no re-run fixes.
+- `collected` lists the generations this call deleted: evidence for the physical half of an Art. 17 erasure, and what to
+  keep if you build a proof-of-deletion artifact. It can legitimately be empty on a successful erasure, when a
+  concurrent collector removed the holding generation first. `erased: true` is a claim about the bucket, not about who
+  emptied it.
+- A call that could not collect throws instead of reporting `erased: true` over bytes still there:
+  `WriteConflictError` when the collect could not prove the segment was still the same one (re-created, or its row
+  purged), or when a generation still holding the id is left in the bucket. A chunk holding an out-of-range value throws
+  `IntegrityError` instead of being re-encoded into the new generation, so a corrupt segment is reported as corrupt, not
+  erased.
+

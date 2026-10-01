@@ -68,6 +68,12 @@ bound is stated; other pages link here.
   that is shorter). The store converges within one retry of the registry answering. A refresh that fails with anything
   else, such as an access denial or a row that will not parse, is not ridden out: the call that meets it throws that
   error, and the next read resolves the segment afresh.
+- **`store.invalidate(ref)` forgets what this store derived about a segment**: its open reader and the key that reader
+  unwrapped, its decoded chunks, and those of every pin of the segment, so its next read resolves the current
+  generation afresh. It does no I/O. The store's own writes (`load`, `rollback`, the `*Into` verbs, `eraseSubject`,
+  `dropSegment`, `retireExpired`) do this for themselves. Call it for what they cannot see: a `destroySegment` or
+  `eraseNamespace` beside the store, or another process's publish, erasure or drop, when your own fan-out delivers
+  the news.
 - **Without a registry** (a bare storage driver, which is read-only and cleartext), a store finds the generation by
   listing the bucket when it opens a segment, and keeps it until the reader cache evicts the segment, a read finds it
   swept, or it is invalidated.
@@ -76,7 +82,7 @@ bound is stated; other pages link here.
 resolved once, before any chunk is fetched, and every chunk is a whole, checksum-verified chunk of one generation. A
 load landing mid-call never tears a chunk. But a long call can read its later chunks from another generation if it
 straddles a TTL boundary, if the reader cache evicts the segment mid-call, if a sweep collects the generation it was
-reading, or if the store invalidates the segment. Its answer then describes two instants. [Pin the segment](#read-one-fixed-point-in-time)
+reading, or if the store invalidates the segment. Its answer then describes two instants. `dropSegment` and `retireExpired` invalidate too: a read of a segment that then no longer resolves ends rather than moves on, and a read of one `retireExpired` lists but leaves live moves on. [Pin the segment](#read-one-fixed-point-in-time)
 when that matters.
 
 ## Read one fixed point in time
@@ -101,6 +107,43 @@ for await (const id of audience.iterate()) {
 - **Size `keep` for your longest pinned job:** keep more generations than the loads that can land on the segment while
   the job runs. See [Generations and `keep`](loading.md#generations-and-keep). An erasure collects the generation it rewrote whatever
   `keep` says.
+
+### How a pin stays correct
+
+- **A pin costs a generation number, not a retained index.** The pinned reader lives in the same bounded LRU as every
+  other reader. Its decoded chunks share the store's chunk cache and its bound, under keys of their own that no live
+  read writes. So a pin is never handed a chunk a live read fetched from another generation, and it pays one GET for a
+  chunk a live read of its generation already cached.
+- **One call reads a segment at one generation.** A combine that holds the same segment at two generations is refused
+  with `ValidationError` when it is read, as a combine's other errors are. That covers pins of two generations, pins of
+  one generation number in two incarnations of its name, and a pin beside a live handle of the same segment.
+  Materialize one side first with `intersectInto(dest, [])`. Two pins of one object combine freely, and an `*Into` of a
+  combine that is refused throws before it reads anything.
+- **A pin is safe across a re-creation.** `pin()` records the pinned object's size and footer checksum. If the segment
+  is purged and loaded again, which starts the new segment at generation 0 again, the pin never reads the new
+  segment: what it has already read still answers, and anything it would have to fetch fails with `NotFoundError`, with
+  or without a registry. An object of another size counts as another object, damaged or not. A replacement it has
+  found is remembered, so later reads fail with no request, until the store forgets it. `store.invalidate(ref)` does
+  that, and so does a later `pin()` of the same version that opens the pinned object again. The store remembers at most
+  `cache.readerMax` of them. So once a restore puts the object back, invalidate its store: the pin then reads it
+  again, and a pin taken after that reads the object then stored as its generation.
+- **`pin()` opens its reader as it pins.** With a registry, pins of one generation taken while its row is unchanged
+  share that reader while the store keeps it open, pins taken at the same moment included. Only the first costs a tail
+  read, and a key unwrap for an encrypted segment, even if it is never read. Without a registry, every `pin()` lists the
+  segment's objects and makes the tail read. `pin()` and every pinned read are retried as the store's reads are.
+- **A segment with no current generation pins nothing and reads empty.** A pinned segment whose row is later dropped or
+  destroyed fails with `NotFoundError` once it must open its object again, rather than going empty part-way through a
+  call.
+- **A pin keeps the key its reader unwrapped while that reader stays open, and answers from the chunks it decoded while
+  they stay cached.** Its own store invalidates it on a `load`, a `rollback` or an `*Into` of its segment, a
+  `dropSegment` of its segment, a `retireExpired` whose ledger lists its segment (retired or not; neither of those two
+  on a dry run), and an `eraseSubject` that scans its segment while it is not destroyed. An invalidated pin opens its
+  object again, and fails if that object is gone or replaced, or its row is gone or destroyed. Anything else leaves it
+  as it is. After a `destroySegment` beside its store, or an erasure, a drop or a retirement through another store, in
+  the same process or another, it answers from what it holds until its store's reader cache evicts the pin's reader and
+  the store's chunk cache evicts the chunks the pin decoded, or `store.invalidate(ref)` is called on its store. Where
+  the object it reads has been deleted, a chunk it has not cached fails at once.
+- **It needs the `.crbm` storage source** (`UnsupportedError` otherwise).
 
 ## Page through a segment
 

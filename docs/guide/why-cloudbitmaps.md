@@ -1,10 +1,7 @@
 # What it saves, and where it doesn't
 
-For anyone deciding whether to keep large bitmap sets in CloudBitmaps or in an always-on Redis. Every cost here
-comes from the library's own `estimateCost()`. Every dollar amount, share, multiple and request count on the page
-written in digits, AWS's published prices among them, is written into it by `bench/sizing.cjs` and checked against it
-by CI. CI refuses any other digit on the page, bar a few names such as `us-east-1`, and the HTML, images and code
-fences that could hide one; a figure written in words, it refuses in the spellings it knows. The prices are AWS's
+For anyone deciding whether to keep large bitmap sets in CloudBitmaps or in an always-on Redis. [The short
+answer](#the-short-answer) is first. Every cost here comes from the library's own `estimateCost()`. The prices are AWS's
 `us-east-1` list prices, on demand unless a sentence says otherwise, and the three deployments are illustrative
 workloads, not anyone's measured system. There is no latency figure, because none has been measured inside a region
 yet.
@@ -222,3 +219,8 @@ proposed in an issue on this repo before it is built.
   modeled.
 - **What running Redis takes besides its price**: the operations, the failovers, and its speed, which is Redis's to
   win.
+
+**How the figures are kept honest.** Every dollar amount, share, multiple and request count on this page written in
+digits, AWS's published prices among them, is written into it by `bench/sizing.cjs` and checked against it by CI. CI
+refuses any other digit on the page, bar a few names such as `us-east-1`, and the HTML, images and code fences that
+could hide one; a figure written in words, it refuses in the spellings it knows.

@@ -61,6 +61,9 @@ create the bucket, not on every load. It is idempotent, so re-running is harmles
   sweep.
 - **A past instant is legal** and means "eligible on the next sweep". Backfilling a policy onto buckets that already
   exist is a normal migration.
+- **A crypto-shredded segment is refused**, and the result's `indexed` says whether the due-index pointer was written.
+  `indexed: false` is a degradation, not a failure: the fleet scan still retires the segment. The seconds check is a
+  floor, `MIN_EXPIRES_AT_MS`.
 - **It works before the first load.** A segment with no registry row yet gets one (the result says
   `createdRow: true`) with no storage generation (`currentGen: null`). The policy is recorded ahead of the data, the
   sweep can already see the segment, and the first load publishes onto that row. Reads are unaffected: a pointer-less
@@ -99,6 +102,8 @@ for an object a load was still writing, and the `generationsRemaining` report al
 const swept = await store.retireExpired({ namespace: 'active-daily' });
 // → { scanned, eligible, retired, wouldRetire, tombstonesPurged, limited, dryRun, entries }
 ```
+
+A bad argument throws `ValidationError`. A per-segment fault is an `entries` row, never a throw.
 
 **It is a call, not a daemon.** Nothing in this library schedules itself, and that is deliberate: the same code has
 to behave identically in a Lambda, an edge isolate and a long-lived server, and a timer that only works in one of
@@ -226,6 +231,7 @@ const result = await store.dropSegment(ref, { confirmSegment: ref.segment });
 |---|---|---|
 | `true` | `undefined` | An ordinary drop: tombstone written, storage generations swept |
 | `true` | `'already'` | Already tombstoned. **Not** a no-op: it re-sweeps storage, so it is how a residual in `generationsRemaining` is collected |
+| `true` | any | On an encrypted segment the result also says `cryptoShredded: true`, because the drop discards the key. `dryRun` previews `wouldDelete` and `wouldCryptoShred` without touching anything |
 | `false` | `'absent'` | **Nothing existed**: no row and no objects. The one case to alert on, usually a mistyped name or an omitted `namespace`, both of which address a different segment than you meant |
 
 A whole retention job by hand is a loop. If the cutoff is a property of the segment rather than of your code,

@@ -44,6 +44,17 @@ refused.
 
 A refused load also emits `segment.load-refused` to the `audit` sink you pass.
 
+**What throws instead.** A refusal is an outcome. A throw is a fault:
+
+- invalid options or ids, or a crypto-shredded segment: `ValidationError`;
+- a key the keystore cannot provide: `KeyUnavailableError`;
+- a current generation that will not open when the load reads its size for a guard: `IntegrityError`;
+- a driver failure;
+- a collection pass that could not prove the segment was unchanged: `WriteConflictError`. This can be raised after the
+  publish landed, so a throw does not by itself mean the load did not take effect.
+
+The `*Into` verbs throw on the same superseded condition instead of reporting it.
+
 ## What a load accepts
 
 **Any id source, in any order, with duplicates.** The input is a sync or async iterable, consumed lazily and
@@ -115,6 +126,15 @@ for await (const s of store.segments({ namespace: 'active-daily' })) {
   [reliability](production.md#reliability-retries-backoff--timeouts)): a transient fault part-way through ends the loop
   with that error, and calling `segments()` again scans from the start. It yields `destroyed` tombstones and rows with
   no data as they are, rather than quietly filtering them.
+- `exists` answers `false` for a row minted ahead of the first load (`setRetention` does that) and for a `destroyed`
+  tombstone, because a read answers empty in both. Two states answer `true` where a read still gives you nothing, and
+  neither is this call's job: a torn restore (a live pointer whose object was deleted) makes reads throw, which
+  `checkConsistency` is the call for, and a handle with an expired `expiresAt` reads empty by a rule that lives on the
+  handle.
+- `segments()` yields `destroyed` tombstones and rows whose `currentGen` is `null`, because a filtered enumeration that
+  looks complete is worse than an honest one. Filter yourself, or ask `exists` the narrower question. Internal
+  bookkeeping rows are the one exclusion, and only on an unscoped scan: they live in the reserved `cbm.due.` namespace,
+  so a `namespace` starting with it throws `ValidationError`, as it does in every call that takes one.
 - Neither `exists` nor `segments` is a lock: a segment can appear or vanish between the check and whatever you do
   next. When the answer has to hold, use the fence built for that: `load`'s `guard`, or `expectFrom` and
   `expectToken` on a publish.
@@ -195,6 +215,9 @@ await store.rollback(ref, 3, { audit }); // → { fromGeneration: 4, generation:
 await store.rollback(ref, 4, { audit, allowForward: true });
 ```
 
+- `generations` is one registry read and one listing, and it does not open the objects. It lists the bucket whether or
+  not the segment has a registry row, so it also finds the objects a purged row left behind. It shows what the bucket
+  holds, not what the segment has ever been, since collection deletes superseded objects.
 - A rollback deletes nothing, and it is fenced on the row it read, so a load that lands meanwhile makes it throw
   `WriteConflictError` instead of being undone.
 - A generation that is not in the bucket throws `NotFoundError` naming the ones that are.
@@ -205,6 +228,18 @@ await store.rollback(ref, 4, { audit, allowForward: true });
 - Each move emits `segment.rollback` to the `audit` sink you pass
   ([the audit trail](observability.md#audit-trail-security--compliance-events)), and this store drops its cached view of
   the segment.
+
+**Why rollback is not forward-only.** Forward-only is right for a writer: a load whose ids came from upstream loses
+nothing by being out-raced, and regressing would let a slow loader silently undo a fast one. It is wrong for an
+operator who has looked at the segment and knows which generation they want. So rollback refuses rather than guesses.
+A crypto-shredded segment throws `ValidationError`, since every generation of it is unreadable, and rolling to the
+generation already current is a reported no-op.
+
+**What happens to the generations above the new pointer.** They stay, which is what makes a rollback reversible. They
+are then above `currentGen`, where collection never looks, so they remain until a load numbers above them (collection
+then keeps the newest `keep` of what is below its pointer), `dropSegment` deletes them, or an erasure deletes them: all
+of them when it rewrites, only those that hold the id when the current generation does not. Rollback is audited as
+`segment.rollback`, because every other pointer move can be reconstructed from "a load happened" and this one cannot.
 
 ## Write a result into another segment: the `*Into` verbs
 
@@ -263,6 +298,12 @@ otherwise. Five properties follow from "a write is a load":
   same bounds `load()` takes, judged against what the destination held. A refusal is reported, not thrown; a lost race
   still throws `WriteConflictError`. A refused call also emits `segment.load-refused` to `audit`, since a
   materialization is a load.
+
+A `WriteConflictError` from an `*Into` means the destination changed underneath the call, and it does not by itself
+mean nothing was published. The same error covers a pointer that moved, a row rewritten by something that is not a
+supersession at all (a `setRetention`), a purge, and the collection pass that runs after a successful publish. Re-read
+the destination and decide; do not treat it as "the write did not happen". A call that involves an expired handle is
+refused earlier and harder, with `ValidationError`.
 
 To suppress the result of an intersection, pass `exclude` to `intersectInto` instead of writing a temporary segment and
 then calling `andNotInto`. The suppression folds into the same chunk-aligned pass, and each exclude is read only where
