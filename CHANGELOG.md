@@ -19,9 +19,9 @@ nothing in the library would still call, the second takes names off the public e
 that uses them, and the third and fourth remove the retrying driver wrappers and the bulk loader. The two after those
 make a backend class the one way an application builds its storage: the size settings move onto the backend options,
 and the separate storage and registry halves and `createBackend` are no longer exported. The ninth makes
-the collection refuse a `keep` it used to accept. The next ten make a call throw where it used to return: five of
+the collection refuse a `keep` it used to accept. The next eleven make a call throw where it used to return: six of
 them fix a wrong answer, and the entries under **Fixed** say what the call returned before; one changes when a pin fails;
-three hold a call to a rule the rest of the library already kept; the last of the ten refuses a namespace the library keeps for its own
+three hold a call to a rule the rest of the library already kept; the last of the eleven refuses a namespace the library keeps for its own
 rows, and says in its own entry what the call returned before. The six after them hold the store, the backends and the registry to what the library itself takes and writes, stop
 checking for a local store's older directory layout, and give its errors the library's own brand. The last two
 change what `estimateCost()` compares with and what a `CostReport` carries.
@@ -200,6 +200,13 @@ change what `estimateCost()` compares with and what a `CostReport` carries.
   that lists a segment's chunks: `iterate`, every combine, and a `count` with no index to sum. A combine used to drop
   the duplicate. The sources the library ships never list a key twice; make a custom one's `listChunkKeys` return
   each key once.
+- **A read whose pointer refresh fails with anything but a transient fault throws that error**, where it kept
+  serving. A `has`, `count`, `iterate` or combine, or a `costReport`'s size read, that finds its segment's pointer
+  due for a re-read (once `cache.genTtlMs` has passed) and gets an access denial, an `IntegrityError` for a row
+  that will not parse, or any other error that is not a `TransientError` now fails with it, and the reader's
+  snapshot is dropped, so the next read resolves the segment afresh. A transient fault is unchanged: the reader
+  keeps serving, now with a retry after 500 ms rather than after a whole `cache.genTtlMs`. A dropped or shredded
+  row, which the registry reports as no row, still reads empty. See **Fixed**.
 - **`eraseNamespace` throws `BudgetExceededError` for a namespace of more than 250,000 segments**, where it erased
   it. It listed the whole namespace with no bound, holding every row resident, when every other fleet scan stops at
   a ceiling. It now holds its listing to `DEFAULT_MAX_SCAN_SEGMENTS` (250,000), and the error tells you to raise
@@ -486,6 +493,14 @@ These two change what `estimateCost()` reports:
 
 ### Fixed
 
+- **A failed pointer refresh served the old generation, and the key it unwrapped, for as long as the registry
+  stayed unreadable.** A reader that could not re-read a segment's pointer kept its reader and stamped it fresh,
+  so during a registry outage, or after an access denial, a crypto-shredded or dropped segment could keep
+  answering well past the `cache.genTtlMs` that `PRIVACY.md` states. Only a transient fault is ridden out now, and
+  the bound has the shape the privacy note gives: while the registry cannot be read, a reader keeps serving the
+  generation it had, retrying the refresh after 500 ms (never longer than `cache.genTtlMs`) and at most once per
+  segment at a time; any other error reaches the reader. Reads inside the TTL, and the one registry read a refresh
+  makes, are unchanged.
 - **Two local-filesystem backends on one root in one process could both advance a registry row from the same
   token.** The row's compare-and-swap was serialized by a lock each `LocalFsStorage` (or
   `LocalFsRegistryDriver`) kept for itself, so two instances on one root, or a store and a CLI call in one

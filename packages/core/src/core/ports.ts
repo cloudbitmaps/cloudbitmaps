@@ -383,7 +383,11 @@ export function isStorageBackend(value: unknown): value is StorageBackend {
  */
 export interface IRegistryDriver {
   capabilities(): RegCaps;
-  /** The segment's record, or `null` if it doesn't exist (or was deleted). */
+  /**
+   * The segment's record, or `null` if it doesn't exist (or was deleted). Throw {@link TransientError} for a fault
+   * worth riding out (throttling, a 5xx, a dropped connection): a reader whose pointer refresh meets one keeps
+   * serving what it holds and asks again shortly, while any other error reaches the read that met it.
+   */
   get(ref: SegmentRef): Promise<RegistryRecord | null>;
   /** Create the row; throws {@link WriteConflictError} if it already exists (use CAS to mutate). */
   create(ref: SegmentRef, record: NewRegistryRecord): Promise<{ token: Token }>;

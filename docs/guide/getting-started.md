@@ -408,7 +408,11 @@ await store.segment('active').count(); // → 3, generation resolved from the re
 segment's current generation on a short TTL (`cache.genTtlMs`, default **2000 ms**), so reads are **bounded
 eventually-consistent**: after a load publishes a new generation, a reader may serve the prior one for up to the
 TTL, then converges — no restart needed. Tune it down for fresher reads, up to trade a little staleness for fewer
-registry reads. `0` turns the timed refresh off: the store then re-resolves a segment only when its reader cache
+registry reads. **An outage of the registry stretches the bound.** A refresh that fails with a transient fault
+(throttling, a 5xx, a dropped connection) keeps serving the generation the reader holds, and retries 500 ms later
+(or after the TTL, if that is shorter), so it converges within one retry of the registry answering. A refresh that
+fails with anything else, such as an access denial or a row that will not parse, is not ridden out: the `has`,
+`count`, `iterate` or combine that meets it throws that error, and the next read resolves the segment afresh. `0` turns the timed refresh off: the store then re-resolves a segment only when its reader cache
 evicts it, when a read has to fetch from a generation a sweep deleted, or when it is invalidated — by this store's
 own `load`, `rollback`, `eraseSubject` or `*Into` writes, or by `store.invalidate(ref)` — so another process's
 publish reaches it with no bound at all. The cache is keyed by
@@ -638,7 +642,7 @@ object that landed unpublished; while another writer is active on the segment, t
 is. `generations` is not retried either, so a fault there means asking again.
 
 > Writing your own driver? Throw `TransientError` for your backend's retryable faults: the store's read retry
-> rides them out, and a write's caller can tell them from a deterministic failure. The store wraps the source it
+> rides them out, and a write's caller can tell them from a deterministic failure. A registry's `get` is held to it too: a pointer refresh rides out only a `TransientError`, so a custom registry that throws a plain `Error` for an outage makes the read that meets it fail. The store wraps the source it
 > reads through, a `StorageChunkSource` you pass as `storage` included, so do not wrap one before handing it over:
 > that multiplies each read's attempts. A call of your own is yours to retry: loop over it, and back off before the
 > next attempt when `isTransientError(err)` is true. The retry primitives a flavor or driver author builds on are on
@@ -1386,9 +1390,12 @@ happen to point at the same bucket.
 |---|---|
 | storage | on return — the generation holding it is deleted |
 | the store that performed the erasure | on return, and its pins then fail |
-| another store, with a registry and a `cache.genTtlMs` above 0 | within `cache.genTtlMs` (default 2 s) |
+| another store, with a registry and a `cache.genTtlMs` above 0 | within `cache.genTtlMs` (default 2 s), while the registry can be read: a transient fault in reading it keeps the store serving what it holds and retries 500 ms later |
 | a pinned handle (`seg.pin()`) in another store | **no bound** — until that store's reader cache evicts the pin's reader and its chunk cache evicts the chunks the pin decoded, or `store.invalidate(ref)` is called there |
 | another store with **no registry** (a bare `IStorageDriver`), with `cache: { genTtlMs: 0 }`, or on a storage source built with **no clock** | **no bound** — only when its caches happen to let the segment go, or something tells it |
+
+A refresh that fails with anything but a transient fault (an access denial, a row that will not parse) does not
+keep serving: the read that meets it throws, and the reader is dropped with the key it unwrapped.
 
 `cache: { genTtlMs: 0 }` turns the timed refresh off, and is a reasonable setting for a read-only replica of
 immutable data — but a store set that way has no bound on when it observes an erasure or a crypto-shred. `store.invalidate(ref)` is the hook;

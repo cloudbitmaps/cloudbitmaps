@@ -201,7 +201,9 @@ collecting the generation it was reading, which heals the read forward; and an i
 `retireExpired` invalidate too: a read of a segment that then no longer resolves ends rather than moves on, and a
 read of one `retireExpired` lists but leaves live moves on. The timed refresh needs a
 `registry` and a `cache.genTtlMs` above 0 (default 2000 ms): after a load publishes, such a store serves the previous
-generation for at most that long, then converges. The cache is keyed by generation, so a new generation is never
+generation for at most that long, then converges. While the registry cannot be read, a refresh that fails with a
+transient fault keeps serving what the reader holds and retries 500 ms later (or after the TTL, if shorter); any
+other error reaches the read that meets it, and its reader is dropped. The cache is keyed by generation, so a new generation is never
 served from stale decoded chunks. To read one instant, pin: `seg.pin()`.
 
 ---
@@ -275,7 +277,7 @@ wrote)
 | key | type | what it holds |
 |---|---|---|
 | `storage` **(required)** | `StorageBackend \| IStorageDriver \| StorageChunkSource` | where everything lives |
-| `cache?` | `CacheOptions` | `maxChunks?` (decoded chunks held in RAM, default 1024) · `ttlMs?` · `genTtlMs?` (default 2000 — the bound on read staleness after a publish; needs a backend) · `readerMax?` (open `.crbm` readers, default 1024) · `readerMaxBytes?` (their parsed indices, default 64 MiB) |
+| `cache?` | `CacheOptions` | `maxChunks?` (decoded chunks held in RAM, default 1024) · `ttlMs?` · `genTtlMs?` (default 2000 — the bound on read staleness after a publish, stretched by a registry outage to one retry of 500 ms after it ends; needs a backend) · `readerMax?` (open `.crbm` readers, default 1024) · `readerMaxBytes?` (their parsed indices, default 64 MiB) |
 | `encryption?` | `EncryptionOptions` | `keystore?` · `required?` — both need a backend, since the wrapped DEK lives in the registry |
 | `retry?` | `RetryOptions \| false` | a **partial** `RetryPolicy` (anything omitted keeps its `DEFAULT_RETRY_POLICY` value) plus `onRetry?`, for the transient retry of every read that answers a query (an erasure's reads and a load's guard read are not retried); `false` turns it off. Writes are never retried ([Resilience](#resilience-the-store-wires-this-by-default)) |
 | `metrics?` | `IMetricsSink` | typed metric events; defaults to a no-op |

@@ -11,6 +11,7 @@ import {
   DEFAULT_CURRENT_GEN_TTL_MS,
   DEFAULT_MAX_OPEN_INDEX_BYTES,
   DEFAULT_MAX_OPEN_SEGMENTS,
+  REFRESH_RETRY_MS,
 } from './reader-defaults';
 import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
 import {
@@ -161,7 +162,8 @@ function versionOf(generation: number, lineage: unknown): string {
 /** A memoized per-segment reader plus the time it was installed, for the current-generation TTL refresh. */
 interface Snapshot {
   readonly reader: Promise<CrbmReader | null>;
-  readonly installedAtMs: number;
+  /** When the snapshot's refresh clock started. A refresh that failed transiently moves it back, so it lapses sooner. */
+  installedAtMs: number;
 }
 
 /**
@@ -278,24 +280,48 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     // Expired: install the in-flight refresh **synchronously** (before any await) so concurrent readers in this
     // window coalesce onto the one re-resolve — ≤ one registry read + at most one reopen per segment per window
     // (no boundary thundering-herd). computeRefreshedReader reuses the prior reader unless the generation moved.
-    return this.install(key, this.computeRefreshedReader(ref, existing)).reader;
+    const snap: Snapshot = this.install(
+      key,
+      this.computeRefreshedReader(ref, existing, () => this.retrySoon(snap)),
+    );
+    return snap.reader;
+  }
+
+  /**
+   * A refresh failed transiently and the prior reader keeps serving: make this snapshot lapse after
+   * {@link REFRESH_RETRY_MS} (never longer than the TTL) rather than after a whole TTL, so the next read after
+   * that asks the registry again. It costs no read of its own; it only changes when the next refresh happens.
+   */
+  private retrySoon(snap: Snapshot): void {
+    snap.installedAtMs =
+      this.now() - (this.currentGenTtlMs - Math.min(this.currentGenTtlMs, REFRESH_RETRY_MS));
   }
 
   /** TTL elapsed: cheaply re-resolve `currentGen`; reopen only if it actually changed, else reuse the prior reader. */
   private async computeRefreshedReader(
     ref: SegmentRef,
     existing: Snapshot,
+    onTransientFault: () => void,
   ): Promise<CrbmReader | null> {
     const current = await existing.reader.catch(() => null);
     let target: Target | null | undefined;
     try {
       target = await this.resolveTarget(ref);
-    } catch {
-      target = undefined; // transient resolve fault
+    } catch (err) {
+      // Only a transient fault is ridden out. Anything else — an access denial, a corrupt row, a registry that
+      // answers NotFound — fails this read exactly as a cold resolve of the segment would, and the snapshot is
+      // forgotten, so the reader and the key it unwrapped do not outlive a refresh that could not be trusted.
+      if (!isTransientError(err)) throw err;
+      target = undefined;
     }
-    // Transient resolve fault: keep serving the prior reader if it's alive; if it's dead (null/failed open),
+    // Transient resolve fault: keep serving the prior reader if it's alive, but ask again soon rather than a whole
+    // TTL later, so an outage ends the stale serving shortly after the registry answers. If it's dead (null/failed open),
     // reopen rather than re-arm a dead snapshot (else the segment reads empty for a whole TTL window).
-    if (target === undefined) return current ?? this.resolveLatest(ref);
+    if (target === undefined) {
+      if (current === null) return this.resolveLatest(ref);
+      onTransientFault();
+      return current;
+    }
     if (target === null) return null; // segment gone / destroyed
     // Reuse only when BOTH the generation and the row match. Comparing the number alone treated a
     // retired-and-re-created name as unchanged — `nextGeneration` restarts at 0, so incarnation 2's generation 0
