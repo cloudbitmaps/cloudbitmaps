@@ -19,7 +19,7 @@ nothing in the library would still call, the second takes names off the public e
 that uses them, and the third and fourth remove the retrying driver wrappers and the bulk loader. The two after those
 make a backend class the one way an application builds its storage: the size settings move onto the backend options,
 and the separate storage and registry halves and `createBackend` are no longer exported. The ninth makes
-the collection refuse a `keep` it used to accept. The next eleven make a call throw where it used to return: six of
+the collection refuse a `keep` it used to accept. The next twelve make a call throw where it used to return: seven of
 them fix a wrong answer, and the entries under **Fixed** say what the call returned before; one changes when a pin fails;
 three hold a call to a rule the rest of the library already kept; the last of the eleven refuses a namespace the library keeps for its own
 rows, and says in its own entry what the call returned before. The six after them hold the store, the backends and the registry to what the library itself takes and writes, stop
@@ -202,6 +202,13 @@ budget for the generations it opens.
   touch or run past their container, a run container with no runs, a bitset whose header cardinality disagrees with
   its bits, and an offset header that disagrees with where the containers are. Nothing the library writes has any of
   these shapes, so a segment it loaded reads as it did.
+- **An object whose index is not internally consistent is refused with `IntegrityError` when it is opened**, so
+  every call that opens it throws: `has`, `count`, `iterate`, every combine, a load's guard, a pin, an erasure and
+  `checkConsistency`. Two shapes were accepted and are now refused: an index entry whose payload runs past the end
+  of the payload region, into the index, and an encrypted object's entry whose payload is too short to hold its
+  nonce and tag. `count()` summed such an index and returned; a read of the chunk failed later, on its checksum or
+  its authentication tag. Nothing the library writes has either shape, so a segment it loaded reads as it did. To move
+  past one, roll the segment back to an earlier generation that opens, or load it again.
 - **A combine whose other operands have all expired checks its own segment as every combine does.**
   `seg.union([expired])` and `seg.andNot([expired])` read `seg` alone, and now refuse a `seg` that names no segment
   with `ValidationError`, as `seg.union([live])` already did, where they returned no ids; `allowAbsentOperands: true`
@@ -538,6 +545,17 @@ This one changes what an erasure charges its budget for:
 
 ### Fixed
 
+- **`count()` answers from the index, and an open did not check every rule the index must keep.** The per-chunk
+  cardinalities the `.crbm` index records are summed with no payload decoded, so a corrupt index changes the answer
+  where `iterate()` and the combines, which decode the payloads, would refuse it. An open already refused a key that
+  repeats, falls out of order or passes `0xffff`, a cardinality outside `1..65536`, an empty or oversized payload,
+  and, on an unencrypted object, a footer chunk count or total that disagrees with the index. It now also refuses an
+  entry whose payload runs into the index rather than ending where the index starts, and an encrypted entry too short
+  for its nonce and tag (see **Breaking**), once per open and never per call. A corrupt index that is still
+  internally consistent still yields a wrong count, and that is now stated where `count()` is described: the guide,
+  the API reference, the README, `SECURITY.md` and the TSDoc. The same index feeds a load's `cardinalityBefore` and
+  the chunk keys an `intersect` plans from. `iterate()` the segment where the count must be confirmed against the
+  payloads.
 - **A rollback whose undo failed said the pointer "could NOT be put back", which it could not know.** When the
   target generation was collected while the pointer moved, the rollback swaps the pointer back and throws. If
   that swap threw, the message stated that the pointer still named the missing generation, but a swap that

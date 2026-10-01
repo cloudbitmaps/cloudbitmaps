@@ -599,7 +599,9 @@ millions of users per segment, because the operations that govern it don't scale
   count is a pointer read and one tail read, which brings the index (a second read for an index larger than it);
   a reader that already has the segment open re-reads only the pointer, at most once each `cache.genTtlMs`. So
   counting a ten-million-user audience makes the same requests as counting a thousand while its index fits that
-  one tail read.
+  one tail read. The sum is the index's own word, checked for internal consistency when the object opens but not
+  against the payloads: a corrupt index that is still internally consistent yields a wrong count, where `iterate()`
+  and the combines decode the payloads.
 - **Membership checks come from RAM** once warm: a `has()` whose chunk is in the cache makes no request, beyond
   at most one pointer read per segment each `cache.genTtlMs` (2 s by default), for as long as the reader cache
   keeps the segment open.

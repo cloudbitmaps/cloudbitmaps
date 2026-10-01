@@ -24,7 +24,11 @@ that crashes the process when it is used. The decoded **values** are then range-
 another chunk's space. The last two checks matter because size caps and CRCs catch neither — a CRC proves the
 bytes are the bytes that were written, which an attacker able to write your storage satisfies by construction.
 A hostile or corrupted object fails
-closed with a typed `IntegrityError` on read — it can neither crash the process nor return a wrong answer. This
+closed with a typed `IntegrityError` on read — it can neither crash the process nor return a wrong answer from a
+payload it decodes. `count()` is the exception to the second half: it answers from the index without decoding a
+payload, so opening an object checks the index for internal consistency (key order and range, each cardinality in
+`1..65536`, payloads inside the payload region, and the footer's chunk count and total against the index on an
+unencrypted object), and an index that is corrupt yet still internally consistent yields a wrong count. This
 boundary is exercised by coverage-guided fuzzing (`pnpm fuzz:*`, nightly) and the DR drill's byte-corruption
 scenario (`pnpm dr-drill`).
 

@@ -148,6 +148,15 @@ IDs are integers in `[0, 2³²)`. Each is split into a 16-bit chunk key + a 16-b
 of storage and transfer: `has()` fetches one chunk (or answers from the cache), `count()` fetches none, and
 `intersect()` fetches only the chunks two segments could share.
 
+**What `count()` trusts.** `count()` answers from the `.crbm` index: it sums the per-chunk cardinalities the index
+records and decodes no payload, which is what makes it cheap. Opening a generation checks the index for internal
+consistency, once, and refuses one that fails with `IntegrityError`: every chunk key in range and ascending, every
+cardinality in `1..65536`, every payload inside the payload region, and, on an unencrypted object, the footer's
+chunk count and total cardinality equal to what the index holds. A corrupt index that is still internally
+consistent yields a wrong count, with no error. `iterate()` and the combines decode the payloads, whose structure
+is checked. The same index supplies `load`'s `cardinalityBefore` and the chunk keys an `intersect` plans its fetches
+from. Where an exact answer matters more than the request count, `iterate()` the segment and count what it yields.
+
 **There is no `add` or `remove` on a segment.** A segment changes by getting a *new generation* — the next load
 supersedes the previous one, an `*Into` verb writes a new generation of its destination ([§7](#7-materializing-the-into-verbs)),
 and a GDPR erasure rewrites the current generation without one id ([§13](#13-subject-access--erasure-gdpr-art-15--17)).
@@ -1958,7 +1967,7 @@ guidance, and why the registry must be point-in-time-recoverable alongside the o
 | Method | Returns | Notes |
 |---|---|---|
 | `has(id)` | `Promise<boolean>` | `ValidationError` if `id ∉ [0, 2³²)`. The cache, else **one** ranged GET of that id's chunk — never budgeted |
-| `count()` | `Promise<number>` | exact cardinality, summed from the `.crbm` index with **zero payload reads** on a loaded segment; `budget`-guarded on a source without an index ([§15](#15-cost-ceiling-the-per-op-fan-out-budget)) |
+| `count()` | `Promise<number>` | cardinality, summed from the `.crbm` index with **zero payload reads** on a loaded segment (the index is checked for internal consistency at open, and a corrupt but consistent one yields a wrong count; `iterate()` and the combines decode payloads); `budget`-guarded on a source without an index ([§15](#15-cost-ceiling-the-per-op-fan-out-budget)) |
 | `iterate({ after?, through? }?)` | `AsyncIterable<number>` | ascending, one chunk at a time; `budget`-guarded. With a range, only the ids in `(after, through]` and the chunks it overlaps ([Page through a segment](#page-through-a-segment)) |
 | `intersect(others, { after?, through?, exclude?, concurrency?, budget? })` | `AsyncIterable<number>` | ascending; chunk-skipping. `exclude` subtracts suppression segments **in the same pass** |
 | `union(others, { after?, through?, exclude?, concurrency?, budget? })` | `AsyncIterable<number>` | ascending. The one composite with **no** chunk-skipping — every chunk of every operand is read |
