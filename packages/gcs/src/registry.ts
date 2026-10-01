@@ -48,6 +48,8 @@ import { saveOnce } from './send-once';
 export interface GcsRegistryDriverOptions {
   /** A constructed `@google-cloud/storage` `Storage` client (point `apiEndpoint` at fake-gcs-server locally). */
   readonly storage: Storage;
+  /** The client the downloads go through; `storage` when absent (see `GcsStorageDriverOptions.readStorage`). */
+  readonly readStorage?: Storage;
   /** Target bucket (must already exist). */
   readonly bucket: string;
   /** Optional object-name prefix under which all registry objects live (e.g. `cloudbitmaps/`). */
@@ -62,6 +64,7 @@ class GcsStore implements ObjectRegistryStore {
 
   constructor(
     private readonly storage: Storage,
+    private readonly readStorage: Storage,
     private readonly bucket: string,
   ) {}
 
@@ -70,6 +73,11 @@ class GcsStore implements ObjectRegistryStore {
     return generation === undefined
       ? this.storage.bucket(this.bucket).file(name)
       : this.storage.bucket(this.bucket).file(name, { generation });
+  }
+
+  /** The same file handle on the download client. */
+  private downloadable(name: string, generation: string) {
+    return this.readStorage.bucket(this.bucket).file(name, { generation });
   }
 
   async read(key: string): Promise<ObjectRow | null> {
@@ -91,7 +99,7 @@ class GcsStore implements ObjectRegistryStore {
     try {
       // Pin the download to the generation we just measured, so a concurrent overwrite between the two calls
       // cannot hand us bytes that do not match the fence we are about to compare-and-swap against.
-      const [buf] = await this.file(key, generation).download();
+      const [buf] = await this.downloadable(key, generation).download();
       return { bytes: new Uint8Array(buf), version: generation };
     } catch (err) {
       // A 404 on the PINNED download does not mean the object is gone — it means the generation we pinned
@@ -175,7 +183,7 @@ function mapError(err: unknown): unknown {
 export class GcsRegistryDriver extends ObjectStoreRegistry {
   constructor(options: GcsRegistryDriverOptions) {
     super(
-      new GcsStore(options.storage, options.bucket),
+      new GcsStore(options.storage, options.readStorage ?? options.storage, options.bucket),
       normalizeObjectPrefix(options.prefix),
       options.now ?? ((): number => Date.now()),
     );

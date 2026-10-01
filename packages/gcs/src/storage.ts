@@ -61,6 +61,11 @@ const DEFAULT_UPLOAD_THRESHOLD_BYTES = 8 * 1024 * 1024;
 export interface GcsStorageDriverOptions {
   /** A constructed `@google-cloud/storage` `Storage` client (point `apiEndpoint` at fake-gcs-server locally). */
   readonly storage: Storage;
+  /**
+   * The client the downloads go through; `storage` when absent. `GcsStorage` passes one built with the SDK's request
+   * retries off, because a download the SDK retries can crash the process (see `readClientFor` in `backend.ts`).
+   */
+  readonly readStorage?: Storage;
   /** Target bucket (must already exist). */
   readonly bucket: string;
   /** Optional object-name prefix under which all objects live (e.g. `cloudbitmaps/`). */
@@ -74,6 +79,7 @@ export interface GcsStorageDriverOptions {
 
 export class GcsStorageDriver implements IStorageDriver {
   private readonly storage: Storage;
+  private readonly readStorage: Storage;
   private readonly bucket: string;
   private readonly prefix: string | undefined;
   private readonly maxObjectBytes: number;
@@ -81,6 +87,7 @@ export class GcsStorageDriver implements IStorageDriver {
 
   constructor(options: GcsStorageDriverOptions) {
     this.storage = options.storage;
+    this.readStorage = options.readStorage ?? options.storage;
     this.bucket = options.bucket;
     this.prefix = normalizeGcsPrefix(options.prefix);
     // Fail fast at the boundary: `??` only guards `undefined`, so NaN, 0, a negative or a fraction would otherwise
@@ -103,6 +110,11 @@ export class GcsStorageDriver implements IStorageDriver {
 
   private file(name: string) {
     return this.storage.bucket(this.bucket).file(name);
+  }
+
+  /** The same object on the download client. */
+  private downloadable(name: string) {
+    return this.readStorage.bucket(this.bucket).file(name);
   }
 
   async putImmutable(
@@ -135,7 +147,7 @@ export class GcsStorageDriver implements IStorageDriver {
     const objectName = storageObjectName(this.prefix, key);
     try {
       // GCS `end` is inclusive.
-      const [buf] = await this.file(objectName).download({
+      const [buf] = await this.downloadable(objectName).download({
         start: offset,
         end: offset + length - 1,
       });
@@ -164,7 +176,7 @@ export class GcsStorageDriver implements IStorageDriver {
       }
       if (maxBytes <= 0 || size === 0) return { bytes: new Uint8Array(0), size };
       const start = Math.max(0, size - maxBytes);
-      const [buf] = await this.file(objectName).download({ start, end: size - 1 });
+      const [buf] = await this.downloadable(objectName).download({ start, end: size - 1 });
       return { bytes: new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength), size };
     } catch (err) {
       throw this.mapReadError(err, key);

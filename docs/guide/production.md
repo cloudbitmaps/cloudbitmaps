@@ -135,6 +135,13 @@ const store = new CloudRoaring({
 });
 ```
 
+**On GCS the library does the retrying, and the client should not.** In `@google-cloud/storage` 8.x, a download the SDK
+retries after a 503 or 429 can crash the process with `ERR_STREAM_UNABLE_TO_PIPE`, thrown outside any promise, even
+though the retried request succeeded. The client `GcsStorage` builds sends each download once, so a transient fault
+reaches the store as `TransientError` and its read retry, above, runs the read again; its other requests keep the SDK's
+retries. A `client` you pass is used as it is: build it with `retryOptions: { autoRetry: false }`, and leave the store's
+`retry` on.
+
 Only transient faults (they surface as `TransientError`) are retried. Errors that retrying cannot fix are never
 retried: `ValidationError`, `IntegrityError`, `NotFoundError` and `WriteConflictError`.
 

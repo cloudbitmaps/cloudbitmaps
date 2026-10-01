@@ -11,6 +11,17 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A GCS read the SDK retried could crash the process.** With `@google-cloud/storage` 8.x, when a download got a single
+  503 or 429 and the SDK's own retry then succeeded, the SDK threw `ERR_STREAM_UNABLE_TO_PIPE` ("Cannot pipe to a
+  closed or destroyed stream") outside any promise and Node exited with code 1, whatever the caller wrapped around the
+  call. It hit every read through `GcsStorage` on the client it built itself (tail, range and registry reads), in 0.10.0
+  and later. `GcsStorage` now builds a second client with the SDK's request retries off and sends every download
+  through it, so a transient fault is an ordinary `TransientError` that the store's read retry runs again. Its other
+  requests (uploads, listings, metadata reads) keep the default retries. A `client` you pass is used as given: build
+  it with `retryOptions: { autoRetry: false }`.
+
 ## [0.11.1] — 2026-10-01
 
 The package READMEs on npm say how to install on npm 12. npm 12 runs a dependency's install script only where the
