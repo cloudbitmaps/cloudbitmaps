@@ -362,7 +362,7 @@ import { CloudRoaring } from '@cloudbitmaps/roaring';
 import { S3Storage } from '@cloudbitmaps/s3';
 
 // Bucket stated once, for both the generations and the pointer. Builds its own client from the
-// ambient credential chain; pass `client`, or `endpoint` + `pathStyle` + `credentials`, when you need to.
+// ambient credential chain; pass `client`, or `endpoint` + `pathStyle` + `credentials` (not both), when you need to.
 const store = new CloudRoaring({
   storage: new S3Storage({ bucket: 'bitmaps', region: 'us-east-1' }),
 });

@@ -22,7 +22,7 @@ and the separate storage and registry halves and `createBackend` are no longer e
 the collection refuse a `keep` it used to accept. The next nine make a call throw where it used to return: five of
 them fix a wrong answer, and the entries under **Fixed** say what the call returned before; one changes when a pin fails;
 two hold a call to a rule the rest of the library already kept; the last of the nine refuses a namespace the library keeps for its own
-rows, and says in its own entry what the call returned before. The five after them hold the store, the backends and the registry to what the library itself takes and writes, stop
+rows, and says in its own entry what the call returned before. The six after them hold the store, the backends and the registry to what the library itself takes and writes, stop
 checking for a local store's older directory layout, and give its errors the library's own brand. The last two
 change what `estimateCost()` compares with and what a `CostReport` carries.
 
@@ -216,8 +216,8 @@ change what `estimateCost()` compares with and what a `CostReport` carries.
   before upgrading, copy each into another namespace (`iterate()` its ids and `load` them there) and `dropSegment`
   the old one.
 
-The first three of these make the library refuse what it used to ignore or accept, so that a wrong input fails
-where it is written. The fourth drops the check for a local store's older directory layout, and the fifth renames
+The first four of these make the library refuse what it used to ignore or accept, so that a wrong input fails
+where it is written. The fifth drops the check for a local store's older directory layout, and the sixth renames
 the error brands:
 
 - **`new CloudRoaring(options)` refuses every key it does not take**, at the top level and inside `cache`,
@@ -228,6 +228,16 @@ the error brands:
 - **`new S3Storage(options)`, `new GcsStorage(options)` and `new AzureBlobStorage(options)` refuse every key they do
   not take** the same way, and an options bag that is not an object. `GcsStorage` refused only `storage` before,
   and the other two ignored any key they did not take.
+- **`new S3Storage(options)` and `new GcsStorage(options)` refuse a connection setting given beside a `client`.**
+  `S3Storage` refuses `region`, `endpoint`, `pathStyle` and `credentials`, and `GcsStorage` refuses `projectId` and
+  `apiEndpoint`, with a `ValidationError` naming each one given. They were ignored before: a `client` carries its own
+  region, endpoint and credentials, so an `endpoint` meant for MinIO beside a client built for AWS sent the store's
+  traffic to AWS. Configure those settings on the client, or drop `client` and let the store build one from them.
+  `bucket`, `prefix`, `now` and the size settings (`maxObjectBytes`, `partBytes`, `simpleUploadThresholdBytes`) are still
+  taken beside a `client`, as is a setting set to `undefined`. A `client` of
+  `null` counts as none, so the settings build one; `AzureBlobStorage` reads a `containerClient` of `null` the same
+  way, which throws `ValidationError` at construction unless `connectionString` and `container` are given, where it
+  used to build a store that failed on its first read.
 - **`RegistryStatus` is `'active' | 'destroyed'`.** A stored registry row with another status, a field its record
   or its envelope does not declare, or no `schemaVersion` is refused on read with `IntegrityError`, and so is every
   `list()` of a registry that holds one, which the retention sweep, `checkConsistency` and subject erasure run. Every
