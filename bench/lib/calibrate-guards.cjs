@@ -268,6 +268,18 @@ function layoutFromCounts({ segments, shared, priv, stride }) {
     { length: segments },
     (_, i) => (firstBandChunk + i * bandChunks) * CHUNK_SPAN,
   );
+  // Each segment's own ids, summed, so a read that returns everything but the shared core can be held to an exact
+  // answer too. Checked against 2^53 as the expected intersection is.
+  const ownSums = bases.map((base) => {
+    const total =
+      BigInt(priv) * BigInt(base) + (BigInt(stride) * BigInt(priv) * BigInt(priv - 1)) / 2n;
+    if (total > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error(
+        "a segment's own ids sum past 2^53 — the exact-content check would be unsound",
+      );
+    }
+    return Number(total);
+  });
   return {
     shared,
     priv,
@@ -276,6 +288,7 @@ function layoutFromCounts({ segments, shared, priv, stride }) {
     privateChunks,
     chunksPerSegment: sharedChunks + privateChunks,
     bases,
+    ownSums,
     expected: { count: shared, sum },
   };
 }
@@ -574,7 +587,8 @@ const MAX_SEGMENTS = 1000 / 2;
  * Every intersect pairs segment i with segment i + 1, wrapping round. With one segment that is a segment with
  * itself: every chunk is shared, so a run shrunk to one segment — what someone does to make it cheaper — would fetch
  * all 1,999 chunks an intersect, fail its exactness check and overspend its projection before the ceiling check
- * could see it. Each set of segments the stages load is held to the same rule.
+ * could see it. Each set of segments the stages load is held to the same rule, and the stages that read segments
+ * another stage loaded must find enough of them.
  *
  * `loaded` is every segment the run loads, the stages' own included: it is what teardown's first listing has to hold.
  */
@@ -586,6 +600,9 @@ function checkWorkload({
   spreadReads = 0,
   sweepSegments = 0,
   sweepEntries = 0,
+  pointSegments = 0,
+  andNotCalls = 0,
+  andNotExcludes = 0,
 }) {
   const pairs = (n, reading, name, env) => {
     if (reading > 0 && n < 2) {
@@ -598,6 +615,18 @@ function checkWorkload({
   pairs(segments, reads, '', 'CR_CALIBRATE_SEGMENTS');
   pairs(spreadSegments, spreadReads, 'spread', 'CR_CALIBRATE_SPREAD_SEGMENTS');
   pairs(sweepSegments, sweepEntries, 'sweep', 'CR_CALIBRATE_SWEEP_SEGMENTS');
+  if (pointSegments > segments) {
+    throw new Error(
+      `${pointSegments} point-read segments, but only ${segments} calibration segments to read them from`,
+    );
+  }
+  if (andNotCalls > 0 && (andNotExcludes < 1 || andNotExcludes + 1 > segments)) {
+    throw new Error(
+      `an andNot of one segment against ${andNotExcludes} others needs ${andNotExcludes + 1} calibration ` +
+        'segments and at least one excluded; set CR_CALIBRATE_SEGMENTS and CR_CALIBRATE_ANDNOT_EXCLUDES, or the ' +
+        'calls to 0',
+    );
+  }
   const loaded =
     segments +
     largeSegments +

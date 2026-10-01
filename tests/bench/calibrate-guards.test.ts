@@ -56,6 +56,7 @@ type CalibrationLayout = {
   chunksPerSegment: number;
   bases: number[];
   priv: number;
+  ownSums: number[];
   expected: { count: number; sum: number };
 };
 
@@ -827,6 +828,8 @@ describe('a rehearsal cannot be committed as the evidence', () => {
         CR_CALIBRATE_SPREAD_SEGMENTS: '0',
         CR_CALIBRATE_SPREAD_READS: '0',
         CR_CALIBRATE_SWEEP: 'none',
+        CR_CALIBRATE_POINT_SEGMENTS: '0',
+        CR_CALIBRATE_ANDNOT_CALLS: '0',
       }).stderr,
     ).not.toMatch(/teardown's first listing/);
   });

@@ -19,7 +19,15 @@
 const { projectOps } = require('./calibrate-guards.cjs');
 
 /** Every stage, in the order the harness runs them. */
-const STAGES = Object.freeze(['load', 'intersect', 'spread', 'sweep', 'warm']);
+const STAGES = Object.freeze([
+  'load',
+  'intersect',
+  'spread',
+  'sweep',
+  'warm',
+  'pointReads',
+  'andNot',
+]);
 
 /** The sweep over how many chunks two segments share, when none is asked for: k and how many intersects at each. */
 const DEFAULT_SWEEP = Object.freeze([
@@ -75,6 +83,8 @@ const coldIntersectBound = (k) => 2 * (3 + k);
  *   w.spread           { segments, reads, sharedChunks }             cold intersects, spread layout
  *   w.sweep            { segments, entries: [{ k, intersects }] }    each entry has `segments` loaded of its own
  *   w.warm             { segments, sharedChunks }                    one priming pass over `segments` segments
+ *   w.pointReads       { segments, sharedChunks }                    a cold `count()` and a cold `has()` per chunk
+ *   w.andNot           { calls, excludes, includeChunks, sharedChunks }
  *   w.retryBound, w.fixedPuts, w.fixedGets
  */
 function projectStages(w) {
@@ -109,6 +119,20 @@ function projectStages(w) {
     get: w.warm.segments * (3 + w.warm.sharedChunks),
   };
 
+  // A cold `count()` and a cold `has()` for every shared chunk of every segment, each segment opened by its first
+  // read: a pointer, a tail, and a chunk read for each `has()`. The warm repeats are held to none.
+  stages.pointReads = {
+    put: 0,
+    get: 2 * w.pointReads.segments * 3 + w.pointReads.segments * w.pointReads.sharedChunks,
+  };
+
+  // Every operand opened, every chunk of the include operand read, and each exclude's chunks where it overlaps it.
+  const a = w.andNot;
+  stages.andNot = {
+    put: 0,
+    get: a.calls * ((1 + a.excludes) * 3 + a.includeChunks + a.excludes * a.sharedChunks),
+  };
+
   const put = Object.values(stages).reduce((n, s) => n + s.put, 0) + w.fixedPuts;
   const getSum = Object.values(stages).reduce((n, s) => n + s.get, 0) + w.fixedGets;
   // Reads are projected at least as high as writes, as `projectOps` does: every write path reads before it writes.
@@ -121,12 +145,17 @@ function projectStages(w) {
  * records them per load.
  */
 function expectedReads(w) {
+  const a = w.andNot;
   return {
     intersect: w.intersect.reads * coldIntersectGets(w.intersect.sharedChunks),
     spread: w.spread.reads * coldIntersectGets(w.spread.sharedChunks),
     sweep: w.sweep.entries.reduce((n, e) => n + e.intersects * coldIntersectGets(e.k), 0),
     // Each segment once: a pointer, a tail and the shared chunks. The timed warm intersects make none.
     warm: w.warm.segments * (2 + w.warm.sharedChunks),
+    // `count()` opens a segment: a pointer and a tail. A `has()` on a store that has not opened it does the same,
+    // then reads one chunk; on one that has, only the chunk.
+    pointReads: 2 * w.pointReads.segments * 2 + w.pointReads.segments * w.pointReads.sharedChunks,
+    andNot: a.calls * (2 * (1 + a.excludes) + a.includeChunks + a.excludes * a.sharedChunks),
   };
 }
 

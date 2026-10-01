@@ -143,6 +143,23 @@ const SWEEP_SEGMENTS = resolveSize(
   3,
   'CR_CALIBRATE_SWEEP_SEGMENTS',
 );
+/** The calibration segments the point reads open: each read from its first shared chunk to its last. */
+const POINT_SEGMENTS = resolveSize(
+  process.env.CR_CALIBRATE_POINT_SEGMENTS,
+  Math.min(SEGMENTS, 10),
+  'CR_CALIBRATE_POINT_SEGMENTS',
+);
+/** `andNot` calls, each of one calibration segment against this many others. */
+const ANDNOT_CALLS = resolveSize(
+  process.env.CR_CALIBRATE_ANDNOT_CALLS,
+  10,
+  'CR_CALIBRATE_ANDNOT_CALLS',
+);
+const ANDNOT_EXCLUDES = resolveSize(
+  process.env.CR_CALIBRATE_ANDNOT_EXCLUDES,
+  10,
+  'CR_CALIBRATE_ANDNOT_EXCLUDES',
+);
 /**
  * Segments large enough to be uploaded MULTIPART — the other half of "load throughput, single-part and
  * multipart". The S3 driver uses a single conditional PUT for anything that fits one 8 MiB part, and the intersect
@@ -204,6 +221,13 @@ function planWorkload({ layout, spread, sweep }) {
     sweep: { segments: SWEEP_SEGMENTS, entries: sweep },
     // The warm stage repeats the calibration intersects' pairs, which touch this many segments.
     warm: { segments: READS === 0 ? 0 : Math.min(SEGMENTS, READS + 1), sharedChunks },
+    pointReads: { segments: POINT_SEGMENTS, sharedChunks },
+    andNot: {
+      calls: ANDNOT_CALLS,
+      excludes: ANDNOT_EXCLUDES,
+      includeChunks: layout.chunksPerSegment,
+      sharedChunks,
+    },
     retryBound: RETRY_BOUND,
     // The probe HEAD and the round-trip samples, one attempt each; the bucket's creation; and teardown's listings
     // at every attempt its retrying client may make (see TEARDOWN_PUTS).
@@ -293,6 +317,9 @@ async function main() {
         spreadReads: SPREAD_READS,
         sweepSegments: SWEEP_SEGMENTS,
         sweepEntries: sweep.length,
+        pointSegments: POINT_SEGMENTS,
+        andNotCalls: ANDNOT_CALLS,
+        andNotExcludes: ANDNOT_EXCLUDES,
       });
     }
   } catch (err) {
@@ -417,6 +444,8 @@ async function main() {
               .join(', ')
               .concat(` (${SWEEP_SEGMENTS} segments each)`),
       warm: `${READS} repeats of the calibration pairs from memory, asserted at 0 GET`,
+      pointReads: `has() on every shared chunk of ${POINT_SEGMENTS} segments, and count(), cold then warm`,
+      andNot: `${ANDNOT_CALLS} calls, one segment against ${ANDNOT_EXCLUDES}`,
     };
     for (const name of STAGES) {
       const b = stageBounds[name];
@@ -1229,6 +1258,142 @@ async function main() {
       },
     });
 
+    // ---- point reads: has() and count(), cold and then warm ------------------------------------------------------
+    // One id from each shared chunk of each segment, so each has() is one chunk read once its segment is open. The
+    // stores trust their pointers for the stage, so a segment is opened once, by the first read that reaches it.
+    await stage('pointReads', {
+      run: async () => {
+        if (POINT_SEGMENTS === 0) return { segments: 0 };
+        const names = calibrationNames.slice(0, POINT_SEGMENTS);
+        const point = () =>
+          new CloudRoaring({ storage, ...warmStore(2 * POINT_SEGMENTS * layout.sharedChunks) });
+        const timedCalls = async (calls, check) => {
+          const ms = [];
+          const g0 = snap().get;
+          for (const call of calls) {
+            const t0 = process.hrtime.bigint();
+            const got = await call();
+            ms.push(msSince(t0));
+            check(got);
+            checkCeiling();
+          }
+          return { gets: snap().get - g0, ...spreadOf(ms) };
+        };
+        const mustMake = (name, phase, gets) => {
+          if (phase.gets !== gets) {
+            throw new Error(`${name} made ${phase.gets} GET-class requests; expected ${gets}`);
+          }
+        };
+        // count(): cardinality from the index, so a segment's first read is its pointer and its tail and nothing else.
+        const counted = point();
+        const countCold = await timedCalls(
+          names.map((name) => () => counted.segment(name).count()),
+          (got) => {
+            if (got !== IDS) throw new Error(`count() returned ${got}; expected ${IDS}`);
+          },
+        );
+        const countWarm = await timedCalls(
+          Array.from(
+            { length: layout.sharedChunks * POINT_SEGMENTS },
+            (_, i) => () => counted.segment(names[i % names.length]).count(),
+          ),
+          (got) => {
+            if (got !== IDS) throw new Error(`count() returned ${got}; expected ${IDS}`);
+          },
+        );
+        mustMake('a warm count()', countWarm, 0);
+        // has(): the first id of each shared chunk, present in every segment.
+        const idIn = (c) => Math.ceil((c * CHUNK_SPAN) / layout.stride) * layout.stride;
+        const ids = Array.from({ length: layout.sharedChunks }, (_, c) => idIn(c));
+        for (const id of ids) {
+          if (id >= layout.shared * layout.stride || id >>> 16 !== Math.floor(id / CHUNK_SPAN)) {
+            throw new Error(
+              `id ${id} is not in the shared core; the point reads would not be present ids`,
+            );
+          }
+        }
+        const probed = point();
+        const calls = names.flatMap((name) => ids.map((id) => () => probed.segment(name).has(id)));
+        const present = (got) => {
+          if (got !== true) throw new Error('has() of a shared id returned false');
+        };
+        const hasCold = await timedCalls(calls, present);
+        const hasWarm = await timedCalls(calls, present);
+        mustMake('a warm has()', hasWarm, 0);
+        log(
+          `  has() ${calls.length} cold p50 ${hasCold.p50ms.toFixed(2)} ms, warm p50 ${hasWarm.p50ms.toFixed(2)} ms; ` +
+            `count() cold p50 ${countCold.p50ms.toFixed(2)} ms`,
+        );
+        return {
+          segments: POINT_SEGMENTS,
+          sharedChunks: layout.sharedChunks,
+          count: { cold: countCold, warm: countWarm },
+          has: { cold: hasCold, warm: hasWarm },
+        };
+      },
+    });
+
+    // ---- andNot with a large exclude -----------------------------------------------------------------------------
+    // One calibration segment against ANDNOT_EXCLUDES others. `andNot` reads every chunk of the segment it filters
+    // and each exclude only where it overlaps it, so what it costs scales with the include operand.
+    await stage('andNot', {
+      run: async () => {
+        if (ANDNOT_CALLS === 0) return { runs: 0 };
+        const include = 'seg-0';
+        const excludes = Array.from({ length: ANDNOT_EXCLUDES }, (_, i) => `seg-${i + 1}`);
+        // Everything in the first segment but the shared core: exact, like every other read.
+        const expected = {
+          count: layout.priv,
+          sum: layout.ownSums[0],
+        };
+        const reads = [];
+        for (let i = 0; i < ANDNOT_CALLS; i += 1) {
+          const store = timedStore();
+          const before = snap();
+          const t0 = process.hrtime.bigint();
+          let n = 0;
+          let sum = 0;
+          for await (const id of store
+            .segment(include)
+            .andNot(excludes.map((name) => store.segment(name)))) {
+            n += 1;
+            sum += id;
+          }
+          const ms = msSince(t0);
+          const after = snap();
+          if (n !== expected.count || sum !== expected.sum) {
+            throw new Error(
+              `andNot returned ${n} ids (sum ${sum}); expected exactly ${expected.count} (sum ${expected.sum}). ` +
+                'A read that is not exact must not produce a latency figure.',
+            );
+          }
+          reads.push({
+            ms,
+            gets: after.get - before.get,
+            chunkReads: after.rangeN - before.rangeN,
+            tailReads: after.suffixN - before.suffixN,
+            pointerReads: after.wholeN - before.wholeN,
+          });
+          checkCeiling();
+        }
+        const ms = reads.map((r) => r.ms);
+        log(
+          `  ${reads.length} andNot calls, all exact — p50 ${q(ms, 0.5).toFixed(1)} ms, median ${median(reads.map((r) => r.gets))} GETs`,
+        );
+        return {
+          runs: reads.length,
+          exact: true,
+          excludes: ANDNOT_EXCLUDES,
+          includeChunks: layout.chunksPerSegment,
+          ...spreadOf(ms),
+          medianGets: median(reads.map((r) => r.gets)),
+          chunkReadsPerCall: median(reads.map((r) => r.chunkReads)),
+          tailReadsPerCall: median(reads.map((r) => r.tailReads)),
+          pointerReadsPerCall: median(reads.map((r) => r.pointerReads)),
+          timedStore: TIMED_STORE,
+        };
+      },
+    });
     results.partial = false;
     running = false;
     workFinished = true;

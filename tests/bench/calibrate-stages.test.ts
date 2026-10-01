@@ -21,6 +21,8 @@ type Plan = {
   spread: { segments: number; reads: number; sharedChunks: number };
   sweep: { segments: number; entries: { k: number; intersects: number }[] };
   warm: { segments: number; sharedChunks: number };
+  pointReads: { segments: number; sharedChunks: number };
+  andNot: { calls: number; excludes: number; includeChunks: number; sharedChunks: number };
   retryBound: number;
   fixedPuts: number;
   fixedGets: number;
@@ -43,6 +45,7 @@ type Layout = {
   sharedChunks: number;
   privateChunks: number;
   chunksPerSegment: number;
+  ownSums: number[];
   expected: { count: number; sum: number };
 };
 const guards = require_(join(ROOT, 'bench', 'lib', 'calibrate-guards.cjs')) as {
@@ -90,6 +93,13 @@ function defaultPlan(): Plan {
     spread: { segments: 10, reads: 40, sharedChunks: layout.sharedChunks },
     sweep: { segments: 3, entries: stages.DEFAULT_SWEEP },
     warm: { segments: 20, sharedChunks: layout.sharedChunks },
+    pointReads: { segments: 10, sharedChunks: layout.sharedChunks },
+    andNot: {
+      calls: 10,
+      excludes: 10,
+      includeChunks: layout.chunksPerSegment,
+      sharedChunks: layout.sharedChunks,
+    },
     retryBound: guards.RETRY_BOUND,
     fixedPuts: 16,
     fixedGets: 11,
@@ -139,6 +149,8 @@ describe('the stage table', () => {
       spread: { ...w.spread, segments: 0, reads: 0 },
       sweep: { ...w.sweep, entries: [] },
       warm: { ...w.warm, segments: 0 },
+      pointReads: { ...w.pointReads, segments: 0 },
+      andNot: { ...w.andNot, calls: 0 },
     });
     expect(loadsOnly.total.get).toBeGreaterThanOrEqual(loadsOnly.total.put);
   });
@@ -146,7 +158,10 @@ describe('the stage table', () => {
   // The projection is the ceiling's input. A stage added to the table with no bound, or one whose bound is under what
   // the engine is expected to make, would spend past a ceiling that said it was safe.
   it('bounds every stage at or above what the engine is expected to make', () => {
-    for (const w of [defaultPlan()]) {
+    for (const w of [
+      defaultPlan(),
+      { ...defaultPlan(), andNot: { ...defaultPlan().andNot, excludes: 3 } },
+    ]) {
       const { stages: bounds } = stages.projectStages(w);
       const expected = stages.expectedReads(w);
       for (const [name, gets] of Object.entries(expected)) {
@@ -262,6 +277,12 @@ describe('the sweep layout', () => {
         );
         expect(common.size).toBe(k);
       }
+      // Each segment's own ids sum to what the layout says: the exact answer of `andNot` reads depends on it.
+      for (let i = 0; i < 3; i += 1) {
+        const ids = seg(i);
+        expect(ids.length).toBe(L.shared + L.priv);
+        expect(ids.slice(L.shared).reduce((acc, id) => acc + id, 0)).toBe(L.ownSums[i]);
+      }
     }
   });
 
@@ -294,6 +315,21 @@ describe('the workload the stages need', () => {
         sweepEntries: 0,
       }),
     ).not.toThrow();
+  });
+
+  it('refuses point reads and an andNot that need more calibration segments than there are', () => {
+    expect(() => guards.checkWorkload({ ...base, segments: 5, pointSegments: 6 })).toThrow(
+      /point-read/,
+    );
+    expect(() =>
+      guards.checkWorkload({ ...base, segments: 10, andNotCalls: 1, andNotExcludes: 10 }),
+    ).toThrow(/needs 11 calibration/);
+    expect(() =>
+      guards.checkWorkload({ ...base, segments: 11, andNotCalls: 1, andNotExcludes: 10 }),
+    ).not.toThrow();
+    expect(() => guards.checkWorkload({ ...base, andNotCalls: 1, andNotExcludes: 0 })).toThrow(
+      /needs 1 calibration/,
+    );
   });
 
   // Teardown lists 500 segments' two versions in its first listing, whichever stage loaded them.
@@ -329,6 +365,12 @@ describe('a stage that reads from memory', () => {
     expect(warm).toContain('if (after.get !== before.get || after.put !== before.put) {');
     expect(warm).toMatch(/throw new Error\(\s*`warm intersect/);
   });
+
+  it('fails the stage when a warm point read makes a request', () => {
+    const points = stageSource('pointReads');
+    expect(points).toContain("mustMake('a warm count()', countWarm, 0)");
+    expect(points).toContain("mustMake('a warm has()', hasWarm, 0)");
+  });
 });
 
 // The engine's own requests, counted the way the load stage's are: against local drivers and the real registry
@@ -363,6 +405,13 @@ describe('what the stages request, counted against the engine', () => {
     intersect: { reads: 6, sharedChunks: layout.sharedChunks },
     // Six pairs, each a segment and the next: seven segments.
     warm: { segments: 7, sharedChunks: layout.sharedChunks },
+    pointReads: { segments: 4, sharedChunks: layout.sharedChunks },
+    andNot: {
+      calls: 2,
+      excludes: 3,
+      includeChunks: layout.chunksPerSegment,
+      sharedChunks: layout.sharedChunks,
+    },
   });
   const loaded = (async () => {
     const loader = new CloudRoaring({ storage: backend, ...guards.TIMED_STORE });
@@ -407,9 +456,51 @@ describe('what the stages request, counted against the engine', () => {
     for (let i = 0; i < 6; i += 1) expect(await countOf(() => pair(i))).toBe(0);
   });
 
+  it('point reads open each segment once, and a warm read makes none', async () => {
+    await loaded;
+    const names = ['seg-0', 'seg-1', 'seg-2', 'seg-3'];
+    const counted = new CloudRoaring({ storage: backend, ...guards.warmStore(1_024) });
+    let total = 0;
+    for (const name of names) {
+      total += await countOf(async () => {
+        expect(await counted.segment(name).count()).toBe(20_000);
+      });
+    }
+    for (let i = 0; i < 20; i += 1) {
+      expect(
+        await countOf(async () => void (await counted.segment(names[i % 4] ?? '').count())),
+      ).toBe(0);
+    }
+    const idIn = (c: number): number => Math.ceil((c * 65_536) / stride) * stride;
+    const ids = Array.from({ length: layout.sharedChunks }, (_, c) => idIn(c));
+    const probed = new CloudRoaring({ storage: backend, ...guards.warmStore(1_024) });
+    const has = async (): Promise<void> => {
+      for (const name of names)
+        for (const id of ids) expect(await probed.segment(name).has(id)).toBe(true);
+    };
+    total += await countOf(has);
+    expect(total).toBe(expected.pointReads);
+    expect(await countOf(has)).toBe(0);
+  });
+
+  it('an andNot reads every chunk of the include operand and each exclude where it overlaps', async () => {
+    await loaded;
+    let total = 0;
+    for (let i = 0; i < 2; i += 1) {
+      const store = new CloudRoaring({ storage: backend, ...guards.TIMED_STORE });
+      total += await countOf(async () => {
+        const n = await drain(
+          store.segment('seg-0').andNot([1, 2, 3].map((j) => store.segment(`seg-${j}`))),
+        );
+        expect(n).toBe(layout.priv);
+      });
+    }
+    expect(total).toBe(expected.andNot);
+  });
+
   it('projects each of these above what it counted', () => {
     const bounds = stages.projectStages(plan()).stages;
-    for (const name of ['intersect', 'warm']) {
+    for (const name of ['intersect', 'warm', 'pointReads', 'andNot']) {
       expect(bounds[name]?.get ?? 0, name).toBeGreaterThanOrEqual(expected[name] ?? Infinity);
     }
   });
