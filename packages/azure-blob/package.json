@@ -1,6 +1,6 @@
 {
   "name": "@cloudbitmaps/azure-blob",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "description": "Azure Blob Storage for CloudBitmaps",
   "keywords": [
     "cloudbitmaps",
