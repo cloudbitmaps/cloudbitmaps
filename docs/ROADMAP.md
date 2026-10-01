@@ -102,7 +102,7 @@ is a dependency of both and is never installed directly. The storage drivers are
   on every admin path, and a default-on per-operation **request budget** that fails with `BudgetExceededError`
   rather than quietly running up a bill. Every registry scan has a ceiling by default: the DR consistency check,
   the retention sweep and `eraseNamespace` refuse past `maxScanSegments` (250,000 rows by default), and the subject scans
-  (`subjectReport`, `eraseSubject`) refuse past the request budget, `budget.maxRequests`. `budget: false`, on the
+  (`subjectReport`, `eraseSubject`) refuse past the request budget, `budget.maxRequests`, which `eraseSubject` also charges for each superseded generation it opens. `budget: false`, on the
   call or on the store, lifts that ceiling, and a subject scan then holds every row it lists.
 - **Immutable, generation-keyed objects.** `segment.<gen>.crbm` + one registry pointer, never overwritten in
   place. A load takes the next number past both the pointer and whatever is in the bucket, so a crashed
