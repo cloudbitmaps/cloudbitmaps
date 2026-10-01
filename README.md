@@ -175,7 +175,9 @@ off the shelf.
 namespace the id is in (`{ allNamespaces: true }` sweeps every namespace), streams each one's current generation
 through a fresh one with the single bit cleared, publishes it fenced on the generation it streamed, and then
 deletes the generation that held the bit, every other generation below the new one, and every generation above
-the pointer that held the bit, including one a `rollback` left there — so when the call returns, every segment its
+the pointer that held the bit, including one a `rollback` left there. When the current generation does not hold
+the id, nothing is rewritten or published: the generations below the pointer are collected and each one above it
+that holds the id is deleted, while the generations above the pointer that never held it stay as rollback targets. So when the call returns, every segment its
 ledger reports `erased: true` has the id **gone from the bucket's objects**, not merely masked. Storage the bucket
 keeps on its own is outside that: with versioning on, the deleted generation stays as a noncurrent version until a
 lifecycle rule expires it, and replicas and backups keep their copies ([`PRIVACY.md`](PRIVACY.md) has the
@@ -195,11 +197,14 @@ reaching every copy. Rotate keys without re-encrypting data, and wrap under an o
 lost key isn't fatal.
 
 **Resilient by default — a blip never loses data.** Cloud storage throttles, returns 5xx, and drops connections;
-CloudBitmaps treats that as normal. Every **read of segment data** automatically **retries transient faults**
-(throttle / 5xx / dropped connection / request timeout) with bounded exponential backoff + full jitter — on by
-default, tunable, or `retry: false` to defer to your client's own retry. A **write** reports a transient fault to
-you instead, because a conditional write that lands and then loses its response would, replayed, report your own
-write as a conflict. The retry is yours: re-run the call. For a load that is **safe by construction**: pass the same ids again. A
+CloudBitmaps treats that as normal. Every **read that answers a query** (`has`, `count`, `iterate`, the combines, a pinned handle's reads and `pin()`)
+automatically **retries transient faults** (throttle / 5xx / dropped connection / request timeout) with bounded exponential backoff + full jitter — on by
+default, tunable, or `retry: false` to defer to your client's own retry. The store never retries a **write**; it
+reports a transient fault to you instead, because a conditional write that lands and then loses its response would,
+replayed, report your own write as a conflict. On S3, and on GCS for objects up to `simpleUploadThresholdBytes`,
+nothing replays one. On Azure Blob, and on GCS above that size, the client's own retry can resend an object's
+commit, and the driver settles the replay by reading back the write id the object carries. The retry is yours:
+re-run the call. For a load that is **safe by construction**: pass the same ids again, through a fresh iterator. A
 re-run load takes a fresh generation number and re-reads the row, so once the failed attempt has settled it
 publishes whether or not that attempt landed, and the pointer never moves backwards. If the generation before the
 load must stay a rollback target, re-run with `keep: 2`: an attempt whose object landed takes the default single

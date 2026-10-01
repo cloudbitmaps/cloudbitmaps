@@ -22,7 +22,8 @@
  * **Deployment requirements** (a policy that violates these silently corrupts the registry):
  * - The principal needs `storage.objects.get`, `create`, `update` and `list` on the bucket. Without `list`
  *   the registry cannot enumerate, and a missing-object read may surface as `403` rather than `404`.
- * - **Do not apply an Object Lifecycle rule to the `registry/` prefix**, and do not enable a retention
+ * - **Do not apply an Object Lifecycle rule to the `registry/` prefix that deletes a live object** (one on
+ *   noncurrent versions only is safe), and do not enable a retention
  *   policy that blocks overwrite. `delete` tombstones rather than removing, for ABA-safety — see
  *   {@link ObjectStoreRegistry}.
  * - Object versioning is neither required nor used; the driver always reads the live generation. Because a

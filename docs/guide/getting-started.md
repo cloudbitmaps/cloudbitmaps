@@ -92,7 +92,7 @@ The rest of this guide walks each step in turn.
 | **S3-compatible** storage — AWS S3 / MinIO (`@cloudbitmaps/s3`), multipart for large generations | ✅ |
 | **GCS + Azure Blob** storage (`@cloudbitmaps/gcs`, `@cloudbitmaps/azure-blob`) — write-once immutable generations | ✅ |
 | `.crbm` archive read/write + a bounded cache | ✅ |
-| **Automatic retry + backoff** for transient faults on every read of segment data (on by default) | ✅ |
+| **Automatic retry + backoff** for transient faults on every read that answers a query (on by default) | ✅ |
 | **Segment registry** (memory / LocalFs / **S3** / **GCS** / **Azure Blob** — run on one bucket alone) — one strong read resolves the current generation, no per-read scan | ✅ |
 | **Generation bookkeeping** — a load takes the next generation number itself and collects the objects it superseded (`keep`) | ✅ |
 | **Encryption-at-rest** (AES-256-GCM, BYOK keystore) **+ crypto-shred** (`destroySegment` / `eraseNamespace`) | ✅ |
@@ -442,13 +442,14 @@ const store = new CloudRoaring({ storage: backend });
 
 > **S3 registry requirements:** the bucket backend must honor `If-Match` conditional writes (AWS S3; recent
 > MinIO), the IAM principal needs **`s3:ListBucket`** (else a missing key returns `403` not `404`, and
-> discovery can't list), and **don't put a lifecycle-expiration rule on the `registry/` prefix** (deleted rows are
-> tombstoned for the pointer's ABA-safety).
+> discovery can't list), and **don't put a rule on the `registry/` prefix that expires a current version** (deleted rows are
+> tombstoned for the pointer's ABA-safety; a rule on noncurrent versions only is safe, and is the optional recipe in the
+> [disaster-recovery guide](disaster-recovery.md#optional-make-a-shred-durable-with-a-registry-expiry-rule)).
 
 **GCS and Azure Blob work exactly the same way**, each using its own cloud's conditional write —
 `ifGenerationMatch` on GCS, `If-None-Match` / `If-Match` on Azure — so the compare-and-swap is enforced by the
-service rather than by the client. The same "no lifecycle rule on the `registry/` prefix" caveat applies to all
-three.
+service rather than by the client. The same caveat applies to all three: no lifecycle rule on the `registry/` prefix that deletes a current
+version.
 
 > **One lifecycle rule you should add:** **`AbortIncompleteMultipartUpload`**, on the bucket holding storage
 > objects (a few days is plenty). A large generation is written as a multipart upload; the library aborts it on
@@ -522,9 +523,10 @@ Per-backend DR/backup guidance (RPO/RTO, point-in-time recovery, what to snapsho
 ## 6. Reliability: retries, backoff & timeouts
 
 Cloud storage throttles, returns 5xx, and drops connections. CloudBitmaps handles that for you on the read path:
-**every read of segment data automatically retries transient faults** (throttling, 5xx, dropped connections,
+**every read that answers a query automatically retries transient faults** (throttling, 5xx, dropped connections,
 request timeouts) with bounded exponential backoff + full jitter — `has`, `count`, `iterate` and the combines (the
-`*Into` verbs' reads of their operands included), a pinned handle's reads and `pin()` itself. It's **on by
+`*Into` verbs' reads of their operands included), a pinned handle's reads and `pin()` itself. An erasure's reads
+and a load's guard read go to the drivers directly, and are not retried. It's **on by
 default** — you don't have to do anything:
 
 ```ts
@@ -600,8 +602,9 @@ latency and a write a re-run, never correctness.
 
 **Writes are yours to retry.** `load`, the write half of the `*Into` verbs and the lifecycle helpers (`eraseSubject`,
 `dropSegment`, `retireExpired`, `rollback`, …) run over the raw drivers **without** the retry wrapper, on purpose, and
-so do the calls that read the registry or list the bucket directly: `exists`, `segments`, `generations`,
-`getRetention` and `checkConsistency`, and the registry scan that `subjectReport` and `exportSegments` start from. A write that lands and then loses its response looks, from the error alone,
+so do the calls that read the registry or list the bucket directly: `exists`, `segments`, `generations`
+and `getRetention`, and the registry scan that `subjectReport`, `exportSegments` and `checkConsistency` start from
+(`checkConsistency` records a fault on one segment in `report.errored` and throws only from that scan). A write that lands and then loses its response looks, from the error alone,
 like one that failed, and replaying its conditional put or compare-and-swap would find that write already there and
 report it as a conflict. So a transient fault on a write reaches its caller (as a ledger entry or a throw), and the
 retry is yours: re-run the call. The `retry` option tunes the reads alone.
@@ -759,7 +762,7 @@ Who runs it today:
 | `store.load` | **it does** — collection is part of the call, keeping `keep` generations (default 1) |
 | an `*Into` | **you** — pass `keep` to collect on the way through; without it nothing is collected, and the next `store.load` of the destination collects everything below its own pointer beyond its `keep`. This is the step `store.load` exists to stop you forgetting |
 | `eraseSubject` | **yes**, with `keep: 0` — the whole point is that the generation holding the bit does not survive the call. A holder *above* the pointer, which a `rollback` leaves there, is outside collection's range, so the erasure deletes it itself |
-| `retireExpired` | **yes**, for the tombstones it wrote itself — it collects a straggler generation before purging the row. A tombstone a hand-run `dropSegment` or a crypto-shred left is never touched |
+| `retireExpired` | **yes**, for the tombstones it wrote itself, and only with `purgeTombstones` (on by default) and after the grace period — it collects a straggler generation before purging the row. A tombstone a hand-run `dropSegment` or a crypto-shred left is never touched |
 | `dropSegment` | deletes every generation of the segment it drops (and reports any it could not in `generationsRemaining`) |
 
 **Read staleness, restated for the whole picture.** With a registry and a `cache.genTtlMs` above 0, a store
@@ -1348,6 +1351,17 @@ carries whatever its source held, and the library cannot know that source was me
 loads of the affected segments for the duration, or fix the source first and load after. A writer that lands
 *during* the rewrite is caught and reported as a reason rather than an error (`'superseded'` for a load or a
 racing erasure).
+
+**Do not roll the segment back while erasing from it.** A rollback that lands mid-erasure can move the pointer onto
+a generation the erasure did not rewrite. What the call reports depends on where it lands. Before the publish, the
+entry says `'superseded'`. After it, while the call collects, the generation it replaced can be left above the
+lowered pointer, or be the one the pointer now names: a generation that still holds the id stays in the bucket, and
+the call reports an `error: …` note instead of `erased: true`. When the id was not in the current generation and
+nothing was published, a rollback while the call deletes generations above the pointer is reported as
+`'superseded'` if a holder is left, and one while it collects is an `error: …` note. In the last instant before a
+delete, a rollback onto the generation being deleted leaves the pointer on a missing object, which
+`checkConsistency()` reports. Re-run any of these once the pointer is where you want it. Roll back before the
+erasure starts or after it returns.
 
 **Who stops seeing the id, and when.** The erasure is immediate in storage and immediate in the store that
 performed it — that store drops what it had cached about the segment before returning, so it cannot keep

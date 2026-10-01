@@ -16,7 +16,8 @@
  *
  * **Deployment requirements** (a policy that violates these silently corrupts the registry):
  * - The principal needs read, write and list on the container (`Storage Blob Data Contributor` covers it).
- * - **Do not apply a lifecycle-management rule to the `registry/` prefix**, and do not enable an immutability
+ * - **Do not apply a lifecycle-management rule to the `registry/` prefix that deletes a current blob** (one that
+ *   deletes only previous versions is safe), and do not enable an immutability
  *   policy or legal hold on it: `delete` tombstones by overwriting rather than removing, for ABA-safety, so a
  *   WORM policy would fail every tombstone. See {@link ObjectStoreRegistry}.
  * - Blob versioning and soft delete are neither required nor used; the driver always reads the current blob.

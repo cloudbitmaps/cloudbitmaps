@@ -81,11 +81,12 @@ export interface RollbackResult {
  *
  * What it does **not** do is delete anything. The generations above the new pointer stay in the bucket, which is
  * what makes the rollback reversible — roll forward again by naming one of them. They are also then *above*
- * `currentGen`, where generation collection never looks, so they will sit there until a later load raises the
- * pointer past them or they are deleted deliberately. That is a deliberate trade: an operator who has just
- * undone a bad load should not have the evidence collected out from under them. A subject erasure is the one
- * call that deletes any of them, and only those that hold the id it erases: a rollback target that still holds
- * erased data would make the erasure undoable by an ordinary operator action.
+ * `currentGen`, where generation collection never looks. They stay until a load numbers above them (collection
+ * then keeps the newest `keep` of what is below its pointer), `dropSegment` deletes them, or a subject erasure
+ * deletes them: all of those present when it rewrites, and only those holding the id when the current generation does not.
+ * Not collecting them is a deliberate trade: an operator who has just undone a bad load should not have the
+ * evidence collected out from under them, while a rollback target that still holds erased data would make the
+ * erasure undoable by an ordinary operator action.
  */
 export async function rollbackSegment(
   ref: SegmentRef,

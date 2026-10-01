@@ -187,12 +187,12 @@ export interface CloudRoaringOptions {
   readonly encryption?: EncryptionOptions;
 
   /**
-   * Resilience: by default every read of segment data retries **transient** faults (throttling, 5xx, dropped
+   * Resilience: by default every read that answers a query retries **transient** faults (throttling, 5xx, dropped
    * connections) with bounded, jittered exponential backoff (see {@link DEFAULT_RETRY_POLICY}): `has`, `count`,
    * `iterate` and the combines, the `*Into` verbs' reads of their operands included, a pinned handle's reads and
-   * `pin()` itself. Writes are not retried, and nor are the calls that read the registry or list the bucket
-   * directly (`exists`, `segments`, `generations`, `getRetention`, `checkConsistency`, and the registry scan
-   * `subjectReport` and `exportSegments` start from): they report a transient fault to their caller, because a conditional write that lands and then loses its response would, replayed,
+   * `pin()` itself. Writes are not retried, and nor are an erasure's reads, a load's guard read, or the calls that
+   * read the registry or list the bucket directly (`exists`, `segments`, `generations`, `getRetention`, and the
+   * registry scan `subjectReport`, `exportSegments` and `checkConsistency` start from): they report a transient fault to their caller, because a conditional write that lands and then loses its response would, replayed,
    * report its own write as a conflict. Pass a partial policy to tune it — anything you leave out keeps its
    * default — or `false` to turn the read retry off (e.g. if your injected client already retries).
    * Deterministic errors (`ValidationError`/`IntegrityError`/`WriteConflictError`/…) are never retried by this
@@ -1249,10 +1249,12 @@ export class CloudRoaring {
    * current is a no-op that reports itself.
    *
    * It deletes nothing. The generations above the new pointer stay put — which is what makes this reversible —
-   * and are then *above* `currentGen`, where collection never looks, so they remain until a later load raises the
-   * pointer past them. An operator who has just undone a bad load should not have the evidence collected out from
-   * under them. The one call that deletes one of them is {@link CloudRoaring.eraseSubject}, and only one that
-   * holds the id it erases: a rollback target that still holds erased data would make the erasure undoable.
+   * and are then *above* `currentGen`, where collection never looks. They remain until a load numbers above them
+   * (collection then keeps the newest `keep` of what is below its pointer), {@link CloudRoaring.dropSegment}
+   * deletes them, or {@link CloudRoaring.eraseSubject} does: all of those present when it rewrites, and only those holding
+   * the id when the current generation does not. An operator who has just undone a bad load should not have the
+   * evidence collected out from under them, while a rollback target that still holds erased data would make the
+   * erasure undoable.
    *
    * A target **above** the pointer needs `{ allowForward: true }`, and is refused with {@link ValidationError}
    * without it: that is also where objects live that were never published, such as a load that wrote its object
