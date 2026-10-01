@@ -219,5 +219,8 @@ so a cursor that reaches the end of its window needs no special case.
 `after` alone is charged to the end of the segment however early it stops. A combine also fetches ahead: it starts
 `concurrency` chunk keys at once (8 by default), and one more each time it yields a key's ids, on every segment it
 reads. A page that stops early has already fetched up to `concurrency` keys past the one holding its last id. Those
-chunks land in the chunk cache, where the next page usually finds them. `iterate` fetches one chunk at a time and
-nothing ahead.
+chunks land in the chunk cache, where the next page usually finds them. `iterate` reads ahead too, through a window
+that opens 1, 2, 4, then 8 fetches wide: a page that stops in its first chunk has fetched that chunk alone, and one
+that stops later has fetched at most 7 chunks past the one it stopped in. A full read keeps 8 fetches open where it
+kept one, so a cold segment reads up to about 8 times faster when the storage round trip dominates; the number of
+requests is the same.
