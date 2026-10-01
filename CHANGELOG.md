@@ -13,7 +13,7 @@ so, and so do the module headers in the code.
 
 ### Breaking
 
-The first two narrow what an application sees: `@cloudbitmaps/roaring` exports a list of names in place of all of
+The first changes what two combines return, with no error. The next two narrow what an application sees: `@cloudbitmaps/roaring` exports a list of names in place of all of
 core's, and a `Segment` can no longer be constructed. The four after them remove exports: the first deletes names
 nothing in the library would still call, the second takes names off the public entries or moves them to the package
 that uses them, and the third and fourth remove the retrying driver wrappers and the bulk loader. The two after those
@@ -27,6 +27,17 @@ checking for a local store's older directory layout, and give its errors the lib
 change what `estimateCost()` compares with and what a `CostReport` carries. The last holds `eraseSubject` to its
 budget for the generations it opens.
 
+- **An expired exclusion excludes nothing, in every shape of combine.** `a.intersect([b], { exclude: [stale] })` and
+  `a.union([b], { exclude: [stale] })` subtracted the ids of an `exclude` handle whose `expiresAt` had passed, and now
+  return what they would with that handle left out of `exclude`, as `a.andNot([stale])` and a `union` whose other
+  operands had all expired already did. The same holds with a range (`after`, `through`) and on pinned handles. An
+  expired exclusion is skipped without being read, so one that names a segment that does not exist is no longer
+  refused as an absent operand. Expiry treats an expired segment as gone, and an exclusion that is gone removes
+  nothing; the answer used to depend on how the combine was spelled. A result that used to leave out a lapsed
+  opt-out list's ids now includes them, so renew the list's `expiresAt`, or leave the deadline off it, where it
+  must keep suppressing. Unchanged: an expired `self` or include operand is empty or dropped, an absent operand is
+  refused unless `allowAbsentOperands` is set, and an `*Into` involving an expired handle, an exclusion included,
+  throws `ValidationError`.
 - **`@cloudbitmaps/roaring` exports an explicit list of names, not everything `@cloudbitmaps/core` exports.** An
   application installs the flavor and sees the store, the errors, the types its signatures name, the backends'
   shared types, and the constants and helpers a user calls. Every name below stays on `@cloudbitmaps/core`, which
