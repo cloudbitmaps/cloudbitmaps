@@ -397,7 +397,7 @@ describe('`retry` retries reads of segment data, and no write', () => {
           ? Promise.reject(blip('compareAndSwap'))
           : r.compareAndSwap(ref, token, patch),
       list: (namespace) => r.list(namespace),
-      delete: (ref) => r.delete(ref),
+      delete: (ref, expected) => r.delete(ref, expected),
     };
     const retries: number[] = [];
     const store = new CloudRoaring({

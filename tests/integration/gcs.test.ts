@@ -9,6 +9,7 @@ import { Writable } from 'node:stream';
 import { Storage } from '@google-cloud/storage';
 import {
   storageChunkSourceConformance,
+  storageDriverConformance,
   registryConformance,
   registryConcurrency,
   CONFORMANCE_SEGMENT,
@@ -117,6 +118,24 @@ const freshDriver = (): GcsStorageDriver =>
   new GcsStorageDriver({ storage, bucket: BUCKET, prefix: `${RUN}/conf/${n++}` });
 
 // The GCS driver must pass the SAME storage-source contract as in-memory + LocalFs + S3.
+// The same IStorageDriver contract memory and LocalFs pass: write-once, typed errors, true tail size, idempotent
+// delete, read-after-delete listing.
+storageDriverConformance('GcsStorageDriver (fake-gcs-server)', freshDriver);
+// The same cases with a 100-byte threshold, so every object takes the resumable upload. fake-gcs-server does not
+// enforce `ifGenerationMatch` on a resumable upload (a second write to the key succeeds and overwrites), so the
+// collision is skipped here: a real GCS answers it with 412, and the driver maps that the same way as the simple path.
+storageDriverConformance(
+  'GcsStorageDriver, resumable (fake-gcs-server)',
+  () =>
+    new GcsStorageDriver({
+      storage,
+      bucket: BUCKET,
+      prefix: `${RUN}/conf-resumable/${n++}`,
+      simpleUploadThresholdBytes: 100,
+    }),
+  { skip: ['collision'] },
+);
+
 storageChunkSourceConformance('GcsStorageDriver (fake-gcs-server)', async (chunks) => {
   const driver = freshDriver();
   await writeCrbmGeneration(driver, { segment: CONFORMANCE_SEGMENT, generation: 1 }, chunks);

@@ -36,6 +36,8 @@ class FakeObjectStore implements ObjectRegistryStore {
   conflictWrites = 0;
   /** Reject the next write with this instead — a fault that is NOT a lost race. */
   writeFault: Error | undefined;
+  /** Apply the next write, then fail it with this: a write that lands and loses its response. */
+  landThenFail: Error | undefined;
   /** Raise {@link ObjectVersionRaced} on this many upcoming reads, as a two-round-trip store does. */
   racedReads = 0;
 
@@ -80,6 +82,11 @@ class FakeObjectStore implements ObjectRegistryStore {
       return Promise.reject(new WriteConflictError(`version mismatch: ${key}`));
     }
     this.objects.set(key, { bytes: body, version: this.nextVersion++ });
+    if (this.landThenFail !== undefined) {
+      const fault = this.landThenFail;
+      this.landThenFail = undefined;
+      return Promise.reject(fault);
+    }
     return Promise.resolve();
   }
 
@@ -109,6 +116,53 @@ registryConcurrency('ObjectStoreRegistry (fake object store)', () => {
     new ObjectStoreRegistry(store, 'conf', ticking()),
     new ObjectStoreRegistry(store, 'conf', ticking()),
   ];
+});
+
+// A write that LANDS and then fails is the one fault a registry can misreport in either direction: as a clean
+// failure (the caller believes nothing happened) or, on a replay, as a conflict against its own row. The registry
+// must pass the fault through untouched and never retry it, so the caller learns "unknown, check" and the row says
+// what actually happened.
+describe('ObjectStoreRegistry: a write that lands and then fails', () => {
+  const ref = { segment: 's:v1' };
+  const lost = (): TransientError => new TransientError('connection reset after the write');
+  const fresh = (): { store: FakeObjectStore; reg: ObjectStoreRegistry } => {
+    const store = new FakeObjectStore();
+    return { store, reg: new ObjectStoreRegistry(store, undefined, ticking()) };
+  };
+
+  it('a create reports the fault, not a conflict, and the row is there', async () => {
+    const { store, reg } = fresh();
+    store.landThenFail = lost();
+    await expect(reg.create(ref, { currentGen: 0 })).rejects.toBeInstanceOf(TransientError);
+    expect((await reg.get(ref))?.currentGen).toBe(0);
+    // The registry did not send it again: the replay is the caller's, and it is told the truth.
+    await expect(reg.create(ref, { currentGen: 0 })).rejects.toBeInstanceOf(WriteConflictError);
+  });
+
+  it('a compare-and-swap reports the fault once and the swap is applied exactly once', async () => {
+    const { store, reg } = fresh();
+    const { token } = await reg.create(ref, { currentGen: 0 });
+    store.landThenFail = lost();
+    await expect(reg.compareAndSwap(ref, token, { currentGen: 1 })).rejects.toBeInstanceOf(
+      TransientError,
+    );
+    const after = await reg.get(ref);
+    expect(after?.currentGen).toBe(1);
+    expect(after?.token).toBe('1'); // advanced once, not twice
+    await expect(reg.compareAndSwap(ref, token, { currentGen: 2 })).rejects.toBeInstanceOf(
+      WriteConflictError,
+    );
+  });
+
+  it('a fenced delete reports the fault and the tombstone is written once', async () => {
+    const { store, reg } = fresh();
+    const { token } = await reg.create(ref, { currentGen: 0 });
+    store.landThenFail = lost();
+    await expect(reg.delete(ref, token)).rejects.toBeInstanceOf(TransientError);
+    expect(await reg.get(ref)).toBeNull();
+    // Re-creating proves the tombstone advanced the counter once: token 0 -> tombstone 1 -> recreate 2.
+    expect((await reg.create(ref, { currentGen: 0 })).token).toBe('2');
+  });
 });
 
 describe('ObjectStoreRegistry: reading a row the store is racing', () => {

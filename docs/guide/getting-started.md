@@ -641,7 +641,14 @@ it listed before the call. A new current generation is a publish that landed, an
 object that landed unpublished; while another writer is active on the segment, the listing cannot say whose either
 is. `generations` is not retried either, so a fault there means asking again.
 
-> Writing your own driver? Throw `TransientError` for your backend's retryable faults: the store's read retry
+> Writing your own driver? Start from what a driver must do: a storage driver's `putImmutable` is write-once and
+> throws `WriteConflictError` on a collision; `getRange` and `getTail` throw `NotFoundError` for a missing object and
+> `ValidationError` for an out-of-range read; `delete` is idempotent; `list` is strongly consistent, read-after-delete.
+> A registry driver's `create` and `compareAndSwap` are atomic conditional writes, and its `delete(ref, expected?)`
+> lands only while the row carries `expected` when one is given, which keeps a stale delete from taking a row
+> created after it was decided. No driver may replay a conditional write without telling the replay apart: send it
+> once, or recognise your own write on the read-back. The [driver kit](api-reference.md#driver-kit--what-you-need-to-implement-a-driver)
+> lists each with the reason a caller depends on it. Throw `TransientError` for your backend's retryable faults: the store's read retry
 > rides them out, and a write's caller can tell them from a deterministic failure. A registry's `get` is held to it too: a pointer refresh rides out only a `TransientError`, so a custom registry that throws a plain `Error` for an outage makes the read that meets it fail. The store wraps the source it
 > reads through, a `StorageChunkSource` you pass as `storage` included, so do not wrap one before handing it over:
 > that multiplies each read's attempts. A call of your own is yours to retry: loop over it, and back off before the
@@ -2233,4 +2240,5 @@ and keep `has`, `count` and `intersect` where the requests are.
   every driver in this repository passes. It is an internal helper, consumed in-repo through the `@/` alias and
   not exported as a public `./testing` package subpath, so a driver outside the repository cannot run it; the
   [driver kit](api-reference.md#driver-kit--what-you-need-to-implement-a-driver) lists the behaviours to reproduce
-  by hand.
+  by hand. The suite covers `IStorageDriver` (`storageDriverConformance`) as well as `IRegistryDriver` and
+  `StorageChunkSource`.

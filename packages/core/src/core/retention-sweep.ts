@@ -401,7 +401,9 @@ export async function retireExpired(
             continue;
           }
         }
-        if (!dryRun) await deps.registry.delete(ref);
+        // Fenced on the token of the row this decision was made from (the marker and its grace window), so a
+        // tombstone that was purged and re-created, or rewritten, since the scan is refused rather than deleted.
+        if (!dryRun) await deps.registry.delete(ref, rec.token);
         if (!dryRun) tombstonesPurged += 1;
         entries.push({
           ...base,
@@ -515,14 +517,21 @@ export async function retireExpired(
         // `gcOrphanGenerations` (which takes every generation of a destroyed row) and purges the row once it is
         // genuinely empty. The residual is visible in this entry's `result.generationsRemaining` meanwhile.
         //
+        // Fenced on the tombstone just written, so a name purged and re-created by someone else since is not
+        // tombstoned by this delete: only a `destroyed` row is removed, and only at the token it was read with.
+        //
         // **A delete that fails falls through to the stamp as well.** Left unstamped, the row is indistinguishable
         // from a crypto-shred's tombstone, which no sweep may ever delete, so one transient registry fault would
-        // keep a fenced name for good. Stamped, it is this sweep's own tombstone, and a later sweep purges it.
-        const deleted = await deps.registry.delete(ref).then(
-          () => true,
-          () => false,
-        );
-        if (deleted) continue;
+        // keep a fenced name for good. Stamped, it is this sweep's own tombstone, and a later sweep purges it. The
+        // stamp itself only touches a `destroyed` row, so a name that was re-created meanwhile is left alone.
+        const tombstone = await deps.registry.get(ref).catch(() => null);
+        if (tombstone?.status === 'destroyed') {
+          const deleted = await deps.registry.delete(ref, tombstone.token).then(
+            () => true,
+            () => false,
+          );
+          if (deleted) continue;
+        }
       }
       // Stamp the tombstone as OURS, so a later sweep may purge the row (see the attribution note above). A
       // failure here only means the row is never auto-purged — never data loss — so it is best-effort.

@@ -101,9 +101,13 @@ export class MemoryRegistryDriver implements IRegistryDriver {
     }
   }
 
-  async delete(ref: SegmentRef): Promise<void> {
+  async delete(ref: SegmentRef, expected?: Token): Promise<void> {
     validateSegmentRef(ref);
-    this.rows.delete(segmentKey(ref)); // idempotent; token uniqueness is global so a recreate is ABA-safe
+    const key = segmentKey(ref);
+    if (expected !== undefined && this.rows.get(key)?.token !== expected) {
+      throw new WriteConflictError(`OCC token mismatch for registry row ${ref.segment}`);
+    }
+    this.rows.delete(key); // idempotent; token uniqueness is global so a recreate is ABA-safe
   }
 }
 
