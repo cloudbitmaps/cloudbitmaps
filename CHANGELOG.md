@@ -13,6 +13,11 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **The calibration figures refuse a run for what it reports as wrong itself.** A run that timed `store.load()` is
+  refused as evidence when teardown left anything behind, when it missed an expected count, when a stage's requests
+  are not the ones the stage table expected, or when the shell ran in another region than the bucket's. Its latency is
+  labelled in-region only when the round-trip floor is under the line and the shell's region is proven to be the
+  bucket's, since a floor under 30 ms keeps another continent out but not a neighbouring region.
 - **The calibration harness runs the stages an in-region run needs.** `pnpm calibrate:aws` now runs seven stages and
   records each one's own requests by class and by kind of read: loads through `store.load()`, cold intersects over
   the calibration layout, the same overlap with its shared chunks spread uniformly over each segment (a pure layout

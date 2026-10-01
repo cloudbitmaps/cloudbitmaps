@@ -239,7 +239,10 @@ hang-up on a real pseudo-terminal that is then closed, and the whole path by int
 - **Each stage's own requests, and each load's.** A load makes pointer reads that the meter files with an intersect's,
   so a run's totals cannot be divided between stages afterwards. Every stage records its requests as it makes them,
   every load records its own, and `lib/calibration-figures.cjs` prices each load from its record and refuses a file
-  whose stages do not add up to what was billed.
+  whose stages do not add up to what was billed. It also refuses a file for what the run reports as wrong itself:
+  anything teardown left behind, a missed expected count, a stage whose requests are not the ones it expected, and a
+  shell that ran in another region than the bucket's. Latency is labelled in-region only when the floor is under the
+  line and the shell's region is the bucket's.
 - **Chunk reads and the tail read, separately.** Measured request by request, a cold intersect reads exactly 100
   chunks per operand (about 516 bytes each) plus one 256 KiB read from the end of each object, which fetches the
   footer and index in a single round trip. They are reported apart: the chunk count is the proportional part and
