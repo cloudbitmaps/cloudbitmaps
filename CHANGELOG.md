@@ -18,9 +18,11 @@ so, and so do the module headers in the code.
   size and then a ranged download. The pointer read is now one GET, taking the version fence from `x-goog-generation`
   and capping the length before it buffers; the tail read is one suffix-range GET (`Range: bytes=-N`), taking the
   object's size from `Content-Range`, and an object shorter than the range comes back whole. Both refuse a header that
-  is missing, malformed or at odds with the bytes received. A pointer read can no longer lose its generation to a
-  concurrent write between its two requests. The bytes read, the errors raised and the registry's behaviour are
-  unchanged. GCS now costs what S3 does per sized read, so `storage.requestsPerSizedRead: 2` in a pricing profile is
+  is missing, malformed or at odds with the bytes received: a pointer read answers `IntegrityError` and a tail read
+  `ValidationError`, where before the driver trusted whatever the second request returned. An empty object's tail is
+  the exception to one request: GCS refuses a suffix of nothing with a `416`, and the metadata then confirms the object
+  is empty, so it takes two. A pointer read can no longer lose its generation to a concurrent write between its two
+  requests. The bytes returned and the registry's behaviour are unchanged. GCS now costs what S3 does per sized read, so `storage.requestsPerSizedRead: 2` in a pricing profile is
   for Azure Blob alone; leave it at its default of 1 for GCS.
 
 ## [0.11.1] — 2026-10-01

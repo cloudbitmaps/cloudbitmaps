@@ -164,8 +164,11 @@ export class GcsStorageDriver implements IStorageDriver {
       // `Content-Range: bytes a-b/total`, the object's size. An object shorter than N comes back whole.
       let res;
       try {
-        res = await readOnce(this.file(objectName), { end: -maxBytes }, maxBytes, () =>
-          this.badTail(key, `the response is longer than the ${maxBytes}B requested`),
+        res = await readOnce(
+          this.file(objectName),
+          { end: -maxBytes, decompress: false },
+          maxBytes,
+          () => this.badTail(key, `the response is longer than the ${maxBytes}B requested`),
         );
       } catch (err) {
         // A zero-byte object has no suffix to satisfy, and a server may refuse the range with a 416. The metadata

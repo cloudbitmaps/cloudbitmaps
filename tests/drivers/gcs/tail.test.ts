@@ -70,7 +70,7 @@ describe('GcsStorageDriver.getTail (suffix range, one request)', () => {
     const got = await driverOver(fake).getTail(KEY, 100);
     expect(got.size).toBe(1000);
     expect(Array.from(got.bytes)).toEqual(Array.from(obj.subarray(900)));
-    expect(fake.requests).toEqual([{ kind: 'read', options: { end: -100 } }]);
+    expect(fake.requests).toEqual([{ kind: 'read', options: { end: -100, decompress: false } }]);
   });
 
   it('returns the whole object, and its size, when it is shorter than N', async () => {
@@ -169,6 +169,15 @@ describe('GcsStorageDriver.getTail (suffix range, one request)', () => {
       await refuse(bytesOf(50), (h) => ({
         ...h,
         headers: { 'content-range': 'bytes 40-49/9007199254740991' },
+      }));
+    });
+
+    it('refuses an internally consistent range that is shorter than the tail asked for', async () => {
+      // 5 bytes at 45-49/50 is coherent, but a 10-byte tail of a 50-byte object starts at 40.
+      await refuse(bytesOf(50), (h) => ({
+        ...h,
+        headers: { 'content-range': 'bytes 45-49/50' },
+        body: h.body.subarray(5),
       }));
     });
 

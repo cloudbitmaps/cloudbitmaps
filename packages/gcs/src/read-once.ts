@@ -42,7 +42,7 @@ export function singleHeader(headers: ObjectRead['headers'], name: string): stri
  */
 export function readOnce(
   file: GcsFile,
-  options: { start?: number; end?: number; validation?: false },
+  options: { start?: number; end?: number; validation?: false; decompress?: false },
   maxBytes: number,
   oversize: (size: number | undefined) => Error,
 ): Promise<ObjectRead> {
@@ -57,7 +57,10 @@ export function readOnce(
     const fail = (err: unknown): void => {
       if (settled) return;
       settled = true;
-      stream.destroy();
+      // Deferred: the SDK builds its response pipeline right after announcing the response, and destroying the
+      // stream before that makes the pipeline throw out of an event handler, where nothing can catch it, and
+      // leaves the socket open. One turn later the same destroy closes the socket cleanly.
+      setImmediate(() => stream.destroy());
       reject(err);
     };
 

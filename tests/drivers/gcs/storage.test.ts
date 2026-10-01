@@ -186,6 +186,6 @@ describe('GcsStorageDriver — what a tail read costs', () => {
     const tail = await driver.getTail({ segment: 's', generation: 0 }, 40);
     expect(tail.size).toBe(100);
     expect(tail.bytes.length).toBe(40);
-    expect(calls).toEqual([{ end: -40 }]);
+    expect(calls).toEqual([{ end: -40, decompress: false }]);
   });
 });

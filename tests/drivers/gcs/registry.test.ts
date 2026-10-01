@@ -59,6 +59,9 @@ class FakeGcs {
     };
   }
 
+  /** The status a read answers with; a test sets it to model a backend that does not answer a plain GET with 200. */
+  status = 200;
+
   /** Response headers a plain GET carries; a test overrides this to model a hostile or non-conforming backend. */
   headers = (obj: FakeObject): Record<string, string> => ({
     'x-goog-generation': String(obj.generation),
@@ -74,7 +77,7 @@ class FakeGcs {
         queueMicrotask(() => {
           if (obj === undefined) return void out.destroy(gcsError(404));
           out.emit('response', {
-            statusCode: 200,
+            statusCode: this.status,
             headers: this.headers(obj),
           });
           out.end(Buffer.from(obj.bytes));
@@ -277,6 +280,16 @@ describe('GcsRegistryDriver — construction + GCS specifics', () => {
         ...(generation === undefined ? {} : { 'x-goog-generation': generation }),
         'content-length': String(obj.bytes.length),
       });
+      await expect(d.get(ref)).rejects.toBeInstanceOf(IntegrityError);
+    }
+  });
+
+  it('refuses a pointer read that is not a 200', async () => {
+    const storage = new FakeGcs();
+    const d = driverOver(storage);
+    await d.create(ref, { currentGen: 0 });
+    for (const status of [204, 206]) {
+      storage.status = status;
       await expect(d.get(ref)).rejects.toBeInstanceOf(IntegrityError);
     }
   });
