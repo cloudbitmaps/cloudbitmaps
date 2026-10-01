@@ -56,6 +56,8 @@ figure is published from it with no check behind it, the row says that too.
 
 A rehearsal writes `calibrate-aws-rehearsal.json` instead, which git ignores — it has the same shape as a real
 run's file, so under an evidence name it would be one `git add` from being committed as the evidence.
+Both write every fractional number to nine decimals: below a nanosecond for a time in milliseconds, a billionth of a
+dollar for a cost, and short enough that a ratio's 17-digit binary tail cannot fail the leak scan by chance.
 
 ## Real-cloud calibration
 

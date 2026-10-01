@@ -181,6 +181,19 @@ function writeResultsFile({ file, fallback, text, overwrite = false }) {
 }
 
 /**
+ * A run's results as the text of its file, every fractional number written to nine decimals.
+ *
+ * A ratio's binary tail runs to 17 digits, and a run of digits that long is what a scan for identifiers looks for, so
+ * a file could fail the scan by chance and then not be committed. Nine decimals is below a nanosecond for a time in
+ * milliseconds and a billionth of a dollar for a cost, so nothing measured is lost.
+ */
+function resultsJson(results) {
+  const round = (_key, v) =>
+    typeof v === 'number' && !Number.isInteger(v) && Number.isFinite(v) ? Number(v.toFixed(9)) : v;
+  return `${JSON.stringify(results, round, 2)}\n`;
+}
+
+/**
  * The files a run from a checkout executes: the harness, the modules it loads, and the packages it loads, which are
  * this checkout's. The figures library in `bench/lib` is not among them; it reads a run's file, and never runs one.
  */
@@ -285,6 +298,7 @@ module.exports = {
   holdTerminal,
   silenceTerminal,
   writeResultsFile,
+  resultsJson,
   harnessRef,
   HARNESS_FILES,
 };

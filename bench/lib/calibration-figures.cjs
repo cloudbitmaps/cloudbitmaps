@@ -223,7 +223,9 @@ function derive(run, src) {
   const n = (name) => cmd[name] ?? 0;
   const getUSD = src.pricing.getPerMillion / 1e6;
   const putUSD = src.pricing.putPerMillion / 1e6;
-  const close = (a, b) => Math.abs(a - b) < 1e-12;
+  // A results file records dollars to nine decimals, so two figures that agree differ by a few billionths at most.
+  // One request costs at least 400 billionths, so a file that is off by a single request still fails.
+  const close = (a, b) => Math.abs(a - b) < 1e-8;
 
   // ── the evidence has to reconcile with itself ───────────────────────────────────────────────────────────────
   const byClass = { put: 0, get: 0, free: 0 };

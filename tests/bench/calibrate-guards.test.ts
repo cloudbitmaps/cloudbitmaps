@@ -166,6 +166,7 @@ const processLib = require_(join(ROOT, 'bench', 'lib', 'calibrate-process.cjs'))
     overwrite?: boolean;
   }) => string;
   harnessRef: (root: string, env?: Record<string, string | undefined>) => string;
+  resultsJson: (results: unknown) => string;
   measuredVersion: (root: string) => string;
   measuredSdk: (root: string) => { clientS3: string; nodeHttpHandler: string };
   SDK_DEFAULT_MAX_SOCKETS: number;
@@ -794,6 +795,44 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  // A ratio's binary tail runs to 17 digits, and a run of digits that long is what a scan for identifiers looks for:
+  // a results file that tripped one could not be committed. So every fractional number is written to nine decimals,
+  // which is below a nanosecond for a time in milliseconds and a billionth of a dollar for a cost.
+  it('writes every fractional number to nine decimals, and leaves integers and the rest alone', () => {
+    const text = processLib.resultsJson({
+      rounds: 18.388563978644598,
+      meanInFlight: 11.129749221924502,
+      sum: 0.1 + 0.2,
+      p50ms: 1059.2655,
+      getUSD: 92948 * 0.4e-6,
+      gets: 92948,
+      bytes: 264765440,
+      nested: [{ fraction: 0.04904532700686635 }, 'text', null, true],
+    });
+    expect(JSON.parse(text)).toEqual({
+      rounds: 18.388563979,
+      meanInFlight: 11.129749222,
+      sum: 0.3,
+      p50ms: 1059.2655,
+      getUSD: 0.0371792,
+      gets: 92948,
+      bytes: 264765440,
+      nested: [{ fraction: 0.049045327 }, 'text', null, true],
+    });
+    expect(text.endsWith('}\n')).toBe(true);
+    expect(text).toContain('\n  "rounds": 18.388563979,');
+    // The harness writes its results through it and nowhere else, and so is the fixture written.
+    const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
+    expect(src).toContain('text: resultsJson(results)');
+    expect(src).not.toContain('JSON.stringify(results');
+    const fixture = readFileSync(
+      join(ROOT, 'tests', 'bench', 'fixtures', 'calibration-rehearsal.json'),
+      'utf8',
+    );
+    expect(fixture.match(/\.\d{10,}/g) ?? []).toEqual([]);
+    expect(processLib.resultsJson(JSON.parse(fixture))).toBe(fixture);
   });
 
   // Run, not read: a check pointed at the partial file instead of the evidence passes every source-text test here.

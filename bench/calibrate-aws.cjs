@@ -93,6 +93,7 @@ const {
   holdTerminal,
   silenceTerminal,
   writeResultsFile,
+  resultsJson,
   harnessRef,
   measuredVersion,
   measuredSdk,
@@ -743,7 +744,7 @@ async function main() {
     const wrote = writeResultsFile({
       file,
       fallback,
-      text: `${JSON.stringify(results, null, 2)}\n`,
+      text: resultsJson(results),
       overwrite: REHEARSE,
     });
     if (wrote !== file) {
