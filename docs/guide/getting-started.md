@@ -18,14 +18,14 @@ pnpm add @cloudbitmaps/roaring              # the store; includes in-memory and 
 pnpm add @cloudbitmaps/s3                   # only when you move to S3 (or /gcs, or /azure-blob)
 ```
 
-On pnpm 10 and later, allow the one build script first, or the package throws at `import` while the install exits
-0. Put this in your `package.json`:
+On npm 12 and pnpm 10 and later, allow `roaring`'s one install script first, or the install exits 0 and the package
+throws at `import`. Put this in your `package.json`:
 
 ```json
-{ "pnpm": { "onlyBuiltDependencies": ["roaring"] } }
+{ "allowScripts": { "roaring": true }, "pnpm": { "onlyBuiltDependencies": ["roaring"] } }
 ```
 
-npm and pnpm 9 need nothing extra. `@cloudbitmaps/roaring` is the package you import from. `@cloudbitmaps/core` is the
+npm 11 runs the script but warns until you allow it the same way; pnpm 9 needs nothing extra. `@cloudbitmaps/roaring` is the package you import from. `@cloudbitmaps/core` is the
 engine underneath; it arrives on its own and you never install or import it.
 
 The packages are **ES modules only and need Node 22.12 or later.** Use `import`. `require()` works too, on the same
@@ -295,15 +295,16 @@ The install **exits 0** and the package is then unusable at runtime. Two ways to
 the plain install is one of them**, with no flag of your own:
 
 ```
+$ npm i @cloudbitmaps/roaring             # npm 12+: warns that roaring's install script was blocked, exits 0
 $ pnpm add @cloudbitmaps/roaring          # pnpm 10+: warns "Ignored build scripts: roaring", exits 0
 $ npm i --ignore-scripts @cloudbitmaps/roaring    # any client, when you opt out of scripts
 $ node -e "require('@cloudbitmaps/roaring')"
 Error: Cannot find module './build/Release/roaring.node'
 ```
 
-**pnpm 10 does not run dependency build scripts unless you allow them** — a deliberate supply-chain default, not
-a bug — so it is the one client where the *documented* install command needs a second step. pnpm 9 runs them,
-and so does npm unless you pass `--ignore-scripts`.
+**npm 12 and pnpm 10 do not run a dependency's install script unless you allow it** — a deliberate supply-chain
+default, not a bug — so on them the *documented* install command needs a second step. npm 11 runs it and warns
+that `allowScripts` does not cover it yet; pnpm 9 runs it; every client skips it under `--ignore-scripts`.
 
 **Why.** The native dependency `roaring` publishes an npm tarball containing **no** compiled binary; it ships an
 `install` script that downloads the right prebuilt binary for your platform from GitHub Releases. Skip install
@@ -313,17 +314,20 @@ success because the *install* did succeed — only the post-install step was ski
 **Fixes, in order of preference:**
 
 1. **Allow the install script for that one package** — narrow the exception rather than re-enabling scripts
-   globally. On pnpm, put it in your own `package.json` so CI and teammates inherit it:
+   globally. Put it in your own `package.json` so CI and teammates inherit it; the first key is npm's, the second
+   pnpm's:
 
    ```json
-   { "pnpm": { "onlyBuiltDependencies": ["roaring"] } }
+   { "allowScripts": { "roaring": true }, "pnpm": { "onlyBuiltDependencies": ["roaring"] } }
    ```
 
-   `pnpm approve-builds` does the same thing interactively. On npm, scope an install to it.
-2. **Then re-run the skipped step** — `pnpm rebuild roaring`, or `npm rebuild roaring` on npm. On pnpm the
-   allowlist above has to be in place **first**: `pnpm rebuild roaring` without it is a **silent no-op** — it
-   prints nothing, exits 0, and leaves the package just as broken, because rebuilding still runs a build script
-   and pnpm still will not. (`npm rebuild roaring` does repair a pnpm-installed tree, if you have npm to hand.)
+   `npm install-scripts approve roaring` (npm 12) and `pnpm approve-builds` do the same interactively; npm's
+   records the approval pinned to the installed `roaring` version.
+2. **Then re-run the skipped step** — `npm rebuild roaring` or `pnpm rebuild roaring`. The allowance above has
+   to be in place **first**: without it, both exit 0 and leave the package just as broken, because rebuilding
+   still runs an install script the client still will not run. npm 12 at least warns that it blocked one; pnpm's
+   `pnpm rebuild roaring` is a **silent no-op**. An approval made with `npm install-scripts approve roaring` runs
+   nothing by itself, so the rebuild is what fetches the binary.
 3. **Build from source** — `npm_config_build_from_source=true npm i` with a C/C++ toolchain present. Also the
    route on **Alpine/musl**, where no prebuilt binary is published at all.
 
