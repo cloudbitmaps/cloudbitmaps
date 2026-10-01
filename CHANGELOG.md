@@ -44,6 +44,9 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **Calibration results files carry every fractional number to nine decimals.** That is below a nanosecond for a time
+  in milliseconds and a billionth of a dollar for a cost. A ratio's binary tail otherwise runs to 17 digits, and one of
+  exactly 12 is a run the leak scan refuses, so a file could not be committed by chance.
 - **The default calibration workload is 20 single-part and 5 multipart loads, and every segment is loaded once.** A
   segment's first load is what the projection bounds, so the harness refuses to load a name twice.
 
