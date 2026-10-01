@@ -1,4 +1,4 @@
-# Retention, TTL and pruning
+# Retention
 
 How to expire and delete data: what exists, and what does not.
 
@@ -24,10 +24,10 @@ declare const idsSeenToday: Iterable<number>;
 
 const DAY = 86_400_000;
 const ref = { namespace: 'active-daily', segment: today };
-await store.setRetention(ref, { expiresAt: Date.now() + 30 * DAY }); // once, when the bucket is created
+await store.setRetention(ref, { expiresAt: Date.now() + 30 * DAY }); // once, when you first record the segment
 await store.load(ref, idsSeenToday);
 
-// Elsewhere, on a schedule (once a day is enough for daily buckets):
+// Elsewhere, on a schedule (once a day is enough for daily segments):
 const swept = await store.retireExpired({ namespace: 'active-daily' });
 ```
 
@@ -52,18 +52,18 @@ await store.setRetention(ref, { expiresAt: Date.now() + 30 * DAY }); // before o
 await store.load(ref, idsSeenToday);
 ```
 
-That is one registry write, and nothing else happens. Nothing is deleted and no timer starts. Call it once when you
-create the bucket, not on every load. It is idempotent, so re-running is harmless, but it is a write.
+That is one registry write, and nothing else happens. Nothing is deleted and no timer starts. Call it once, when you first
+record the segment, not on every load. It is idempotent, so re-running is harmless, but it is a write.
 
 - **`expiresAt` is an absolute instant in epoch milliseconds**, which you compute. A duration would have to be measured
   from something, and every anchor the library could use is wrong. `updatedAt` and `currentGen` are rewritten by every
-  load, so "expire 30 days after the last write" would push a daily-reloaded bucket's expiry forward on every refresh.
+  load, so "expire 30 days after the last write" would push a daily-reloaded segment's expiry forward on every refresh.
   The segment would stay alive because it is being kept fresh. The library stores your instant verbatim and never
   moves it.
 - **A value that looks like epoch seconds is rejected.** `Date.now() / 1000 + 30 * 86400` is a natural thing to type
   and lands in 1970, already expired. Without the check it would not be an error, it would be a deletion on the next
   sweep.
-- **A past instant is legal** and means "eligible on the next sweep". Backfilling a policy onto buckets that already
+- **A past instant is legal** and means "eligible on the next sweep". Backfilling a policy onto segments that already
   exist is a normal migration.
 - **A crypto-shredded segment is refused**, and the result's `indexed` says whether the due-index pointer was written.
   `indexed: false` is a degradation, not a failure: the fleet scan still retires the segment. The seconds check is a
@@ -127,12 +127,12 @@ those is worse than none. **You own the heartbeat.** Any of these is a correct a
 > disjoint slice with `shards` and `totalShards`. The slice is a stable hash of the segment key, so a worker owns the
 > same slice across restarts.
 
-**Once a day is enough** for daily buckets: retention windows are measured in days, so an hourly sweep just re-scans
+**Once a day is enough** for daily segments: retention windows are measured in days, so an hourly sweep just re-scans
 the same registry 24 times. Match the cadence to the granularity of your policies, not to how fast you want the
 deletion to feel.
 
 - A fleet scan is a billed `LIST` over the registry prefix. The default `'fleet'` scan costs what the fleet holds.
-- `scan: 'index'` reads only the due buckets of the due index and costs what is expiring.
+- `scan: 'index'` reads only the due days of the due index and costs what is expiring.
 - The index is a fast path, not the source of truth. Each candidate's live row is re-read before anything is decided,
   and a policy whose pointer write failed has no index entry. So run the `'fleet'` scan periodically as the repair
   pass. `lookbackBuckets` (default 7) is how many past days a fast scan also reads, so a sweep that did not run leaves
@@ -212,7 +212,7 @@ once.
 pre-built `StorageChunkSource` cannot do. Without one you get an `UnsupportedError`.
 
 ```ts
-// Your value: the name of the bucket you want to retire.
+// Your value: the name of the daily segment you want to retire.
 declare const oldDay: string;
 
 // The namespace is part of the identity. Omit it and you address a DIFFERENT segment, and the call is a
@@ -303,7 +303,7 @@ aging is not deferred work. It is incompatible with the data model.
 ### The pattern that gives you the same outcome
 
 Put time in the name instead of in the data, and let set algebra do the window. Use a **namespace per family and the
-date as the segment**, not one long name, and load one bucket per day:
+date as the segment**, not one long name, and load one segment per day:
 
 ```ts
 // Your values: today's date as a string, the last seven dates, and the ids seen today.
@@ -311,21 +311,21 @@ declare const today: string;
 declare const last7Days: string[];
 declare const idsSeenToday: Iterable<number>;
 
-const bucket = (day: string) => store.segment(day, { namespace: 'active-daily' });
+const daily = (day: string) => store.segment(day, { namespace: 'active-daily' });
 
-// Load today's bucket: a generation, from wherever today's ids come from.
+// Load today's segment: a generation, from wherever today's ids come from.
 const ref = { namespace: 'active-daily', segment: today };
 await store.load(ref, idsSeenToday);
 
-// "Active in the last 7 days" is a union over the buckets you still keep. A day whose bucket was never loaded (a
+// "Active in the last 7 days" is a union over the daily segments you still keep. A day whose segment was never loaded (a
 // job that did not run) names no segment, which a combine refuses; `allowAbsentOperands` reads it as empty instead.
 // Leave it out to be told.
-const [head, ...rest] = last7Days.map(bucket);
-for await (const id of head.union(rest, { allowAbsentOperands: true })) {
+const days = last7Days.map(daily);
+for await (const id of days[0]!.union(days.slice(1), { allowAbsentOperands: true })) {
   /* ... */
 }
 
-// Retention is dropping whole buckets, not aging bits.
+// Retention is dropping whole daily segments, not aging bits.
 ```
 
 `union` reads every chunk of every operand and cannot skip. If a 7-way union per read is too much, materialize the
@@ -334,19 +334,19 @@ supersedes its destination rather than adding to it, so a rolling `active-7d` re
 that day's window:
 
 ```ts
-// last7Days and bucket are as in the example above.
+// last7Days and daily are as in the example above.
 declare const last7Days: string[];
-declare const bucket: (day: string) => ReturnType<typeof store.segment>;
+declare const daily: (day: string) => ReturnType<typeof store.segment>;
 
 const window = store.segment('active-7d', { namespace: 'windows' });
-const days = last7Days.map(bucket);
+const days = last7Days.map(daily);
 // window's previous generation is superseded, not merged into
-await days[0].unionInto(window, days.slice(1), { allowAbsentOperands: true });
+await days[0]!.unionInto(window, days.slice(1), { allowAbsentOperands: true });
 ```
 
-Loading a bucket a day is the natural shape for a "seen this period" set: today's bucket is a different, empty set
+Loading a segment a day is the natural shape for a "seen this period" set: today's segment is a different, empty set
 until you load it, and the union is your window. A genuine rolling window, such as "seen in the last 4 hours",
-exactly, is a smaller bucket loaded more often. There is no per-id write to age individual ids out with.
+exactly, is a shorter period's segment loaded more often. There is no per-id write to age individual ids out with.
 
 **A name is any non-empty string.** `dedup:2026-08-01`, `orders/2026`, `user@example.com`, `日本語` and `100%` are all
 legal. There is no character allowlist, because each storage layer escapes what it cannot take literally, which is the
@@ -368,8 +368,8 @@ is reserved: `cbm.dueX`, `cbm.due` and `cbmdue.eu` are ordinary namespaces, and 
 included.
 
 The namespace split is still the better shape for a family: `store.segments({ namespace: 'active-daily' })` lists
-exactly that family's buckets, and `eraseNamespace` can retire the whole family at once. With one flat name, finding
-"every daily bucket" means string-matching.
+exactly that family's daily segments, and `eraseNamespace` can retire the whole family at once. With one flat name, finding
+"every daily segment" means string-matching.
 
 ## How it stays correct
 
@@ -387,7 +387,7 @@ exactly that family's buckets, and `eraseNamespace` can retire the whole family 
    tombstone it wrote itself, through `retireExpired`; one a hand-run `dropSegment` wrote is left to you.
 
 **Tombstones are purged, narrowly.** A retired segment leaves a `destroyed` row behind, and one dead row per retired
-daily bucket would accumulate forever. The sweep deletes those rows too, but only when all three of these hold,
+daily segment would accumulate forever. The sweep deletes those rows too, but only when all three of these hold,
 because deleting the row is what makes the name writable again:
 
 1. **The row carries the sweep's own retirement stamp.** This is a positive marker `retireExpired` writes on the
