@@ -34,7 +34,7 @@
  * reproduce `us-east-1` answering 200 OK to `CreateBucket` on a bucket you already own. Those meet reality for the
  * first time on a real account, which is why the probe refuses anything but a clean 404.
  */
-const { existsSync, readFileSync } = require('node:fs');
+const { existsSync } = require('node:fs');
 const { resolve } = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { setTimeout: sleep } = require('node:timers/promises');
@@ -93,6 +93,7 @@ const {
   silenceTerminal,
   writeResultsFile,
   harnessRef,
+  measuredVersion,
 } = require('./lib/calibrate-process.cjs');
 
 const ROOT = resolve(__dirname, '..');
@@ -398,9 +399,7 @@ async function main() {
   if (MODE !== 'cleanup') {
     let AWS_US_EAST_1_ONDEMAND;
     ({ AWS_US_EAST_1_ONDEMAND } = await import('@cloudbitmaps/roaring'));
-    packageVersion = JSON.parse(
-      readFileSync(resolve(ROOT, 'packages/roaring/package.json'), 'utf8'),
-    ).version;
+    packageVersion = measuredVersion(ROOT);
     pricing = AWS_US_EAST_1_ONDEMAND;
     layout = planLayout({ segments: SEGMENTS, idsPerSegment: IDS, ...DEFAULT_LAYOUT });
     // The spread layout has the calibration layout's overlap: the same shared chunks, the same ids in every chunk.

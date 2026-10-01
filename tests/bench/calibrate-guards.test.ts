@@ -1,5 +1,13 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -158,6 +166,7 @@ const processLib = require_(join(ROOT, 'bench', 'lib', 'calibrate-process.cjs'))
     overwrite?: boolean;
   }) => string;
   harnessRef: (root: string, env?: Record<string, string | undefined>) => string;
+  measuredVersion: (root: string) => string;
   HARNESS_FILES: string[];
   failureOf: (err: unknown) => string | null;
   stopThenTearDown: (i: {
@@ -1161,6 +1170,67 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     expect(needed.size).toBeGreaterThanOrEqual(3);
     for (const dep of needed)
       expect(copied.has(dep), `${dep} is required and not copied`).toBe(true);
+  });
+
+  // The CloudShell script runs the harness from a scratch directory that holds the files it copies and the packages it
+  // installed, and no checkout: no `packages/` directory. The harness has to run there, so this runs it there, in
+  // projection mode, which reads no credential and sends nothing.
+  it('runs from a scratch directory with only the files the CloudShell script copies', () => {
+    const sh = readFileSync(join(ROOT, 'bench', 'calibrate-cloudshell.sh'), 'utf8');
+    const copied = [
+      ...sh.matchAll(/^cp ((?:bench\/[\w./-]+ ?)+) "\$WORK\/(bench\/(?:lib\/)?)"$/gm),
+    ].flatMap((m) => (m[1] ?? '').trim().split(/\s+/));
+    expect(copied).toContain('bench/calibrate-aws.cjs');
+    expect(copied.length).toBeGreaterThanOrEqual(5);
+    const scratch = mkdtempSync(join(tmpdir(), 'calib-scratch-'));
+    try {
+      for (const rel of copied) {
+        mkdirSync(join(scratch, dirname(rel)), { recursive: true });
+        writeFileSync(join(scratch, rel), readFileSync(join(ROOT, rel)));
+      }
+      // What `npm i` leaves: the packages and the SDK, resolvable from the scratch directory.
+      symlinkSync(join(ROOT, 'node_modules'), join(scratch, 'node_modules'));
+      const out = spawnSync(process.execPath, ['bench/calibrate-aws.cjs'], {
+        cwd: scratch,
+        env: {
+          PATH: process.env.PATH ?? '',
+          HOME: OFFLINE_HOME,
+          AWS_CONFIG_FILE: join(OFFLINE_HOME, 'no-config'),
+          AWS_SHARED_CREDENTIALS_FILE: join(OFFLINE_HOME, 'no-credentials'),
+          AWS_EC2_METADATA_DISABLED: 'true',
+        },
+        encoding: 'utf8',
+        timeout: 60_000,
+      });
+      expect(out.stderr).toBe('');
+      expect(out.status).toBe(0);
+      expect(out.stdout).toMatch(/PROJECTION ONLY/);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it("says what it measured: the checkout's package, else the installed one, else nothing", () => {
+    const root = mkdtempSync(join(tmpdir(), 'calib-version-'));
+    const put = (rel: string, version: string): void => {
+      mkdirSync(join(root, dirname(rel)), { recursive: true });
+      writeFileSync(join(root, rel), JSON.stringify({ name: '@cloudbitmaps/roaring', version }));
+    };
+    try {
+      expect(() => processLib.measuredVersion(root)).toThrow(/no @cloudbitmaps\/roaring package/);
+      put('node_modules/@cloudbitmaps/roaring/package.json', '0.11.0');
+      expect(processLib.measuredVersion(root)).toBe('0.11.0');
+      put('packages/roaring/package.json', '0.12.0-dev');
+      expect(processLib.measuredVersion(root)).toBe('0.12.0-dev');
+      // A package file that is there and unreadable is an error, not a reason to look elsewhere.
+      writeFileSync(join(root, 'packages', 'roaring', 'package.json'), '{');
+      expect(() => processLib.measuredVersion(root)).toThrow();
+      expect(readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8')).not.toContain(
+        "'packages/roaring/package.json'",
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   // A run is named dirty by the files it executes. A module the harness requires that the list leaves out could be

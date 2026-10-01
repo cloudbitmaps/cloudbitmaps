@@ -24,6 +24,14 @@ so, and so do the module headers in the code.
   requests, and `bench/lib/calibration-figures.cjs` prices a `store.load()` run from them and from each stage's own
   counts, refusing a file whose stages do not add up to what was billed.
 
+### Fixed
+
+- **The calibration harness runs from the CloudShell script's scratch directory.** It read the version it measured from
+  `packages/roaring/package.json`, which a scratch directory that installed the published packages does not have, so
+  `bash bench/calibrate-cloudshell.sh` stopped with `ENOENT` before it did anything. It now reads the installed
+  package's version there and the checkout's own from a checkout, and a test runs the harness, in projection mode,
+  from a directory holding only the files the script copies.
+
 ### Changed
 
 - **The default calibration workload is 20 single-part and 5 multipart loads, and every segment is loaded once.** A

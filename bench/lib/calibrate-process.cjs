@@ -8,8 +8,8 @@
  * second run under a name already taken, and a harness with uncommitted edits recorded as a commit.
  */
 const { execFileSync } = require('node:child_process');
-const { mkdirSync, writeFileSync } = require('node:fs');
-const { dirname } = require('node:path');
+const { mkdirSync, readFileSync, writeFileSync } = require('node:fs');
+const { dirname, join } = require('node:path');
 const { clearTimeout, setTimeout } = require('node:timers');
 
 const { redact } = require('./calibrate-guards.cjs');
@@ -216,7 +216,33 @@ function harnessRef(root, env = process.env) {
   }
 }
 
+/**
+ * The version of `@cloudbitmaps/roaring` a run measured: this checkout's own package when the run is from one, and the
+ * installed package when it is from a scratch directory that installed the published ones, as the CloudShell script
+ * does. A directory with neither is refused, since a run that cannot say what it measured has no evidence to write.
+ */
+function measuredVersion(root) {
+  const where = [
+    'packages/roaring/package.json',
+    'node_modules/@cloudbitmaps/roaring/package.json',
+  ];
+  for (const rel of where) {
+    let text;
+    try {
+      text = readFileSync(join(root, rel), 'utf8');
+    } catch (err) {
+      if (err?.code === 'ENOENT') continue;
+      throw err;
+    }
+    return JSON.parse(text).version;
+  }
+  throw new Error(
+    `no @cloudbitmaps/roaring package under ${root}: looked in ${where.join(' and ')}`,
+  );
+}
+
 module.exports = {
+  measuredVersion,
   interruptGate,
   isInterruption,
   failureOf,
