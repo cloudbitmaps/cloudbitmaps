@@ -18,6 +18,10 @@ If you arrived here asking "does it support TTL?": for a segment, yes; for an id
 **The usual setup is two calls.** Record an expiry when you create each segment, and run the sweep on a schedule:
 
 ```ts
+// Your values: today's date as the segment name, and the ids seen today.
+declare const today: string;
+declare const idsSeenToday: Iterable<number>;
+
 const DAY = 86_400_000;
 const ref = { namespace: 'active-daily', segment: today };
 await store.setRetention(ref, { expiresAt: Date.now() + 30 * DAY }); // once, when the bucket is created
@@ -72,6 +76,7 @@ create the bucket, not on every load. It is idempotent, so re-running is harmles
 Reading and cancelling:
 
 ```ts
+const ref = { namespace: 'active-daily', segment: '2026-08-05' };
 await store.getRetention(ref); // → { expiresAt } | null | 'invalid'
 await store.clearRetention(ref); // → true if a policy was actually removed
 ```
@@ -151,6 +156,7 @@ would leave you unable to say which segments were retired, having already retire
 // Your function: schedule another run of the sweep soon.
 declare function scheduleAnotherPassSoon(): void;
 
+const swept = await store.retireExpired({ namespace: 'active-daily' });
 for (const e of swept.entries) {
   if (e.action === 'skipped') console.warn(`${e.segment}: ${e.reason}`);
   if (e.action === 'retired' && e.result.generationsRemaining.length > 0) {
@@ -328,6 +334,10 @@ supersedes its destination rather than adding to it, so a rolling `active-7d` re
 that day's window:
 
 ```ts
+// last7Days and bucket are as in the example above.
+declare const last7Days: string[];
+declare const bucket: (day: string) => ReturnType<typeof store.segment>;
+
 const window = store.segment('active-7d', { namespace: 'windows' });
 const days = last7Days.map(bucket);
 // window's previous generation is superseded, not merged into
