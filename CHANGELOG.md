@@ -16,8 +16,8 @@ so, and so do the module headers in the code.
 - **The CloudShell calibration script no longer stops in silence while it installs Node.** CloudShell ships Node 20, so
   the script installs Node 22 with nvm. nvm is not written for `set -eu`: sourcing `nvm.sh` returns 3 while no default
   Node is installed, and the script's `set -e` ended it there after printing "installing Node 22 with nvm", every time.
-  It now runs nvm with those options off and checks the result itself, stopping with a message if Node 22 is still
-  missing. A test runs the script's own bootstrap under its own shell options against an `nvm.sh` that returns 3.
+  It now runs nvm with those options off, restores them, and checks the result itself, stopping with a message if Node
+  22 is still missing, and with another if nvm itself cannot be downloaded. A test runs the script's own bootstrap under its own shell options against an `nvm.sh` that returns 3.
 
 ## [0.11.1] — 2026-10-01
 

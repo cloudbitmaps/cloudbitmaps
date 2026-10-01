@@ -111,7 +111,12 @@ node_ok() {
 if ! node_ok; then
   echo "cloudshell: installing Node 22 with nvm (the packages require Node >= 22.12)"
   export NVM_DIR="$HOME/.nvm"
-  [ -s "$NVM_DIR/nvm.sh" ] || curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+  if [ ! -s "$NVM_DIR/nvm.sh" ]; then
+    curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash || {
+      echo "cloudshell: could not install nvm from GitHub — install Node >= 22.12 by hand, then re-run" >&2
+      exit 2
+    }
+  fi
   # nvm is not written for `set -eu`: sourcing nvm.sh returns 3 while no default Node is installed, which under `set -e`
   # ended this script here without a word. So nvm runs with both off, and what it did is checked by hand.
   set +eu

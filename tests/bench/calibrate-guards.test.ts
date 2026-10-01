@@ -2381,7 +2381,7 @@ describe("the CloudShell script's Node bootstrap", () => {
   const to = sh.indexOf('\nWORK=', from);
   const bootstrap = sh.slice(from, to);
 
-  const run = (nvmInstallFails: boolean) => {
+  const run = (nvmInstallFails: boolean, useLeavesOldNode = false) => {
     const dir = mkdtempSync(join(tmpdir(), 'calib-nvm-'));
     try {
       // A `node` that is too old until `nvm use 22` puts a newer one first on PATH.
@@ -2398,7 +2398,9 @@ describe("the CloudShell script's Node bootstrap", () => {
           'nvm() {',
           '  case "$1" in',
           `    install) return ${nvmInstallFails ? 1 : 0} ;;`,
-          `    use) PATH="${v22}:$PATH"; export PATH; return 0 ;;`,
+          useLeavesOldNode
+            ? '    use) return 0 ;;'
+            : `    use) PATH="${v22}:$PATH"; export PATH; return 0 ;;`,
           '  esac',
           '}',
           // What the real nvm.sh does at the end when no default version is installed yet.
@@ -2407,9 +2409,14 @@ describe("the CloudShell script's Node bootstrap", () => {
         ].join('\n'),
       );
       const script = join(dir, 'bootstrap.sh');
-      writeFileSync(script, `set -euo pipefail\n${bootstrap}\necho "bootstrap: node is ready"\n`, {
-        mode: 0o755,
-      });
+      // After the block the script's own options must be back on: errexit, nounset and pipefail.
+      writeFileSync(
+        script,
+        `set -euo pipefail\n${bootstrap}\necho "bootstrap: node is ready"\necho "opts: $-"\nset -o | grep pipefail\n`,
+        {
+          mode: 0o755,
+        },
+      );
       return spawnSync('bash', [script], {
         env: { PATH: `${old}:/usr/bin:/bin`, HOME: dir },
         encoding: 'utf8',
@@ -2427,6 +2434,16 @@ describe("the CloudShell script's Node bootstrap", () => {
     expect(out.stdout).toContain('installing Node 22 with nvm');
     expect(out.stdout).toContain('bootstrap: node is ready');
     expect(out.status).toBe(0);
+    const opts = /opts: (\S+)/.exec(out.stdout)?.[1] ?? '';
+    expect(opts).toContain('e');
+    expect(opts).toContain('u');
+    expect(out.stdout).toMatch(/pipefail\s+on/);
+  });
+
+  it('stops with a message when nvm reports success but no Node >= 22.12 is on PATH', () => {
+    const out = run(false, true);
+    expect(out.status).toBe(2);
+    expect(out.stderr).toMatch(/still no Node >= 22\.12/);
   });
 
   it('stops with a message, not in silence, when nvm cannot install Node', () => {
