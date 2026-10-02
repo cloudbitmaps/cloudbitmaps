@@ -307,7 +307,8 @@ function parent() {
 
 /** The figures the guide publishes, derived from the results file the one way `--check` and a writer both use. */
 function publishedFigures(results) {
-  const ms = (x) => `${Math.round(x)} ms`;
+  // Thousands separated, as the guide writes every number: `1,075 ms`, which the check reads whole.
+  const ms = (x) => `${Math.round(x).toLocaleString('en-US')} ms`;
   const out = {};
   for (const shape of ['dense', 'sparse', 'runs']) {
     for (const v of VARIANTS) out[`${shape} ${v}`] = ms(results.shapes[shape][v].wallMs.median);
@@ -331,12 +332,19 @@ function guideSection() {
 }
 
 /**
- * Every time or ratio the section quotes, in any form a note would write one: `270 ms`, `270ms`, `0.27 s`,
- * `22 ns`, `3 µs`, `200 milliseconds`, `4x`, `4.2×`. Counts, sizes and shares (`12M`, `28 MB`, `10 %`) are not
- * figures this bench produces, and are left alone.
+ * Every time or ratio the section quotes, in any form a note would write one: `270 ms`, `270ms`, `270 msec`,
+ * `0.27 s`, `1.2 sec`, `2 min`, `22 ns`, `3 µs` (or with the Greek letter, `3 μs`), `200 milliseconds`, `4x`,
+ * `4.2×`, `4 times`, `4-fold`. A number is read whole, thousands separators included, so `1,075 ms` is one figure.
+ * Counts, sizes and shares (`12M`, `28 MB`, `10 %`) are not figures this bench produces, and are left alone, as is a
+ * product: `×` or `x` followed by a number (`245 × 65,536`) multiplies rather than compares, and a unit followed by
+ * a hyphen or a letter (`us-east-1`) is not a unit.
  */
-const FIGURE =
-  /\b\d+(?:\.\d+)?\s?(?:milliseconds?|microseconds?|nanoseconds?|seconds?|ms|µs|us|ns|s|x)\b|\b\d+(?:\.\d+)?\s?×/g;
+const FIGURE = new RegExp(
+  '(?<![\\d.,])(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?' +
+    '(?:\\s?(?:milliseconds?|microseconds?|nanoseconds?|seconds?|minutes?|msecs?|secs?|mins?|ms|µs|μs|us|ns|s)(?![\\w-])' +
+    '|\\s?x(?![\\w-])(?!\\s?\\d)|\\s?×(?!\\s?\\d)|\\stimes\\b|-fold\\b)',
+  'gu',
+);
 function quotedFigures(section) {
   return new Set([...section.matchAll(FIGURE)].map((m) => m[0]));
 }

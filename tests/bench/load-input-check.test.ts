@@ -115,19 +115,39 @@ describe('bench:load-input:check, before anything is measured', () => {
     'costs 3 µs per container',
     'takes about 200 milliseconds',
     'takes 1.5 seconds',
+    'takes 270 msec',
+    'takes 270 msecs',
+    'takes 1.2 sec',
+    'takes 1.2 secs',
+    'takes 2 min',
+    'takes 2 mins',
+    'takes 2 minutes',
+    'is 4 times faster',
+    'is a 4-fold gain',
+    'costs 3 μs per container (Greek mu)',
+    'takes 1,075 ms',
   ])('fails on a figure in any unit or ratio form: "%s"', (figure) => {
     const d = copy();
     replaceSection(d, `These figures have not been measured yet. A 12M load ${figure}.`);
     expect(check(d).status).toBe(1);
   });
 
-  it('passes the counts, sizes and shares a section legitimately states', () => {
+  it.each([
+    'a 12M-member set',
+    '245 chunks at 10 % and 90 %',
+    '1,048,576 ids',
+    'about 28 MB',
+    '14.4M members',
+    '5 runs and 5 sets',
+    '65,536 containers',
+    'a 1,024-container slice',
+    '245 × 65,536 values',
+    'a 5 x 4 grid',
+    'the 2 us-east-1 buckets',
+    'nine times the members',
+  ])('passes a count, size, share or product a section legitimately states: "%s"', (text) => {
     const d = copy();
-    replaceSection(
-      d,
-      'These figures have not been measured yet. Five sets: a 12M-member set, 245 chunks at 10 % and 90 %, ' +
-        '1,048,576 ids, about 28 MB, 14.4M members, 5 runs, 65,536 containers.',
-    );
+    replaceSection(d, `These figures have not been measured yet. Here: ${text}.`);
     expect(check(d)).toMatchObject({ status: 0 });
   });
 
@@ -150,6 +170,21 @@ describe('bench:load-input:check, once results are recorded', () => {
     const d = copy();
     withResults(d, plantedResults());
     expect(check(d)).toMatchObject({ status: 0 });
+  });
+
+  it('quotes a figure of four digits with its thousands separator, and reads it whole', () => {
+    const results = plantedResults();
+    const shapes = results.shapes as Record<string, Record<string, { wallMs: { median: number } }>>;
+    shapes.dense!.idsSync!.wallMs.median = 1_075;
+    expect(Object.values(publishedFigures(results))).toContain('1,075 ms');
+    const d = copy();
+    withResults(d, results);
+    expect(check(d)).toMatchObject({ status: 0 });
+    const e = copy();
+    withResults(e, results);
+    const p = join(e, GUIDE);
+    writeFileSync(p, readFileSync(p, 'utf8').replace('1,075 ms', '1075 ms'));
+    expect(check(e).status).toBe(1);
   });
 
   it('fails on a guide figure that is not the results', () => {
