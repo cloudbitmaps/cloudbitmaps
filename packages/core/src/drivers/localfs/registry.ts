@@ -171,7 +171,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
       } else if (current === null || current.deleted) {
         return; // idempotent
       }
-      // Tombstone (advance the counter) rather than unlink — keeps the token monotonic for ABA-safety.
+      // Tombstone (advance the counter) rather than unlink, so a re-create carries the counter on (ABA-safety).
       const token = nextRegistryToken(current.record, this.entropy);
       await this.writeRow(path, true, { ...current.record, token, updatedAt: this.now() });
     });

@@ -439,10 +439,13 @@ describe('a runtime without Web Crypto', () => {
 });
 
 /** A crypto-shred takes the summary with the wrapped keys: nothing of the generation's description survives it. */
-describe.each([
-  ['MemoryRegistryDriver', (): IRegistryDriver => new MemoryRegistryDriver()],
-  ...harnesses.map(([name, make]) => [name, (): IRegistryDriver => make().registry] as const),
-])('a crypto-shred clears the summary: %s', (_, makeRegistry) => {
+/** Every shipped registry, built fresh. */
+const everyRegistry: ReadonlyArray<readonly [string, () => IRegistryDriver]> = [
+  ['MemoryRegistryDriver', () => new MemoryRegistryDriver()],
+  ...harnesses.map(([name, make]) => [name, () => make().registry] as const),
+];
+
+describe.each(everyRegistry)('a crypto-shred clears the summary: %s', (_, makeRegistry) => {
   it('dropSegment of a cleartext segment leaves a tombstone with no summary', async () => {
     const registry = makeRegistry();
     await registry.create(REF, {

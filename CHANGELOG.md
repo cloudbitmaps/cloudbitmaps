@@ -21,27 +21,36 @@ so, and so do the module headers in the code.
   `eraseSubject`, `subjectReport`, `eraseNamespace`, `checkConsistency`, `store.segments()` and the
   `export-segments` CLI. A 0.11 load, `*Into`, `rollback`, `setRetention` or drop of a schema-2 row throws too. It
   fails closed and typed, and never misreads a row. Upgrade in this order:
-  1. Upgrade the processes that only read (`count`, `has`, `iterate`, the combines, `pin`) to 0.12 first: 0.12 reads
-     every row 0.11 wrote.
+  1. Upgrade the processes that only read to 0.12 first: those that call `count`, `has`, `iterate`, the combines or
+     `pin`, and those that list, `store.segments()` and `subjectReport`. 0.12 reads every row 0.11 wrote.
   2. Stop every 0.11 process that writes, sweeps, erases, checks consistency or exports, then start the 0.12 ones. A
-     0.11 `eraseSubject` cannot complete once any schema-2 row exists, so schedule erasure runs around the cut-over.
+     0.11 `eraseSubject` cannot complete once a schema-2 row exists in a namespace it lists (every namespace, for an
+     unscoped run), so schedule erasure runs around the cut-over.
   3. There is no downgrade. After the first 0.12 write, 0.11 cannot read the registry; the only way back is a
      registry restore to a point before that write (the disaster-recovery guide), which loses every write since.
 
-  Schema 2 adds the record's optional `summary` and the incarnation-form token, both below. A row stamped 1 may hold
-  only what schema 1 could: a `summary` or an incarnation-form token on one is an `IntegrityError`.
+  Schema 2 adds the record's optional `summary` and the new token form, both below. A row stamped 1 may hold only
+  what schema 1 could: a `summary` or a token with a write part on one is an `IntegrityError`.
 
-- **A registry row 0.12 creates has a token of a new form, `<32 lowercase hex digits>.<counter>`.** The digits are a
-  128-bit incarnation id drawn from the platform's Web Crypto when the row is created; the counter advances on every
-  write to the row and carries on across a tombstone. A name that is deleted and re-created therefore never meets a
-  token an earlier incarnation held, and that now holds even once the earlier row's object is gone entirely (a
-  tombstone removed by an object-store delete or a lifecycle rule), with overwhelming probability rather than by
-  construction. A counter alone restarted at 0 there and re-issued the earlier row's tokens, so a warm store at the
-  same generation took the new row for the old one and kept serving the deleted ids. A row written before 0.12 keeps
-  its bare decimal token (`"7"`) for as long as it lives; only a create starts an incarnation, and a bare counter
-  never equals an incarnation-form token. The library compares tokens only for equality; code of your own that read a
-  shipped registry's token as a number breaks. The in-memory backend's tokens take the same form, its counter still
-  global to the backend.
+- **A registry token is now `<incarnation>.<counter>.<write>`, and no two writes under a name are given the same
+  one.** The incarnation is a 128-bit id as 32 lowercase hex digits, drawn from the platform's Web Crypto when a row
+  is created; the counter advances on every write and carries on across a tombstone; the write part is 64 bits as 16
+  lowercase hex digits, drawn for every write. Both random parts make the tokens unique with overwhelming
+  probability, where a counter alone was not:
+  - once a row's object was gone entirely (a tombstone removed by an object-store delete or a lifecycle rule), a
+    re-create restarted its counter at 0 and re-issued the earlier row's tokens. A warm store at the same generation
+    took the new row for the old one and kept serving the deleted ids; a publish fenced on a token read from the
+    earlier row (`expectToken`, as an erasure rewrite publishes) landed on the new one; and a collection pass over a
+    `destroyed` segment, which goes on only while the row's token is unchanged, took the new row for the old one and
+    deleted every generation, the new current included;
+  - after a registry restore from a backup, a row was back at an older counter, so its next writes were given the
+    tokens the writes after the backup had, and a store that skipped the restore's restart served the generation
+    the restore took away from its cache.
+
+  A row written before 0.12 keeps its bare decimal token (`"7"`) until its first 0.12 write, which gives it
+  `<counter>.<write>`; it gains no incarnation, since only a create starts one. No two of the three forms compare
+  equal. The library compares tokens only for equality; code of your own that read a shipped registry's token as a
+  number breaks. The in-memory backend's tokens take the same form, its counter still global to the backend.
 
 ### Added
 
@@ -50,19 +59,23 @@ so, and so do the module headers in the code.
   integer from 0 to 2^32 and `metadata` string keys to string or finite-number values, at most 1 KiB as canonical
   JSON (`GenerationMetadata`); sealed on an encrypted one, `{ generation, sealed }`, base64 of a nonce, the count
   sealed as a fixed-width u64 with the metadata after it, and a tag, so its length reveals only the metadata's size.
-  Each shape is checked at both registry boundaries: `ValidationError` on a write, `IntegrityError` on a read. It
-  names the generation it describes and follows the pointer: a patch that moves `currentGen` without mentioning it
-  drops the old one, and one a write gives must name the `currentGen` the row will have. A crypto-shred clears it.
-  Nothing in the library writes or reads one yet, and a row without one is correct. Every shipped registry
-  round-trips it, and the registry conformance suite holds a driver to that. Types: `RegistrySummary`,
-  `ClearRegistrySummary`, `SealedRegistrySummary`, `GenerationMetadata`.
+  Each shape is checked at both registry boundaries: `ValidationError` on a write, `IntegrityError` naming the row
+  on a read. It names the generation it describes and follows the pointer and the keys: a patch that moves
+  `currentGen`, or changes `wrappedDeks` so the shape no longer agrees, without mentioning it drops the old one, and
+  one a write gives must name the `currentGen` and agree with the keys (sealed with wrapped keys, clear without) the
+  row will have. A stored row that disagrees is still read, so one such row cannot stop every listing, and whatever
+  reads the summary must not use it then. The registry stores a frozen copy of the summary it was called with. A
+  crypto-shred clears it. Nothing in the library writes or reads one yet, and a row without one is correct. Every
+  shipped registry round-trips it, and the registry conformance suite now requires a driver of your own to as well.
+  Types: `RegistrySummary`, `ClearRegistrySummary`, `SealedRegistrySummary`, `GenerationMetadata`.
 
-- **`Entropy`, the seam a registry draws incarnation ids from** (`(length) => Uint8Array`, from
+- **`Entropy`, the seam a registry draws its tokens' random parts from** (`(length) => Uint8Array`, from
   `@cloudbitmaps/core`). `ObjectStoreRegistry` takes one as an optional fourth constructor argument and defaults to
-  Web Crypto, refusing with `UnsupportedError` at the first create when the runtime has none. It is not the `Rng`
-  seam, which is seedable for simulation: a seeded source hands every process the same ids. Inject one only to make
-  a test replayable.
-
+  Web Crypto. It is not the `Rng` seam, which is seedable for simulation: a seeded source hands every process the
+  same ids. Inject one only to make a test replayable. On a runtime with no Web Crypto a shipped registry still
+  reads, reports `canWrite: false` in its `capabilities()` (a new optional `RegCaps` field), and refuses every write
+  with `UnsupportedError`; a load and an erasure rewrite check it before their first request, so they refuse before
+  they write an object.
 
 - **`AzureBlobStorage` can time each read: `readTimeoutMs`, off unless set.** With it set, every read request the
   Azure Blob storage and registry drivers send, a range read, a tail read's properties and its ranged download, each
@@ -106,9 +119,9 @@ so, and so do the module headers in the code.
 
 ### Changed
 
-- **A registry row whose token is in neither form the library writes is refused when it is read**, with an
+- **A registry row whose token is in no form the library writes is refused when it is read**, with an
   `IntegrityError` naming the row's key, where it used to pass the read and fail at its next write. A row stamped 1
-  must hold a decimal counter.
+  must hold a decimal counter, and one stamped 2 a token with a write part.
 
 - **Azure Blob reads a registry pointer in one request, where it made two.** A pointer read was the blob's
   properties and then a download pinned to the ETag they named; it is now one GET of the whole blob, taking the ETag

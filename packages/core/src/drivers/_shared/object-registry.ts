@@ -242,7 +242,7 @@ export class ObjectStoreRegistry implements IRegistryDriver {
 
   async delete(ref: SegmentRef, expected?: Token): Promise<void> {
     const key = registryObjectKey(this.prefix, ref);
-    // Tombstone (advance the counter) rather than remove the object — keeps the token monotonic for
+    // Tombstone (advance the counter) rather than remove the object, so a re-create carries the counter on, for
     // ABA-safety. Retry the read→tombstone on a cross-process race; it converges, then fails typed rather
     // than silently leaving the row live.
     for (let attempt = 0; attempt < MAX_DELETE_ATTEMPTS; attempt++) {

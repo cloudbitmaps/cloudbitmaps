@@ -15,8 +15,8 @@ import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
  * publishes incarnation 1's content over incarnation 2, collects the live objects with its `keep: 0` sweep, and
  * returns `erased: true`. A successful Art. 17 receipt for an operation that destroys the live segment.
  *
- * The row's OCC token is the identity that survives a delete: the port contract says a later `create` gets "a
- * fresh, greater token", and every driver is conformance-tested on it.
+ * The row's OCC token is the identity that survives a delete: the port contract says a re-created row never carries
+ * a token an earlier incarnation held, and every driver is conformance-tested on it.
  */
 const REF: SegmentRef = { namespace: 'ns', segment: 's' };
 

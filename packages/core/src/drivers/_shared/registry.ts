@@ -309,8 +309,9 @@ export function validateRegistryPatch(patch: RegistryPatch): RegistryPatch {
 
 /**
  * The persisted envelope for a registry row: the record plus a tombstone flag. A **deleted** row keeps its
- * record (with an advanced counter) rather than being removed, so the monotonic token survives a
- * delete→recreate — ABA-safety. Shared by the persistent drivers (LocalFs file, S3 object).
+ * record (with an advanced counter) rather than being removed, so a re-create carries the counter on and the two
+ * incarnations' tokens are apart by construction, as well as by their random parts — ABA-safety. Shared by the
+ * persistent drivers (LocalFs file, S3 object).
  *
  * `schemaVersion` is a wire-only concern — it stamps the persisted bytes, not the in-memory domain object —
  * so it lives on the serialize/parse boundary ({@link serializeRegistryEnvelope} /
