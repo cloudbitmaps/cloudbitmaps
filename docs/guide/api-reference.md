@@ -364,9 +364,24 @@ The name is deliberately **not** tied to a codec. `.crbm` is the container for a
 CRC32C checksums, the AES-GCM framing and the generation model are all codec-independent, and only the chunk
 payload bytes would differ. Roaring is the one codec that ships.
 
+**Format versions.** A reader refuses an unknown major version and reads every minor of its major. **1.0** is
+the preamble, the chunk payloads, the index and the fixed 104-byte footer. **1.1** adds, only to a generation written
+with metadata, one **extension block** between the last payload and the index; with no metadata the writer emits 1.0
+byte for byte. The block is found from the index's offset alone: its last 12 bytes, just before the index, are its
+sections' length (u32), a CRC32C of the sections and that length (u32), and the magic `CRBX`. The sections, at most
+4 KiB in all, are each a type (u8), a length (u32) and that many bytes, in strictly ascending type order; type 1 is
+the generation's metadata as canonical JSON (keys sorted by UTF-16 code unit, each key and value as
+`JSON.stringify` writes it, no whitespace), at most 1 KiB, sealed like the index on an encrypted object (AES-256-GCM,
+`nonce ‖ ciphertext ‖ tag`, under `aadFor(ref, generation, 'metadata')`). A reader skips a section type it does not
+know, so every later 1.x minor carries the block and adds section types to it. A 1.0 reader, 0.11 included, opens a
+1.1 object and ignores the block: it never reads between the last payload and the index. A 1.1 reader reads the
+block with the index, from the tail or in the same range read, and refuses with `IntegrityError` a block whose
+trailer, CRC, size or sections do not hold, metadata that breaks a rule or is not exactly its canonical form, and a
+payload that runs into the block.
+
 | Symbol | What it does |
 |---|---|
-| `CrbmReader` / `CrbmReaderOptions` | read it (`tailBytes`, `maxPayloadBytes`, `maxIndexBytes`, `crypto`, and `lineage`, an opaque marker of the incarnation of the name the object belongs to, which the reader carries and never interprets, so a caller can tell one generation of a segment from the same generation number of a segment deleted and re-created); `reader.fingerprint` names the object by its size and footer checksum, and `CrbmReader.sameObject(blob, fingerprint)` says whether the object behind `blob` is that one, from one footer's worth with no key: another size is another object, and a footer that fails its own checks throws. A fingerprint is opaque: compare two for equality, and do not parse one |
+| `CrbmReader` / `CrbmReaderOptions` | read it (`tailBytes`, `maxPayloadBytes`, `maxIndexBytes`, `crypto`, and `lineage`, an opaque marker of the incarnation of the name the object belongs to, which the reader carries and never interprets, so a caller can tell one generation of a segment from the same generation number of a segment deleted and re-created); `reader.fingerprint` names the object by its size and footer checksum, and `CrbmReader.sameObject(blob, fingerprint)` says whether the object behind `blob` is that one, from one footer's worth with no key: another size is another object, and a footer that fails its own checks throws. A fingerprint is opaque: compare two for equality, and do not parse one. `reader.metadata` is the generation's metadata (`GenerationMetadata`, frozen), checked and, on an encrypted object, decrypted at open; `undefined` on a generation with none, every 1.0 object included |
 | `CrbmStorageChunkSource` / `CrbmStorageChunkSourceOptions` | the `.crbm` storage reader over an `IStorageDriver` (the store builds this from a raw driver for you); options add `registry`, `keystore`, `requireEncryption`, `clock`, `currentGenTtlMs`, `maxOpenSegments`, `maxOpenIndexBytes` |
 | `BufferReader` · `BlobSink` · `BlobReader` | the in-memory `BlobReader` you hand to `CrbmReader.open`, plus the two interfaces themselves: `BlobSink` takes bytes (one method, `write`), `BlobReader` serves them (`getRange`, `getTail`) |
 
@@ -626,7 +641,7 @@ one segment inside `checkConsistency` is recorded in `report.errored`, not throw
 
 | Symbol | What it does |
 |---|---|
-| `NodeAead` · `Aead` · `AeadSealed` · `WrappedDek` · `CrbmCrypto` · `aadFor` | the AES-256-GCM implementation + the crypto interfaces the `.crbm` reader/writer use. An **`Aead` implementation is handed** the associated data and never builds it. A **`CrbmCrypto` caller does** — it is the `{ aead, aadFor }` pair that `CrbmReader.open` takes, so tooling reading an *encrypted* archive builds one with `aadFor(ref, generation, scope)`, which binds each chunk and the index to `(segment, generation)` |
+| `NodeAead` · `Aead` · `AeadSealed` · `WrappedDek` · `CrbmCrypto` · `aadFor` | the AES-256-GCM implementation + the crypto interfaces the `.crbm` reader/writer use. An **`Aead` implementation is handed** the associated data and never builds it. A **`CrbmCrypto` caller does** — it is the `{ aead, aadFor }` pair that `CrbmReader.open` takes, so tooling reading an *encrypted* archive builds one with `aadFor(ref, generation, scope)`, which binds each chunk, the index and the metadata section (scope `'metadata'`) to `(segment, generation)` |
 | `EraseDeps` | `{ registry }` — deps for the free-function crypto-shred (`destroySegment` / `eraseNamespace`) |
 
 ### Low-level ports & capabilities (driver-author typing)

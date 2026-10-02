@@ -13,7 +13,8 @@ release.
 ## Trust boundary (what the library defends)
 
 CloudBitmaps treats **all bytes read back from storage as untrusted input**. Every `.crbm` object — its chunk
-payloads, its index and its footer — is length-checked and CRC-verified, and deserialized with the **safe**
+payloads, its index, its footer and, in format 1.1, the extension block that carries a generation's metadata — is
+length-checked and CRC-verified, and deserialized with the **safe**
 RoaringBitmap reader (never the
 trusting variant) behind a hard size cap, before the native addon sees it. That reader only keeps its reads inside
 the buffer, so each payload's **structure** is checked before the reader runs: containers and values in order,
@@ -28,7 +29,10 @@ closed with a typed `IntegrityError` on read — it can neither crash the proces
 payload it decodes. `count()` is the exception to the second half: it answers from the index without decoding a
 payload, so opening an object checks the index for internal consistency (key order and range, each cardinality in
 `1..65536`, payloads inside the payload region, and the footer's chunk count and total against the index on an
-unencrypted object), and an index that is corrupt yet still internally consistent yields a wrong count. This
+unencrypted object), and an index that is corrupt yet still internally consistent yields a wrong count. The
+metadata in an extension block is held to the same rules a caller's metadata is (string keys of at most 128 bytes,
+string or finite-number values, at most 1 KiB as canonical JSON) and must be exactly its canonical form, so a record
+that only parses is refused; on an encrypted object it is sealed and authenticated like the index. This
 boundary is exercised by coverage-guided fuzzing (`pnpm fuzz:*`, nightly) and the DR drill's byte-corruption
 scenario (`pnpm dr-drill`).
 
