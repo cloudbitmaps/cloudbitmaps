@@ -35,6 +35,14 @@ export interface AzureBlobStorageOptions {
   readonly maxObjectBytes?: number;
   /** Staged block size in bytes (default 8 MiB). Tunes peak write memory. Must be a positive safe integer. */
   readonly blockBytes?: number;
+  /**
+   * How long each read request either half sends may take, in ms, its response body included, before it is aborted
+   * and throws `TransientError` for the store's read retry: a range read, a tail read's properties and its ranged
+   * download, each on its own, and a registry row's read. The clock starts at the call into the SDK, so time waiting
+   * for a socket or a credential's token counts. Writes, deletes and listings are not timed. `0`, the default, sets no
+   * timeout; an integer from 0 to 2,147,483,647.
+   */
+  readonly readTimeoutMs?: number;
   /** Injected clock for the registry's `createdAt`/`updatedAt`; defaults to `Date.now`. */
   readonly now?: () => number;
 }
@@ -50,6 +58,7 @@ export const AZURE_BLOB_STORAGE_OPTION_KEYS = [
   'prefix',
   'maxObjectBytes',
   'blockBytes',
+  'readTimeoutMs',
   'now',
 ] as const;
 
@@ -114,6 +123,7 @@ export class AzureBlobStorage implements StorageBackend {
     const shared = {
       containerClient: this.containerClient,
       ...(options.prefix === undefined ? {} : { prefix: options.prefix }),
+      ...(options.readTimeoutMs === undefined ? {} : { readTimeoutMs: options.readTimeoutMs }),
     };
     this.storage = new AzureBlobStorageDriver({
       ...shared,

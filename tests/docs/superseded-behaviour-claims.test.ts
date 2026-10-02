@@ -542,9 +542,9 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
     claim: new RegExp(g('no orphan is left behind by a refused rewrite'), 'i'),
     why: "a refused rewrite deletes its object only when it sits above the winner's pointer; elsewhere it stays, as a refused load's does",
   },
-  // The S3 package can time its reads (`readTimeoutMs`), so a page may not say the library has no timeout. What is true
-  // is narrower: nothing is timed unless that is set, no write is timed, and nor is an S3 listing or any GCS or Azure
-  // Blob request.
+  // The S3 and Azure Blob packages can time their reads (`readTimeoutMs`), so a page may not say the library has no
+  // timeout. What is true is narrower: nothing is timed unless that is set, no write, delete or listing is timed on any
+  // backend, and nor is any GCS request.
   {
     claim: new RegExp(
       g(
@@ -552,7 +552,7 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
       ),
       'i',
     ),
-    why: 'the S3 package times each read when `readTimeoutMs` is set — say what is not timed: any read while it is unset, the writes, S3 listings, and every GCS and Azure Blob request',
+    why: 'the S3 and Azure Blob packages time each read when `readTimeoutMs` is set — say what is not timed: any read while it is unset, every write, delete and listing, and every GCS request',
   },
   // A load's guard read and an erasure's reads run under the store's read retry, so no page may say they are not
   // retried. The write itself is still sent once; say that instead.
@@ -571,7 +571,7 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
   },
   {
     claim: new RegExp(g(String.raw`no \`?AbortSignal\`? anywhere in (?:this|the) library`), 'i'),
-    why: "the S3 package aborts a read that runs past `readTimeoutMs` through its request's abort signal — say that no write is timed",
+    why: "the S3 and Azure Blob packages abort a read that runs past `readTimeoutMs` through its request's abort signal — say that no write is timed",
   },
 ];
 
@@ -1151,7 +1151,8 @@ describe('no document claims behaviour this library does not have', () => {
     'A refused load leaves its object behind once the row has changed.',
     'The library times no write, deliberately, since a timeout of its own would abandon a write in flight.',
     'An S3 write has no timeout of its own.',
-    'The GCS and Azure Blob packages set no timeout of their own.',
+    'The GCS package sets no timeout of its own.',
+    'No S3 or Azure Blob write has a timeout of its own.',
     "An erasure's writes are not retried; its reads are.",
     "An erasure's reads are retried, and its writes are not retried.",
   ])('leaves %j alone', (text) => {

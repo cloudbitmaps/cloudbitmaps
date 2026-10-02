@@ -13,6 +13,20 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **`AzureBlobStorage` can time each read: `readTimeoutMs`, off unless set.** With it set, every read request the
+  Azure Blob storage and registry drivers send, a range read, a tail read's properties and its ranged download, each
+  on its own, and a registry row's read, has `readTimeoutMs` to finish, the response body included, or it is aborted
+  and throws `TransientError` ("Azure Blob download timed out after 2000 ms"), which the store's read retry runs
+  again. No client setting bounds an Azure read whose body stalls: the SDK's per-try timer stops at the response
+  headers. The timer starts at the call into the SDK, so waiting for a socket or a credential's token counts; the
+  HTTP agent the SDK builds sets no socket limit. Writes, block commits, deletes and listings are not timed. `0`, the
+  default, turns it off, and a value that is not an integer from 0 to 2,147,483,647 is refused with
+  `ValidationError`. The drivers take it too (`AzureBlobStorageDriver`, `AzureBlobRegistryDriver`). The SDK's default
+  retry waits 4 s before its second retry of a 500 or 503, so a timeout below that cuts it off, and the read throws the
+  timeout instead of the 503 for the store's retry to run again. Tests run a real `@azure/storage-blob` client against
+  a stub that stalls before the headers, after them and mid-body, and a child process checks that a read leaves no
+  timer behind.
+
 - **`S3Storage` can time each read: `readTimeoutMs`, off unless you set it.** The default is `0`, no timeout, until
   in-region measurements justify one. Set, it bounds every `GetObject` and `HeadObject` the S3 storage and registry
   drivers send, from the moment the read is handed to the SDK until its body is read: a read still running after that
@@ -58,6 +72,14 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **An Azure Blob range or tail read whose connection drops part-way through the body is a `TransientError`.** The
+  SDK fails such a body with an `AbortError`, which reached the caller as it was, so the store's read retry did not run
+  it again and a `has()`, `count()` or erasure failed on one dropped connection. The registry already read the same
+  fault as transient. Tests drop the connection mid-body on a range read and a tail read, with the timeout off and on,
+  and through the store.
+- **An Azure Blob range or tail read lets go of a response the SDK refuses.** The SDK refuses a download with no ETag
+  or no length by throwing a `RangeError`, and leaves the body unread with its socket open. The read now aborts its
+  request when it fails, which closes the socket, with or without a timeout.
 - **A calibration run survives a transient fault in a timed sample.** The workload's client makes one attempt per
   request and every timed store runs with its own retry off, so a single transient fault anywhere in a run's requests
   (up to ~94,600 GET-class and 364 PUT-class at the default workload) failed the whole run, and a partial run is not
