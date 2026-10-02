@@ -37,6 +37,18 @@ so, and so do the module headers in the code.
   fails. A `404` is still absence. Writes, listings and the tombstoning delete are unchanged, and a tail read stays two
   requests, since Azure Blob takes no suffix range. Price an Azure deployment with `storage.requestsPerSizedRead: 2`
   and `requestsPerPointerRead` at its default of 1.
+
+## [0.11.2] — 2026-10-01
+
+**Upgrade if you read from GCS.** In 0.10.0 to 0.11.1, a GCS read that the SDK retried after a 408, 429 or 5xx could
+end the process with `ERR_STREAM_UNABLE_TO_PIPE`, whatever the caller wrapped around it. This release sends every
+GCS download once and retries it in the driver instead. It also makes a GCS pointer read and tail read one request
+each, holds a reader's parsed index in typed arrays whose memory is counted exactly, and has `iterate` fetch up to 8
+chunks at a time. No public API changes. The CloudShell entry is repository work on the calibration harness,
+outside the packages.
+
+### Changed
+
 - **GCS reads a registry pointer and a generation's tail in one request each, where it made two.** A pointer read was
   a metadata request and then a download pinned to the generation it named; a tail read was a metadata request for the
   size and then a ranged download. The pointer read is now one GET, taking the version fence from `x-goog-generation`

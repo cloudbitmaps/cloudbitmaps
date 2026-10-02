@@ -189,7 +189,6 @@ proposed in an issue on this repo before it is built.
 | Many stateless readers | **A shared cache tier**: an interface that a Valkey, Redis or local-disk adapter implements, holding only the hot set | A fleet shares one warm copy of the hot set instead of each reader paying for its own |
 | The pointer refresh | **Push invalidation**: object-store events tell readers a segment changed, with a longer refresh as the backstop | Most of the refresh bill goes, and a change reaches readers as fast as the events do: [typically seconds, sometimes a minute or longer](https://docs.aws.amazon.com/AmazonS3/latest/userguide/EventNotifications.html), with the backstop as the bound |
 | Retries in a throttling storm | **Retrying at one layer**, the SDK's, for throttling | One throttled request stops multiplying into many |
-| Reader memory | **Measuring the index's real heap**, and storing it compactly | The memory bound becomes exact, and holds more segments open |
 
 ## Beyond the bill
 
