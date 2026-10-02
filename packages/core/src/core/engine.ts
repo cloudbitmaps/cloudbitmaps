@@ -173,6 +173,46 @@ function keysWithin(keys: readonly number[], w: IdWindow): number[] {
   return keys.slice(firstAtLeast(w.loKey), firstAtLeast(w.hiKey + 1));
 }
 
+/**
+ * An ordered window of chunk reads: up to `max` reads open ahead of the one being consumed, handed back in key
+ * order. With `ramp`, the window opens 1, 2, 4, 8 wide instead of `max` at once, so a read that stops after a few
+ * ids has fetched a handful of chunks, not a full window.
+ *
+ * Each read is wrapped to resolve and never reject, so a read nobody consumes (the consumer stopped, or an
+ * earlier chunk failed) cannot raise an unhandled rejection; its error surfaces from {@link take} only if the
+ * read reaches that chunk. Memory is bounded by the window: at most `max` decoded chunks are held ahead.
+ */
+class ChunkWindow {
+  private readonly open: Array<Promise<{ chunk: CodecBitmap | null; error?: { cause: unknown } }>> =
+    [];
+  private launched = 0;
+  private taken = 0;
+
+  constructor(
+    private readonly keys: readonly number[],
+    private readonly fetch: (chunkKey: number) => Promise<CodecBitmap | null>,
+    private readonly max: number,
+    private readonly ramp: boolean,
+  ) {}
+
+  /** The next chunk in key order (null if the source holds none), or the error its read raised. */
+  async take(): Promise<CodecBitmap | null> {
+    const width = this.ramp ? Math.min(this.max, 2 ** Math.min(this.taken, 30)) : this.max;
+    while (this.launched < this.keys.length && this.launched - this.taken < width) {
+      this.open.push(
+        this.fetch(this.keys[this.launched++]!).then(
+          (chunk) => ({ chunk }),
+          (cause: unknown) => ({ chunk: null, error: { cause } }),
+        ),
+      );
+    }
+    const slot = await this.open.shift()!;
+    this.taken += 1;
+    if (slot.error) throw slot.error.cause;
+    return slot.chunk;
+  }
+}
+
 export class SegmentEngine {
   private readonly storage: StorageChunkSource;
   private readonly cache: BoundedLru<string, CodecBitmap> | undefined;
@@ -227,10 +267,10 @@ export class SegmentEngine {
     const chunkKeys = await this.chunkKeys(seg);
     checkBudget(this.budget, chunkKeys.length, 'count'); // one storage fetch per chunk (before fan-out)
     const gen = await this.cacheVersion(seg); // after the shape read — see `combine`
+    // Order does not matter to a sum, but the window hands chunks back in key order: no more state than that.
+    const window = this.chunkWindow(seg, chunkKeys, gen, false);
     let total = 0;
-    for (const chunkKey of chunkKeys) {
-      total += (await this.storageChunk({ ...seg, chunkKey }, gen))?.size ?? 0;
-    }
+    for (let i = 0; i < chunkKeys.length; i++) total += (await window.take())?.size ?? 0;
     return total;
   }
 
@@ -249,8 +289,24 @@ export class SegmentEngine {
     return this.storage.sizeOf ? this.storage.sizeOf(seg) : Promise.resolve(null);
   }
 
+  /** The chunks of `seg` at `chunkKeys`, read through a window of {@link DEFAULT_INTERSECT_CONCURRENCY}. */
+  private chunkWindow(
+    seg: SegmentRef,
+    chunkKeys: readonly number[],
+    gen: string | number | null | undefined,
+    ramp: boolean,
+  ): ChunkWindow {
+    return new ChunkWindow(
+      chunkKeys,
+      (chunkKey) => this.storageChunk({ ...seg, chunkKey }, gen),
+      DEFAULT_INTERSECT_CONCURRENCY,
+      ramp,
+    );
+  }
+
   /**
-   * Every id, ascending, one chunk at a time; with `range`, only the ids in `(after, through]`, fetching only the
+   * Every id, ascending, reading ahead through a window of up to 8 chunk fetches that opens 1, 2, 4, 8 wide, so a
+   * read that stops early has fetched only a handful of chunks past the one it stopped in; with `range`, only the ids in `(after, through]`, fetching only the
    * chunks the range overlaps (see {@link IdRange}).
    *
    * Two generators, not one with a branch: a second `yield` site in the full read's generator grows its frame, and
@@ -265,8 +321,9 @@ export class SegmentEngine {
     const chunkKeys = await this.chunkKeys(seg);
     checkBudget(this.budget, chunkKeys.length, 'iterate'); // one storage fetch per chunk (before fan-out)
     const gen = await this.cacheVersion(seg); // after the shape read — see `combine`
+    const window = this.chunkWindow(seg, chunkKeys, gen, true);
     for (const chunkKey of chunkKeys) {
-      const chunk = await this.storageChunk({ ...seg, chunkKey }, gen);
+      const chunk = await window.take();
       if (chunk === null) continue;
       // Read straight off the (possibly cached) instance: iteration does not mutate it.
       for (const remainder of chunk) yield joinId(chunkKey, remainder);
@@ -279,8 +336,9 @@ export class SegmentEngine {
     const chunkKeys = keysWithin(await this.chunkKeys(seg), w);
     checkBudget(this.budget, chunkKeys.length, 'iterate'); // one storage fetch per chunk (before fan-out)
     const gen = await this.cacheVersion(seg); // after the shape read — see `combine`
+    const window = this.chunkWindow(seg, chunkKeys, gen, true);
     for (const chunkKey of chunkKeys) {
-      const chunk = await this.storageChunk({ ...seg, chunkKey }, gen);
+      const chunk = await window.take();
       if (chunk === null) continue;
       if (isEdge(chunkKey, w)) {
         for (const id of edgeIds(chunk, chunkKey, w)) yield id;
@@ -314,7 +372,7 @@ export class SegmentEngine {
    * up front (before the fan-out) and threaded into every chunk read, so a concurrent load can't corrupt or tear
    * the result — every chunk read is a whole, checksum-verified, immutable generation. The edge a *long* call can
    * hit is invariant 3's: if it straddles a mid-call `cache.genTtlMs` boundary and a load has published, an
-   * operand's not-yet-read chunks may re-resolve forward to the newer generation (a generation hop within one long
+   * operand's not-yet-requested chunks may re-resolve forward to the newer generation (a generation hop within one long
    * call) — the call never crashes or returns a torn object, but may mix generations. Three things hop it without
    * waiting for the TTL, so a shorter call can meet them too: **the reader cache evicting an operand mid-call**
    * (`maxOpenSegments`), whose re-read re-resolves fresh; a sweep deleting the generation it was reading, which

@@ -26,8 +26,9 @@
  * one alone under-quotes a load by more than half and leaves out a pointer read and an index read for every
  * operand.
  *
- * The counts are S3's, and one reader process's. On GCS and Azure Blob a read that needs the object's size — a
- * pointer read, and a segment's tail read — is two requests, the metadata and then the bytes, which
+ * The counts are S3's (and GCS's), and one reader process's. A pointer read is one request on every backend, and
+ * {@link PricingProfile} carries it as `requestsPerPointerRead`. A segment's tail read needs the object's size, and
+ * on Azure Blob, which takes no suffix range, it is two requests, the properties and then the bytes, which
  * {@link PricingProfile} carries as `requestsPerSizedRead`. A fleet of reader processes pays the pointer refresh
  * once per process, which {@link Workload.readerProcesses} carries. Where the model still quotes low is listed on
  * {@link Workload.hotSegments} and {@link Workload.chunksPerIntersect}.
@@ -58,9 +59,18 @@ export interface PricingProfile {
     readonly putPerMillion: number;
     readonly storagePerGiBMonth: number;
     /**
-     * Requests one read costs when it needs the object's size first: a pointer read, and a segment's tail read.
-     * Default **1**, S3's, whose suffix-range GET returns the size with the bytes. **2** on GCS and Azure Blob,
-     * which read the metadata and then the bytes. A chunk read knows its range, and is one request everywhere.
+     * Requests one pointer read costs: a read of a segment's registry row, whose version comes back with its bytes.
+     * Default **1**, and 1 on S3, GCS and Azure Blob, each of which answers it with one GET. Charged for each operand
+     * of an intersection, for the eight pointer reads a load makes, and for each pointer refresh. Set it when a
+     * registry of your own takes more than one request to read a row.
+     */
+    readonly requestsPerPointerRead?: number;
+    /**
+     * Requests one tail read costs: the read of a segment's index from the end of its generation, which needs the
+     * object's size. Default **1**, S3's, whose suffix-range GET returns the size with the bytes, and GCS's, the same.
+     * **2** on Azure Blob, which takes no suffix range and reads the properties and then the bytes. Charged for each
+     * operand of an intersection and for the one index read a load makes. A chunk read knows its range, and is one
+     * request everywhere.
      */
     readonly requestsPerSizedRead?: number;
   };
@@ -188,7 +198,8 @@ export interface Workload {
   /**
    * Segments each intersection reads, `exclude` operands included; at least 1. Default 2. An intersection is priced
    * **cold**: before its chunks, each operand's pointer is read, then its index, in one read of the object's tail —
-   * 2 GETs an operand, so a cold intersect of two segments sharing `k` chunks is `4 + 2k` GETs. `cacheHitRate`
+   * 2 GETs an operand on S3 and GCS, so a cold intersect of two segments sharing `k` chunks is `4 + 2k` GETs there,
+   * and 3 on Azure Blob, whose tail read is two requests (see {@link PricingProfile}). `cacheHitRate`
    * does not apply to intersections, so a long-lived reader that answers a repeat from its cache pays less. Other
    * combines read their operands the same way and can be priced here too, with the chunks they fetch.
    */
@@ -318,20 +329,15 @@ const SECONDS_PER_MONTH = HOURS_PER_MONTH * 3600; // 2,628,000
 const GIB = 1024 ** 3;
 
 /**
- * A cold intersection's reads for each operand before its chunks: the pointer, then the index in one tail read.
- * Both need the object's size, so each costs `requestsPerSizedRead` requests.
- */
-const SIZED_READS_PER_COLD_OPERAND = 2;
-
-/**
  * What `store.load()` adds to its object's write, as the engine makes the requests on a segment with two
  * generations behind it: PUT-class, two listings (one to number the generation, one to collect after the publish)
- * and the pointer's write; reads, eight of the pointer and one of the current generation's index, each a sized
- * read. `tests/core/cost.test.ts` holds these to the engine, and counts a segment's first load at seven reads and
- * its second at eight.
+ * and the pointer's write; reads, eight of the pointer, each `requestsPerPointerRead` requests, and one tail read of
+ * the current generation's index, `requestsPerSizedRead`. `tests/core/cost.test.ts` holds these to the engine, and
+ * counts a segment's first load at seven reads and its second at eight.
  */
 const STORE_LOAD_PUT_CLASS = 3;
-const STORE_LOAD_SIZED_READS = 9;
+const STORE_LOAD_POINTER_READS = 8;
+const STORE_LOAD_TAIL_READS = 1;
 
 /** Fail-fast at the boundary: reject non-finite / negative inputs rather than leak NaN into the report. */
 function requireFiniteNonNeg(n: number | undefined, field: string): number {
@@ -568,6 +574,10 @@ function buildReport(input: {
   requireFiniteNonNeg(storage.getPerMillion, 'pricing.storage.getPerMillion');
   requireFiniteNonNeg(storage.putPerMillion, 'pricing.storage.putPerMillion');
   requireFiniteNonNeg(storage.storagePerGiBMonth, 'pricing.storage.storagePerGiBMonth');
+  const pointerRead = requireFiniteNonNeg(
+    storage.requestsPerPointerRead ?? 1,
+    'pricing.storage.requestsPerPointerRead',
+  );
   const sizedRead = requireFiniteNonNeg(
     storage.requestsPerSizedRead ?? 1,
     'pricing.storage.requestsPerSizedRead',
@@ -637,13 +647,14 @@ function buildReport(input: {
 
   const storageUSD = storedGiB * storage.storagePerGiBMonth;
   const readsUSD = readMisses * storageGetUSD;
-  const intersectGets =
-    chunksPerIntersect + SIZED_READS_PER_COLD_OPERAND * operandsPerIntersect * sizedRead;
+  // A cold intersection reads each operand's pointer, then its index in one tail read, before its chunks.
+  const getsPerColdOperand = pointerRead + sizedRead;
+  const intersectGets = chunksPerIntersect + getsPerColdOperand * operandsPerIntersect;
   const intersectsUSD = intersects * intersectGets * storageGetUSD;
-  const loadGets = STORE_LOAD_SIZED_READS * sizedRead;
+  const loadGets = STORE_LOAD_POINTER_READS * pointerRead + STORE_LOAD_TAIL_READS * sizedRead;
   const loadsUSD =
     loadsPerMonth * ((requestsPerLoad + STORE_LOAD_PUT_CLASS) * putUSD + loadGets * storageGetUSD);
-  const refreshUSD = refreshes * sizedRead * storageGetUSD;
+  const refreshUSD = refreshes * pointerRead * storageGetUSD;
   const total = readsUSD + intersectsUSD + storageUSD + loadsUSD + refreshUSD;
 
   // Crossover: the sustained read rate (other axes 0) where request cost alone passes the baseline less the fixed
@@ -724,7 +735,7 @@ function buildReport(input: {
     ...(intersects > 0
       ? [
           `Intersections priced cold: ${intersectGets} GETs each, ` +
-            `${SIZED_READS_PER_COLD_OPERAND * sizedRead} for each of ${operandsPerIntersect} operand(s) plus ` +
+            `${getsPerColdOperand} for each of ${operandsPerIntersect} operand(s) plus ` +
             `${chunksPerIntersect} chunk read(s); cacheHitRate does not apply.`,
         ]
       : []),

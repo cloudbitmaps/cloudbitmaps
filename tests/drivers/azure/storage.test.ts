@@ -220,7 +220,8 @@ describe('AzureBlobStorageDriver write-once (fake ContainerClient, emulator-inde
 
 // The cost model prices a segment's tail read on Azure Blob as two requests (`requestsPerSizedRead: 2`): the
 // properties for the blob's size, then a ranged download, where S3's suffix-range GET is one. Held here against the
-// driver. (The registry's own two-request read is pinned in registry.test.ts.)
+// driver. (The registry's pointer read, one request, priced by `requestsPerPointerRead`, is pinned in
+// registry.test.ts and registry-read.test.ts.)
 describe('AzureBlobStorageDriver — what a tail read costs', () => {
   it('makes two requests: the properties, then the ranged download', async () => {
     const calls: string[] = [];

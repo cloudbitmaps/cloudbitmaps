@@ -11,7 +11,7 @@ checklist: work down the table, and follow each link for the detail.
 | Versioning and backups cover the data and the pointers | A restore must bring both back to the same point in time | [Versioning and backups](#versioning-and-backups) |
 | With versioning on, noncurrent versions expire after your restore window | Each generation a load collects is otherwise billed for as long as the bucket keeps it, out of sight | [Bucket lifecycle](#bucket-lifecycle) |
 | The bucket honors conditional writes, and the S3 SDK is 3.645.0 or later | Otherwise a write-once generation can be silently overwritten | [Conditional writes and the S3 SDK](#conditional-writes-and-the-s3-sdk) |
-| Your storage client has a request timeout | The library times only S3 reads (`readTimeoutMs`); any other request that hangs hangs its call | [Reliability](#reliability-retries-backoff--timeouts) |
+| Your storage client has a request timeout | The library times only S3 reads (`readTimeoutMs`); any other request that hangs hangs its call. On GCS 8.x and Azure Blob no client setting bounds a download's body | [Reliability](#reliability-retries-backoff--timeouts) |
 | Your job re-runs a write after a transient error | Writes are never retried for you | [Reliability](#reliability-retries-backoff--timeouts) |
 | You know the request budget and the memory ceilings | A runaway call is refused, not billed | [Limits](#limits-the-per-op-budget-and-the-memory-ceilings) |
 | The keystore is backed up, if you encrypt | Losing the key makes the data permanently unreadable | [Encryption](encryption.md#before-you-encrypt) |
@@ -139,12 +139,22 @@ const store = new CloudRoaring({
 and 8.1.0), a download the SDK retries after any status it retries (408, 429, 500, 502, 503 or 504) can crash the process with
 `ERR_STREAM_UNABLE_TO_PIPE`, thrown outside any promise, even though the retried request succeeded. The client
 `GcsStorage` builds sends each download once, and the driver runs it again itself, up to three more times with
-backoff, after a reset connection, a 408, 429, 500, 502, 503 or 504 and after nothing else, so a download is retried whichever
+backoff, after a connection fault (refused, reset, timed out, a DNS failure, a body cut off) or a 408, 429, 500, 502, 503 or 504, and after nothing else (not a missing credentials file or a TLS failure), so a download is retried whichever
 call made it and whether or not the store's own `retry` is on. What still fails after those attempts is a
 `TransientError`, which the store's read retry, above, can run again. The client's other requests keep the SDK's
 retries. A `client` you pass is used as it is: build it with `retryOptions: { autoRetry: false }`. That also turns off
-the SDK's retries of listings, metadata reads, deletes and resumable uploads on that client, which the library does not
+the SDK's retries of listings, metadata reads and resumable uploads on that client, which the library does not
 retry; the client `GcsStorage` builds keeps them and needs nothing.
+
+**A GCS client's `timeout` does not bound a download** on `@google-cloud/storage` 8.x: the SDK hands it to an HTTP
+client that has no such option. Measured against a local server that accepts a read and never answers, a read through
+a client built with `timeout: 2000` was still pending after 12 s, and one through the default client after 75 s. So
+nothing bounds a stalled GCS read today; a timeout below applies to S3.
+
+**Nor does an Azure Blob client's timeout bound a body that stalls.** The SDK's per-try timer stops once the response
+headers arrive, and `retryOptions.tryTimeoutInMs` is the timeout it asks the service to apply. Measured against a local
+server that sends a registry pointer's headers and then nothing, a read through a client set with `tryTimeoutInMs: 500`
+was still pending after 2.5 s.
 
 Only transient faults (they surface as `TransientError`) are retried. Errors that retrying cannot fix are never
 retried: `ValidationError`, `IntegrityError`, `NotFoundError` and `WriteConflictError`.
@@ -168,10 +178,10 @@ const backend = new S3Storage({ bucket: 'my-bitmaps', readTimeoutMs: 5_000 }); /
 Raise it on a link too slow to deliver a read inside the timeout, since such a read fails on every attempt. The timer
 is set on each request rather than on the client, so a `client` you pass gets it without being changed.
 
-**Set a timeout on your storage client for the rest.** The library times no write, because a write abandoned in
-flight can still land after it was given up on, and it times no S3 listing and no GCS or Azure Blob request. A timeout
-on your client turns a hung request into a transient fault: a read that the store retries, or a write that is yours to
-re-run. Build the client with the timeout and pass it to the backend:
+**Set a timeout on your S3 client for the rest.** The library times no write, because a write abandoned in flight
+can still land after it was given up on, and it times no S3 listing and no GCS or Azure Blob request. On S3 a timeout
+on your client turns a hung write or listing into a transient fault, which for a write is yours to re-run. Build the
+client with the timeout and pass it to the backend:
 
 ```ts
 import { S3Client } from '@aws-sdk/client-s3';

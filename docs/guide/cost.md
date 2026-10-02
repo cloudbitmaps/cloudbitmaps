@@ -131,11 +131,15 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   read and a tail read, which the model does not price, and the report says so when `hotSegments` is past 1,024.
   Nor does it price the index each reader opens again after every load. Size the caches to keep the hot set open.
 
-**On GCS and Azure Blob**, a read that needs the object's size — a pointer read, and a segment's tail read — is two
-requests, the metadata and then the bytes, where S3's suffix-range GET is one. Set
-`storage.requestsPerSizedRead: 2` in your pricing profile and the model doubles those reads; chunk reads stay one
-request each. Each count above is held to the engine by a test that counts its requests, on S3's request shape, and
-the GCS and Azure backends' own tests pin the two requests each makes, so the model moves when the engine does. The
+**A pointer read is one request on every backend**: S3, GCS and Azure Blob each answer it with a single GET whose
+headers carry the version beside the bytes. **A tail read needs the object's size.** S3 and GCS answer it with a single
+suffix-range GET whose `Content-Range` carries the size; Azure Blob takes no suffix range, so there it is two requests,
+the properties and then the bytes. The pricing profile prices the two apart: `storage.requestsPerPointerRead` (1 by
+default) for each pointer read, and `storage.requestsPerSizedRead` (1 by default) for each tail read. For Azure Blob,
+set `storage.requestsPerSizedRead: 2` and leave `requestsPerPointerRead` at 1; chunk reads stay one request each, and
+S3 and GCS keep both defaults. Each count above is held to the engine by a test that counts its requests, on S3's
+request shape, and each backend's own tests pin the requests it makes (a pointer read in one everywhere; a tail read in
+one on GCS and two on Azure Blob), so the model moves when the engine does. The
 [benchmarks page](../benchmarks.md#the-single-bucket-bill--run-2026-09-23-94416) has the request shapes measured
 on real S3.
 

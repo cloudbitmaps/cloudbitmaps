@@ -397,7 +397,7 @@ const GUIDE_EXAMPLE_INPUT = {
 const sizeOf = (p) => p.segments * p.segmentBytes;
 /** One cold intersect's GETs on its segments' data prefix: every chunk and tail read, not the pointers beside it. */
 const DATA_GETS_PER_INTERSECT =
-  intersectGets(SHARED_CHUNKS) - OPERANDS * (P.storage.requestsPerSizedRead ?? 1);
+  intersectGets(SHARED_CHUNKS) - OPERANDS * (P.storage.requestsPerPointerRead ?? 1);
 /** A deployment's GETs a second on its one data prefix, the point reads that miss the cache included. */
 const dataGetsOf = (p) =>
   (p.intersectsPerMonth / SECONDS_PER_MONTH) * DATA_GETS_PER_INTERSECT +
@@ -756,7 +756,7 @@ function render() {
   ];
 
   // The large deployment's GETs a second on its one data prefix: every chunk and tail read, and the point reads
-  // that miss the cache. Pointer reads, one sized read an operand, go to the registry's own prefix beside it.
+  // that miss the cache. Pointer reads, one an operand, go to the registry's own prefix beside it.
   const dataGets = dataGetsOf(large);
   const prefix =
     `And S3 has a rate of its own. AWS documents [at least ${int(S3_PREFIX_GETS_PER_SEC)} GET requests a second ` +
@@ -782,7 +782,7 @@ function render() {
     `    hotSegments: ${medium.hotPerProcess}, // in each reader process…`,
     `    readerProcesses: ${medium.readerProcesses}, // …of ${medium.readerProcesses}`,
     '  },',
-    "  // pricing: your region's rates; on GCS or Azure Blob, set storage.requestsPerSizedRead to 2.",
+    "  // pricing: your region's rates; on Azure Blob, storage.requestsPerSizedRead: 2 for its tail reads.",
     '});',
     `report.monthlyUSD.total; // ${usd(price(medium).monthlyUSD.total)}, the medium deployment above`,
     `report.redisBaseline; // ${usd(redisOf(medium).monthlyUSD)} a month: ${estimatorWords(price(medium)).cluster}`,

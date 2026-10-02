@@ -4,7 +4,8 @@ import type { AddressInfo } from 'node:net';
 import { CRC32C, IdempotencyStrategy, Storage } from '@google-cloud/storage';
 import { GcsStorage } from '@/gcs/backend';
 import { GcsStorageDriver } from '@/gcs/storage';
-import { TransientError, WriteConflictError } from '@/core/errors';
+import { IntegrityError, TransientError, ValidationError, WriteConflictError } from '@/core/errors';
+import { MAX_ROW_BYTES } from '@/drivers/_shared/object-registry';
 import type { GenKey } from '@/core/ports';
 
 /**
@@ -87,10 +88,31 @@ class StubGcs {
   /** When set, an upload's answer names a checksum the stored bytes do not have. */
   corruptChecksums = false;
   private seq = 1_000;
+  /** Connections the stub has accepted and seen close, to show a refused response does not leak its socket. */
+  opened = 0;
+  closed = 0;
+  /**
+   * When set, answers every media request with `status` and `headers`, then writes an endless body until the client
+   * hangs up. `aborted` records whether the client did, which is what a response refused part-way looks like to the
+   * server.
+   */
+  mediaEndless:
+    { status: number; headers: (cur: StoredObject) => Record<string, string> } | undefined;
+  aborted = false;
+  /** When set, replaces the stub's answer to every media (download) request. */
+  mediaOverride:
+    ((current: StoredObject) => [number, Record<string, string>, Buffer | string]) | undefined;
   private fault: { op: Operation; land: boolean } | undefined;
   private readonly server: Server = createServer((req, res) => {
     void this.serve(req, res);
   });
+
+  constructor() {
+    this.server.on('connection', (socket) => {
+      this.opened++;
+      socket.on('close', () => this.closed++);
+    });
+  }
   endpoint = '';
 
   async start(): Promise<void> {
@@ -149,6 +171,21 @@ class StubGcs {
       req.socket.destroy();
       return;
     }
+    const stored = this.objects.get(name);
+    if (op === 'media' && stored !== undefined && this.mediaEndless !== undefined) {
+      const { status, headers } = this.mediaEndless;
+      res.writeHead(status, headers(stored));
+      res.on('close', () => {
+        if (!res.writableFinished) this.aborted = true;
+      });
+      const chunk = Buffer.alloc(64 * 1024);
+      const pump = (): void => {
+        while (!res.destroyed && res.write(chunk)) continue;
+        if (!res.destroyed) res.once('drain', pump);
+      };
+      pump();
+      return;
+    }
     const [status, headers, payload] = this.apply(op, name, url.searchParams, req, body);
     if (fault?.land === true) {
       req.socket.destroy();
@@ -203,9 +240,25 @@ class StubGcs {
       case 'metadata':
         return current === undefined ? error(404, 'notFound') : json(200, resource(current));
       case 'media': {
+        if (current !== undefined && this.mediaOverride !== undefined) {
+          return this.mediaOverride(current);
+        }
         const pinned = query.get('generation');
         if (current === undefined || (pinned !== null && Number(pinned) !== current.generation)) {
           return error(404, 'notFound');
+        }
+        const suffix = /^bytes=-(\d+)$/.exec(String(req.headers.range ?? ''));
+        if (suffix !== null) {
+          const first = Math.max(0, current.body.length - Number(suffix[1]));
+          return [
+            206,
+            {
+              'content-type': 'application/octet-stream',
+              'content-range': `bytes ${first}-${current.body.length - 1}/${current.body.length}`,
+              'x-goog-generation': String(current.generation),
+            },
+            current.body.subarray(first),
+          ];
         }
         const range = /^bytes=(\d+)-(\d+)$/.exec(String(req.headers.range ?? ''));
         if (range === null) {
@@ -213,6 +266,7 @@ class StubGcs {
             200,
             {
               'content-type': 'application/octet-stream',
+              'x-goog-generation': String(current.generation),
               'x-goog-hash': `crc32c=${crc32c(current.body)},md5=${md5(current.body)}`,
             },
             current.body,
@@ -366,7 +420,7 @@ describe('GCS: the single request carries what file.save() would have sent', () 
   });
 });
 
-describe('GCS: a read keeps the SDK retry', () => {
+describe('GCS: a read on a client the caller supplies, with the SDK retry on', () => {
   it('a ranged read retries a dropped connection', async () => {
     const driver = new GcsStorageDriver({ storage: stub.client(), bucket: BUCKET });
     await put(driver, new Uint8Array([1, 2, 3, 4]));
@@ -374,5 +428,126 @@ describe('GCS: a read keeps the SDK retry', () => {
 
     await expect(driver.getRange(GEN, 1, 2)).resolves.toEqual(new Uint8Array([2, 3]));
     expect(stub.count('media')).toBe(2);
+  });
+});
+
+// The single-GET reads, through the real SDK: the fakes elsewhere stand in for its streams, and only the SDK shows
+// that refusing a response mid-flight neither throws out of an event handler nor leaves its socket open.
+describe('GCS: one-request reads through the real SDK', () => {
+  const seed = async (bytes: Uint8Array): Promise<GcsStorage> => {
+    const backend = new GcsStorage({ bucket: BUCKET, client: stub.client() });
+    await put(backend.storage as GcsStorageDriver, bytes);
+    return backend;
+  };
+
+  /** Collect process-level failures a handler that throws out of an event would raise. */
+  const watchProcess = (): { events: unknown[]; stop: () => void } => {
+    const events: unknown[] = [];
+    const onEvent = (e: unknown): void => void events.push(e);
+    process.on('unhandledRejection', onEvent);
+    process.on('uncaughtException', onEvent);
+    return {
+      events,
+      stop: () => {
+        process.off('unhandledRejection', onEvent);
+        process.off('uncaughtException', onEvent);
+      },
+    };
+  };
+
+  const registryRow = async (): Promise<{ backend: GcsStorage; key: string }> => {
+    const backend = new GcsStorage({ bucket: BUCKET, client: stub.client() });
+    await backend.registry.create(REF, { currentGen: 0 });
+    return { backend, key: [...stub.objects.keys()][0] as string };
+  };
+
+  it('a pointer read is one HTTP request', async () => {
+    const { backend } = await registryRow();
+    const before = stub.count('media') + stub.count('metadata');
+    expect(await backend.registry.get(REF)).toMatchObject({ currentGen: 0 });
+    expect(stub.count('media') + stub.count('metadata') - before).toBe(1);
+  });
+
+  it('a tail read is one HTTP request, and a short object is too', async () => {
+    const backend = await seed(Uint8Array.from({ length: 100 }, (_, i) => i));
+    const driver = backend.storage as GcsStorageDriver;
+    const tail = await driver.getTail(GEN, 40);
+    expect(tail.size).toBe(100);
+    expect(tail.bytes).toEqual(Uint8Array.from({ length: 40 }, (_, i) => 60 + i));
+    expect(stub.count('media')).toBe(1);
+    expect(stub.count('metadata')).toBe(0);
+    const whole = await driver.getTail(GEN, 500);
+    expect(whole.size).toBe(100);
+    expect(whole.bytes).toHaveLength(100);
+    expect(stub.count('media')).toBe(2);
+    expect(stub.count('metadata')).toBe(0);
+  });
+
+  it('an empty object takes two requests: the refused suffix, then the metadata', async () => {
+    const backend = await seed(new Uint8Array(0));
+    stub.mediaOverride = () => [
+      416,
+      { 'content-type': 'application/json' },
+      '{"error":{"code":416}}',
+    ];
+    expect(await (backend.storage as GcsStorageDriver).getTail(GEN, 10)).toEqual({
+      bytes: new Uint8Array(0),
+      size: 0,
+    });
+    expect(stub.count('media')).toBe(1);
+    expect(stub.count('metadata')).toBe(1);
+  });
+
+  /** Refuse `read` against an endless response and show the SDK let go of it: no stray event, the server saw a hang-up. */
+  const refusedAndReleased = async (
+    read: () => Promise<unknown>,
+    expected: new (...a: never[]) => Error,
+  ) => {
+    const watch = watchProcess();
+    try {
+      await expect(read()).rejects.toBeInstanceOf(expected);
+      for (let i = 0; i < 100 && !stub.aborted; i++) await new Promise((r) => setTimeout(r, 20));
+      expect(stub.aborted).toBe(true);
+      await new Promise((r) => setTimeout(r, 50));
+    } finally {
+      watch.stop();
+    }
+    expect(watch.events).toEqual([]);
+  };
+
+  it('a pointer whose advertised length is over the cap is refused, and the response is let go', async () => {
+    const { backend } = await registryRow();
+    stub.mediaEndless = {
+      status: 200,
+      headers: (cur) => ({
+        'x-goog-generation': String(cur.generation),
+        'content-length': String(MAX_ROW_BYTES * 1024),
+      }),
+    };
+    await refusedAndReleased(() => backend.registry.get(REF), IntegrityError);
+  });
+
+  it('a pointer body that outruns the cap with no length is refused, and the response is let go', async () => {
+    const { backend } = await registryRow();
+    stub.mediaEndless = {
+      status: 200,
+      headers: (cur) => ({ 'x-goog-generation': String(cur.generation) }),
+    };
+    await refusedAndReleased(() => backend.registry.get(REF), IntegrityError);
+  });
+
+  it('a tail response past the requested length is refused the same way, by length and by stream', async () => {
+    const backend = await seed(new Uint8Array(100));
+    const driver = backend.storage as GcsStorageDriver;
+    for (const extra of [{ 'content-length': String(1024 ** 3) }, {}] as Array<
+      Record<string, string>
+    >) {
+      stub.aborted = false;
+      stub.mediaEndless = {
+        status: 206,
+        headers: () => ({ 'content-range': 'bytes 90-99/100', ...extra }),
+      };
+      await refusedAndReleased(() => driver.getTail(GEN, 10), ValidationError);
+    }
   });
 });

@@ -1,3 +1,4 @@
+import { Readable } from 'node:stream';
 import type { ContainerClient } from '@azure/storage-blob';
 import { AzureBlobRegistryDriver } from '@/azure-blob/registry';
 import { storageObjectName } from '@/azure-blob/keys';
@@ -21,7 +22,7 @@ interface Stored {
   metadata?: Record<string, string>;
 }
 
-type Sent = { op: 'upload' | 'commit' | 'getProperties' };
+type Sent = { op: 'upload' | 'commit' | 'getProperties' | 'download' };
 
 /** A fake container: conditional writes, custom metadata, and one armed fault per test. */
 class FakeContainer {
@@ -68,6 +69,7 @@ class FakeContainer {
 
   getBlockBlobClient(name: string): unknown {
     return {
+      url: `https://acct.blob.core.windows.net/c/${name}`,
       getProperties: async () => {
         this.sent.push({ op: 'getProperties' });
         if (this.propertiesFault !== undefined) throw this.propertiesFault;
@@ -75,17 +77,16 @@ class FakeContainer {
         if (b === undefined) throw restErr(404);
         return { etag: b.etag, contentLength: b.bytes.length, metadata: b.metadata };
       },
-      downloadToBuffer: async (
-        _o: number,
-        _c: number,
-        opts?: { conditions?: { ifMatch?: string } },
-      ) => {
+      download: async () => {
+        this.sent.push({ op: 'download' });
         const b = this.blobs.get(name);
         if (b === undefined) throw restErr(404, 'BlobNotFound');
-        if (opts?.conditions?.ifMatch !== undefined && opts.conditions.ifMatch !== b.etag) {
-          throw restErr(412, 'ConditionNotMet');
-        }
-        return Buffer.from(b.bytes);
+        return {
+          etag: b.etag,
+          contentLength: b.bytes.length,
+          readableStreamBody: Readable.from([Buffer.from(b.bytes)]),
+          _response: { status: 200 },
+        };
       },
       upload: async (
         body: Uint8Array,
@@ -189,7 +190,8 @@ describe('AzureBlobRegistryDriver write id', () => {
     const { token } = (await reg.get(ref))!;
     await reg.compareAndSwap(ref, token, { currentGen: 1 });
     expect(c.blobs.get(rowKey(c))?.metadata?.cbwid).toMatch(/^[0-9a-f]{32}$/);
-    expect(c.count('getProperties')).toBe(3); // create's read, get, and the swap's read: no read-back
+    expect(c.count('download')).toBe(3); // create's read, get, and the swap's read
+    expect(c.count('getProperties')).toBe(0); // and no read-back
   });
 
   it('a create that meets its own row is a success', async () => {
@@ -267,18 +269,8 @@ describe('AzureBlobRegistryDriver write id', () => {
     const reg = registryOver(c);
     const { token } = await reg.create(ref, { currentGen: 0 });
     c.replayConflictAfterWrite = restErr(412, 'ConditionNotMet');
-    // the compare-and-swap reads the row first (two getProperties), so fault only the third
-    const blob = c.getBlockBlobClient.bind(c);
-    let calls = 0;
-    c.getBlockBlobClient = (name: string) => {
-      const b = blob(name) as { getProperties: () => Promise<unknown> };
-      const real = b.getProperties;
-      b.getProperties = async () => {
-        if (++calls === 2) throw restErr(503, 'ServerBusy');
-        return real();
-      };
-      return b;
-    };
+    // The swap reads the row with a download, so the one `getProperties` is the read-back.
+    c.propertiesFault = restErr(503, 'ServerBusy');
     await expect(reg.compareAndSwap(ref, token, { currentGen: 1 })).rejects.toBeInstanceOf(
       TransientError,
     );

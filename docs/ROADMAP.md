@@ -48,7 +48,7 @@ Where each piece sits today:
 | `exists()` + `segments()` | **shipped** — `exists()` is one point read of the registry, and `segments()` streams the registry's own enumeration, namespace-scoped, admin-path. Neither is inferred from `count()`, which cannot tell *never loaded* from *loaded and empty*, and neither needs a list of names kept beside the store |
 | Extending the load guard to the `*Into` verbs | **shipped** — a materialization routes through the same guarded write path as `load()`, so an empty or implausible combine is refused (`published: false` + `reason`) instead of replacing `dest`. `allowEmpty: true` publishes an empty result where emptying the destination is the intent; `guard: { minCardinality, minRetained }` adds the plausibility bounds, judged against what `dest` held |
 | A snapshot handle, so a long job reads one instant | **shipped** — `segment.pin()` resolves the generation once and holds it, so an export or a reconciliation describes a single instant. Only that segment is pinned; an ordinary handle still re-resolves on `cache.genTtlMs` |
-| Id-range reads for keyset paging — `iterate({ after, through })` and the same bounds on every combine | **shipped**, in the current release (`0.11.1`). Yields only the ids in `(after, through]` and fetches only the chunks the range overlaps |
+| Id-range reads for keyset paging — `iterate({ after, through })` and the same bounds on every combine | **shipped**, in the current release (`0.11.2`). Yields only the ids in `(after, through]` and fetches only the chunks the range overlaps |
 | A public docs + site pass leading with the loaded store's strengths | **shipped** |
 | WASM CRoaring research | **after** the loaded store |
 
@@ -183,7 +183,9 @@ Two things worth knowing before you pick:
 - **Every cloud backend can host the registry itself**, so a deployment needs exactly one cloud account: storage
   generations and the pointer live in the same bucket or container. Each native registry rides its own store's
   conditional-write primitive — S3 `If-None-Match`/`If-Match`, GCS `ifGenerationMatch`, Azure
-  `If-None-Match`/`If-Match` — so the compare-and-swap is enforced by the service, not by the client. To keep
+  `If-None-Match`/`If-Match` — so the compare-and-swap is enforced by the service, not by the client. Each reads a
+  pointer in one GET, whose version fence comes back with the bytes, so a pointer read costs the same on all three. A
+  segment's tail read is one request on S3 and GCS, and two on Azure Blob, which takes no suffix range. To keep
   the pointer off the object store entirely, implement `IRegistryDriver` against a database you already run.
 - **A registry is optional only for a cleartext, read-only store**, which list-scans the bucket for the latest
   generation. Encrypted segments, the `*Into` verbs and every lifecycle helper need one.
@@ -311,9 +313,6 @@ move it up.
     refresh kept as a longer backstop, and an `expire(ref)` that costs one lookup where `invalidate` scans the cache.
   - **Retrying at one layer.** The SDKs retry throttling and the library retries it again, so one slow request can
     become a dozen; throttling belongs to the SDK's retry alone.
-  - **One request per pointer read on GCS and Azure**, and a one-request tail read on GCS, which accepts a suffix
-    range, so their pointer reads cost what S3's do, and so do GCS's index reads. Azure takes no suffix range, so an
-    Azure tail read stays two requests.
 - **WASM CRoaring — research, after the loaded store.** A WebAssembly build of CRoaring as a second codec would
   remove the native addon from the install story (prebuilt binaries, musl, from-source builds on Alpine) and is
   the prerequisite for the edge-runtime item below. It is deliberately queued *behind* the loaded store's own

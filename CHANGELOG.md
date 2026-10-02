@@ -27,6 +27,33 @@ so, and so do the module headers in the code.
   `ValidationError` (a longer Node timer fires after 1 ms). Tests run a real `S3Client` against a stub endpoint that
   stalls before the headers, mid-body and on a HEAD, and a child process checks that a read leaves no timer behind.
 
+- **`PricingProfile.storage.requestsPerPointerRead` prices a pointer read apart from a tail read.** It is the requests
+  one pointer read costs, 1 by default, and the cost model charges it for each operand of an intersection, for the
+  eight pointer reads a load makes and for each pointer refresh. `requestsPerSizedRead` keeps its name and its default
+  of 1, and now prices tail reads only: each operand's index read and the one a load makes. A pointer read is one
+  request on S3, GCS and Azure Blob alike, so every shipped backend leaves `requestsPerPointerRead` at 1; S3 and GCS
+  leave `requestsPerSizedRead` at 1 too, and an Azure Blob profile sets `requestsPerSizedRead: 2`, for its two-request
+  tail read. An Azure profile that already sets `requestsPerSizedRead: 2` is priced one request lower for each pointer
+  read, which is what an Azure pointer read now costs. A value that is not a finite number of at least 0 is refused
+  with `ValidationError`, as `requestsPerSizedRead` is.
+
+### Changed
+
+- **Azure Blob reads a registry pointer in one request, where it made two.** A pointer read was the blob's
+  properties and then a download pinned to the ETag they named; it is now one GET of the whole blob, taking the ETag
+  (the version fence) and the length from the response that carries the bytes, so the pair describes one version and a
+  concurrent overwrite is seen as the older row or the newer one, never split between two requests. The response is
+  untrusted: one that is not a `200`, that has no ETag or an empty one, that has no length, or whose length is over the
+  1 MiB row cap is refused with `IntegrityError` before a byte of its body is read, and the body is counted as it
+  arrives and refused at the first byte past its length. A refused response is let go: the SDK throws on a response
+  with no ETag or no length and leaves its socket open, and the driver aborts the request, which closes it. The read
+  asks the SDK not to re-request the rest of a body cut off part-way, so the bytes come from one response or the read
+  fails, with a `TransientError` the store's read retry repeats. An answer from a host other than the container's own,
+  which is where a client set with `retryOptions.secondaryHost` sends a retried read, is refused as transient too, so
+  the registry never takes a geo-replica's older row for the current one. A `404` is still absence. Writes, listings and the tombstoning delete are unchanged, and a tail read stays two
+  requests, since Azure Blob takes no suffix range. Price an Azure deployment with `storage.requestsPerSizedRead: 2`
+  and `requestsPerPointerRead` at its default of 1.
+
 ### Fixed
 
 - **The production guide's S3 client-timeout sample set a timeout that only logs.** It built the client with
@@ -34,6 +61,48 @@ so, and so do the module headers in the code.
   logs a warning when it passes and leaves the request running; it ends the request only beside
   `throwOnRequestTimeout: true`. The sample sets `socketTimeout`, which ends a request whose connection has carried
   nothing for that long and leaves an upload that is still sending alone.
+
+## [0.11.2] — 2026-10-01
+
+**Upgrade if you read from GCS.** In 0.10.0 to 0.11.1, a GCS read that the SDK retried after a 408, 429 or 5xx could
+end the process with `ERR_STREAM_UNABLE_TO_PIPE`, whatever the caller wrapped around it. This release sends every
+GCS download once and retries it in the driver instead. It also makes a GCS pointer read and tail read one request
+each, holds a reader's parsed index in typed arrays whose memory is counted exactly, and has `iterate` fetch up to 8
+chunks at a time. No public API changes. The CloudShell entry is repository work on the calibration harness,
+outside the packages.
+
+### Changed
+
+- **GCS reads a registry pointer and a generation's tail in one request each, where it made two.** A pointer read was
+  a metadata request and then a download pinned to the generation it named; a tail read was a metadata request for the
+  size and then a ranged download. The pointer read is now one GET, taking the version fence from `x-goog-generation`
+  and capping the length before it buffers; the tail read is one suffix-range GET (`Range: bytes=-N`), taking the
+  object's size from `Content-Range`, and an object shorter than the range comes back whole. Both refuse a header that
+  is missing, malformed or at odds with the bytes received: a pointer read answers `IntegrityError` and a tail read
+  `ValidationError`, where before the driver trusted whatever the second request returned. An empty object's tail is
+  the exception to one request: GCS refuses a suffix of nothing with a `416`, and the metadata then confirms the object
+  is empty, so it takes two. A pointer read can no longer lose its generation to a concurrent write between its two
+  requests. The bytes returned and the registry's behaviour are unchanged. GCS now costs what S3 does per sized read, so `storage.requestsPerSizedRead: 2` in a pricing profile is
+  for Azure Blob alone; leave it at its default of 1 for GCS.
+- **`iterate` and the storage path of `count` fetch eight chunks at a time instead of one.** A cold full read of a
+  segment waited for each chunk's GET before it asked for the next, so a 2,000-chunk read was 2,000 round trips in a
+  row. `iterate` (with or without a range) now keeps up to 8 chunk fetches open ahead of the one it is yielding, and
+  still yields every id in ascending order. The window opens 1, 2, 4, 8 wide, so a read the caller stops after a few
+  ids has fetched a handful of chunks past where it stopped (none, if it stops in the first chunk), and an error in a
+  later chunk surfaces only when the read reaches that chunk. `count` takes the storage path only for a custom chunk
+  source that cannot serve cardinalities from an index; the shipped backends serve them, so their `count` reads no
+  payload and is unchanged. The request total, the per-op budget and the memory ceiling (at most 8 decoded chunks held
+  ahead) are unchanged, and there is no new option. A read still resolves one generation before it fetches, but a
+  segment that re-resolves mid-read (a TTL boundary, an eviction, a sweep, an invalidation such as the store's own
+  `eraseSubject`) now leaves up to 8 chunks already requested from the earlier generation, where a one-at-a-time read
+  left only the chunk it was on; `intersect` has always read ahead this way. A fetch started ahead is not cancelled
+  when the caller stops.
+  Measured against an in-memory source with 10 ms of added latency per chunk read, 500 chunks, load average about 6.5:
+  `iterate` 5.93 s to 0.77 s, `count` 5.92 s to 0.75 s; per-id cost on a warm segment is unchanged (about 180 ns an
+  id before and after).
+
+### Fixed
+
 - **The CloudShell calibration script no longer stops in silence while it installs Node.** CloudShell ships Node 20, so
   the script installs Node 22 with nvm. nvm is not written for `set -eu`: sourcing `nvm.sh` returns 3 while no default
   Node is installed, and the script's `set -e` ended it there after printing "installing Node 22 with nvm", every time.
@@ -54,11 +123,11 @@ so, and so do the module headers in the code.
   exited with code 1, whatever the caller wrapped around the call. It hit every read through `GcsStorage` on the client
   it built itself (tail, range and registry reads), in 0.10.0 and later. `GcsStorage` now builds a second client with
   the SDK's request retries off and sends every download through it, and the driver retries a download itself, up to
-  three more times with backoff, after a reset connection, a 408, 429, 500, 502, 503 or 504, so each caller keeps the retry it had
-  and a store built with `retry: false` still gets it. What still fails is a `TransientError`. The client's other
+  three more times with backoff, after a connection fault (refused, reset, timed out, a DNS failure, a body cut off) or a 408, 429, 500, 502, 503 or 504: what the SDK retried, and not a missing credentials file or a TLS
+  failure, which would fail the same way again. A store built with `retry: false` still gets it. What still fails is a `TransientError`. The client's other
   requests (uploads, listings, metadata reads) keep the default retries. A `client` you pass is used as given: build it
-  with `retryOptions: { autoRetry: false }`, which also turns off the SDK's retries of listings, metadata reads, deletes
-  and resumable uploads on that client.
+  with `retryOptions: { autoRetry: false }`, which also turns off the SDK's retries of listings, metadata reads and
+  resumable uploads on that client.
 
 ## [0.11.1] — 2026-10-01
 
