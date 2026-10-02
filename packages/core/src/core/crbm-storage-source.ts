@@ -50,8 +50,9 @@ import type {
 import { CrbmReader } from './crbm/reader';
 import type { CrbmReaderOptions } from './crbm/reader';
 import { CrbmWriter } from './crbm/writer';
-import type { CodecBitmap, CodecInterface } from './codec';
+import type { CodecBitmap, CodecInterface, EncodedChunk } from './codec';
 import { requireCodec } from './codec';
+import { DecodedLoadInput } from './load-input';
 
 export interface CrbmStorageChunkSourceOptions extends CrbmReaderOptions {
   /**
@@ -980,30 +981,58 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
  * `{ size, sha256 }` for the written object. Pass `options.crypto` to AES-256-GCM-encrypt the generation
  * (built from the segment's DEK, with associated data bound to `(segment, generation)`).
  */
-export function writeCrbmGeneration(
+export async function writeCrbmGeneration(
   driver: IStorageDriver,
   key: GenKey,
   chunks: Iterable<{ chunkKey: number; bitmap: CodecBitmap }>,
   options: { crypto?: CrbmCrypto; clock?: Yielder } = {},
 ): Promise<{ size: number; sha256: string }> {
   const sorted = [...chunks].sort((a, b) => a.chunkKey - b.chunkKey);
+  const { size, sha256 } = await writeEncodedChunks(driver, key, encodeEach(sorted), options);
+  return { size, sha256 };
+}
+
+/** Each non-empty bitmap as the chunk it stores, in the order given. */
+function* encodeEach(
+  chunks: Iterable<{ chunkKey: number; bitmap: CodecBitmap }>,
+): Generator<EncodedChunk> {
+  for (const { chunkKey, bitmap } of chunks) {
+    if (bitmap.isEmpty) continue;
+    // Run-encode before serializing. Storage generations are immutable and read many times, so the one-off cost
+    // here buys every later read a smaller fetch — see CodecBitmap.optimize for the measured factors.
+    bitmap.optimize?.();
+    yield { chunkKey, payload: bitmap.serialize(), cardinality: bitmap.size };
+  }
+}
+
+/**
+ * Write one immutable generation from chunks already encoded, which must ascend by key (the writer refuses one
+ * that does not). Returns the driver's `{ size, sha256 }` and a tally of what was written.
+ */
+async function writeEncodedChunks(
+  driver: IStorageDriver,
+  key: GenKey,
+  chunks: Iterable<EncodedChunk>,
+  options: { crypto?: CrbmCrypto; clock?: Yielder },
+): Promise<{ size: number; sha256: string; chunkCount: number; cardinality: number }> {
   // The single longest blocking stretch in a bulk load: serialize + CRC32C + frame, once per chunk, ~62,000
   // times. `await writer.addChunk(...)` looks like it yields and does not — the sink buffers in memory, so the
   // promise is already resolved and awaiting it is a microtask. See {@link yieldEvery}.
   const tick = yieldEvery(options.clock);
-  return driver.putImmutable(key, async (sink) => {
+  let chunkCount = 0;
+  let cardinality = 0;
+  const { size, sha256 } = await driver.putImmutable(key, async (sink) => {
     const writer = new CrbmWriter(sink, { generation: key.generation, crypto: options.crypto });
-    for (const { chunkKey, bitmap } of sorted) {
-      if (bitmap.isEmpty) continue;
-      // Run-encode before serializing. Storage generations are immutable and read many times, so the one-off cost
-      // here buys every later read a smaller fetch — see CodecBitmap.optimize for the measured factors.
-      bitmap.optimize?.();
-      await writer.addChunk(chunkKey, bitmap.serialize(), bitmap.size);
+    for (const chunk of chunks) {
+      await writer.addChunk(chunk.chunkKey, chunk.payload, chunk.cardinality);
+      chunkCount++;
+      cardinality += chunk.cardinality;
       const pause = tick();
       if (pause !== null) await pause;
     }
     await writer.finish();
   });
+  return { size, sha256, chunkCount, cardinality };
 }
 
 /** What {@link writeCrbmGenerationStream} wrote: the driver's `{ size, sha256 }` + a tally of the generation. */
@@ -1272,7 +1301,7 @@ export interface BulkLoadResult {
 export async function bulkLoadCrbmGeneration(
   driver: IStorageDriver,
   key: GenKey,
-  ids: Iterable<number> | AsyncIterable<number>,
+  ids: Iterable<number> | AsyncIterable<number> | DecodedLoadInput,
   options: {
     registry?: IRegistryDriver;
     keystore?: IKeystore;
@@ -1310,96 +1339,14 @@ export async function bulkLoadCrbmGeneration(
     throw new ValidationError('requireEncryption: a load needs a keystore to write encrypted');
   }
   const codec = requireCodec(options.codec, 'bulkLoadCrbmGeneration');
-  const byChunk = new Map<number, CodecBitmap>();
-  // Batched per chunk, not one native `add()` per id.
-  //
-  // The obvious loop — `bitmap.add(remainder)` for every id — crosses the JS↔native boundary once per id, and
-  // measured **1,679 ms for 1M ids** with no yield point anywhere in it. Since this is a synchronous stretch on
-  // Node's only thread, a caller who wires it to a request handler stalls every other request on that instance
-  // for over a second (measured separately: a 0.7 ms health check took 275 ms).
-  //
-  // Buffering the remainders and inserting them per chunk in one `fromValues`/`addMany` call amortises that
-  // boundary crossing across the whole batch.
-  //
-  // WHY THE BUFFER IS CAPPED. Bucketing *everything* first and inserting once per chunk at the end is faster
-  // still, but it holds every remainder as a JS number before any bitmap compression happens — and with up to
-  // 65,536 chunks in play that is unbounded in exactly the way this library refuses to be. So the buffer is
-  // flushed whenever the total pending count crosses `BULK_FLUSH_IDS`, bounding the extra memory regardless of
-  // input size or key distribution while still getting the batching win. That bound is **~28 MB measured** at
-  // 1M staged ids across ~65,000 chunks — not the ~8 MB a naive 8-bytes-per-number estimate gives, because the
-  // cost is dominated by per-array and Map overhead across tens of thousands of small arrays.
-  const pendingByChunk = new Map<number, number[]>();
-  let pending = 0;
-  // Yield periodically, NOT per chunk — see {@link yieldEvery} for why per-unit async is a 7x regression here.
-  const tickChunk = yieldEvery(options.clock);
-  const tickId = yieldEvery(options.clock, YIELD_EVERY_IDS);
-  // Yield every N chunks, NOT per chunk. Measured: handing each chunk's insert to the threadpool
-  // (`fromArrayAsync`) costs ~9 µs of dispatch against ~1.5 µs of actual work once ids are spread across
-  // ~61,000 chunks — 636 ms versus 92 ms, a 7x regression that would have undone the per-chunk batching this
-  // function already does. Keeping the inserts synchronous and interrupting them periodically gets the
-  // starvation fix without the cost — measured on the per-chunk insert microbenchmark: 88 ms wall against a
-  // 92 ms unyielded baseline. The whole-load end-to-end figures are a DIFFERENT experiment and live in
-  // `cooperative.ts`. Quoting this 92 ms baseline beside that experiment's 450 ms stall would describe a 92 ms
-  // operation with 450 ms of starvation inside it, which is impossible on its face.
-  //
-  // The yield must be a REAL macrotask. `await Promise.resolve()` is a microtask and never lets I/O run, which
-  // is the trap that makes naive "just await something" fixes measure as no change at all.
-  const flushPending = async (): Promise<void> => {
-    for (const [chunkKey, rems] of pendingByChunk) {
-      if (rems.length === 0) continue;
-      const existingBitmap = byChunk.get(chunkKey);
-      if (existingBitmap === undefined) byChunk.set(chunkKey, codec.fromValues(rems));
-      else existingBitmap.addMany(rems);
-      rems.length = 0;
-      const pause = tickChunk();
-      if (pause !== null) await pause;
-    }
-    pending = 0;
-  };
-  /** Bucket one id. Returns true when the pending buffer is full and must be flushed. */
-  const ingest = (id: number): boolean => {
-    const { chunkKey, remainder } = splitId(id); // validates the u32 range
-    let bucket = pendingByChunk.get(chunkKey);
-    if (bucket === undefined) {
-      bucket = [];
-      pendingByChunk.set(chunkKey, bucket);
-    }
-    bucket.push(remainder);
-    return ++pending >= BULK_FLUSH_IDS;
-  };
-  // The two ingest loops are deliberately NOT collapsed into one `for await` over a normalising wrapper.
-  //
-  // That is the tidier code and it was measured at **20x** the cost: routing a sync source through an async
-  // generator forces a microtask per id, and over 1M ids that is 224 ms against 11 ms for a plain `for..of` —
-  // 55% of a whole bulk load spent on iteration protocol rather than on work. Since an array, a Set and a
-  // generator are what callers actually hand this function most of the time, the sync path is the common one.
-  //
-  // Note that `for await` yields nothing to the event loop either way: a microtask per id still drains before
-  // the loop turns a phase. Both paths therefore need the same explicit yield.
-  if (Symbol.asyncIterator in ids) {
-    for await (const id of ids as AsyncIterable<number>) {
-      if (ingest(id)) await flushPending();
-      const pause = tickId();
-      if (pause !== null) await pause;
-    }
-  } else {
-    for (const id of ids as Iterable<number>) {
-      if (ingest(id)) await flushPending();
-      const pause = tickId();
-      if (pause !== null) await pause;
-    }
-  }
-  await flushPending();
-
-  let cardinality = 0;
-  const chunks: Array<{ chunkKey: number; bitmap: CodecBitmap }> = [];
-  for (const [chunkKey, bitmap] of byChunk) {
-    // Every chunk in the map received at least one id, so no bitmap here is empty.
-    cardinality += bitmap.size; // a native call per chunk — 5 ms across 62,000 of them, so it yields too
-    chunks.push({ chunkKey, bitmap });
-    const pause = tickChunk();
-    if (pause !== null) await pause;
-  }
+  // A decoded bitmap writes its own chunks, which never touches an id. Ids, and the bitmap of a codec that cannot
+  // encode its own chunks, are bucketed per chunk instead; both give the same bytes.
+  const own = ids instanceof DecodedLoadInput ? ids.bitmap.encodeChunks?.() : undefined;
+  const chunks =
+    own ??
+    encodeEach(
+      await bucketIds(ids instanceof DecodedLoadInput ? ids.bitmap : ids, codec, options.clock),
+    );
 
   if (options.keystore !== undefined && options.registry === undefined) {
     throw new ValidationError('an encrypted load requires a registry to store the wrapped DEK');
@@ -1464,7 +1411,7 @@ export async function bulkLoadCrbmGeneration(
     }
   }
 
-  const { size, sha256 } = await writeCrbmGeneration(driver, key, chunks, {
+  const { size, sha256, chunkCount, cardinality } = await writeEncodedChunks(driver, key, chunks, {
     crypto,
     clock: options.clock,
   });
@@ -1488,13 +1435,106 @@ export async function bulkLoadCrbmGeneration(
     return {
       size,
       sha256,
-      chunkCount: chunks.length,
+      chunkCount,
       cardinality,
       becameCurrent,
       wrappedDeks: newWrapped,
     };
   }
-  return { size, sha256, chunkCount: chunks.length, cardinality, wrappedDeks: newWrapped };
+  return { size, sha256, chunkCount, cardinality, wrappedDeks: newWrapped };
+}
+
+/** Route each id into its chunk's bitmap, consuming the source lazily. Returns the chunks, ascending by key. */
+async function bucketIds(
+  ids: Iterable<number> | AsyncIterable<number>,
+  codec: CodecInterface,
+  clock: Clock | undefined,
+): Promise<Array<{ chunkKey: number; bitmap: CodecBitmap }>> {
+  const byChunk = new Map<number, CodecBitmap>();
+  // Batched per chunk, not one native `add()` per id.
+  //
+  // The obvious loop — `bitmap.add(remainder)` for every id — crosses the JS↔native boundary once per id, and
+  // measured **1,679 ms for 1M ids** with no yield point anywhere in it. Since this is a synchronous stretch on
+  // Node's only thread, a caller who wires it to a request handler stalls every other request on that instance
+  // for over a second (measured separately: a 0.7 ms health check took 275 ms).
+  //
+  // Buffering the remainders and inserting them per chunk in one `fromValues`/`addMany` call amortises that
+  // boundary crossing across the whole batch.
+  //
+  // WHY THE BUFFER IS CAPPED. Bucketing *everything* first and inserting once per chunk at the end is faster
+  // still, but it holds every remainder as a JS number before any bitmap compression happens — and with up to
+  // 65,536 chunks in play that is unbounded in exactly the way this library refuses to be. So the buffer is
+  // flushed whenever the total pending count crosses `BULK_FLUSH_IDS`, bounding the extra memory regardless of
+  // input size or key distribution while still getting the batching win. That bound is **~28 MB measured** at
+  // 1M staged ids across ~65,000 chunks — not the ~8 MB a naive 8-bytes-per-number estimate gives, because the
+  // cost is dominated by per-array and Map overhead across tens of thousands of small arrays.
+  const pendingByChunk = new Map<number, number[]>();
+  let pending = 0;
+  // Yield periodically, NOT per chunk — see {@link yieldEvery} for why per-unit async is a 7x regression here.
+  const tickChunk = yieldEvery(clock);
+  const tickId = yieldEvery(clock, YIELD_EVERY_IDS);
+  // Yield every N chunks, NOT per chunk. Measured: handing each chunk's insert to the threadpool
+  // (`fromArrayAsync`) costs ~9 µs of dispatch against ~1.5 µs of actual work once ids are spread across
+  // ~61,000 chunks — 636 ms versus 92 ms, a 7x regression that would have undone the per-chunk batching this
+  // function already does. Keeping the inserts synchronous and interrupting them periodically gets the
+  // starvation fix without the cost — measured on the per-chunk insert microbenchmark: 88 ms wall against a
+  // 92 ms unyielded baseline. The whole-load end-to-end figures are a DIFFERENT experiment and live in
+  // `cooperative.ts`. Quoting this 92 ms baseline beside that experiment's 450 ms stall would describe a 92 ms
+  // operation with 450 ms of starvation inside it, which is impossible on its face.
+  //
+  // The yield must be a REAL macrotask. `await Promise.resolve()` is a microtask and never lets I/O run, which
+  // is the trap that makes naive "just await something" fixes measure as no change at all.
+  const flushPending = async (): Promise<void> => {
+    for (const [chunkKey, rems] of pendingByChunk) {
+      if (rems.length === 0) continue;
+      const existingBitmap = byChunk.get(chunkKey);
+      if (existingBitmap === undefined) byChunk.set(chunkKey, codec.fromValues(rems));
+      else existingBitmap.addMany(rems);
+      rems.length = 0;
+      const pause = tickChunk();
+      if (pause !== null) await pause;
+    }
+    pending = 0;
+  };
+  /** Bucket one id. Returns true when the pending buffer is full and must be flushed. */
+  const ingest = (id: number): boolean => {
+    const { chunkKey, remainder } = splitId(id); // validates the u32 range
+    let bucket = pendingByChunk.get(chunkKey);
+    if (bucket === undefined) {
+      bucket = [];
+      pendingByChunk.set(chunkKey, bucket);
+    }
+    bucket.push(remainder);
+    return ++pending >= BULK_FLUSH_IDS;
+  };
+  // The two ingest loops are deliberately NOT collapsed into one `for await` over a normalising wrapper.
+  //
+  // That is the tidier code and it was measured at **20x** the cost: routing a sync source through an async
+  // generator forces a microtask per id, and over 1M ids that is 224 ms against 11 ms for a plain `for..of` —
+  // 55% of a whole bulk load spent on iteration protocol rather than on work. Since an array, a Set and a
+  // generator are what callers actually hand this function most of the time, the sync path is the common one.
+  //
+  // Note that `for await` yields nothing to the event loop either way: a microtask per id still drains before
+  // the loop turns a phase. Both paths therefore need the same explicit yield.
+  if (Symbol.asyncIterator in ids) {
+    for await (const id of ids as AsyncIterable<number>) {
+      if (ingest(id)) await flushPending();
+      const pause = tickId();
+      if (pause !== null) await pause;
+    }
+  } else {
+    for (const id of ids as Iterable<number>) {
+      if (ingest(id)) await flushPending();
+      const pause = tickId();
+      if (pause !== null) await pause;
+    }
+  }
+  await flushPending();
+
+  // Every chunk in the map received at least one id, so no bitmap here is empty.
+  return [...byChunk]
+    .map(([chunkKey, bitmap]) => ({ chunkKey, bitmap }))
+    .sort((a, b) => a.chunkKey - b.chunkKey);
 }
 
 /**

@@ -13,9 +13,15 @@
 // keeps the shipped ESM bundle importable under Node ESM. The instance type is derived from the value so we
 // still get a `RoaringBitmap32` type without a (conflicting) second import.
 import roaring from 'roaring';
-import type { CodecBitmap, CodecInterface } from '@cloudbitmaps/core';
+import type {
+  CodecBitmap,
+  CodecInterface,
+  EncodedChunk,
+  LoadInput,
+  PortableBitmap,
+} from '@cloudbitmaps/core';
 import { IntegrityError } from '@cloudbitmaps/core';
-import { checkPortableLayout } from './portable/layout';
+import { checkPortableLayout, containerPayloads } from './portable/layout';
 
 const { RoaringBitmap32, SerializationFormat, DeserializationFormat } = roaring;
 type RoaringBitmap32 = InstanceType<typeof RoaringBitmap32>;
@@ -78,9 +84,27 @@ export class SafeBitmap implements CodecBitmap {
    *
    * Called only when writing an immutable objects generation — see {@link CodecBitmap.optimize} for why the read
    * path deliberately does not.
+   *
+   * CANONICAL, which `runOptimize()` alone is not. Where a container's run and array encodings are the same size
+   * (cardinality = 2 × runs + 1: three values in one run, five in two), CRoaring keeps whichever kind the
+   * container already has. A chunk built from ids starts as an array and stays one; the same set reached through
+   * `addRange`, an earlier `runOptimize()` or an operation over run containers is a run, and serializes to other
+   * bytes. Undoing run compression first starts every container where one built from ids starts, so the bytes
+   * depend on membership alone. On a bitmap built from ids there is nothing to undo.
    */
   optimize(): void {
+    this.bitmap.removeRunCompression();
     this.bitmap.runOptimize();
+  }
+
+  /**
+   * This set as storage chunks, cut from its own containers: {@link optimize}, one `serialize`, then a header walk
+   * that copies each container out (`containerPayloads`). Per container and per byte, never per id, and the
+   * payloads are the ones {@link SafeBitmap.fromValues} of each chunk's low 16 bits would serialize to.
+   */
+  encodeChunks(): Iterable<EncodedChunk> {
+    this.optimize();
+    return containerPayloads(this.serialize());
   }
 
   /**
@@ -151,6 +175,15 @@ export class SafeBitmap implements CodecBitmap {
   toArray(): number[] {
     return this.bitmap.toArray();
   }
+}
+
+/**
+ * A bare `RoaringBitmap32` of this package's own `roaring`, passed where ids go, loads as `{ bitmap }`: from its
+ * containers, through the same check as any bytes, never id by id. Any other input passes through unchanged, and a
+ * bitmap from another copy of `roaring` is loaded as the ids it iterates, which is correct and slower.
+ */
+export function bitmapAsLoadInput(input: LoadInput): LoadInput {
+  return input instanceof RoaringBitmap32 ? { bitmap: input as PortableBitmap } : input;
 }
 
 /**

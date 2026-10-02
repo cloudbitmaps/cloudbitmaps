@@ -61,6 +61,7 @@ export type { PinnedAt } from './core/pinned-storage-source';
 // the one whose last step gets left out when it is composed by hand.
 export { loadSegment } from './core/load';
 export type { LoadDeps, LoadOptions, LoadGuard, LoadResult, LoadRefusal } from './core/load';
+export type { LoadInput, PortableBitmap } from './core/load-input';
 // See what a segment has been, and put it back. `rollbackSegment` is the one pointer move that goes backwards,
 // and the one no automatic path performs — forward-only is right for a writer and wrong for an operator.
 export { listGenerations, rollbackSegment } from './core/rollback';
@@ -68,7 +69,7 @@ export type { GenerationListDeps, GenerationEntry, RollbackResult } from './core
 export { eraseIdFromSegment } from './core/erase-id';
 export type { EraseIdDeps, EraseIdResult } from './core/erase-id';
 // The bitmap-codec seam — the engine is codec-agnostic behind these; roaring is the flagship.
-export type { CodecInterface, CodecBitmap } from './core/codec';
+export type { CodecInterface, CodecBitmap, EncodedChunk } from './core/codec';
 export type { Clock, Rng } from './core/determinism';
 export type {
   StorageChunkSource,

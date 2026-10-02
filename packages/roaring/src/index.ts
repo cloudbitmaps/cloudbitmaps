@@ -66,6 +66,7 @@ import type {
   BudgetOption,
   GenerationEntry,
   LoadGuard,
+  LoadInput,
   LoadOptions,
   LoadRefusal,
   LoadResult,
@@ -108,7 +109,7 @@ import { listGenerations, rollbackSegment } from '@cloudbitmaps/core';
 import { listSegments, segmentExists } from '@cloudbitmaps/core';
 import type { SegmentInfo } from '@cloudbitmaps/core';
 import { refuseReservedNamespace } from './reserved-namespace';
-import { roaringCodec } from './roaring-codec';
+import { bitmapAsLoadInput, roaringCodec } from './roaring-codec';
 import { SystemClock } from './system-clock';
 import { OPTION_KEYS, type OptionGroup } from './option-keys';
 
@@ -1389,15 +1390,11 @@ export class CloudRoaring {
    *
    * Needs a backend (throws {@link UnsupportedError} otherwise).
    */
-  async load(
-    ref: SegmentRef,
-    ids: Iterable<number> | AsyncIterable<number>,
-    options: LoadOptions = {},
-  ): Promise<LoadResult> {
+  async load(ref: SegmentRef, input: LoadInput, options: LoadOptions = {}): Promise<LoadResult> {
     validateSegmentRef(ref);
     const deps = this.lifecycleDeps('load');
     try {
-      return await loadSegment(ref, ids, deps, options);
+      return await loadSegment(ref, bitmapAsLoadInput(input), deps, options);
     } finally {
       // This store's view of the segment is now behind whatever just happened — a published load superseded the
       // generation the caches were built on, and a throw can still have published before failing its collect.
@@ -2538,6 +2535,7 @@ export type {
   CrbmStorageChunkSourceOptions,
   DestroyResult,
   DropResult,
+  EncodedChunk,
   EraseDeps,
   EstimateInput,
   ExportFailure,
@@ -2558,6 +2556,7 @@ export type {
   IdRange,
   InProcessKeystoreOptions,
   LoadGuard,
+  LoadInput,
   LoadOptions,
   LoadRefusal,
   LoadResult,
@@ -2569,6 +2568,7 @@ export type {
   NewRegistryRecord,
   PinnedAt,
   PinnedObject,
+  PortableBitmap,
   PricingProfile,
   RedisNodeType,
   RedisSizing,

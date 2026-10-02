@@ -36,6 +36,7 @@ import {
   isWriteConflictError,
 } from './errors';
 import { gcOrphanGenerations, nextGeneration } from './generation-gc';
+import { type LoadInput, prepareLoadInput } from './load-input';
 import { type ReadRetry, retryRead } from './retry';
 import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef, Token } from './ports';
 import { validateUserRef } from './validate';
@@ -191,7 +192,11 @@ async function currentCardinality(
 }
 
 /**
- * Replace a segment's contents with `ids`, as one immutable generation, and make it current.
+ * Replace a segment's contents with `input`, as one immutable generation, and make it current.
+ *
+ * `input` is ids, or a whole bitmap as `{ serialized }` portable Roaring bytes or a `{ bitmap }` with
+ * `serialize('portable')` ({@link LoadInput}). A bitmap input is checked, decoded and serialized before the first
+ * request, and is written from its own chunks; the generation is byte for byte the one its ids would write.
  *
  * Returns what was written and whether it became current. A refusal is **not** an exception: `published: false`
  * with a `reason` is a normal outcome a caller branches on, in the same shape as a successful load, because the
@@ -199,13 +204,13 @@ async function currentCardinality(
  */
 export async function loadSegment(
   ref: SegmentRef,
-  ids: Iterable<number> | AsyncIterable<number>,
+  input: LoadInput,
   deps: LoadDeps,
   options: LoadOptions = {},
 ): Promise<LoadResult> {
   validateUserRef(ref);
   // Before any round trip: a core caller that forgot the codec learns it from this call's name, not the loader's.
-  requireCodec(deps.codec, 'loadSegment');
+  const codec = requireCodec(deps.codec, 'loadSegment');
   const keep = options.keep ?? 1;
   if (!Number.isInteger(keep) || keep < 0) {
     throw new ValidationError(`keep must be a non-negative integer; got ${String(keep)}`);
@@ -226,6 +231,8 @@ export async function loadSegment(
     }
   }
   const audit = safeAudit(options.audit ?? NOOP_AUDIT);
+  // Still before any round trip: a malformed input costs none, and a `{ bitmap }` is the bitmap as of this call.
+  const ids = prepareLoadInput(input, codec);
 
   // One row read, used for three things: the guard's "before", the incarnation this call is acting on, and the
   // pointer it derived its decision from.

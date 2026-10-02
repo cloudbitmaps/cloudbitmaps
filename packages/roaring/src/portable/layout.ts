@@ -44,6 +44,7 @@
  * @see https://github.com/RoaringBitmap/RoaringFormatSpec
  */
 import { IntegrityError } from '@cloudbitmaps/core';
+import type { EncodedChunk } from '@cloudbitmaps/core';
 
 /** Cookie for a bitmap with no run containers. Followed by a u32 container count. */
 const SERIAL_COOKIE_NO_RUNCONTAINER = 12_346;
@@ -112,6 +113,49 @@ export function parsePortableLayout(bytes: Uint8Array): PortableContainer[] {
  */
 export function checkPortableLayout(bytes: Uint8Array): void {
   walk(bytes, null);
+}
+
+/** A one-container payload's header without run containers: cookie, count, `(key, cardinality - 1)`, offset. */
+const SINGLE_HEADER_BYTES = 16;
+/** A one-container payload's header under the run cookie: cookie holding `count - 1`, one flag byte, the pair. */
+const SINGLE_RUN_HEADER_BYTES = 9;
+
+/**
+ * Each container of the portable bitmap in `bytes`, as the one-container portable bitmap a `.crbm` chunk stores:
+ * its key moved to 0, its cardinality and kind kept, its body copied unchanged. These are exactly the bytes the
+ * native serializer writes for a bitmap holding only that container's low 16 bits, so a chunk cut from a whole
+ * bitmap is the chunk built from its ids, provided the whole bitmap was encoded canonically first.
+ *
+ * Header and body copies only: no value is read one by one beyond the structural check
+ * {@link parsePortableLayout} makes.
+ *
+ * @throws {IntegrityError} where {@link parsePortableLayout} does.
+ */
+export function* containerPayloads(bytes: Uint8Array): Generator<EncodedChunk> {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  for (const { key, cardinality, kind, offset } of parsePortableLayout(bytes)) {
+    const size =
+      kind === ARRAY
+        ? cardinality * 2
+        : kind === BITMAP
+          ? BITMAP_CONTAINER_BYTES
+          : 2 + 4 * view.getUint16(offset, true);
+    const header = kind === RUN ? SINGLE_RUN_HEADER_BYTES : SINGLE_HEADER_BYTES;
+    const payload = new Uint8Array(header + size);
+    const out = new DataView(payload.buffer);
+    if (kind === RUN) {
+      out.setUint32(0, SERIAL_COOKIE, true); // count - 1 = 0 in the high half
+      payload[4] = 1; // container 0 is a run container
+      out.setUint16(7, cardinality - 1, true); // after key 0 at byte 5
+    } else {
+      out.setUint32(0, SERIAL_COOKIE_NO_RUNCONTAINER, true);
+      out.setUint32(4, 1, true);
+      out.setUint16(10, cardinality - 1, true); // after key 0 at byte 8
+      out.setUint32(12, SINGLE_HEADER_BYTES, true);
+    }
+    payload.set(bytes.subarray(offset, offset + size), header);
+    yield { chunkKey: key, payload, cardinality };
+  }
 }
 
 /** Check every container of `bytes`, appending each one's layout to `out` when there is one to append to. */

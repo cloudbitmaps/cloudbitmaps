@@ -73,6 +73,9 @@ export interface CodecBitmap {
    * Re-encode for size, in place, immediately before a **storage** write. Representation only — this must never
    * change membership, and `serialize()` afterwards must decode back to exactly the same set.
    *
+   * **Canonical:** afterwards `serialize()` depends on membership alone, never on how the bitmap was built. A load
+   * relies on it: a chunk built from ids and the same chunk cut from a caller's bitmap must store the same bytes.
+   *
    * **Optional, like {@link maximum}.** A codec whose encoding has no size decision to make (a plain bitset has
    * one representation and nothing to choose) simply omits it, and the engine skips the call.
    *
@@ -89,6 +92,29 @@ export interface CodecBitmap {
    * must not pay for a win that only the stored bytes collect, per KISS/YAGNI.
    */
   optimize?(): void;
+  /**
+   * This set as storage chunks: ascending by chunk key, empty chunks left out, each payload exactly the bytes that
+   * {@link CodecInterface.fromValues} of that chunk's low 16 bits, then {@link optimize}, then {@link serialize}
+   * would give. So a generation written from these is byte for byte the one the same ids write. It may re-encode
+   * this bitmap in place first, as `optimize()` does; membership is untouched.
+   *
+   * **Flavor-author surface, and optional.** A load from a bitmap or from serialized bytes writes these, never
+   * touching an id in JavaScript. A codec without it still loads those inputs, through the bitmap's ids.
+   */
+  encodeChunks?(): Iterable<EncodedChunk>;
+}
+
+/**
+ * One chunk of a set, encoded for storage: what {@link CodecBitmap.encodeChunks} yields, and what a `.crbm`
+ * generation stores per chunk. Flavor-author surface.
+ */
+export interface EncodedChunk {
+  /** The high 16 bits every id in the chunk shares. */
+  readonly chunkKey: number;
+  /** The stored bytes: the codec's serialization of a bitmap holding only the chunk's low 16 bits. */
+  readonly payload: Uint8Array;
+  /** How many ids the chunk holds, 1 to 65,536. */
+  readonly cardinality: number;
 }
 
 /**
