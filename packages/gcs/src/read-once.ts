@@ -20,7 +20,7 @@
  * and nothing else.
  */
 import type { Storage } from '@google-cloud/storage';
-import { ReadTimedOut, type ReadDeadline } from './read-timeout';
+import type { Deadline } from './read-timeout';
 
 type GcsFile = ReturnType<ReturnType<Storage['bucket']>['file']>;
 type Interceptor = GcsFile['interceptors'][number];
@@ -64,16 +64,18 @@ export function singleHeader(headers: ObjectRead['headers'], name: string): stri
  * thrown when the advertised or actual length passes the cap, so each caller reports it in its own vocabulary.
  * Transport and HTTP errors reject as the SDK raises them (a 404 carries `code: 404`).
  *
- * With a `deadline` of more than 0 ms, a read still unsettled when it passes rejects with {@link ReadTimedOut}. The clock
- * starts here, before the SDK fetches a credential or opens a socket, and runs until the body has ended.
+ * With a `deadline`, a read still unsettled when it passes rejects with its `ReadTimedOut`; one asked for after it has
+ * passed is not sent. The deadline belongs to the whole driver read, so an attempt gets only what is left of it.
  */
 export function readOnce(
   file: GcsFile,
   options: { start?: number; end?: number; validation?: false; decompress?: false },
   maxBytes: number,
   oversize: (size: number | undefined) => Error,
-  deadline?: ReadDeadline,
+  deadline?: Deadline,
 ): Promise<ObjectRead> {
+  if (deadline !== undefined && deadline.remaining() === 0)
+    return Promise.reject(deadline.expired());
   return new Promise<ObjectRead>((resolve, reject) => {
     const stream = file.createReadStream(options);
     const chunks: Buffer[] = [];
@@ -84,9 +86,9 @@ export function readOnce(
     let settled = false;
     // The SDK makes no request until the stream is read from, in a later turn, so a timer set here covers all of it.
     const timer =
-      deadline !== undefined && deadline.ms > 0
-        ? setTimeout(() => fail(new ReadTimedOut(deadline.read, deadline.ms)), deadline.ms)
-        : undefined;
+      deadline === undefined
+        ? undefined
+        : setTimeout(() => fail(deadline.expired()), deadline.remaining());
 
     // Deferred: the SDK builds its response pipeline right after announcing the response, and destroying the stream
     // before that makes the pipeline throw out of an event handler, where nothing can catch it, and ends the process.

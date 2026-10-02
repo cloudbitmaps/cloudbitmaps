@@ -43,7 +43,7 @@ import type { Storage } from '@google-cloud/storage';
 import { isNotFound, isPreconditionFailed, isTransient, isTransportFault } from './gcs-errors';
 import { retryDownload } from './download-retry';
 import { downloadFile, readOnce, singleHeader } from './read-once';
-import { ReadTimedOut, resolveReadTimeoutMs } from './read-timeout';
+import { ReadTimedOut, resolveReadTimeoutMs, startDeadline } from './read-timeout';
 import { saveOnce } from './send-once';
 
 export interface GcsRegistryDriverOptions {
@@ -91,19 +91,23 @@ class GcsStore implements ObjectRegistryStore {
     // observation of the object, so the pair cannot straddle a concurrent overwrite.
     let res;
     try {
-      res = await retryDownload(() =>
-        readOnce(
-          this.downloadable(key),
-          {},
-          MAX_ROW_BYTES,
-          (size) =>
-            new IntegrityError(
-              size === undefined
-                ? `registry object exceeds cap ${MAX_ROW_BYTES}B`
-                : `registry object ${size}B exceeds cap ${MAX_ROW_BYTES}B`,
-            ),
-          { ms: this.readTimeoutMs, read: `registry read of ${key}` },
-        ),
+      // One deadline for the read, every attempt included.
+      const deadline = startDeadline(this.readTimeoutMs, `registry read of ${key}`);
+      res = await retryDownload(
+        () =>
+          readOnce(
+            this.downloadable(key),
+            {},
+            MAX_ROW_BYTES,
+            (size) =>
+              new IntegrityError(
+                size === undefined
+                  ? `registry object exceeds cap ${MAX_ROW_BYTES}B`
+                  : `registry object ${size}B exceeds cap ${MAX_ROW_BYTES}B`,
+              ),
+            deadline,
+          ),
+        deadline,
       );
     } catch (err) {
       if (isNotFound(err)) return null;

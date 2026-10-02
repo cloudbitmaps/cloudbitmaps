@@ -3,7 +3,7 @@ import type { Storage } from '@google-cloud/storage';
 import { readOnce, singleHeader } from '@/gcs/read-once';
 import { GcsStorageDriver } from '@/gcs/storage';
 import { TransientError, ValidationError } from '@/core/errors';
-import { ReadTimedOut } from '@/gcs/read-timeout';
+import { Deadline, ReadTimedOut, startDeadline } from '@/gcs/read-timeout';
 
 // `readOnce` against a hand-driven stream, so each way a response can misbehave is one deliberate step. The real SDK
 // is exercised in send-once.test.ts.
@@ -210,11 +210,12 @@ describe('readOnce', () => {
 
 describe('readOnce with a deadline', () => {
   const after = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
-  const deadline = { ms: 50, read: 'tail read of s.0' };
+  /** A 50 ms deadline, started when the test asks for it. */
+  const deadline = (): Deadline => new Deadline(50, 'tail read of s.0');
 
   it('rejects with a retryable ETIMEDOUT naming the read and the ms, and destroys the stream one turn later', async () => {
     const d = new Driven();
-    const p = readOnce(d.file(), {}, 10, oversize, deadline);
+    const p = readOnce(d.file(), {}, 10, oversize, deadline());
     d.respond(206, {});
     d.stream.write(Buffer.alloc(2)); // headers and part of the body, then nothing
     const err = await p.catch((e: unknown) => e);
@@ -230,7 +231,7 @@ describe('readOnce with a deadline', () => {
 
   it('times a read whose response never comes, and leaves the stream alone until a response does', async () => {
     const d = new Driven();
-    const p = readOnce(d.file(), {}, 10, oversize, deadline);
+    const p = readOnce(d.file(), {}, 10, oversize, deadline());
     await expect(p).rejects.toBeInstanceOf(ReadTimedOut);
     await after(20);
     // Destroyed now, the SDK would pipe a late response into a destroyed stream and throw outside any promise.
@@ -243,7 +244,7 @@ describe('readOnce with a deadline', () => {
 
   it('covers the body as well as the headers', async () => {
     const d = new Driven();
-    const outcome = readOnce(d.file(), {}, 10, oversize, deadline).catch((e: unknown) => e);
+    const outcome = readOnce(d.file(), {}, 10, oversize, deadline()).catch((e: unknown) => e);
     d.respond(206, {});
     await after(30);
     d.stream.write(Buffer.alloc(2));
@@ -265,7 +266,7 @@ describe('readOnce with a deadline', () => {
       ],
     ] as const)('%s', async (_name, settleBy) => {
       const d = new Driven();
-      const p = readOnce(d.file(), {}, 10, oversize, deadline);
+      const p = readOnce(d.file(), {}, 10, oversize, deadline());
       expect(vi.getTimerCount()).toBe(1);
       settleBy(d);
       await p.catch(() => undefined);
@@ -275,7 +276,7 @@ describe('readOnce with a deadline', () => {
 
   it('sets no timer at 0', async () => {
     const d = new Driven();
-    const p = readOnce(d.file(), {}, 10, oversize, { ms: 0, read: 'tail read of s.0' });
+    const p = readOnce(d.file(), {}, 10, oversize, startDeadline(0, 'tail read of s.0'));
     await after(30);
     d.respond(200, {});
     d.stream.end(Buffer.alloc(3));

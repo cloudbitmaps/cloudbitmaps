@@ -1,18 +1,19 @@
 /**
- * The read timeout: `readTimeoutMs`, off (`0`) unless set. Each download the GCS drivers make, and the metadata read a
- * tail read can fall back on, is cut off once it has run that long.
+ * The read timeout: `readTimeoutMs`, off (`0`) unless set. It bounds one driver read — a tail read (with the metadata
+ * read it can fall back on), a range read, a registry read — as a whole: one deadline, started when the driver is
+ * called, covers every attempt the driver makes at it and the backoff between them.
  *
  * `@google-cloud/storage` 8.x sets no working timeout of its own: it hands its `timeout` to an HTTP client that has no
  * such option, so a read on a connection that stops answering waits forever, and nothing above it ever gets a fault to
- * retry. A download cut off by this timer fails with {@link ReadTimedOut}, coded `ETIMEDOUT`, which the driver retries
- * as the connection fault it is (`download-retry.ts`); one that times out on every attempt reaches the caller as
- * `TransientError`, its message naming the read and the timeout.
+ * retry. When the deadline passes, the request in flight fails with {@link ReadTimedOut} (coded `ETIMEDOUT`), no
+ * further attempt starts, and a backoff in progress ends with the same error; the driver reports it as
+ * `TransientError`, its message naming the read and the timeout, for the store's read retry to run again.
  *
- * **What the clock counts.** It starts when the driver calls into the SDK, so everything the SDK does before the bytes
- * arrive counts: fetching or refreshing a credential, resolving the project, waiting for a socket (Node's global agents,
- * which the downloads use, set no socket limit unless the process sets one, so by default there is no queue), the
- * request, the headers and the whole body.
- * Each attempt has its own clock.
+ * **What the clock counts.** Everything from the call into the driver: fetching or refreshing a credential, resolving
+ * the project, waiting for a socket (Node's global agents, which the downloads use, set no socket limit unless the
+ * process sets one, so by default there is no queue), each request, its headers and its whole body, and the driver's
+ * backoff between attempts. It counts time the process spends busy too: Node runs a due timer before it reads a socket,
+ * so a synchronous stretch longer than the timeout fails the reads in flight even when their responses have arrived.
  *
  * Uploads, deletes, listings and the conditional writes are not timed: an upload can rightly take longer than a read,
  * and a write cut off may still land.
@@ -41,32 +42,53 @@ export function resolveReadTimeoutMs(value: unknown): number {
   return value;
 }
 
-/** A read the driver gave up on after its timeout. Coded `ETIMEDOUT`, so it is retried like any timed-out connection. */
+/** A read the driver gave up on when its deadline passed. Coded `ETIMEDOUT`, as a timed-out connection is. */
 export class ReadTimedOut extends Error {
   readonly code = 'ETIMEDOUT';
-  constructor(read: string, ms: number) {
-    super(`GCS ${read} timed out after ${ms} ms`);
+  constructor(read: string, ms: number, cause?: unknown) {
+    super(`GCS ${read} timed out after ${ms} ms`, cause === undefined ? undefined : { cause });
     this.name = 'ReadTimedOut';
   }
 }
 
-/** The timeout one read runs under: `ms` (`0`: none) and what to call the read in the error, e.g. `tail read of s.3`. */
-export interface ReadDeadline {
-  readonly ms: number;
-  readonly read: string;
+/** One driver read's deadline: `ms` from when it is made. `read` names the read in the error, e.g. `tail read of s.3`. */
+export class Deadline {
+  private readonly endsAt: number;
+
+  constructor(
+    readonly ms: number,
+    readonly read: string,
+  ) {
+    this.endsAt = performance.now() + ms;
+  }
+
+  /** What is left of it, in milliseconds: 0 once it has passed. */
+  remaining(): number {
+    return Math.max(0, this.endsAt - performance.now());
+  }
+
+  /** The error a read fails with once this has passed; `cause` is the last attempt's own error, if one failed. */
+  expired(cause?: unknown): ReadTimedOut {
+    return new ReadTimedOut(this.read, this.ms, cause);
+  }
+}
+
+/** The deadline a read made now runs under, or none when `ms` is 0 (no timeout). */
+export function startDeadline(ms: number, read: string): Deadline | undefined {
+  return ms === 0 ? undefined : new Deadline(ms, read);
 }
 
 /**
- * Settle with `request`, or with {@link ReadTimedOut} once `deadline.ms` have passed. For a request the SDK cannot
- * cancel: a metadata read is one callback-style request that returns no handle to abort it, so on a timeout this stops
- * waiting and the request runs on until it is answered or its connection closes; what it settles with then is dropped.
+ * Settle with `request`, or with {@link ReadTimedOut} once `deadline` has passed. For a request the SDK cannot cancel: a
+ * metadata read is one callback-style request that returns no handle to abort it, so at the deadline this stops waiting
+ * and the request runs on until it is answered or its connection closes. The race keeps a handler on `request`, so what
+ * it settles with then is dropped rather than raised.
  */
-export function withDeadline<T>(request: Promise<T>, deadline: ReadDeadline): Promise<T> {
-  if (deadline.ms === 0) return request;
+export function withDeadline<T>(request: Promise<T>, deadline: Deadline | undefined): Promise<T> {
+  if (deadline === undefined) return request;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timedOut = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new ReadTimedOut(deadline.read, deadline.ms)), deadline.ms);
+    timer = setTimeout(() => reject(deadline.expired()), deadline.remaining());
   });
-  request.catch(() => undefined); // an answer that comes after the timeout has no one to hear it
   return Promise.race([request, timedOut]).finally(() => clearTimeout(timer));
 }

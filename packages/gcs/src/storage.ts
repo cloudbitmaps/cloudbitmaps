@@ -54,8 +54,9 @@ import { downloadFile, readOnce, singleHeader, type ObjectRead } from './read-on
 import {
   ReadTimedOut,
   resolveReadTimeoutMs,
+  startDeadline,
   withDeadline,
-  type ReadDeadline,
+  type Deadline,
 } from './read-timeout';
 
 /** Default object ceiling: GCS's 5 TiB per-object hard max. Set lower to fail fast on a runaway write. */
@@ -142,9 +143,9 @@ export class GcsStorageDriver implements IStorageDriver {
     return downloadFile(this.readStorage, this.bucket, name);
   }
 
-  /** The timeout one read of `key` runs under, named for its error. */
-  private deadline(read: string, key: GenKey): ReadDeadline {
-    return { ms: this.readTimeoutMs, read: `${read} of ${key.segment}.${key.generation}` };
+  /** The deadline a read of `key` made now runs under, every attempt included, named for its error; none when off. */
+  private deadline(read: string, key: GenKey): Deadline | undefined {
+    return startDeadline(this.readTimeoutMs, `${read} of ${key.segment}.${key.generation}`);
   }
 
   async putImmutable(
@@ -178,14 +179,17 @@ export class GcsStorageDriver implements IStorageDriver {
     try {
       // One request, buffering at most the bytes asked for. GCS `end` is inclusive. `decompress: false`, as for the tail:
       // the offsets are into the bytes as stored.
-      const res = await retryDownload(() =>
-        readOnce(
-          this.downloadable(objectName),
-          { start: offset, end: offset + length - 1, decompress: false },
-          length,
-          () => this.badRange(key, `the response is longer than the ${length}B requested`),
-          this.deadline('range read', key),
-        ),
+      const deadline = this.deadline('range read', key);
+      const res = await retryDownload(
+        () =>
+          readOnce(
+            this.downloadable(objectName),
+            { start: offset, end: offset + length - 1, decompress: false },
+            length,
+            () => this.badRange(key, `the response is longer than the ${length}B requested`),
+            deadline,
+          ),
+        deadline,
       );
       this.checkRange(res, key, offset, length);
       return res.bytes;
@@ -237,10 +241,12 @@ export class GcsStorageDriver implements IStorageDriver {
 
   async getTail(key: GenKey, maxBytes: number): Promise<{ bytes: Uint8Array; size: number }> {
     const objectName = storageObjectName(this.prefix, key);
+    // One deadline for the whole call: the tail's attempts, and the metadata read it may fall back on.
+    const deadline = this.deadline('tail read', key);
     try {
       // Nothing to read: only the size is wanted, which the metadata answers in one request.
       if (maxBytes <= 0)
-        return { bytes: new Uint8Array(0), size: await this.sizeOf(objectName, key) };
+        return { bytes: new Uint8Array(0), size: await this.sizeOf(objectName, deadline) };
       if (!Number.isSafeInteger(maxBytes)) {
         throw new ValidationError(`invalid tail length ${maxBytes}`);
       }
@@ -248,26 +254,28 @@ export class GcsStorageDriver implements IStorageDriver {
       // `Content-Range: bytes a-b/total`, the object's size. An object shorter than N comes back whole.
       let res;
       try {
-        res = await retryDownload(() =>
-          readOnce(
-            this.downloadable(objectName),
-            { end: -maxBytes, decompress: false },
-            maxBytes,
-            () => this.badTail(key, `the response is longer than the ${maxBytes}B requested`),
-            this.deadline('tail read', key),
-          ),
+        res = await retryDownload(
+          () =>
+            readOnce(
+              this.downloadable(objectName),
+              { end: -maxBytes, decompress: false },
+              maxBytes,
+              () => this.badTail(key, `the response is longer than the ${maxBytes}B requested`),
+              deadline,
+            ),
+          deadline,
         );
       } catch (err) {
         // A zero-byte object has no suffix to satisfy, and a server may refuse the range with a 416. The metadata
         // settles whether that is an empty object (a valid, empty tail) or a real range fault.
         if (!isInvalidRange(err)) throw err;
-        const size = await this.sizeOf(objectName, key);
+        const size = await this.sizeOf(objectName, deadline);
         if (size !== 0) throw err;
         return { bytes: new Uint8Array(0), size };
       }
       if (res.bytes.length === 0) {
         // No bytes came back for a positive request: only an empty object may do that.
-        const size = await this.sizeOf(objectName, key);
+        const size = await this.sizeOf(objectName, deadline);
         if (size !== 0) throw this.badTail(key, `no bytes returned for an object of ${size}B`);
         return { bytes: res.bytes, size };
       }
@@ -277,11 +285,14 @@ export class GcsStorageDriver implements IStorageDriver {
     }
   }
 
-  /** The object's size from its metadata, validated, under the read timeout ({@link withDeadline}). */
-  private async sizeOf(objectName: string, key: GenKey): Promise<number> {
-    const [meta] = await withDeadline(
-      this.file(objectName).getMetadata(),
-      this.deadline('metadata read', key),
+  /**
+   * The object's size from its metadata, validated. Read on the download client and retried as a download is, within
+   * the calling read's `deadline` ({@link withDeadline}), so nothing but the one request in flight runs past it.
+   */
+  private async sizeOf(objectName: string, deadline: Deadline | undefined): Promise<number> {
+    const [meta] = await retryDownload(
+      () => withDeadline(this.downloadable(objectName).getMetadata(), deadline),
+      deadline,
     );
     const size = Number(meta.size ?? 0);
     if (!Number.isSafeInteger(size) || size < 0) {
