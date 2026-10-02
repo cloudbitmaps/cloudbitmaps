@@ -12,9 +12,11 @@ import { MemoryStorageDriver } from '@/drivers/memory';
 import { S3StorageDriver } from '@/s3/storage';
 import { CountingObjectStore } from '../helpers/counting';
 
-// A timed sample that meets a transient fault is discarded whole and run again on a fresh store; the requests it made
-// are billed and recorded, and kept out of what the stage is held to. These drive the harness's own sampling code
-// against the real engine and the real SDK, with stubs that fail on purpose, and hold the harness's loops to it.
+// A timed sample that meets a transient fault is discarded whole and run again from the start: on a fresh store, or, for
+// a first `count()` and a `has()` on an open segment, on its store put back in the state the read assumes. The requests
+// it made are billed and recorded, and kept out of what the stage is held to. These drive the harness's own sampling
+// code against the real engine and the real SDK, with stubs that fail on purpose, and hold the harness's loops to it;
+// `tests/integration/calibrate-rehearsal.test.ts` runs the harness itself.
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const require_ = createRequire(import.meta.url);
 
@@ -732,6 +734,9 @@ describe("a failed sample's requests are waited for", () => {
     expect(settle).toContain('inFlight: tally.inFlight');
     expect(settle).toContain('sent: tally.put + tally.get + tally.free');
     expect(settle).toContain('maxMs: DRAIN_MS');
+    // The wait is QUIET_MS, the one the comment beside it argues for: an override at the call would shorten it unseen,
+    // since on a local MinIO a failed sample's requests answer before anything new is sent.
+    expect(settle).not.toMatch(/quietMs|pollMs/);
   });
 });
 
