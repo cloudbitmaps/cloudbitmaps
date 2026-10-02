@@ -81,7 +81,7 @@ class AzureBlobStore implements ObjectRegistryStore {
       throw mapError(err);
     }
     try {
-      return await readRow(res, key, () => request.abort());
+      return await readRow(res, key, new URL(blob.url).host, () => request.abort());
     } catch (err) {
       throw err instanceof IntegrityError ? err : mapError(err);
     }
@@ -132,13 +132,14 @@ class AzureBlobStore implements ObjectRegistryStore {
  * The row `res` answers: its bytes, read whole and counted as they arrive, and its `ETag`, from this one response.
  *
  * The response is checked before a byte of the body is read, and refused unless it is a `200` (a `206` holds part of
- * the blob) with an `ETag` and a length no larger than {@link MAX_ROW_BYTES}. The body is refused at the first byte
- * past that length, or past the cap. A refused response is let go: the body stream is destroyed and the request
- * aborted, so the socket closes rather than holding a response nobody reads.
+ * the blob) from the container's own host, with an `ETag` and a length no larger than {@link MAX_ROW_BYTES}. The body
+ * is refused at the first byte past that length. A refused response is let go: the body stream is destroyed and the
+ * request aborted, so the socket closes rather than holding a response nobody reads.
  */
 function readRow(
   res: BlobDownloadResponseParsed,
   key: string,
+  host: string,
   abort: () => void,
 ): Promise<ObjectRow> {
   return new Promise<ObjectRow>((resolve, reject) => {
@@ -160,8 +161,22 @@ function readRow(
       reject(err);
     };
     // Listened for before anything can end the stream, and for its whole life: a body stream that errors with nothing
-    // listening throws out of the event, where no caller can catch it, and the abort makes it error.
-    body.on('error', fail);
+    // listening throws out of the event, where no caller can catch it, and the abort makes it error. The read aborts
+    // only once it has settled, so an `AbortError` before then is the SDK's word for a connection cut off mid-body.
+    body.on('error', (err: unknown) =>
+      fail(
+        (err as { name?: unknown } | null)?.name === 'AbortError'
+          ? Object.assign(
+              new Error('Azure Blob read was cut off before the response completed', {
+                cause: err,
+              }),
+              {
+                code: 'ECONNRESET',
+              },
+            )
+          : err,
+      ),
+    );
     // A stream that closes without ending or erring was cut off all the same: a dropped connection, and retryable.
     body.on('close', () =>
       fail(
@@ -176,6 +191,17 @@ function readRow(
     if (status !== 200) {
       return fail(new IntegrityError(`registry read answered HTTP ${status}, not 200: ${key}`));
     }
+    // A client whose retry is set to read from a secondary (`retryOptions.secondaryHost`) sends a retried GET there, and a
+    // secondary can answer with a row one or more writes behind, under its own ETag. The registry reads strongly, so
+    // that answer is refused as transient, and the read is tried again.
+    const served = res._response?.request?.url;
+    if (served !== undefined && new URL(served).host !== host) {
+      return fail(
+        new TransientError(
+          `registry read answered by ${new URL(served).host}, not ${host}: ${key}`,
+        ),
+      );
+    }
     if (typeof etag !== 'string' || etag.length === 0) {
       return fail(new IntegrityError(`registry read carries no ETag: ${key}`));
     }
@@ -186,15 +212,14 @@ function readRow(
     if (length > MAX_ROW_BYTES) {
       return fail(new IntegrityError(`registry object ${length}B exceeds cap ${MAX_ROW_BYTES}B`));
     }
-    // Counted as the bytes arrive, against the advertised length and the cap both, so a length that understates the
-    // body cannot make the read hold more than either.
-    const bound = Math.min(length, MAX_ROW_BYTES);
+    // Counted as the bytes arrive, against the advertised length, which is within the cap, so a length that
+    // understates the body cannot make the read hold more than it said.
     body.on('data', (chunk: Buffer | string) => {
       if (settled) return;
       const bytes = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
       total += bytes.length;
-      if (total > bound) {
-        return fail(new IntegrityError(`registry read sent more than ${bound}B: ${key}`));
+      if (total > length) {
+        return fail(new IntegrityError(`registry read sent more than ${length}B: ${key}`));
       }
       chunks.push(bytes);
     });

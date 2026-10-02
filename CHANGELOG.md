@@ -34,7 +34,9 @@ so, and so do the module headers in the code.
   arrives and refused at the first byte past its length. A refused response is let go: the SDK throws on a response
   with no ETag or no length and leaves its socket open, and the driver aborts the request, which closes it. The read
   asks the SDK not to re-request the rest of a body cut off part-way, so the bytes come from one response or the read
-  fails. A `404` is still absence. Writes, listings and the tombstoning delete are unchanged, and a tail read stays two
+  fails, with a `TransientError` the store's read retry repeats. An answer from a host other than the container's own,
+  which is where a client set with `retryOptions.secondaryHost` sends a retried read, is refused as transient too, so
+  the registry never takes a geo-replica's older row for the current one. A `404` is still absence. Writes, listings and the tombstoning delete are unchanged, and a tail read stays two
   requests, since Azure Blob takes no suffix range. Price an Azure deployment with `storage.requestsPerSizedRead: 2`
   and `requestsPerPointerRead` at its default of 1.
 

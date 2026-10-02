@@ -69,6 +69,7 @@ class FakeContainer {
 
   getBlockBlobClient(name: string): unknown {
     return {
+      url: `https://acct.blob.core.windows.net/c/${name}`,
       getProperties: async () => {
         this.sent.push({ op: 'getProperties' });
         if (this.propertiesFault !== undefined) throw this.propertiesFault;

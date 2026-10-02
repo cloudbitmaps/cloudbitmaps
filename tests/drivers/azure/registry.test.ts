@@ -55,6 +55,7 @@ class FakeContainer {
 
   getBlockBlobClient(name: string): unknown {
     return {
+      url: `https://acct.blob.core.windows.net/c/${name}`,
       download: async (
         offset?: number,
         count?: number,

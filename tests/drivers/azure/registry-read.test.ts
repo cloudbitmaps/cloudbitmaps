@@ -1,9 +1,13 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { AnonymousCredential, ContainerClient } from '@azure/storage-blob';
+import {
+  AnonymousCredential,
+  ContainerClient,
+  type StoragePipelineOptions,
+} from '@azure/storage-blob';
 import { AzureBlobRegistryDriver } from '@/azure-blob/registry';
 import { MAX_ROW_BYTES } from '@/drivers/_shared/object-registry';
-import { IntegrityError } from '@/core/errors';
+import { IntegrityError, TransientError } from '@/core/errors';
 
 /**
  * A registry read through a real `@azure/storage-blob` client.
@@ -55,8 +59,8 @@ class StubBlobService {
   readonly blobs = new Map<string, StoredBlob>();
   /** Every request: its method, and the range and condition it carried. */
   readonly requests: Array<{ method: string; range?: string; ifMatch?: string }> = [];
-  /** When set, answers every GET instead of the stored blob. */
-  getOverride: ((cur: StoredBlob | undefined) => Answer) | undefined;
+  /** When set, answers every GET instead of the stored blob; `host` is the name the request was sent to. */
+  getOverride: ((cur: StoredBlob | undefined, host: string) => Answer) | undefined;
   /**
    * For each GET answered by `getOverride`, whether the connection that carried it has closed, and the body bytes the
    * stub had handed to it by then.
@@ -78,9 +82,9 @@ class StubBlobService {
     await new Promise<void>((resolve) => this.server.close(() => resolve()));
   }
 
-  /** A container client of the SDK's own, with its default pipeline. */
-  client(): ContainerClient {
-    return new ContainerClient(this.url, new AnonymousCredential());
+  /** A container client of the SDK's own, with its default pipeline unless `options` change it. */
+  client(options?: StoragePipelineOptions): ContainerClient {
+    return new ContainerClient(this.url, new AnonymousCredential(), options);
   }
 
   count(method: string): number {
@@ -150,7 +154,7 @@ class StubBlobService {
       const watched = { closed: false, sent: 0 };
       this.overridden.push(watched);
       req.socket.once('close', () => (watched.closed = true));
-      return this.send(res, this.getOverride(cur), watched);
+      return this.send(res, this.getOverride(cur, (header('host') ?? '').split(':')[0]!), watched);
     }
     if (cur === undefined) {
       return this.send(
@@ -320,13 +324,71 @@ describe('Azure Blob registry: a pointer read is one request, through the real S
     });
     const watch = watchProcess();
     try {
-      // The stub sends the row, short of the length it advertised, and drops the connection.
-      await expect(registry.get(REF)).rejects.toThrow();
+      // The stub sends the row, short of the length it advertised, and drops the connection: a fault in transit, which
+      // the store's read retry repeats, and not the caller's own cancellation.
+      await expect(registry.get(REF)).rejects.toBeInstanceOf(TransientError);
       await new Promise((r) => setTimeout(r, 50));
     } finally {
       watch.stop();
     }
     expect(watch.events).toEqual([]);
     expect(stub.requests).toEqual([{ method: 'GET', range: undefined, ifMatch: undefined }]);
+  });
+
+  it('a pointer exactly at the cap is not refused for its length; one byte over is', async () => {
+    const registry = await registryRow();
+    const of =
+      (n: number) =>
+      (cur: StoredBlob | undefined): Answer => ({
+        status: 200,
+        headers: { etag: cur!.etag, 'content-length': String(n) },
+        body: Buffer.alloc(n, 0x20),
+      });
+    stub.getOverride = of(MAX_ROW_BYTES);
+    // Read whole, then refused as a row that does not parse: its length was allowed.
+    const atCap = await registry.get(REF).catch((e: unknown) => e);
+    expect(atCap).toBeInstanceOf(IntegrityError);
+    expect(String((atCap as Error).message)).not.toMatch(/exceeds cap|more than/);
+    stub.getOverride = of(MAX_ROW_BYTES + 1);
+    await expect(registry.get(REF)).rejects.toThrow(/exceeds cap/);
+  });
+
+  it('an empty pointer is one GET, refused as a row that does not parse', async () => {
+    const registry = await registryRow();
+    stub.getOverride = (cur) => ({
+      status: 200,
+      headers: { etag: cur!.etag, 'content-length': '0' },
+      body: Buffer.alloc(0),
+    });
+    await expect(registry.get(REF)).rejects.toBeInstanceOf(IntegrityError);
+    expect(stub.count('GET')).toBe(1);
+  });
+
+  it('a retry the client sends to a secondary host is refused, so a stale row there is never read as current', async () => {
+    // The client retries a primary 503 against `secondaryHost`, here `localhost` (the same stub), which answers with the
+    // row one write behind, under that version's ETag, as a geo-replica can.
+    const primary = new AzureBlobRegistryDriver({ containerClient: stub.client() });
+    await primary.create(REF, { currentGen: 0 });
+    const behind = stub.blobs.get('registry/_default/s.reg');
+    expect(behind).toBeDefined();
+    await primary.compareAndSwap(REF, (await primary.get(REF))!.token, { currentGen: 5 });
+    const registry = new AzureBlobRegistryDriver({
+      containerClient: stub.client({
+        retryOptions: { secondaryHost: 'localhost', retryDelayInMs: 5, maxRetryDelayInMs: 10 },
+      }),
+    });
+    let primaryFaults = 1;
+    stub.getOverride = (cur, host) => {
+      if (host === '127.0.0.1' && primaryFaults-- > 0) return xmlError(503, 'ServerBusy');
+      const b = host === 'localhost' ? behind! : cur!;
+      return {
+        status: 200,
+        headers: { etag: b.etag, 'content-length': String(b.body.length) },
+        body: b.body,
+      };
+    };
+    await expect(registry.get(REF)).rejects.toBeInstanceOf(TransientError);
+    // The store's retry asks again; the primary answers, with the current row.
+    expect(await registry.get(REF)).toMatchObject({ currentGen: 5 });
   });
 });
