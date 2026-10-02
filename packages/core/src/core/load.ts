@@ -35,7 +35,7 @@ import {
   isNotFoundError,
   isWriteConflictError,
 } from './errors';
-import { gcOrphanGenerations, nextGeneration } from './generation-gc';
+import { gcOrphanGenerations, nextLoadGeneration } from './generation-gc';
 import { type ReadRetry, retryRead } from './retry';
 import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef, Token } from './ports';
 import { validateUserRef } from './validate';
@@ -227,8 +227,11 @@ export async function loadSegment(
   }
   const audit = safeAudit(options.audit ?? NOOP_AUDIT);
 
-  // One row read, used for three things: the guard's "before", the incarnation this call is acting on, and the
-  // pointer it derived its decision from.
+  // One row read, and the only one before the publish: the guard's "before", the incarnation this call is acting
+  // on, the pointer it derived its decision from, the number it takes next, the write's destroyed check and DEK,
+  // and the publish's first attempt all come from it. Reusing it is sound because the publish is fenced on this
+  // row (its token, the pointer the guard judged, or its absence), so a row that changes before then makes the
+  // publish lose rather than land on the strength of a stale read.
   const row = await deps.registry.get(ref);
   const fromToken: Token | undefined = row?.token;
   const fromGeneration = row?.currentGen ?? undefined;
@@ -239,7 +242,7 @@ export async function loadSegment(
   const needsBefore = guard?.minRetained !== undefined || options.allowEmpty !== true;
   const before = needsBefore ? await currentCardinality(ref, deps, row) : null;
 
-  const generation = await nextGeneration(ref, deps);
+  const generation = await nextLoadGeneration(ref, deps, row);
   const key = { namespace: ref.namespace, segment: ref.segment, generation };
 
   // `publish: false`, deliberately: the guard has to run while the old generation is still authoritative, so the
@@ -255,6 +258,7 @@ export async function loadSegment(
       requireEncryption: deps.requireEncryption,
       codec: deps.codec,
       clock: deps.clock,
+      row,
     });
   } catch (err) {
     // Another loader took this generation number first — write-once refused the second put. That is a lost race,
@@ -285,11 +289,11 @@ export async function loadSegment(
   }
 
   const refuse = async (reason: LoadRefusal): Promise<LoadResult> => {
-    // The object is durable and sits above `currentGen`, where collection never looks until a later load numbers
-    // above it, so the refusal reclaims it here — but ONLY while this is still the same segment.
+    // The object is durable and sits above `currentGen`, where collection never looks until a generation above it
+    // is current, so the refusal reclaims it here — but ONLY while this is still the same segment.
     //
     // A generation number identifies a generation within one incarnation of a row, and nothing more (invariant
-    // 1). If the row was purged and the name re-created while this load was in flight, `nextGeneration` restarts
+    // 1). If the row was purged and the name re-created while this load was in flight, the numbering restarts
     // from 0 and the number this call is holding can name the NEW incarnation's live object. Deleting it would
     // put an active row over a missing generation — the forbidden `missing-storage-generation` state, produced by
     // the one code path whose whole purpose is to prevent data loss. Leaving an orphan behind is strictly the
@@ -343,6 +347,7 @@ export async function loadSegment(
   // nothing legitimate — a token only changes when the row does — and it is what stops this call publishing
   // into a segment that merely reuses the name it started with.
   const published = await publishGeneration(deps.registry, key, {
+    row,
     wrappedDeks: written.wrappedDeks,
     ...(fromToken === undefined ? {} : { expectToken: fromToken }),
     ...(needsBefore && fromGeneration !== undefined ? { expectFrom: fromGeneration } : {}),

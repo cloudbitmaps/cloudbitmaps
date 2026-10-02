@@ -43,6 +43,7 @@ import type {
   GenKey,
   IStorageDriver,
   IRegistryDriver,
+  RegistryRecord,
   SegmentRef,
   SegmentSize,
   Token,
@@ -1111,10 +1112,19 @@ export async function publishGeneration(
      * destination that does not exist yet is the ordinary first run of a pipeline.
      */
     expectAbsent?: boolean;
+    /**
+     * The segment's row as the caller already read it (`null`: it found none). The first attempt acts on it
+     * instead of reading the row again, which is sound because that attempt writes only under the row's own
+     * fence: its compare-and-swap carries this row's token, and with no row it creates create-only, so a row
+     * that changed or appeared since makes the write lose and the next attempt reads the row afresh. Only the
+     * idempotent "already current" answer writes nothing, so a reused row never gives it.
+     */
+    row?: RegistryRecord | null;
   } = {},
 ): Promise<boolean> {
   for (let attempt = 0; attempt < 5; attempt++) {
-    const record = await registry.get(key);
+    const reused = attempt === 0 && options.row !== undefined;
+    const record = reused ? (options.row ?? null) : await registry.get(key);
     try {
       if (options.expectFrom !== undefined && record?.currentGen !== options.expectFrom) {
         // The pointer is no longer where the caller derived its content from — including the cases where the row
@@ -1172,6 +1182,7 @@ export async function publishGeneration(
       } else if (record.currentGen > key.generation) {
         return false; // a newer generation is already current — forward-only, never regress
       } else if (record.currentGen === key.generation) {
+        if (reused) continue; // only a fresh read can show the pointer already there
         return true; // already exactly current (an idempotent re-publish) — nothing to advance
       } else {
         // Advancing over an existing generation. `wrappedDeks` is deliberately NOT carried here, and a caller
@@ -1304,6 +1315,14 @@ export async function bulkLoadCrbmGeneration(
      * current.
      */
     publish?: boolean;
+    /**
+     * The segment's row as the caller already read it (`null`: it found none), for a caller that defers the
+     * publish (`publish: false`) and fences it on that same row. The load then decides from it, refusing a
+     * `destroyed` segment and reusing its DEK, rather than reading the row again. A row that changes in between
+     * (a publish, a drop, a purge and re-create) makes the fenced publish lose, so the object is never published
+     * on the strength of the stale read.
+     */
+    row?: RegistryRecord | null;
   } = {},
 ): Promise<BulkLoadResult> {
   if (options.keystore === undefined && options.requireEncryption === true) {
@@ -1404,9 +1423,15 @@ export async function bulkLoadCrbmGeneration(
   if (options.keystore !== undefined && options.registry === undefined) {
     throw new ValidationError('an encrypted load requires a registry to store the wrapped DEK');
   }
-  // Read the segment's record once (when a registry is wired): to refuse writing to a crypto-shredded segment
-  // (which would create unreadable/unreachable bytes), and to reuse its DEK if it's encrypted.
-  const existing = options.registry !== undefined ? await options.registry.get(key) : null;
+  // Read the segment's record once (when a registry is wired, unless the caller passed the one it read): to refuse
+  // writing to a crypto-shredded segment (which would create unreadable/unreachable bytes), and to reuse its DEK if
+  // it's encrypted.
+  const existing =
+    options.row !== undefined
+      ? options.row
+      : options.registry !== undefined
+        ? await options.registry.get(key)
+        : null;
   if (existing?.status === 'destroyed') {
     throw new ValidationError(
       `segment "${key.segment}" is destroyed (crypto-shredded) — refusing to write; use a new segment`,
