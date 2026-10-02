@@ -28,13 +28,33 @@ type LoadRecord = {
   objectBytes: number;
   uploadBytes: number;
 };
+type Discarded = {
+  of: string;
+  sample: number;
+  name: string;
+  cause: string | null;
+  code: string | null;
+  attempts: number | null;
+  httpStatus: number | null;
+  message: string;
+  failedAfterMs: number;
+  requests: Requests;
+};
 type Run = {
   runId: string;
   mode: string;
   target: string;
   region: string;
+  partial?: boolean;
+  error?: unknown;
   leftovers?: string[];
   expectedMissed?: string[];
+  discards?: {
+    count: number;
+    perRun: number;
+    perStage: number;
+    unfinished?: { stage: string; discarded: Discarded[] };
+  };
   network: { client: string; clientRegion: string | null };
   cost: {
     putUSD: number;
@@ -43,6 +63,7 @@ type Run = {
     ops: {
       put: number;
       get: number;
+      bytesDown: number;
       byCommand: Record<string, number>;
       reads: Record<'whole' | 'suffix' | 'range', { n: number; bytes: number }>;
     };
@@ -58,6 +79,12 @@ type Run = {
 };
 type Figures = {
   remote: boolean;
+  measuredGets: number;
+  chunksPerOperand: number;
+  payloadFraction: number;
+  latency: { p50: number };
+  usd: { run: number; singleLoad: number; multipartLoad: number };
+  discards: { count: number; byStage: Record<string, number>; get: number };
   loadVia: string | null;
   getsPerLoad: number;
   getsPerMultipart: number;
@@ -65,13 +92,21 @@ type Figures = {
   putsPerMultipart: number;
   partsPerMultipart: number;
   loads: number;
-  usd: { singleLoad: number; multipartLoad: number };
-  ledger: { pointerReads: number; loadPointerReads: number };
+  ledger: {
+    pointerReads: number;
+    loadPointerReads: number;
+    chunkReads: number;
+    tailReads: number;
+    get: number;
+  };
   meanPointerReads: number;
   shapes: Array<[number, number]>;
   anchors: Array<[string, string]>;
   rows: Array<{ requests: string; label: string; says: RegExp }>;
-  stageLedger: Record<string, { put: number; get: number; expectedGets: number | null }>;
+  stageLedger: Record<
+    string,
+    { put: number; get: number; keptGet: number; discarded: number; expectedGets: number | null }
+  >;
 };
 const figures = require_(join(ROOT, 'bench', 'lib', 'calibration-figures.cjs')) as {
   readSources: (root: string) => unknown;
@@ -329,5 +364,190 @@ describe("a run's latency is in-region", () => {
     expect(inRegion('in-region', null)).toBe(false);
     expect(inRegion('REMOTE — latency below is network-dominated', 'us-east-1')).toBe(false);
     expect(figures.derive(asRealRun(), SOURCES).remote).toBe(true);
+  });
+});
+
+/**
+ * A sample the harness discarded after a transient fault, as it records one: a read that stopped short, having read
+ * some pointers, tails and chunks, and one request that failed and read nothing.
+ */
+const discard = (
+  of: string,
+  sample: number,
+  n: { whole: number; suffix: number; range: number },
+): Discarded => {
+  const reads = {
+    whole: { n: n.whole, bytes: 161 * n.whole },
+    suffix: { n: n.suffix, bytes: 262_144 * n.suffix },
+    range: { n: n.range, bytes: 516 * n.range },
+  };
+  return {
+    of,
+    sample,
+    name: 'TransientError',
+    cause: 'TimeoutError',
+    code: 'ECONNRESET',
+    attempts: 1,
+    httpStatus: null,
+    message: 'transient S3 fault: TimeoutError',
+    failedAfterMs: 812.5,
+    requests: {
+      put: 0,
+      get: n.whole + n.suffix + n.range + 1,
+      bytesUp: 0,
+      bytesDown: reads.whole.bytes + reads.suffix.bytes + reads.range.bytes,
+      parts: 0,
+      reads,
+    },
+  };
+};
+const IN_INTERSECT = (): Discarded =>
+  discard('calibration-layout cold intersect', 17, { whole: 2, suffix: 2, range: 115 });
+const IN_ANDNOT = (): Discarded =>
+  discard('andNot call', 4, { whole: 11, suffix: 11, range: 1_177 });
+
+/**
+ * `run` as the harness writes one that discarded each sample in its stage: billed, in the stage's requests and the
+ * run's, recorded beside the stage, and counted. `record: false` bills them and records nothing, as a harness that lost
+ * track of a discard would.
+ */
+function withDiscards(
+  run: Run,
+  discards: Array<[string, Discarded]>,
+  { record = true, perRun = 3, perStage = 2 } = {},
+): Run {
+  const ops = run.cost.ops;
+  for (const [stage, d] of discards) {
+    const phase = run.phases[stage] as { requests: Requests; discarded?: Discarded[] };
+    const r = d.requests;
+    phase.requests.get += r.get;
+    phase.requests.bytesDown += r.bytesDown;
+    ops.get += r.get;
+    ops.bytesDown += r.bytesDown;
+    ops.byCommand.GetObjectCommand = (ops.byCommand.GetObjectCommand ?? 0) + r.get;
+    for (const shape of ['whole', 'suffix', 'range'] as const) {
+      phase.requests.reads[shape].n += r.reads[shape].n;
+      phase.requests.reads[shape].bytes += r.reads[shape].bytes;
+      ops.reads[shape].n += r.reads[shape].n;
+      ops.reads[shape].bytes += r.reads[shape].bytes;
+    }
+    if (record) (phase.discarded ??= []).push(d);
+  }
+  run.cost.getUSD = (ops.get * 0.4) / 1e6;
+  run.cost.totalUSD = run.cost.putUSD + run.cost.getUSD;
+  run.discards = { count: record ? discards.length : 0, perRun, perStage };
+  return run;
+}
+
+// A sample that met a transient fault was discarded whole and run again: its requests were billed and are in its
+// stage's, and every figure is derived from the samples the stage kept.
+describe('a run that discarded a sample after a transient fault', () => {
+  const refused = (run: Run): string => {
+    try {
+      figures.derive(run, SOURCES);
+    } catch (err) {
+      return (err as Error).message;
+    }
+    return '';
+  };
+  const both = (): Array<[string, Discarded]> => [
+    ['intersect', IN_INTERSECT()],
+    ['andNot', IN_ANDNOT()],
+  ];
+
+  it("is evidence within its bounds, its figures the kept samples' and its discards stated beside them", () => {
+    const base = figures.derive(asRealRun(), SOURCES);
+    const f = figures.derive(withDiscards(asRealRun(), both()), SOURCES);
+    expect(f.discards).toMatchObject({ count: 2, get: 120 + 1_200 });
+    expect(f.discards.byStage).toMatchObject({ intersect: 1, andNot: 1, load: 0 });
+    expect(f.anchors).toContainEqual([
+      'samples discarded after a transient fault',
+      '2 discarded samples',
+    ]);
+    expect(base.discards.count).toBe(0);
+    expect(base.anchors.map(([what]) => what)).not.toContain(
+      'samples discarded after a transient fault',
+    );
+    // Every figure about the reads is what the kept samples made, as in a run that met no fault.
+    expect(f.measuredGets).toBe(base.measuredGets);
+    expect(f.chunksPerOperand).toBe(base.chunksPerOperand);
+    expect(f.payloadFraction).toBe(base.payloadFraction);
+    expect(f.latency.p50).toBe(base.latency.p50);
+    expect(f.ledger.chunkReads).toBe(base.ledger.chunkReads);
+    expect(f.ledger.tailReads).toBe(base.ledger.tailReads);
+    expect(f.ledger.pointerReads).toBe(base.ledger.pointerReads);
+    // The bill is what was billed, discards and all.
+    expect(f.ledger.get).toBe(base.ledger.get + 1_320);
+    expect(f.usd.run - base.usd.run).toBeCloseTo(1_320 * GET_USD, 12);
+    expect(f.stageLedger.intersect).toMatchObject({
+      get: (base.stageLedger.intersect?.get ?? 0) + 120,
+      keptGet: base.stageLedger.intersect?.expectedGets,
+      discarded: 1,
+    });
+    expect(f.stageLedger.spread?.discarded).toBe(0);
+  });
+
+  it('is refused when a discarded sample was billed and not recorded, since its stage then made more than it expected', () => {
+    expect(
+      refused(withDiscards(asRealRun(), [['intersect', IN_INTERSECT()]], { record: false })),
+    ).toMatch(/its intersect stage made 8,280 GET-class requests, not the 8,160 it expected/);
+  });
+
+  it('is refused past its bounds: a fourth discard in a run, a third in a stage', () => {
+    const four: Array<[string, Discarded]> = [
+      ['intersect', IN_INTERSECT()],
+      ['spread', discard('spread-layout cold intersect', 3, { whole: 2, suffix: 2, range: 9 })],
+      ['sweep', discard('sweep k = 1000 cold intersect', 1, { whole: 2, suffix: 2, range: 40 })],
+      ['andNot', IN_ANDNOT()],
+    ];
+    expect(refused(withDiscards(asRealRun(), four))).toMatch(
+      /it discarded more samples than its bounds allow \(3 a run, 2 a stage\)/,
+    );
+    expect(refused(withDiscards(asRealRun(), four, { perRun: 4 }))).toBe('');
+    const three: Array<[string, Discarded]> = [0, 1, 2].map((i) => [
+      'intersect',
+      discard('calibration-layout cold intersect', i, { whole: 2, suffix: 2, range: 7 }),
+    ]);
+    expect(refused(withDiscards(asRealRun(), three))).toMatch(/more samples than its bounds allow/);
+  });
+
+  it('is refused when it did not finish, as a run past its bounds does not', () => {
+    const run = withDiscards(asRealRun(), both());
+    run.partial = true;
+    run.error = {
+      name: 'DiscardBoundExceeded',
+      cause: 'TimeoutError',
+      code: 'ECONNRESET',
+      attempts: 1,
+      httpStatus: null,
+      message: 'andNot: andNot call 5 met a transient fault (transient S3 fault: TimeoutError) …',
+    };
+    expect(refused(run)).toMatch(/the run did not finish/);
+  });
+
+  it("is refused when its count of discards is not its stages'", () => {
+    const miscounted = withDiscards(asRealRun(), both());
+    if (miscounted.discards !== undefined) miscounted.discards.count = 1;
+    expect(refused(miscounted)).toMatch(
+      /its stages record 2 discarded samples, not the 1 it counted/,
+    );
+    const cutShort = withDiscards(asRealRun(), both());
+    if (cutShort.discards !== undefined) {
+      cutShort.discards.unfinished = { stage: 'andNot', discarded: [IN_ANDNOT()] };
+    }
+    expect(refused(cutShort)).toMatch(/its stages record 2 discarded samples/);
+  });
+
+  it('is refused for a discarded load, or a discard that wrote', () => {
+    const load = withDiscards(asRealRun(), [
+      ['load', discard('load', 0, { whole: 3, suffix: 0, range: 0 })],
+    ]);
+    expect(refused(load)).toMatch(/its load stage discarded a load/);
+    const wrote = withDiscards(asRealRun(), [['intersect', IN_INTERSECT()]]);
+    const d = (wrote.phases.intersect as { discarded?: Discarded[] }).discarded?.[0];
+    if (d !== undefined) d.requests.put = 1;
+    expect(refused(wrote)).toMatch(
+      /its intersect stage records a discard that is not a read sample/,
+    );
   });
 });

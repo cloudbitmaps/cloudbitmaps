@@ -40,6 +40,27 @@ so, and so do the module headers in the code.
   requests, since Azure Blob takes no suffix range. Price an Azure deployment with `storage.requestsPerSizedRead: 2`
   and `requestsPerPointerRead` at its default of 1.
 
+### Fixed
+
+- **A calibration run survives a transient fault in a timed sample.** The workload's client makes one attempt per
+  request and every timed store runs with its own retry off, so a single reset socket anywhere in a run's ~94,600
+  requests failed the whole run, and a partial run is not evidence: at one fault in about 86,300 requests, a full run
+  finished about a third of the time. A timed sample that meets a transient fault (a cold intersect, a cold point read,
+  an `andNot` call or the warm stage's priming pass) is now discarded whole and run again on a fresh store, at most
+  three times a run and twice a stage; one more, or a fault in a load, fails the run as before. A transient fault is
+  the library's `TransientError` or anything the installed SDK's own retry would retry. The harness waits for the
+  failed sample's requests still in flight, counts them against it, and records each discard beside its stage: the
+  sample, the error's name, the transport code beneath it, the SDK's attempt count and the requests it made. Those
+  requests are billed and stay in the stage's, and each stage's expected count is held to what its kept samples made.
+  The projection allows three discarded samples at the costliest sample's bound, so the default workload's projected
+  upper bound is 364 PUT-class and 106,624 GET-class requests, $0.044470, under the $0.05 default ceiling.
+  `bench/lib/calibration-figures.cjs` treats a run with discards within the bound as evidence and requires its report
+  to state how many it discarded. Wherever the harness records an error it now keeps the name, the code and the
+  message: the SDK's HTTP handler renames `ECONNRESET`, `EPIPE` and `ETIMEDOUT` alike to `TimeoutError`, so the name
+  alone could not say which it was. `CR_CALIBRATE_FAULT_GETS` makes a rehearsal fail the GetObject requests it lists,
+  once each, and is refused in every other mode. This is repository work on the calibration harness, outside the
+  packages.
+
 ## [0.11.2] — 2026-10-01
 
 **Upgrade if you read from GCS.** In 0.10.0 to 0.11.1, a GCS read that the SDK retried after a 408, 429 or 5xx could

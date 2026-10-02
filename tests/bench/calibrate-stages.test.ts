@@ -23,6 +23,7 @@ type Plan = {
   warm: { segments: number; sharedChunks: number };
   pointReads: { segments: number; sharedChunks: number };
   andNot: { calls: number; excludes: number; includeChunks: number; sharedChunks: number };
+  discards: { perRun: number; perStage: number };
   retryBound: number;
   fixedPuts: number;
   fixedGets: number;
@@ -35,7 +36,13 @@ const stages = require_(join(ROOT, 'bench', 'lib', 'calibrate-stages.cjs')) as {
   modelRounds: (k: number) => number;
   coldIntersectGets: (k: number) => number;
   coldIntersectBound: (k: number) => number;
-  projectStages: (w: Plan) => { stages: Record<string, Bound>; total: Bound };
+  projectStages: (w: Plan) => {
+    stages: Record<string, Bound>;
+    discards: Bound;
+    costliestSample: number;
+    total: Bound;
+  };
+  sampleBounds: (w: Plan) => Record<string, number>;
   expectedReads: (w: Plan) => Record<string, number>;
   FIRST_LOAD: Bound;
   firstLoadRequests: (parts: number) => Bound;
@@ -75,6 +82,7 @@ const guards = require_(join(ROOT, 'bench', 'lib', 'calibrate-guards.cjs')) as {
   checkWorkload: (i: Record<string, number>) => void;
   MAX_SEGMENTS: number;
   breached: (spent: number, ceiling: number) => boolean;
+  exceedsProjection: (measured: Bound, projected: Bound) => string[];
   firstLoads: () => (segment: string) => void;
   projectOps: (i: { loads: number; reads: number; chunksPerRead: number; retryBound: number }) => {
     put: number;
@@ -86,6 +94,11 @@ const meterLib = require_(join(ROOT, 'bench', 'lib', 'aws-meter.cjs')) as {
     t: { put: number; get: number },
     p: { storage: { putPerMillion: number; getPerMillion: number } },
   ) => { totalUSD: number };
+};
+
+const samples = require_(join(ROOT, 'bench', 'lib', 'calibrate-samples.cjs')) as {
+  DISCARDS_PER_RUN: number;
+  DISCARDS_PER_STAGE: number;
 };
 
 const harnessSrc = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
@@ -110,6 +123,7 @@ function defaultPlan(): Plan {
       includeChunks: layout.chunksPerSegment,
       sharedChunks: layout.sharedChunks,
     },
+    discards: { perRun: samples.DISCARDS_PER_RUN, perStage: samples.DISCARDS_PER_STAGE },
     retryBound: guards.RETRY_BOUND,
     fixedPuts: 16,
     fixedGets: 11,
@@ -145,11 +159,11 @@ describe('the stage table', () => {
     );
   });
 
-  it('adds the stage bounds to the total, with the fixed requests, and never projects reads below writes', () => {
+  it('adds the stage bounds to the total, with the fixed requests and the discards, and never projects reads below writes', () => {
     const w = defaultPlan();
-    const { stages: bounds, total } = stages.projectStages(w);
-    const put = Object.values(bounds).reduce((n, b) => n + b.put, 0) + w.fixedPuts;
-    const get = Object.values(bounds).reduce((n, b) => n + b.get, 0) + w.fixedGets;
+    const { stages: bounds, discards, total } = stages.projectStages(w);
+    const put = Object.values(bounds).reduce((n, b) => n + b.put, 0) + w.fixedPuts + discards.put;
+    const get = Object.values(bounds).reduce((n, b) => n + b.get, 0) + w.fixedGets + discards.get;
     expect(total.put).toBe(put);
     expect(total.get).toBe(Math.max(get, put));
     // A workload of nothing but loads: reads are still at least the writes.
@@ -747,11 +761,67 @@ describe('the ceiling covers every stage', () => {
     expect({ put, get }).toEqual({ put: 183, get: 92_948 });
     const expectedUSD = meterLib.priceTally({ put, get }, pricing).totalUSD;
     expect(expectedUSD).toBeCloseTo(0.038094, 6);
-    // The bound is above it, and under the ceiling.
-    const bound = meterLib.priceTally(stages.projectStages(w).total, pricing).totalUSD;
-    expect(bound).toBeCloseTo(0.039662, 6);
+    // The bound is above it, and under the ceiling: the stages' bounds, the fixed requests, and three discarded samples
+    // at the costliest sample's bound, a cold intersect sharing 2,000 chunks.
+    const projected = stages.projectStages(w);
+    expect(projected.costliestSample).toBe(stages.coldIntersectBound(2_000));
+    expect(projected.discards).toEqual({ put: 0, get: 3 * 4_006 });
+    expect(projected.total).toEqual({ put: 364, get: 94_606 + 12_018 });
+    const bound = meterLib.priceTally(projected.total, pricing).totalUSD;
+    expect(bound).toBeCloseTo(0.04447, 6);
     expect(bound).toBeGreaterThan(expectedUSD);
     expect(bound).toBeLessThan(0.05);
+  });
+
+  // A discarded sample was billed, and a stage's bound is for the samples it keeps. So the projection allows for every
+  // sample a run may discard, each at the bound of the costliest sample the run makes, and a run that discards every
+  // one it may still fits under it.
+  it('projects every sample a run may discard, at the costliest sample, and a run that discards them all stays under it', () => {
+    const w = defaultPlan();
+    const p = stages.projectStages(w);
+    const each = stages.sampleBounds(w);
+    expect(Object.keys(each)).toEqual(stages.STAGES);
+    // What one finished sample of each stage may make: a cold intersect, the warm stage's whole priming pass, a first
+    // has() (a pointer, a tail, a longer index and a chunk) and one andNot call. Loads are not samples.
+    expect(each).toEqual({
+      load: 0,
+      intersect: stages.coldIntersectBound(w.intersect.sharedChunks),
+      spread: stages.coldIntersectBound(w.spread.sharedChunks),
+      sweep: stages.coldIntersectBound(2_000),
+      warm: p.stages.warm?.get,
+      pointReads: 4,
+      andNot: (p.stages.andNot?.get ?? 0) / w.andNot.calls,
+    });
+    for (const name of stages.STAGES) {
+      expect(each[name] ?? Infinity, name).toBeLessThanOrEqual(p.stages[name]?.get ?? 0);
+    }
+    expect(p.costliestSample).toBe(Math.max(...Object.values(each)));
+    expect(p.discards).toEqual({ put: 0, get: samples.DISCARDS_PER_RUN * p.costliestSample });
+    // The worst run the harness lets finish: every stage at its bound, the fixed requests, and every discard it may make
+    // at the costliest sample's bound. It is not over the projection; one discard more, which the run refuses, is.
+    const sum = (key: 'put' | 'get'): number =>
+      Object.values(p.stages).reduce((n, b) => n + b[key], 0);
+    const worst = {
+      put: sum('put') + w.fixedPuts,
+      get: sum('get') + w.fixedGets + samples.DISCARDS_PER_RUN * p.costliestSample,
+    };
+    expect(guards.exceedsProjection(worst, p.total)).toEqual([]);
+    expect(
+      guards.exceedsProjection({ ...worst, get: worst.get + p.costliestSample }, p.total),
+    ).not.toEqual([]);
+    // With no allowance, a run that discarded a single sample would spend past what it projected.
+    const bare = stages.projectStages({ ...w, discards: { perRun: 0, perStage: 0 } });
+    expect(bare.discards).toEqual({ put: 0, get: 0 });
+    expect(
+      guards.exceedsProjection(
+        { put: worst.put, get: bare.total.get + p.costliestSample },
+        bare.total,
+      ),
+    ).not.toEqual([]);
+    // And a plan that forgets the allowance is refused, rather than projected without one.
+    const forgot: Partial<Plan> = { ...w };
+    delete forgot.discards;
+    expect(() => stages.projectStages(forgot as Plan)).toThrow(/discards\.perRun/);
   });
 
   it('breaches a ceiling the projection exceeds, so a stage added unprojected cannot hide under it', () => {
