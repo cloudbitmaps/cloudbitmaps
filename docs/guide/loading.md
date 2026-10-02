@@ -106,8 +106,15 @@ await store.load({ segment: 'audience:imported' }, { serialized: bytes });
 - **One buffer is one bitmap.** Bytes after the bitmap's last container are refused with `ValidationError`, so two
   serializations concatenated into one buffer are refused rather than loaded as the first of them. An empty buffer,
   or a detached one, is the empty bitmap.
-- **No id passes through JavaScript.** The chunks are cut out of the bitmap's own containers: the work is per
-  container and per byte (the check, then the checksum the write computes anyway), never per id.
+- **No per-id work.** The chunks are cut out of the bitmap's own containers. What runs in JavaScript is per
+  container and per byte: the structural check, which reads an array container's values once, and the checksum the
+  write computes anyway.
+- **It yields, except at the start.** The input check and the native decode run before the load's first request
+  and do not yield, for a time that grows with the bitmap's bytes. After them the load yields the event loop on each
+  side of re-encoding the bitmap, and every 1,024 containers while it cuts and writes them.
+- **It holds more than the bitmap.** At its peak a bitmap load holds a decoded copy of the bitmap and its
+  re-encoded bytes, each about the size of the serialization, on top of the bytes you passed and what the backend
+  buffers of the object it writes (one 8 MiB part on S3).
 - **A bare `RoaringBitmap32` passed where ids go takes the same path**, when it comes from the copy of `roaring` that
   `@cloudbitmaps/roaring` uses. One from another copy is loaded as the ids it iterates, which is correct and slower;
   `{ bitmap }` works with either.

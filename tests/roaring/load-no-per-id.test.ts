@@ -4,6 +4,7 @@ import type { LoadInput } from '@/index';
 import { loadSegment } from '@/core/load';
 import type { CodecBitmap, CodecInterface } from '@/core/codec';
 import { YIELD_EVERY } from '@/core/cooperative';
+import { CrbmWriter } from '@/core/crbm/writer';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { SafeBitmap, roaringCodec } from '@/roaring-codec';
 import { SystemClock } from '@/system-clock';
@@ -149,5 +150,55 @@ describe('a bitmap load still hands the event loop back', () => {
     const store = new CloudRoaring({ storage: new MemoryStorage(), seams: { clock } });
     await store.load({ segment: 'coop' }, { serialized: bitmap.serialize('portable') });
     expect(clock.yields).toBeGreaterThanOrEqual(Math.floor(chunks / YIELD_EVERY));
+  });
+
+  it('between two yields there is one whole-bitmap step, or at most 1,024 containers cut and written', async () => {
+    // Bounded in work rather than in milliseconds, so it holds on a busy machine: every event between two yields is
+    // logged, and no slice may hold the decode and the re-encode together, either of them with the cut, or more
+    // than YIELD_EVERY containers. The decode (the structural check and the native decode) is one step that does not
+    // yield, before the load's first request, by design.
+    const log: string[] = [];
+    class RecordingClock extends SystemClock {
+      override yieldNow(): Promise<void> {
+        log.push('yield');
+        return super.yieldNow();
+      }
+    }
+    const wrap = <T extends object>(target: T, name: keyof T & string, event: string): void => {
+      const original = target[name] as unknown as (...a: unknown[]) => unknown;
+      vi.spyOn(target, name as never).mockImplementation(function (this: unknown, ...a: unknown[]) {
+        log.push(event);
+        return original.apply(this, a);
+      } as never);
+    };
+    wrap(SafeBitmap, 'safeDeserialize', 'decode');
+    wrap(SafeBitmap.prototype, 'optimize', 'optimize');
+    wrap(SafeBitmap.prototype, 'serialize', 'serialize');
+    wrap(CrbmWriter.prototype, 'addChunk', 'chunk');
+
+    const chunks = 40_000;
+    const bitmap = new RoaringBitmap32(
+      Array.from({ length: chunks }, (_, i) => i * 65_536 + (i % 65_536)),
+    );
+    const serialized = bitmap.serialize('portable');
+    const store = new CloudRoaring({
+      storage: new MemoryStorage(),
+      seams: { clock: new RecordingClock() },
+    });
+    log.length = 0;
+    await store.load({ segment: 'slices' }, { serialized });
+
+    const slices: string[][] = [[]];
+    for (const event of log) {
+      if (event === 'yield') slices.push([]);
+      else slices[slices.length - 1]!.push(event);
+    }
+    expect(log.filter((e) => e === 'chunk')).toHaveLength(chunks);
+    for (const slice of slices) {
+      const has = (e: string): boolean => slice.includes(e);
+      expect(has('decode') && (has('optimize') || has('serialize') || has('chunk'))).toBe(false);
+      expect((has('optimize') || has('serialize')) && has('chunk')).toBe(false);
+      expect(slice.filter((e) => e === 'chunk').length).toBeLessThanOrEqual(YIELD_EVERY);
+    }
   });
 });

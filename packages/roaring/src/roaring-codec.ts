@@ -111,9 +111,11 @@ export class SafeBitmap implements CodecBitmap {
   }
 
   /**
-   * This set as storage chunks, cut from its own containers: {@link optimize}, one `serialize`, then a header walk
-   * that copies each container out (`containerPayloads`). Per container and per byte, never per id, and the
-   * payloads are the ones {@link SafeBitmap.fromValues} of each chunk's low 16 bits would serialize to.
+   * This set as storage chunks, cut from its own containers: {@link optimize} and one `serialize` when called, then
+   * a lazy header walk that copies one container out per step (`containerPayloads`). Per container and per byte,
+   * never per id, and the payloads are the ones {@link SafeBitmap.fromValues} of each chunk's low 16 bits would
+   * serialize to. The walk trusts the bytes it cuts because the native serializer wrote them, from a bitmap that
+   * passed the structural check when it was decoded.
    */
   encodeChunks(): Iterable<EncodedChunk> {
     this.optimize();

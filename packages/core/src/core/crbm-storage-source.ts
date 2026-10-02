@@ -1480,12 +1480,20 @@ export async function bulkLoadCrbmGeneration(
   const codec = requireCodec(options.codec, 'bulkLoadCrbmGeneration');
   // A decoded bitmap writes its own chunks, which never touches an id. Ids, and the bitmap of a codec that cannot
   // encode its own chunks, are bucketed per chunk instead; both give the same bytes.
-  const own = ids instanceof DecodedLoadInput ? ids.bitmap.encodeChunks?.() : undefined;
-  const chunks =
-    own ??
-    encodeEach(
+  let chunks: Iterable<EncodedChunk>;
+  if (ids instanceof DecodedLoadInput && ids.bitmap.encodeChunks !== undefined) {
+    // The whole-bitmap steps each get a slice of their own: the decode the load made before its first request, the
+    // re-encode and serialize `encodeChunks` makes when called, and then the cut, which is lazy, so the writer's
+    // periodic yield interrupts it.
+    const pause = yieldEvery(options.clock, 1);
+    await pause();
+    chunks = ids.bitmap.encodeChunks();
+    await pause();
+  } else {
+    chunks = encodeEach(
       await bucketIds(ids instanceof DecodedLoadInput ? ids.bitmap : ids, codec, options.clock),
     );
+  }
 
   if (options.keystore !== undefined && options.registry === undefined) {
     throw new ValidationError('an encrypted load requires a registry to store the wrapped DEK');

@@ -128,24 +128,34 @@ const SINGLE_RUN_HEADER_BYTES = 9;
  * native serializer writes for a bitmap holding only that container's low 16 bits, so a chunk cut from a whole
  * bitmap is the chunk built from its ids, provided the whole bitmap was encoded canonically first.
  *
- * Header and body copies only: no value is read one by one beyond the structural check
- * {@link parsePortableLayout} makes.
+ * Lazy, one container per step, and header-only: it reads each container's key, cardinality and kind (and a run
+ * container's run count) and copies the body, reading no value. It is for bytes the native serializer has just
+ * written from a bitmap that passed {@link checkPortableLayout}, never for bytes from elsewhere; it still refuses a
+ * header or a body that runs past the buffer.
  *
- * @throws {IntegrityError} where {@link parsePortableLayout} does.
+ * @throws {IntegrityError} if a part of the bitmap runs past the buffer, or the cookie is unrecognized.
  */
 export function* containerPayloads(bytes: Uint8Array): Generator<EncodedChunk> {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  for (const { key, cardinality, kind, offset } of parsePortableLayout(bytes)) {
-    const size =
-      kind === ARRAY
-        ? cardinality * 2
-        : kind === BITMAP
-          ? BITMAP_CONTAINER_BYTES
-          : 2 + 4 * view.getUint16(offset, true);
-    const header = kind === RUN ? SINGLE_RUN_HEADER_BYTES : SINGLE_HEADER_BYTES;
-    const payload = new Uint8Array(header + size);
+  const length = bytes.byteLength;
+  if (length === 0) return;
+  const { view, count, runFlagsAt, descriptiveAt, bodiesAt } = header(bytes);
+  let pos = bodiesAt;
+  for (let i = 0; i < count; i++) {
+    const key = view.getUint16(descriptiveAt + i * 4, true);
+    const cardinality = view.getUint16(descriptiveAt + i * 4 + 2, true) + 1;
+    const isRun =
+      runFlagsAt >= 0 && ((bytes[runFlagsAt + (i >>> 3)] as number) & (1 << (i & 7))) !== 0;
+    if (isRun && pos + 2 > length) throw overrun(bytes, pos, 2, `container ${i} (run count)`);
+    const size = isRun
+      ? 2 + 4 * view.getUint16(pos, true)
+      : cardinality > ARRAY_MAX_CARDINALITY
+        ? BITMAP_CONTAINER_BYTES
+        : cardinality * 2;
+    if (pos + size > length) throw overrun(bytes, pos, size, `container ${i}`);
+    const headerBytes = isRun ? SINGLE_RUN_HEADER_BYTES : SINGLE_HEADER_BYTES;
+    const payload = new Uint8Array(headerBytes + size);
     const out = new DataView(payload.buffer);
-    if (kind === RUN) {
+    if (isRun) {
       out.setUint32(0, SERIAL_COOKIE, true); // count - 1 = 0 in the high half
       payload[4] = 1; // container 0 is a run container
       out.setUint16(7, cardinality - 1, true); // after key 0 at byte 5
@@ -155,24 +165,32 @@ export function* containerPayloads(bytes: Uint8Array): Generator<EncodedChunk> {
       out.setUint16(10, cardinality - 1, true); // after key 0 at byte 8
       out.setUint32(12, SINGLE_HEADER_BYTES, true);
     }
-    payload.set(bytes.subarray(offset, offset + size), header);
+    payload.set(bytes.subarray(pos, pos + size), headerBytes);
+    pos += size;
     yield { chunkKey: key, payload, cardinality };
   }
 }
 
-/**
- * Check every container of `bytes`, appending each one's layout to `out` when there is one to append to. Returns
- * where the bitmap ends.
- */
-function walk(bytes: Uint8Array, out: PortableContainer[] | null): number {
-  const length = bytes.byteLength;
-  if (length === 0) return 0;
-  const view = new DataView(bytes.buffer, bytes.byteOffset, length);
+/** Where each part of a non-empty portable bitmap's header is, checked against the buffer's length. */
+interface Header {
+  readonly view: DataView;
+  readonly count: number;
+  /** Where the run-container flag bits start, or -1 under the cookie that has none. */
+  readonly runFlagsAt: number;
+  /** The descriptive header: `(key, cardinality - 1)` per container. */
+  readonly descriptiveAt: number;
+  /** The offset header, or -1 where this layout has none. */
+  readonly offsetsAt: number;
+  /** Where the first container's body starts. */
+  readonly bodiesAt: number;
+}
 
+function header(bytes: Uint8Array): Header {
+  const length = bytes.byteLength;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, length);
   if (length < 4) throw overrun(bytes, 0, 4, 'the cookie');
   const cookie = view.getUint32(0, true);
   let count: number;
-  /** Where the run-container flag bits start, or -1 under the cookie that has none. */
   let runFlagsAt = -1;
   let pos: number;
   if (cookie === SERIAL_COOKIE_NO_RUNCONTAINER) {
@@ -193,8 +211,6 @@ function walk(bytes: Uint8Array, out: PortableContainer[] | null): number {
       `portable roaring: unrecognized cookie 0x${cookie.toString(16)}, not a portable-format bitmap`,
     );
   }
-
-  // Descriptive header: (key, cardinality - 1) per container. Then the offset header, when this layout has one.
   const descriptiveAt = pos;
   if (pos + count * 4 > length) throw overrun(bytes, pos, count * 4, 'the descriptive header');
   pos += count * 4;
@@ -204,6 +220,18 @@ function walk(bytes: Uint8Array, out: PortableContainer[] | null): number {
     offsetsAt = pos;
     pos += count * 4;
   }
+  return { view, count, runFlagsAt, descriptiveAt, offsetsAt, bodiesAt: pos };
+}
+
+/**
+ * Check every container of `bytes`, appending each one's layout to `out` when there is one to append to. Returns
+ * where the bitmap ends.
+ */
+function walk(bytes: Uint8Array, out: PortableContainer[] | null): number {
+  if (bytes.byteLength === 0) return 0;
+  const { view, count, runFlagsAt, descriptiveAt, offsetsAt, bodiesAt } = header(bytes);
+  const length = bytes.byteLength;
+  let pos = bodiesAt;
 
   let previousKey = -1;
   // Containers lie back to back from here. That is how the native deserializer finds them (it never reads the
