@@ -11,6 +11,15 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+## [0.11.2] — 2026-10-01
+
+**Upgrade if you read from GCS.** In 0.10.0 to 0.11.1, a GCS read that the SDK retried after a 408, 429 or 5xx could
+end the process with `ERR_STREAM_UNABLE_TO_PIPE`, whatever the caller wrapped around it. This release sends every
+GCS download once and retries it in the driver instead. It also makes a GCS pointer read and tail read one request
+each, holds a reader's parsed index in typed arrays whose memory is counted exactly, and has `iterate` fetch up to 8
+chunks at a time. No public API changes. The CloudShell entry is repository work on the calibration harness,
+outside the packages.
+
 ### Changed
 
 - **GCS reads a registry pointer and a generation's tail in one request each, where it made two.** A pointer read was
