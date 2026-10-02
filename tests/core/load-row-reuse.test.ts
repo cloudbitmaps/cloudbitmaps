@@ -3,7 +3,7 @@ import { loadSegment, type LoadOptions } from '@/core/load';
 import { openGenerationReader, publishGeneration } from '@/core/crbm-storage-source';
 import { aadFor } from '@/core/crypto';
 import { destroySegment, dropSegment } from '@/core/erasure';
-import { KeyUnavailableError, ValidationError } from '@/core/errors';
+import { KeyUnavailableError, TransientError, ValidationError } from '@/core/errors';
 import { rollbackSegment } from '@/core/rollback';
 import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { InProcessKeystore } from '@/drivers/crypto';
@@ -338,6 +338,28 @@ describe('a load reuses the row it read, and every fence on that row still holds
       ).rejects.toThrow();
     },
   );
+
+  it('a publish that fails without a definite answer keeps its object, which may still be published', async () => {
+    const w = world();
+    await threeLoads(w);
+    // The compare-and-swap lands and its response is lost: the outcome is unknown to the load.
+    const lossy = new Proxy(w.registry, {
+      get(t, p, rx) {
+        const value = Reflect.get(t, p, rx) as unknown;
+        if (p !== 'compareAndSwap') return value;
+        return async (...args: Parameters<MemoryRegistryDriver['compareAndSwap']>) => {
+          await w.registry.compareAndSwap(...args);
+          throw new TransientError('connection reset after the write');
+        };
+      },
+    });
+    await expect(
+      loadSegment(SEG, [1, 2, 3, 4], { ...w.deps, registry: lossy }, { keep: 9 }),
+    ).rejects.toBeInstanceOf(TransientError);
+    // The write landed, so the pointer names generation 3, and its object is still there.
+    expect((await w.registry.get(SEG))!.currentGen).toBe(3);
+    expect(await idsOf(w.storage, 3)).toEqual([1, 2, 3, 4]);
+  });
 
   it('an unguarded first load refused by a drop at its publish deletes its object', async () => {
     const w = world();
