@@ -99,7 +99,7 @@ with the pointer in the same bucket as the data. It was driven from a laptop out
 | The same, with each pointer read once | 204 GET | $0.0000816 | $81.60 | expected |
 | Write and publish a 1.05 MB segment, pointer included | 2 PUT + 3 GET | $0.0000112 | **$11.20** | derived |
 | Write and publish a 12.6 MB segment, multipart | 5 PUT-class + 3 GET | $0.0000262 | **$26.20** | derived |
-| A segment's first `store.load()`, single-part | 4 PUT-class + 7 GET | $0.0000228 | $22.80 | expected |
+| A segment's first `store.load()`, single-part | 3 PUT-class + 5 GET | $0.0000170 | $17.00 | expected |
 
 **Derived** rows are measured request counts times the `aws-us-east-1-ondemand` list prices. **Expected** rows are
 what the code predicts where the run did not measure: the first from the measured chunk and tail reads with each

@@ -12,8 +12,8 @@ import { CountingObjectStore } from '../helpers/counting';
 /**
  * How a load numbers its generation. It takes `currentGen + 1` from the row it already read when one existence
  * check (a zero-byte tail read) finds that number free, and falls back to the listing — one above the pointer and
- * above every object present — whenever the check finds it taken or cannot answer. The listing is what a load
- * used to make every time; these pin when it still makes it, and that a number is never one an object holds.
+ * above every object present — whenever the check finds it taken or cannot answer. These pin when a load lists,
+ * and that a number is never one an object holds.
  */
 
 const SEG: SegmentRef = { namespace: 'ns', segment: 's' };

@@ -58,15 +58,16 @@ const {
  * What `store.load()` bills, in requests, as `tests/bench/calibrate-guards.test.ts` counts them against local
  * drivers and the real registry protocol. A run whose load stage timed `store.load()` records each load's own
  * requests, and its loads are priced from those; this table is what a reload and a load that collects cost, which a
- * run that loads each segment once does not measure. PUT-class: the object, two listings (one to choose the
- * generation, one to collect after the publish) and the pointer. GETs: seven pointer reads on a segment's first
- * load; a reload also reads the current generation's index; from the third load on, the collection pass re-reads
- * the pointer before its delete. The test asserts these numbers, so the prices below cannot drift from what runs.
+ * run that loads each segment once does not measure. PUT-class: the object, the collection pass's listing and the
+ * pointer. GETs: on a segment's first load, four pointer reads and one check that the generation number is free (a
+ * HeadObject); a reload also reads the current generation's index; from the third load on, the collection pass
+ * re-reads the pointer before its delete. The test asserts these numbers, so the prices below cannot drift from
+ * what runs.
  */
 const STORE_LOAD_REQUESTS = Object.freeze({
-  first: Object.freeze({ put: 4, get: 7 }),
-  reload: Object.freeze({ put: 4, get: 8 }),
-  collecting: Object.freeze({ put: 4, get: 9 }),
+  first: Object.freeze({ put: 3, get: 5 }),
+  reload: Object.freeze({ put: 3, get: 6 }),
+  collecting: Object.freeze({ put: 3, get: 7 }),
 });
 
 /** Roaring's portable format stores a chunk of at most this many ids as an array: a header, then 2 bytes an id. */
@@ -200,9 +201,9 @@ function derive(run, src) {
   check(run.projectionExceeded === undefined, 'the run exceeded its own projection');
   check(it.cold === true && it.exact === true, 'its intersects are not recorded as cold and exact');
   // A run whose load stage timed `store.load()` records each load's own requests, and every stage's. A load makes
-  // two listings and more pointer reads than a write and publish does, and its collection pass reads the pointer
-  // where the intersects do, so a run's totals cannot be divided between its stages after the fact. Anything else a
-  // load stage timed is not one this derivation prices.
+  // a listing, a check of its generation number and more pointer reads than a write and publish does, and its
+  // collection pass reads the pointer where the intersects do, so a run's totals cannot be divided between its
+  // stages after the fact. Anything else a load stage timed is not one this derivation prices.
   const via = run.phases?.load?.via;
   const storeLoadRun = via === 'store.load()';
   check(
@@ -342,16 +343,16 @@ function derive(run, src) {
         main.filter((l) => l.kind === 'multipart').length === multi.runs,
       "its per-load records are not the load stage's single-part and multipart runs",
     );
-    // Each load's own requests add up to its stage's, and every load's PUT-class requests are the object's, the two
-    // listings and the pointer: a record that disagrees with the meter would price a load wrongly.
+    // Each load's own requests add up to its stage's, and every load's PUT-class requests are the object's, the
+    // collection pass's listing and the pointer: a record that disagrees with the meter would price a load wrongly.
     check(
       sumOf(main, 'put') === run.phases.load.requests.put &&
         sumOf(main, 'get') === run.phases.load.requests.get,
       "its loads' own requests do not add up to its load stage's",
     );
     check(
-      loadRecords.every((l) => l.put === (l.kind === 'single' ? 4 : 5 + l.parts) && l.get >= 7),
-      "a load's requests are not an object, two listings and a pointer write, and at least seven pointer reads",
+      loadRecords.every((l) => l.put === (l.kind === 'single' ? 3 : 4 + l.parts) && l.get >= 5),
+      "a load's requests are not an object, a listing and a pointer write, and at least four pointer reads and a check",
     );
     // Every stage's requests, with its setup's, and what is left is the bucket's: the probe, the round-trip samples,
     // its creation and teardown's listings. Nothing a stage did is missing, and nothing else is in the bill.
@@ -375,13 +376,13 @@ function derive(run, src) {
       n('PutObjectCommand') ===
         2 * loadRecords.filter((l) => l.kind === 'single').length +
           loadRecords.filter((l) => l.kind === 'multipart').length &&
-        n('ListObjectsV2Command') === 2 * loadRecords.length &&
+        n('ListObjectsV2Command') === loadRecords.length &&
         n('CreateMultipartUploadCommand') ===
           loadRecords.filter((l) => l.kind === 'multipart').length &&
         n('CompleteMultipartUploadCommand') ===
           loadRecords.filter((l) => l.kind === 'multipart').length &&
         n('UploadPartCommand') === sumOf(loadRecords, 'parts'),
-      'its PUT-class commands are not what its loads make: the object or its parts, two listings and the pointer',
+      'its PUT-class commands are not what its loads make: the object or its parts, a listing and the pointer',
     );
     check(
       run.phases.warm.warmGets === 0 && run.phases.warm.exact === true,

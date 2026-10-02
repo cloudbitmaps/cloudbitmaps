@@ -228,10 +228,10 @@ npm audit signatures</code></pre>
                     An empty result over a non-empty segment is refused rather than published, so branch on
                     <span class="m">published</span>. Grouped by chunk first, so it bills
                     <strong>per object, not per id</strong>.
-                    On S3, a segment's first load is expected at 4 PUT-class and 7 GET requests, listings
+                    On S3, a segment's first load is expected at 3 PUT-class and 5 GET requests, its listing
                     included — S3 bills a listing at the PUT rate.
                   </td>
-                  <td class="num">4 PUT-class + 7 GET</td>
+                  <td class="num">3 PUT-class + 5 GET</td>
                 </tr>
                 <tr>
                   <td><span class="m">has(id)</span></td>

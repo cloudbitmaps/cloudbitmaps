@@ -85,7 +85,7 @@ file under `expectedMissed`, and the run carries on, because a count that differ
 
 | stage | what it does | requests it is expected to make |
 |---|---|---|
-| `load` | 20 single-part and 5 multipart (two-part) loads through `store.load()`, each recording its own requests | per segment's first load: 4 PUT-class and 7 GET; a multipart object swaps its PUT for a create, its parts and a complete |
+| `load` | 20 single-part and 5 multipart (two-part) loads through `store.load()`, each recording its own requests | per segment's first load: 3 PUT-class and 5 GET; a multipart object swaps its PUT for a create, its parts and a complete |
 | `intersect` | 40 cold intersects over the calibration layout (100 shared chunks packed at keys 0 to 99), each on a fresh store | 4 + 2k GET each: both pointers, both tails, k chunks from each operand |
 | `spread` | 10 segments of the same overlap with the shared chunks spread uniformly over each segment's chunks from a fixed seed, and 40 cold intersects | the same 4 + 2k, so a difference in latency is the layout's |
 | `sweep` | segments sharing 1,000 chunks (10 intersects) and 2,000 (5), `CR_CALIBRATE_SWEEP` to change the list | 4 + 2k each, at each k |
