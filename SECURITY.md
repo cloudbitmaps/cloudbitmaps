@@ -32,7 +32,10 @@ payload, so opening an object checks the index for internal consistency (key ord
 unencrypted object), and an index that is corrupt yet still internally consistent yields a wrong count. The
 metadata in an extension block is held to the same rules a caller's metadata is (string keys of at most 128 bytes,
 string or finite-number values, at most 1 KiB as canonical JSON) and must be exactly its canonical form, so a record
-that only parses is refused; on an encrypted object it is sealed and authenticated like the index. This
+that only parses is refused. On an encrypted object its content is sealed and authenticated like the index, but
+its presence is not: the minor, the block's trailer and its section types are covered by CRCs, which take no key, so
+whoever can write the object can remove the block, and the generation then reads as one without metadata. An object
+opened with an encrypted segment's key that is not itself encrypted is refused rather than read in the clear. This
 boundary is exercised by coverage-guided fuzzing (`pnpm fuzz:*`, nightly) and the DR drill's byte-corruption
 scenario (`pnpm dr-drill`).
 

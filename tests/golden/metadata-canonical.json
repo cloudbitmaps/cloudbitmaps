@@ -1,0 +1,35 @@
+{
+  "about": "Canonical JSON test vectors for .crbm generation metadata. The canonical form is RFC 8785 (JSON Canonicalization Scheme) restricted to one flat object of string and finite-number values: keys sorted by UTF-16 code unit, strings escaped as ECMAScript JSON.stringify escapes them, numbers written as ECMAScript Number.prototype.toString writes them, no whitespace. Each vector gives a JSON text (input), the canonical text a writer must produce from the values it parses to (canonical), and that text in UTF-8 as hex (canonicalUtf8Hex), which is what a .crbm 1.1 metadata section holds. A reader accepts the canonical bytes and refuses the input bytes, which are not canonical.",
+  "vectors": [
+    {
+      "name": "keys: integer-like keys sort as strings, not as numbers",
+      "input": "{\"10\":1,\"2\":2,\"a\":3,\"B\":4,\"1\":5}",
+      "canonical": "{\"1\":5,\"10\":1,\"2\":2,\"B\":4,\"a\":3}",
+      "canonicalUtf8Hex": "7b2231223a352c223130223a312c2232223a322c2242223a342c2261223a337d"
+    },
+    {
+      "name": "keys: by UTF-16 code unit, so a non-BMP key sorts before U+FF01 (code-point order would put it after)",
+      "input": "{\"！\":1,\"😀\":2,\"é\":3,\"z\":4}",
+      "canonical": "{\"z\":4,\"é\":3,\"😀\":2,\"！\":1}",
+      "canonicalUtf8Hex": "7b227a223a342c22c3a9223a332c22f09f9880223a322c22efbc81223a317d"
+    },
+    {
+      "name": "numbers: -0, exponents and their boundaries, the largest safe integer, the smallest subnormal",
+      "input": "{\"a\":-0,\"b\":1E21,\"c\":1e20,\"d\":5E-7,\"e\":0.000001,\"f\":9007199254740991,\"g\":0.1,\"h\":5e-324,\"i\":1.2345678901234568e+20,\"j\":1.5e300,\"k\":-1.5,\"l\":100.0,\"m\":1.7976931348623157e308}",
+      "canonical": "{\"a\":0,\"b\":1e+21,\"c\":100000000000000000000,\"d\":5e-7,\"e\":0.000001,\"f\":9007199254740991,\"g\":0.1,\"h\":5e-324,\"i\":123456789012345680000,\"j\":1.5e+300,\"k\":-1.5,\"l\":100,\"m\":1.7976931348623157e+308}",
+      "canonicalUtf8Hex": "7b2261223a302c2262223a31652b32312c2263223a3130303030303030303030303030303030303030302c2264223a35652d372c2265223a302e3030303030312c2266223a393030373139393235343734303939312c2267223a302e312c2268223a35652d3332342c2269223a3132333435363738393031323334353638303030302c226a223a312e35652b3330302c226b223a2d312e352c226c223a3130302c226d223a312e37393736393331333438363233313537652b3330387d"
+    },
+    {
+      "name": "strings: the escapes JSON.stringify writes, and the characters it leaves as they are",
+      "input": "{\"s\":\"q\\\" bs\\\\ sl\\/ b\\b f\\f n\\n r\\r t\\t nul\\u0000 us\\u001F del\\u007f ls\\u2028 ps\\u2029 e\\u00E9 g\\uD83D\\uDE00\"}",
+      "canonical": "{\"s\":\"q\\\" bs\\\\ sl/ b\\b f\\f n\\n r\\r t\\t nul\\u0000 us\\u001f del ls  ps  eé g😀\"}",
+      "canonicalUtf8Hex": "7b2273223a22715c222062735c5c20736c2f20625c6220665c66206e5c6e20725c7220745c74206e756c5c75303030302075735c75303031662064656c7f206c73e280a8207073e280a92065c3a92067f09f9880227d"
+    },
+    {
+      "name": "keys: a key is escaped as a value is",
+      "input": "{\"q\\\"k\":1,\"n\\nk\":2,\"\\u0001\":3}",
+      "canonical": "{\"\\u0001\":3,\"n\\nk\":2,\"q\\\"k\":1}",
+      "canonicalUtf8Hex": "7b225c7530303031223a332c226e5c6e6b223a322c22715c226b223a317d"
+    }
+  ]
+}

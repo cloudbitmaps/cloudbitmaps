@@ -367,17 +367,32 @@ payload bytes would differ. Roaring is the one codec that ships.
 **Format versions.** A reader refuses an unknown major version and reads every minor of its major. **1.0** is
 the preamble, the chunk payloads, the index and the fixed 104-byte footer. **1.1** adds, only to a generation written
 with metadata, one **extension block** between the last payload and the index; with no metadata the writer emits 1.0
-byte for byte. The block is found from the index's offset alone: its last 12 bytes, just before the index, are its
-sections' length (u32), a CRC32C of the sections and that length (u32), and the magic `CRBX`. The sections, at most
-4 KiB in all, are each a type (u8), a length (u32) and that many bytes, in strictly ascending type order; type 1 is
-the generation's metadata as canonical JSON (keys sorted by UTF-16 code unit, each key and value as
-`JSON.stringify` writes it, no whitespace), at most 1 KiB, sealed like the index on an encrypted object (AES-256-GCM,
-`nonce ‖ ciphertext ‖ tag`, under `aadFor(ref, generation, 'metadata')`; its length, like the index's, stays visible). A reader skips a section type it does not
-know, so every later 1.x minor carries the block and adds section types to it. A 1.0 reader, 0.11 included, opens a
-1.1 object and ignores the block: it never reads between the last payload and the index. A 1.1 reader reads the
-block with the index, from the tail or in the same range read, and refuses with `IntegrityError` a block whose
-trailer, CRC, size or sections do not hold, metadata that breaks a rule or is not exactly its canonical form, and a
-payload that runs into the block.
+byte for byte. A 1.0 reader, 0.11 included, opens a 1.1 object and ignores the block, since it never reads between
+the last payload and the index.
+
+- **Where the block is.** It is found from the index's offset alone: its last 12 bytes, just before the index, are
+  its sections' length (u32), a CRC32C of the sections and that length (u32), and the magic `CRBX`. Payloads end
+  where the block starts.
+- **Sections.** At most 4 KiB in all, each a type (u8), a length (u32) and that many bytes, in strictly ascending
+  type order; type 0 is not a type. A reader skips a type it does not know, so a section must be safe to ignore: a
+  meaning every reader has to understand needs a footer flag bit instead, which an older reader refuses. Every minor
+  from 1.1 on carries the block, an empty one if it has no section, and a later minor adds section types to it.
+- **Type 1, the metadata.** Its canonical JSON, at most 1 KiB: RFC 8785 (the JSON Canonicalization Scheme) for one
+  flat object of string and finite-number values. Keys are sorted by UTF-16 code unit, strings are escaped as
+  `JSON.stringify` escapes them, numbers are written as ECMAScript's `Number.prototype.toString` writes them (`-0` is
+  `0`, `1e21` is `1e+21`, `5e-7` stays `5e-7`), and there is no whitespace. A language's ordinary JSON writer differs
+  in places (Python writes `1e-07`; Go and Rust sort keys by code point), so
+  [`tests/golden/metadata-canonical.json`](../../tests/golden/metadata-canonical.json) holds vectors to check a port
+  against.
+- **Encrypted.** The section is sealed like the index (AES-256-GCM, `nonce ‖ ciphertext ‖ tag`, under
+  `aadFor(ref, generation, 'metadata')`), so its content cannot be read or altered without the key; its length, like
+  the index's, stays visible. That the block is there at all is not authenticated: the minor, the trailer and the
+  section types are covered by CRCs, which take no key, so whoever can write the object can remove the block, and the
+  object then reads as one with no metadata.
+- **What a 1.1 reader refuses**, with `IntegrityError`: a block whose trailer, CRC, size or sections do not hold;
+  metadata that breaks a rule or is not exactly its canonical form; a payload that runs into the block; and any
+  object that is not encrypted when it is opened with a key. It reads the block with the index, from the tail or in
+  the same range read, and makes one more read only when the tail ends inside the block.
 
 | Symbol | What it does |
 |---|---|
