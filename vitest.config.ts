@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
+import { ROUTED, ROUTED_PROJECT, ROUTING_SETUP } from './tests/helpers/load-input-routes';
 
 const CORE = fileURLToPath(new URL('./packages/core/src', import.meta.url));
 const ROARING = fileURLToPath(new URL('./packages/roaring/src', import.meta.url));
@@ -13,9 +14,19 @@ export default defineConfig({
     // Configures fast-check once for all eight property suites: verbose counterexamples, and `FC_SEED` to
     // replay a CI failure locally. See the file for why the seed stays random by default.
     setupFiles: ['tests/setup-fast-check.ts'],
-    include: ['tests/**/*.test.ts'],
     exclude: ['tests/integration/**', 'node_modules/**'],
     passWithNoTests: false,
+    // Two runs. `ids` is every test as written. `serialized` re-runs each load test with core's load handed
+    // `{ serialized }` in place of the ids it was given, which is how a load from portable Roaring bytes is held to
+    // every guarantee an id load has without a copy of any test. Which files, and why the rest are ids-only, is in
+    // `tests/helpers/load-input-routes.ts`; `tests/arch/load-input-coverage.test.ts` holds that list to the tree.
+    projects: [
+      { extends: true, test: { name: 'ids', include: ['tests/**/*.test.ts'] } },
+      {
+        extends: true,
+        test: { name: ROUTED_PROJECT, include: [...ROUTED], setupFiles: [ROUTING_SETUP] },
+      },
+    ],
   },
   resolve: {
     // The test suite lives at the repo root and drives all five packages (many tests are white-box across
