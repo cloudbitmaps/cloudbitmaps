@@ -52,7 +52,7 @@ const MAX_SUMMARY_CARDINALITY = 2 ** 32;
 const SEALED_SUMMARY_MIN_BYTES = 12 + 8 + 16;
 /** The fixed part plus metadata at its cap. */
 const SEALED_SUMMARY_MAX_BYTES = SEALED_SUMMARY_MIN_BYTES + MAX_METADATA_BYTES;
-/** Canonical, padded standard base64. */
+/** Padded standard base64; canonical once its pad bits are checked too (see {@link base64PadBitsAreZero}). */
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
 /** `null` is legal and meaningful: the segment has no Storage generation yet (see `RegistryRecord.currentGen`). */
@@ -151,17 +151,41 @@ function validateWrappedDeks(value: unknown, isStored: boolean): void {
   }
 }
 
+/** The standard base64 alphabet, whose index of a character is the six bits it carries. */
+const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
 /**
- * Validate a {@link RegistrySummary}'s shape at the write or read boundary: exactly one of the two shapes, a
- * non-negative safe-integer generation, a cardinality from 0 to 2^32, metadata by the metadata rules (never the
- * empty object, which is never stored), or a sealed blob in canonical base64 whose length fits a sealed count plus
- * metadata at its cap. Whether a summary may be *used* is the reader's rule, not this one: this only bounds what
- * a row can hold. `isStored` picks the error class (write = ValidationError; read = IntegrityError, invariant 5).
+ * Whether a padded standard base64 string is canonical: the bits of its last character past the data are zero.
+ * Without this two strings would decode to the same bytes.
  */
-function validateSummary(value: unknown, isStored: boolean): void {
-  if (value === undefined) return;
+function base64PadBitsAreZero(text: string): boolean {
+  const pad = text.endsWith('==') ? 2 : text.endsWith('=') ? 1 : 0;
+  if (pad === 0) return true;
+  const last = BASE64_ALPHABET.indexOf(text[text.length - pad - 1]!);
+  return pad === 2 ? (last & 0b1111) === 0 : (last & 0b11) === 0;
+}
+
+/**
+ * Validate a {@link RegistrySummary}'s shape at the write or read boundary, and return a frozen copy built from the
+ * checked fields only: exactly one of the two shapes, a non-negative safe-integer generation, a cardinality from 0 to
+ * 2^32, metadata by the metadata rules (never the empty object, which is never stored) with its keys in canonical
+ * order, or a sealed blob in canonical base64 whose length fits a sealed count plus metadata at its cap. A writer
+ * stores the copy, so a caller that changes its object after the call, while the driver awaits the row, changes
+ * nothing that is written. Whether a summary may be *used* is the reader's rule, not this one: this only bounds what a
+ * row can hold. `isStored` picks the error class (write = ValidationError; read = IntegrityError, invariant 5), and a
+ * read names the row by `ctx`.
+ */
+function validateSummary(
+  value: unknown,
+  isStored: boolean,
+  ctx?: string,
+): RegistrySummary | undefined {
+  if (value === undefined) return undefined;
   const fail = (msg: string): never => {
-    throw isStored ? new IntegrityError(`summary: ${msg}`) : new ValidationError(`summary: ${msg}`);
+    const where = ctx === undefined ? '' : `: ${ctx}`;
+    throw isStored
+      ? new IntegrityError(`registry record summary: ${msg}${where}`)
+      : new ValidationError(`summary: ${msg}${where}`);
   };
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     fail(
@@ -178,12 +202,15 @@ function validateSummary(value: unknown, isStored: boolean): void {
       `has fields its ${isSealed ? 'sealed' : 'clear'} shape does not declare (${extra.join(', ')})`,
     );
   }
-  if (!Number.isSafeInteger(s.generation) || (s.generation as number) < 0) {
-    fail(`generation must be a non-negative safe integer (got ${String(s.generation)})`);
+  const generation = s.generation;
+  if (!Number.isSafeInteger(generation) || (generation as number) < 0) {
+    fail(`generation must be a non-negative safe integer (got ${String(generation)})`);
   }
   if (isSealed) {
     const sealed = s.sealed;
-    if (typeof sealed !== 'string' || !BASE64.test(sealed)) fail('sealed must be canonical base64');
+    if (typeof sealed !== 'string' || !BASE64.test(sealed) || !base64PadBitsAreZero(sealed)) {
+      fail('sealed must be canonical, padded standard base64');
+    }
     const text = sealed as string;
     const bytes = (text.length / 4) * 3 - (text.endsWith('==') ? 2 : text.endsWith('=') ? 1 : 0);
     if (bytes < SEALED_SUMMARY_MIN_BYTES || bytes > SEALED_SUMMARY_MAX_BYTES) {
@@ -192,15 +219,21 @@ function validateSummary(value: unknown, isStored: boolean): void {
           '(a nonce, a fixed-width count, a tag, and metadata up to its cap)',
       );
     }
-    return;
+    return Object.freeze({ generation: generation as number, sealed: text });
   }
   const n = s.cardinality;
   if (!Number.isInteger(n) || (n as number) < 0 || (n as number) > MAX_SUMMARY_CARDINALITY) {
     fail(`cardinality must be an integer from 0 to 2^32 (got ${String(n)})`);
   }
-  if (s.metadata !== undefined && canonicalMetadataJson(s.metadata, fail) === '{}') {
-    fail('metadata is empty; a generation without metadata carries none');
+  if (s.metadata === undefined) {
+    return Object.freeze({ generation: generation as number, cardinality: n as number });
   }
+  const canonical = canonicalMetadataJson(s.metadata, fail);
+  if (canonical === '{}') fail('metadata is empty; a generation without metadata carries none');
+  // Rebuilt from the canonical JSON, so its keys are in canonical order (JavaScript still lists integer-like keys
+  // first, in numeric order, as it does in every object) and nothing of the caller's object is kept.
+  const metadata = Object.freeze(JSON.parse(canonical) as Record<string, string | number>);
+  return Object.freeze({ generation: generation as number, cardinality: n as number, metadata });
 }
 
 /** A summary given at a write must describe the generation the row will point at. */
@@ -215,28 +248,62 @@ function validateSummaryNames(
   }
 }
 
-/** Validate the caller-settable fields at `create`. */
-export function validateNewRegistryRecord(rec: NewRegistryRecord): void {
+/**
+ * Whether a summary's shape agrees with the row's encryption: sealed on a row with wrapped keys, clear on one without.
+ * A clear count or metadata beside a key would leak what the segment's objects hide; a sealed one on a cleartext row
+ * could never be opened.
+ */
+function summaryAgreesWithKeys(
+  summary: RegistrySummary,
+  wrappedDeks: RegistryRecord['wrappedDeks'],
+): boolean {
+  return 'sealed' in summary === (wrappedDeks !== undefined);
+}
+
+/** A summary given at a write must agree with the row's encryption (see {@link summaryAgreesWithKeys}). */
+function validateSummaryKeys(
+  summary: RegistrySummary | undefined,
+  wrappedDeks: RegistryRecord['wrappedDeks'],
+): void {
+  if (summary !== undefined && !summaryAgreesWithKeys(summary, wrappedDeks)) {
+    throw new ValidationError(
+      wrappedDeks === undefined
+        ? 'summary is sealed, but the row has no wrapped keys to open it with'
+        : "summary is in the clear, but the row is encrypted: an encrypted segment's summary must be sealed",
+    );
+  }
+}
+
+/**
+ * Validate the caller-settable fields at `create`, and return the record to store: the caller's, with its summary
+ * replaced by the checked, frozen copy {@link validateSummary} builds.
+ */
+export function validateNewRegistryRecord(rec: NewRegistryRecord): NewRegistryRecord {
   validateGeneration(rec.currentGen);
   if (rec.status !== undefined) validateStatus(rec.status);
   validateWrappedDeks(rec.wrappedDeks, false);
   validateGovernance(rec.retention, 'retention');
   validateGovernance(rec.residency, 'residency');
-  validateSummary(rec.summary, false);
-  validateSummaryNames(rec.summary, rec.currentGen);
+  if (!('summary' in rec)) return rec;
+  const summary = validateSummary(rec.summary, false);
+  validateSummaryNames(summary, rec.currentGen);
+  validateSummaryKeys(summary, rec.wrappedDeks);
+  return { ...rec, summary };
 }
 
 /**
- * Validate the caller-settable fields in a `compareAndSwap` patch. That a given `summary` names the row's
- * resulting `currentGen` needs the stored row, so {@link applyRegistryPatch} checks it.
+ * Validate the caller-settable fields in a `compareAndSwap` patch, and return the patch to apply: the caller's, with
+ * its summary replaced by the checked, frozen copy. That a given `summary` names the row's resulting `currentGen`,
+ * and agrees with its resulting keys, needs the stored row, so {@link applyRegistryPatch} checks both.
  */
-export function validateRegistryPatch(patch: RegistryPatch): void {
+export function validateRegistryPatch(patch: RegistryPatch): RegistryPatch {
   validatePatchGeneration(patch);
   if (patch.status !== undefined) validateStatus(patch.status);
   if ('wrappedDeks' in patch) validateWrappedDeks(patch.wrappedDeks, false);
   if ('retention' in patch) validateGovernance(patch.retention, 'retention');
   if ('residency' in patch) validateGovernance(patch.residency, 'residency');
-  if ('summary' in patch) validateSummary(patch.summary, false);
+  if (!('summary' in patch)) return patch;
+  return { ...patch, summary: validateSummary(patch.summary, false) };
 }
 
 /**
@@ -521,7 +588,10 @@ export function assertStoredRecordShape(
       throw new IntegrityError(`registry record has a non-object ${field}: ${ctx}`);
     }
   }
-  validateSummary(r.summary, true);
+  // Shape only. Whether the summary agrees with the row's keys and names its `currentGen` is not checked here: a
+  // stored row that disagrees is a summary its reader must not use, not a row to refuse, and refusing it would let
+  // one row stop every listing that reaches it.
+  validateSummary(r.summary, true, ctx);
 }
 
 /**
@@ -529,8 +599,9 @@ export function assertStoredRecordShape(
  * `createdAt` are preserved). Optional fields use `'k' in patch` so a patch can *clear* them (set to
  * `undefined`, e.g. dropping `keyId` on crypto-shred); required fields use `??` (they always have a value).
  *
- * `summary` describes the current generation, so it follows the pointer: a patch that moves `currentGen` without
- * mentioning it drops the old one, and a summary the patch gives must name the resulting `currentGen`
+ * `summary` describes the current generation, so it follows the pointer and the keys: a patch that moves
+ * `currentGen`, or changes `wrappedDeks` so the summary's shape no longer agrees, without mentioning `summary` drops
+ * the old one; and a summary the patch gives must name the resulting `currentGen` and agree with the resulting keys
  * (`ValidationError`, before anything is written).
  */
 export function applyRegistryPatch(
@@ -544,18 +615,22 @@ export function applyRegistryPatch(
   // patch that clears the pointer and leave the old generation in place. The same reason `wrappedDeks` and
   // `keyId` below use presence: any field whose null is a *value* cannot be merged with `??`.
   const currentGen = 'currentGen' in patch ? (patch.currentGen ?? null) : prev.currentGen;
+  const wrappedDeks = 'wrappedDeks' in patch ? patch.wrappedDeks : prev.wrappedDeks;
   let summary: RegistrySummary | undefined;
   if ('summary' in patch) {
     validateSummaryNames(patch.summary, currentGen);
+    validateSummaryKeys(patch.summary, wrappedDeks);
     summary = patch.summary;
   } else {
-    summary = currentGen === prev.currentGen ? prev.summary : undefined;
+    // Kept only while it still describes the row: the same generation, and the same encryption.
+    const kept = currentGen === prev.currentGen ? prev.summary : undefined;
+    summary = kept !== undefined && summaryAgreesWithKeys(kept, wrappedDeks) ? kept : undefined;
   }
   return {
     namespace: prev.namespace,
     segment: prev.segment,
     currentGen,
-    wrappedDeks: 'wrappedDeks' in patch ? patch.wrappedDeks : prev.wrappedDeks,
+    wrappedDeks,
     keyId: 'keyId' in patch ? patch.keyId : prev.keyId,
     status: patch.status ?? prev.status,
     retention: 'retention' in patch ? patch.retention : prev.retention,

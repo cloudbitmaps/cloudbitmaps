@@ -159,6 +159,7 @@ const rowText = (schemaVersion: number, record: Record<string, unknown>, deleted
   JSON.stringify({ schemaVersion, deleted, record });
 
 const INC = '0123456789abcdef0123456789abcdef';
+const WRAPPED = [{ keyId: 'k', wrapped: 'd3JhcHBlZA==' }];
 const baseRecord = {
   segment: 's',
   currentGen: 3,
@@ -382,8 +383,13 @@ describe('the summary field: every malformed shape is refused at both boundaries
       const generation = (summary as { generation: number }).generation;
       const text = rowText(2, { ...baseRecord, currentGen: generation, token: '1', summary });
       expect(() => parseRegistryEnvelope(text, 'ok'), JSON.stringify(summary)).not.toThrow();
+      const keys = 'sealed' in (summary as object) ? { wrappedDeks: WRAPPED } : {};
       expect(() =>
-        validateNewRegistryRecord({ currentGen: generation, summary: summary as RegistrySummary }),
+        validateNewRegistryRecord({
+          currentGen: generation,
+          ...keys,
+          summary: summary as RegistrySummary,
+        }),
       ).not.toThrow();
     }
   });
@@ -426,5 +432,146 @@ describe('the summary follows the pointer', () => {
     );
     expect(() => validateNewRegistryRecord({ currentGen: 4, summary })).toThrow(ValidationError);
     expect(() => validateNewRegistryRecord({ currentGen: null, summary })).toThrow(ValidationError);
+  });
+});
+
+/** A malformed summary on a stored row is refused naming the row, like every other field. */
+describe('a malformed summary names its row', () => {
+  it('puts the row key in the IntegrityError', () => {
+    const text = rowText(2, {
+      ...baseRecord,
+      token: '1',
+      summary: { generation: 3, cardinality: -1 },
+    });
+    expect(() => parseRegistryEnvelope(text, 'registry/ns/seg.reg')).toThrow(
+      /summary: cardinality .*: registry\/ns\/seg\.reg$/,
+    );
+    const meta = rowText(2, {
+      ...baseRecord,
+      token: '1',
+      summary: { generation: 3, cardinality: 1, metadata: { a: true } },
+    });
+    expect(() => parseRegistryEnvelope(meta, 'registry/ns/seg.reg')).toThrow(
+      /registry\/ns\/seg\.reg$/,
+    );
+  });
+});
+
+/**
+ * A sealed blob has one spelling: padded, standard alphabet, and the bits of its last character past the data zero,
+ * so two strings never decode to the same bytes.
+ */
+describe('a sealed summary is canonical base64', () => {
+  const sealedRow = (sealed: string): string =>
+    rowText(2, { ...baseRecord, token: '1', summary: { generation: 3, sealed } });
+
+  it('refuses non-zero pad bits and the URL-safe alphabet', () => {
+    const twoPad = sealedOf(37); // 37 bytes: ends "AA==", 4 pad bits
+    const onePad = sealedOf(38); // 38 bytes: ends "AAA=", 2 pad bits
+    expect(twoPad.endsWith('A==')).toBe(true);
+    expect(onePad.endsWith('A=')).toBe(true);
+    expect(() => parseRegistryEnvelope(sealedRow(twoPad), 'ok')).not.toThrow();
+    expect(() => parseRegistryEnvelope(sealedRow(onePad), 'ok')).not.toThrow();
+    const bits = [
+      `${twoPad.slice(0, -3)}B==`,
+      `${twoPad.slice(0, -3)}P==`,
+      `${onePad.slice(0, -2)}B=`,
+      `${onePad.slice(0, -2)}D=`,
+    ];
+    for (const bad of bits) {
+      expect(() => parseRegistryEnvelope(sealedRow(bad), bad), bad).toThrow(IntegrityError);
+    }
+    // The pad bits of a character that carries only zeros there pass.
+    expect(() => parseRegistryEnvelope(sealedRow(`${twoPad.slice(0, -3)}Q==`), 'Q')).not.toThrow();
+    expect(() => parseRegistryEnvelope(sealedRow(`${onePad.slice(0, -2)}E=`), 'E')).not.toThrow();
+    for (const bad of [
+      `${twoPad.slice(0, 4)}-${twoPad.slice(5)}`,
+      `${twoPad.slice(0, 4)}_${twoPad.slice(5)}`,
+    ]) {
+      expect(() => parseRegistryEnvelope(sealedRow(bad), bad), bad).toThrow(IntegrityError);
+    }
+  });
+});
+
+/**
+ * An encrypted segment's row carries a sealed summary, a cleartext one a clear summary. A write that disagrees is
+ * refused; a stored row that disagrees is still read, so that one such row cannot stop every listing, and its summary
+ * is one a reader must not use.
+ */
+describe("the summary agrees with the row's encryption", () => {
+  const clear: RegistrySummary = { generation: 3, cardinality: 5 };
+  const sealed: RegistrySummary = { generation: 3, sealed: sealedOf(36) };
+
+  it('refuses a create whose summary disagrees with its keys (ValidationError)', () => {
+    expect(() =>
+      validateNewRegistryRecord({ currentGen: 3, wrappedDeks: WRAPPED, summary: clear }),
+    ).toThrow(/clear, but the row is encrypted/);
+    expect(() => validateNewRegistryRecord({ currentGen: 3, summary: sealed })).toThrow(
+      /no wrapped keys/,
+    );
+    expect(() =>
+      validateNewRegistryRecord({ currentGen: 3, wrappedDeks: WRAPPED, summary: sealed }),
+    ).not.toThrow();
+    expect(() => validateNewRegistryRecord({ currentGen: 3, summary: clear })).not.toThrow();
+  });
+
+  it('refuses a patch whose summary disagrees with the keys the row will have', () => {
+    const plain: RegistryRecord = { ...baseRecord, status: 'active', token: '1' };
+    const encrypted: RegistryRecord = { ...plain, wrappedDeks: WRAPPED };
+    expect(() => applyRegistryPatch(encrypted, { summary: clear }, 2, '2')).toThrow(
+      ValidationError,
+    );
+    expect(() => applyRegistryPatch(plain, { summary: sealed }, 2, '2')).toThrow(ValidationError);
+    expect(() =>
+      applyRegistryPatch(plain, { wrappedDeks: WRAPPED, summary: sealed }, 2, '2'),
+    ).not.toThrow();
+    expect(() =>
+      applyRegistryPatch(encrypted, { wrappedDeks: undefined, summary: clear }, 2, '2'),
+    ).not.toThrow();
+  });
+
+  it('drops a summary a patch leaves disagreeing with the keys, rather than refuse the patch', () => {
+    // A crypto-shred that did not mention the summary must still land; the sealed one cannot be opened after it.
+    const encrypted: RegistryRecord = {
+      ...baseRecord,
+      status: 'active',
+      token: '1',
+      wrappedDeks: WRAPPED,
+      summary: sealed,
+    };
+    const shredded = applyRegistryPatch(
+      encrypted,
+      { wrappedDeks: undefined, status: 'destroyed' },
+      2,
+      '2',
+    );
+    expect(shredded.summary).toBeUndefined();
+    expect(applyRegistryPatch(encrypted, { retention: {} }, 2, '2').summary).toEqual(sealed);
+  });
+
+  it('reads a stored row that disagrees, rather than refuse it', () => {
+    const text = rowText(2, { ...baseRecord, token: '1', wrappedDeks: WRAPPED, summary: clear });
+    expect(parseRegistryEnvelope(text, 'row').record.summary).toEqual(clear);
+    const sealedPlain = rowText(2, { ...baseRecord, token: '1', summary: sealed });
+    expect(parseRegistryEnvelope(sealedPlain, 'row').record.summary).toEqual(sealed);
+  });
+});
+
+/** The summary a write stores is a frozen copy, its metadata keys in canonical order. */
+describe('a written summary is a frozen, canonical copy', () => {
+  it('copies, freezes and orders the metadata', () => {
+    const summary = { generation: 3, cardinality: 5, metadata: { b: 1, a: 'x', '10': 2, '2': 3 } };
+    const checked = validateNewRegistryRecord({ currentGen: 3, summary }).summary as {
+      metadata: Record<string, unknown>;
+    };
+    expect(checked).not.toBe(summary);
+    expect(checked.metadata).not.toBe(summary.metadata);
+    expect(Object.isFrozen(checked)).toBe(true);
+    expect(Object.isFrozen(checked.metadata)).toBe(true);
+    // Integer-like keys come first in numeric order, as JavaScript lists them in every object; the rest are sorted.
+    expect(Object.keys(checked.metadata)).toEqual(['2', '10', 'a', 'b']);
+    const patched = validateRegistryPatch({ summary }).summary as { metadata: object };
+    expect(Object.isFrozen(patched)).toBe(true);
+    expect(Object.keys(patched.metadata)).toEqual(['2', '10', 'a', 'b']);
   });
 });

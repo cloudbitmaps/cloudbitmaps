@@ -745,9 +745,34 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       expect((await d.get(SEG))!.summary).toEqual(clearSummary);
       expect((await drainRecords(d.list()))[0]!.summary).toEqual(clearSummary);
 
-      await d.compareAndSwap(SEG, t0, { currentGen: 4, summary: sealedSummary });
+      // A sealed summary goes with wrapped keys: an encrypted segment's row never carries a clear one.
+      const wrappedDeks = [{ keyId: 'active', wrapped: 'YWN0aXZlLXdyYXBwZWQ=' }];
+      await d.compareAndSwap(SEG, t0, { currentGen: 4, wrappedDeks, summary: sealedSummary });
       expect((await d.get(SEG))!.summary).toEqual(sealedSummary);
       expect((await drainRecords(d.list()))[0]!.summary).toEqual(sealedSummary);
+    });
+
+    // A write must store the summary it was called with. A driver that checks it at the call and serialises the
+    // caller's object after awaiting the row would store whatever the caller changed in between: a row every later
+    // read refuses, or another write's metadata.
+    it('stores the summary as it was when the write was called, whatever the caller changes after', async () => {
+      const d = makeDriver();
+      const asCalled = { generation: 3, cardinality: 5, metadata: { day: 'mon' } };
+      const mine = structuredClone(asCalled);
+      const created = d.create(SEG, { currentGen: 3, summary: mine });
+      mine.cardinality = -1;
+      mine.metadata.day = 'x'.repeat(2000);
+      const { token } = await created;
+      expect((await d.get(SEG))!.summary).toEqual(asCalled);
+
+      const next = { generation: 4, cardinality: 6, metadata: { day: 'tue' } };
+      const theirs = structuredClone(next);
+      const swapped = d.compareAndSwap(SEG, token, { currentGen: 4, summary: theirs });
+      theirs.generation = 9;
+      theirs.metadata.day = 'wed';
+      await swapped;
+      expect((await d.get(SEG))!.summary).toEqual(next);
+      expect((await drainRecords(d.list()))[0]!.summary).toEqual(next);
     });
 
     it('keeps a summary across a patch that does not mention it, and clears it when told to', async () => {

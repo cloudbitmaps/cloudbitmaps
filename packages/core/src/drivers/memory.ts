@@ -75,7 +75,7 @@ export class MemoryRegistryDriver implements IRegistryDriver {
 
   async create(ref: SegmentRef, record: NewRegistryRecord): Promise<{ token: Token }> {
     validateSegmentRef(ref);
-    validateNewRegistryRecord(record);
+    const checked = validateNewRegistryRecord(record);
     const key = segmentKey(ref);
     if (this.rows.has(key)) {
       throw new WriteConflictError(`registry row already exists for segment ${ref.segment}`);
@@ -83,7 +83,7 @@ export class MemoryRegistryDriver implements IRegistryDriver {
     const token = this.nextToken(drawIncarnation(this.entropy));
     // clone in: the caller's (nested) retention/residency can't alias stored state (value semantics, parity
     // with the serialize-based persistent drivers).
-    this.rows.set(key, structuredClone(recordFromNew(ref, record, this.now(), token)));
+    this.rows.set(key, structuredClone(recordFromNew(ref, checked, this.now(), token)));
     return { token };
   }
 
@@ -93,14 +93,14 @@ export class MemoryRegistryDriver implements IRegistryDriver {
     patch: RegistryPatch,
   ): Promise<{ token: Token }> {
     validateSegmentRef(ref);
-    validateRegistryPatch(patch);
+    const checked = validateRegistryPatch(patch);
     const key = segmentKey(ref);
     const existing = this.rows.get(key);
     if (!existing || existing.token !== expected) {
       throw new WriteConflictError(`OCC token mismatch for registry row ${ref.segment}`);
     }
     const token = this.nextToken(incarnationOf(existing.token) ?? drawIncarnation(this.entropy));
-    this.rows.set(key, structuredClone(applyRegistryPatch(existing, patch, this.now(), token)));
+    this.rows.set(key, structuredClone(applyRegistryPatch(existing, checked, this.now(), token)));
     return { token };
   }
 

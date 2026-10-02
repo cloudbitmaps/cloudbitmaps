@@ -171,7 +171,7 @@ export class ObjectStoreRegistry implements IRegistryDriver {
   }
 
   async create(ref: SegmentRef, record: NewRegistryRecord): Promise<{ token: Token }> {
-    validateNewRegistryRecord(record);
+    const checked = validateNewRegistryRecord(record);
     const key = registryObjectKey(this.prefix, ref);
     const current = await this.readRow(key);
     if (current !== null && !current.env.deleted) {
@@ -181,7 +181,7 @@ export class ObjectStoreRegistry implements IRegistryDriver {
     const token = newIncarnationToken(this.entropy, current?.env.record);
     const env: RegistryEnvelope = {
       deleted: false,
-      record: recordFromNew(ref, record, this.now(), token),
+      record: recordFromNew(ref, checked, this.now(), token),
     };
     // Create-only when truly absent; overwrite the tombstone under its version when recreating. Either way
     // a concurrent create loses the precondition and surfaces as a conflict.
@@ -194,7 +194,7 @@ export class ObjectStoreRegistry implements IRegistryDriver {
     expected: Token,
     patch: RegistryPatch,
   ): Promise<{ token: Token }> {
-    validateRegistryPatch(patch);
+    const checked = validateRegistryPatch(patch);
     const key = registryObjectKey(this.prefix, ref);
     const current = await this.readRow(key);
     if (current === null || current.env.deleted || current.env.record.token !== expected) {
@@ -203,7 +203,7 @@ export class ObjectStoreRegistry implements IRegistryDriver {
     const token = nextRegistryToken(current.env.record);
     const env: RegistryEnvelope = {
       deleted: false,
-      record: applyRegistryPatch(current.env.record, patch, this.now(), token),
+      record: applyRegistryPatch(current.env.record, checked, this.now(), token),
     };
     // The version we read fences a concurrent writer between that read and this write.
     await this.putRow(key, env, { version: current.version });

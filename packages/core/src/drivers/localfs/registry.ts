@@ -103,7 +103,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
   }
 
   async create(ref: SegmentRef, record: NewRegistryRecord): Promise<{ token: Token }> {
-    validateNewRegistryRecord(record);
+    const checked = validateNewRegistryRecord(record);
     const path = registryRowPath(this.root, ref);
     return this.withRowLock(path, async () => {
       const current = await this.readRow(path);
@@ -112,7 +112,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
       }
       // A new incarnation, whose counter continues across a tombstone (ABA-safe).
       const token = newIncarnationToken(this.entropy, current?.record);
-      await this.writeRow(path, false, recordFromNew(ref, record, this.now(), token));
+      await this.writeRow(path, false, recordFromNew(ref, checked, this.now(), token));
       return { token };
     });
   }
@@ -122,7 +122,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
     expected: Token,
     patch: RegistryPatch,
   ): Promise<{ token: Token }> {
-    validateRegistryPatch(patch);
+    const checked = validateRegistryPatch(patch);
     const path = registryRowPath(this.root, ref);
     return this.withRowLock(path, async () => {
       const current = await this.readRow(path);
@@ -133,7 +133,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
       await this.writeRow(
         path,
         false,
-        applyRegistryPatch(current.record, patch, this.now(), token),
+        applyRegistryPatch(current.record, checked, this.now(), token),
       );
       return { token };
     });
