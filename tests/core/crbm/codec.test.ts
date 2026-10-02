@@ -258,12 +258,17 @@ describe('what the writer writes always opens', () => {
     ['65,536 chunks', all65536, 65_535 + 65_536],
   ];
 
-  it.each(shapes)('opens %s, unencrypted and encrypted', async (_what, chunks, total) => {
-    const plain = await CrbmReader.open(new BufferReader(await build(chunks)));
-    expect(plain.chunkKeys()).toEqual(chunks.map((c) => c.chunkKey));
-    expect(plain.count()).toBe(total);
-    const sealed = await CrbmReader.open(new BufferReader(await sealedBuild(chunks)), { crypto });
-    expect(sealed.chunkKeys()).toEqual(chunks.map((c) => c.chunkKey));
-    expect(sealed.count()).toBe(total);
-  });
+  // Writing and sealing 65,536 chunks one by one took 0.8 to 5.1 s on CI runners, against the 5 s default timeout.
+  it.each(shapes)(
+    'opens %s, unencrypted and encrypted',
+    async (_what, chunks, total) => {
+      const plain = await CrbmReader.open(new BufferReader(await build(chunks)));
+      expect(plain.chunkKeys()).toEqual(chunks.map((c) => c.chunkKey));
+      expect(plain.count()).toBe(total);
+      const sealed = await CrbmReader.open(new BufferReader(await sealedBuild(chunks)), { crypto });
+      expect(sealed.chunkKeys()).toEqual(chunks.map((c) => c.chunkKey));
+      expect(sealed.count()).toBe(total);
+    },
+    30_000,
+  );
 });
