@@ -217,6 +217,32 @@ describe('Azure Blob: what the read timeout leaves alone', () => {
   }, 15_000);
 });
 
+describe('Azure Blob: a read lets go of a response the SDK refuses', () => {
+  // The SDK refuses a download answered with no ETag by throwing a `RangeError`, and leaves the body unread with the
+  // socket open. The answer here never ends, so only the read's own abort closes that socket.
+  it.each([
+    ['off', 0],
+    ['set', TIMEOUT],
+  ])('a range read answered with no ETag, with the timeout %s', async (_label, readTimeoutMs) => {
+    stub.getOverride = () => ({
+      status: 206,
+      headers: { 'content-length': String(64 * 1024 * 1024), 'content-range': 'bytes 0-3/4' },
+      body: 'endless',
+    });
+    const watch = watchProcess();
+    try {
+      await expect(storage(readTimeoutMs).getRange(GEN, 0, 4)).rejects.toThrow(RangeError);
+      for (let i = 0; i < 100 && !stub.overridden.every((o) => o.closed); i++) await sleep(20);
+      expect(stub.overridden).toHaveLength(1);
+      expect(stub.overridden[0]!.closed).toBe(true);
+      await sleep(50);
+    } finally {
+      watch.stop();
+    }
+    expect(watch.events).toEqual([]);
+  });
+});
+
 describe('Azure Blob: a timed-out read is retried by the store', () => {
   it('a read that stalls once and then answers succeeds, on the retry', async () => {
     const backend = new AzureBlobStorage({
@@ -345,10 +371,12 @@ describe('Azure Blob: a read leaves no timer behind', () => {
     'a process whose %s read fails, with a long timeout, exits promptly',
     async (call, error) => {
       if (call === 'registry') {
-        // A pointer answered with no ETag, which the SDK refuses with a socket left open unless the read lets it go.
+        // A pointer answered with no ETag, which the read refuses with IntegrityError: a read that fails, whose timer
+        // must be cleared as a fast read's is. (A socket left open does not hold a process; the release of one is
+        // checked in-process, above, where the stub sees the connection close.)
         stub.getOverride = () => ({
           status: 200,
-          headers: { 'content-length': '100' },
+          headers: { 'content-length': String(64 * 1024 * 1024) },
           body: 'endless',
         });
       }
