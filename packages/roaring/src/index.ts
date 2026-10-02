@@ -198,7 +198,8 @@ export interface CloudRoaringOptions {
    * read the registry or list the bucket directly (`exists`, `segments`, `generations`, `getRetention`, and the
    * registry scan `subjectReport`, `exportSegments` and `checkConsistency` start from): they report a transient fault to their caller, because a conditional write that lands and then loses its response would, replayed,
    * report its own write as a conflict. Pass a partial policy to tune it — anything you leave out keeps its
-   * default — or `false` to turn the read retry off (e.g. if your injected client already retries).
+   * default — or `false` to turn the read retry off (e.g. if your injected client already retries). A GCS download is retried by
+   * the GCS driver whatever this says.
    * Deterministic errors (`ValidationError`/`IntegrityError`/`WriteConflictError`/…) are never retried by this
    * layer.
    */
