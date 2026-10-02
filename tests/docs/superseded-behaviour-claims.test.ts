@@ -573,6 +573,47 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
     claim: new RegExp(g(String.raw`no \`?AbortSignal\`? anywhere in (?:this|the) library`), 'i'),
     why: "the S3 and Azure Blob packages abort a read that runs past `readTimeoutMs` through its request's abort signal — say that no write is timed",
   },
+  {
+    claim: new RegExp(
+      g(String.raw`\ba load (?:takes|numbers)\b[^.]{0,80}?\bone above the highest\b`),
+      'i',
+    ),
+    why: 'a load takes `currentGen + 1` when no object holds it, and numbers above everything in the bucket only when its check finds that number taken or cannot answer',
+  },
+  {
+    claim: new RegExp(
+      g(
+        String.raw`\b(?:until )?an? (?:later )?load numbers (?:its generation )?above (?:them|it)\b`,
+      ),
+      'i',
+    ),
+    why: 'a load can number below an object above the pointer: such objects stay until loads pass them (the first whose number one of them holds numbers above them all), or until a generation above them is current',
+  },
+  {
+    claim: new RegExp(
+      g(
+        String.raw`\b(?:lists?|listing|listings)\b(?: the segment)?(?: twice)?[^.]{0,30}?\bto (?:choose|number) (?:the|a|its) generation(?: number)?\b`,
+      ),
+      'i',
+    ),
+    why: 'a load checks that its generation number is free with one metadata request, and lists the segment for it only when the check finds the number taken',
+  },
+  {
+    claim: new RegExp(
+      g(
+        String.raw`store\.load\(\)[^.]{0,200}?\babout (?:twice|doubles?)\b|\babout doubles a load(?:'|’)s bill\b`,
+      ),
+      'i',
+    ),
+    why: "store.load() adds about half the write and publish's bill again, not as much again",
+  },
+  {
+    claim: new RegExp(
+      g(String.raw`\b(?:reads (?:the|its) pointer seven times|seven pointer reads)\b`),
+      'i',
+    ),
+    why: "a segment's first load reads the pointer five times and checks its generation number once",
+  },
 ];
 
 /**

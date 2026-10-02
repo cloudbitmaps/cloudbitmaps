@@ -1313,8 +1313,9 @@ export class CloudRoaring {
    * current is a no-op that reports itself.
    *
    * It deletes nothing. The generations above the new pointer stay put — which is what makes this reversible —
-   * and are then *above* `currentGen`, where collection never looks. They remain until a load numbers above them
-   * (collection then keeps the newest `keep` of what is below its pointer), {@link CloudRoaring.dropSegment}
+   * and are then *above* `currentGen`, where collection never looks. They remain until loads pass them (the first
+   * load whose number one of them holds numbers above them all, and collection then keeps the newest `keep` of what is
+   * below its pointer), {@link CloudRoaring.dropSegment}
    * deletes them, or {@link CloudRoaring.eraseSubject} does: all of those present when it rewrites, and only those holding
    * the id when the current generation does not. An operator who has just undone a bad load should not have the
    * evidence collected out from under them, while a rollback target that still holds erased data would make the
@@ -1431,9 +1432,11 @@ export class CloudRoaring {
    * forever and quietly. Branch on `dropped`, and treat `reason: 'absent'` as the alert.
    *
    * **Inspect `generationsRemaining`.** Empty is the normal outcome; non-empty means the storage was NOT fully
-   * reclaimed and the drop should be re-run. A load that was already writing when the tombstone landed still
-   * finishes its object, so a single sweep can miss it — this call re-sweeps and then reports whatever it still
-   * could not remove rather than returning a result that looks like a clean drop.
+   * reclaimed and the drop should be re-run. A load that had read the segment before the tombstone landed, whether it
+   * was writing or still consuming its ids, can still write its object, so a single sweep can miss it — this call
+   * re-sweeps and then reports whatever it still could not remove rather than returning a result that looks like a
+   * clean drop. A load that writes after the last sweep deletes its own object once its publish is refused; only one
+   * whose process stops in between leaves it, for a re-run of the drop.
    *
    * Reads become empty within `cache.genTtlMs` (default 2 s), not instantly: a store that had already read this
    * segment may answer from its cached generation + cached chunks until that window lapses, or, while the registry

@@ -111,8 +111,8 @@ export async function nextLoadGeneration(
  * an empty array is not: `eraseIdFromSegment` reads the returned list as the physical half of its erasure
  * receipt, and would otherwise report `erased: true` over bytes still in the bucket. Re-run it.
  *
- * That state is reachable in practice: a `dropSegment` whose Storage sweep threw part-way, or a load that was
- * already writing its object when the tombstone landed and finished the write afterwards. `dropSegment` re-sweeps
+ * That state is reachable in practice: a `dropSegment` whose Storage sweep threw part-way, or a load that had read
+ * the row before the tombstone landed, wrote its object afterwards, and stopped before its refusal deleted it. `dropSegment` re-sweeps
  * and reports whatever it could not reclaim in `generationsRemaining`, but a drop that was never re-run leaves a
  * residual, and this is what eventually collects it from the retention sweep.
  *

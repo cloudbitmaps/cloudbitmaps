@@ -15,9 +15,9 @@
  *
  * Refusing therefore has to clean up after itself. The object is already durable at that point, and it sits
  * ABOVE `currentGen`, where generation collection deliberately never looks (it deletes strictly below the
- * pointer), so a refused load deletes its own object before returning, while the segment's row is unchanged or
- * gone. Once another write has changed the row, the object's number may name a re-created segment's live object,
- * so it stays, and collection takes it like any other generation once one above it is current.
+ * pointer), so a refused load deletes its own object before returning, while the segment's row is unchanged, gone
+ * or `destroyed`. Once another write has changed the row, the object's number may name a re-created segment's live
+ * object, so it stays, and collection takes it like any other generation once one above it is current.
  */
 import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
 import { type CodecInterface, requireCodec } from './codec';
@@ -109,14 +109,15 @@ export type LoadRefusal =
    * put refused this one and it wrote nothing (`size: 0`); or the segment's registry row changed while the load was
    * writing: another load published, a retention change, a rollback or an erasure wrote the row, or the row was
    * deleted. Once another write has changed the row, the object stays in the bucket, because its generation number
-   * may by then name another incarnation's live object; once the row is gone, the object is deleted.
+   * may by then name another incarnation's live object; once the row is gone or `destroyed` (dropped or
+   * crypto-shredded), the object is deleted.
    */
   | 'superseded';
 
 export interface LoadResult {
   /**
    * The generation written. Present even when refused: a refusal deletes that object while the segment's row is
-   * unchanged or gone, and leaves it in the bucket once another write has changed the row. A load that lost its
+   * unchanged, gone or `destroyed`, and leaves it in the bucket once another write has changed the row. A load that lost its
    * generation number to another wrote nothing, and reports `size: 0`.
    */
   readonly generation: number;

@@ -45,7 +45,7 @@ so, and so do the module headers in the code.
 
 - **`PricingProfile.storage.requestsPerPointerRead` prices a pointer read apart from a tail read.** It is the requests
   one pointer read costs, 1 by default, and the cost model charges it for each operand of an intersection, for the
-  eight pointer reads a load makes and for each pointer refresh. `requestsPerSizedRead` keeps its name and its default
+  five pointer reads a load makes and for each pointer refresh. `requestsPerSizedRead` keeps its name and its default
   of 1, and now prices tail reads only: each operand's index read and the one a load makes. A pointer read is one
   request on S3, GCS and Azure Blob alike, so every shipped backend leaves `requestsPerPointerRead` at 1; S3 and GCS
   leave `requestsPerSizedRead` at 1 too, and an Azure Blob profile sets `requestsPerSizedRead: 2`, for its two-request
@@ -55,32 +55,60 @@ so, and so do the module headers in the code.
 
 ### Changed
 
-- **`store.load()` sends 11 requests to S3 where it sent 14: it reads the segment's row once, and checks its next
-  generation number instead of listing for it.** A load read its registry row four times before its publish; it now
-  reads it once, and the guard, the generation number, the write's refusal of a `destroyed` segment and its reuse of
-  the segment's key, and the publish's first attempt all decide from that read. The publish is fenced on that row as
-  before, on its token, on the pointer a guarded load judged, or on its absence, so a row that changes in between
-  makes the publish lose rather than land on the stale read. The number is `currentGen + 1` when one existence check
-  finds no object holding it (a zero-byte tail read: `HeadObject` on S3, the object's metadata on GCS, the blob's
-  properties on Azure Blob, one request on each); when the check meets an object, such as a crashed load's or the
-  generations a rollback left above the pointer, or cannot answer, the load lists the segment and numbers above
-  everything in it, as every load did before. A load can therefore take a number below an unpublished object above the
-  pointer, never one an object holds. A steady single-part load on S3 is now 3 PUT-class requests (the object, the
-  row, the collection pass's listing), 7 GET-class (five row reads, the guard's tail read, the check) and a delete,
-  where it was 4, 9 and a delete; a segment's first load is 3 and 5, where it was 4 and 7. GCS makes the same counts;
-  Azure Blob one GET-class request more, for its two-request tail read. `costReport()` and `estimateCost()` price a
-  load at those counts, the check at one request on every backend whatever `requestsPerPointerRead` and
-  `requestsPerSizedRead` say: $17.80 per million steady single-part loads at the default prices, where it was $23.60,
-  and $17.00 for a segment's first load, where it was $22.80. Two outcomes move with the single read, both
-  refusals still. A `dropSegment` or retention sweep that lands while a load is still consuming its ids now ends the
-  load `published: false` with `reason: 'superseded'`, its object left for the dropped segment's collection, where
-  the load threw `ValidationError` before writing; and on a store with a keystore, an unguarded load (`allowEmpty:
-  true`) into a segment with no row, whose row another writer creates while it is consuming its ids, now throws
-  `ValidationError` at its publish instead of reusing that writer's key. The calibration harness expects each load's
-  new shape, its projection of a load's GET-class requests is now `3 + 2 × retryBound` (the default workload's bound
-  is 364 PUT-class and 106,542 GET-class requests, $0.044437, and its expected bill 142 PUT-class and 92,866
-  GET-class, $0.037856), and the storage conformance suite now holds a driver's zero-byte tail read of a missing
-  object to `NotFoundError`, as the port documents for every tail read.
+- **A steady `store.load()` sends 11 requests to S3 where it sent 14: it reads the segment's row once, and checks its
+  next generation number instead of listing for it.** A load read its registry row four times before its publish. On
+  a cleartext segment it now reads it once, and the guard, the generation number, the write's refusal of a
+  `destroyed` segment, and the publish's first attempt all decide from that read; the publish is fenced on that row
+  as before, on its token, on the pointer a guarded load judged, or on its absence, so a row that changes in between
+  makes the publish lose rather than land on the stale read. A load that found no row, or found an encrypted one,
+  reads it again after its ids and before its write, so a first load still sees a row another writer created
+  meanwhile, and an encrypted segment's key is unwrapped only from a row read after the ids. The number is
+  `currentGen + 1` when one existence check finds no object holding it (a zero-byte tail read: `HeadObject` on S3,
+  the object's metadata on GCS, the blob's properties on Azure Blob, one request on each); when the check meets an
+  object, such as a crashed load's or the generations a rollback left above the pointer, or cannot answer (silently:
+  nothing records it), the load lists the segment and numbers above everything in it, as every load did before. A
+  load can therefore take a number below an object above the pointer, never one an object holds.
+
+  Counts, measured on S3 (MinIO) and counted at the driver ports; those for GCS and Azure Blob are derived from their
+  drivers. A steady single-part load on S3 is now 3 PUT-class requests (the object, the row, the collection pass's
+  listing), 7 GET-class (five row reads, the guard's tail read, the check) and a delete, where it was 4, 9 and a
+  delete; a segment's first load is 3 and 6, where it was 4 and 7, and its second the same. GCS makes the same
+  counts; Azure Blob one GET-class request more, for its two-request tail read. An encrypted segment's load reads its
+  row once more. `costReport()` and `estimateCost()` price a load at those counts, the check at one request on every
+  backend whatever `requestsPerPointerRead` and `requestsPerSizedRead` say: $17.80 per million steady single-part
+  loads at the default prices, where it was $23.60, and $17.40 for a segment's first load, where it was $22.80.
+
+  What else moves with it:
+  - **A drop or a shred that lands while a load is consuming its ids.** A load that read a present cleartext row
+    before a `dropSegment` (or a retention sweep's drop) now writes its object, is refused at the publish
+    (`published: false`, `reason: 'superseded'`) and deletes that object itself, since every generation of a
+    `destroyed` segment is garbage; it threw `ValidationError` before writing. Only a load whose process stops
+    between its write and its refusal leaves the object behind, for a re-run of the drop. An encrypted segment, or
+    a load that found no row, is refused with `ValidationError` before it writes, as before. An `*Into` whose
+    destination is dropped while it runs now throws `WriteConflictError` ("Re-read the destination and re-run"),
+    where it threw `ValidationError`; a re-run gets the `ValidationError`.
+  - **A cleartext write is never published onto an encrypted row.** A load with no keystore that wrote cleartext
+    while another writer created the segment encrypted is refused at its publish with `KeyUnavailableError` and
+    told to re-run with the keystore; before, a narrow window let such a publish land. A keystore load that mints a
+    key while another writer publishes first is refused with `ValidationError`, whose message now says to re-run
+    the write, which then uses the segment's key.
+  - **A number whose object was deleted can be taken again.** It always could be (a refused load's, or a number an
+    erasure freed with nothing above it); now a load also numbers under an object that survives above the pointer,
+    after an erasure of the generations above a rolled-back pointer or a collection pass that stopped part-way. A
+    live reader that still holds the old object's index used to fail such a read with `IntegrityError`; on an
+    `IntegrityError` or a range `ValidationError` it now reads the object's footer, as a pin does, and when the
+    object is another one, or gone, it re-reads the segment and answers from the new object. Caches key on the
+    number and the row's token, and pins on the object's fingerprint, as before.
+  - **Disaster recovery.** After a registry restore, re-running the load takes the number after the restored
+    pointer while no object holds it, so the first re-runs can number below the generations published after the
+    restore point and leave them above the pointer until a load's check meets one; the guide says to load until
+    the pointer is above them. Because a re-run load takes again the numbers collection freed, step 9's restart or
+    invalidation of every store is what clears a store that read the segment before the disaster.
+  - **The calibration harness** expects each load's new shape, and its projection of a load's GET-class requests is
+    now `4 + 2 × retryBound`: the default workload's bound is 364 PUT-class and 106,583 GET-class requests,
+    $0.044453, and its expected bill 142 PUT-class and 92,907 GET-class, $0.037873.
+  - **The storage conformance suite** now holds a driver's zero-byte tail read of a missing object to
+    `NotFoundError`, as the port documents for every tail read.
 - **Azure Blob reads a registry pointer in one request, where it made two.** A pointer read was the blob's
   properties and then a download pinned to the ETag they named; it is now one GET of the whole blob, taking the ETag
   (the version fence) and the length from the response that carries the bytes, so the pair describes one version and a
@@ -120,8 +148,8 @@ so, and so do the module headers in the code.
   records each discard beside its stage: the sample, the error's name, the transport code beneath it, the SDK's
   attempt count, how long the attempt ran and the requests it made. Those requests are billed and stay in the stage's,
   and each stage's expected count is held to what its kept samples made. The projection allows three discarded samples
-  at the costliest sample's bound, so the default workload's projected upper bound is 364 PUT-class and 106,624
-  GET-class requests, $0.044470, under the $0.05 ceiling the README's example sets (`CR_CALIBRATE_MAX_USD` has no
+  at the costliest sample's bound, so the default workload's projected upper bound is 364 PUT-class and 106,583
+  GET-class requests, $0.044453, under the $0.05 ceiling the README's example sets (`CR_CALIBRATE_MAX_USD` has no
   default, and `--run` refuses without one). `bench/lib/calibration-figures.cjs` treats a run with discards within the
   harness's bounds as evidence and requires its report to state how many it discarded. Wherever the harness records an
   error it now keeps the name, the code and the message: the SDK's HTTP handler renames `ECONNRESET`, `EPIPE` and
