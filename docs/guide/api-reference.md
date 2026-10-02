@@ -73,9 +73,9 @@ pointer — configured from one bucket and one prefix, which is what makes them 
 |---|---|---|
 | `MemoryStorage` (`MemoryStorageOptions`) | `@cloudbitmaps/roaring` | `new MemoryStorage({ now? }?)` |
 | `LocalFsStorage` (`LocalFsStorageOptions`) | `@cloudbitmaps/roaring` | `new LocalFsStorage('/var/lib/cloudbitmaps', { now? }?)` — generations under `<root>/storage`, pointers under `<root>/registry`, which is also the layout `export-segments` expects. A root is for one process: instances in a process share a lock per row, two processes on one root are not fenced |
-| `S3Storage` | `@cloudbitmaps/s3` | `new S3Storage({ bucket, prefix?, client?, region?, endpoint?, pathStyle?, credentials?, maxObjectBytes?, partBytes?, readTimeoutMs?, now? })` — `client` or the four settings that build one, and both is refused |
-| `GcsStorage` | `@cloudbitmaps/gcs` | `new GcsStorage({ bucket, prefix?, client?, projectId?, apiEndpoint?, maxObjectBytes?, simpleUploadThresholdBytes?, now? })` — `client` or the two settings that build one, and both is refused |
-| `AzureBlobStorage` | `@cloudbitmaps/azure-blob` | `new AzureBlobStorage({ containerClient, prefix?, maxObjectBytes?, blockBytes?, readTimeoutMs?, now? })` or `({ connectionString, container, prefix?, maxObjectBytes?, blockBytes?, readTimeoutMs?, now? })` — one or the other, and both is refused |
+| `S3Storage` | `@cloudbitmaps/s3` | `new S3Storage({ bucket, prefix?, client?, region?, endpoint?, pathStyle?, credentials?, maxObjectBytes?, partBytes?, readTimeoutMs?, conditionalDelete?, now? })` — `client` or the four settings that build one, and both is refused |
+| `GcsStorage` | `@cloudbitmaps/gcs` | `new GcsStorage({ bucket, prefix?, client?, projectId?, apiEndpoint?, maxObjectBytes?, simpleUploadThresholdBytes?, conditionalDelete?, now? })` — `client` or the two settings that build one, and both is refused |
+| `AzureBlobStorage` | `@cloudbitmaps/azure-blob` | `new AzureBlobStorage({ containerClient, prefix?, maxObjectBytes?, blockBytes?, readTimeoutMs?, conditionalDelete?, now? })` or `({ connectionString, container, prefix?, maxObjectBytes?, blockBytes?, readTimeoutMs?, conditionalDelete?, now? })` — one or the other, and both is refused |
 
 **A backend comes from one of these five classes, or from a class of your own that calls `brandAsBackend` from the driver kit
 ([driver kit](#driver-kit--what-you-need-to-implement-a-driver)).** A plain `{ storage, registry }` object is
@@ -94,6 +94,25 @@ is built:
 | `GcsStorage` | `maxObjectBytes` | 5 TiB, GCS's per-object maximum | the largest object the backend will write and advertise; set it lower to fail fast on a runaway write; a positive safe integer |
 | `AzureBlobStorage` | `blockBytes` | 8 MiB | staged block size, and so the peak write memory; a positive safe integer |
 | `AzureBlobStorage` | `maxObjectBytes` | `blockBytes` × 50,000 (about 400 GiB at the default) | the largest blob the backend will write and advertise; raise it and `blockBytes` grows so the 50,000-block limit still covers it; a positive safe integer |
+
+**Each cloud backend says whether its registry removes a deleted row for good: `conditionalDelete`.** On, a row the
+registry deletes, the retention sweep's purge of a tombstone included, is removed from the bucket by a delete the
+service applies only to the version the registry read: `DeleteObject` with `If-Match` on S3, a delete with
+`ifGenerationMatch` on GCS, Delete Blob with `ifMatch` on Azure Blob. A precondition that no longer holds is a
+`WriteConflictError`, and the registry re-reads. Off, every delete leaves a tombstone in the row's place, which every
+full listing reads. A row written by a release before 0.12 is tombstoned either way. `backend.registry.capabilities()`
+reports which (`conditionalDelete: true` or `false`). A value that is not a boolean is refused with `ValidationError`.
+The registry needs delete permission on its prefix for it.
+
+| Backend | Default | Why |
+|---|---|---|
+| `S3Storage` | `true` with no `endpoint` and a client without one; `false` with a custom endpoint | AWS documents `If-Match` on `DeleteObject` for general purpose and directory buckets. An S3-compatible store may accept the header and ignore it, and MinIO does, so a client with an endpoint of its own keeps tombstones until you set `true`. A VPC endpoint is a custom endpoint too |
+| `GcsStorage` | `true` on the public endpoint; `false` with a custom `apiEndpoint` | GCS applies `ifGenerationMatch` on a delete; fake-gcs-server ignores it |
+| `AzureBlobStorage` | `true` | Azure Blob applies `If-Match` on Delete Blob, and Azurite does too |
+
+Whether real S3 and real GCS refuse a stale precondition on a delete is checked by a probe against real buckets
+(`tests/integration/real-cloud-conditional-delete.test.ts`), which the integration lane, on emulators that ignore it,
+cannot replace.
 
 **`S3Storage` can time its reads.** `readTimeoutMs` (`0`, the default, sets no timeout; an integer from 0 to
 2,147,483,647) is how long each `GetObject` and `HeadObject` either half sends may take, the response body included,
@@ -492,7 +511,8 @@ to (`packages/roaring/src/testing/conformance.ts`) is *not* exported as a public
 driver cannot execute it today. Until it is, the load-bearing behaviours to reproduce by hand are: a
 conditional create that **refuses** rather than overwrites (hard invariant 2 — this is the one that silently
 loses data if you get it wrong), ranged reads that return exactly the requested bytes, a compare-and-swap on
-the pointer row that reports a lost race rather than clobbering, and the four `currentGen: null` obligations
+the pointer row that reports a lost race rather than clobbering, a delete that removes a row only while it is
+the version the delete read, if you report `conditionalDelete: true`, and the four `currentGen: null` obligations
 listed below.
 
 </details>
@@ -519,7 +539,7 @@ nothing can compare one. Branding them is you taking that on.
 | `brandAsBackend` · `STORAGE_BACKEND` | stamp the cross-package brand on a backend, and the symbol a backend class declares it with. A store accepts a backend by brand, never by `instanceof`, so a backend built in one package is recognised in another. It checks that `storage` has a `putImmutable` and `registry` a `compareAndSwap`, throwing `ValidationError` otherwise, or when the object is frozen or non-extensible, and returns the object it was given. It takes a class (`brandAsBackend(this)` in the constructor) or a plain `{ storage, registry }` object, which is how halves of your own are paired — see below |
 | `Token` · `segmentKey` | **from `@cloudbitmaps/core`, not from `driver-kit`.** The opaque compare-and-swap token (unique per write, compared by equality only, ABA-safe across delete→recreate) and the canonical segment key-string helper. A driver package may import core's main entry for these |
 | `ObjectStoreRegistry` | compare-and-swap over a plain object store. Every cloud registry driver is a thin adapter over this, which is why all three pass one conformance suite — the OCC semantics live here, not in the drivers |
-| `ObjectRegistryStore` · `ObjectRow` | the minimal store a driver hands `ObjectStoreRegistry`, and the row it persists |
+| `ObjectRegistryStore` · `ObjectRow` | the minimal store a driver hands `ObjectStoreRegistry`, and the row it persists: `read`, a conditional `write` and `listKeys`, and optionally `delete(key, { version })`, a delete the backend applies only while the object is at exactly that version, with `conditionalDelete: true` to say the backend can be relied on to. With both, `ObjectStoreRegistry` removes a row born with an incarnation id rather than tombstoning it, and reports `conditionalDelete: true` in its `capabilities()` |
 | `ObjectVersionRaced` · `MAX_ROW_BYTES` | the sentinel a store that reads a row in two calls throws when a write lands between them, which `ObjectStoreRegistry` answers by reading again (no shipped store raises it: each reads a row in one request), and the hard cap on a serialized row |
 | `normalizeObjectPrefix` · `prefixPart` | prefix normalization, so `cr`, `cr/` and `/cr/` address the same place |
 | `encodeNameForKey` · `namespaceKeyPart` | how a segment name and namespace become an object key |
@@ -554,6 +574,17 @@ driver to them (`IStorageDriver`'s doc comment states the same list):
 reads are strongly consistent; `list` yields every existing row, `destroyed` tombstones included, with every field;
 the replay rule above applies to `create` and `compareAndSwap`; a transient fault is a `TransientError`; and
 `delete` is idempotent, with one addition.
+
+**`RegCaps.conditionalDelete` says what `delete` leaves behind.** `true`: a delete removes a row whose token carries an
+incarnation id from the backend for good, and only while the row is still the exact version it read (by a precondition
+the backend applies, or a lock every writer of the backend takes), so a full `list` no longer reads it. A row a
+release before 0.12 wrote has a bare decimal token and is still tombstoned: a process on that release, re-creating
+the name over nothing, would issue its counters again from 0. `false` or absent: every delete leaves a tombstone. A
+shipped registry reports it: the in-memory and local-filesystem ones `true`, the cloud ones as their backend's
+`conditionalDelete` option says. It is optional and additive: a driver of your own that omits it is read as `false`.
+The in-repo conformance suite's `registryDeleteConformance(label, make)` holds every shipped driver to what it declares;
+`make` returns the driver and a `stored(ref)` probe of its backend, and optionally `plantRow(ref, text)`, which puts a
+row as another writer left it.
 
 **`delete(ref, expected?)` takes an optional expected token.** Without it, deleting an absent row is a no-op, as
 before. With it, the delete is fenced like a compare-and-swap: it lands only while the row still carries that token,
@@ -593,7 +624,8 @@ which compares them only for equality. `ObjectStoreRegistry`'s constructor takes
 `Entropy` source (`(length) => Uint8Array`), which defaults to the platform's Web Crypto: inject one only to make a
 test replayable, never a seeded one in production, which hands every process the same ids. On a runtime with no Web
 Crypto a shipped registry still reads, reports `canWrite: false` in its `capabilities()`, and refuses every write
-with `UnsupportedError`; a load and an erasure rewrite check `canWrite` before their first request, so they refuse
+that issues a token (a create, a compare-and-swap, a tombstone) with `UnsupportedError`; a delete that removes a row
+issues none, and lands; a load and an erasure rewrite check `canWrite` before their first request, so they refuse
 before writing an object. A registry of your own may report `canWrite: false` the same way.
 
 **`currentGen` is nullable, and `null` is a value — not a missing field.** A `RegistryRecord` with
@@ -790,8 +822,9 @@ Boundary helpers and errors: `validateSegmentRef` · `BlobSink` · `ValidationEr
 
 `S3Storage` · `S3StorageOptions` — the backend, both halves in one bucket.
 
-Each conditional write the backend makes — the write-once `PutObject`, a multipart upload's `CompleteMultipartUpload`, and
-the registry's create, compare-and-swap and delete, which writes a tombstone — is sent once, with the SDK's retry off for that request alone, whether
+Each conditional request the backend makes — the write-once `PutObject`, a multipart upload's `CompleteMultipartUpload`,
+the registry's create, compare-and-swap and tombstone, and with `conditionalDelete` the registry's `DeleteObject` under
+`If-Match` — is sent once, with the SDK's retry off for that request alone, whether
 the client is one you passed or one `S3Storage` built. Every other request keeps the client's retry. A transient
 failure of a conditional write throws `TransientError`, and the write may or may not have landed
 ([why](production.md#reliability-retries-backoff--timeouts)).
@@ -823,7 +856,10 @@ around it, so a transient failure throws `TransientError` and the write may or m
 is a resumable upload, a session of requests that the SDK retries within, under the client's retry options: it
 carries a random id in the object's metadata, and a `412` on its commit reads the stored object back, so an object
 that carries its own id is a success and any other a `WriteConflictError`
-([why](production.md#reliability-retries-backoff--timeouts)).
+([why](production.md#reliability-retries-backoff--timeouts)). With `conditionalDelete`, the registry removes a row with
+a delete under `ifGenerationMatch`, which the SDK retries as it does any request with a precondition: a second copy can
+remove nothing the first could not, and one that meets the first's landed delete is a 404, which the registry reads as
+a lost race and re-reads.
 
 ### `@cloudbitmaps/azure-blob`
 
@@ -835,7 +871,9 @@ run on **one container alone**: compare-and-swap rides blob conditions (`ifNoneM
 `ifMatch: <etag>` to swap), so no second service is needed to hold the `currentGen` pointer. Every request goes
 through the client's retry policy, the conditional writes included. Each conditional write carries a random id in
 the blob's metadata, and a conflict reads the stored blob back, so a blob that carries its own id is a success and
-any other a `WriteConflictError` ([why](production.md#reliability-retries-backoff--timeouts)).
+any other a `WriteConflictError` ([why](production.md#reliability-retries-backoff--timeouts)). The registry removes a
+row with Delete Blob under `ifMatch`, unless `conditionalDelete` is `false`; a `412` or a `404` on it is a lost race,
+and a `409` (a snapshot or a lease in the way) reaches the caller as the SDK raised it.
 
 ## Keeping this in sync
 

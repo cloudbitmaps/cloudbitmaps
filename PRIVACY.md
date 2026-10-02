@@ -262,18 +262,33 @@ So the two are complements, not alternatives: **`dropSegment` for "stop paying f
 > failed `dropSegment`, and a fine way to expire *noncurrent* object versions; give it a window comfortably
 > longer than your retention and never let it touch a current generation.
 
-> ⚠️ **Never let a lifecycle rule expire a registry row's current version or its tombstone** — a separate trap,
-> and a worse one. Deleting a registry row does not remove it: it writes a **tombstone** carrying the row's token
-> counter on, which is what keeps the name's tokens unique by construction. Expire those tombstones and a segment
-> re-created under the same name starts the counter again; its tokens are then kept apart from the old ones only by
-> their random parts, an incarnation id drawn when the row is created and a part drawn for each write, with
-> overwhelming probability rather than by construction. That
-> token is the segment's **identity**: it is what a cached reader, a fenced publish and a generation-collection
-> pass each compare to decide whether two observations describe the same segment. Re-issue one and they can all
-> answer "yes" about a segment that no longer exists — serving a deleted incarnation's data, or collecting a
-> live one's objects. Storage for a tombstone is a few bytes per retired segment; treat it as permanent. A rule
-> on *noncurrent* versions of the registry prefix touches neither the current row nor its tombstone; what it
-> shortens is the history a registry restore picks from, and the time a crypto-shred takes to complete (above).
+> ⚠️ **Never let a lifecycle rule expire a registry row's current version, a tombstone, or a due-index pointer** —
+> a separate trap, and a worse one. A rule cannot tell a live row from a tombstone, and an expired live row is a
+> segment whose pointer is gone: its generations look unreferenced, and nothing reads or collects them. The library
+> removes a row only by a delete the store applies to the exact version it judged, and only a row whose token
+> carries a random incarnation id, so a name re-created later is told apart from it with overwhelming probability.
+> A tombstone of a row written by a release before 0.12 carries the row's token counter on instead, and that counter
+> is what keeps the name's tokens unique against a process still on that release. That token is the segment's
+> **identity**: it is what a cached reader, a fenced publish and a generation-collection pass each compare to decide
+> whether two observations describe the same segment. Re-issue one and they can all answer "yes" about a segment that
+> no longer exists — serving a deleted incarnation's data, or collecting a live one's objects. A rule on
+> *noncurrent* versions of the registry prefix touches neither the current row nor its tombstone; what it shortens is
+> the history a registry restore picks from, and the time a crypto-shred takes to complete (above).
+
+**What the registry keeps of a retired segment, and for how long.** A retirement by `retireExpired` leaves a
+`destroyed` row: the segment's namespace and name, its `retention` and `residency` metadata (any keys of yours in
+them included), its timestamps and its token. It holds no id, and on an encrypted segment no wrapped key, since the
+drop shreds it. The due index holds a pointer to it whose name spells out the same namespace and name. Both stay
+for `tombstoneGraceMs` (24 h by default) after the retirement, and for as long as the segment's storage cannot be
+proven gone. Then the sweep's purge removes both from the bucket, where the registry reports `conditionalDelete`:
+the default for AWS S3, GCS on its public endpoint, Azure Blob, the local filesystem and memory. A pointer whose
+removal fails stays until a `scan: 'index'` sweep reads its day and removes it, so a deployment that never runs one
+keeps such a pointer. Where the registry does not report `conditionalDelete` (an S3-compatible store or an
+emulator, by default, or `conditionalDelete: false`), and for a row written by a
+release before 0.12 on any backend, the purge leaves a tombstone instead: every one of those fields, in the bucket,
+indefinitely, read by every full listing. With object versioning on, a removed row's earlier versions stay until a
+noncurrent-version rule expires them, as an overwritten row's do. A tombstone a hand-run `dropSegment` or a
+crypto-shred left is never purged by the library.
 
 Full detail, including the dated-bucket pattern and the pitfalls, is in the retention section of the
 [retention guide](docs/guide/retention.md).

@@ -13,6 +13,15 @@ so, and so do the module headers in the code.
 
 ### Breaking
 
+- **A registry needs permission to delete under its own prefix: its deletes now remove rows.** Where the backend's
+  `conditionalDelete` is on (below), every registry delete of a row created by 0.12, the retention sweep's purge of a
+  tombstone among them, is a delete under a precondition, where it was an overwrite with a tombstone: `DeleteObject` on
+  S3, an object delete on GCS, Delete Blob on Azure. A policy that lets the backend delete only under the segments'
+  prefix makes each such delete fail with the provider's access error: a purge then leaves the row and reports the
+  error in its ledger entry, and the due index keeps a pointer it meant to remove. Grant `s3:DeleteObject`,
+  `storage.objects.delete` or a role that may delete blobs on `<prefix>registry/`, or set `conditionalDelete: false`
+  on the backend to keep writing tombstones.
+
 - **Registry rows are schema 2, and there is no going back: stop every 0.11 process before the first 0.12 write.**
   Every row a 0.12 registry writes, whether a create, a compare-and-swap or a tombstone, is stamped
   `schemaVersion: 2`, whatever it holds, and 0.12 reads rows stamped 1 or 2. A 0.11 process refuses a schema-2 row
@@ -53,6 +62,28 @@ so, and so do the module headers in the code.
   number breaks. The in-memory backend's tokens take the same form, its counter still global to the backend.
 
 ### Added
+
+- **The due index carries a pointer to each retirement's tombstone, so `scan: 'index'` purges as well as retires.**
+  A retirement files it under the day the tombstone's grace ends, its stamp plus `tombstoneGraceMs`; no field of the
+  row records that day. An index scan reads it back with the expiry pointers and hands the row to the same purge the
+  fleet scan runs, which removes the pointer once the row is gone, and never after a delete whose outcome is unknown.
+  A retirement costs one registry read and one write more, a purge one read and one delete more.
+
+- **`RegCaps.conditionalDelete`, and a `conditionalDelete` option on `S3Storage`, `GcsStorage` and
+  `AzureBlobStorage` and their registry drivers.** `true` says a registry's `delete` removes a row from its backend for
+  good, only while the row is still the version the delete read, so a full `list` no longer reads it; `false` or
+  absent, every delete leaves a tombstone. The cloud registries remove a row with `DeleteObject` under `If-Match` (sent
+  once, like the S3 writes), a GCS delete under `ifGenerationMatch`, and Delete Blob under `ifMatch`, each set to the
+  version the registry read; a precondition that no longer holds, or an object already gone, is a
+  `WriteConflictError`, and the registry re-reads. The option defaults to `true` for AWS S3 (a client with no custom
+  endpoint), GCS on its public endpoint and Azure Blob, and to `false` for an S3 or GCS client with an endpoint of its
+  own: MinIO and fake-gcs-server accept the precondition on a delete and ignore it, and on such a store two sweepers
+  and a re-create of the name could delete a live row. A value that is not a boolean is refused with
+  `ValidationError`. The in-memory and local-filesystem registries report `true`. For driver authors,
+  `ObjectRegistryStore` may implement `delete(key, { version })` and set `conditionalDelete: true` to say its backend
+  applies the precondition; with both, `ObjectStoreRegistry` removes rows rather than tombstoning them. Whether real S3
+  and real GCS refuse a stale precondition is checked by `tests/integration/real-cloud-conditional-delete.test.ts`
+  against named buckets, skipped otherwise, which is a gate for this release.
 
 - **A registry record can carry a `summary` of its current generation** (`RegistryRecord.summary`, for driver
   authors). In the clear on a cleartext segment, `{ generation, cardinality, metadata? }`, with `cardinality` an
@@ -121,6 +152,23 @@ so, and so do the module headers in the code.
   with `ValidationError`, as `requestsPerSizedRead` is.
 
 ### Changed
+
+- **The local-filesystem registry unlinks a deleted row born with an incarnation id**, under the row's lock, and
+  tombstones one a release before 0.12 wrote. **An index scan removes a due-index pointer whose segment has no row**,
+  fenced on the pointer's token and after reading the segment again, where it skipped it on every scan that read its
+  day; only in the sweep's own namespace and shards, and never under `dryRun`.
+
+- **The retention sweep's purge removes a tombstone's row for good, where the registry reports
+  `conditionalDelete`.** It used to rewrite the row as a tombstone that every later full listing read, so a sweep of a
+  namespace that churns short-lived segments made one registry read for every name the namespace had ever held. It
+  now makes one for each segment that is live or inside its grace: after 10,000 segments are created, retired and
+  purged, a namespace-scoped or unscoped sweep makes one registry read, for the one live row, where it made 10,001 or
+  20,001. The delete is fenced on the token the purge judged and applied by the store only to the version it read, so
+  a write or a re-create of the name that lands first makes it fail (`failed: contended` in the ledger) and leaves the
+  newer row. A row written by a release before 0.12 is still tombstoned: its token is a bare counter, and a process on
+  that release re-creating the name over nothing would issue those counters again. Tombstones already in a bucket
+  stay. Every registry `delete` follows the same rule, so a due-index pointer a retirement or a `setRetention` removes
+  is removed for good too.
 
 - **A registry row whose token is in no form the library writes is refused when it is read**, with an
   `IntegrityError` naming the row's key, where it used to pass the read and fail at its next write. A row stamped 1

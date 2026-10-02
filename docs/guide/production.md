@@ -86,8 +86,9 @@ days are also the oldest point you can restore to: set them at or above your res
 ```
 
 **Never: expire current objects.** No rule may delete current generations, and no rule may delete current versions
-under the `registry/` prefix. A deleted pointer row is replaced by a tombstone that keeps the pointer safe against
-reuse, so expiring the row breaks that. A rule on noncurrent versions only is safe, and is the optional recipe in
+under the `registry/` prefix. A rule cannot tell a live row from a tombstone or from a due-index pointer, and an
+expired live row is a pointer lost: every generation it named looks unreferenced. Where the registry removes a row
+itself, it removes only the version it judged, by a conditional delete. A rule on noncurrent versions only is safe, and is the optional recipe in
 [the disaster-recovery guide](disaster-recovery.md#optional-make-a-shred-durable-with-a-registry-expiry-rule).
 
 ## Versioning and backups
@@ -431,8 +432,8 @@ loop re-reads the row first, so no publish can move it back. All bytes are check
 **Your client's own retry, and the writes it does not reach.** Each cloud SDK retries a failed request itself, under
 the store's retry. For a conditional write that retry gives the wrong answer. A write that lands and then loses its
 response is sent again, meets itself, and fails its own precondition, which reads as a lost race for a write that
-won. This covers a generation's write-once put and the registry's create, compare-and-swap and delete (a delete
-writes a tombstone). So the S3 and GCS packages send a conditional write once where the SDK lets them, with its retry
+won. This covers a generation's write-once put and the registry's create, compare-and-swap and delete (a tombstone
+write, or a delete under a precondition where the backend's `conditionalDelete` is on). So the S3 and GCS packages send a conditional write once where the SDK lets them, with its retry
 off for that request alone. The Azure Blob package, whose retry has no per-request switch, tags each write and
 settles a conflict by reading it back. The GCS package does the same for an object above
 `simpleUploadThresholdBytes`, which uploads as a resumable session. The client is otherwise left as it is, a client
@@ -444,9 +445,9 @@ package stands:
 
 | package | conditional writes |
 |---|---|
-| `@cloudbitmaps/s3` | every one is sent once: the write-once `PutObject`, a multipart upload's `CompleteMultipartUpload`, and the registry's create, compare-and-swap and delete |
-| `@cloudbitmaps/gcs` | the registry's writes, and an object up to `simpleUploadThresholdBytes` (8 MiB by default), are each one request, sent once. A larger object is a resumable upload, a session of requests that the SDK retries within, under the client's retry options; it and every Azure Blob write are tagged with a random id in metadata, as described below |
-| `@cloudbitmaps/azure-blob` | sent through the client's retry policy, which sends a request again after a network error or a 500 or 503. Each write is tagged with a random id in blob metadata, and a conflict is settled by reading the stored blob back, as described below |
+| `@cloudbitmaps/s3` | every one is sent once: the write-once `PutObject`, a multipart upload's `CompleteMultipartUpload`, and the registry's create, compare-and-swap and delete, a `DeleteObject` under `If-Match` included |
+| `@cloudbitmaps/gcs` | the registry's writes, and an object up to `simpleUploadThresholdBytes` (8 MiB by default), are each one request, sent once. A larger object is a resumable upload, a session of requests that the SDK retries within, under the client's retry options; it and every Azure Blob write are tagged with a random id in metadata, as described below. The registry's delete under `ifGenerationMatch` goes through the SDK's retry, which a precondition makes safe: a second copy removes nothing the first could not |
+| `@cloudbitmaps/azure-blob` | sent through the client's retry policy, which sends a request again after a network error or a 500 or 503. Each write is tagged with a random id in blob metadata, and a conflict is settled by reading the stored blob back, as described below. The registry's delete under `ifMatch` is sent the same way, safe for the same reason as GCS's |
 
 **Writes that are tagged instead.** Azure Blob's retry is a policy on the client's pipeline, and a GCS resumable
 upload is a session the SDK retries within, so neither has a per-request switch. Each of their conditional writes

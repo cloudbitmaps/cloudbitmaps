@@ -201,12 +201,17 @@ makes the coordinated restore point easy to hit rather than something you have t
    [a registry row the library did not write](#a-registry-row-the-library-did-not-write)). A row created after `T`
    has no such version; the row's body names its `namespace` and `segment`. If you do not want that segment's
    objects, first run `store.dropSegment(ref, { confirmSegment: ref.segment, audit })`, which deletes them and
-   removes the wrapped key from the row. Then remove the row with the backend's `registry.delete(ref)`, which
-   leaves a tombstone that keeps the row's token counter, and the rest of the row with it, wrapped keys included —
-   the reason for dropping first. Prefer it to an object-store delete, which takes the tombstone too: the name's
-   next row is then told apart from the earlier ones only by the random parts of its tokens, with overwhelming
-   probability rather than by construction. A segment you delete the row of without dropping keeps its objects in
-   the bucket with no row; `store.generations(ref)` lists them. Step 6 is what tells you the result is coherent.
+   removes the wrapped key from the row. Then remove the row with the backend's `registry.delete(ref)`. On a registry
+   that reports `conditionalDelete` it removes a row created by 0.12 outright, by a delete fenced on the version it
+   read; any other row it replaces with a tombstone that keeps the row's token counter, and the rest of the row
+   with it, wrapped keys included — the reason for dropping first. Prefer it to an object-store delete, which
+   removes whatever version is current when it lands, a row written since you looked included. A segment you delete
+   the row of without dropping keeps its objects in the bucket with no row; `store.generations(ref)` lists them.
+   Step 6 is what tells you the result is coherent.
+
+   A row the retention sweep's purge removed after `T` is a row whose current version is newer than `T`, too: on a
+   versioned bucket its current version is a delete marker, and the sweep above copies its version at `T` back like
+   any other's. Without versioning it is gone, which is one reason versioning is a prerequisite.
 5. **Restore the keystore** (if encryption is on), and check it can open the key of every restored segment:
    [Encryption & DR](#encryption--dr) has the check.
 6. **Run `checkConsistency()`** (below) **before** serving traffic.
@@ -308,6 +313,7 @@ state and is cheap to check for, so check for it after any hard kill of a proces
                                then sweep Storage: list + delete, up to three passes
      forgetDuePointer(ref)     delete the segment's due-index pointer, if it has one
   2. stampRetirement(ref)      CAS retention.retiredBySweepAt = now         ← the attribution
+     filePurgePointer(ref)     create a due-index pointer under the day the grace ends
 ```
 
 A `SIGKILL` — or a `terminationGracePeriodSeconds` that expires, or a node that vanishes — landing anywhere after
@@ -394,8 +400,9 @@ that reaches the row at least `tombstoneGraceMs` (default 24 h) after the stamp'
 default `scan: 'fleet'`, over the row's namespace (and shard, if you shard), with `purgeTombstones` not set to
 `false`, and not cut short by its `limit` before the row (`limited: true`) — then treats the row as its own,
 verifies storage is actually empty, collects any orphan generations itself, and deletes the row. A `scan: 'index'` pass may never
-reach it: that scan reads only the rows the due index points at, and the retirement can have removed the
-segment's pointer before the kill.
+reach it: that scan reads only the rows the due index points at, the retirement can have removed the segment's
+expiry pointer before the kill, and the pointer that finds a tombstone for its purge is filed only after the stamp
+the kill prevented. A stamp you write by hand files none.
 
 ```ts
 import { MIN_EXPIRES_AT_MS } from '@cloudbitmaps/roaring';

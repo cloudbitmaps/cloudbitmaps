@@ -131,8 +131,9 @@ those is worse than none. **You own the heartbeat.** Any of these is a correct a
 the same registry 24 times. Match the cadence to the granularity of your policies, not to how fast you want the
 deletion to feel.
 
-- A fleet scan is a billed `LIST` over the registry prefix. The default `'fleet'` scan costs what the fleet holds.
-- `scan: 'index'` reads only the due days of the due index and costs what is expiring.
+- A fleet scan is a billed `LIST` over the registry prefix. The default `'fleet'` scan costs what the fleet holds: its
+  live segments, and the retired ones still inside their grace (see [what the purge removes](#how-it-stays-correct)).
+- `scan: 'index'` reads only the due days of the due index and costs what is expiring, and what is due to be purged.
 - The index is a fast path, not the source of truth. Each candidate's live row is re-read before anything is decided,
   and a policy whose pointer write failed has no index entry. So run the `'fleet'` scan periodically as the repair
   pass. `lookbackBuckets` (default 7) is how many past days a fast scan also reads, so a sweep that did not run leaves
@@ -273,7 +274,8 @@ Two limits to know before you automate it:
 - **A drop is final for the name.** The tombstone fences every later load of that segment (refused with
   `ValidationError`), which is what makes the storage sweep converge. To reuse a name, use a fresh dated name, which
   is the pattern anyway, or retire the segment through `retireExpired`, which purges the tombstones it wrote itself
-  once their grace period has passed and their storage is empty. A tombstone a hand-run `dropSegment` wrote is never
+  once their grace period has passed and their storage is empty, and on a registry with a conditional delete removes
+  them for good. A tombstone a hand-run `dropSegment` wrote is never
   purged by the library; the
   [disaster-recovery runbook](disaster-recovery.md#repair-an-unstamped-tombstone-after-a-hard-kill) shows how to
   delete such a row by hand once its storage is empty.
@@ -404,6 +406,46 @@ because deleting the row is what makes the name writable again:
    gone does the row stay, with `tombstone-not-empty`. Without the row the collection can no longer see the segment at
    all, and the objects would be billed forever. That reason also covers the case where the collection declined because
    the row changed under it. That is not a storage fault, and the next cycle simply retries.
+
+**What the purge removes.** On a backend whose registry can delete a row only while it is unchanged, the purge removes
+the row from the bucket for good, with a delete the store applies only to the version the sweep judged: S3
+`DeleteObject` with `If-Match`, GCS with `ifGenerationMatch`, Azure Blob with `ifMatch`. The registry says which it is:
+`backend.registry.capabilities().conditionalDelete`. It is on by default for AWS S3, for GCS on its public endpoint,
+for Azure Blob, and for the local-filesystem and in-memory backends. A full sweep then reads what is live and what is
+inside its grace, not every name the namespace ever held: after 10,000 short-lived segments are created, retired and
+purged, a sweep of that namespace makes one registry read, for the one segment still live.
+
+Where the registry cannot, the purge leaves a small tombstone in the row's place, and every later full sweep reads it,
+one request per row. That is the case:
+
+- on an S3 client with a custom `endpoint` (MinIO, Ceph, R2) and a GCS client with a custom `apiEndpoint`, by default.
+  Such a store may accept the precondition and ignore it, and MinIO and fake-gcs-server both do: there, a delete
+  conditioned on a version that has moved on deletes anyway, and two sweepers and a re-create of the name could
+  delete a live row. Set `conditionalDelete: true` on the backend only once you know your store applies it. An AWS
+  endpoint you name yourself, such as a VPC endpoint, reads as custom too, and AWS S3 applies the precondition there;
+- with `conditionalDelete: false` on any backend;
+- for a row written by a release before 0.12, always. Its token is a bare counter, and a process still on that
+  release, re-creating the name over nothing, would start the counter at 0 again and issue the deleted row's tokens,
+  so its row could not be told apart from the deleted one. A row created by 0.12 carries a random incarnation id in
+  its token, so a re-create is told apart from it with overwhelming probability, whatever is left of it.
+
+A tombstone already in the bucket stays: the purge never sees a row that is already deleted, and nothing in the library
+removes one. A cleanup for them, safe once no process on a release before 0.12 is left, is on the
+[roadmap](../ROADMAP.md).
+
+**An index scan purges too.** Each retirement files a pointer in the due index under the day its tombstone's grace
+ends, beside the expiry pointers, and `scan: 'index'` reads it with them, so a namespace can sweep by index alone and
+keep the fleet scan as its repair pass. No field of the row records that day: the purge works it out from the
+retirement's stamp and the grace. The pointer is removed with the row, and a pointer whose segment is gone is removed
+by the next index scan that reads it. A sweep run with a longer grace than the one that filed a pointer finds it early
+and leaves it; once its day is older than `lookbackBuckets`, the fleet scan purges the row.
+
+**What it costs.** A retirement makes one registry read and one write to file the pointer, and a purge one read and one
+delete to remove it. On S3 the purge itself is a `DeleteObject`, which is not billed, where a tombstone is a
+`PutObject`. The registry needs delete permission on its prefix (`s3:DeleteObject`,
+`storage.objects.delete`, or a role that may delete blobs); without it a purge fails, the row stays, and the ledger
+entry says why. An unscoped sweep also lists the due index's pointers, one read each before it skips them, so
+give each sweep a `namespace` where you can.
 
 Pass `purgeTombstones: false` to keep every tombstone. That is the right choice if something outside this library
 treats the presence of a `destroyed` row as an attestation. It includes the row of a retirement whose drop found no
