@@ -1028,7 +1028,7 @@ function valuesOf(f, { withLatency }) {
       bind(1e6 * f.usd.loadRereads, ['rereads'], ['rereads']),
       ...[f.usd.measuredIntersect, 1e6 * f.usd.measuredIntersect].map(measuredValue),
       ...f.kRows.flatMap((r) => [r.usd, 1e6 * r.usd]).map(expectedValue),
-      // The write and the publish, which is not store.load(): the same pages price that at about a tenth more, so a load's
+      // The write and the publish, which is not store.load(): the same pages price that at about a tenth more on average, so a load's
       // price stated without either word reads as store.load()'s. A run whose loads were `store.load()` has no write
       // and publish to say it of: its loads are store.load(), and the price must stand beside that name.
       ...[f.usd.singleLoad, f.usd.multipartLoad]
@@ -1044,7 +1044,7 @@ function valuesOf(f, { withLatency }) {
         .filter(([kind]) => f.loadVia === null || kind !== 'first')
         .flatMap(([, v]) => [v, 1e6 * v])
         .map((v) =>
-          // Nor is it the write and the publish, which the same pages price at about a tenth less.
+          // Nor is it the write and the publish, which the same pages price at about a tenth less on average.
           bind(v, MEASURED, ['expected'], false, [
             { group: ['write', 'storeLoad'], allow: ['storeLoad'], require: false },
           ]),

@@ -161,7 +161,8 @@ the same `keep`, validated the same way. Returns a
 `LoadResult` — `{ generation, published, reason?, size, sha256, chunkCount, cardinality, cardinalityBefore,
 collected }`. With a `keep` of 0 or 1, a load that found nothing above its pointer deletes by name the one generation
 its publish pushed out of the window, and lists the segment only on every 16th generation; with a `keep` of 2 or more,
-or when its check of its generation number met an object, it lists on every load
+or when its check of its generation number met an object or its guard found the current generation's object gone,
+it lists on every load
 ([how it collects](loading.md#generations-and-keep)). `collected` names what the pass deleted, and a generation
 deleted by name may have been gone already: a delete of an absent object succeeds and says nothing, so the list is not
 a receipt that the generation was there. Memory is bounded by the **distinct set** being built, not by the input length — a batch job's shape,

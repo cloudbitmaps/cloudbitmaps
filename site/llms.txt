@@ -81,7 +81,7 @@ With the pointer in the same bucket as the data, the topology that ships: the me
 500,000-id segments sharing 100 of their 1,999 chunks made 206 GETs as measured, $82.40 per million, requesting
 only the shared chunks. Inside the region, where each pointer is read once, the same intersect is expected at
 204 GETs, $81.60 per million. Writing and publishing a segment is 2 PUTs and 3 GETs, $11.20 per million, and
-store.load(), which also checks its generation number and collects, is expected at about a tenth more. For comparison: an always-on
+store.load(), which also checks its generation number and collects, is expected at about a tenth more on average. For comparison: an always-on
 Redis-HA line of $346/month standing, and a modelled $0.03/month for 1.2 GiB of segments at rest. The run was
 driven from outside the region, so no latency is published. One crossover is published, in GETs: past 329.15
 sustained GETs a second, with every read missing the cache, metered GETs pass the standing cluster — a warmer

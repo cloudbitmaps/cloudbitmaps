@@ -273,7 +273,7 @@ The loaded store's own measurements are the next benchmark pass. The single-buck
   count and chunk overlap.
 - **What `store.load()` costs on S3.** The run measured a load's write and publish. `store.load()` adds a check that
   its generation number is free and a collection pass after the publish. A test counts the requests that adds, about
-  a tenth of a load's bill; they are not yet measured on S3. The harness times `store.load()` itself, so
+  a tenth of a load's bill on average; they are not yet measured on S3. The harness times `store.load()` itself, so
   its next run measures them.
 - **A Lambda figure** — a function's cold start and initialisation against a real store, from inside one.
 

@@ -1385,17 +1385,18 @@ export class CloudRoaring {
    *
    * **Collection is by name for the default `keep`.** With `keep` of 0 or 1, a load that found nothing above the
    * pointer deletes the one generation its publish pushed out of the window and lists nothing; it lists the segment's
-   * objects on every sixteenth generation, and on any load that met an object above the pointer, to take what the
-   * name-only passes leave, such as the generations an earlier, wider `keep` held. `keep` of 2 or more lists on
-   * every load. {@link LoadResult.collected} then names what the pass deleted by name, and that generation may
-   * have been gone already.
+   * objects on every sixteenth generation, and on any load that met an object above the pointer or whose guard
+   * found the current generation's object gone, to take what the name-only passes leave, such as the generations an
+   * earlier, wider `keep` held. `keep` of 2 or more lists on every load. {@link LoadResult.collected} then names what
+   * the pass deleted by name, and that generation may have been gone already.
    *
    * What it **throws** for is a fault rather than an outcome: invalid options or ids, and a crypto-shredded
    * segment (`ValidationError`); a key the keystore cannot provide (`KeyUnavailableError`); a current generation
    * that will not open when a guard reads its size (`IntegrityError`); a driver failure; and a collection pass
-   * that could not prove the segment was still the same one (`WriteConflictError`). The last can be raised
-   * **after** the publish already landed, so a throw does not by itself mean the load did not take effect —
-   * re-read the pointer rather than assuming.
+   * by listing that could not prove the segment was still the same one (`WriteConflictError`). That one, and a
+   * failure in the collection's own reads or deletes, can be raised **after** the publish already landed, so a throw
+   * does not by itself mean the load did not take effect — re-read the pointer rather than assuming. A collection by
+   * name that finds the segment changed returns an empty `collected` instead.
    *
    * Needs a backend (throws {@link UnsupportedError} otherwise).
    */

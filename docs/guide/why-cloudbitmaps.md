@@ -84,7 +84,7 @@ The two bills charge for different things:
  │ the hot part    ──► your readers' memory, a slice of it      │ ──► your own machines
  │ each cold read  ──► S3 GETs, $0.40 a million                 │ ──► grows with the queries
  │ each refresh    ──► a reader's pointer GET, after genTtlMs   │ ──► at most one a read, and one a genTtlMs
- │ each load       ──► S3 PUTs and LISTs, GETs, a pointer write │ ──► grows with how often the data changes
+ │ each load       ──► S3 PUTs and GETs, a pointer write        │ ──► grows with how often the data changes
  └──────────────────────────────────────────────────────────────┘
 ```
 <!-- SIZING:MONEY:END -->

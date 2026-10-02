@@ -201,7 +201,7 @@
                   <td class="from">
                     A generation written once, then the pointer moved to it: 2 PUT + 3 GET, measured on real S3
                     with the pointer in the same bucket. <span class="m">store.load()</span> also checks its
-                    generation number and collects, which adds about a tenth. The meter counts objects, not ids — so batch a refresh.
+                    generation number and collects, which adds about a tenth on average. The meter counts objects, not ids — so batch a refresh.
                   </td>
                   <td><span class="status is-coming">Batch it</span></td>
                 </tr>
@@ -540,7 +540,7 @@
             <span class="rl-note">
               The September run measured a load's write and publish. <span class="m">store.load()</span> also
               checks that its generation number is free and runs a collection pass after the publish. A test
-              counts what that adds, about a tenth of the bill; it has not been measured on S3.
+              counts what that adds, about a tenth of the bill on average; it has not been measured on S3.
             </span>
           </li>
           <li>
