@@ -26,7 +26,10 @@ export interface GcsStorageOptions {
   /**
    * A constructed `@google-cloud/storage` client. One is built from the ambient credentials when absent. Its retry
    * options apply to every request except the single-request conditional writes, which are sent once whatever they
-   * say.
+   * say. In `@google-cloud/storage` 7.x and 8.x a download the SDK retries after a 408, 429, 500, 502, 503 or 504 can crash the process
+   * with `ERR_STREAM_UNABLE_TO_PIPE`, so build it with `retryOptions: { autoRetry: false }`; the driver retries
+   * downloads itself. That also turns off the SDK's retries of listings, metadata reads, deletes and resumable uploads on
+   * this client, which the store does not retry. The client built here needs none of this: only its downloads are sent once.
    */
   readonly client?: GcsClient;
   /** Project id for the client built when `client` is absent (refused beside `client`). Falls back to the SDK's own resolution. */
@@ -91,6 +94,7 @@ export class GcsStorage implements StorageBackend {
   readonly client: GcsClient;
 
   constructor(options: GcsStorageOptions) {
+    let readClient: GcsClient;
     refuseUnknown(
       'GcsStorage',
       options,
@@ -111,14 +115,24 @@ export class GcsStorage implements StorageBackend {
         );
       }
       this.client = options.client;
+      readClient = options.client;
     } else {
-      this.client = new GcsClient({
+      const settings = {
         ...(options.projectId === undefined ? {} : { projectId: options.projectId }),
         ...(options.apiEndpoint === undefined ? {} : { apiEndpoint: options.apiEndpoint }),
-      });
+      };
+      this.client = new GcsClient(settings);
+      // A second client, for downloads only. `@google-cloud/storage` 7.x and 8.x retry a failed download by default, and
+      // when the retried request succeeds they throw `ERR_STREAM_UNABLE_TO_PIPE` outside any promise, which ends the
+      // process whatever the caller wrote around the call. A download is sent once instead, and the driver retries it
+      // itself (`download-retry.ts`). Everything else keeps the default retries: a resumable upload's session, a
+      // listing, a metadata read, none of which the store retries on its own. Two clients mean two `GoogleAuth`
+      // instances: lazy, so the first download makes a second token fetch, and a second hourly refresh follows.
+      readClient = new GcsClient({ ...settings, retryOptions: { autoRetry: false } });
     }
     const shared = {
       storage: this.client,
+      readStorage: readClient,
       bucket: options.bucket,
       ...(options.prefix === undefined ? {} : { prefix: options.prefix }),
     };

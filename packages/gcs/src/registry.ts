@@ -41,12 +41,15 @@ import {
 import type { ObjectRegistryStore, ObjectRow } from '@cloudbitmaps/core/driver-kit';
 import type { Storage } from '@google-cloud/storage';
 import { isNotFound, isPreconditionFailed, isTransient } from './gcs-errors';
+import { retryDownload } from './download-retry';
 import { readOnce, singleHeader } from './read-once';
 import { saveOnce } from './send-once';
 
 export interface GcsRegistryDriverOptions {
   /** A constructed `@google-cloud/storage` `Storage` client (point `apiEndpoint` at fake-gcs-server locally). */
   readonly storage: Storage;
+  /** The client the downloads go through; `storage` when absent (see `GcsStorageDriverOptions.readStorage`). */
+  readonly readStorage?: Storage;
   /** Target bucket (must already exist). */
   readonly bucket: string;
   /** Optional object-name prefix under which all registry objects live (e.g. `cloudbitmaps/`). */
@@ -61,6 +64,7 @@ class GcsStore implements ObjectRegistryStore {
 
   constructor(
     private readonly storage: Storage,
+    private readonly readStorage: Storage,
     private readonly bucket: string,
   ) {}
 
@@ -69,21 +73,28 @@ class GcsStore implements ObjectRegistryStore {
     return this.storage.bucket(this.bucket).file(name);
   }
 
+  /** The same file handle on the download client. */
+  private downloadable(name: string) {
+    return this.readStorage.bucket(this.bucket).file(name);
+  }
+
   async read(key: string): Promise<ObjectRow | null> {
     // One GET: the response headers carry the `generation` fence and the length, and the body is the same
     // observation of the object, so the pair cannot straddle a concurrent overwrite.
     let res;
     try {
-      res = await readOnce(
-        this.file(key),
-        {},
-        MAX_ROW_BYTES,
-        (size) =>
-          new IntegrityError(
-            size === undefined
-              ? `registry object exceeds cap ${MAX_ROW_BYTES}B`
-              : `registry object ${size}B exceeds cap ${MAX_ROW_BYTES}B`,
-          ),
+      res = await retryDownload(() =>
+        readOnce(
+          this.downloadable(key),
+          {},
+          MAX_ROW_BYTES,
+          (size) =>
+            new IntegrityError(
+              size === undefined
+                ? `registry object exceeds cap ${MAX_ROW_BYTES}B`
+                : `registry object ${size}B exceeds cap ${MAX_ROW_BYTES}B`,
+            ),
+        ),
       );
     } catch (err) {
       if (isNotFound(err)) return null;
@@ -176,7 +187,7 @@ function mapError(err: unknown): unknown {
 export class GcsRegistryDriver extends ObjectStoreRegistry {
   constructor(options: GcsRegistryDriverOptions) {
     super(
-      new GcsStore(options.storage, options.bucket),
+      new GcsStore(options.storage, options.readStorage ?? options.storage, options.bucket),
       normalizeObjectPrefix(options.prefix),
       options.now ?? ((): number => Date.now()),
     );

@@ -42,6 +42,7 @@ import {
   segmentObjectPrefix,
 } from './keys';
 import { isInvalidRange, isNotFound, isPreconditionFailed, isTransient } from './gcs-errors';
+import { retryDownload } from './download-retry';
 import { saveOnce } from './send-once';
 import { readOnce, singleHeader, type ObjectRead } from './read-once';
 
@@ -62,6 +63,12 @@ const DEFAULT_UPLOAD_THRESHOLD_BYTES = 8 * 1024 * 1024;
 export interface GcsStorageDriverOptions {
   /** A constructed `@google-cloud/storage` `Storage` client (point `apiEndpoint` at fake-gcs-server locally). */
   readonly storage: Storage;
+  /**
+   * The client the downloads go through; `storage` when absent. `GcsStorage` passes one built with the SDK's request
+   * retries off (the read client built in its constructor), because a download the SDK retries can crash the process;
+   * the driver retries a download itself instead.
+   */
+  readonly readStorage?: Storage;
   /** Target bucket (must already exist). */
   readonly bucket: string;
   /** Optional object-name prefix under which all objects live (e.g. `cloudbitmaps/`). */
@@ -75,6 +82,7 @@ export interface GcsStorageDriverOptions {
 
 export class GcsStorageDriver implements IStorageDriver {
   private readonly storage: Storage;
+  private readonly readStorage: Storage;
   private readonly bucket: string;
   private readonly prefix: string | undefined;
   private readonly maxObjectBytes: number;
@@ -82,6 +90,7 @@ export class GcsStorageDriver implements IStorageDriver {
 
   constructor(options: GcsStorageDriverOptions) {
     this.storage = options.storage;
+    this.readStorage = options.readStorage ?? options.storage;
     this.bucket = options.bucket;
     this.prefix = normalizeGcsPrefix(options.prefix);
     // Fail fast at the boundary: `??` only guards `undefined`, so NaN, 0, a negative or a fraction would otherwise
@@ -104,6 +113,11 @@ export class GcsStorageDriver implements IStorageDriver {
 
   private file(name: string) {
     return this.storage.bucket(this.bucket).file(name);
+  }
+
+  /** The same object on the download client. */
+  private downloadable(name: string) {
+    return this.readStorage.bucket(this.bucket).file(name);
   }
 
   async putImmutable(
@@ -136,10 +150,9 @@ export class GcsStorageDriver implements IStorageDriver {
     const objectName = storageObjectName(this.prefix, key);
     try {
       // GCS `end` is inclusive.
-      const [buf] = await this.file(objectName).download({
-        start: offset,
-        end: offset + length - 1,
-      });
+      const [buf] = await retryDownload(() =>
+        this.downloadable(objectName).download({ start: offset, end: offset + length - 1 }),
+      );
       // A short read means the range ran past EOF — treat as out-of-bounds, never a partial result.
       if (buf.length !== length) {
         throw new ValidationError(
@@ -164,11 +177,13 @@ export class GcsStorageDriver implements IStorageDriver {
       // `Content-Range: bytes a-b/total`, the object's size. An object shorter than N comes back whole.
       let res;
       try {
-        res = await readOnce(
-          this.file(objectName),
-          { end: -maxBytes, decompress: false },
-          maxBytes,
-          () => this.badTail(key, `the response is longer than the ${maxBytes}B requested`),
+        res = await retryDownload(() =>
+          readOnce(
+            this.downloadable(objectName),
+            { end: -maxBytes, decompress: false },
+            maxBytes,
+            () => this.badTail(key, `the response is longer than the ${maxBytes}B requested`),
+          ),
         );
       } catch (err) {
         // A zero-byte object has no suffix to satisfy, and a server may refuse the range with a 416. The metadata

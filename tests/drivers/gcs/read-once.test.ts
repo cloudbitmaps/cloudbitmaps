@@ -27,6 +27,25 @@ class Driven {
   }
 }
 
+/** A file whose every read opens a fresh stream, so a read the driver retries is a second request the test drives. */
+class DrivenReads {
+  readonly reads: Driven[] = [];
+  file(): GcsFile {
+    return {
+      createReadStream: () => {
+        const d = new Driven();
+        this.reads.push(d);
+        return d.stream;
+      },
+    } as unknown as GcsFile;
+  }
+  /** The driver's `n`th read (from 0), once it has opened it; the retry waits a random backoff first. */
+  async read(n: number): Promise<Driven> {
+    while (this.reads.length <= n) await new Promise((r) => setTimeout(r, 5));
+    return this.reads[n]!;
+  }
+}
+
 const oversize = (size: number | undefined): Error =>
   new Error(size === undefined ? 'oversize stream' : `oversize ${size}`);
 const settle = (): Promise<void> => new Promise((r) => setImmediate(r));
@@ -94,16 +113,36 @@ describe('readOnce', () => {
     await expect(p).rejects.toMatchObject({ code: 'ECONNRESET' });
   });
 
-  it('reaches the caller as TransientError when a tail read is cut off', async () => {
-    const d = new Driven();
-    const storage = { bucket: () => ({ file: () => d.file() }) } as unknown as Storage;
-    const driver = new GcsStorageDriver({ storage, bucket: 'b' });
-    const p = driver.getTail({ segment: 's', generation: 0 }, 10);
-    await settle();
+  const cutOff = (d: Driven): void => {
     d.respond(206, { 'content-range': 'bytes 0-9/10' });
     d.stream.write(Buffer.alloc(3));
     d.stream.destroy();
+  };
+
+  it('retries a tail read that is cut off, and returns what the retry read', async () => {
+    const reads = new DrivenReads();
+    const storage = { bucket: () => ({ file: () => reads.file() }) } as unknown as Storage;
+    const driver = new GcsStorageDriver({ storage, bucket: 'b' });
+    const p = driver.getTail({ segment: 's', generation: 0 }, 10);
+    cutOff(await reads.read(0));
+    const second = await reads.read(1);
+    second.respond(206, { 'content-range': 'bytes 0-9/10' });
+    second.stream.end(Buffer.alloc(10, 7));
+    const tail = await p;
+    expect(tail.size).toBe(10);
+    expect(tail.bytes).toEqual(new Uint8Array(10).fill(7));
+    expect(reads.reads).toHaveLength(2);
+  });
+
+  it('reaches the caller as TransientError when every attempt at a tail read is cut off', async () => {
+    const reads = new DrivenReads();
+    const storage = { bucket: () => ({ file: () => reads.file() }) } as unknown as Storage;
+    const driver = new GcsStorageDriver({ storage, bucket: 'b' });
+    const p = driver.getTail({ segment: 's', generation: 0 }, 10);
+    p.catch(() => undefined); // read below, once every attempt has been cut off
+    for (let i = 0; i < 4; i++) cutOff(await reads.read(i));
     await expect(p).rejects.toBeInstanceOf(TransientError);
+    expect(reads.reads).toHaveLength(4); // the first read and three retries, as the SDK would have made
   });
 });
 
