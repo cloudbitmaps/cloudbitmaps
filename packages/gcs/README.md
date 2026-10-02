@@ -55,15 +55,17 @@ It builds its own client from Application Default Credentials. Any other key is 
   8.1.0), a download the SDK retries after any status it retries (408, 429, 500, 502, 503 or 504) can crash the process with
   `ERR_STREAM_UNABLE_TO_PIPE`, thrown outside any promise, even though the retried request succeeded. The client
   `GcsStorage` builds therefore sends each download once, and the driver runs a download again itself, up to three
-  more times with backoff, after a reset connection, a 408, 429, 500, 502, 503 or 504, and after nothing else. That holds for every
-  caller, including a store built with `retry: false`. The client's other requests (uploads, listings, metadata reads,
-  deletes) keep the SDK's retries. **A client you pass as `client` is used as it is, so build it with
-  `retryOptions: { autoRetry: false }`.** That also turns off the SDK's retries of listings, metadata reads, deletes and
+  more times with backoff, after a connection fault (refused, reset, timed out, a DNS failure, a body cut off) or a 408, 429, 500, 502, 503 or 504, and after nothing else. That holds for every
+  caller, including a store built with `retry: false`. The client's other requests (uploads, listings, metadata reads)
+  keep the SDK's retries. **A client you pass as `client` is used as it is, so build it with
+  `retryOptions: { autoRetry: false }`.** That also turns off the SDK's retries of listings, metadata reads and
   resumable uploads on that client, which the library does not retry; the client `GcsStorage` builds keeps them.
+- **A client `timeout` does not bound a download on `@google-cloud/storage` 8.x**, so a read whose server stalls waits
+  for it. Measured against a local server that never answers: still pending after 12 s with `timeout: 2000`.
 - **A transient failure of a write throws `TransientError`, and the write may or may not have landed.** Re-run the
   call, or check `store.generations(ref)`.
 
-The [production checklist](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md) covers each item, and the ones every backend shares: a request timeout on your client, backups of the data and the registry, and a schedule for your loads.
+The [production checklist](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md) covers each item, and the ones every backend shares: backups of the data and the registry, and a schedule for your loads.
 
 ## Documentation
 

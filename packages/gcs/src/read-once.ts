@@ -59,7 +59,9 @@ export function readOnce(
       settled = true;
       // Deferred: the SDK builds its response pipeline right after announcing the response, and destroying the
       // stream before that makes the pipeline throw out of an event handler, where nothing can catch it, and
-      // leaves the socket open. One turn later the same destroy closes the socket cleanly.
+      // leaves the socket open. One turn later the same destroy ends the read without a throw. The SDK then
+      // destroys its keep-alive agent, which the client's other requests share, so a refused response also resets
+      // whatever else that client has in flight; those surface as connection faults, which a read retries.
       setImmediate(() => stream.destroy());
       reject(err);
     };
@@ -85,7 +87,8 @@ export function readOnce(
       settled = true;
       resolve({ status, headers, bytes: new Uint8Array(Buffer.concat(chunks, total)) });
     });
-    // A stream that closes without ending was cut off mid-body: a dropped connection, so a retryable fault.
+    // A net under the SDK: it reports a cut-off body as an 'error' itself, but a stream that closes without ending
+    // or erring was cut off all the same, so it is a dropped connection, and retryable.
     stream.on('close', () =>
       fail(
         Object.assign(new Error('GCS read ended before the response completed'), {

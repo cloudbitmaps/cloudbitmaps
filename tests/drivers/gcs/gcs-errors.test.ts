@@ -1,9 +1,11 @@
 import {
+  ReadInterrupted,
   isDownloadRetryable,
   isInvalidRange,
   isNotFound,
   isPreconditionFailed,
   isTransient,
+  isTransportFault,
 } from '@/gcs/gcs-errors';
 
 /** GCS carries the HTTP status on `err.code` (number) or `err.response.status`; sockets use a string code. */
@@ -28,15 +30,28 @@ describe('GCS error classification', () => {
     expect(isTransient(apiErr(416))).toBe(false);
   });
 
-  // The driver retries a download in the SDK's place, so it retries what the SDK's own predicate
-  // (`RETRYABLE_ERR_FN_DEFAULT` in @google-cloud/storage 8.1.0) retries, and nothing more.
-  it('a download is retried after exactly what the SDK retries, and after nothing else', () => {
+  // The driver retries a download in the SDK's place, so it retries what the SDK retried: the statuses its predicate
+  // (`RETRYABLE_ERR_FN_DEFAULT` in @google-cloud/storage 8.1.0) names, and any fault before a response, which
+  // retry-request repeats without asking the predicate. And nothing more.
+  it('a download is retried after what the SDK retried, and after nothing else', () => {
     for (const c of [408, 429, 500, 502, 503, 504]) {
       expect(isDownloadRetryable(apiErr(c))).toBe(true);
       expect(isDownloadRetryable({ code: String(c) })).toBe(true);
     }
-    for (const n of ['ECONNRESET', 'EPIPE', 'EAI_AGAIN', 'getaddrinfo EAI_AGAIN'])
+    for (const n of [
+      'ECONNRESET',
+      'EPIPE',
+      'EAI_AGAIN',
+      'ECONNREFUSED',
+      'ENOTFOUND',
+      'ETIMEDOUT',
+      'EHOSTUNREACH',
+      'ENETUNREACH',
+      'ERR_STREAM_PREMATURE_CLOSE',
+    ])
       expect(isDownloadRetryable(netErr(n))).toBe(true);
+    // node-fetch's FetchError for a connection that never came carries the system code too.
+    expect(isDownloadRetryable({ type: 'system', code: 'ECONNREFUSED' })).toBe(true);
     for (const reason of [
       'unexpected connection closure',
       'socket connection timeout',
@@ -45,10 +60,39 @@ describe('GCS error classification', () => {
       expect(isDownloadRetryable({ code: 400, errors: [{ reason }] })).toBe(true);
     for (const c of [400, 401, 403, 404, 412, 416, 501, 505])
       expect(isDownloadRetryable(apiErr(c))).toBe(false);
-    for (const n of ['ECONNREFUSED', 'ENOTFOUND', 'ETIMEDOUT'])
+    // An answer, not a fault in transit: a checksum mismatch, a programming error, a TLS failure, a status as a string.
+    for (const n of [
+      'CONTENT_DOWNLOAD_MISMATCH',
+      'ERR_INVALID_ARG_TYPE',
+      'ERR_SSL_WRONG_VERSION_NUMBER',
+      'CERT_HAS_EXPIRED',
+      'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+      '501',
+    ])
       expect(isDownloadRetryable(netErr(n))).toBe(false);
-    expect(isDownloadRetryable(new Error('boom'))).toBe(false);
+    // A status wins over a code-shaped field: an HTTP 404 is never a fault in transit.
+    expect(isDownloadRetryable({ code: 404, errno: 'ECONNRESET' })).toBe(false);
+    expect(isDownloadRetryable(new Error('Could not load the default credentials'))).toBe(false);
     expect(isDownloadRetryable(null)).toBe(false);
+  });
+
+  it('a fault in transit is told from an answer by its code, not its message', () => {
+    expect(isTransportFault(netErr('ECONNREFUSED'))).toBe(true);
+    expect(isTransportFault(netErr('ERR_STREAM_PREMATURE_CLOSE'))).toBe(true);
+    expect(isTransportFault(apiErr(503))).toBe(false);
+    expect(isTransportFault({ response: { status: 500 }, code: 'ECONNRESET' })).toBe(false);
+    expect(isTransportFault(new Error('ECONNREFUSED'))).toBe(false);
+  });
+
+  it('a read that outlasted its retries in transit is transient, and keeps its cause and code', () => {
+    const cause = Object.assign(new Error('premature close'), {
+      code: 'ERR_STREAM_PREMATURE_CLOSE',
+    });
+    const err = new ReadInterrupted(cause);
+    expect(isTransient(err)).toBe(true);
+    expect(err.cause).toBe(cause);
+    expect(err.code).toBe('ERR_STREAM_PREMATURE_CLOSE');
+    expect(err.message).toContain('premature close');
   });
 
   it('429 + any 5xx + dropped sockets are transient', () => {

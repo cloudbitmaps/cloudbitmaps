@@ -2,7 +2,7 @@ import { PassThrough } from 'node:stream';
 import type { Storage } from '@google-cloud/storage';
 import { readOnce, singleHeader } from '@/gcs/read-once';
 import { GcsStorageDriver } from '@/gcs/storage';
-import { TransientError } from '@/core/errors';
+import { TransientError, ValidationError } from '@/core/errors';
 
 // `readOnce` against a hand-driven stream, so each way a response can misbehave is one deliberate step. The real SDK
 // is exercised in send-once.test.ts.
@@ -132,6 +132,50 @@ describe('readOnce', () => {
     expect(tail.size).toBe(10);
     expect(tail.bytes).toEqual(new Uint8Array(10).fill(7));
     expect(reads.reads).toHaveLength(2);
+  });
+
+  it('refuses a tail longer than it asked for on the first response, without a retry', async () => {
+    const reads = new DrivenReads();
+    const storage = { bucket: () => ({ file: () => reads.file() }) } as unknown as Storage;
+    const driver = new GcsStorageDriver({ storage, bucket: 'b' });
+    const p = driver.getTail({ segment: 's', generation: 0 }, 10);
+    p.catch(() => undefined);
+    (await reads.read(0)).respond(206, {
+      'content-length': '11',
+      'content-range': 'bytes 0-10/11',
+    });
+    await expect(p).rejects.toBeInstanceOf(ValidationError);
+    await new Promise((r) => setTimeout(r, 1_200)); // past the longest backoff, so a retry would have opened
+    expect(reads.reads).toHaveLength(1);
+  });
+
+  it('does not retry a 501 itself, which the SDK did not either, and reports it as transient', async () => {
+    const reads = new DrivenReads();
+    const storage = { bucket: () => ({ file: () => reads.file() }) } as unknown as Storage;
+    const driver = new GcsStorageDriver({ storage, bucket: 'b' });
+    const p = driver.getTail({ segment: 's', generation: 0 }, 10);
+    p.catch(() => undefined);
+    const d = await reads.read(0);
+    d.respond(501, {});
+    d.stream.destroy(Object.assign(new Error('not implemented'), { code: 501 }));
+    await expect(p).rejects.toBeInstanceOf(TransientError); // any 5xx, for the store's own retry to judge
+    await new Promise((r) => setTimeout(r, 1_200));
+    expect(reads.reads).toHaveLength(1);
+  });
+
+  it('retries a fault before any response, whatever its code, as the SDK did', async () => {
+    const reads = new DrivenReads();
+    const storage = { bucket: () => ({ file: () => reads.file() }) } as unknown as Storage;
+    const driver = new GcsStorageDriver({ storage, bucket: 'b' });
+    const p = driver.getTail({ segment: 's', generation: 0 }, 10);
+    p.catch(() => undefined);
+    for (let i = 0; i < 4; i++) {
+      (await reads.read(i)).stream.destroy(
+        Object.assign(new Error('refused'), { code: 'EHOSTUNREACH' }),
+      );
+    }
+    await expect(p).rejects.toBeInstanceOf(TransientError);
+    expect(reads.reads).toHaveLength(4);
   });
 
   it('reaches the caller as TransientError when every attempt at a tail read is cut off', async () => {

@@ -28,7 +28,7 @@ export interface GcsStorageOptions {
    * options apply to every request except the single-request conditional writes, which are sent once whatever they
    * say. In `@google-cloud/storage` 7.x and 8.x a download the SDK retries after a 408, 429, 500, 502, 503 or 504 can crash the process
    * with `ERR_STREAM_UNABLE_TO_PIPE`, so build it with `retryOptions: { autoRetry: false }`; the driver retries
-   * downloads itself. That also turns off the SDK's retries of listings, metadata reads, deletes and resumable uploads on
+   * downloads itself. That also turns off the SDK's retries of listings, metadata reads and resumable uploads on
    * this client, which the store does not retry. The client built here needs none of this: only its downloads are sent once.
    */
   readonly client?: GcsClient;

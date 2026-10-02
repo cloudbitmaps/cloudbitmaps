@@ -139,12 +139,17 @@ const store = new CloudRoaring({
 and 8.1.0), a download the SDK retries after any status it retries (408, 429, 500, 502, 503 or 504) can crash the process with
 `ERR_STREAM_UNABLE_TO_PIPE`, thrown outside any promise, even though the retried request succeeded. The client
 `GcsStorage` builds sends each download once, and the driver runs it again itself, up to three more times with
-backoff, after a reset connection, a 408, 429, 500, 502, 503 or 504 and after nothing else, so a download is retried whichever
+backoff, after a connection fault (refused, reset, timed out, a DNS failure, a body cut off) or a 408, 429, 500, 502, 503 or 504, and after nothing else, so a download is retried whichever
 call made it and whether or not the store's own `retry` is on. What still fails after those attempts is a
 `TransientError`, which the store's read retry, above, can run again. The client's other requests keep the SDK's
 retries. A `client` you pass is used as it is: build it with `retryOptions: { autoRetry: false }`. That also turns off
-the SDK's retries of listings, metadata reads, deletes and resumable uploads on that client, which the library does not
+the SDK's retries of listings, metadata reads and resumable uploads on that client, which the library does not
 retry; the client `GcsStorage` builds keeps them and needs nothing.
+
+**A GCS client's `timeout` does not bound a download** on `@google-cloud/storage` 8.x: the SDK hands it to an HTTP
+client that has no such option. Measured against a local server that accepts a read and never answers, a read through
+a client built with `timeout: 2000` was still pending after 12 s, and one through the default client after 75 s. So
+nothing bounds a stalled GCS read today; a timeout below applies to S3.
 
 Only transient faults (they surface as `TransientError`) are retried. Errors that retrying cannot fix are never
 retried: `ValidationError`, `IntegrityError`, `NotFoundError` and `WriteConflictError`.

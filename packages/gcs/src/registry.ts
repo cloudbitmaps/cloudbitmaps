@@ -177,7 +177,7 @@ function generationFence(version: string, key: string): number {
 function mapError(err: unknown): unknown {
   if (isTransient(err)) {
     return new TransientError(
-      `transient GCS fault: ${(err as { name?: string } | null)?.name ?? 'unknown'}`,
+      `transient GCS fault: ${(err as { code?: unknown } | null)?.code ?? (err as { name?: string } | null)?.name ?? 'unknown'}`,
       { cause: err },
     );
   }

@@ -420,7 +420,7 @@ describe('GCS: the single request carries what file.save() would have sent', () 
   });
 });
 
-describe('GCS: a read keeps the SDK retry', () => {
+describe('GCS: a read on a client the caller supplies, with the SDK retry on', () => {
   it('a ranged read retries a dropped connection', async () => {
     const driver = new GcsStorageDriver({ storage: stub.client(), bucket: BUCKET });
     await put(driver, new Uint8Array([1, 2, 3, 4]));

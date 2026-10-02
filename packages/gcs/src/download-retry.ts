@@ -1,15 +1,16 @@
 /**
- * `retryDownload` — run one download again after the faults the SDK itself would have retried, and no others.
+ * `retryDownload` — run one download again after the faults the SDK itself would have retried.
  *
  * The client `GcsStorage` builds sends a download once (see `backend.ts`: a download the SDK retries can crash the
- * process), which also took away the SDK's quiet retry of a reset connection and of a 408, 429, 500, 502, 503 or 504.
- * This puts that retry back inside the driver, so every caller keeps what the SDK gave it: the store's admin and
- * write-path registry reads, and a store built with `retry: false`, included. Which faults: `isDownloadRetryable`,
- * the SDK's own predicate. How many: three retries, the SDK's default, with full-jitter backoff of at most about 0.7 s
- * a call. A chunk read that the store's own retry also repeats makes at most 16 requests, as it did with the SDK's
- * retry. A 404, 412, 403 and every other answer reach the caller on the first attempt.
+ * process), which also took away the SDK's quiet retry of a connection fault and of a 408, 429, 500, 502, 503 or 504.
+ * This puts that retry back inside the driver, so every caller keeps it: the store's admin and write-path registry
+ * reads, and a store built with `retry: false`, included. Which faults: `isDownloadRetryable`. How many: three
+ * retries, the SDK's default, with full-jitter backoff of at most about 0.7 s a call. A chunk read that the store's
+ * own retry also repeats makes at most 16 requests, as it did with the SDK's retry. A 404, 412, 403 and every other
+ * answer reach the caller on the first attempt. A fault in transit that outlasts the retries is thrown as
+ * `ReadInterrupted`, which the driver reports as a `TransientError`.
  */
-import { isDownloadRetryable } from './gcs-errors';
+import { ReadInterrupted, isDownloadRetryable, isTransportFault } from './gcs-errors';
 
 const RETRIES = 3;
 const BASE_DELAY_MS = 100;
@@ -21,7 +22,9 @@ export async function retryDownload<T>(download: () => Promise<T>): Promise<T> {
     try {
       return await download();
     } catch (err) {
-      if (attempt >= RETRIES || !isDownloadRetryable(err)) throw err;
+      if (attempt >= RETRIES || !isDownloadRetryable(err)) {
+        throw isTransportFault(err) ? new ReadInterrupted(err) : err;
+      }
       const ceiling = Math.min(MAX_DELAY_MS, BASE_DELAY_MS * 2 ** attempt);
       await new Promise((resolve) => setTimeout(resolve, Math.random() * ceiling));
     }

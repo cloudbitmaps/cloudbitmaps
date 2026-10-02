@@ -3,14 +3,29 @@
  * and a test that made the same call in-process would take the test runner down with it, so each scenario runs here
  * and the parent reads the exit code: 1 is that crash, 0 is a call that settled and left the process alone.
  *
- * argv: the stub's endpoint, then the call to make (`tail`, `range`, `registry`, `list`, or `exists`, a facade call that reads the registry with the store's own retry off). Prints one JSON line.
+ * argv: the stub's endpoint, then the call to make (`tail`, `range`, `registry`, `list`, or `exists`, a facade call that reads the registry with the store's own retry off), then optionally `count-connects`, which adds how many connections the
+ * call opened to the endpoint's port. Prints one JSON line.
  */
+import { Socket } from 'node:net';
 import { CloudRoaring } from '../../../../packages/roaring/src/index';
 import { GcsStorage } from '../../../../packages/gcs/src/backend';
 
-const [endpoint, call] = process.argv.slice(2);
+const [endpoint, call, count] = process.argv.slice(2);
 if (endpoint === undefined || call === undefined)
-  throw new Error('usage: read-child <endpoint> <call>');
+  throw new Error('usage: read-child <endpoint> <call> [count-connects]');
+
+// Every connection the SDK opens goes through `Socket#connect`; count the ones to the endpoint's port. Node's own
+// `net.connect` hands it one normalized array, `[options, callback]`, rather than the options themselves.
+const port = Number(new URL(endpoint).port);
+let connects = 0;
+const connect = Socket.prototype.connect;
+Socket.prototype.connect = function (this: Socket, ...args: unknown[]): Socket {
+  const first: unknown = Array.isArray(args[0]) ? (args[0] as unknown[])[0] : args[0];
+  const target =
+    typeof first === 'object' && first !== null ? (first as { port?: unknown }).port : first;
+  if (Number(target) === port) connects++;
+  return (connect as (...a: unknown[]) => Socket).apply(this, args);
+} as typeof connect;
 
 const backend = new GcsStorage({
   bucket: 'b',
@@ -46,6 +61,7 @@ try {
 } catch (err) {
   outcome = { error: (err as Error).constructor.name };
 }
+if (count === 'count-connects') outcome.connects = connects;
 console.log(JSON.stringify(outcome));
 // Linger past the SDK's retry: its crash fires after a retried request succeeds, not when the call settles.
 await new Promise((resolve) => setTimeout(resolve, 400));
