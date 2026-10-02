@@ -176,6 +176,14 @@ describe('encodeChunks(): each chunk exactly as fromValues → optimize → seri
   it('the empty bitmap has no chunks', () => {
     expect([...SafeBitmap.empty().encodeChunks()]).toEqual([]);
   });
+
+  it('cuts lazily, one container per step, so a writer can yield between them', () => {
+    const bitmap = SafeBitmap.safeDeserialize(fromRanges().serialize('portable'), 1 << 30);
+    const chunks = bitmap.encodeChunks();
+    expect(Object.prototype.toString.call(chunks)).toBe('[object Generator]');
+    const iterator = chunks[Symbol.iterator]();
+    expect(iterator.next().value).toMatchObject({ chunkKey: 0, cardinality: 4 });
+  });
 });
 
 describe('an encrypted load from a bitmap stores what the id load stores, under fresh nonces', () => {
