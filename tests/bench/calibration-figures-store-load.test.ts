@@ -130,7 +130,7 @@ const withFaults = JSON.parse(
     join(ROOT, 'tests', 'bench', 'fixtures', 'calibration-rehearsal-discards.json'),
     'utf8',
   ),
-) as Run & { injectedFaults?: { getObjectRequests: number[] } };
+) as Run & { injectedFaults?: Array<{ getObject: number; as: string }> };
 /** The rehearsal, dressed as a finished real run: only what a real run's file says about itself is changed. */
 const asRealRun = (from: Run = fixture): Run => ({
   ...structuredClone(from),
@@ -165,7 +165,11 @@ describe('a run that timed store.load()', () => {
   // The harness's own output from a run that met three transient faults, in three kinds of sample. Dressed as a real
   // run it is evidence: each stage held to what it kept, the bill to every request, and its discards stated.
   it("is evidence from a rehearsal that discarded three samples, and its figures are the fault-free run's", () => {
-    expect(withFaults.injectedFaults?.getObjectRequests).toEqual([1_200, 60_000, 75_000]);
+    expect(withFaults.injectedFaults).toEqual([
+      { getObject: 1_200, as: 'reset' },
+      { getObject: 60_000, as: 'reset' },
+      { getObject: 75_000, as: 'reset' },
+    ]);
     expect(withFaults.discards).toEqual({ count: 3, perRun: 3, perStage: 2 });
     const clean = figures.derive(asRealRun(), SOURCES);
     const f = figures.derive(asRealRun(withFaults), SOURCES);
