@@ -1,5 +1,6 @@
 /**
- * The registry token's form, as the shipped registries issue it: `<32 lowercase hex incarnation>.<counter>`.
+ * The registry token's form, as the shipped registries issue it for a row they create:
+ * `<32 lowercase hex incarnation>.<counter>.<16 lowercase hex write part>`.
  * Tests assert a token through these rather than as a literal, because the incarnation is random.
  */
 import type { Entropy } from '@/core/determinism';

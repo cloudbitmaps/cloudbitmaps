@@ -73,9 +73,12 @@ so, and so do the module headers in the code.
   `@cloudbitmaps/core`). `ObjectStoreRegistry` takes one as an optional fourth constructor argument and defaults to
   Web Crypto. It is not the `Rng` seam, which is seedable for simulation: a seeded source hands every process the
   same ids. Inject one only to make a test replayable. On a runtime with no Web Crypto a shipped registry still
-  reads, reports `canWrite: false` in its `capabilities()` (a new optional `RegCaps` field), and refuses every write
-  with `UnsupportedError`; a load and an erasure rewrite check it before their first request, so they refuse before
-  they write an object.
+  reads and refuses every write with `UnsupportedError`.
+
+- **`RegCaps.canWrite`, an optional registry capability: `false` says the registry cannot write.** Absent means
+  writable, so an existing driver is unchanged. A shipped registry reports `false` on a runtime with no Web Crypto,
+  and a registry of your own may report it the same way. A load and an erasure rewrite check it before their first
+  request, so they refuse with `UnsupportedError` before they write an object.
 
 - **`AzureBlobStorage` can time each read: `readTimeoutMs`, off unless set.** With it set, every read request the
   Azure Blob storage and registry drivers send, a range read, a tail read's properties and its ranged download, each

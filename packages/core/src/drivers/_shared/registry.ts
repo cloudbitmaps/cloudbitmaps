@@ -231,6 +231,8 @@ function validateSummary(
   }
   const canonical = canonicalMetadataJson(s.metadata, fail);
   if (canonical === '{}') fail('metadata is empty; a generation without metadata carries none');
+  // A read only checks the stored shape and keeps the object it parsed, so it builds no copy.
+  if (isStored) return s as unknown as RegistrySummary;
   // Rebuilt from the canonical JSON, so its keys are in canonical order (JavaScript still lists integer-like keys
   // first, in numeric order, as it does in every object) and nothing of the caller's object is kept.
   const metadata = Object.freeze(JSON.parse(canonical) as Record<string, string | number>);

@@ -146,6 +146,10 @@ describe.each(harnesses)('%s across the schema-2 cut-over', (_, make) => {
       [2, '8'], // a bare counter: every token this build writes has a write part
       [1, `8.${'0'.repeat(16)}`], // a write part on a row no build of this one wrote
       [2, '1e3'],
+      [2, `8.${'A'.repeat(16)}`], // a write part in upper-case hex
+      [2, `${'A'.repeat(32)}.8.${'0'.repeat(16)}`], // an incarnation in upper-case hex
+      [2, `${'0'.repeat(32)}.8.${'A'.repeat(16)}`], // an incarnation-form write part in upper-case hex
+      [2, `8.${'0'.repeat(15)}`], // a write part one digit short
     ] as const) {
       for (const deleted of [false, true]) {
         await h.plant(JSON.stringify({ schemaVersion, deleted, record: { ...record, token } }));

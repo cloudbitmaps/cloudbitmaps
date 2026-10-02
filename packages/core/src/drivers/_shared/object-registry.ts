@@ -4,9 +4,10 @@
  * Lets a **read-mostly deployment run on one bucket alone** — storage `.crbm` generations plus the registry in
  * the same place, with no separate database. One tiny JSON object per segment at
  * `<prefix>registry/<ns>/<segment>.reg` holding the `{ deleted, record }` envelope (the same shape LocalFs
- * persists). The OCC token is a random incarnation id drawn when the row is created, beside a counter advanced on
- * every mutation and even across a `delete` (which **tombstones** rather than removes the object), so a
- * deleted-then-recreated row never re-issues an old token (ABA-safe) — identical semantics to the LocalFs registry,
+ * persists). The OCC token is a random incarnation id drawn when the row is created, a counter advanced on every
+ * mutation and even across a `delete` (which **tombstones** rather than removes the object), and a random part drawn
+ * for every write, so a deleted-then-recreated row, or one restored from a backup, never re-issues an old token
+ * (ABA-safe) — identical semantics to the LocalFs registry,
  * so it passes the same conformance suite.
  *
  * **The atomic swap is offloaded to the store's conditional writes.** `create` writes only if absent (or

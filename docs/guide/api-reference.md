@@ -579,7 +579,8 @@ naming the row on a read). A stored row whose summary disagrees with its keys, o
 `currentGen`, is still read, so one such row cannot stop every listing: whatever reads the summary must not use it
 then. Nothing in this release writes one yet, and a row without one is correct. **The registry conformance suite
 now requires a driver to persist it**: to round-trip it through `create`, `get`, `list` and `compareAndSwap`, keep it
-across a patch that does not mention it, and store it as it was when the write was called.
+across a patch that does not mention it, store it as it was when the write was called, and refuse a malformed one with
+`ValidationError` on the write.
 
 **A shipped registry's token is `<incarnation>.<counter>.<write>`.** The incarnation is 128 bits as 32 lowercase hex
 digits, drawn when a row is created, so a re-created name never meets an earlier incarnation's token, even once the
