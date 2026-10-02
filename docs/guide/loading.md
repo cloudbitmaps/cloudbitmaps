@@ -98,7 +98,7 @@ await store.load({ segment: 'audience:imported' }, { serialized: bytes });
 
 - **It is the same load.** The generation is byte for byte the one the same ids write, and everything above holds
   unchanged: the guard and the empty refusal, `keep`, the fenced publish, encryption and the result.
-- **It is checked first.** The bytes are size-capped (at 537,395,208, the largest a 32-bit bitmap's canonical
+- **It is checked first.** The bytes are size-capped (at 537,395,208 bytes, the largest a 32-bit bitmap's canonical
   encoding can take; call `runOptimize()` before serializing a bitmap that is over it), checked structurally the way
   every stored chunk is, and decoded by the safe deserializer, all before the load's first request. Bytes that fail
   are a `ValidationError`, and nothing is read or written. `{ bitmap }` is checked the same way: it is serialized once,

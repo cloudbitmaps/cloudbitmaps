@@ -28,7 +28,7 @@ so, and so do the module headers in the code.
   `{ serialized: bitmap.serialize('portable') }`, serialized once at the call, so changing the bitmap afterwards does
   not change what is loaded. `{ serialized }` is one 32-bit bitmap in the portable Roaring format, the one the
   `'roaring'` export writes. A bare `RoaringBitmap32` from the `roaring` this package uses, passed where ids go, is
-  loaded the same way. Every bitmap input takes one path: the bytes are capped at 537,395,208 (the largest a 32-bit
+  loaded the same way. Every bitmap input takes one path: the bytes are capped at 537,395,208 bytes (the largest a 32-bit
   bitmap's canonical encoding can take), checked structurally the way every stored chunk is, and decoded by the safe
   deserializer, all before the load's first request, so malformed or oversized bytes throw `ValidationError` and
   nothing is read or written. The chunks are then cut from the bitmap's own containers, per container and per byte
