@@ -2,6 +2,7 @@ import fc from 'fast-check';
 import { loadSegment, type LoadOptions } from '@/core/load';
 import { LIST_COLLECTION_CADENCE, collectByName, gcOrphanGenerations } from '@/core/generation-gc';
 import { ValidationError, WriteConflictError } from '@/core/errors';
+import { eraseIdFromSegment } from '@/core/erase-id';
 import { rollbackSegment } from '@/core/rollback';
 import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { brandAsBackend } from '@/core/ports';
@@ -247,6 +248,18 @@ describe('keep of 2 or more, and a number the check could not prove free, still 
     // A name-only pass would have taken 2 and left 0 and 1: the listing takes all but the newest below 4.
     expect(await held()).toEqual([3, 4]);
     expect(calls.list).toBe(1);
+  });
+
+  it('an erasure rewrite still lists, and collects every generation below its own', async () => {
+    const w = world();
+    await loadMany(w, 4, { keep: 9 }); // generations 0 to 3 held in full, and 2 and 3 hold the id
+    w.reset();
+    const res = await eraseIdFromSegment(SEG, 2, w.deps);
+    expect(res).toMatchObject({ erased: true, generation: 4 });
+    // A name-only pass would have taken the one generation below the rewrite.
+    expect(w.storageCalls.list).toBeGreaterThanOrEqual(1);
+    expect([...res.collected].sort((a, b) => a - b)).toEqual([0, 1, 2, 3]);
+    expect(await generations(w.memory)).toEqual([4]);
   });
 
   it.each([2, 3, 9])('lists once for keep %i, as before', async (keep) => {
