@@ -7,10 +7,10 @@
  * reads, and a store built with `retry: false`, included. Which faults: `isDownloadRetryable`. How many: three
  * retries, the SDK's default, with full-jitter backoff of at most about 0.7 s a call. A chunk read that the store's
  * own retry also repeats makes at most 16 requests, as it did with the SDK's retry. A 404, 412, 403 and every other
- * answer reach the caller on the first attempt. A fault in transit that outlasts the retries is thrown as
- * `ReadInterrupted`, which the driver reports as a `TransientError`.
+ * answer reach the caller on the first attempt. What the last attempt raised is rethrown as it is, for the driver to
+ * classify.
  */
-import { ReadInterrupted, isDownloadRetryable, isTransportFault } from './gcs-errors';
+import { isDownloadRetryable } from './gcs-errors';
 
 const RETRIES = 3;
 const BASE_DELAY_MS = 100;
@@ -22,9 +22,7 @@ export async function retryDownload<T>(download: () => Promise<T>): Promise<T> {
     try {
       return await download();
     } catch (err) {
-      if (attempt >= RETRIES || !isDownloadRetryable(err)) {
-        throw isTransportFault(err) ? new ReadInterrupted(err) : err;
-      }
+      if (attempt >= RETRIES || !isDownloadRetryable(err)) throw err;
       const ceiling = Math.min(MAX_DELAY_MS, BASE_DELAY_MS * 2 ** attempt);
       await new Promise((resolve) => setTimeout(resolve, Math.random() * ceiling));
     }

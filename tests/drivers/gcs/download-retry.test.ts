@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { retryDownload } from '@/gcs/download-retry';
-import { ReadInterrupted } from '@/gcs/gcs-errors';
 
 /**
  * The driver's download retry: three retries with full-jitter backoff, 100 ms doubling to a 1 s ceiling. The jitter
@@ -48,7 +47,7 @@ describe('retryDownload', () => {
     p.catch(() => undefined);
     await vi.runAllTimersAsync();
     expect(calls).toBe(4);
-    await expect(p).rejects.toBeInstanceOf(ReadInterrupted);
+    await expect(p).rejects.toMatchObject({ code: 'ECONNRESET' }); // as the last attempt raised it
   });
 
   it('returns the first success, and throws an answer it does not retry as raised', async () => {

@@ -1,5 +1,4 @@
 import {
-  ReadInterrupted,
   isDownloadRetryable,
   isInvalidRange,
   isNotFound,
@@ -47,6 +46,7 @@ describe('GCS error classification', () => {
       'ETIMEDOUT',
       'EHOSTUNREACH',
       'ENETUNREACH',
+      'ECONNABORTED',
       'ERR_STREAM_PREMATURE_CLOSE',
     ])
       expect(isDownloadRetryable(netErr(n))).toBe(true);
@@ -60,13 +60,19 @@ describe('GCS error classification', () => {
       expect(isDownloadRetryable({ code: 400, errors: [{ reason }] })).toBe(true);
     for (const c of [400, 401, 403, 404, 412, 416, 501, 505])
       expect(isDownloadRetryable(apiErr(c))).toBe(false);
-    // An answer, not a fault in transit: a checksum mismatch, a programming error, a TLS failure, a status as a string.
+    // Not a fault in transit, though some share its shape: a credentials file that is missing or unreadable, a TLS
+    // failure (Node gives an https request to a plain-HTTP port EPROTO), a checksum mismatch, a programming error, a
+    // status as a string.
     for (const n of [
-      'CONTENT_DOWNLOAD_MISMATCH',
-      'ERR_INVALID_ARG_TYPE',
+      'ENOENT',
+      'EACCES',
+      'EISDIR',
+      'EPROTO',
       'ERR_SSL_WRONG_VERSION_NUMBER',
       'CERT_HAS_EXPIRED',
       'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+      'CONTENT_DOWNLOAD_MISMATCH',
+      'ERR_INVALID_ARG_TYPE',
       '501',
     ])
       expect(isDownloadRetryable(netErr(n))).toBe(false);
@@ -82,17 +88,8 @@ describe('GCS error classification', () => {
     expect(isTransportFault(apiErr(503))).toBe(false);
     expect(isTransportFault({ response: { status: 500 }, code: 'ECONNRESET' })).toBe(false);
     expect(isTransportFault(new Error('ECONNREFUSED'))).toBe(false);
-  });
-
-  it('a read that outlasted its retries in transit is transient, and keeps its cause and code', () => {
-    const cause = Object.assign(new Error('premature close'), {
-      code: 'ERR_STREAM_PREMATURE_CLOSE',
-    });
-    const err = new ReadInterrupted(cause);
-    expect(isTransient(err)).toBe(true);
-    expect(err.cause).toBe(cause);
-    expect(err.code).toBe('ERR_STREAM_PREMATURE_CLOSE');
-    expect(err.message).toContain('premature close');
+    expect(isTransportFault(netErr('ENOENT'))).toBe(false);
+    expect(isTransportFault(netErr('EPROTO'))).toBe(false);
   });
 
   it('429 + any 5xx + dropped sockets are transient', () => {

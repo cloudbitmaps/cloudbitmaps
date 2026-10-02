@@ -55,38 +55,36 @@ function isSdkConnectionProblem(reason: string): boolean {
 }
 
 /**
- * A download that failed in transit rather than with an HTTP status: no response came (refused, reset, timed out, a
- * DNS failure, an unreachable host) or the body was cut off. Node names the first kind with an `E…` system code, and a
- * chunked body cut off mid-stream arrives as `ERR_STREAM_PREMATURE_CLOSE`. A TLS or certificate failure is not one of
- * these: it would fail the same way again.
+ * The codes Node gives a connection that failed or was cut off: refused, reset, aborted, timed out, a DNS failure, an
+ * unreachable host or network, a broken pipe, and a chunked body cut off mid-stream (`ERR_STREAM_PREMATURE_CLOSE`).
+ * Only these: a file the credentials name that is missing or unreadable (`ENOENT`, `EACCES`) and a TLS failure
+ * (`EPROTO`, a certificate error) carry codes of the same shape, and would fail the same way again.
  */
+const TRANSPORT_CODES = new Set([
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ECONNABORTED',
+  'ETIMEDOUT',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'EPIPE',
+  'ERR_STREAM_PREMATURE_CLOSE',
+]);
+
+/** A download that failed in transit rather than with an HTTP status: one of {@link TRANSPORT_CODES}. */
 export function isTransportFault(err: unknown): boolean {
   if (httpStatus(err) !== undefined) return false;
   const code = networkCode(err);
-  if (code === undefined) return false;
-  return (
-    code === 'ERR_STREAM_PREMATURE_CLOSE' || (!code.startsWith('ERR_') && /^E[A-Z_]+$/.test(code))
-  );
-}
-
-/** A download that still failed in transit after the driver's retries: a transient fault, with the last one as its cause. */
-export class ReadInterrupted extends Error {
-  readonly code: string | undefined;
-  constructor(cause: unknown) {
-    super(`GCS read failed in transit: ${cause instanceof Error ? cause.message : String(cause)}`, {
-      cause,
-    });
-    this.name = 'ReadInterrupted';
-    this.code = networkCode(cause);
-  }
+  return code !== undefined && TRANSPORT_CODES.has(code);
 }
 
 /**
  * Whether the driver retries a failed download, which it does in the SDK's place: the statuses the SDK's predicate
  * retries (408, 429, 500, 502, 503 and 504, as a number or a string `code`), the connection faults it names in any
- * `errors[].reason`, and every {@link isTransportFault}, since the SDK retried any fault that came before a response
- * whatever its code. A 404, 412, 416 or 403, a 501 or 505, a TLS failure, and every other answer reach the caller on
- * the first attempt.
+ * `errors[].reason`, and every {@link isTransportFault}, which the SDK retried before any response came. A 404, 412,
+ * 416 or 403, a 501 or 505, a credentials or TLS failure, and every other answer reach the caller on the first attempt.
  */
 export function isDownloadRetryable(err: unknown): boolean {
   if (err === null || typeof err !== 'object') return false;
@@ -112,7 +110,6 @@ export function isDownloadRetryable(err: unknown): boolean {
  * a blind transient (a retried doomed conditional write would just fail again, and mask an OCC conflict).
  */
 export function isTransient(err: unknown): boolean {
-  if (err instanceof ReadInterrupted) return true;
   if (isPreconditionFailed(err) || isNotFound(err) || isInvalidRange(err)) return false;
   const status = httpStatus(err);
   if (status === 408 || status === 429 || (status !== undefined && status >= 500 && status < 600))

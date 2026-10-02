@@ -63,8 +63,8 @@ so, and so do the module headers in the code.
   exited with code 1, whatever the caller wrapped around the call. It hit every read through `GcsStorage` on the client
   it built itself (tail, range and registry reads), in 0.10.0 and later. `GcsStorage` now builds a second client with
   the SDK's request retries off and sends every download through it, and the driver retries a download itself, up to
-  three more times with backoff, after a connection fault (refused, reset, timed out, a DNS failure, a body cut off) or a 408, 429, 500, 502, 503 or 504: what the SDK retried, apart from a TLS failure, which would fail
-  again. A store built with `retry: false` still gets it. What still fails is a `TransientError`. The client's other
+  three more times with backoff, after a connection fault (refused, reset, timed out, a DNS failure, a body cut off) or a 408, 429, 500, 502, 503 or 504: what the SDK retried, and not a missing credentials file or a TLS
+  failure, which would fail the same way again. A store built with `retry: false` still gets it. What still fails is a `TransientError`. The client's other
   requests (uploads, listings, metadata reads) keep the default retries. A `client` you pass is used as given: build it
   with `retryOptions: { autoRetry: false }`, which also turns off the SDK's retries of listings, metadata reads and
   resumable uploads on that client.

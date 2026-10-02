@@ -55,7 +55,7 @@ It builds its own client from Application Default Credentials. Any other key is 
   8.1.0), a download the SDK retries after any status it retries (408, 429, 500, 502, 503 or 504) can crash the process with
   `ERR_STREAM_UNABLE_TO_PIPE`, thrown outside any promise, even though the retried request succeeded. The client
   `GcsStorage` builds therefore sends each download once, and the driver runs a download again itself, up to three
-  more times with backoff, after a connection fault (refused, reset, timed out, a DNS failure, a body cut off) or a 408, 429, 500, 502, 503 or 504, and after nothing else. That holds for every
+  more times with backoff, after a connection fault (refused, reset, timed out, a DNS failure, a body cut off) or a 408, 429, 500, 502, 503 or 504, and after nothing else (not a missing credentials file or a TLS failure). That holds for every
   caller, including a store built with `retry: false`. The client's other requests (uploads, listings, metadata reads)
   keep the SDK's retries. **A client you pass as `client` is used as it is, so build it with
   `retryOptions: { autoRetry: false }`.** That also turns off the SDK's retries of listings, metadata reads and

@@ -41,7 +41,13 @@ import {
   parseGenerationFromName,
   segmentObjectPrefix,
 } from './keys';
-import { isInvalidRange, isNotFound, isPreconditionFailed, isTransient } from './gcs-errors';
+import {
+  isInvalidRange,
+  isNotFound,
+  isPreconditionFailed,
+  isTransient,
+  isTransportFault,
+} from './gcs-errors';
 import { retryDownload } from './download-retry';
 import { saveOnce } from './send-once';
 import { readOnce, singleHeader, type ObjectRead } from './read-once';
@@ -287,6 +293,15 @@ export class GcsStorageDriver implements IStorageDriver {
     // ValidationError, never a short/empty read.
     if (isInvalidRange(err)) {
       return new ValidationError(`range out of bounds for ${key.segment}.${key.generation}`);
+    }
+    // A connection that failed or was cut off, after the driver's retries: transient, whichever code Node gave it.
+    if (isTransportFault(err)) {
+      return new TransientError(
+        `transient GCS fault: ${String((err as { code?: unknown }).code)}`,
+        {
+          cause: err,
+        },
+      );
     }
     return this.mapError(err);
   }

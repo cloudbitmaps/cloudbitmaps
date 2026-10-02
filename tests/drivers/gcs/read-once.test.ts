@@ -134,6 +134,22 @@ describe('readOnce', () => {
     expect(reads.reads).toHaveLength(2);
   });
 
+  it.each(['ENOENT', 'EACCES', 'EPROTO'])(
+    'does not retry a %s (a credentials file, a TLS failure), and reports it as raised',
+    async (code) => {
+      const reads = new DrivenReads();
+      const storage = { bucket: () => ({ file: () => reads.file() }) } as unknown as Storage;
+      const driver = new GcsStorageDriver({ storage, bucket: 'b' });
+      const p = driver.getTail({ segment: 's', generation: 0 }, 10);
+      p.catch(() => undefined);
+      const raised = Object.assign(new Error(`${code}: permanent`), { code });
+      (await reads.read(0)).stream.destroy(raised);
+      await expect(p).rejects.toBe(raised);
+      await new Promise((r) => setTimeout(r, 1_200));
+      expect(reads.reads).toHaveLength(1);
+    },
+  );
+
   it('refuses a tail longer than it asked for on the first response, without a retry', async () => {
     const reads = new DrivenReads();
     const storage = { bucket: () => ({ file: () => reads.file() }) } as unknown as Storage;
@@ -163,7 +179,7 @@ describe('readOnce', () => {
     expect(reads.reads).toHaveLength(1);
   });
 
-  it('retries a fault before any response, whatever its code, as the SDK did', async () => {
+  it('retries a connection that failed before any response, on any network code, as the SDK did', async () => {
     const reads = new DrivenReads();
     const storage = { bucket: () => ({ file: () => reads.file() }) } as unknown as Storage;
     const driver = new GcsStorageDriver({ storage, bucket: 'b' });

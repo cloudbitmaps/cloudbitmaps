@@ -40,7 +40,7 @@ import {
 } from '@cloudbitmaps/core/driver-kit';
 import type { ObjectRegistryStore, ObjectRow } from '@cloudbitmaps/core/driver-kit';
 import type { Storage } from '@google-cloud/storage';
-import { isNotFound, isPreconditionFailed, isTransient } from './gcs-errors';
+import { isNotFound, isPreconditionFailed, isTransient, isTransportFault } from './gcs-errors';
 import { retryDownload } from './download-retry';
 import { readOnce, singleHeader } from './read-once';
 import { saveOnce } from './send-once';
@@ -98,7 +98,7 @@ class GcsStore implements ObjectRegistryStore {
       );
     } catch (err) {
       if (isNotFound(err)) return null;
-      throw mapError(err);
+      throw mapReadError(err);
     }
     if (res.status !== 200) {
       throw new IntegrityError(`registry read answered HTTP ${res.status}, not 200: ${key}`);
@@ -171,6 +171,16 @@ function generationFence(version: string, key: string): number {
     throw new IntegrityError(`registry version fence is not a GCS generation: ${key}`);
   }
   return generation;
+}
+
+/** A read's error: a connection that failed or was cut off is transient too, after the driver's retries. */
+function mapReadError(err: unknown): unknown {
+  if (isTransportFault(err)) {
+    return new TransientError(`transient GCS fault: ${String((err as { code?: unknown }).code)}`, {
+      cause: err,
+    });
+  }
+  return mapError(err);
 }
 
 /** Reclassify a transient GCS fault as a retryable {@link TransientError}; pass everything else through. */

@@ -105,9 +105,14 @@ interface Run {
 }
 
 /** The child gets a minimal environment, so nothing the developer or CI exports (an emulator host, credentials) leaks in. */
-function runChild(endpoint: string, call: string, ...extra: string[]): Promise<Run> {
+function runChild(
+  endpoint: string,
+  call: string,
+  extra: string[] = [],
+  extraEnv: Record<string, string> = {},
+): Promise<Run> {
   return new Promise((resolve, reject) => {
-    const env = { PATH: process.env.PATH ?? '', HOME: home };
+    const env = { PATH: process.env.PATH ?? '', HOME: home, ...extraEnv };
     const proc = spawn(process.execPath, [child, endpoint, call, ...extra], {
       env,
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -195,9 +200,26 @@ describe('a GCS download', () => {
         await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve));
         const port = (probe.address() as AddressInfo).port;
         await new Promise<void>((resolve) => probe.close(() => resolve()));
-        const run = await runChild(`http://127.0.0.1:${port}`, call, 'count-connects');
+        const run = await runChild(`http://127.0.0.1:${port}`, call, ['count-connects']);
         expect(run.code).toBe(0);
         expect(run.outcome).toEqual({ error: 'TransientError', connects: 4 });
+      },
+      20_000,
+    );
+
+    it.concurrent(
+      'a credentials file that does not exist is raised as it is, on the first attempt',
+      async () => {
+        const stub = await startStub();
+        try {
+          const run = await runChild(stub.endpoint, call, ['creds-missing'], {
+            GOOGLE_APPLICATION_CREDENTIALS: `${home}/no-such-key.json`,
+          });
+          expect(run.code).toBe(0);
+          expect(run.outcome).toEqual({ error: 'Error', code: 'ENOENT', reads: 1 });
+        } finally {
+          await stub.close();
+        }
       },
       20_000,
     );
