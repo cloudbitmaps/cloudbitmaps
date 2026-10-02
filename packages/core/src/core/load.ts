@@ -36,6 +36,7 @@ import {
   isWriteConflictError,
 } from './errors';
 import { gcOrphanGenerations, nextGeneration } from './generation-gc';
+import { type ReadRetry, retryRead } from './retry';
 import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef, Token } from './ports';
 import { validateUserRef } from './validate';
 
@@ -47,6 +48,11 @@ export interface LoadDeps {
   readonly keystore?: IKeystore;
   readonly requireEncryption?: boolean;
   readonly clock?: Clock;
+  /**
+   * The store's read retry, for the read the guard makes of the current generation: a transient fault there is run
+   * again under it rather than failing the load. Absent, the read is made once. The write is never retried.
+   */
+  readonly readRetry?: ReadRetry;
 }
 
 /**
@@ -163,7 +169,10 @@ async function currentCardinality(
   }
   let reader;
   try {
-    reader = await openGenerationReader(deps.storage, { ...ref, generation }, crypto);
+    reader = await retryRead(
+      () => openGenerationReader(deps.storage, { ...ref, generation }, crypto),
+      deps.readRetry,
+    );
   } catch (err) {
     // The row names a generation whose OBJECT is gone — the `missing-storage-generation` state a consistency
     // check reports, produced by a partial `dropSegment`, a bucket lifecycle rule, or a restore that brought

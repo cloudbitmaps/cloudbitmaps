@@ -1905,6 +1905,15 @@ describe('the meter counts every attempt the SDK makes, not every send', () => {
     }
   }, 20_000);
 
+  // A timed read that the S3 package cut short would land in a latency sample as a fault, so the harness turns the
+  // timeout off by name rather than inheriting whatever the default becomes.
+  it('the harness builds its one store with the read timeout off, stated', () => {
+    const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
+    const stores = src.match(/new S3Storage\(\{[^}]*\}\)/g) ?? [];
+    expect(stores).toHaveLength(1);
+    expect(stores[0]).toMatch(/\breadTimeoutMs: 0\b/);
+  });
+
   it('the harness builds exactly those two clients, meters both, and tears down with the retrying one', () => {
     const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
     // Each variable tied to its config, and the workload metered: a swap of the two configs, or a workload client

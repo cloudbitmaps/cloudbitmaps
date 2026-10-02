@@ -194,10 +194,12 @@ export interface CloudRoaringOptions {
    * Resilience: by default every read that answers a query retries **transient** faults (throttling, 5xx, dropped
    * connections) with bounded, jittered exponential backoff (see {@link DEFAULT_RETRY_POLICY}): `has`, `count`,
    * `iterate` and the combines, the `*Into` verbs' reads of their operands included, a pinned handle's reads and
-   * `pin()` itself. Writes are not retried, and nor are an erasure's reads, a load's guard read, or the calls that
-   * read the registry or list the bucket directly (`exists`, `segments`, `generations`, `getRetention`, and the
-   * registry scan `subjectReport`, `exportSegments` and `checkConsistency` start from): they report a transient fault to their caller, because a conditional write that lands and then loses its response would, replayed,
-   * report its own write as a conflict. Pass a partial policy to tune it — anything you leave out keeps its
+   * `pin()` itself, and the reads a write makes along the way: a load's guard read of the current generation, and an
+   * erasure's reads of the generation it rewrites, of the one it wrote and of any other that may still hold the id.
+   * Writes are not retried, and nor are the calls that read the registry or list the bucket directly (`exists`,
+   * `segments`, `generations`, `getRetention`, and the registry scan `subjectReport`, `exportSegments` and
+   * `checkConsistency` start from): they report a transient fault to their caller, because a conditional write that
+   * lands and then loses its response would, replayed, report its own write as a conflict. Pass a partial policy to tune it — anything you leave out keeps its
    * default — or `false` to turn the read retry off (e.g. if your injected client already retries). A GCS download is retried by
    * the GCS driver whatever this says.
    * Deterministic errors (`ValidationError`/`IntegrityError`/`WriteConflictError`/…) are never retried by this
@@ -629,7 +631,10 @@ function resolveStorageSource(
   };
 }
 
-/** The deps every write-side helper on the store shares: raw storage + registry + the store's codec/crypto/clock. */
+/**
+ * The deps every write-side helper on the store shares: raw storage + registry + the store's codec/crypto/clock, and
+ * the store's read retry for the reads a write makes along the way (undefined when the store's retry is off).
+ */
 interface LifecycleDeps {
   readonly storage: IStorageDriver;
   readonly registry: IRegistryDriver;
@@ -637,6 +642,7 @@ interface LifecycleDeps {
   readonly clock: Clock;
   readonly keystore?: IKeystore;
   readonly requireEncryption?: boolean;
+  readonly readRetry?: RetryingOptions;
 }
 
 /** How the store names a group value that is an object to `typeof` but configures nothing, by its built-in tag. */
@@ -798,7 +804,9 @@ export class CloudRoaring {
     this.clock = clock;
     this.metrics = metrics;
     // Keep the raw drivers for the lifecycle helpers (see the fields above). They use the raw drivers directly —
-    // a one-shot admin op surfaces a transient fault to the caller rather than retrying under the hood.
+    // a one-shot admin op surfaces a transient fault to the caller rather than retrying under the hood — except for
+    // the reads a load's guard and an erasure make along the way, which take the store's read retry (`readRetry`),
+    // since a read is safe to repeat and one fault there would otherwise fail the whole write.
     this.storageDriver = resolved.driver;
     this.registry = resolved.registry;
     this.keystore = options.encryption?.keystore;
@@ -834,6 +842,7 @@ export class CloudRoaring {
       codec: roaringCodec, // facade injects the flagship codec
       keystore: this.keystore,
       requireEncryption: this.requireEncryption,
+      readRetry: this.retryOptions,
     };
   }
 

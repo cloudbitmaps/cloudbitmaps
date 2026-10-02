@@ -234,7 +234,9 @@ constants and the source text:
   every page of versions, up to ten pages, and refuses and reports a bucket holding any key outside `calib/`, the
   store's prefix, rather than empty it. `--cleanup` checks `CR_CALIBRATE_EXPECT_ACCOUNT` as a run does.
 - **Teardown cannot hang.** Its requests time out, 5 s to connect and 30 s to answer, and are retried; the SDK waits
-  for ever by default. The workload's requests have no timeout, since a timed request must not be cut short.
+  for ever by default. The workload's requests have no timeout, since a timed request must not be cut short: its
+  client sets none, and its store is built with `readTimeoutMs: 0`, stated rather than left to the S3 package's
+  default, so a change of that default cannot add one.
 - **It runs only where it has prices.** Every run is priced at `us-east-1`'s rates, so a run anywhere else would
   record the wrong bill and check its ceiling against the wrong one. It is refused until a pricing profile for that
   region exists.

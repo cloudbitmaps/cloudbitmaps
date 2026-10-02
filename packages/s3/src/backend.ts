@@ -11,7 +11,7 @@
  * credential chain the SDK cannot infer (SSO, an assumed role, a custom retry strategy); pass `endpoint` +
  * `pathStyle` + `credentials` for an S3-compatible store (MinIO, Ceph, R2). Both halves stay reachable as `.storage` and
  * `.registry` for anyone wiring something the facade does not cover. `maxObjectBytes` and `partBytes` size the
- * multipart upload.
+ * multipart upload, and `readTimeoutMs`, when set, bounds each read both halves make.
  */
 import { STORAGE_BACKEND, ValidationError, brandAsBackend } from '@cloudbitmaps/core/driver-kit';
 import type {
@@ -62,6 +62,23 @@ export interface S3StorageOptions {
   /** Multipart part size in bytes (default 8 MiB; a smaller value is raised to the S3 5 MiB minimum). Must be a
    * positive safe integer. Tunes peak write memory. */
   readonly partBytes?: number;
+  /**
+   * How long one read may take before it is abandoned, in ms. `0`, the default, sets no timeout. When set, it bounds
+   * each `GetObject` and `HeadObject` either half sends, the response body included, so a connection that stops
+   * answering part-way through a body is cut off too. A read that runs out of time throws `TransientError`, which the
+   * store's read retry runs again. AWS's S3 guidance is to retry a GET of under 512 KB that has not answered in about
+   * 2 seconds. Must be a non-negative safe integer no larger than 2,147,483,647.
+   *
+   * The clock starts when the read is handed to the SDK, so it also counts the time the read waits for one of the
+   * client's sockets (50 by default) and the time spent fetching credentials, and under `retryMode: 'adaptive'` the
+   * SDK's rate-limiter wait. A burst of concurrent reads larger than the socket pool can therefore time out with
+   * nothing slow on the wire: size the timeout above the worst queueing your concurrency implies, or raise the client's
+   * `maxSockets`. On a client built with `cacheMiddleware: true`, a timed read resolves its middleware each time.
+   *
+   * Writes and listings are never timed: a write that hangs needs a timeout on the client (its `requestHandler`). The
+   * timeout is applied per request, so a `client` you pass gets it without being changed.
+   */
+  readonly readTimeoutMs?: number;
   /** Injected clock for the registry's `createdAt`/`updatedAt`; defaults to `Date.now`. */
   readonly now?: () => number;
 }
@@ -81,6 +98,7 @@ export const S3_STORAGE_OPTION_KEYS = [
   'credentials',
   'maxObjectBytes',
   'partBytes',
+  'readTimeoutMs',
   'now',
 ] as const;
 
@@ -144,6 +162,7 @@ export class S3Storage implements StorageBackend {
       client: this.client,
       bucket: options.bucket,
       ...(options.prefix === undefined ? {} : { prefix: options.prefix }),
+      ...(options.readTimeoutMs === undefined ? {} : { readTimeoutMs: options.readTimeoutMs }),
     };
     this.storage = new S3StorageDriver({
       ...shared,
