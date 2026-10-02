@@ -15,6 +15,14 @@ import { ListBucketsCommand, S3Client } from '@aws-sdk/client-s3';
 // the failed attempt and the wait for its requests out, that a fault that is not transient, or one in a load, fails the
 // run, and that the run's error says what failed.
 //
+// A known limit: a harness that put a failed attempt's own time, without the wait, into the kept sample's latency is
+// not caught here. That time is about one sample's, inside the spread of the samples themselves, and the results file
+// records each stage's quantiles, not each sample's latency, so no line drawn from it separates the two without failing
+// honest runs. (A fault that held the failed attempt open far longer than a sample, a delayed reset, would separate
+// them; the fault hook has none.) A clock started outside the attempt is caught, because it also carries the wait, at
+// least QUIET_MS; and the source test in `tests/bench/calibrate-samples.test.ts` holds every sample's clock inside its
+// attempt.
+//
 // A rehearsal touches no cloud account: the harness points it at 127.0.0.1:9000 with MinIO's own credentials, and its
 // money guards do not run. It is spawned with `--rehearse` alone, never `--run`, where no AWS credential can be found.
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -86,11 +94,13 @@ const figures = require_(join(ROOT, 'bench', 'lib', 'calibration-figures.cjs')) 
 };
 
 /**
- * The workload: four calibration segments of 150,000 ids, which spread over 600 chunks with 30 shared, so each object
- * is larger than the 256 KiB tail read, as the full workload's are; one multipart segment; four cold intersects; point
- * reads on two segments; two `andNot` calls against two others; no spread stage and no sweep.
+ * The workload: four calibration segments of 125,000 ids, which spread over 500 chunks with 25 shared, so each object
+ * is still larger than the 256 KiB tail read, as the full workload's are; one multipart segment; four cold intersects;
+ * point reads on two segments; two `andNot` calls, each against one other segment; no spread stage and no sweep. An
+ * `andNot` call reads every chunk of its include operand, so it is the slowest sample here, and the smallest segment
+ * that keeps the tail read whole is what keeps it short.
  */
-const W = { segments: 4, ids: 150_000, large: 1, reads: 4, point: 2, andNot: 2, excludes: 2 };
+const W = { segments: 4, ids: 125_000, large: 1, reads: 4, point: 2, andNot: 2, excludes: 1 };
 const WORKLOAD = {
   CR_CALIBRATE_SEGMENTS: String(W.segments),
   CR_CALIBRATE_IDS: String(W.ids),
@@ -116,20 +126,36 @@ const k = layout.sharedChunks;
  * makes 4 + 2k; the priming pass reads each segment once, a pointer, a tail and its shared chunks; a first `count()` is
  * a pointer and a tail, a `has()` on an open segment a chunk, and a first `has()` a pointer, a tail and a chunk.
  */
+const LOADS = (W.segments + W.large) * stages.FIRST_LOAD.get;
+const COLD = stages.coldIntersectGets(k);
+const PRIMING = W.segments * (2 + k);
+/** One `andNot` call: a pointer and a tail per operand, every chunk of the include, the exclude's shared chunks. */
+const ANDNOT_CALL = 2 * (1 + W.excludes) + layout.chunksPerSegment + W.excludes * k;
 const AT = (() => {
-  const loads = (W.segments + W.large) * stages.FIRST_LOAD.get;
-  const cold = stages.coldIntersectGets(k);
   // The last request of the first cold intersect: the discard made every request a finished intersect makes, more
   // than the stage's bound leaves above its expected count, so a stage held to its total would overspend.
-  const intersect = loads + cold;
+  const intersect = LOADS + COLD;
   // With that sample discarded and run again, the intersects are five samples' worth.
-  const warm = loads + 5 * cold;
-  const pointReads = warm + W.segments * (2 + k);
+  const pointReads = LOADS + 5 * COLD + PRIMING;
   // The tail read of the first first-read `has()`, after the cold `count()`s and the open-segment `has()`s.
   const firstRead = pointReads + 2 * W.point + W.point * k + 2;
-  // With that discarded (a pointer and a tail) and run again, then the rest: part-way into the first `andNot` call.
-  const andNot = firstRead + 3 * W.point * k + 300;
-  return { loads, intersect, firstRead, andNot };
+  // With that discarded (a pointer and a tail) and run again, then the rest: nine tenths into the first `andNot` call,
+  // so the failed attempt ran about as long as a finished call, which the latency test's line is drawn from.
+  const andNot = firstRead + 3 * W.point * k + Math.floor(0.9 * ANDNOT_CALL);
+  return { intersect, firstRead, andNot };
+})();
+/**
+ * The other three kinds of sample, in a second run: the priming pass's last request, a first `count()`'s tail read,
+ * and the first `has()` on an open segment. The first two re-run on their store, not on a fresh one, and the console
+ * says where each runs again.
+ */
+const AT_ON_ITS_STORE = (() => {
+  const priming = LOADS + W.reads * COLD + PRIMING;
+  // The priming pass discarded whole at its last request, then run again: then the first `count()`.
+  const count = priming + PRIMING + 2;
+  // That discarded (a pointer and a tail) and run again, then the second segment's `count()`: the first open `has()`.
+  const openHas = count + 2 + 2 + 1;
+  return { priming, count, openHas };
 })();
 
 const OFFLINE_HOME = mkdtempSync(join(tmpdir(), 'calib-rehearsal-'));
@@ -229,7 +255,9 @@ describe('a calibration rehearsal that meets transient faults', () => {
     // The intersect failed at its last request, so it had made all of them; the first read at its tail, after its pointer.
     expect(phases.intersect?.discarded[0]?.requests.get).toBe(stages.coldIntersectGets(k));
     expect(phases.pointReads?.discarded[0]?.requests.get).toBe(2);
-    expect(phases.andNot?.discarded[0]?.requests.get).toBeGreaterThanOrEqual(300);
+    expect(phases.andNot?.discarded[0]?.requests.get).toBeGreaterThanOrEqual(
+      Math.floor(0.9 * ANDNOT_CALL),
+    );
     for (const name of ['intersect', 'pointReads', 'andNot']) {
       expect(phases[name]?.discarded[0]?.failedAfterMs, name).toBeGreaterThan(0);
     }
@@ -277,9 +305,49 @@ describe('a calibration rehearsal that meets transient faults', () => {
   });
 });
 
+describe('a calibration rehearsal that meets transient faults in the samples that run again on their own store', () => {
+  let run: ReturnType<typeof rehearse>;
+  beforeAll(() => {
+    run = rehearse(
+      `${AT_ON_ITS_STORE.priming},${AT_ON_ITS_STORE.count},${AT_ON_ITS_STORE.openHas}`,
+    );
+  }, 180_000);
+
+  it('discards each, says where it runs again, and keeps every stage exact', () => {
+    expect(run.status, run.stderr).toBe(0);
+    expect(run.results.discards).toEqual({ count: 3, perRun: 3, perStage: 2 });
+    const lines = run.stderr.match(/^calibrate: DISCARDED — .*$/gm) ?? [];
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toMatch(
+      /^calibrate: DISCARDED — warm: priming pass 0, .* running it again on a fresh store \(/,
+    );
+    expect(lines[1]).toMatch(
+      /^calibrate: DISCARDED — pointReads: count\(\) first read 0, .* running it again on its store, once the store has forgotten the segment \(/,
+    );
+    expect(lines[2]).toMatch(
+      /^calibrate: DISCARDED — pointReads: has\(\) on an open segment 0, .* running it again on the same store, which still holds the segment open \(/,
+    );
+    const { phases } = run.results;
+    expect(phases.warm?.discarded.map((d) => [d.of, d.requests.get])).toEqual([
+      ['priming pass', PRIMING],
+    ]);
+    expect(phases.pointReads?.discarded.map((d) => [d.of, d.requests.get])).toEqual([
+      ['count() first read', 2],
+      ['has() on an open segment', 1],
+    ]);
+    expect(run.results.expectedMissed).toBeUndefined();
+    expect(run.results.projectionExceeded).toBeUndefined();
+    for (const name of stages.STAGES) {
+      const stage = run.results.phases[name];
+      if (stage !== undefined)
+        expect(samples.keptRequests(stage).get, name).toBe(stage.expectedGets);
+    }
+  });
+});
+
 describe('a calibration rehearsal that meets a fault it must not discard', () => {
   it('fails the run on a fault that is not transient, discarding nothing, and records the error by name and status', () => {
-    const { status, stderr, results } = rehearse(`${AT.loads + 10}:denied`);
+    const { status, stderr, results } = rehearse(`${LOADS + 10}:denied`);
     expect(status, stderr).toBe(1);
     expect(stderr).not.toMatch(/DISCARDED/);
     expect(results.partial).toBe(true);
