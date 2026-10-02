@@ -302,9 +302,10 @@ connection settings, so `S3Storage` refuses `region`, `endpoint`, `pathStyle` an
 `IMetricsSink` · `MetricEvent` · `MetricOpName` · `MetricsSnapshot` · `IAuditSink` · `AuditEvent`
 
 The cost model has no per-id write term — data arrives as generations, and a generation is a load.
-`PricingProfile` is `{ name, storage: { getPerMillion, putPerMillion, storagePerGiBMonth, requestsPerSizedRead? },
-redis }`, where `requestsPerSizedRead` defaults to 1, S3's request shape, and is 2 for Azure Blob, where a
-read that needs the object's size is two requests, so set it there (GCS answers such a read in one, like S3); `redis` is either
+`PricingProfile` is `{ name, storage: { getPerMillion, putPerMillion, storagePerGiBMonth, requestsPerPointerRead?,
+requestsPerSizedRead? }, redis }`, where `requestsPerPointerRead` is the requests one pointer read costs, 1 by default
+and on S3, GCS and Azure Blob alike, and `requestsPerSizedRead` the requests one tail read costs, 1 by default, as on S3
+and GCS, and 2 for Azure Blob, which takes no suffix range and reads the object's size first, so set it there; `redis` is either
 `{ sizedToData: RedisSizing }`, the default's, which prices the cheapest cluster that holds the report's stored bytes,
 or `{ monthlyUSD }`, one cluster whatever the data size — exactly one of the two, or it is refused. `RedisSizing` is `{ source, nodeTypes, replicasPerShard,
 reservedMemoryFraction }`, and each `RedisNodeType` is `{ name, memoryGiB, ssdGiB?, hourlyUSD, maxShards? }`;

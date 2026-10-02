@@ -59,6 +59,9 @@ Any other key is refused by name.
 - **A transient failure of a write throws `TransientError`, and the write may or may not have landed.** Re-run the
   call, or check `store.generations(ref)`. Every write is tagged with a random id and a conflict is settled by reading
   it back, because the client's own retry has no per-request switch.
+- **Price it with `storage.requestsPerSizedRead: 2`.** A pointer read is one GET here, as on S3 and GCS, but a
+  segment's tail read is two requests, its properties and then its bytes, because Azure Blob takes no suffix range.
+  Set it in the pricing profile you give `estimateCost` or `costReport`, and leave `requestsPerPointerRead` at 1.
 
 The [production checklist](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md) covers each item, and the ones every backend shares: a request timeout on your client, backups of the data and the registry, and a schedule for your loads.
 
