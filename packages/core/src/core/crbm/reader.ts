@@ -254,6 +254,14 @@ export class CrbmReader {
     if (encrypted && options.crypto === undefined) {
       throw new ValidationError('.crbm is encrypted but no decryption key (crypto) was provided');
     }
+    // A key is given only for an encrypted segment, and every generation such a segment publishes is encrypted. A
+    // cleartext object under one is corrupt or forged, so its index and metadata are not believed.
+    if (!encrypted && options.crypto !== undefined) {
+      throw new IntegrityError(
+        '.crbm is not encrypted, but it was opened with a key: an object stored where an encrypted one belongs ' +
+          'is corrupt, forged, or a write from before the segment was given its key',
+      );
+    }
     if ((flags & FLAG_LITTLE_ENDIAN) === 0) {
       throw new UnsupportedError('.crbm big-endian layout not supported (v1 is little-endian)');
     }
@@ -389,10 +397,7 @@ export class CrbmReader {
       if (crc32c(covered) !== tview.getUint32(4, true)) {
         throw new IntegrityError('.crbm extension block CRC mismatch');
       }
-      metadata = parseExtension(
-        covered.subarray(0, sectionsLength),
-        encrypted ? options.crypto : undefined,
-      );
+      metadata = parseExtension(covered.subarray(0, sectionsLength), options.crypto);
       payloadEnd = extStart;
     }
 

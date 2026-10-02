@@ -158,6 +158,19 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A cleartext `.crbm` object under an encrypted segment is refused, not believed.** A read of a segment whose row
+  carries wrapped keys opened such an object as if it were the segment's: the footer's encrypted flag alone decided,
+  and the key the read was given went unused, so a cleartext object written over a generation by anyone able to
+  write the bucket, with no key, answered `count()` with whatever its index claimed. Every generation an encrypted
+  segment publishes is encrypted (the posture is chosen at its first load, and a publish never adds a key to a
+  lineage that has generations), so such an object is a forgery, corruption, or a write from before the segment was
+  given its key, which never became one of its generations. `CrbmReader.open` given a `crypto` now refuses an object
+  that is not encrypted with `IntegrityError`, before it reads its index, and the live read, a pin, a load's guard
+  and the erasure rewrite all open that way. A `rollback` onto such a write still moves the pointer, and every read
+  then fails with that error until the pointer is moved back. Tooling that passes a `crypto` for every object it
+  opens must pass it only for encrypted ones. Tests forge a cleartext object in place of an encrypted segment's
+  generation, roll back onto a cleartext write that never published, and open cleartext 1.0 and 1.1 objects with a
+  key.
 - **An Azure Blob range or tail read whose connection drops part-way through the body is a `TransientError`.** The
   SDK fails such a body with an `AbortError`, which reached the caller as it was, so the store's read retry did not run
   it again and a `has()`, `count()` or erasure failed on one dropped connection. The registry already read the same

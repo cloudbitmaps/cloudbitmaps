@@ -459,6 +459,24 @@ describe('.crbm 1.1 on an encrypted object', () => {
     });
     await expect(open(bytes, cryptoFor(randomBytes(32)))).rejects.toBeInstanceOf(IntegrityError);
   });
+
+  it('refuses a cleartext object opened with a key, 1.0 or 1.1, before it believes its index or metadata', async () => {
+    // A key is passed only for an encrypted segment, and every generation such a segment publishes is encrypted,
+    // so a cleartext object under one is corrupt or forged: its count and its metadata must not be believed.
+    const forged = await writeCrbm(
+      [{ chunkKey: 0, payload: Uint8Array.of(1), cardinality: 65_536 }],
+      { generation: GEN, metadata: { owner: 'attacker' } },
+    );
+    const plain10 = await writeCrbm(CHUNKS, { generation: GEN });
+    for (const bytes of [forged, plain10]) {
+      await expect(open(bytes, cryptoFor(randomBytes(32)))).rejects.toThrow(
+        /not encrypted, but it was opened with a key/,
+      );
+      await expect(open(bytes, cryptoFor(randomBytes(32)))).rejects.toBeInstanceOf(IntegrityError);
+    }
+    // Without a key it is an ordinary cleartext object.
+    expect((await open(forged)).metadata).toEqual({ owner: 'attacker' });
+  });
 });
 
 function concat(...parts: Uint8Array[]): Uint8Array {
