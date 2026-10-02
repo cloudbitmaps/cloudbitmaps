@@ -1155,12 +1155,12 @@ describe('pointer refresh cost term', () => {
 });
 
 // ---------------------------------------------------------------------------------------------------
-// GCS and Azure Blob read an object's metadata before its bytes, so a read that needs the size — a pointer read, a
-// tail read — is two requests there. The driver tests pin those two requests against each SDK; this holds the
-// model to them.
+// Azure Blob reads an object's properties before its bytes, so a read that needs the size — a pointer read, a
+// tail read — is two requests there (S3 and GCS answer in one). The driver tests pin the requests against each SDK;
+// this holds the model to them.
 // ---------------------------------------------------------------------------------------------------
 describe('requests per sized read', () => {
-  const GCS_SHAPED: PricingProfile = { ...P, storage: { ...P.storage, requestsPerSizedRead: 2 } };
+  const AZURE_SHAPED: PricingProfile = { ...P, storage: { ...P.storage, requestsPerSizedRead: 2 } };
   const getUSD = P.storage.getPerMillion / 1e6;
   const putUSD = P.storage.putPerMillion / 1e6;
 
@@ -1168,7 +1168,7 @@ describe('requests per sized read', () => {
     const r = estimateCost({
       segments: [{ sizeBytes: 0 }],
       workload: { intersectsPerSec: 1, chunksPerIntersect: 200 },
-      pricing: GCS_SHAPED,
+      pricing: AZURE_SHAPED,
     });
     expect(r.monthlyUSD.byOp.intersects).toBeCloseTo(
       SECONDS_PER_MONTH * (200 + 2 * 2 * 2) * getUSD,
@@ -1184,7 +1184,7 @@ describe('requests per sized read', () => {
     const r = estimateCost({
       segments: [{ sizeBytes: 0 }],
       workload: { loadsPerMonth: 1000, hotSegments: 1, readsPerSec: 10 },
-      pricing: GCS_SHAPED,
+      pricing: AZURE_SHAPED,
     });
     expect(r.monthlyUSD.byOp.loads).toBeCloseTo(1000 * (4 * putUSD + 18 * getUSD), 12);
     expect(r.monthlyUSD.byOp.pointerRefresh).toBeCloseTo(2 * 1_314_000 * getUSD, 9);

@@ -303,8 +303,8 @@ connection settings, so `S3Storage` refuses `region`, `endpoint`, `pathStyle` an
 
 The cost model has no per-id write term — data arrives as generations, and a generation is a load.
 `PricingProfile` is `{ name, storage: { getPerMillion, putPerMillion, storagePerGiBMonth, requestsPerSizedRead? },
-redis }`, where `requestsPerSizedRead` defaults to 1, S3's request shape, and is 2 for GCS and Azure Blob, where a
-read that needs the object's size is two requests, so set it for them; `redis` is either
+redis }`, where `requestsPerSizedRead` defaults to 1, S3's request shape, and is 2 for Azure Blob, where a
+read that needs the object's size is two requests, so set it there (GCS answers such a read in one, like S3); `redis` is either
 `{ sizedToData: RedisSizing }`, the default's, which prices the cheapest cluster that holds the report's stored bytes,
 or `{ monthlyUSD }`, one cluster whatever the data size — exactly one of the two, or it is refused. `RedisSizing` is `{ source, nodeTypes, replicasPerShard,
 reservedMemoryFraction }`, and each `RedisNodeType` is `{ name, memoryGiB, ssdGiB?, hourlyUSD, maxShards? }`;
@@ -756,10 +756,10 @@ this library's word for the durable tier, so the backend takes it as `client`.
 
 The client the backend builds sends each download once, because in `@google-cloud/storage` 7.x and 8.x (checked on 7.22.0
 and 8.1.0) a download the SDK retries after any status it retries (408, 429, 500, 502, 503 or 504) can crash the process with
-`ERR_STREAM_UNABLE_TO_PIPE`. The driver retries a download itself, up to three more times with backoff, after a reset
-connection, a 408, 429, 500, 502, 503 or 504, and after nothing else; what still fails is a `TransientError`. Its other requests keep
+`ERR_STREAM_UNABLE_TO_PIPE`. The driver retries a download itself, up to three more times with backoff, after
+a connection fault (refused, reset, timed out, a DNS failure, a body cut off) or a 408, 429, 500, 502, 503 or 504, and after nothing else (not a missing credentials file or a TLS failure); what still fails is a `TransientError`. Its other requests keep
 the SDK's retries. A `client` you pass is used as given, so build it with `retryOptions: { autoRetry: false }`, which also
-turns off the SDK's retries of listings, metadata reads, deletes and resumable uploads on that client
+turns off the SDK's retries of listings, metadata reads and resumable uploads on that client
 ([why](production.md#reliability-retries-backoff--timeouts)).
 
 The registry lets a GCS deployment run on **one bucket

@@ -311,9 +311,8 @@ move it up.
     refresh kept as a longer backstop, and an `expire(ref)` that costs one lookup where `invalidate` scans the cache.
   - **Retrying at one layer.** The SDKs retry throttling and the library retries it again, so one slow request can
     become a dozen; throttling belongs to the SDK's retry alone.
-  - **One request per pointer read on GCS and Azure**, and a one-request tail read on GCS, which accepts a suffix
-    range, so their pointer reads cost what S3's do, and so do GCS's index reads. Azure takes no suffix range, so an
-    Azure tail read stays two requests.
+  - **One request per pointer read on Azure Blob**, so its pointer reads cost what S3's and GCS's do. Azure takes no
+    suffix range, so an Azure tail read stays two requests.
 - **WASM CRoaring — research, after the loaded store.** A WebAssembly build of CRoaring as a second codec would
   remove the native addon from the install story (prebuilt binaries, musl, from-source builds on Alpine) and is
   the prerequisite for the edge-runtime item below. It is deliberately queued *behind* the loaded store's own

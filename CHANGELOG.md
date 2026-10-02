@@ -13,6 +13,17 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **GCS reads a registry pointer and a generation's tail in one request each, where it made two.** A pointer read was
+  a metadata request and then a download pinned to the generation it named; a tail read was a metadata request for the
+  size and then a ranged download. The pointer read is now one GET, taking the version fence from `x-goog-generation`
+  and capping the length before it buffers; the tail read is one suffix-range GET (`Range: bytes=-N`), taking the
+  object's size from `Content-Range`, and an object shorter than the range comes back whole. Both refuse a header that
+  is missing, malformed or at odds with the bytes received: a pointer read answers `IntegrityError` and a tail read
+  `ValidationError`, where before the driver trusted whatever the second request returned. An empty object's tail is
+  the exception to one request: GCS refuses a suffix of nothing with a `416`, and the metadata then confirms the object
+  is empty, so it takes two. A pointer read can no longer lose its generation to a concurrent write between its two
+  requests. The bytes returned and the registry's behaviour are unchanged. GCS now costs what S3 does per sized read, so `storage.requestsPerSizedRead: 2` in a pricing profile is
+  for Azure Blob alone; leave it at its default of 1 for GCS.
 - **`iterate` and the storage path of `count` fetch eight chunks at a time instead of one.** A cold full read of a
   segment waited for each chunk's GET before it asked for the next, so a 2,000-chunk read was 2,000 round trips in a
   row. `iterate` (with or without a range) now keeps up to 8 chunk fetches open ahead of the one it is yielding, and
@@ -52,11 +63,11 @@ so, and so do the module headers in the code.
   exited with code 1, whatever the caller wrapped around the call. It hit every read through `GcsStorage` on the client
   it built itself (tail, range and registry reads), in 0.10.0 and later. `GcsStorage` now builds a second client with
   the SDK's request retries off and sends every download through it, and the driver retries a download itself, up to
-  three more times with backoff, after a reset connection, a 408, 429, 500, 502, 503 or 504, so each caller keeps the retry it had
-  and a store built with `retry: false` still gets it. What still fails is a `TransientError`. The client's other
+  three more times with backoff, after a connection fault (refused, reset, timed out, a DNS failure, a body cut off) or a 408, 429, 500, 502, 503 or 504: what the SDK retried, and not a missing credentials file or a TLS
+  failure, which would fail the same way again. A store built with `retry: false` still gets it. What still fails is a `TransientError`. The client's other
   requests (uploads, listings, metadata reads) keep the default retries. A `client` you pass is used as given: build it
-  with `retryOptions: { autoRetry: false }`, which also turns off the SDK's retries of listings, metadata reads, deletes
-  and resumable uploads on that client.
+  with `retryOptions: { autoRetry: false }`, which also turns off the SDK's retries of listings, metadata reads and
+  resumable uploads on that client.
 
 ## [0.11.1] — 2026-10-01
 

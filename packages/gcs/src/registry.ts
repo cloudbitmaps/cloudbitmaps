@@ -26,24 +26,23 @@
  *   noncurrent versions only is safe), and do not enable a retention
  *   policy that blocks overwrite. `delete` tombstones rather than removing, for ABA-safety — see
  *   {@link ObjectStoreRegistry}.
- * - Object versioning is neither required nor used; the driver always reads the live generation. Because a
- *   non-versioned bucket retires a superseded generation immediately, a read whose pinned generation is
- *   overwritten mid-flight reports {@link ObjectVersionRaced} and is retried by {@link ObjectStoreRegistry},
- *   never mistaken for an absent row.
+ * - Object versioning is neither required nor used; the driver always reads the live generation. A read is one
+ *   GET whose `x-goog-generation` header and body describe the same object, so a concurrent overwrite is simply
+ *   observed as the older or the newer row, never as a torn pair or a missing one.
  */
 import {
   IntegrityError,
   MAX_ROW_BYTES,
   ObjectStoreRegistry,
-  ObjectVersionRaced,
   TransientError,
   WriteConflictError,
   normalizeObjectPrefix,
 } from '@cloudbitmaps/core/driver-kit';
 import type { ObjectRegistryStore, ObjectRow } from '@cloudbitmaps/core/driver-kit';
 import type { Storage } from '@google-cloud/storage';
-import { isNotFound, isPreconditionFailed, isTransient } from './gcs-errors';
+import { isNotFound, isPreconditionFailed, isTransient, isTransportFault } from './gcs-errors';
 import { retryDownload } from './download-retry';
+import { readOnce, singleHeader } from './read-once';
 import { saveOnce } from './send-once';
 
 export interface GcsRegistryDriverOptions {
@@ -69,48 +68,52 @@ class GcsStore implements ObjectRegistryStore {
     private readonly bucket: string,
   ) {}
 
-  /** A file handle, optionally pinned to one object generation (GCS's version fence). */
-  private file(name: string, generation?: string) {
-    return generation === undefined
-      ? this.storage.bucket(this.bucket).file(name)
-      : this.storage.bucket(this.bucket).file(name, { generation });
+  /** A handle on one registry object. */
+  private file(name: string) {
+    return this.storage.bucket(this.bucket).file(name);
   }
 
   /** The same file handle on the download client. */
-  private downloadable(name: string, generation: string) {
-    return this.readStorage.bucket(this.bucket).file(name, { generation });
+  private downloadable(name: string) {
+    return this.readStorage.bucket(this.bucket).file(name);
   }
 
   async read(key: string): Promise<ObjectRow | null> {
-    // Metadata first: it carries the `generation` fence AND the size, so a hostile object is rejected on its
-    // advertised length before any of it is buffered.
-    let generation: string;
-    let size: number;
+    // One GET: the response headers carry the `generation` fence and the length, and the body is the same
+    // observation of the object, so the pair cannot straddle a concurrent overwrite.
+    let res;
     try {
-      const [meta] = await this.file(key).getMetadata();
-      generation = String(meta.generation ?? '');
-      size = Number(meta.size ?? 0);
+      res = await retryDownload(() =>
+        readOnce(
+          this.downloadable(key),
+          {},
+          MAX_ROW_BYTES,
+          (size) =>
+            new IntegrityError(
+              size === undefined
+                ? `registry object exceeds cap ${MAX_ROW_BYTES}B`
+                : `registry object ${size}B exceeds cap ${MAX_ROW_BYTES}B`,
+            ),
+        ),
+      );
     } catch (err) {
       if (isNotFound(err)) return null;
-      throw mapError(err);
+      throw mapReadError(err);
     }
-    if (size > MAX_ROW_BYTES) {
-      throw new IntegrityError(`registry object ${size}B exceeds cap ${MAX_ROW_BYTES}B`);
+    if (res.status !== 200) {
+      throw new IntegrityError(`registry read answered HTTP ${res.status}, not 200: ${key}`);
     }
-    try {
-      // Pin the download to the generation we just measured, so a concurrent overwrite between the two calls
-      // cannot hand us bytes that do not match the fence we are about to compare-and-swap against.
-      const [buf] = await retryDownload(() => this.downloadable(key, generation).download());
-      return { bytes: new Uint8Array(buf), version: generation };
-    } catch (err) {
-      // A 404 on the PINNED download does not mean the object is gone — it means the generation we pinned
-      // is. Buckets here run without Object Versioning (the registry neither needs nor uses it), so an
-      // overwrite retires the superseded generation immediately and this is simply what losing the pin looks
-      // like. Reporting it as absence would make a live row disappear from `get`, hand `delete` a false
-      // success, and silently drop rows from `list`; the caller re-reads instead.
-      if (isNotFound(err)) throw new ObjectVersionRaced(key);
-      throw mapError(err);
+    // The fence is compared by `ifGenerationMatch` on the next write, so it is parsed here, where a header that
+    // is missing or malformed can be refused before it is mistaken for a version.
+    const generation = singleHeader(res.headers, 'x-goog-generation');
+    if (
+      generation === undefined ||
+      !/^[1-9]\d*$/.test(generation) ||
+      !Number.isSafeInteger(Number(generation))
+    ) {
+      throw new IntegrityError(`registry read carries no usable x-goog-generation: ${key}`);
     }
+    return { bytes: res.bytes, version: generation };
   }
 
   async write(
@@ -158,7 +161,7 @@ class GcsStore implements ObjectRegistryStore {
 
 /**
  * Narrow a version fence back to the number `ifGenerationMatch` takes. The fence always originates as
- * `meta.generation` in {@link GcsStore.read}, so this cannot fire in practice — but `Number()` answers `NaN`
+ * the `x-goog-generation` header in {@link GcsStore.read}, so this cannot fire in practice — but `Number()` answers `NaN`
  * for anything non-numeric, and `ifGenerationMatch: NaN` serializes to a precondition GCS ignores. That
  * failure is invisible (writes simply stop being fenced), so it is checked rather than assumed.
  */
@@ -170,11 +173,21 @@ function generationFence(version: string, key: string): number {
   return generation;
 }
 
+/** A read's error: a connection that failed or was cut off is transient too, after the driver's retries. */
+function mapReadError(err: unknown): unknown {
+  if (isTransportFault(err)) {
+    return new TransientError(`transient GCS fault: ${String((err as { code?: unknown }).code)}`, {
+      cause: err,
+    });
+  }
+  return mapError(err);
+}
+
 /** Reclassify a transient GCS fault as a retryable {@link TransientError}; pass everything else through. */
 function mapError(err: unknown): unknown {
   if (isTransient(err)) {
     return new TransientError(
-      `transient GCS fault: ${(err as { name?: string } | null)?.name ?? 'unknown'}`,
+      `transient GCS fault: ${(err as { code?: unknown } | null)?.code ?? (err as { name?: string } | null)?.name ?? 'unknown'}`,
       { cause: err },
     );
   }
