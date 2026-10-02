@@ -13,8 +13,8 @@
  * to collect it: {@link gcOrphanGenerations}. Pure orchestration over the driver ports — no I/O, time or randomness
  * of its own.
  */
-import { ValidationError, WriteConflictError } from './errors';
-import type { IStorageDriver, IRegistryDriver, SegmentRef } from './ports';
+import { ValidationError, WriteConflictError, isNotFoundError } from './errors';
+import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
 
 /** The two ports generation bookkeeping needs: the objects, and the pointer that says which one is current. */
 export interface GenerationDeps {
@@ -24,7 +24,9 @@ export interface GenerationDeps {
 
 /**
  * The generation number a writer should use for the segment's **next** object: one above the highest generation
- * the registry points at *or* that is present in Storage — whichever is higher.
+ * the registry points at *or* that is present in Storage — whichever is higher. The erasure rewrite numbers this
+ * way; a load numbers with {@link nextLoadGeneration}, which lists as this does when its existence check finds the
+ * number taken or cannot answer.
  *
  * Both are consulted because they can disagree. A load that wrote its object and crashed before publishing leaves
  * an object *above* `currentGen`; a writer that consulted only the pointer would pick that same number and hit the
@@ -35,12 +37,53 @@ export interface GenerationDeps {
  * A segment with no row and no objects starts at 0. An admin/write-path helper, never on the read path.
  */
 export async function nextGeneration(ref: SegmentRef, deps: GenerationDeps): Promise<number> {
-  const record = await deps.registry.get(ref);
+  return aboveEverything(ref, deps, await deps.registry.get(ref));
+}
+
+/** One above `record`'s pointer and above every generation listed in Storage, whichever is higher. */
+async function aboveEverything(
+  ref: SegmentRef,
+  deps: GenerationDeps,
+  record: RegistryRecord | null,
+): Promise<number> {
   let highest = record?.currentGen ?? -1;
   for await (const key of deps.storage.list(ref)) {
     if (key.generation > highest) highest = key.generation;
   }
   return highest + 1;
+}
+
+/**
+ * The generation number a load takes, from the row it has already read: `currentGen + 1` (0 with no row or no
+ * pointer yet) when no object holds that number, which one existence check proves (a zero-byte `getTail`, one
+ * metadata request on every shipped driver); otherwise one above the pointer and above everything listed, as
+ * {@link nextGeneration} numbers. The check finding the number taken (a crashed load's orphan, the object of a
+ * load still in flight, or the generations a rollback left above the pointer) and the check failing in any way
+ * other than "not found" both take the listing, so the listing stays the authority whenever the check cannot
+ * prove the number free. A failed check falls back silently: nothing records it, and what it costs is the listing,
+ * one more PUT-class request on S3, so a fault that makes every check fail shows only in the bill.
+ *
+ * A load can therefore take a number **below** an object already in the bucket: an orphan at `currentGen + 2`
+ * with `currentGen + 1` free is numbered under, not past. That is as safe as a listing's number. A load never
+ * takes a number an object holds, and a put that races onto one fails write-once, so the load reports
+ * `superseded`. The orphan above stays unpublished; the load whose check meets it numbers past it by the listing,
+ * and collection takes it once a generation above it is current. Like a listing's, the number can be one whose
+ * object was deleted (an erasure removes the generations above a rolled-back pointer that held the id), which is
+ * why nothing identifies a generation by its number alone: the reader cache, the chunk cache and a pin all key on
+ * the number and the row's token, and the token has moved on.
+ */
+export async function nextLoadGeneration(
+  ref: SegmentRef,
+  deps: GenerationDeps,
+  row: RegistryRecord | null,
+): Promise<number> {
+  const generation = (row?.currentGen ?? -1) + 1;
+  try {
+    await deps.storage.getTail({ namespace: ref.namespace, segment: ref.segment, generation }, 0);
+  } catch (err) {
+    if (isNotFoundError(err)) return generation;
+  }
+  return aboveEverything(ref, deps, row);
 }
 
 /**
@@ -68,8 +111,8 @@ export async function nextGeneration(ref: SegmentRef, deps: GenerationDeps): Pro
  * an empty array is not: `eraseIdFromSegment` reads the returned list as the physical half of its erasure
  * receipt, and would otherwise report `erased: true` over bytes still in the bucket. Re-run it.
  *
- * That state is reachable in practice: a `dropSegment` whose Storage sweep threw part-way, or a load that was
- * already writing its object when the tombstone landed and finished the write afterwards. `dropSegment` re-sweeps
+ * That state is reachable in practice: a `dropSegment` whose Storage sweep threw part-way, or a load that had read
+ * the row before the tombstone landed, wrote its object afterwards, and stopped before its refusal deleted it. `dropSegment` re-sweeps
  * and reports whatever it could not reclaim in `generationsRemaining`, but a drop that was never re-run leaves a
  * residual, and this is what eventually collects it from the retention sweep.
  *
@@ -121,7 +164,7 @@ export async function gcOrphanGenerations(
   // On the ordinary branch, take the LOWER of the two pointers. Within one incarnation the pointer only moves
   // forward, so a publish landing mid-listing leaves the cutoff exactly where it was and routine GC still
   // collects — refusing on any token change would make GC useless on a busy segment. But the pointer is only
-  // monotonic *within* an incarnation: `nextGeneration` restarts at 0 once a row is purged and the bucket
+  // monotonic *within* an incarnation: the numbering restarts at 0 once a row is purged and the bucket
   // emptied, so a name that was retired and re-created wears a LOWER `currentGen` than the one read before the
   // listing — and `rollbackSegment` lets an operator lower it deliberately — so `g < current` would then select
   // a live object. `Math.min` is what makes a

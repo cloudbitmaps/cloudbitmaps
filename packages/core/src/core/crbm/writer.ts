@@ -82,6 +82,9 @@ export class CrbmWriter {
   private finished = false;
   /** The metadata's canonical JSON, copied at construction; `undefined` writes format 1.0. */
   private readonly metadata: Uint8Array | undefined;
+  /** Bytes written so far, the footer included once {@link finish} has run. */
+  private written = 0;
+  private footerCrc32c: number | undefined;
 
   constructor(
     private readonly sink: BlobSink,
@@ -171,7 +174,22 @@ export class CrbmWriter {
 
     const footer = this.buildFooter(indexOffset, indexRegion, indexNonce, indexTag);
     await this.sink.write(footer);
+    this.written = this.offset + footer.length;
+    this.footerCrc32c = new DataView(footer.buffer, footer.byteOffset).getUint32(
+      FOOTER.footerCrc32c,
+      true,
+    );
     this.finished = true;
+  }
+
+  /**
+   * The finished object's size and its footer's CRC: what names it, as a reader's fingerprint does. A writer that
+   * has to tell its own object from another stored later under the same key compares these with the object's
+   * footer. Throws before {@link finish}.
+   */
+  get identity(): { readonly size: number; readonly footerCrc: number } {
+    if (this.footerCrc32c === undefined) throw new ValidationError('CrbmWriter not finished');
+    return { size: this.written, footerCrc: this.footerCrc32c };
   }
 
   private async ensurePreamble(): Promise<void> {

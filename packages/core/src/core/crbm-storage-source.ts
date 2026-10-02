@@ -43,11 +43,12 @@ import type {
   GenKey,
   IStorageDriver,
   IRegistryDriver,
+  RegistryRecord,
   SegmentRef,
   SegmentSize,
   Token,
 } from './ports';
-import { CrbmReader } from './crbm/reader';
+import { CrbmReader, fingerprintFor } from './crbm/reader';
 import type { CrbmReaderOptions } from './crbm/reader';
 import { CrbmWriter } from './crbm/writer';
 import type { CodecBitmap, CodecInterface } from './codec';
@@ -130,7 +131,7 @@ function storageBlobReader(driver: IStorageDriver, key: GenKey): BlobReader {
  * registry never gives two writes under one name the same token, with overwhelming probability: each row's token
  * carries a random incarnation id, and each write a random part of its own. It is what separates two *incarnations*
  * of one name, which a generation number cannot:
- * `nextGeneration` restarts at 0 once the row is purged and the bucket emptied, so a retired-and-re-created
+ * the numbering restarts at 0 once the row is purged and the bucket emptied, so a retired-and-re-created
  * segment presents different data at the same `currentGen`. Undefined for a registry-less source, which has no
  * row: there, only the object itself tells two incarnations apart, by the fingerprint a pin records.
  */
@@ -325,7 +326,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     }
     if (target === null) return null; // segment gone / destroyed
     // Reuse only when BOTH the generation and the row match. Comparing the number alone treated a
-    // retired-and-re-created name as unchanged — `nextGeneration` restarts at 0, so incarnation 2's generation 0
+    // retired-and-re-created name as unchanged — the numbering restarts at 0, so incarnation 2's generation 0
     // is indistinguishable from the reader already open — and the snapshot was never refreshed, so the store
     // kept serving a deleted segment's ids. A token that moved for an unrelated row write costs one reopen.
     if (
@@ -966,13 +967,52 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         if (reader === null) return ifGone;
         return await read(reader);
       } catch (err) {
-        // Only a vanished pinned generation is recoverable here, and only on the first try; anything else
-        // (corruption, a real second miss) propagates / falls through.
-        if (!isNotFoundError(err) || attempt === 1) throw err;
+        // Two misses are recoverable here, and only on the first try: a generation swept from under the snapshot,
+        // and one whose object was replaced under the same number (see `replacedUnder`). Anything else
+        // (corruption, a real second miss) propagates.
+        if (attempt === 1) throw err;
+        if (!isNotFoundError(err) && !(await this.replacedUnder(ref, pending, err))) throw err;
         this.dropStale(segmentKey(ref), pending); // lazily: the happy path never needs the key
       }
     }
     return ifGone;
+  }
+
+  /**
+   * Whether `err`, raised by a read through the snapshot's reader, came from an object that is no longer the one the
+   * reader opened. A generation number can be taken again once its object is deleted (an erasure removes the
+   * generations above a rolled-back pointer that held the id, a collection pass can stop part-way, and a load then
+   * numbers `currentGen + 1` again), so a reader that still holds the old object's index reads the new object's
+   * bytes at the old offsets: a chunk checksum fails, or a range runs past the end. The object's footer says which it
+   * was, as it does for a pin ({@link CrbmReader.sameObject}): replaced, or gone, re-resolves; the same object means
+   * the error is real, and it stands. Only these two errors pay for the footer read, never a read that succeeded. A
+   * transient fault in the check is rethrown; a footer that cannot be read says nothing, and the error stands.
+   */
+  private async replacedUnder(
+    ref: SegmentRef,
+    pending: Promise<CrbmReader | null>,
+    err: unknown,
+  ): Promise<boolean> {
+    if (!(isIntegrityError(err) || isValidationError(err))) return false;
+    let reader: CrbmReader | null;
+    try {
+      reader = await pending;
+    } catch {
+      return false;
+    }
+    if (reader === null) return false;
+    const at: GenKey = {
+      namespace: ref.namespace,
+      segment: ref.segment,
+      generation: reader.generation,
+    };
+    try {
+      return !(await CrbmReader.sameObject(storageBlobReader(this.driver, at), reader.fingerprint));
+    } catch (checkErr) {
+      if (isNotFoundError(checkErr)) return true;
+      if (isTransientError(checkErr)) throw checkErr;
+      return false;
+    }
   }
 }
 
@@ -982,18 +1022,19 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
  * `{ size, sha256 }` for the written object. Pass `options.crypto` to AES-256-GCM-encrypt the generation
  * (built from the segment's DEK, with associated data bound to `(segment, generation)`).
  */
-export function writeCrbmGeneration(
+export async function writeCrbmGeneration(
   driver: IStorageDriver,
   key: GenKey,
   chunks: Iterable<{ chunkKey: number; bitmap: CodecBitmap }>,
   options: { crypto?: CrbmCrypto; clock?: Yielder } = {},
-): Promise<{ size: number; sha256: string }> {
+): Promise<{ size: number; sha256: string; fingerprint: string }> {
   const sorted = [...chunks].sort((a, b) => a.chunkKey - b.chunkKey);
   // The single longest blocking stretch in a bulk load: serialize + CRC32C + frame, once per chunk, ~62,000
   // times. `await writer.addChunk(...)` looks like it yields and does not — the sink buffers in memory, so the
   // promise is already resolved and awaiting it is a microtask. See {@link yieldEvery}.
   const tick = yieldEvery(options.clock);
-  return driver.putImmutable(key, async (sink) => {
+  let identity: { readonly size: number; readonly footerCrc: number } | undefined;
+  const { size, sha256 } = await driver.putImmutable(key, async (sink) => {
     const writer = new CrbmWriter(sink, { generation: key.generation, crypto: options.crypto });
     for (const { chunkKey, bitmap } of sorted) {
       if (bitmap.isEmpty) continue;
@@ -1005,7 +1046,32 @@ export function writeCrbmGeneration(
       if (pause !== null) await pause;
     }
     await writer.finish();
+    identity = writer.identity;
   });
+  if (identity === undefined) {
+    throw new IntegrityError(
+      `the driver committed ${key.segment}.${key.generation} without writing it`,
+    );
+  }
+  // The fingerprint of what this call wrote, which tells it from an object stored later under the same key.
+  return { size, sha256, fingerprint: fingerprintFor(identity.size, identity.footerCrc) };
+}
+
+/**
+ * Whether the object under `key` is provably the one `fingerprint` names ({@link CrbmReader.fingerprint}), from one
+ * read of its footer. False when it is another object, when it is gone, and when the read fails in any way: a caller
+ * that deletes on `true` deletes nothing it cannot prove is its own.
+ */
+export async function holdsObject(
+  storage: IStorageDriver,
+  key: GenKey,
+  fingerprint: string,
+): Promise<boolean> {
+  try {
+    return await CrbmReader.sameObject(storageBlobReader(storage, key), fingerprint);
+  } catch {
+    return false;
+  }
 }
 
 /** What {@link writeCrbmGenerationStream} wrote: the driver's `{ size, sha256 }` + a tally of the generation. */
@@ -1055,6 +1121,26 @@ export async function writeCrbmGenerationStream(
 }
 
 /**
+ * Refuses, with {@link KeyUnavailableError}, to point a row that carries key material at a generation written in
+ * cleartext. The writer decided its key from the row it read before the write; another writer that created the
+ * segment encrypted meanwhile leaves this one holding a cleartext object that no reader of the segment can open.
+ */
+function refuseCleartextOntoKey(
+  key: GenKey,
+  record: RegistryRecord,
+  cleartext: boolean | undefined,
+): void {
+  if (cleartext !== true || record.wrappedDeks === undefined || record.wrappedDeks.length === 0) {
+    return;
+  }
+  throw new KeyUnavailableError(
+    `segment "${key.segment}" is encrypted, and generation ${key.generation} was written in cleartext: another ` +
+      `writer created the segment with a key while this one was writing. Nothing was published. Re-run the ` +
+      `write with the keystore that holds the segment's key.`,
+  );
+}
+
+/**
  * Point a segment's registry `currentGen` at `key.generation` — the publish step that makes a freshly-written
  * generation the authoritative latest (so registry-aware readers see it). **Forward-only and idempotent:**
  * if the registry has no row it creates one; if it's already at/ahead of `key.generation` it's a no-op (an
@@ -1078,7 +1164,7 @@ export async function writeCrbmGenerationStream(
  * so the check and the write see the same row.
  *
  * **`expectToken` fences the LINEAGE, and a derived writer needs both.** A generation number identifies a
- * generation only within one incarnation of a name: `nextGeneration` restarts at `0` once the row is purged and
+ * generation only within one incarnation of a name: the numbering restarts at `0` once the row is purged and
  * the bucket empty, so a name that is retired and re-created has a *different* segment wearing the *same*
  * `currentGen`. `expectFrom` alone matched it — and an erasure rewrite then published one incarnation's content
  * over another's, deleted the live objects with its `keep: 0` collection, and returned `erased: true`. The row's
@@ -1113,10 +1199,27 @@ export async function publishGeneration(
      * destination that does not exist yet is the ordinary first run of a pipeline.
      */
     expectAbsent?: boolean;
+    /**
+     * The segment's row as the caller already read it (`null`: it found none). The first attempt acts on it
+     * instead of reading the row again, which is sound because that attempt writes only under the row's own
+     * fence: its compare-and-swap carries this row's token, and with no row it creates create-only, so a row
+     * that changed or appeared since makes the write lose and the next attempt reads the row afresh. Only the
+     * idempotent "already current" answer writes nothing, so a reused row never gives it.
+     */
+    row?: RegistryRecord | null;
+    /**
+     * The object was written without encryption. Its publish is refused, with {@link KeyUnavailableError}, onto a row
+     * that carries key material: a reader of that segment opens every generation with its key, and a later
+     * `destroySegment` would attest that shredding it made a readable object unreadable. A caller decides its key
+     * from the row it read before the write, so this closes the window in which another writer creates the
+     * segment encrypted meanwhile.
+     */
+    cleartext?: boolean;
   } = {},
 ): Promise<boolean> {
   for (let attempt = 0; attempt < 5; attempt++) {
-    const record = await registry.get(key);
+    const reused = attempt === 0 && options.row !== undefined;
+    const record = reused ? (options.row ?? null) : await registry.get(key);
     try {
       if (options.expectFrom !== undefined && record?.currentGen !== options.expectFrom) {
         // The pointer is no longer where the caller derived its content from — including the cases where the row
@@ -1167,6 +1270,7 @@ export async function publishGeneration(
         // field by *mentioning* it (`'wrappedDeks' in patch`), so passing `wrappedDeks: undefined` unconditionally
         // would wipe key material off the row whenever a cleartext generation is published onto it — a divergence
         // from the branch below, which never touches the field.
+        refuseCleartextOntoKey(key, record, options.cleartext);
         await registry.compareAndSwap(key, record.token, {
           currentGen: key.generation,
           ...(options.wrappedDeks === undefined ? {} : { wrappedDeks: options.wrappedDeks }),
@@ -1174,6 +1278,7 @@ export async function publishGeneration(
       } else if (record.currentGen > key.generation) {
         return false; // a newer generation is already current — forward-only, never regress
       } else if (record.currentGen === key.generation) {
+        if (reused) continue; // only a fresh read can show the pointer already there
         return true; // already exactly current (an idempotent re-publish) — nothing to advance
       } else {
         // Advancing over an existing generation. `wrappedDeks` is deliberately NOT carried here, and a caller
@@ -1192,10 +1297,13 @@ export async function publishGeneration(
         if (options.wrappedDeks !== undefined && options.wrappedDeks.length > 0) {
           throw new ValidationError(
             `publishGeneration: refusing to publish generation ${key.generation} of "${key.segment}" with new ` +
-              `key material onto a segment that already has generation ${record.currentGen} — its existing ` +
-              `generations are not encrypted under this key. Encrypt a new segment and load into that instead.`,
+              `key material onto a segment that already has generation ${record.currentGen}: its generations ` +
+              `are not encrypted under this key, and nothing was published. If another writer published to the ` +
+              `segment while this one was writing, re-run the write, which then uses the segment's own key; ` +
+              `if the segment's generations are cleartext, encrypt a new segment and load into that instead.`,
           );
         }
+        refuseCleartextOntoKey(key, record, options.cleartext);
         await registry.compareAndSwap(key, record.token, { currentGen: key.generation });
       }
       return true; // created or advanced the pointer to key.generation → it is now current
@@ -1235,6 +1343,10 @@ export interface BulkLoadResult {
    * unreadable: the bytes are encrypted with a key nothing recorded.
    */
   readonly wrappedDeks?: readonly WrappedDek[];
+  /** Whether the object was written encrypted: under the segment's key, or under one this call minted. */
+  readonly encrypted: boolean;
+  /** The written object's fingerprint, which tells it from an object stored later under the same key. */
+  readonly fingerprint: string;
   /** Total distinct ids in the generation (post-dedup). */
   readonly cardinality: number;
   /**
@@ -1267,7 +1379,8 @@ export interface BulkLoadResult {
  * commits only after the callback resolves). An empty source writes a valid empty generation.
  *
  * Writes a fresh full snapshot of a segment. The caller picks the generation number in `key` — `nextGeneration`
- * computes the right one from the registry and the bucket — and re-using an existing generation throws
+ * computes one from the registry and the bucket, as `nextLoadGeneration` does for a load — and re-using an existing
+ * generation throws
  * {@link WriteConflictError} (write-once). Without a registry a `StorageChunkSource` serves the **highest**
  * generation present, so a too-high number silently shadows real data; with one, `publishGeneration` decides.
  */
@@ -1306,6 +1419,16 @@ export async function bulkLoadCrbmGeneration(
      * current.
      */
     publish?: boolean;
+    /**
+     * The segment's row as the caller already read it (`null`: it found none), for a caller that defers the
+     * publish (`publish: false`) and fences it on that same row. A present cleartext row is then used as read,
+     * rather than read again: a row that changes in between (a publish, a drop, a purge and re-create) makes the
+     * fenced publish lose, so the object is never published on the strength of the stale read. A row read as
+     * absent, or one carrying key material, is read again after the ids, as with no row passed: a first load must
+     * see a row another writer created meanwhile, and an encrypted segment's key is unwrapped only from a row read
+     * after the ids, so a segment shredded while they streamed is refused before its key is used.
+     */
+    row?: RegistryRecord | null;
   } = {},
 ): Promise<BulkLoadResult> {
   if (options.keystore === undefined && options.requireEncryption === true) {
@@ -1406,9 +1529,18 @@ export async function bulkLoadCrbmGeneration(
   if (options.keystore !== undefined && options.registry === undefined) {
     throw new ValidationError('an encrypted load requires a registry to store the wrapped DEK');
   }
-  // Read the segment's record once (when a registry is wired): to refuse writing to a crypto-shredded segment
-  // (which would create unreadable/unreachable bytes), and to reuse its DEK if it's encrypted.
-  const existing = options.registry !== undefined ? await options.registry.get(key) : null;
+  // Read the segment's record once (when a registry is wired): to refuse writing to a crypto-shredded segment (which
+  // would create unreadable/unreachable bytes), and to reuse its DEK if it's encrypted. A present cleartext row the
+  // caller already read is used as read (see `row`).
+  const passed = options.row;
+  const existing =
+    passed !== undefined &&
+    passed !== null &&
+    (passed.wrappedDeks === undefined || passed.wrappedDeks.length === 0)
+      ? passed
+      : options.registry !== undefined
+        ? await options.registry.get(key)
+        : null;
   if (existing?.status === 'destroyed') {
     throw new ValidationError(
       `segment "${key.segment}" is destroyed (crypto-shredded) — refusing to write; use a new segment`,
@@ -1466,7 +1598,7 @@ export async function bulkLoadCrbmGeneration(
     }
   }
 
-  const { size, sha256 } = await writeCrbmGeneration(driver, key, chunks, {
+  const { size, sha256, fingerprint } = await writeCrbmGeneration(driver, key, chunks, {
     crypto,
     clock: options.clock,
   });
@@ -1475,6 +1607,7 @@ export async function bulkLoadCrbmGeneration(
   if (options.registry !== undefined && options.publish !== false) {
     const becameCurrent = await publishGeneration(options.registry, key, {
       wrappedDeks: newWrapped,
+      cleartext: crypto === undefined,
     });
     // Audit the publish only when this generation actually *became* the current one — not when a
     // forward-only publish no-oped because a newer generation was already current (the event's contract is
@@ -1494,9 +1627,19 @@ export async function bulkLoadCrbmGeneration(
       cardinality,
       becameCurrent,
       wrappedDeks: newWrapped,
+      encrypted: crypto !== undefined,
+      fingerprint,
     };
   }
-  return { size, sha256, chunkCount: chunks.length, cardinality, wrappedDeks: newWrapped };
+  return {
+    size,
+    sha256,
+    chunkCount: chunks.length,
+    cardinality,
+    wrappedDeks: newWrapped,
+    encrypted: crypto !== undefined,
+    fingerprint,
+  };
 }
 
 /**

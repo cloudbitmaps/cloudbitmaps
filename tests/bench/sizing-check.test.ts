@@ -176,9 +176,9 @@ describe('bench:sizing:check fails what it exists to catch', () => {
 
   it('fails a hand-edited figure in the README, and a hand-edited or missing chart', () => {
     const readme = page('README.md');
-    expect(readme).toContain('**90% less**');
+    expect(readme).toContain('**91% less**');
     refused(
-      { 'README.md': readme.replace('**90% less**', '**91% less**') },
+      { 'README.md': readme.replace('**91% less**', '**90% less**') },
       /README\.md \(WHY_SIZES\)/,
     );
     const CHART = 'bench/bill-as-data-grows.svg';

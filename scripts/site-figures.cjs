@@ -430,7 +430,7 @@ const RUN_TRIGGERS = [
   'cold intersects the Redis line buys a month',
   'loads the Redis line buys a month',
 ];
-// A request shape, "4 PUT-class + 7 GET", is the run's to state: a block that states one is about it, and the shape
+// A request shape, "3 PUT-class + 6 GET", is the run's to state: a block that states one is about it, and the shape
 // must then be one the run has. A `store.load()` row, say, can carry a shape and none of the run's figures.
 const REQUEST_SHAPE = /\d+\s?PUTs?(?:-class)?(?:\s+requests?)?,?\s*(?:\+|and|plus)\s*\d+\s?GETs?/;
 function quotesTheRun(block) {

@@ -961,8 +961,8 @@ export class CloudRoaring {
       // materialisation that silently did not take effect is the one outcome a caller cannot detect on its
       // own.
       // `size > 0` distinguishes the two ways a materialisation loses the race, and the operator needs them
-      // apart: the object either exists as an orphan above the pointer (collected by the first load that collects
-      // once a generation above it is current) or was
+      // apart: the object either exists as an orphan (collected by the first load that collects once a generation
+      // above it is current, or deleted by the refusal itself when the destination was dropped meanwhile) or was
       // never written at all, because the write-once PUT itself collided. Telling someone to look for an
       // orphan that does not exist is a wasted investigation.
       // Deliberately does NOT assert which of the four causes it was. "A newer generation was published first"
@@ -977,7 +977,7 @@ export class CloudRoaring {
       throw new WriteConflictError(
         `${op}: the destination "${dest.segment}" changed while this materialisation was in flight, so it ` +
           `never became current: ${wrote}. The pointer may have moved, the row may have been rewritten ` +
-          `(a retention policy does this) or purged. Re-read the destination and re-run.`,
+          `(a retention policy does this), dropped or purged. Re-read the destination and re-run.`,
       );
     }
     return {
@@ -1314,8 +1314,9 @@ export class CloudRoaring {
    * current is a no-op that reports itself.
    *
    * It deletes nothing. The generations above the new pointer stay put — which is what makes this reversible —
-   * and are then *above* `currentGen`, where collection never looks. They remain until a load numbers above them
-   * (collection then keeps the newest `keep` of what is below its pointer), {@link CloudRoaring.dropSegment}
+   * and are then *above* `currentGen`, where collection never looks. They remain until loads pass them (the first
+   * load whose number one of them holds numbers above them all, and collection then keeps the newest `keep` of what is
+   * below its pointer), {@link CloudRoaring.dropSegment}
    * deletes them, or {@link CloudRoaring.eraseSubject} does: all of those present when it rewrites, and only those holding
    * the id when the current generation does not. An operator who has just undone a bad load should not have the
    * evidence collected out from under them, while a rollback target that still holds erased data would make the
@@ -1432,9 +1433,12 @@ export class CloudRoaring {
    * forever and quietly. Branch on `dropped`, and treat `reason: 'absent'` as the alert.
    *
    * **Inspect `generationsRemaining`.** Empty is the normal outcome; non-empty means the storage was NOT fully
-   * reclaimed and the drop should be re-run. A load that was already writing when the tombstone landed still
-   * finishes its object, so a single sweep can miss it — this call re-sweeps and then reports whatever it still
-   * could not remove rather than returning a result that looks like a clean drop.
+   * reclaimed and the drop should be re-run. A load that had read the segment before the tombstone landed, whether it
+   * was writing or still consuming its ids, can still write its object, so a single sweep can miss it — this call
+   * re-sweeps and then reports whatever it still could not remove rather than returning a result that looks like a
+   * clean drop. A load that writes after the last sweep deletes its own object once its publish is refused; only one
+   * whose process stops in between, or whose publish fails without a definite answer (a lost response, a timeout),
+   * leaves it, for a re-run of the drop.
    *
    * Reads become empty within `cache.genTtlMs` (default 2 s), not instantly: a store that had already read this
    * segment may answer from its cached generation + cached chunks until that window lapses, or, while the registry
