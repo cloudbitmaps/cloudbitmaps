@@ -2,7 +2,10 @@ import { MemoryStorage, CloudRoaring } from '@/index';
 import type { SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { MemoryStorageDriver } from '@/drivers/memory';
-import type { IRegistryDriver, IStorageDriver } from '@/core/ports';
+import { brandAsBackend, type IRegistryDriver, type IStorageDriver } from '@/core/ports';
+import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
+import { registryObjectKey } from '@/drivers/_shared/object-registry-keys';
+import { CountingObjectStore } from '../helpers/counting';
 
 /**
  * A generation number is not an identity. `nextGeneration` returns `max(currentGen, highest object) + 1`, so it
@@ -142,5 +145,40 @@ describe('a re-created name is a different segment, not the same one', () => {
     const { storage, registry } = backend;
     const { CrbmStorageChunkSource } = await import('@/index');
     expect(await new CrbmStorageChunkSource(storage, { registry }).currentVersion(REF)).toBeNull();
+  });
+});
+
+/**
+ * The same hazard once nothing of the earlier row is left: its object removed outright, as a hard purge or a
+ * lifecycle rule removes it, rather than tombstoned. With no tombstone there is no counter to continue, and a
+ * counter-only token restarted where the first incarnation's had, so a warm reader at the same generation took the
+ * new row for the old one and kept serving the deleted ids. The incarnation id drawn at create is what tells them
+ * apart now.
+ */
+describe('a re-created name whose earlier row is gone entirely', () => {
+  it('a warm store stops serving the previous incarnation', async () => {
+    const store = new CountingObjectStore(0);
+    const registry = new ObjectStoreRegistry(store, undefined, () => 1);
+    const storage = new MemoryStorageDriver();
+    const backend = brandAsBackend({ storage, registry });
+    let t = 0;
+    const clock = { now: () => t, sleep: async () => {} };
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3], { registry });
+
+    const roaring = new CloudRoaring({
+      storage: backend,
+      cache: { genTtlMs: 10 },
+      seams: { clock },
+    });
+    expect(await roaring.segment('s').has(1)).toBe(true); // warms the snapshot AND chunk 0
+
+    for await (const k of storage.list(REF)) await storage.delete(k);
+    store.remove(registryObjectKey(undefined, REF)); // no tombstone left behind
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [9], { registry });
+    t += 100; // past the TTL
+
+    expect(await roaring.segment('s').has(1)).toBe(false);
+    expect(await roaring.segment('s').has(9)).toBe(true);
+    expect(await collect(roaring.segment('s').iterate())).toEqual([9]);
   });
 });
