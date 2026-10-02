@@ -55,6 +55,32 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **`store.load()` sends 11 requests to S3 where it sent 14: it reads the segment's row once, and checks its next
+  generation number instead of listing for it.** A load read its registry row four times before its publish; it now
+  reads it once, and the guard, the generation number, the write's refusal of a `destroyed` segment and its reuse of
+  the segment's key, and the publish's first attempt all decide from that read. The publish is fenced on that row as
+  before, on its token, on the pointer a guarded load judged, or on its absence, so a row that changes in between
+  makes the publish lose rather than land on the stale read. The number is `currentGen + 1` when one existence check
+  finds no object holding it (a zero-byte tail read: `HeadObject` on S3, the object's metadata on GCS, the blob's
+  properties on Azure Blob, one request on each); when the check meets an object, such as a crashed load's or the
+  generations a rollback left above the pointer, or cannot answer, the load lists the segment and numbers above
+  everything in it, as every load did before. A load can therefore take a number below an unpublished object above the
+  pointer, never one an object holds. A steady single-part load on S3 is now 3 PUT-class requests (the object, the
+  row, the collection pass's listing), 7 GET-class (five row reads, the guard's tail read, the check) and a delete,
+  where it was 4, 9 and a delete; a segment's first load is 3 and 5, where it was 4 and 7. GCS makes the same counts;
+  Azure Blob one GET-class request more, for its two-request tail read. `costReport()` and `estimateCost()` price a
+  load at those counts, the check at one request on every backend whatever `requestsPerPointerRead` and
+  `requestsPerSizedRead` say: $17.80 per million steady single-part loads at the default prices, where it was $23.60,
+  and $17.00 for a segment's first load, where it was $22.80. Two outcomes move with the single read, both
+  refusals still. A `dropSegment` or retention sweep that lands while a load is still consuming its ids now ends the
+  load `published: false` with `reason: 'superseded'`, its object left for the dropped segment's collection, where
+  the load threw `ValidationError` before writing; and on a store with a keystore, an unguarded load (`allowEmpty:
+  true`) into a segment with no row, whose row another writer creates while it is consuming its ids, now throws
+  `ValidationError` at its publish instead of reusing that writer's key. The calibration harness expects each load's
+  new shape, its projection of a load's GET-class requests is now `3 + 2 × retryBound` (the default workload's bound
+  is 364 PUT-class and 106,542 GET-class requests, $0.044437, and its expected bill 142 PUT-class and 92,866
+  GET-class, $0.037856), and the storage conformance suite now holds a driver's zero-byte tail read of a missing
+  object to `NotFoundError`, as the port documents for every tail read.
 - **Azure Blob reads a registry pointer in one request, where it made two.** A pointer read was the blob's
   properties and then a download pinned to the ETag they named; it is now one GET of the whole blob, taking the ETag
   (the version fence) and the length from the response that carries the bytes, so the pair describes one version and a
