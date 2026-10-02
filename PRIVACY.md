@@ -119,15 +119,17 @@ after it returns, and re-run any erasure a rollback interrupted.
 
 ### One process, and the rest of your fleet
 
-Erasure and crypto-shred are **immediate in storage and immediate in the store whose verb performed them**. They
-are not immediate in any *other* store, in the same process or another, and this library ships nothing that could
+Erasure and crypto-shred are **immediate in storage and immediate in the store whose verb performed them**, for
+every read that starts after the verb returns. A read already in progress in that store can still yield an erased id
+from a chunk it had requested before the verb ran: up to 8 chunks for `iterate` and `count`, and up to `concurrency`
+keys for a combine. They are not immediate in any *other* store, in the same process or another, and this library ships nothing that could
 make them so — there is no daemon, no bus, and no connection between two stores that happen to point at the same
 bucket.
 
 | | when the id stops being readable |
 |---|---|
 | storage | on return — the generation holding it is deleted, or the wrapped DEK is removed from the segment's current registry row (a crypto-shred is complete once no retained copy of that row holds it, or every KEK that wrapped it is destroyed; see *Erasure vs. backups / WORM* below) |
-| the store whose verb made the call (`eraseSubject`, `dropSegment`, `retireExpired`) | on return — it invalidates what it cached, and its pins then fail |
+| the store whose verb made the call (`eraseSubject`, `dropSegment`, `retireExpired`) | on return, for every read that starts after it — it invalidates what it cached, and its pins then fail; a read already in progress there can still yield it from a chunk it had requested before |
 | another store, with a registry and a `cache.genTtlMs` above 0 | within `cache.genTtlMs` (default 2 s), when its snapshot re-resolves, **while the registry can be read** (see below) |
 | another store with **no registry** (a bare `IStorageDriver`), with `cache: { genTtlMs: 0 }`, or on a storage source built with **no clock** | **no bound** — only when its caches happen to let the segment go, or something tells it |
 | a pinned handle (`seg.pin()`) in another store | **no bound** — until that store's reader cache evicts the pin's reader and its chunk cache evicts the chunks the pin decoded, or something tells it |
