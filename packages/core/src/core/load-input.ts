@@ -80,6 +80,25 @@ function plainView(bytes: Uint8Array, what: string): Uint8Array {
   return length === 0 ? new Uint8Array(0) : new Uint8Array(buffer, offset, length);
 }
 
+/**
+ * Whether `buffer` is a `SharedArrayBuffer`, by its brand: the type's own `byteLength` getter throws on anything
+ * else, where a `Symbol.toStringTag` can be given any value. False on a runtime without one.
+ */
+const sharedByteLength =
+  typeof SharedArrayBuffer === 'function'
+    ? (Object.getOwnPropertyDescriptor(SharedArrayBuffer.prototype, 'byteLength')?.get as
+        ((this: unknown) => unknown) | undefined)
+    : undefined;
+function isShared(buffer: ArrayBufferLike): boolean {
+  if (sharedByteLength === undefined) return false;
+  try {
+    sharedByteLength.call(buffer);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function overCap(what: string, length: number): ValidationError {
   return new ValidationError(
     `${what} is ${length} bytes, more than any canonical 32-bit bitmap serializes to ` +
@@ -141,7 +160,7 @@ function decode(bytes: unknown, what: string, codec: CodecInterface): DecodedLoa
   const view = plainView(bytes as Uint8Array, what);
   if (view.byteLength > MAX_SERIALIZED_LOAD_BYTES) throw overCap(what, view.byteLength);
   // Bytes in a SharedArrayBuffer are copied: another thread could change them between the check and the decode.
-  const own = tagOf(view.buffer) === 'SharedArrayBuffer' ? new Uint8Array(view) : view;
+  const own = isShared(view.buffer) ? new Uint8Array(view) : view;
   try {
     return new DecodedLoadInput(
       codec.safeDeserialize(own, MAX_SERIALIZED_LOAD_BYTES, { whole: true }),

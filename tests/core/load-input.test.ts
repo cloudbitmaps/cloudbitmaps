@@ -195,6 +195,20 @@ describe('{ serialized }: portable Roaring bytes, checked before anything is rea
   });
 
   /** A codec that records what it was asked to decode and decodes nothing. */
+  /** A SharedArrayBuffer by its brand, which a `Symbol.toStringTag` cannot fake. */
+  const sabByteLength = Object.getOwnPropertyDescriptor(
+    SharedArrayBuffer.prototype,
+    'byteLength',
+  )!.get!;
+  function isShared(buffer: ArrayBufferLike): boolean {
+    try {
+      sabByteLength.call(buffer);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   function recordingCodec(): {
     codec: CodecInterface;
     calls: Array<{ length: number; max: number; shared: boolean }>;
@@ -206,7 +220,7 @@ describe('{ serialized }: portable Roaring bytes, checked before anything is rea
         calls.push({
           length: bytes.byteLength,
           max,
-          shared: Object.prototype.toString.call(bytes.buffer) === '[object SharedArrayBuffer]',
+          shared: isShared(bytes.buffer),
         });
         return roaringCodec.empty();
       },
@@ -283,6 +297,18 @@ describe('{ serialized }: portable Roaring bytes, checked before anything is rea
     expect(await loadSegment(SEG, { serialized: shared }, b.deps)).toEqual(
       await loadSegment(SEG, IDS, a.deps),
     );
+  });
+
+  it('a SharedArrayBuffer is known by its brand, not by a tag it can be given', async () => {
+    const portable = new RoaringBitmap32(IDS).serialize('portable');
+    const disguised = new SharedArrayBuffer(portable.length);
+    Object.defineProperty(disguised, Symbol.toStringTag, { value: 'ArrayBuffer' });
+    expect(Object.prototype.toString.call(disguised)).toBe('[object ArrayBuffer]');
+    const view = new Uint8Array(disguised);
+    view.set(portable);
+    const { codec, calls } = recordingCodec();
+    await loadSegment(SEG, { serialized: view }, world(codec).deps);
+    expect(calls.map((c) => c.shared)).toEqual([false]);
   });
 
   it('a Uint8Array whose byteLength lies is checked over the bytes it really holds', async () => {
