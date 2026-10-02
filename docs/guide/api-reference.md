@@ -75,7 +75,7 @@ pointer — configured from one bucket and one prefix, which is what makes them 
 | `LocalFsStorage` (`LocalFsStorageOptions`) | `@cloudbitmaps/roaring` | `new LocalFsStorage('/var/lib/cloudbitmaps', { now? }?)` — generations under `<root>/storage`, pointers under `<root>/registry`, which is also the layout `export-segments` expects. A root is for one process: instances in a process share a lock per row, two processes on one root are not fenced |
 | `S3Storage` | `@cloudbitmaps/s3` | `new S3Storage({ bucket, prefix?, client?, region?, endpoint?, pathStyle?, credentials?, maxObjectBytes?, partBytes?, now? })` — `client` or the four settings that build one, and both is refused |
 | `GcsStorage` | `@cloudbitmaps/gcs` | `new GcsStorage({ bucket, prefix?, client?, projectId?, apiEndpoint?, maxObjectBytes?, simpleUploadThresholdBytes?, now? })` — `client` or the two settings that build one, and both is refused |
-| `AzureBlobStorage` | `@cloudbitmaps/azure-blob` | `new AzureBlobStorage({ containerClient, prefix?, maxObjectBytes?, blockBytes?, now? })` or `({ connectionString, container, prefix?, maxObjectBytes?, blockBytes?, now? })` — one or the other, and both is refused |
+| `AzureBlobStorage` | `@cloudbitmaps/azure-blob` | `new AzureBlobStorage({ containerClient, prefix?, maxObjectBytes?, blockBytes?, readTimeoutMs?, now? })` or `({ connectionString, container, prefix?, maxObjectBytes?, blockBytes?, readTimeoutMs?, now? })` — one or the other, and both is refused |
 
 **A backend comes from one of these five classes, or from a class of your own that calls `brandAsBackend` from the driver kit
 ([driver kit](#driver-kit--what-you-need-to-implement-a-driver)).** A plain `{ storage, registry }` object is
@@ -94,6 +94,12 @@ is built:
 | `GcsStorage` | `maxObjectBytes` | 5 TiB, GCS's per-object maximum | the largest object the backend will write and advertise; set it lower to fail fast on a runaway write; a positive safe integer |
 | `AzureBlobStorage` | `blockBytes` | 8 MiB | staged block size, and so the peak write memory; a positive safe integer |
 | `AzureBlobStorage` | `maxObjectBytes` | `blockBytes` × 50,000 (about 400 GiB at the default) | the largest blob the backend will write and advertise; raise it and `blockBytes` grows so the 50,000-block limit still covers it; a positive safe integer |
+
+**`AzureBlobStorage` can time its reads.** `readTimeoutMs` (default `0`, no timeout; an integer from 0 to
+2,147,483,647) is how long each read request either half sends may take, the response body included, before it is
+aborted and throws `TransientError` for the store's read retry: a range read, a tail read's properties and its ranged
+download, each on its own, and a registry row's read. The clock starts at the call into the SDK. Writes, deletes and
+listings are not timed ([why](production.md#reliability-retries-backoff--timeouts)).
 
 Each cloud backend builds its own SDK client unless you pass one. Every backend exposes its storage and registry as `.storage`
 and `.registry`, and accepts an injected `now` for deterministic tests. The three cloud backends refuse an option

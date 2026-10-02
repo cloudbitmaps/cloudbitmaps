@@ -11,7 +11,7 @@ checklist: work down the table, and follow each link for the detail.
 | Versioning and backups cover the data and the pointers | A restore must bring both back to the same point in time | [Versioning and backups](#versioning-and-backups) |
 | With versioning on, noncurrent versions expire after your restore window | Each generation a load collects is otherwise billed for as long as the bucket keeps it, out of sight | [Bucket lifecycle](#bucket-lifecycle) |
 | The bucket honors conditional writes, and the S3 SDK is 3.645.0 or later | Otherwise a write-once generation can be silently overwritten | [Conditional writes and the S3 SDK](#conditional-writes-and-the-s3-sdk) |
-| Your storage client has a request timeout | The library has none of its own; a hung request hangs the read. On GCS 8.x and Azure Blob no client setting bounds a download's body | [Reliability](#reliability-retries-backoff--timeouts) |
+| Your storage client has a request timeout | A hung request hangs the read. On GCS 8.x and Azure Blob no client setting bounds a download's body; on Azure Blob, `readTimeoutMs` does, when you set it | [Reliability](#reliability-retries-backoff--timeouts) |
 | Your job re-runs a write after a transient error | Writes are never retried for you | [Reliability](#reliability-retries-backoff--timeouts) |
 | You know the request budget and the memory ceilings | A runaway call is refused, not billed | [Limits](#limits-the-per-op-budget-and-the-memory-ceilings) |
 | The keystore is backed up, if you encrypt | Losing the key makes the data permanently unreadable | [Encryption](encryption.md#before-you-encrypt) |
@@ -156,12 +156,26 @@ headers arrive, and `retryOptions.tryTimeoutInMs` is the timeout it asks the ser
 server that sends a registry pointer's headers and then nothing, a read through a client set with `tryTimeoutInMs: 500`
 was still pending after 2.5 s.
 
+**`readTimeoutMs` bounds an Azure Blob read, when you set it.** It is off by default. Set, each read request either
+half of `AzureBlobStorage` sends, a range read, a tail read's properties and its ranged download, each on its own, and
+a registry row's read, has that many ms to finish, the response body included, or it is aborted and throws
+`TransientError`, which the store's read retry runs again. Measured against a local server that stalls before the
+headers, after them or part-way through the body, a range read, a tail read and a registry read with
+`readTimeoutMs: 300` each failed after 301 to 306 ms, and the server saw the connection close. The clock starts at the call into the SDK, so time waiting for a socket and for a token
+credential's token counts; the HTTP agent the SDK builds sets no limit on sockets (twenty reads at once opened twenty
+connections), so a client of the SDK's own making does not queue a read for one. Writes, block commits, deletes and
+listings are not timed.
+
+```ts
+const backend = new AzureBlobStorage({ containerClient, readTimeoutMs: 2_000 });
+```
+
 Only transient faults (they surface as `TransientError`) are retried. Errors that retrying cannot fix are never
 retried: `ValidationError`, `IntegrityError`, `NotFoundError` and `WriteConflictError`.
 
-**Set a timeout on your storage client.** The library has no timeout of its own, because one would abandon requests
-that are in flight. A timeout on your client turns a hung read into a transient fault that is retried. Build the
-client with the timeout and pass it to the backend:
+**Set a timeout on your storage client.** On S3 and GCS the library has no timeout of its own; on Azure Blob it has
+the opt-in `readTimeoutMs` above, for reads alone. A timeout on your client turns a hung read into a transient fault
+that is retried. Build the client with the timeout and pass it to the backend:
 
 ```ts
 import { S3Client } from '@aws-sdk/client-s3';

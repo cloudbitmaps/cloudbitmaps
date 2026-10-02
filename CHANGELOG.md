@@ -13,6 +13,19 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **`AzureBlobStorage` can time each read: `readTimeoutMs`, off unless set.** With it set, every read request the
+  Azure Blob storage and registry drivers send, a range read, a tail read's properties and its ranged download, each
+  on its own, and a registry row's read, has `readTimeoutMs` to finish, the response body included, or it is aborted
+  and throws `TransientError` ("Azure Blob download timed out after 2000 ms"), which the store's read retry runs
+  again. No client setting bounds an Azure read whose body stalls: the SDK's per-try timer stops at the response
+  headers. The timer starts at the call into the SDK, so waiting for a socket or a credential's token counts; the
+  HTTP agent the SDK builds sets no socket limit. Writes, block commits, deletes and listings are not timed. `0`, the
+  default, turns it off, and a value that is not an integer from 0 to 2,147,483,647 is refused with
+  `ValidationError`. The drivers take it too (`AzureBlobStorageDriver`, `AzureBlobRegistryDriver`). Every read now
+  also lets go of a response the SDK refuses with a `RangeError` and leaves unread, with or without a timeout, where a
+  range or tail read left its socket open. Tests run a real `@azure/storage-blob` client against a stub that stalls
+  before the headers, after them and mid-body, and a child process checks that a read leaves no timer behind.
+
 - **`PricingProfile.storage.requestsPerPointerRead` prices a pointer read apart from a tail read.** It is the requests
   one pointer read costs, 1 by default, and the cost model charges it for each operand of an intersection, for the
   eight pointer reads a load makes and for each pointer refresh. `requestsPerSizedRead` keeps its name and its default

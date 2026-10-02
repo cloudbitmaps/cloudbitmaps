@@ -46,6 +46,7 @@ Any other key is refused by name.
 | `prefix` | a key prefix for everything this store writes |
 | `blockBytes` | the staged block size (default 8 MiB; the upload buffers one block at a time) |
 | `maxObjectBytes` | the largest blob (default `blockBytes` × 50,000, about 400 GiB) |
+| `readTimeoutMs` | how long each read request may take, its body included, before it is cut off and retried (default `0`, off) |
 
 ## Before production
 
@@ -59,6 +60,12 @@ Any other key is refused by name.
 - **A transient failure of a write throws `TransientError`, and the write may or may not have landed.** Re-run the
   call, or check `store.generations(ref)`. Every write is tagged with a random id and a conflict is settled by reading
   it back, because the client's own retry has no per-request switch.
+- **Set `readTimeoutMs` to bound a read that stalls.** No client setting does: the SDK's per-try timer stops once the
+  response headers arrive, so a body that stalls after them holds the read as long as the connection stays open. With
+  `readTimeoutMs` set, each read request (a range read, a tail read's properties and its download, a registry row's
+  read) that has not finished, body included, in that many ms is aborted and throws `TransientError`, which the
+  store's read retry runs again. It is off unless you set it. The clock starts at the call into the SDK, so waiting
+  for a socket or a credential's token counts. Writes, deletes and listings are not timed.
 - **Price it with `storage.requestsPerSizedRead: 2`.** A pointer read is one GET here, as on S3 and GCS, but a
   segment's tail read is two requests, its properties and then its bytes, because Azure Blob takes no suffix range.
   Set it in the pricing profile you give `estimateCost` or `costReport`, and leave `requestsPerPointerRead` at 1.
