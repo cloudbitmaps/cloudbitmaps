@@ -33,7 +33,9 @@ export function canonicalMetadataJson(value: unknown, fail: (message: string) =>
   ) {
     fail('metadata must be a plain object, not an array, a Map, a boxed value or a class instance');
   }
-  const entries: string[] = [];
+  // Each key with the value the rules checked, so the bytes are serialised from that value and never from a second
+  // read, which a proxy could answer differently.
+  const entries: Array<[string, string | number]> = [];
   const keys = Reflect.ownKeys(value as object);
   for (const key of keys) {
     if (typeof key !== 'string') fail('metadata keys must be strings, not symbols');
@@ -44,9 +46,12 @@ export function canonicalMetadataJson(value: unknown, fail: (message: string) =>
     if (key.length === 0) fail('metadata keys must be non-empty');
     if (key === '__proto__') fail('metadata may not use the key "__proto__"');
     if (!isWellFormedString(key)) fail('metadata keys must be well-formed UTF-16');
-    const keyBytes = utf8Length(key);
-    if (keyBytes > MAX_METADATA_KEY_BYTES) {
-      fail(`metadata key is ${keyBytes}B, over the ${MAX_METADATA_KEY_BYTES}B cap`);
+    // A UTF-16 unit is at most 3 UTF-8 bytes, so a key that short is under the cap without encoding it.
+    if (key.length * 3 > MAX_METADATA_KEY_BYTES) {
+      const keyBytes = utf8Length(key);
+      if (keyBytes > MAX_METADATA_KEY_BYTES) {
+        fail(`metadata key is ${keyBytes}B, over the ${MAX_METADATA_KEY_BYTES}B cap`);
+      }
     }
     const v: unknown = descriptor.value;
     if (typeof v === 'string') {
@@ -56,11 +61,11 @@ export function canonicalMetadataJson(value: unknown, fail: (message: string) =>
     } else if (typeof v !== 'number' || !Number.isFinite(v)) {
       fail(`metadata value of ${JSON.stringify(key)} must be a string or a finite number`);
     }
-    entries.push(key);
+    entries.push([key, v]);
   }
-  entries.sort();
-  const record = value as Record<string, string | number>;
-  const json = `{${entries.map((k) => `${JSON.stringify(k)}:${JSON.stringify(record[k])}`).join(',')}}`;
+  // Keys are unique, so comparing them alone orders the entries by UTF-16 code unit.
+  entries.sort(([a], [b]) => (a < b ? -1 : 1));
+  const json = `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${JSON.stringify(v)}`).join(',')}}`;
   const bytes = utf8Length(json);
   if (bytes > MAX_METADATA_BYTES) {
     fail(`metadata is ${bytes}B as canonical JSON, over the ${MAX_METADATA_BYTES}B cap`);
