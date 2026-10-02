@@ -11,6 +11,9 @@
  *
  * It never runs in CI or on a laptop by accident: each half is skipped unless its bucket is named. It writes, reads
  * and deletes a handful of small objects under one random prefix in the bucket you name, and removes them at the end.
+ * Run it twice per backend, against a bucket without object versioning and one with it, since the disaster-recovery
+ * guide asks for versioning on the registry prefix and a delete there leaves a delete marker or a noncurrent version.
+ * On a versioned bucket the cleanup at the end leaves noncurrent versions for the bucket's own lifecycle to expire.
  *
  *   CBM_PROBE_S3_BUCKET=<scratch bucket> AWS_REGION=<its region> \
  *     pnpm exec vitest run -c vitest.integration.config.ts tests/integration/real-cloud-conditional-delete.test.ts

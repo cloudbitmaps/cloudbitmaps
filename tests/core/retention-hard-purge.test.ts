@@ -578,6 +578,67 @@ describe('the purge pointer in the due index', () => {
     expect(again.reads).toBe(0);
   });
 
+  it('a pointer a setRetention takes as its own while the sweep runs is kept, though the scan read it as litter', async () => {
+    const w = world();
+    const reused = { namespace: 'n', segment: 'reused' };
+    const expiring = { namespace: 'n', segment: 'expiring' };
+    await seed(w, expiring, T0 + RETENTION);
+    w.advance(RETENTION + 1);
+    const today = dueBucket(w.now());
+    await w.registry.create(dueIndexRef(today, reused), { currentGen: null }); // litter from an earlier incarnation
+    // While the sweep retires the expiring segment, the reused name is created anew with a policy due today: its
+    // pointer write finds the litter already at that key and takes it as its own.
+    const storage: IStorageDriver = {
+      capabilities: () => w.storage.capabilities(),
+      putImmutable: (k, f) => w.storage.putImmutable(k, f),
+      getRange: (k, o, l) => w.storage.getRange(k, o, l),
+      getTail: (k, m) => w.storage.getTail(k, m),
+      delete: (k) => w.storage.delete(k),
+      list: (r) =>
+        (async function* () {
+          if ((await w.registry.get(reused)) === null) {
+            const set = await setSegmentRetention(
+              reused,
+              { registry: w.registry },
+              { expiresAt: w.now() },
+            );
+            expect(set.indexed).toBe(true);
+          }
+          yield* w.storage.list(r);
+        })(),
+    };
+    await retireExpired(
+      { registry: w.registry, storage },
+      { scan: 'index', now: w.now(), tombstoneGraceMs: GRACE },
+    );
+    expect((await bucketRows(w, today)).map((r) => r.segment)).toContain(
+      dueIndexRef(today, reused).segment,
+    );
+  });
+
+  it('an index purge removes every pointer it read to the row, pointers left behind included', async () => {
+    const w = world();
+    const ref = { namespace: 'n', segment: 'day' };
+    await seed(w, ref, T0 + RETENTION);
+    w.advance(RETENTION + 1);
+    await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: GRACE });
+    w.advance(GRACE);
+    // Two pointers whose removal failed earlier (an interrupted reindex, a failed forget), on days inside the
+    // lookback: the scan reads them before the purge pointer, under today.
+    const today = dueBucket(w.now());
+    for (const day of [today - 2, today - 1]) {
+      await w.registry.create(dueIndexRef(day, ref), { currentGen: null });
+    }
+    const res = await retireExpired(w.deps, {
+      scan: 'index',
+      now: w.now(),
+      tombstoneGraceMs: GRACE,
+    });
+    expect(res.tombstonesPurged).toBe(1);
+    for (const day of [today - 2, today - 1, today]) expect(await bucketRows(w, day)).toEqual([]);
+    expect(registryObjects(w)).toBe(0);
+  });
+
   it('a dry run files no pointer and removes none, litter included', async () => {
     const w = world();
     const ref = { namespace: 'n', segment: 'day' };
