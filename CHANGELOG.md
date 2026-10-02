@@ -13,6 +13,15 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A reader's memory bound counted less than its parsed index held.** `cache.readerMaxBytes` weighs each open
+  reader by a fixed size per index entry, 160 B, and a measurement of the heap found 186–200 B retained per entry,
+  so a cache could hold more index than its budget said. The reader now keeps its parsed index as typed arrays
+  (key, cardinality, length, CRC and offset at their own widths) and reports their byte length: 20 B per entry,
+  exact, and a test measures the retained memory against it. A 2,000-entry index also parses in about 45 µs where it
+  took about 185 µs (Node 24, Apple M3 Pro, both versions bundled and timed under plain Node; inside a test runner
+  the gap is nearer 1.7×). A chunk lookup is a binary search over
+  the sorted keys. Nothing a caller sees changes except that the same budget now holds about eight times as many
+  index entries; the sizing guide's reader table is regenerated at 20 B.
 - **A GCS read the SDK retried could crash the process.** With `@google-cloud/storage` 7.x and 8.x (checked on 7.22.0 and
   8.1.0), when a download got any status the SDK retries (408, 429, 500, 502, 503 or 504) and the SDK's own retry then succeeded, the
   SDK threw `ERR_STREAM_UNABLE_TO_PIPE` ("Cannot pipe to a closed or destroyed stream") outside any promise and Node
