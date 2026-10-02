@@ -11,13 +11,14 @@
  * omits it) still cannot make the caller hold more than `maxBytes`. The headers are returned as received; each caller
  * parses the ones it relies on strictly.
  *
- * **Every download stays off the SDK's shared connection pool.** When a download's stream is destroyed — a refused
- * response, a timeout — the SDK destroys the HTTP agent the request went out on, to free its socket. By default that is
- * one keep-alive agent the whole process shares (teeny-request's, for every request with `forever: true`), so every
- * other request in flight on any client is reset with it, uploads included. {@link downloadFile} sets `forever: false`
- * on its own requests, through the SDK's request interceptors: they then go out on Node's global agent, still kept
- * alive, which the SDK never destroys, and on `@google-cloud/storage` 8.x a destroyed download closes its own socket
- * and nothing else.
+ * **Every download stays off the SDK's shared connection pool.** When a download fails part-way — a body cut off, a
+ * refused response, a timeout — the SDK destroys the HTTP agent the request went out on, to free its socket. By default
+ * that is one keep-alive agent the whole process shares (teeny-request's, for every request with `forever: true`), so
+ * every other request in flight on any client is reset with it, uploads included. {@link downloadFile} sets
+ * `forever: false` on its own requests, through the SDK's request interceptors: they then go out on Node's global
+ * agent, which the SDK never destroys, and on `@google-cloud/storage` 8.x a destroyed download closes its own socket
+ * and nothing else. The cost: the global agent closes a connection idle for 5 seconds, where the SDK's pool keeps it,
+ * so a read after a longer pause opens a new one; and it is shared with the process's other `http` and `https` code.
  */
 import type { Storage } from '@google-cloud/storage';
 import type { Deadline } from './read-timeout';

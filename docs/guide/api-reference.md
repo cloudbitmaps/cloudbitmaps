@@ -74,7 +74,7 @@ pointer — configured from one bucket and one prefix, which is what makes them 
 | `MemoryStorage` (`MemoryStorageOptions`) | `@cloudbitmaps/roaring` | `new MemoryStorage({ now? }?)` |
 | `LocalFsStorage` (`LocalFsStorageOptions`) | `@cloudbitmaps/roaring` | `new LocalFsStorage('/var/lib/cloudbitmaps', { now? }?)` — generations under `<root>/storage`, pointers under `<root>/registry`, which is also the layout `export-segments` expects. A root is for one process: instances in a process share a lock per row, two processes on one root are not fenced |
 | `S3Storage` | `@cloudbitmaps/s3` | `new S3Storage({ bucket, prefix?, client?, region?, endpoint?, pathStyle?, credentials?, maxObjectBytes?, partBytes?, now? })` — `client` or the four settings that build one, and both is refused |
-| `GcsStorage` | `@cloudbitmaps/gcs` | `new GcsStorage({ bucket, prefix?, client?, projectId?, apiEndpoint?, maxObjectBytes?, simpleUploadThresholdBytes?, now?, readTimeoutMs? })` — `client` or the two settings that build one, and both is refused |
+| `GcsStorage` | `@cloudbitmaps/gcs` | `new GcsStorage({ bucket, prefix?, client?, projectId?, apiEndpoint?, maxObjectBytes?, simpleUploadThresholdBytes?, readTimeoutMs?, now? })` — `client` or the two settings that build one, and both is refused |
 | `AzureBlobStorage` | `@cloudbitmaps/azure-blob` | `new AzureBlobStorage({ containerClient, prefix?, maxObjectBytes?, blockBytes?, now? })` or `({ connectionString, container, prefix?, maxObjectBytes?, blockBytes?, now? })` — one or the other, and both is refused |
 
 **A backend comes from one of these five classes, or from a class of your own that calls `brandAsBackend` from the driver kit
@@ -92,7 +92,7 @@ is built:
 | `S3Storage` | `maxObjectBytes` | `partBytes` × 10,000 (about 80 GiB at the default) | the largest object the backend will write and advertise; raise it and `partBytes` grows so the 10,000-part limit still covers it, up to S3's 5 TiB; a positive safe integer |
 | `GcsStorage` | `simpleUploadThresholdBytes` | 8 MiB | an object up to this size is one simple request; a larger one is a resumable stream; a positive safe integer |
 | `GcsStorage` | `maxObjectBytes` | 5 TiB, GCS's per-object maximum | the largest object the backend will write and advertise; set it lower to fail fast on a runaway write; a positive safe integer |
-| `GcsStorage` | `readTimeoutMs` | `0`: no timeout | cuts off each attempt at a download (a tail, a range, a registry row) and the metadata read a tail read falls back on, once it has run this long; see [`@cloudbitmaps/gcs`](#cloudbitmapsgcs); a non-negative safe integer no larger than 2,147,483,647 |
+| `GcsStorage` | `readTimeoutMs` | `0`: no timeout | how long one read (a tail with its metadata fallback, a range, a registry row) may take, every attempt and the body included, before it throws `TransientError` for the store's read retry; see [`@cloudbitmaps/gcs`](#cloudbitmapsgcs); a non-negative safe integer no larger than 2,147,483,647 |
 | `AzureBlobStorage` | `blockBytes` | 8 MiB | staged block size, and so the peak write memory; a positive safe integer |
 | `AzureBlobStorage` | `maxObjectBytes` | `blockBytes` × 50,000 (about 400 GiB at the default) | the largest blob the backend will write and advertise; raise it and `blockBytes` grows so the 50,000-block limit still covers it; a positive safe integer |
 
@@ -764,13 +764,19 @@ the SDK's retries. A `client` you pass is used as given, so build it with `retry
 turns off the SDK's retries of listings, metadata reads and resumable uploads on that client
 ([why](production.md#reliability-retries-backoff--timeouts)).
 
-A client's `timeout` does not bound a download on 8.x; `readTimeoutMs` does, and it is off (`0`) unless set. Each
-attempt at a download, and the metadata read a tail read falls back on for an empty object, is cut off once it has run
-that long, timed from the call into the SDK (a credential fetch and any wait for a socket count) to the end of the body. A download cut off is
-retried like a dropped connection; one cut off on every attempt throws `TransientError` naming the read and the
-timeout. Uploads, deletes, listings and the conditional writes are not timed. A read that times out before any answer
-leaves its connection open until the server answers or closes it, since the SDK cannot cancel it. Every download goes
-out on Node's global agent, not the SDK's shared one, so one the driver cuts off or refuses resets no other request
+A client's `timeout` does not bound a download on 8.x; `readTimeoutMs` does, and it is off (`0`) unless set. It bounds
+one read as a whole (a tail with the metadata read it falls back on for an empty object, a range, a registry row): one
+deadline covers every attempt the driver makes and the backoff between them, from the call into the driver (a
+credential fetch and any wait for a socket count) to the end of the body, and it counts time the process spends busy,
+so a synchronous stretch longer than the timeout fails the reads in flight. When it passes, the read throws
+`TransientError` naming the read and the timeout, no further attempt starts, and the store's read retry runs it again:
+about 8.35 s in all at `2_000` with the default retry policy. Uploads, deletes, listings and the conditional writes are
+not timed. The SDK cannot cancel a request whose response has not begun, so a read that times out before its server
+answers leaves that connection open until the server answers or closes it: one per read, up to four per call through
+the store's retry. A 404 whose error body arrives after the deadline is a `TransientError`, not `NotFoundError`. Every
+download goes out on Node's global agent, not the SDK's shared one, so one the driver cuts off or refuses resets no
+other request; that agent closes a connection idle for 5 seconds, and is shared with the process's other `http` and
+`https` requests
 ([why](production.md#reliability-retries-backoff--timeouts)).
 
 The registry lets a GCS deployment run on **one bucket

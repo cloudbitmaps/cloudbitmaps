@@ -157,24 +157,42 @@ import { GcsStorage } from '@cloudbitmaps/gcs';
 const backend = new GcsStorage({ bucket: 'my-bitmaps', readTimeoutMs: 2_000 });
 ```
 
-It times every download the backend makes, each attempt on its own clock: a generation's tail, a range of it and a
-registry row, and also the metadata read a tail read falls back on for an empty object. The clock starts at the call
-into the SDK, so fetching or refreshing a credential counts, as does any wait for a socket (Node's agents set no limit
-on sockets unless your process sets one), and it runs until the whole body has arrived, so a server that sends its
-headers and then stalls is cut off too. A download cut off is retried like a dropped connection, up to
-three more times; one cut off on every attempt throws `TransientError` naming the read and the timeout, for the store's
-read retry to run again. Uploads, deletes, listings and the conditional writes are not timed: an upload can rightly
-take longer than a read, and a write cut off may still land. The SDK cannot cancel a request whose response has not
-begun, so a read that times out before any answer leaves that request's connection open until the server answers or
-closes it, and until then it keeps a Node process from exiting: measured against a local server that never answers, a
-process whose four attempts had all timed out at 200 ms exited when the server closed its connections, 6 s later.
-A read cut off after its response began closes its own connection.
+It bounds each read the backend makes as a whole: a generation's tail (with the metadata read it falls back on for an
+empty object), a range of it, and a registry row. One deadline covers every attempt the driver makes at the read and
+the backoff between them, so `readTimeoutMs` bounds one driver read, its own retries included. The clock starts at the
+call into the driver, so fetching or refreshing a credential counts, as does any wait for a socket (Node's agents set
+no limit on sockets unless your process sets one), and it runs until the whole body has arrived, so a server that
+sends its headers and then stalls is cut off too. It counts time the process spends busy too: Node runs a due timer
+before it reads a socket, so a synchronous stretch longer than the timeout fails the reads in flight even when their
+responses have arrived. When the deadline passes, the read throws `TransientError` naming the read and the timeout, no
+further attempt starts, and the store's read retry, above, runs it again. With `readTimeoutMs: 2_000` and the default
+retry policy, a read whose requests stall on every attempt fails after 4 × 2,000 ms of timeouts plus up to 350 ms of
+backoff, about 8.35 s; measured against a local server that never answers, a `has()` failed after 8.1 to 8.2 s.
+Uploads, deletes, listings and the conditional writes are not timed: an upload can rightly take longer than a read,
+and a write cut off may still land.
 
-The driver sends every download, timed or not, on Node's global agent rather than the SDK's shared keep-alive one.
-The SDK destroys the agent a destroyed download went out on, and its own agent is shared by every request in the
-process, so a download cut off or refused there would reset all the others in flight, uploads included. Node's global
-agent is still kept alive, and the SDK never destroys it. Measured on 8.1.0, a 64-byte upload, and a read and a
-registry write on a second backend, all completed while a read timed out on every attempt.
+**What a timed-out read leaves open.** The SDK cannot cancel a request whose response has not begun, so when the
+deadline passes before the server has answered, that request keeps its connection open until the server answers or
+closes it, and until then it keeps a Node process from exiting. That is one request per driver read, and so up to four
+per call through the store's read retry: measured against a local server that never answers, one `has()` left 4
+requests open, 20 at once left 80, and a process whose read had timed out at 200 ms exited only when the server closed
+its connection, 6 s later. A sustained outage at N reads a second therefore adds about 4N held connections each
+second, until the server closes them. On `@google-cloud/storage` 8.x a read cut off after its response began closes
+its own connection; on 7.x (checked on 7.22.0) it stays open as well, and without a timeout a body the server cuts off
+part-way never settles. A 404 whose error body arrives after the deadline is reported as the timeout, a
+`TransientError`, rather than as `NotFoundError`.
+
+**The driver sends every download on Node's global agent**, timed or not, rather than on the SDK's own keep-alive
+pool. When a download fails part-way, the SDK destroys the agent it went out on, and its own pool is shared by every
+request in the process, so a download cut off mid-body, refused or timed out there resets every other request in
+flight, uploads included: measured on 8.1.0 with no timeout, a body the server cut off part-way reset a 64-byte upload
+and a registry write on a second backend. On the global agent all of them complete, and the SDK never destroys it.
+What that costs: Node's global agent closes a connection that has been idle for 5 seconds, which the SDK's own pool
+does not, so a read after a longer quiet spell opens a new connection, with its TCP and TLS handshake; and the downloads
+share that agent with any other `http` or `https` request in your process, so a `maxSockets` set on it queues them,
+and the queue counts toward the timeout. Raising `https.globalAgent.options.timeout` keeps idle connections longer
+(measured on Node's `http` agent against a local server: two reads 6.5 s apart opened two connections by default and
+one with `options.timeout` at 30 s).
 
 **Nor does an Azure Blob client's timeout bound a body that stalls.** The SDK's per-try timer stops once the response
 headers arrive, and `retryOptions.tryTimeoutInMs` is the timeout it asks the service to apply. Measured against a local

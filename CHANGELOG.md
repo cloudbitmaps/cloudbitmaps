@@ -15,50 +15,32 @@ so, and so do the module headers in the code.
 
 - **`readTimeoutMs` on `GcsStorage` cuts off a GCS read that stalls; it is off unless you set it.** A client's own
   `timeout` does not bound a download on `@google-cloud/storage` 8.x, so a read whose server stops answering waited
-  for it forever. With `readTimeoutMs` set, each attempt at a download (a generation's tail, a range of it, a registry
-  row) and the metadata read a tail read falls back on for an empty object is cut off once it has run that long,
-  timed from the call into the SDK, so a credential fetch counts, to the end of the body, so a stall after the headers
-  is cut off too. A download cut off is retried like a dropped connection, and one cut off on every attempt throws
-  `TransientError` naming the read and the timeout. Uploads, deletes, listings and the conditional writes are not
-  timed. `0`, the default, sets no timeout; a value that is not a non-negative safe integer no larger than
-  2,147,483,647 is refused with `ValidationError`. The SDK cannot cancel a request whose response has not begun, so a
-  read that times out before any answer leaves its connection open until the server answers or closes it. The GCS
-  storage and registry drivers take the option too.
-
-- **`PricingProfile.storage.requestsPerPointerRead` prices a pointer read apart from a tail read.** It is the requests
-  one pointer read costs, 1 by default, and the cost model charges it for each operand of an intersection, for the
-  eight pointer reads a load makes and for each pointer refresh. `requestsPerSizedRead` keeps its name and its default
-  of 1, and now prices tail reads only: each operand's index read and the one a load makes. A pointer read is one
-  request on S3, GCS and Azure Blob alike, so every shipped backend leaves `requestsPerPointerRead` at 1; S3 and GCS
-  leave `requestsPerSizedRead` at 1 too, and an Azure Blob profile sets `requestsPerSizedRead: 2`, for its two-request
-  tail read. An Azure profile that already sets `requestsPerSizedRead: 2` is priced one request lower for each pointer
-  read, which is what an Azure pointer read now costs. A value that is not a finite number of at least 0 is refused
-  with `ValidationError`, as `requestsPerSizedRead` is.
-
-### Changed
-
-- **Azure Blob reads a registry pointer in one request, where it made two.** A pointer read was the blob's
-  properties and then a download pinned to the ETag they named; it is now one GET of the whole blob, taking the ETag
-  (the version fence) and the length from the response that carries the bytes, so the pair describes one version and a
-  concurrent overwrite is seen as the older row or the newer one, never split between two requests. The response is
-  untrusted: one that is not a `200`, that has no ETag or an empty one, that has no length, or whose length is over the
-  1 MiB row cap is refused with `IntegrityError` before a byte of its body is read, and the body is counted as it
-  arrives and refused at the first byte past its length. A refused response is let go: the SDK throws on a response
-  with no ETag or no length and leaves its socket open, and the driver aborts the request, which closes it. The read
-  asks the SDK not to re-request the rest of a body cut off part-way, so the bytes come from one response or the read
-  fails, with a `TransientError` the store's read retry repeats. An answer from a host other than the container's own,
-  which is where a client set with `retryOptions.secondaryHost` sends a retried read, is refused as transient too, so
-  the registry never takes a geo-replica's older row for the current one. A `404` is still absence. Writes, listings and the tombstoning delete are unchanged, and a tail read stays two
-  requests, since Azure Blob takes no suffix range. Price an Azure deployment with `storage.requestsPerSizedRead: 2`
-  and `requestsPerPointerRead` at its default of 1.
+  for it forever. With `readTimeoutMs` set, one deadline bounds each read as a whole (a generation's tail with the
+  metadata read it falls back on for an empty object, a range of it, a registry row): every attempt the driver makes
+  and the backoff between them, timed from the call into the driver, so a credential fetch counts, to the end of the
+  body, so a stall after the headers is cut off too. When it passes, the read throws `TransientError` naming the read
+  and the timeout and no further attempt starts; the store's read retry runs it again, so at `2_000` a read that stalls
+  on every attempt fails after about 8.35 s (measured: 8.1 to 8.2 s). It counts time the process spends busy, so a
+  synchronous stretch longer than the timeout fails the reads in flight. Uploads, deletes, listings and the
+  conditional writes are not timed. `0`, the default, sets no timeout; a value that is not a non-negative safe integer
+  no larger than 2,147,483,647 is refused with `ValidationError`. The SDK cannot cancel a request whose response has
+  not begun, so a read that times out before its server answers leaves that connection open until the server answers
+  or closes it: one per read, up to four per call through the store's retry (on 7.x, checked on 7.22.0, a read cut off
+  after its response began keeps its connection open too). A 404 whose error body arrives after the deadline is a
+  `TransientError`, not `NotFoundError`. The GCS storage and registry drivers take the option too.
 
 ### Fixed
 
-- **A GCS download the driver cuts off or refuses no longer resets the other requests in flight.** The SDK destroys
-  the HTTP agent a destroyed download went out on, and its default agent is one keep-alive agent shared by every
-  request in the process, so refusing an oversize response reset every other request on it, uploads included, and a
-  sent-once write among them failed as `TransientError`. Every download now goes out on Node's global agent, still kept
-  alive, which the SDK never destroys, so a destroyed download closes its own connection and nothing else.
+- **A GCS download that fails part-way no longer resets the other requests in flight, uploads included.** When a
+  download's body was cut off, or the driver refused or cut off the response, the SDK destroyed the HTTP agent it went
+  out on, and its default agent is one keep-alive pool shared by every request in the process, so every other request
+  on it was reset: with no timeout set, a body the server cut off part-way failed a concurrent 64-byte upload and a
+  registry write on another backend with `ECONNRESET`, and a sent-once write so failed may or may not have landed.
+  Every download now goes out on Node's global agent, which the SDK never destroys, so a destroyed download closes its
+  own connection and nothing else. The cost: Node's global agent closes a connection idle for 5 seconds, where the
+  SDK's pool kept it, so a read after a longer pause opens a new connection, with its TCP and TLS handshake, and the
+  downloads share that agent with any other `http` or `https` request in the process. Raising
+  `https.globalAgent.options.timeout` keeps idle connections longer.
 - **A GCS range read buffers at most the bytes it asked for, and checks the response is those bytes.** It is one GET
   through the same path as the tail read: a response longer than the range is refused as soon as its length shows,
   where the whole response was downloaded before its length was checked, and a 206 must name the requested bytes in

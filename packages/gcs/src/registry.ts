@@ -58,9 +58,9 @@ export interface GcsRegistryDriverOptions {
   /** Injected clock for `createdAt`/`updatedAt`; defaults to `Date.now`. */
   readonly now?: () => number;
   /**
-   * Cut off each attempt at reading a registry row once it has run this long, in milliseconds; `0` (the default) sets
-   * no timeout. Timed and retried as the storage driver's reads are (see `GcsStorageDriverOptions.readTimeoutMs`); the
-   * writes and listings are not timed.
+   * Cut off a read of a registry row once it has run this long, in milliseconds, every attempt included; `0` (the
+   * default) sets no timeout. Timed as the storage driver's reads are (see `GcsStorageDriverOptions.readTimeoutMs`);
+   * the writes and listings are not timed.
    */
   readonly readTimeoutMs?: number;
 }

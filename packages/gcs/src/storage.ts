@@ -92,11 +92,11 @@ export interface GcsStorageDriverOptions {
    * Must be a positive safe integer. */
   readonly simpleUploadThresholdBytes?: number;
   /**
-   * Cut off a read that has run this long, in milliseconds: each attempt at a tail or range read, and the metadata read
-   * a tail read falls back on for an empty object. `0` (the default) sets no timeout. The clock starts at the call into
-   * the SDK, so a credential fetch counts, and runs until the body has ended. A timed-out download is retried like a
-   * dropped connection; one that times out every time throws `TransientError`. Uploads, deletes and listings are not
-   * timed. A non-negative safe integer no larger than 2,147,483,647.
+   * Cut off a read that has run this long, in milliseconds: a tail read (with the metadata read it falls back on for
+   * an empty object) or a range read, every attempt and the backoff between them included. `0` (the default) sets no
+   * timeout. The clock starts at the call into the driver, so a credential fetch counts, and runs until the body has
+   * ended; when it passes the read throws `TransientError` and no further attempt starts. Uploads, deletes and
+   * listings are not timed. A non-negative safe integer no larger than 2,147,483,647.
    */
   readonly readTimeoutMs?: number;
 }
