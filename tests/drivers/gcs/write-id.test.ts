@@ -139,12 +139,13 @@ describe('GcsStorageDriver write id, resumable path', () => {
     expect(b.metadataReads).toBe(0);
   });
 
-  it('leaves the simple upload as it was: no id, and no read-back on a 412', async () => {
+  it('tags the simple upload too, and reads nothing back on a 412 to its first send', async () => {
     const b = new FakeBucket();
     b.failWith = httpErr(412);
     await expect(put(driverOver(b, 1024))).rejects.toBeInstanceOf(WriteConflictError);
     expect(b.streamsOpened[0]).toMatchObject({ resumable: false });
-    expect(b.streamsOpened[0]?.metadata?.metadata).toBeUndefined();
+    expect(b.streamsOpened[0]?.metadata?.metadata?.cbwid).toMatch(/^[0-9a-f]{32}$/);
+    // Sent once so far, so the 412 cannot be this write meeting itself.
     expect(b.metadataReads).toBe(0);
   });
 });

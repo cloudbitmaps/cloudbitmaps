@@ -30,6 +30,16 @@ export function isPreconditionFailed(err: unknown): boolean {
   return httpStatus(err) === 412;
 }
 
+/**
+ * GCS asked the client to slow down: `429` (`rateLimitExceeded`) or `503` (`backendError`), which the SDK raises as an
+ * `ApiError` with the status as a numeric `code`. GCS does not document that a throttled request was not applied, so
+ * an upload sent again after one must still tell a landed first send apart.
+ */
+export function isThrottle(err: unknown): boolean {
+  const status = httpStatus(err);
+  return status === 429 || status === 503;
+}
+
 /** The object / generation does not exist (GCS returns 404). */
 export function isNotFound(err: unknown): boolean {
   return httpStatus(err) === 404;
