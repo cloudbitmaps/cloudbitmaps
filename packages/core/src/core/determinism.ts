@@ -42,3 +42,11 @@ export interface Rng {
   /** A float in the half-open interval [0, 1). */
   next(): number;
 }
+
+/**
+ * Injected entropy: `length` cryptographically strong random bytes, for an identity that must never repeat (a
+ * registry row's incarnation id). Deliberately not an {@link Rng}: an `Rng` is seedable for simulation, and a seeded
+ * source hands every process the same "random" identity. Production wiring uses the platform's Web Crypto; a test
+ * injects a deterministic source to replay a run.
+ */
+export type Entropy = (length: number) => Uint8Array;

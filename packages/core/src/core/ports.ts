@@ -11,6 +11,7 @@
 import { ValidationError } from './errors';
 import type { BlobSink } from './blob';
 import type { WrappedDek } from './crypto';
+import type { GenerationMetadata } from './metadata';
 
 /** Opaque optimistic-concurrency token — unique per write, compared by equality only. */
 export type Token = string;
@@ -223,6 +224,39 @@ export type RegistryStatus = 'active' | 'destroyed';
 export type GovernanceMeta = Record<string, unknown>;
 
 /**
+ * A cached description of one generation, carried on the registry row: how many ids it holds, and the metadata it
+ * was loaded with. The generation's `.crbm` object stays the truth; this is a copy, written by the same write that
+ * moves the pointer, and it names the generation it describes so a copy left behind by a writer that did not
+ * carry it can never be taken for another generation's.
+ *
+ * Two shapes. On a cleartext segment the values are in the clear. On an encrypted segment (a row with
+ * `wrappedDeks`) they are sealed under the segment's data key, as the generation's index is, so the row reveals
+ * neither the count nor the metadata.
+ */
+export type RegistrySummary = ClearRegistrySummary | SealedRegistrySummary;
+
+/** {@link RegistrySummary} on a cleartext segment. */
+export interface ClearRegistrySummary {
+  /** The generation this describes. A non-negative safe integer. */
+  readonly generation: number;
+  /** How many ids the generation holds: an integer from 0 to 2^32. */
+  readonly cardinality: number;
+  /** The generation's metadata, when it has any. Never the empty object. */
+  readonly metadata?: GenerationMetadata;
+}
+
+/** {@link RegistrySummary} on an encrypted segment. */
+export interface SealedRegistrySummary {
+  /** The generation this describes. A non-negative safe integer. */
+  readonly generation: number;
+  /**
+   * Base64 of `nonce(12) ‖ ciphertext ‖ tag(16)`, sealing the cardinality as a little-endian u64 followed by the
+   * metadata's canonical JSON, if any. The count is fixed-width, so the length reveals only the metadata's size.
+   */
+  readonly sealed: string;
+}
+
+/**
  * One registry row — the authoritative per-segment record. Exactly one per segment.
  */
 export interface RegistryRecord extends SegmentRef {
@@ -259,10 +293,19 @@ export interface RegistryRecord extends SegmentRef {
    */
   readonly retention?: GovernanceMeta;
   readonly residency?: GovernanceMeta;
+  /**
+   * A cached description of the current generation (see {@link RegistrySummary}). Optional: a row without one is
+   * correct, and a reader then opens the generation instead. Trusted only for the generation it names.
+   */
+  readonly summary?: RegistrySummary;
   /** Epoch-ms of creation / last mutation (from the driver's injected clock). */
   readonly createdAt: number;
   readonly updatedAt: number;
-  /** Opaque OCC token — compare-by-equality, never reused (ABA-safe). */
+  /**
+   * Opaque OCC token — compare-by-equality, never reused (ABA-safe): no two writes, of this row or of any earlier
+   * row under the same name, are given the same token (for a row whose predecessor's record is gone, with
+   * overwhelming probability rather than by construction).
+   */
   readonly token: Token;
 }
 
@@ -276,13 +319,22 @@ export interface NewRegistryRecord {
   readonly status?: RegistryStatus;
   readonly retention?: GovernanceMeta;
   readonly residency?: GovernanceMeta;
+  /** Must name `currentGen` when given. */
+  readonly summary?: RegistrySummary;
 }
 
-/** Fields a {@link IRegistryDriver.compareAndSwap} may mutate (identity + audit + token are off-limits). */
+/**
+ * Fields a {@link IRegistryDriver.compareAndSwap} may mutate (identity + audit + token are off-limits).
+ *
+ * Presence-based: a field the patch does not mention is left as it was. `summary` is the one exception, because it
+ * describes the current generation: a patch that moves `currentGen` and does not mention `summary` drops the old
+ * one rather than keep a description of another generation. A `summary` the patch gives must name the
+ * `currentGen` the row will have.
+ */
 export type RegistryPatch = Partial<
   Pick<
     RegistryRecord,
-    'currentGen' | 'wrappedDeks' | 'keyId' | 'status' | 'retention' | 'residency'
+    'currentGen' | 'wrappedDeks' | 'keyId' | 'status' | 'retention' | 'residency' | 'summary'
   >
 >;
 

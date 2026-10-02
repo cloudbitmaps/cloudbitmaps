@@ -2,9 +2,9 @@
  * `LocalFsRegistryDriver` — a zero-cloud, persistent {@link IRegistryDriver}.
  *
  * One JSON file per segment at `<root>/<namespace>/registry/<segment>.reg`, holding `{ deleted, record }`.
- * OCC: the token is a monotonic counter (stringified), advanced on every mutation and
- * even across a `delete` (which **tombstones** rather than unlinks) so a deleted-then-recreated row never
- * re-issues an old token (ABA-safe). Every write is temp → fsync(file) → atomic rename → fsync(dir), and
+ * OCC: the token is a random incarnation id drawn when the row is created, beside a counter advanced on every
+ * mutation and even across a `delete` (which **tombstones** rather than unlinks), so a deleted-then-recreated row
+ * never re-issues an old token (ABA-safe). Every write is temp → fsync(file) → atomic rename → fsync(dir), and
  * read-modify-write is serialized per row across the whole process (the lock is keyed by the row's resolved
  * path, so every instance on one root shares it). A root is for one process: two processes on one root are not
  * fenced. Drivers do I/O; only `core/` is bound by determinism.
@@ -14,6 +14,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, open, readdir, realpath, rename, unlink } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { IntegrityError, ValidationError, WriteConflictError } from '@/core/errors';
+import type { Entropy } from '@/core/determinism';
 import type {
   IRegistryDriver,
   NewRegistryRecord,
@@ -25,12 +26,14 @@ import type {
 } from '@/core/ports';
 import {
   applyRegistryPatch,
+  newIncarnationToken,
+  nextRegistryToken,
   parseRegistryEnvelope,
   recordFromNew,
-  registryCounterOf,
   serializeRegistryEnvelope,
   validateNewRegistryRecord,
   validateRegistryPatch,
+  webCryptoEntropy,
   type RegistryEnvelope,
 } from '../_shared/registry';
 import { registryDir, registryRowPath, parseNamespaceDir, parseRegistryRow } from './paths';
@@ -74,16 +77,20 @@ async function rowLockKey(path: string): Promise<string> {
 export interface LocalFsRegistryDriverOptions {
   /** Injected clock for `createdAt`/`updatedAt`; defaults to `Date.now`. */
   readonly now?: () => number;
+  /** Draws each new row's incarnation id; defaults to Web Crypto. Inject one only to make a test replayable. */
+  readonly entropy?: Entropy;
 }
 
 export class LocalFsRegistryDriver implements IRegistryDriver {
   private readonly now: () => number;
+  private readonly entropy: Entropy;
 
   constructor(
     private readonly root: string,
     options: LocalFsRegistryDriverOptions = {},
   ) {
     this.now = options.now ?? (() => Date.now());
+    this.entropy = options.entropy ?? webCryptoEntropy;
   }
 
   capabilities(): RegCaps {
@@ -103,8 +110,8 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
       if (current !== null && !current.deleted) {
         throw new WriteConflictError(`registry row already exists for segment ${ref.segment}`);
       }
-      const counter = current ? registryCounterOf(current.record) + 1 : 0; // advance across a tombstone (ABA-safe)
-      const token = String(counter);
+      // A new incarnation, whose counter continues across a tombstone (ABA-safe).
+      const token = newIncarnationToken(this.entropy, current?.record);
       await this.writeRow(path, false, recordFromNew(ref, record, this.now(), token));
       return { token };
     });
@@ -122,7 +129,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
       if (current === null || current.deleted || current.record.token !== expected) {
         throw new WriteConflictError(`OCC token mismatch for registry row ${ref.segment}`);
       }
-      const token = String(registryCounterOf(current.record) + 1);
+      const token = nextRegistryToken(current.record);
       await this.writeRow(
         path,
         false,
@@ -163,7 +170,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
         return; // idempotent
       }
       // Tombstone (advance the counter) rather than unlink — keeps the token monotonic for ABA-safety.
-      const token = String(registryCounterOf(current.record) + 1);
+      const token = nextRegistryToken(current.record);
       await this.writeRow(path, true, { ...current.record, token, updatedAt: this.now() });
     });
   }

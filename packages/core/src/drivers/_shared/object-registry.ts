@@ -4,9 +4,10 @@
  * Lets a **read-mostly deployment run on one bucket alone** — storage `.crbm` generations plus the registry in
  * the same place, with no separate database. One tiny JSON object per segment at
  * `<prefix>registry/<ns>/<segment>.reg` holding the `{ deleted, record }` envelope (the same shape LocalFs
- * persists). The OCC token is a monotonic counter, advanced on every mutation and even across a `delete`
- * (which **tombstones** rather than removes the object) so a deleted-then-recreated row never re-issues an
- * old token (ABA-safe) — identical semantics to the LocalFs registry, so it passes the same conformance suite.
+ * persists). The OCC token is a random incarnation id drawn when the row is created, beside a counter advanced on
+ * every mutation and even across a `delete` (which **tombstones** rather than removes the object), so a
+ * deleted-then-recreated row never re-issues an old token (ABA-safe) — identical semantics to the LocalFs registry,
+ * so it passes the same conformance suite.
  *
  * **The atomic swap is offloaded to the store's conditional writes.** `create` writes only if absent (or
  * over a tombstone under its version), and `compareAndSwap`/`delete` write only if the object still carries
@@ -28,8 +29,9 @@
  * - Reads must be **strongly consistent** — true of S3 (since 2020), GCS and Azure Blob — since the registry
  *   advertises `strongRead` and generation resolution depends on it.
  * - **Do not apply a lifecycle-expiration rule to the `registry/` prefix that expires a current version.**
- *   `delete` tombstones (keeps the object with an advanced counter) for ABA-safety; expiring a tombstone would let a recreate reset the
- *   token to 0 and re-issue a stale one.
+ *   Expiring a live row loses its pointer. `delete` tombstones (keeps the object with an advanced counter) for
+ *   ABA-safety; a recreate over an expired tombstone draws a fresh incarnation, so its tokens are still new, but
+ *   only with overwhelming probability rather than by construction.
  *
  * **`list()` is fail-closed, and one bad object stops it for everyone.** An object under the `registry/`
  * prefix whose key parses but whose body does not aborts the whole enumeration — every namespace, not just
@@ -60,15 +62,18 @@ import type {
   SegmentRef,
   Token,
 } from '@/core/ports';
+import type { Entropy } from '@/core/determinism';
 import { mapWithConcurrency } from '@/core/concurrency';
 import {
   applyRegistryPatch,
+  newIncarnationToken,
+  nextRegistryToken,
   parseRegistryEnvelope,
   recordFromNew,
-  registryCounterOf,
   serializeRegistryEnvelope,
   validateNewRegistryRecord,
   validateRegistryPatch,
+  webCryptoEntropy,
   type RegistryEnvelope,
 } from './registry';
 import { parseRegistryKey, registryListPrefix, registryObjectKey } from './object-registry-keys';
@@ -145,10 +150,15 @@ export interface ObjectRegistryStore {
 }
 
 export class ObjectStoreRegistry implements IRegistryDriver {
+  /**
+   * `entropy` draws each new row's incarnation id; it defaults to the platform's Web Crypto. Inject one only to
+   * make a test replayable: a seeded source in production gives every process the same ids.
+   */
   constructor(
     private readonly store: ObjectRegistryStore,
     private readonly prefix: string | undefined,
     private readonly now: () => number,
+    private readonly entropy: Entropy = webCryptoEntropy,
   ) {}
 
   capabilities(): RegCaps {
@@ -167,8 +177,8 @@ export class ObjectStoreRegistry implements IRegistryDriver {
     if (current !== null && !current.env.deleted) {
       throw new WriteConflictError(`registry row already exists for segment ${ref.segment}`);
     }
-    // Advance across a tombstone so a recreate never re-issues an old token (ABA-safe).
-    const token = String(current ? registryCounterOf(current.env.record) + 1 : 0);
+    // A new incarnation, whose counter continues across a tombstone, so a recreate never re-issues an old token.
+    const token = newIncarnationToken(this.entropy, current?.env.record);
     const env: RegistryEnvelope = {
       deleted: false,
       record: recordFromNew(ref, record, this.now(), token),
@@ -190,7 +200,7 @@ export class ObjectStoreRegistry implements IRegistryDriver {
     if (current === null || current.env.deleted || current.env.record.token !== expected) {
       throw new WriteConflictError(`OCC token mismatch for registry row ${ref.segment}`);
     }
-    const token = String(registryCounterOf(current.env.record) + 1);
+    const token = nextRegistryToken(current.env.record);
     const env: RegistryEnvelope = {
       deleted: false,
       record: applyRegistryPatch(current.env.record, patch, this.now(), token),
@@ -243,7 +253,7 @@ export class ObjectStoreRegistry implements IRegistryDriver {
       } else if (current === null || current.env.deleted) {
         return; // idempotent — already gone
       }
-      const token = String(registryCounterOf(current.env.record) + 1);
+      const token = nextRegistryToken(current.env.record);
       const env: RegistryEnvelope = {
         deleted: true,
         record: { ...current.env.record, token, updatedAt: this.now() },

@@ -7,6 +7,7 @@ import { GcsStorageDriver } from '@/gcs/storage';
 import { IntegrityError, TransientError, ValidationError, WriteConflictError } from '@/core/errors';
 import { MAX_ROW_BYTES } from '@/drivers/_shared/object-registry';
 import type { GenKey } from '@/core/ports';
+import { CREATED_TOKEN, tokenAfter } from '../../helpers/tokens';
 
 /**
  * A conditional write is sent once, through a real `@google-cloud/storage` client.
@@ -332,7 +333,10 @@ describe('GCS: a conditional write is sent once, whatever the SDK retry would do
 
     expect(err).toBeInstanceOf(TransientError);
     expect(stub.count('upload')).toBe(1);
-    expect(await backend.registry.get(REF)).toMatchObject({ currentGen: 0, token: '0' });
+    expect(await backend.registry.get(REF)).toMatchObject({
+      currentGen: 0,
+      token: expect.stringMatching(CREATED_TOKEN),
+    });
   });
 
   it("the registry's compareAndSwap that lands and loses its response throws TransientError", async () => {
@@ -346,7 +350,10 @@ describe('GCS: a conditional write is sent once, whatever the SDK retry would do
 
     expect(err).toBeInstanceOf(TransientError);
     expect(stub.count('upload')).toBe(2); // the create, then the swap once
-    expect(await backend.registry.get(REF)).toMatchObject({ currentGen: 1, token: '1' });
+    expect(await backend.registry.get(REF)).toMatchObject({
+      currentGen: 1,
+      token: tokenAfter(token),
+    });
   });
 
   // The registry's delete writes a tombstone under a generation fence, so it is a conditional write like the others.

@@ -4,6 +4,7 @@ import { S3Storage } from '@/s3/backend';
 import { S3StorageDriver } from '@/s3/storage';
 import { TransientError, WriteConflictError } from '@/core/errors';
 import type { GenKey } from '@/core/ports';
+import { CREATED_TOKEN, tokenAfter } from '../../helpers/tokens';
 
 /**
  * A conditional write is sent once, through a real `S3Client`.
@@ -287,7 +288,10 @@ describe('S3: a conditional write is sent once, whatever the SDK retry would do'
 
     expect(err).toBeInstanceOf(TransientError);
     expect(bucket.count('PutObject')).toBe(1);
-    expect(await backend.registry.get(REF)).toMatchObject({ currentGen: 0, token: '0' });
+    expect(await backend.registry.get(REF)).toMatchObject({
+      currentGen: 0,
+      token: expect.stringMatching(CREATED_TOKEN),
+    });
   });
 
   it("the registry's compareAndSwap that lands and loses its response throws TransientError", async () => {
@@ -302,7 +306,10 @@ describe('S3: a conditional write is sent once, whatever the SDK retry would do'
 
     expect(err).toBeInstanceOf(TransientError);
     expect(bucket.count('PutObject')).toBe(2); // the create, then the swap once
-    expect(await backend.registry.get(REF)).toMatchObject({ currentGen: 1, token: '1' });
+    expect(await backend.registry.get(REF)).toMatchObject({
+      currentGen: 1,
+      token: tokenAfter(token),
+    });
   });
 
   // The registry's delete writes a tombstone under `If-Match`, so it is a conditional write like the others. It is

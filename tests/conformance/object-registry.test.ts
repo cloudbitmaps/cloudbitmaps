@@ -7,6 +7,7 @@ import {
   type ObjectRow,
 } from '@/drivers/_shared/object-registry';
 import { IntegrityError, TransientError, WriteConflictError } from '@/core/errors';
+import { tokenAfter, tokenParts } from '../helpers/tokens';
 
 /**
  * The shared object-store registry protocol, proven WITHOUT a cloud.
@@ -148,7 +149,7 @@ describe('ObjectStoreRegistry: a write that lands and then fails', () => {
     );
     const after = await reg.get(ref);
     expect(after?.currentGen).toBe(1);
-    expect(after?.token).toBe('1'); // advanced once, not twice
+    expect(after?.token).toBe(tokenAfter(token)); // advanced once, not twice
     await expect(reg.compareAndSwap(ref, token, { currentGen: 2 })).rejects.toBeInstanceOf(
       WriteConflictError,
     );
@@ -160,8 +161,11 @@ describe('ObjectStoreRegistry: a write that lands and then fails', () => {
     store.landThenFail = lost();
     await expect(reg.delete(ref, token)).rejects.toBeInstanceOf(TransientError);
     expect(await reg.get(ref)).toBeNull();
-    // Re-creating proves the tombstone advanced the counter once: token 0 -> tombstone 1 -> recreate 2.
-    expect((await reg.create(ref, { currentGen: 0 })).token).toBe('2');
+    // Re-creating proves the tombstone advanced the counter once: token 0 -> tombstone 1 -> recreate 2, under a
+    // new incarnation.
+    const recreated = (await reg.create(ref, { currentGen: 0 })).token;
+    expect(tokenParts(recreated).counter).toBe(2);
+    expect(tokenParts(recreated).incarnation).not.toBe(tokenParts(token).incarnation);
   });
 });
 
@@ -303,7 +307,9 @@ describe('ObjectStoreRegistry: what the shared protocol guarantees', () => {
     const first = await reg.create(ref, { currentGen: null });
     await reg.delete(ref);
     const second = await reg.create(ref, { currentGen: null });
-    expect(Number(second.token)).toBeGreaterThan(Number(first.token));
+    // A new incarnation, and a counter carried on past the tombstone's: apart by the id and by construction.
+    expect(tokenParts(second.token).incarnation).not.toBe(tokenParts(first.token).incarnation);
+    expect(tokenParts(second.token).counter).toBe(tokenParts(first.token).counter + 2);
   });
 
   it('refuses a compare-and-swap carrying the pre-delete token', async () => {
