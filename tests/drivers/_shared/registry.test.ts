@@ -253,8 +253,10 @@ describe('registry row schema 2: what each schema may hold', () => {
 });
 
 /**
- * How a schema-1 token and a schema-2 token compare: never equal, because only the incarnation form has a `.`; a
- * row keeps the form it was born with, and only a create starts a new incarnation.
+ * How the token forms compare. A row 0.11 created holds a bare counter (`7`) until its first 0.12 write, which gives it
+ * `<counter>.<write part>` (`8.<16 hex>`) and no incarnation; a row 0.12 creates holds
+ * `<32 hex incarnation>.<counter>.<16 hex write part>`. No two forms are ever equal, and only a create starts a new
+ * incarnation.
  */
 describe('the registry token: its forms, and how they compare', () => {
   const rec = (token: string): RegistryRecord => ({ ...baseRecord, status: 'active', token });

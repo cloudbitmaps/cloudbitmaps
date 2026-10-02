@@ -2,9 +2,9 @@
  * `LocalFsRegistryDriver` — a zero-cloud, persistent {@link IRegistryDriver}.
  *
  * One JSON file per segment at `<root>/<namespace>/registry/<segment>.reg`, holding `{ deleted, record }`.
- * OCC: the token is a random incarnation id drawn when the row is created, beside a counter advanced on every
- * mutation and even across a `delete` (which **tombstones** rather than unlinks), so a deleted-then-recreated row
- * never re-issues an old token (ABA-safe). Every write is temp → fsync(file) → atomic rename → fsync(dir), and
+ * OCC: the token is a random incarnation id drawn when the row is created, a counter advanced on every mutation and
+ * even across a `delete` (which **tombstones** rather than unlinks), and a random part drawn for every write, so a
+ * deleted-then-recreated row, or one restored from a backup, never re-issues an old token (ABA-safe). Every write is temp → fsync(file) → atomic rename → fsync(dir), and
  * read-modify-write is serialized per row across the whole process (the lock is keyed by the row's resolved
  * path, so every instance on one root shares it). A root is for one process: two processes on one root are not
  * fenced. Drivers do I/O; only `core/` is bound by determinism.
