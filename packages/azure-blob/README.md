@@ -46,7 +46,7 @@ Any other key is refused by name.
 | `prefix` | a key prefix for everything this store writes |
 | `blockBytes` | the staged block size (default 8 MiB; the upload buffers one block at a time) |
 | `maxObjectBytes` | the largest blob (default `blockBytes` × 50,000, about 400 GiB) |
-| `readTimeoutMs` | how long each read request may take, its body included, before it is cut off and retried (default `0`, off) |
+| `readTimeoutMs` | how long each read request may take, its body included, before it is cut off with a `TransientError` the store's read retry repeats (default `0`, off) |
 
 ## Before production
 
