@@ -27,8 +27,11 @@ import type { GenKey } from '@/core/ports';
 
 const BUCKET = 'b';
 const FIVE_MIB = 5 * 1024 * 1024;
-/** Small enough to keep the suite quick, large enough that a loaded machine answers a fast request well inside it. */
-const TIMEOUT = 100;
+/**
+ * Small enough to keep the suite quick, large enough that a loaded machine answers a fast request well inside it: the
+ * tests that need a read to succeed run it under this timeout too.
+ */
+const TIMEOUT = 200;
 /** How long a test waits for a read that should end before calling it hung. Generous, so a loaded machine does not flake. */
 const HUNG = 8_000;
 /** Each test's own limit, above {@link HUNG}, so a hung read fails the assertion rather than the runner's timeout. */
@@ -366,7 +369,9 @@ function expectTimedOut<T>(
   const { error, ms } = outcome as { error: unknown; ms: number };
   expect(error).toBeInstanceOf(TransientError);
   expect((error as Error).message).toBe(`S3 ${operation} timed out after ${timeoutMs} ms`);
-  expect(ms).toBeGreaterThanOrEqual(timeoutMs - 5);
+  // A little early is the timer's clock, not the read: Node starts a timer from the event loop's cached time, which
+  // a busy loop leaves a few ms behind.
+  expect(ms).toBeGreaterThanOrEqual(timeoutMs - 25);
   expect(ms).toBeLessThan(timeoutMs + 1_000);
 }
 
@@ -606,7 +611,7 @@ describe('S3: writes, deletes and listings are not timed', LIMIT, () => {
 
     const outcome = await settle(put(new Uint8Array([1, 2, 3])));
     expect(outcome).toMatchObject({ value: { size: 3 } });
-    expect((outcome as { ms: number }).ms).toBeGreaterThanOrEqual(3 * TIMEOUT - 5);
+    expect((outcome as { ms: number }).ms).toBeGreaterThanOrEqual(3 * TIMEOUT - 25);
     expect(stub.count('PutObject')).toBe(1);
     expect(stub.cut).toEqual([]);
   });
@@ -635,7 +640,7 @@ describe('S3: writes, deletes and listings are not timed', LIMIT, () => {
       }),
     );
     expect(outcome).toMatchObject({ error: failed });
-    expect((outcome as { ms: number }).ms).toBeGreaterThanOrEqual(3 * TIMEOUT - 5);
+    expect((outcome as { ms: number }).ms).toBeGreaterThanOrEqual(3 * TIMEOUT - 25);
     expect(stub.answered).toContain('AbortMultipartUpload');
     expect(stub.cut).toEqual([]);
   });
@@ -646,7 +651,7 @@ describe('S3: writes, deletes and listings are not timed', LIMIT, () => {
 
     const outcome = await settle(backend.storage.delete(GEN));
     expect(outcome).toHaveProperty('value');
-    expect((outcome as { ms: number }).ms).toBeGreaterThanOrEqual(3 * TIMEOUT - 5);
+    expect((outcome as { ms: number }).ms).toBeGreaterThanOrEqual(3 * TIMEOUT - 25);
     expect(stub.objects.has(OBJECT_KEY)).toBe(false);
     expect(stub.cut).toEqual([]);
   });
@@ -789,7 +794,7 @@ describe("S3: through the store, a stalled read is the store's retry to repeat",
 
     const outcome = await settle(store.segment('s').has(70_000));
     expect(outcome).toMatchObject({ value: true });
-    expect((outcome as { ms: number }).ms).toBeGreaterThanOrEqual(TIMEOUT - 5);
+    expect((outcome as { ms: number }).ms).toBeGreaterThanOrEqual(TIMEOUT - 25);
     // The stalled request, then the store's retry of it, then whatever else the read needed.
     expect(stub.count('GetObject', '.crbm') - before).toBeGreaterThanOrEqual(2);
     await expectReleased(stub);
