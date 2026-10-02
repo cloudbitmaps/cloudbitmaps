@@ -113,8 +113,8 @@ export interface StorageChunkSource {
    * the generation *and* the incarnation of the name it belongs to.
    *
    * {@link StorageChunkSource.currentGeneration} is not enough to key a decoded-chunk cache, and the gap is not
-   * theoretical: a load numbers its generation `max(currentGen, highest object) + 1`, so the number **restarts at 0** once
-   * a registry row is purged and the bucket emptied. A retired, re-created name therefore serves different
+   * theoretical: a load numbers its generation from the row's pointer and what is in the bucket, so the number
+   * **restarts at 0** once a registry row is purged and the bucket emptied. A retired, re-created name therefore serves different
    * data at the same `currentGen`, and a cache keyed on `(segment, chunk, generation)` hands back the previous
    * incarnation's ids — an erased id reappearing, with no read to intercept.
    *

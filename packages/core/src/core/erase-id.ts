@@ -520,9 +520,11 @@ export async function eraseIdFromSegment(
   /**
    * Delete the object a refused rewrite wrote, when it would otherwise outlive the winner above its pointer.
    *
-   * Only one position needs it: the pointer moved forward past `from` and stopped **below** `written`. That is
-   * where this call took its number after the winner's object was already in the bucket — `nextGeneration`
-   * numbers above everything present — and it is above the winner's pointer, where no collection ever looks. The
+   * Only one position needs it: the pointer moved forward past `from` and stopped **below** `written`. Two winners
+   * leave it there: one whose object was already in the bucket when this call took its number (`nextGeneration`
+   * numbers above everything present), and a load that numbered after it from its own row, which takes
+   * `currentGen + 1` whenever no object holds that number, below this call's object. Either way the object is
+   * above the winner's pointer, where no collection ever looks. The
    * object was derived from `from`, so when the winner was another erasure it still holds the id that erasure
    * has just reported gone, one `rollback({ allowForward: true })` from being served, and the newest superseded
    * generation once a later load raises the pointer past it, which is exactly what that load's `keep` retains.
