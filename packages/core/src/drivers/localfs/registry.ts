@@ -33,9 +33,9 @@ import {
   serializeRegistryEnvelope,
   validateNewRegistryRecord,
   validateRegistryPatch,
-  webCryptoEntropy,
   type RegistryEnvelope,
 } from '../_shared/registry';
+import { entropyIsAvailable, webCryptoEntropy } from '../_shared/entropy';
 import { registryDir, registryRowPath, parseNamespaceDir, parseRegistryRow } from './paths';
 import { O_NOFOLLOW, fsyncDir, isCode, mapFsError } from './fs-util';
 
@@ -77,7 +77,7 @@ async function rowLockKey(path: string): Promise<string> {
 export interface LocalFsRegistryDriverOptions {
   /** Injected clock for `createdAt`/`updatedAt`; defaults to `Date.now`. */
   readonly now?: () => number;
-  /** Draws each new row's incarnation id; defaults to Web Crypto. Inject one only to make a test replayable. */
+  /** Draws every token's random parts; defaults to Web Crypto. Inject one only to make a test replayable. */
   readonly entropy?: Entropy;
 }
 
@@ -94,7 +94,9 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
   }
 
   capabilities(): RegCaps {
-    return { strongRead: true };
+    return entropyIsAvailable(this.entropy)
+      ? { strongRead: true }
+      : { strongRead: true, canWrite: false };
   }
 
   async get(ref: SegmentRef): Promise<RegistryRecord | null> {
@@ -129,7 +131,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
       if (current === null || current.deleted || current.record.token !== expected) {
         throw new WriteConflictError(`OCC token mismatch for registry row ${ref.segment}`);
       }
-      const token = nextRegistryToken(current.record);
+      const token = nextRegistryToken(current.record, this.entropy);
       await this.writeRow(
         path,
         false,
@@ -170,7 +172,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
         return; // idempotent
       }
       // Tombstone (advance the counter) rather than unlink — keeps the token monotonic for ABA-safety.
-      const token = nextRegistryToken(current.record);
+      const token = nextRegistryToken(current.record, this.entropy);
       await this.writeRow(path, true, { ...current.record, token, updatedAt: this.now() });
     });
   }

@@ -3,7 +3,8 @@
  *
  * The registry's record-construction, patch-application, and field-validation are identical across every
  * backend (memory / LocalFs / object store) — only the *storage* + OCC mechanics differ. This is the one home
- * for that logic so the three drivers can't drift. Pure: no I/O, no SDK, no clock (the caller passes `now`).
+ * for that logic so the three drivers can't drift. Pure: no I/O, no SDK, no clock (the caller passes `now`), and no
+ * ambient randomness (the caller passes its `Entropy`; the Web Crypto default is in `entropy.ts`).
  */
 import { IntegrityError, UnsupportedError, ValidationError } from '@/core/errors';
 import type { Entropy } from '@/core/determinism';
@@ -369,84 +370,107 @@ export function serializeRegistryEnvelope(env: RegistryEnvelope): string {
 
 // ── The OCC token ────────────────────────────────────────────────────────────────────────────────────────────
 //
-// A token is `<incarnation>.<counter>`: 32 lowercase hex digits drawn from injected entropy when the row is
-// created, and a canonical decimal counter that every write of the row advances by one. The incarnation is what
-// keeps a re-created name from ever being taken for an earlier incarnation of it, even once the earlier row's
-// record is gone and nothing is left to continue a counter from; the counter keeps the tokens of one incarnation
-// apart. A row created over a tombstone continues the tombstone's counter too, so while a tombstone exists the
-// separation is by construction as well as by the random id.
+// A token is `<incarnation>.<counter>.<write>`. The incarnation is 32 lowercase hex digits drawn from injected
+// entropy when the row is created; it keeps a re-created name from ever being taken for an earlier incarnation of
+// it, even once the earlier row's record is gone and nothing is left to continue a counter from. The counter is a
+// canonical decimal that every write of the row advances by one, and carries on across a tombstone, so while a row's
+// history is intact its tokens are apart by construction. The write part is 16 lowercase hex digits drawn afresh for
+// every write: a row restored from a backup is back at an older counter, and without it the writes after the restore
+// would be given the tokens the writes after the backup already had.
 //
-// A row first written by a schema-1 build has a bare decimal counter (`"7"`), and keeps that form for as long as
-// it lives: its writes advance the counter as before. Only a create starts a new incarnation, and every create
-// gives the incarnation form. So a token's form says which kind of row issued it, and the two forms never compare
-// equal: a bare counter has no `.`. Tokens are compared only by equality; nothing orders them.
+// A row first written by a schema-1 build has a bare decimal counter (`"7"`), and gains no incarnation for as long as
+// it lives: a write to it advances the counter and adds a write part (`"8.<write>"`). Only a create starts a new
+// incarnation. So a token's form says which kind of row issued it, and no two forms ever compare equal: they differ
+// in how many `.` they hold. Tokens are compared only by equality; nothing orders them.
 
-/** A row's token on a schema-1-born row: a canonical decimal counter. */
+/** A schema-1 row's token: a canonical decimal counter. */
 const COUNTER_TOKEN = /^(0|[1-9]\d*)$/;
-/** An incarnation-form token: 128 bits as 32 lowercase hex digits, a `.`, and a canonical decimal counter. */
-const INCARNATION_TOKEN = /^([0-9a-f]{32})\.(0|[1-9]\d*)$/;
+/** A schema-1-born row's token once this build has written it: the counter, a `.`, and a write part. */
+const WRITTEN_COUNTER_TOKEN = /^(0|[1-9]\d*)\.([0-9a-f]{16})$/;
+/** An incarnation-form token: the incarnation id, the counter and a write part, `.`-separated. */
+const INCARNATION_TOKEN = /^([0-9a-f]{32})\.(0|[1-9]\d*)\.([0-9a-f]{16})$/;
 /** The incarnation id's width, in bytes. */
 const INCARNATION_BYTES = 16;
+/** The write part's width, in bytes. */
+const WRITE_BYTES = 8;
 
-/** A token taken apart: its incarnation (absent for a bare counter) and its counter. */
+/** A token taken apart: its incarnation (absent on a schema-1-born row) and its counter. */
 interface TokenParts {
   readonly incarnation: string | undefined;
   readonly counter: number;
 }
 
 /**
- * Take a stored token apart, refusing anything that is not one of the two forms a shipped driver writes, or one a
- * schema-1 row may not hold (invariant 5): `"1e3"`, `"0x10"`, `" 5 "`, `""`, a counter past 2^53, upper-case hex.
+ * Take a token apart, refusing anything that is not a form a shipped driver writes (invariant 5): `"1e3"`, `"0x10"`,
+ * `" 5 "`, `""`, a counter past 2^53, upper-case hex. A stored row of `schemaVersion` 1 holds only a bare counter, and
+ * one of 2 only a form with a write part; a record already read (`schemaVersion` undefined) may hold any of them.
  */
-function tokenParts(token: string, schemaVersion: number, ctx: string): TokenParts {
-  const legacy = COUNTER_TOKEN.exec(token);
-  const born = legacy === null && schemaVersion >= 2 ? INCARNATION_TOKEN.exec(token) : null;
-  if (legacy === null && born === null) {
+function tokenParts(token: string, schemaVersion: number | undefined, ctx: string): TokenParts {
+  const bare =
+    schemaVersion === undefined || schemaVersion === 1 ? COUNTER_TOKEN.exec(token) : null;
+  const written =
+    schemaVersion === undefined || schemaVersion >= 2
+      ? (WRITTEN_COUNTER_TOKEN.exec(token) ?? INCARNATION_TOKEN.exec(token))
+      : null;
+  const match = bare ?? written;
+  if (match === null) {
     throw new IntegrityError(
-      `registry row token is not one a schema-${schemaVersion} row holds (${JSON.stringify(token)}): ${ctx}`,
+      `registry row token is not one a schema-${schemaVersion ?? REGISTRY_SCHEMA_VERSION} row holds ` +
+        `(${JSON.stringify(token)}): ${ctx}`,
     );
   }
-  const counter = Number(legacy !== null ? legacy[1] : born![2]);
+  const born = match.length === 4; // the incarnation form has three groups
+  const counter = Number(born ? match[2] : match[1]);
   if (!Number.isSafeInteger(counter)) {
     throw new IntegrityError(`registry row token's counter is out of safe-integer range: ${ctx}`);
   }
-  return { incarnation: born === null ? undefined : born[1], counter };
+  return { incarnation: born ? match[1] : undefined, counter };
 }
 
 /**
- * The incarnation id in a token, or `undefined` for one that has none: a bare counter from a schema-1-born row, or
- * any token another driver issues. Two tokens with the same incarnation are writes of one incarnation of a row.
+ * The incarnation id in a token, or `undefined` for one that has none: a schema-1-born row's, or any token another
+ * driver issues. Two tokens with the same incarnation are writes of one incarnation of a row.
  */
 export function incarnationOf(token: Token): string | undefined {
   return INCARNATION_TOKEN.exec(token)?.[1];
 }
 
-/** The token after `record`'s: the same incarnation and form, the counter one on. For a write or a tombstone. */
-export function nextRegistryToken(record: RegistryRecord): Token {
-  const { incarnation, counter } = tokenParts(
-    record.token,
-    REGISTRY_SCHEMA_VERSION,
-    record.segment,
-  );
-  return incarnation === undefined ? String(counter + 1) : `${incarnation}.${counter + 1}`;
+/** `bytes` fresh bytes from `entropy`, as lowercase hex, refusing a source that does not give them. */
+function drawHex(entropy: Entropy, bytes: number): string {
+  const drawn = entropy(bytes);
+  if (!(drawn instanceof Uint8Array) || drawn.length !== bytes) {
+    throw new ValidationError(
+      `the registry's entropy source must return ${bytes} bytes as a Uint8Array`,
+    );
+  }
+  let hex = '';
+  for (const b of drawn) hex += b.toString(16).padStart(2, '0');
+  return hex;
 }
 
 /** A fresh incarnation id from `entropy`: 128 bits as 32 lowercase hex digits. */
 export function drawIncarnation(entropy: Entropy): string {
-  const bytes = entropy(INCARNATION_BYTES);
-  if (!(bytes instanceof Uint8Array) || bytes.length !== INCARNATION_BYTES) {
-    throw new ValidationError(
-      `the registry's entropy source must return ${INCARNATION_BYTES} bytes as a Uint8Array`,
-    );
-  }
-  let incarnation = '';
-  for (const b of bytes) incarnation += b.toString(16).padStart(2, '0');
-  return incarnation;
+  return drawHex(entropy, INCARNATION_BYTES);
+}
+
+/** A fresh write part from `entropy`: 64 bits as 16 lowercase hex digits. */
+export function drawWrite(entropy: Entropy): string {
+  return drawHex(entropy, WRITE_BYTES);
 }
 
 /**
- * The token of a new row: a fresh incarnation from `entropy`, and a counter that continues `tombstone`'s when the
- * row is created over one, else starts at 0.
+ * The token for the write after `record`'s: the same incarnation, if it has one, the counter one on, and a fresh write
+ * part. For a compare-and-swap or a tombstone.
+ */
+export function nextRegistryToken(record: RegistryRecord, entropy: Entropy): Token {
+  const { incarnation, counter } = tokenParts(record.token, undefined, record.segment);
+  const tail = `${counter + 1}.${drawWrite(entropy)}`;
+  return incarnation === undefined ? tail : `${incarnation}.${tail}`;
+}
+
+/**
+ * The token of a new row: a fresh incarnation and write part from `entropy`, and a counter that continues
+ * `tombstone`'s when the row is created over one, else starts at 0.
  */
 export function newIncarnationToken(
   entropy: Entropy,
@@ -455,26 +479,9 @@ export function newIncarnationToken(
   const counter =
     tombstone === undefined
       ? 0
-      : tokenParts(tombstone.token, REGISTRY_SCHEMA_VERSION, tombstone.segment).counter + 1;
-  return `${drawIncarnation(entropy)}.${counter}`;
+      : tokenParts(tombstone.token, undefined, tombstone.segment).counter + 1;
+  return `${drawIncarnation(entropy)}.${counter}.${drawWrite(entropy)}`;
 }
-
-/**
- * The default entropy: the platform's Web Crypto. Refused with `UnsupportedError` when there is none, at the first
- * row created rather than at construction, so a read-only process runs anywhere.
- */
-export const webCryptoEntropy: Entropy = (length) => {
-  const webCrypto = (globalThis as { crypto?: { getRandomValues?: unknown } }).crypto;
-  if (webCrypto === undefined || typeof webCrypto.getRandomValues !== 'function') {
-    throw new UnsupportedError(
-      'this runtime has no Web Crypto (crypto.getRandomValues), which a registry needs to create a row: ' +
-        'give the registry driver an entropy source',
-    );
-  }
-  return (webCrypto as { getRandomValues(a: Uint8Array): Uint8Array }).getRandomValues(
-    new Uint8Array(length),
-  );
-};
 
 /**
  * Parse + structurally validate a persisted `{ deleted, record }` envelope from stored bytes. A published row

@@ -8,7 +8,7 @@
  * tokens; they never understand roaring or the `.crbm` layout.
  */
 
-import { ValidationError } from './errors';
+import { UnsupportedError, ValidationError } from './errors';
 import type { BlobSink } from './blob';
 import type { WrappedDek } from './crypto';
 
@@ -347,6 +347,26 @@ export type RegistryPatch = Partial<
 export interface RegCaps {
   /** REQUIRED — `currentGen` feeds read correctness + the publish CAS, so reads must be strongly consistent. */
   readonly strongRead: true;
+  /**
+   * `false` when this registry cannot write a row in this runtime, though it reads: a shipped registry draws random
+   * bytes for every token it issues, and on a runtime with no Web Crypto it has none to draw. A write path that
+   * writes an object before its row (a load, an erasure rewrite) checks it first and refuses with `UnsupportedError`
+   * before it writes anything, rather than leave an object no row names. Absent means the registry can write.
+   */
+  readonly canWrite?: false;
+}
+
+/**
+ * Refuse, with `UnsupportedError`, a write that would write an object before its row when the registry reports it
+ * cannot write a row (see {@link RegCaps.canWrite}). Called before the write's first request.
+ */
+export function assertRegistryCanWrite(registry: IRegistryDriver, what: string): void {
+  if (registry.capabilities().canWrite === false) {
+    throw new UnsupportedError(
+      `${what}: the registry reports it cannot write a row in this runtime (capabilities().canWrite is false), ` +
+        'so nothing is written',
+    );
+  }
 }
 
 /**

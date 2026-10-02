@@ -12,7 +12,6 @@ import {
   serializeRegistryEnvelope,
   validateNewRegistryRecord,
   validateRegistryPatch,
-  webCryptoEntropy,
   type RegistryEnvelope,
 } from '@/drivers/_shared/registry';
 import type { RegistryRecord, RegistrySummary } from '@/core/ports';
@@ -102,7 +101,7 @@ describe('registry envelope schema version (format freeze)', () => {
     status: 'active',
     createdAt: 1,
     updatedAt: 1,
-    token: '0',
+    token: '0123456789abcdef0123456789abcdef.0.fedcba9876543210',
   };
   const envelope: RegistryEnvelope = { deleted: false, record };
 
@@ -159,6 +158,9 @@ const rowText = (schemaVersion: number, record: Record<string, unknown>, deleted
   JSON.stringify({ schemaVersion, deleted, record });
 
 const INC = '0123456789abcdef0123456789abcdef';
+const W = 'fedcba9876543210';
+/** A schema-2 token: every token this build writes has a write part. */
+const T2 = `${INC}.1.${W}`;
 const WRAPPED = [{ keyId: 'k', wrapped: 'd3JhcHBlZA==' }];
 const baseRecord = {
   segment: 's',
@@ -185,18 +187,20 @@ describe('registry row schema 2: what each schema may hold', () => {
     expect(env.record).toMatchObject({ currentGen: 3, token: '7' });
   });
 
-  it('refuses a schema-1 row carrying a summary or an incarnation-form token (IntegrityError)', () => {
+  it('refuses a schema-1 row carrying a summary or a token with a write part (IntegrityError)', () => {
     const summary = { generation: 3, cardinality: 5 };
     expect(() =>
       parseRegistryEnvelope(rowText(1, { ...baseRecord, token: '7', summary }), 'v1+summary'),
     ).toThrow(/summary/);
-    expect(() =>
-      parseRegistryEnvelope(rowText(1, { ...baseRecord, token: `${INC}.0` }), 'v1+incarnation'),
-    ).toThrow(IntegrityError);
+    for (const token of [`${INC}.0.${W}`, `8.${W}`]) {
+      expect(() =>
+        parseRegistryEnvelope(rowText(1, { ...baseRecord, token }), 'v1+written'),
+      ).toThrow(IntegrityError);
+    }
   });
 
-  it('reads a schema-2 row with either token form, and a summary', () => {
-    for (const token of ['8', `${INC}.0`, `${INC}.12`]) {
+  it('reads a schema-2 row with either written form, and a summary', () => {
+    for (const token of [`8.${W}`, `${INC}.0.${W}`, `${INC}.12.${W}`]) {
       const env = parseRegistryEnvelope(
         rowText(2, { ...baseRecord, token, summary: { generation: 3, cardinality: 5 } }),
         token,
@@ -206,28 +210,43 @@ describe('registry row schema 2: what each schema may hold', () => {
     }
   });
 
-  it('refuses a token in neither form, in either schema (IntegrityError)', () => {
+  it('refuses a bare counter on a schema-2 row: every token this build writes has a write part', () => {
+    expect(() => parseRegistryEnvelope(rowText(2, { ...baseRecord, token: '8' }), 'k')).toThrow(
+      IntegrityError,
+    );
+  });
+
+  it('refuses a token in no form, in either schema, naming the row (IntegrityError)', () => {
     const bad = [
       '',
       '01',
       '1e3',
       ' 5',
       '9007199254740992',
-      `${INC.toUpperCase()}.0`,
-      `${INC.slice(1)}.0`,
-      `${INC}0.0`,
-      `${INC}.01`,
-      `${INC}.`,
-      `.${INC}`,
-      `${INC}.9007199254740992`,
-      `${INC}.0.0`,
+      `${INC}.0`,
+      `${INC.toUpperCase()}.0.${W}`,
+      `${INC.slice(1)}.0.${W}`,
+      `${INC}0.0.${W}`,
+      `${INC}.01.${W}`,
+      `${INC}.0.${W.toUpperCase()}`,
+      `${INC}.0.${W.slice(1)}`,
+      `${INC}.0.${W}0`,
+      `${INC}..${W}`,
+      `${INC}.${W}`,
+      `.${INC}.0.${W}`,
+      `${INC}.9007199254740992.${W}`,
+      `${INC}.0.${W}.0`,
+      `08.${W}`,
+      `8.${INC}`,
+      `8.${W}.`,
+      `9007199254740992.${W}`,
     ];
     for (const token of bad) {
       for (const v of [1, 2]) {
         expect(
-          () => parseRegistryEnvelope(rowText(v, { ...baseRecord, token }), token),
+          () => parseRegistryEnvelope(rowText(v, { ...baseRecord, token }), 'registry/k.reg'),
           `v${v} ${JSON.stringify(token)}`,
-        ).toThrow(IntegrityError);
+        ).toThrow(/: registry\/k\.reg$/);
       }
     }
   });
@@ -237,47 +256,75 @@ describe('registry row schema 2: what each schema may hold', () => {
  * How a schema-1 token and a schema-2 token compare: never equal, because only the incarnation form has a `.`; a
  * row keeps the form it was born with, and only a create starts a new incarnation.
  */
-describe('the registry token: a bare counter and the incarnation form', () => {
+describe('the registry token: its forms, and how they compare', () => {
   const rec = (token: string): RegistryRecord => ({ ...baseRecord, status: 'active', token });
+  const ZEROS = '0'.repeat(16);
 
-  it('advances a token within its form and incarnation', () => {
-    expect(nextRegistryToken(rec('7'))).toBe('8');
-    expect(nextRegistryToken(rec(`${INC}.7`))).toBe(`${INC}.8`);
+  it('advances a token within its incarnation, with a fresh write part every time', () => {
+    const entropy = countingEntropy(1);
+    expect(nextRegistryToken(rec('7'), entropy)).toBe(`8.${ZEROS.slice(0, 15)}1`);
+    expect(nextRegistryToken(rec(`8.${W}`), entropy)).toBe(`9.${ZEROS.slice(0, 15)}2`);
+    expect(nextRegistryToken(rec(`${INC}.7.${W}`), entropy)).toBe(
+      `${INC}.8.${ZEROS.slice(0, 15)}3`,
+    );
   });
 
-  it("starts a new incarnation at create, continuing a tombstone's counter of either form", () => {
+  it("starts a new incarnation at create, continuing a tombstone's counter of any form", () => {
     const entropy = countingEntropy(5);
-    const fresh = newIncarnationToken(entropy, undefined);
-    expect(fresh).toBe(`${'0'.repeat(30)}05.0`);
-    const overLegacy = newIncarnationToken(entropy, rec('7'));
-    expect(overLegacy).toBe(`${'0'.repeat(30)}06.8`);
-    const overBorn = newIncarnationToken(entropy, rec(`${INC}.7`));
-    expect(overBorn).toBe(`${'0'.repeat(30)}07.8`);
+    const hex = (n: number, width: number): string => n.toString(16).padStart(width, '0');
+    expect(newIncarnationToken(entropy, undefined)).toBe(`${hex(5, 32)}.0.${hex(6, 16)}`);
+    expect(newIncarnationToken(entropy, rec('7'))).toBe(`${hex(7, 32)}.8.${hex(8, 16)}`);
+    expect(newIncarnationToken(entropy, rec(`7.${W}`))).toBe(`${hex(9, 32)}.8.${hex(10, 16)}`);
+    const overBorn = newIncarnationToken(entropy, rec(`${INC}.7.${W}`));
+    expect(overBorn).toBe(`${hex(11, 32)}.8.${hex(12, 16)}`);
     expect(incarnationOf(overBorn)).not.toBe(INC);
   });
 
-  it('a bare counter never equals an incarnation-form token, at any counter', () => {
+  it('a restored row at an old counter is never given the token it had at that counter before', () => {
+    // Two histories of one row from the same counter, as a restore from a backup makes: only the write part differs.
+    const before = nextRegistryToken(rec(`${INC}.7.${W}`), countingEntropy(1));
+    const after = nextRegistryToken(rec(`${INC}.7.${W}`), countingEntropy(2));
+    expect(before).not.toBe(after);
+    expect(incarnationOf(after)).toBe(incarnationOf(before));
+  });
+
+  it('no two forms ever compare equal, at any counter', () => {
     for (const n of [0, 1, 7, 1_000_000]) {
-      expect(String(n)).not.toBe(`${INC}.${n}`);
-      expect(incarnationOf(String(n))).toBeUndefined();
-      expect(incarnationOf(`${INC}.${n}`)).toBe(INC);
+      const forms = [String(n), `${n}.${W}`, `${INC}.${n}.${W}`];
+      expect(new Set(forms).size).toBe(3);
     }
   });
 
-  it('refuses an entropy source that does not give 16 bytes (ValidationError)', () => {
+  it('incarnationOf names the incarnation of an incarnation-form token and of nothing else', () => {
+    expect(incarnationOf(`${INC}.0.${W}`)).toBe(INC);
+    expect(incarnationOf(`${INC}.12.${W}`)).toBe(INC);
+    for (const token of [
+      '7',
+      '',
+      `7.${W}`,
+      `${INC}.0`,
+      `${INC}.0.${W}x`,
+      `x${INC}.0.${W}`,
+      `${INC.toUpperCase()}.0.${W}`,
+      `${INC.slice(1)}.0.${W}`,
+      `${INC}0.0.${W}`,
+      `abc.5.${W}`,
+      `V1.9.${W}`,
+      `${INC}.0.${W}.1`,
+      `ns/${INC}.0.${W}`,
+    ]) {
+      expect(incarnationOf(token), JSON.stringify(token)).toBeUndefined();
+    }
+  });
+
+  it('refuses an entropy source that does not give the bytes asked for (ValidationError)', () => {
     for (const bad of [new Uint8Array(15), new Uint8Array(17), [1, 2, 3], 'x'.repeat(16)]) {
       expect(() => newIncarnationToken(() => bad as Uint8Array, undefined)).toThrow(
         ValidationError,
       );
     }
-  });
-
-  it('defaults to Web Crypto: 16 bytes, fresh every draw', () => {
-    const a = webCryptoEntropy(16);
-    const b = webCryptoEntropy(16);
-    expect(a).toBeInstanceOf(Uint8Array);
-    expect(a).toHaveLength(16);
-    expect(Buffer.from(a).equals(Buffer.from(b))).toBe(false);
+    const short = (n: number): Uint8Array => new Uint8Array(n === 8 ? 7 : n);
+    expect(() => nextRegistryToken(rec('7'), short)).toThrow(ValidationError);
   });
 });
 
@@ -329,7 +376,7 @@ describe('the summary field: every malformed shape is refused at both boundaries
   ];
 
   it.each(malformed)('refuses %s on read (IntegrityError)', (_, summary) => {
-    const text = rowText(2, { ...baseRecord, token: '1', summary });
+    const text = rowText(2, { ...baseRecord, token: T2, summary });
     expect(() => parseRegistryEnvelope(text, 'row')).toThrow(IntegrityError);
   });
 
@@ -344,7 +391,7 @@ describe('the summary field: every malformed shape is refused at both boundaries
   it('refuses what only stored bytes can carry: a __proto__ key and a lone surrogate', () => {
     const at = (metadataJson: string): string =>
       `{"schemaVersion":2,"deleted":false,"record":{"segment":"s","currentGen":3,"status":"active",` +
-      `"createdAt":1,"updatedAt":1,"token":"1","summary":{"generation":3,"cardinality":5,` +
+      `"createdAt":1,"updatedAt":1,"token":"0123456789abcdef0123456789abcdef.1.fedcba9876543210","summary":{"generation":3,"cardinality":5,` +
       `"metadata":${metadataJson}}}}`;
     expect(() => parseRegistryEnvelope(at('{"a":1}'), 'ok')).not.toThrow();
     for (const bad of ['{"__proto__":"x"}', '{"\\ud800":"x"}', '{"a":"\\udc00"}']) {
@@ -381,7 +428,7 @@ describe('the summary field: every malformed shape is refused at both boundaries
     ];
     for (const summary of ok) {
       const generation = (summary as { generation: number }).generation;
-      const text = rowText(2, { ...baseRecord, currentGen: generation, token: '1', summary });
+      const text = rowText(2, { ...baseRecord, currentGen: generation, token: T2, summary });
       expect(() => parseRegistryEnvelope(text, 'ok'), JSON.stringify(summary)).not.toThrow();
       const keys = 'sealed' in (summary as object) ? { wrappedDeks: WRAPPED } : {};
       expect(() =>
@@ -401,7 +448,7 @@ describe('the summary field: every malformed shape is refused at both boundaries
  */
 describe('the summary follows the pointer', () => {
   const summary: RegistrySummary = { generation: 3, cardinality: 5 };
-  const prev: RegistryRecord = { ...baseRecord, status: 'active', token: '1', summary };
+  const prev: RegistryRecord = { ...baseRecord, status: 'active', token: T2, summary };
 
   it('a patch that moves the pointer without a summary drops the old one', () => {
     expect(applyRegistryPatch(prev, { currentGen: 4 }, 2, '2').summary).toBeUndefined();
@@ -440,7 +487,7 @@ describe('a malformed summary names its row', () => {
   it('puts the row key in the IntegrityError', () => {
     const text = rowText(2, {
       ...baseRecord,
-      token: '1',
+      token: T2,
       summary: { generation: 3, cardinality: -1 },
     });
     expect(() => parseRegistryEnvelope(text, 'registry/ns/seg.reg')).toThrow(
@@ -448,7 +495,7 @@ describe('a malformed summary names its row', () => {
     );
     const meta = rowText(2, {
       ...baseRecord,
-      token: '1',
+      token: T2,
       summary: { generation: 3, cardinality: 1, metadata: { a: true } },
     });
     expect(() => parseRegistryEnvelope(meta, 'registry/ns/seg.reg')).toThrow(
@@ -463,7 +510,7 @@ describe('a malformed summary names its row', () => {
  */
 describe('a sealed summary is canonical base64', () => {
   const sealedRow = (sealed: string): string =>
-    rowText(2, { ...baseRecord, token: '1', summary: { generation: 3, sealed } });
+    rowText(2, { ...baseRecord, token: T2, summary: { generation: 3, sealed } });
 
   it('refuses non-zero pad bits and the URL-safe alphabet', () => {
     const twoPad = sealedOf(37); // 37 bytes: ends "AA==", 4 pad bits
@@ -516,7 +563,7 @@ describe("the summary agrees with the row's encryption", () => {
   });
 
   it('refuses a patch whose summary disagrees with the keys the row will have', () => {
-    const plain: RegistryRecord = { ...baseRecord, status: 'active', token: '1' };
+    const plain: RegistryRecord = { ...baseRecord, status: 'active', token: T2 };
     const encrypted: RegistryRecord = { ...plain, wrappedDeks: WRAPPED };
     expect(() => applyRegistryPatch(encrypted, { summary: clear }, 2, '2')).toThrow(
       ValidationError,
@@ -535,7 +582,7 @@ describe("the summary agrees with the row's encryption", () => {
     const encrypted: RegistryRecord = {
       ...baseRecord,
       status: 'active',
-      token: '1',
+      token: T2,
       wrappedDeks: WRAPPED,
       summary: sealed,
     };
@@ -550,9 +597,9 @@ describe("the summary agrees with the row's encryption", () => {
   });
 
   it('reads a stored row that disagrees, rather than refuse it', () => {
-    const text = rowText(2, { ...baseRecord, token: '1', wrappedDeks: WRAPPED, summary: clear });
+    const text = rowText(2, { ...baseRecord, token: T2, wrappedDeks: WRAPPED, summary: clear });
     expect(parseRegistryEnvelope(text, 'row').record.summary).toEqual(clear);
-    const sealedPlain = rowText(2, { ...baseRecord, token: '1', summary: sealed });
+    const sealedPlain = rowText(2, { ...baseRecord, token: T2, summary: sealed });
     expect(parseRegistryEnvelope(sealedPlain, 'row').record.summary).toEqual(sealed);
   });
 });

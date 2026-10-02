@@ -352,7 +352,7 @@ describe('GCS: a conditional write is sent once, whatever the SDK retry would do
     expect(stub.count('upload')).toBe(2); // the create, then the swap once
     expect(await backend.registry.get(REF)).toMatchObject({
       currentGen: 1,
-      token: tokenAfter(token),
+      token: expect.stringMatching(tokenAfter(token)),
     });
   });
 

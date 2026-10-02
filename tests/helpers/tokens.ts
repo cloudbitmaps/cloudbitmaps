@@ -4,20 +4,23 @@
  */
 import type { Entropy } from '@/core/determinism';
 
-/** A token a shipped registry gives a row it creates over an absent key: a fresh incarnation, counter 0. */
-export const CREATED_TOKEN = /^[0-9a-f]{32}\.0$/;
+/** A token a shipped registry gives a row it creates over an absent key: a fresh incarnation, counter 0, a write part. */
+export const CREATED_TOKEN = /^[0-9a-f]{32}\.0\.[0-9a-f]{16}$/;
 
 /** Take an incarnation-form token apart, failing the test on any other form. */
-export function tokenParts(token: string): { incarnation: string; counter: number } {
-  const m = /^([0-9a-f]{32})\.(0|[1-9]\d*)$/.exec(token);
+export function tokenParts(token: string): { incarnation: string; counter: number; write: string } {
+  const m = /^([0-9a-f]{32})\.(0|[1-9]\d*)\.([0-9a-f]{16})$/.exec(token);
   if (m === null) throw new Error(`not an incarnation-form token: ${JSON.stringify(token)}`);
-  return { incarnation: m[1]!, counter: Number(m[2]) };
+  return { incarnation: m[1]!, counter: Number(m[2]), write: m[3]! };
 }
 
-/** The token `n` writes after `token`, on the same incarnation. */
-export function tokenAfter(token: string, n = 1): string {
+/**
+ * The tokens `n` writes after `token` may have: the same incarnation, the counter `n` on, and any write part. A
+ * pattern, since the write part is random.
+ */
+export function tokenAfter(token: string, n = 1): RegExp {
   const { incarnation, counter } = tokenParts(token);
-  return `${incarnation}.${counter + n}`;
+  return new RegExp(`^${incarnation}\\.${counter + n}\\.[0-9a-f]{16}$`);
 }
 
 /**

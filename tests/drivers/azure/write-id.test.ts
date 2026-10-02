@@ -209,7 +209,7 @@ describe('AzureBlobRegistryDriver write id', () => {
     const { token } = await reg.create(ref, { currentGen: 0 });
     c.replayConflictAfterWrite = restErr(412, 'ConditionNotMet');
     await expect(reg.compareAndSwap(ref, token, { currentGen: 1 })).resolves.toEqual({
-      token: tokenAfter(token),
+      token: expect.stringMatching(tokenAfter(token)),
     });
   });
 
