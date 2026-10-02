@@ -571,8 +571,8 @@ for (const page of PAGES) {
   // with the words that say which claim each makes (see calibration-figures.cjs).
   if (singleBucket !== null) {
     // The run's own figures come from its values, bindings and all. Only the page's other sources join them, as plain
-    // values: the run's anchors, merged in plainly, would let "store.load() costs $11.20 per million" pass on every
-    // page here, because a plain value passes whatever words stand beside it.
+    // values: the run's anchors, merged in plainly, would let a page give store.load() the run's write-and-publish price
+    // pass on every page here, because a plain value passes whatever words stand beside it.
     const otherSources = anchors
       .filter(([name, v]) => v && !name.startsWith('single-bucket'))
       .map(([, v]) => v);

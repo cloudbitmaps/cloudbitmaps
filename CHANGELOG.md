@@ -100,9 +100,9 @@ so, and so do the module headers in the code.
   is 2 PUT-class requests, 5 GET-class and a delete, 8 requests, where 0.11.2 sent 14. A segment's first and second
   load collect nothing and have no delete, 2 and 4. Every 16th generation lists, and is 3 and 7. GCS makes the same
   counts; Azure Blob one GET-class request more, for its two-request tail read. `costReport()` and `estimateCost()`
-  price a load at those counts, a sixteenth of a listing and two pointer reads a load on average: $12.36 per million
-  steady single-part loads at the default prices, which is $12.00 for a load that does not list and $17.80 for one
-  that does, and $11.60 for a segment's first load. The calibration harness expects a first load of 2 PUT-class and 4
+  price a load at those counts, averaged over the cadence: $12.36 per million steady single-part loads at the default
+  prices: $12.00 when a load does not list, $17.80 when it lists (every 16th generation), and $11.60 for a segment's
+  first load. The average has a sixteenth of a listing and two pointer reads a load in it. The calibration harness expects a first load of 2 PUT-class and 4
   GET-class requests and its rehearsal fixtures are re-captured, and the pages that quote a load's price or its
   requests, the sizing tables and the cost guide's model say what the estimator now gives.
 

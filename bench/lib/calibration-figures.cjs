@@ -1607,7 +1607,7 @@ function unaccounted(text, values) {
         const at = m.index + m[0].indexOf(token);
         if (claimed.has(at)) continue;
         claimed.add(at);
-        // "1M loads" is the unit a price is quoted per — "$11.20 / 1M loads" — not a count of a million loads.
+        // "1M loads" is the unit a price is quoted per — "$N / 1M loads" — not a count of a million loads.
         if (key === 'counts' && m[3] === 'M' && token === '1') continue;
         let candidates;
         if (key === 'counts') {
