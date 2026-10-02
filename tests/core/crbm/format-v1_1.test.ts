@@ -92,6 +92,14 @@ describe('.crbm 1.1 writer', () => {
     ).toBe(META_JSON);
   });
 
+  it('a reader weighs what it holds: its index, and twice the metadata it decoded', async () => {
+    const plain = await open(await writeCrbm(CHUNKS, { generation: GEN }));
+    const withMeta = await open(await writeCrbm(CHUNKS, { generation: GEN, metadata: META }));
+    expect(plain.retainedBytes).toBe(plain.retainedIndexBytes);
+    expect(withMeta.retainedIndexBytes).toBe(plain.retainedIndexBytes);
+    expect(withMeta.retainedBytes).toBe(plain.retainedIndexBytes + 2 * utf8(META_JSON).length);
+  });
+
   it('round-trips the metadata, frozen, and key order never changes the bytes', async () => {
     const a = await writeCrbm(CHUNKS, { generation: GEN, metadata: META });
     const b = await writeCrbm(CHUNKS, {

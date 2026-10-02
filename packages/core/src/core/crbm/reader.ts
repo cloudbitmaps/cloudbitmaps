@@ -183,6 +183,8 @@ export class CrbmReader {
      * (every format 1.0 object). Frozen: every caller shares one copy.
      */
     readonly metadata: GenerationMetadata | undefined,
+    /** The byte length of that metadata's canonical JSON; 0 when there is none. */
+    private readonly metadataLength: number,
   ) {}
 
   /**
@@ -213,6 +215,16 @@ export class CrbmReader {
       crcs.byteLength +
       offsets.byteLength
     );
+  }
+
+  /**
+   * What this reader holds, the weight the storage reader cache bounds on: its parsed index
+   * ({@link retainedIndexBytes}), plus twice the canonical length of the metadata it decoded, since a decoded record
+   * holds its strings and the object around them (measured at about one length more than the JSON). Equal to
+   * {@link retainedIndexBytes} for a generation with no metadata.
+   */
+  get retainedBytes(): number {
+    return this.retainedIndexBytes + 2 * this.metadataLength;
   }
 
   /** Per-chunk cardinality (`chunkKey → count`) from the parsed index — no payload reads. */
@@ -357,6 +369,7 @@ export class CrbmReader {
     // --- Extension block (1.1): sections ‖ u32 sectionsLength ‖ u32 crc32c ‖ "CRBX", just before the index ---
     let payloadEnd = indexOffset;
     let metadata: GenerationMetadata | undefined;
+    let metadataLength = 0;
     if (hasExtension) {
       const trailerStart = indexOffset - EXT_TRAILER_BYTES;
       if (trailerStart < PAYLOAD_START) {
@@ -397,7 +410,10 @@ export class CrbmReader {
       if (crc32c(covered) !== tview.getUint32(4, true)) {
         throw new IntegrityError('.crbm extension block CRC mismatch');
       }
-      metadata = parseExtension(covered.subarray(0, sectionsLength), options.crypto);
+      ({ metadata, metadataLength } = extensionContents(
+        covered.subarray(0, sectionsLength),
+        options.crypto,
+      ));
       payloadEnd = extStart;
     }
 
@@ -455,6 +471,7 @@ export class CrbmReader {
       options.crypto,
       storedFooterCrc,
       metadata,
+      metadataLength,
     );
   }
 
@@ -531,9 +548,9 @@ function within(bytes: Uint8Array, start: number, from: number, to: number): Uin
   return bytes.subarray(from - start, to - start);
 }
 
-const extensionCorrupt = (message: string): never => {
+function extensionCorrupt(message: string): never {
   throw new IntegrityError(`.crbm extension block: ${message}`);
-};
+}
 
 /**
  * Read the sections of an extension block, its bytes before the trailer, once their CRC has passed. Each section is
@@ -549,8 +566,17 @@ export function parseExtension(
   sections: Uint8Array,
   crypto: CrbmCrypto | undefined,
 ): GenerationMetadata | undefined {
+  return extensionContents(sections, crypto).metadata;
+}
+
+/** {@link parseExtension}'s walk, with the canonical length of the metadata it decoded, for the reader's weight. */
+function extensionContents(
+  sections: Uint8Array,
+  crypto: CrbmCrypto | undefined,
+): { metadata: GenerationMetadata | undefined; metadataLength: number } {
   const view = new DataView(sections.buffer, sections.byteOffset, sections.byteLength);
   let metadata: GenerationMetadata | undefined;
+  let metadataLength = 0;
   let lastType = 0;
   let pos = 0;
   while (pos < sections.length) {
@@ -571,14 +597,20 @@ export function parseExtension(
     const body = sections.subarray(pos, pos + length);
     pos += length;
     lastType = type;
-    if (type === EXT_SECTION_METADATA) metadata = metadataSection(body, crypto);
+    if (type === EXT_SECTION_METADATA)
+      ({ metadata, metadataLength } = metadataSection(body, crypto));
   }
-  return metadata;
+  return { metadata, metadataLength };
 }
 
 /** The metadata section's record: its canonical JSON, opened first when the object is encrypted. */
-function metadataSection(body: Uint8Array, crypto: CrbmCrypto | undefined): GenerationMetadata {
-  if (crypto === undefined) return metadataFromBytes(body, extensionCorrupt);
+function metadataSection(
+  body: Uint8Array,
+  crypto: CrbmCrypto | undefined,
+): { metadata: GenerationMetadata; metadataLength: number } {
+  if (crypto === undefined) {
+    return { metadata: metadataFromBytes(body, extensionCorrupt), metadataLength: body.length };
+  }
   const framing = AEAD_NONCE_BYTES + AEAD_TAG_BYTES;
   if (body.length <= framing || body.length > framing + MAX_METADATA_BYTES) {
     extensionCorrupt(`sealed metadata of ${body.length}B is not a nonce, up to 1 KiB and a tag`);
@@ -601,7 +633,7 @@ function metadataSection(body: Uint8Array, crypto: CrbmCrypto | undefined): Gene
       "the sealed metadata does not open: tampered bytes, a block moved from another object, or a CrbmCrypto whose aadFor does not map the 'metadata' scope",
     );
   }
-  return metadataFromBytes(plain, extensionCorrupt);
+  return { metadata: metadataFromBytes(plain, extensionCorrupt), metadataLength: plain.length };
 }
 
 // Exported for the coverage-guided fuzz harness, which fuzzes the hand-written index parser
