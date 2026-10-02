@@ -766,7 +766,7 @@ turns off the SDK's retries of listings, metadata reads and resumable uploads on
 
 A client's `timeout` does not bound a download on 8.x; `readTimeoutMs` does, and it is off (`0`) unless set. Each
 attempt at a download, and the metadata read a tail read falls back on for an empty object, is cut off once it has run
-that long, timed from the call into the SDK (a credential fetch counts) to the end of the body. A download cut off is
+that long, timed from the call into the SDK (a credential fetch and any wait for a socket count) to the end of the body. A download cut off is
 retried like a dropped connection; one cut off on every attempt throws `TransientError` naming the read and the
 timeout. Uploads, deletes, listings and the conditional writes are not timed. A read that times out before any answer
 leaves its connection open until the server answers or closes it, since the SDK cannot cancel it. Every download goes

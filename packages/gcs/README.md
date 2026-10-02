@@ -65,8 +65,8 @@ It builds its own client from Application Default Credentials. Any other key is 
   for it. Measured against a local server that never answers: still pending after 12 s with `timeout: 2000`.
   **`readTimeoutMs` does, and it is off unless you set it.** It times every download, each attempt on its own clock:
   a generation's tail, a range of it and a registry row, plus the metadata read a tail read falls back on for an empty
-  object. The clock starts at the call into the SDK, so a credential fetch counts, and runs until the whole body has
-  arrived. A download cut off is retried like a dropped connection, and one cut off on every attempt throws
+  object. The clock starts at the call into the SDK, so a credential fetch and any wait for a socket count, and runs
+  until the whole body has arrived. A download cut off is retried like a dropped connection, and one cut off on every attempt throws
   `TransientError` naming the read and the timeout. Uploads, deletes and listings are not timed. The SDK cannot
   cancel a request whose response has not begun, so a read that times out before any answer leaves its connection
   open until the server answers or closes it, and until then that connection keeps a Node process from exiting.

@@ -159,8 +159,9 @@ const backend = new GcsStorage({ bucket: 'my-bitmaps', readTimeoutMs: 2_000 });
 
 It times every download the backend makes, each attempt on its own clock: a generation's tail, a range of it and a
 registry row, and also the metadata read a tail read falls back on for an empty object. The clock starts at the call
-into the SDK, so fetching or refreshing a credential counts, and runs until the whole body has arrived, so a server
-that sends its headers and then stalls is cut off too. A download cut off is retried like a dropped connection, up to
+into the SDK, so fetching or refreshing a credential counts, as does any wait for a socket (Node's agents set no limit
+on sockets unless your process sets one), and it runs until the whole body has arrived, so a server that sends its
+headers and then stalls is cut off too. A download cut off is retried like a dropped connection, up to
 three more times; one cut off on every attempt throws `TransientError` naming the read and the timeout, for the store's
 read retry to run again. Uploads, deletes, listings and the conditional writes are not timed: an upload can rightly
 take longer than a read, and a write cut off may still land. The SDK cannot cancel a request whose response has not

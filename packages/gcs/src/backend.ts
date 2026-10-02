@@ -50,7 +50,8 @@ export interface GcsStorageOptions {
    *
    * It times every download the backend makes, each attempt on its own clock: a generation's tail and a range of it,
    * and a registry row, plus the metadata read a tail read falls back on for an empty object. The clock starts at the
-   * call into the SDK, so a credential fetch counts, and runs until the whole body has arrived. A download that times
+   * call into the SDK, so a credential fetch and any wait for a socket count (Node's agents set no socket limit unless
+   * your process sets one), and runs until the whole body has arrived. A download that times
    * out is retried like a dropped connection, and one that times out on every attempt throws `TransientError` naming
    * the read and the timeout, for the store's read retry to run again. Uploads, deletes, listings and the conditional
    * writes are not timed. The SDK cannot cancel a request whose response has not begun, so a read timed out before

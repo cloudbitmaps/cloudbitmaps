@@ -9,8 +9,9 @@
  * `TransientError`, its message naming the read and the timeout.
  *
  * **What the clock counts.** It starts when the driver calls into the SDK, so everything the SDK does before the bytes
- * arrive counts: fetching or refreshing a credential, resolving the project, waiting for a socket (neither agent a
- * download can use limits its sockets, so in practice there is no queue), the request, the headers and the whole body.
+ * arrive counts: fetching or refreshing a credential, resolving the project, waiting for a socket (Node's global agents,
+ * which the downloads use, set no socket limit unless the process sets one, so by default there is no queue), the
+ * request, the headers and the whole body.
  * Each attempt has its own clock.
  *
  * Uploads, deletes, listings and the conditional writes are not timed: an upload can rightly take longer than a read,
