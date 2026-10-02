@@ -57,8 +57,11 @@ class StubBlobService {
   readonly requests: Array<{ method: string; range?: string; ifMatch?: string }> = [];
   /** When set, answers every GET instead of the stored blob. */
   getOverride: ((cur: StoredBlob | undefined) => Answer) | undefined;
-  /** For each GET answered by `getOverride`, whether the connection that carried it has closed. */
-  readonly overridden: Array<{ closed: boolean }> = [];
+  /**
+   * For each GET answered by `getOverride`, whether the connection that carried it has closed, and the body bytes the
+   * stub had handed to it by then.
+   */
+  readonly overridden: Array<{ closed: boolean; sent: number }> = [];
   private seq = 0;
   private readonly server: Server = createServer((req, res) => {
     void this.serve(req, res);
@@ -84,7 +87,7 @@ class StubBlobService {
     return this.requests.filter((r) => r.method === method).length;
   }
 
-  private send(res: ServerResponse, answer: Answer): void {
+  private send(res: ServerResponse, answer: Answer, watched?: { sent: number }): void {
     res.writeHead(answer.status, { 'x-ms-request-id': 'stub', ...answer.headers });
     if (Buffer.isBuffer(answer.body)) {
       res.end(answer.body);
@@ -98,7 +101,10 @@ class StubBlobService {
     }
     const chunk = Buffer.alloc(64 * 1024, 0x7b);
     const pump = (): void => {
-      while (!res.destroyed && res.write(chunk));
+      while (!res.destroyed) {
+        if (watched !== undefined) watched.sent += chunk.length;
+        if (!res.write(chunk)) break;
+      }
       if (!res.destroyed) res.once('drain', pump);
     };
     pump();
@@ -141,10 +147,10 @@ class StubBlobService {
       return this.send(res, { status: 201, headers: { etag }, body: Buffer.alloc(0) });
     }
     if (req.method === 'GET' && this.getOverride !== undefined) {
-      const watched = { closed: false };
+      const watched = { closed: false, sent: 0 };
       this.overridden.push(watched);
       req.socket.once('close', () => (watched.closed = true));
-      return this.send(res, this.getOverride(cur));
+      return this.send(res, this.getOverride(cur), watched);
     }
     if (cur === undefined) {
       return this.send(
@@ -253,6 +259,9 @@ describe('Azure Blob registry: a pointer read is one request, through the real S
     expect(watch.events).toEqual([]);
     expect(stub.count('GET')).toBe(1);
     expect(stub.count('HEAD')).toBe(0);
+    // Refused on the headers, so the client hung up having taken no more than the socket buffers hold: a read that
+    // buffered the body first would have drawn it all, a gibibyte for the over-cap answer.
+    expect(stub.overridden.every((o) => o.sent < 64 * 1024 * 1024)).toBe(true);
     // The client is still usable: the next read is answered as normal.
     stub.getOverride = undefined;
     expect(await registry.get(REF)).toMatchObject({ currentGen: 0 });
