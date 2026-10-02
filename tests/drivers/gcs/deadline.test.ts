@@ -1,6 +1,6 @@
 import { PassThrough } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { retryDownload } from '@/gcs/download-retry';
+import { MIN_RETRY_MS, retryDownload } from '@/gcs/download-retry';
 import { readOnce } from '@/gcs/read-once';
 import { Deadline, ReadTimedOut, startDeadline, withDeadline } from '@/gcs/read-timeout';
 
@@ -109,6 +109,28 @@ describe('a deadline across retryDownload', () => {
     expect(calls).toBe(1);
   });
 
+  it.each([
+    ['an attempt fails with less than that left', 95, 0],
+    ['the backoff leaves less than that', 50, 0.45],
+  ])(
+    `sends no retry with less than MIN_RETRY_MS (${MIN_RETRY_MS} ms) left: %s`,
+    async (_name, failsAt, jitter) => {
+      vi.useFakeTimers();
+      vi.spyOn(Math, 'random').mockReturnValue(jitter);
+      let calls = 0;
+      const deadline = new Deadline(100, 'range read of s.0');
+      const outcome = retryDownload(() => {
+        calls++;
+        return new Promise((_, reject) => setTimeout(() => reject(unavailable()), failsAt));
+      }, deadline).catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(await outcome).toMatchObject({ code: 'ETIMEDOUT', cause: { code: 503 } });
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(calls).toBe(1);
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
   it('retries within the deadline as it does without one', async () => {
     vi.spyOn(Math, 'random').mockReturnValue(0);
     let calls = 0;
@@ -139,13 +161,36 @@ describe('Deadline', () => {
   });
 });
 
+describe('a deadline that has already passed', () => {
+  it('readOnce opens no stream, so sends no request', async () => {
+    vi.useFakeTimers();
+    const reads = new Reads();
+    const deadline = new Deadline(10, 'range read of s.0');
+    await vi.advanceTimersByTimeAsync(10);
+    const err = await readOnce(reads.file(), {}, 10, () => new Error('oversize'), deadline).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(ReadTimedOut);
+    expect(reads.streams).toHaveLength(0);
+  });
+
+  it('withDeadline sends nothing', async () => {
+    vi.useFakeTimers();
+    const send = vi.fn(() => Promise.resolve('ok'));
+    const deadline = new Deadline(10, 'tail read of s.0');
+    await vi.advanceTimersByTimeAsync(10);
+    await expect(withDeadline(send, deadline)).rejects.toBeInstanceOf(ReadTimedOut);
+    expect(send).not.toHaveBeenCalled();
+  });
+});
+
 describe('withDeadline', () => {
   it('rejects at the deadline, and drops what the request settles with afterwards', async () => {
     vi.useFakeTimers();
     const deadline = new Deadline(100, 'tail read of s.0');
     let fail: (e: Error) => void = () => undefined;
     const request = new Promise<never>((_, reject) => (fail = reject));
-    const outcome = withDeadline(request, deadline).catch((e: unknown) => e);
+    const outcome = withDeadline(() => request, deadline).catch((e: unknown) => e);
     await vi.advanceTimersByTimeAsync(100);
     expect(await outcome).toBeInstanceOf(ReadTimedOut);
     const unhandled = vi.fn();
@@ -163,14 +208,14 @@ describe('withDeadline', () => {
     ['fails', () => Promise.reject(Object.assign(new Error('nf'), { code: 404 }))],
   ] as const)('clears its timer when the request %s', async (_name, request) => {
     vi.useFakeTimers();
-    const outcome = withDeadline(request(), new Deadline(60_000, 'tail read of s.0'));
+    const outcome = withDeadline(request, new Deadline(60_000, 'tail read of s.0'));
     await outcome.catch(() => undefined);
     expect(vi.getTimerCount()).toBe(0);
   });
 
   it('sets no timer without a deadline', async () => {
     vi.useFakeTimers();
-    const pending = withDeadline(new Promise(() => undefined), undefined);
+    const pending = withDeadline(() => new Promise(() => undefined), undefined);
     expect(vi.getTimerCount()).toBe(0);
     void pending;
   });

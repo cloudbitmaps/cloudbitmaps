@@ -291,7 +291,7 @@ export class GcsStorageDriver implements IStorageDriver {
    */
   private async sizeOf(objectName: string, deadline: Deadline | undefined): Promise<number> {
     const [meta] = await retryDownload(
-      () => withDeadline(this.downloadable(objectName).getMetadata(), deadline),
+      () => withDeadline(() => this.downloadable(objectName).getMetadata(), deadline),
       deadline,
     );
     const size = Number(meta.size ?? 0);

@@ -12,8 +12,9 @@
  *
  * **Under a read timeout** (`readTimeoutMs`), one {@link Deadline} covers every attempt: each attempt passes it to its
  * request, so the request in flight when it passes fails with {@link ReadTimedOut}; no attempt starts after it; and a
- * backoff that would outlast it ends when it passes, with the same error. So a server that never answers is sent one
- * request per call, not four.
+ * backoff that would outlast it ends when it passes, with the same error. Nor is a retry sent with less than
+ * {@link MIN_RETRY_MS} left: no answer could arrive in time, and the request would only be one more held open. So a
+ * server that never answers is sent one request per call, not four.
  */
 import { isDownloadRetryable } from './gcs-errors';
 import { ReadTimedOut, type Deadline } from './read-timeout';
@@ -21,6 +22,8 @@ import { ReadTimedOut, type Deadline } from './read-timeout';
 const RETRIES = 3;
 const BASE_DELAY_MS = 100;
 const MAX_DELAY_MS = 1_000;
+/** Under a deadline, a retry is not sent with less than this left of it. */
+export const MIN_RETRY_MS = 10;
 
 /**
  * Call `download`, and again after each retryable fault, up to {@link RETRIES} more times, within `deadline` when there
@@ -38,11 +41,12 @@ export async function retryDownload<T>(
       if (err instanceof ReadTimedOut) throw err;
       if (attempt >= RETRIES || !isDownloadRetryable(err)) throw err;
       const left = deadline?.remaining() ?? Infinity;
-      if (deadline !== undefined && left === 0) throw deadline.expired(err);
+      if (deadline !== undefined && left < MIN_RETRY_MS) throw deadline.expired(err);
       const ceiling = Math.min(MAX_DELAY_MS, BASE_DELAY_MS * 2 ** attempt);
       const delay = Math.random() * ceiling;
       await new Promise((resolve) => setTimeout(resolve, Math.min(delay, left)));
-      if (deadline !== undefined && delay >= left) throw deadline.expired(err);
+      if (deadline !== undefined && deadline.remaining() < MIN_RETRY_MS)
+        throw deadline.expired(err);
     }
   }
 }

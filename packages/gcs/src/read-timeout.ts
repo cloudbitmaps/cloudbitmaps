@@ -88,13 +88,19 @@ export function startDeadline(ms: number, read: string): Deadline | undefined {
 }
 
 /**
- * Settle with `request`, or with {@link ReadTimedOut} once `deadline` has passed. For a request the SDK cannot cancel: a
- * metadata read is one callback-style request that returns no handle to abort it, so at the deadline this stops waiting
- * and the request runs on until it is answered or its connection closes. The race keeps a handler on `request`, so what
- * it settles with then is dropped rather than raised.
+ * Make the request `send` starts, and settle with it, or with {@link ReadTimedOut} once `deadline` has passed; a
+ * deadline already passed sends nothing. For a request the SDK cannot cancel: a metadata read is one callback-style
+ * request that returns no handle to abort it, so at the deadline this stops waiting and the request runs on until it is
+ * answered or its connection closes. The race keeps a handler on the request, so what it settles with then is dropped
+ * rather than raised.
  */
-export function withDeadline<T>(request: Promise<T>, deadline: Deadline | undefined): Promise<T> {
-  if (deadline === undefined) return request;
+export function withDeadline<T>(
+  send: () => Promise<T>,
+  deadline: Deadline | undefined,
+): Promise<T> {
+  if (deadline === undefined) return send();
+  if (deadline.remaining() === 0) return Promise.reject(deadline.expired());
+  const request = send();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timedOut = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(deadline.expired()), deadline.remaining());

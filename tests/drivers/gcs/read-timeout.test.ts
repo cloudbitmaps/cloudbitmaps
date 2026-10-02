@@ -51,6 +51,7 @@ type Media =
   | 'stall-body'
   | 'cut'
   | { late: number }
+  | { late503: number }
   | { slow: number }
   | 404
   | 503
@@ -184,6 +185,14 @@ async function startStub(options: StubOptions): Promise<Stub> {
     counts.downloads++;
     if (typeof answer === 'number') {
       res.writeHead(answer, json).end(JSON.stringify({ error: { code: answer, message: 'stub' } }));
+      return;
+    }
+    if (typeof answer === 'object' && 'late503' in answer) {
+      setTimeout(
+        () =>
+          res.writeHead(503, json).end(JSON.stringify({ error: { code: 503, message: 'stub' } })),
+        answer.late503,
+      );
       return;
     }
     if (answer === 'stall-headers') return;
@@ -402,9 +411,10 @@ describe('a GCS read with readTimeoutMs', () => {
     it.concurrent(
       'a 503 and then a stall share one deadline: the retry gets only what is left of it',
       async () => {
+        // The 503 takes 600 of the 1,000 ms, so a fresh clock for the retry would end past 1,600 ms.
         const timeout = 1_000;
         const { run, counts, held } = await scenario(call, timeout, {
-          media: [503, 'stall-headers'],
+          media: [{ late503: 600 }, 'stall-headers'],
         });
         expect(run.code).toBe(0);
         expect(run.outcome).toMatchObject({ error: 'TransientError' });
@@ -412,8 +422,7 @@ describe('a GCS read with readTimeoutMs', () => {
         expect(held).toBe(1);
         const ms = Number(run.outcome?.ms);
         expect(ms).toBeGreaterThanOrEqual(timeout - 20);
-        expect(ms).toBeLessThan(timeout + SLACK_MS); // a fresh clock for the retry would end past 2 × timeout
-        expect(ms).toBeLessThan(2 * timeout);
+        expect(ms).toBeLessThan(timeout + 400);
       },
       30_000,
     );
