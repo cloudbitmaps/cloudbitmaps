@@ -8,6 +8,13 @@ import { NodeAead } from '@/drivers/crypto';
 import { CrbmReader as Reader0112 } from './fixtures/reader-0.11.2/reader';
 import { extensionBlock, section, spliceBlock, utf8, writeCrbm } from '../../helpers/crbm-v1_1';
 
+const concat = (a: Uint8Array, b: Uint8Array): Uint8Array => {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a, 0);
+  out.set(b, a.length);
+  return out;
+};
+
 /**
  * What a deployed 0.11 process does with a format 1.1 object: it opens it, answers from it exactly as this build
  * does, and ignores the extension block. Run against the 0.11.2 reader itself, pinned beside this file, so the claim
@@ -66,7 +73,7 @@ describe('the 0.11.2 reader opens a .crbm 1.1 object and ignores its block', () 
     });
     const later = spliceBlock(
       await writeCrbm(chunks, { generation: 2 }),
-      extensionBlock(section(1, utf8('{"a":1}'))),
+      extensionBlock(concat(section(1, utf8('{"a":1}')), section(9, utf8('a later type')))),
       2,
     );
     for (const bytes of [atCap, later]) {

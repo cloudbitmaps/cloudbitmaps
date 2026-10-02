@@ -143,6 +143,8 @@ export function spliceBlock(base: Uint8Array, block: Uint8Array, minor = 1): Uin
 export class CountingReader implements BlobReader {
   tails = 0;
   ranges = 0;
+  /** Each range read, as `[offset, length]`, in order. */
+  readonly rangeReads: Array<[number, number]> = [];
   private readonly inner: BufferReader;
 
   constructor(bytes: Uint8Array) {
@@ -151,6 +153,7 @@ export class CountingReader implements BlobReader {
 
   getRange(offset: number, length: number): Promise<Uint8Array> {
     this.ranges++;
+    this.rangeReads.push([offset, length]);
     return this.inner.getRange(offset, length);
   }
 

@@ -235,6 +235,59 @@ describe('.crbm 1.1 reader: the reads it makes', () => {
     }
   });
 
+  it('at the exact edges: a tail that starts at the block or at its trailer reads what it lacks, and only that', async () => {
+    const bytes = await writeCrbm(CHUNKS, { generation: GEN, metadata: META });
+    const { indexOffset } = layoutOf(bytes);
+    const sectionsLength = new DataView(bytes.buffer, bytes.byteOffset).getUint32(
+      indexOffset - 12,
+      true,
+    );
+    const trailerStart = indexOffset - EXT_TRAILER_BYTES;
+    const extStart = trailerStart - sectionsLength;
+    // A tail that starts exactly at the block holds all of it: no read more.
+    const atBlock = new CountingReader(bytes);
+    expect(
+      (await CrbmReader.open(atBlock, { tailBytes: bytes.length - extStart })).servedFromTail,
+    ).toBe(true);
+    expect([atBlock.tails, atBlock.ranges]).toEqual([1, 0]);
+    // One byte later, the tail holds the trailer and misses the first byte of the sections: one read, of exactly the
+    // sections and their length field.
+    const pastBlock = new CountingReader(bytes);
+    await CrbmReader.open(pastBlock, { tailBytes: bytes.length - extStart - 1 });
+    expect(pastBlock.rangeReads).toEqual([[extStart, sectionsLength + 4]]);
+    // A tail that starts exactly at the trailer: the trailer is there, so the read is of the sections alone.
+    const atTrailer = new CountingReader(bytes);
+    await CrbmReader.open(atTrailer, { tailBytes: bytes.length - trailerStart });
+    expect(atTrailer.rangeReads).toEqual([[extStart, sectionsLength + 4]]);
+    // An empty block whose trailer the tail starts at needs no read at all.
+    const empty = spliceBlock(
+      await writeCrbm(CHUNKS, { generation: GEN }),
+      extensionBlock(new Uint8Array(0)),
+    );
+    const emptyAtTrailer = new CountingReader(empty);
+    const opened = await CrbmReader.open(emptyAtTrailer, {
+      tailBytes: empty.length - (layoutOf(empty).indexOffset - EXT_TRAILER_BYTES),
+    });
+    expect(opened.metadata).toBeUndefined();
+    expect([emptyAtTrailer.tails, emptyAtTrailer.ranges]).toEqual([1, 0]);
+  });
+
+  it('a block at the 4 KiB cap is read with the index in the same single range read; one byte over is refused', async () => {
+    const base = await writeCrbm(CHUNKS, { generation: GEN });
+    // 4,096 bytes of sections: the metadata, then a later type's section padding the rest.
+    const meta = section(EXT_SECTION_METADATA, utf8(META_JSON));
+    const pad = (total: number): Uint8Array => section(9, new Uint8Array(total - meta.length - 5));
+    const atCap = spliceBlock(base, extensionBlock(concat(meta, pad(MAX_EXT_BYTES))));
+    const fromTail = new CountingReader(atCap);
+    expect((await CrbmReader.open(fromTail)).metadata).toEqual(META);
+    expect([fromTail.tails, fromTail.ranges]).toEqual([1, 0]);
+    const ranged = new CountingReader(atCap);
+    expect((await CrbmReader.open(ranged, { tailBytes: FOOTER_BYTES })).metadata).toEqual(META);
+    expect([ranged.tails, ranged.ranges]).toEqual([1, 1]);
+    const over = spliceBlock(base, extensionBlock(concat(meta, pad(MAX_EXT_BYTES + 1))));
+    await expect(open(over)).rejects.toThrow(/4097B exceeds cap 4096B/);
+  });
+
   it('a 1.0 object costs what it did: no read for a block it does not have', async () => {
     const counting = new CountingReader(await writeCrbm(CHUNKS, { generation: GEN }));
     await CrbmReader.open(counting, { tailBytes: FOOTER_BYTES });
@@ -270,6 +323,12 @@ describe('.crbm 1.1 reader: a malformed trailer or block is refused', () => {
     [
       'a length reaching back before the payloads',
       (b) => spliceBlock(b, extensionBlock(good, { sectionsLength: 4000 })),
+      /out of bounds/,
+    ],
+    [
+      // The 12 bytes of payloads plus 16: the block would start at byte 4, inside the preamble.
+      'a length reaching back into the preamble',
+      (b) => spliceBlock(b, extensionBlock(good, { sectionsLength: good.length + 16 })),
       /out of bounds/,
     ],
     [
@@ -317,6 +376,11 @@ describe('.crbm 1.1 reader: a malformed section or metadata record is refused', 
   const sectionCases: Array<[string, Uint8Array, RegExp]> = [
     ['a cut-off section header', Uint8Array.of(1, 0, 0), /section header is cut off/],
     ['a section running past the block', section(1, utf8(META_JSON), 999), /runs past the block/],
+    [
+      'a section one byte longer than the block',
+      section(1, utf8(META_JSON), META_JSON.length + 1),
+      /runs past the block/,
+    ],
     ['section type 0', section(0, utf8('x')), /type 0 is not a section type/],
     [
       'a metadata section listed twice',
@@ -364,7 +428,7 @@ describe('.crbm 1.1 reader: a malformed section or metadata record is refused', 
     await expect(open(hostile)).rejects.toThrow(message);
   });
 
-  it('skips a section type it does not know, before or after the metadata', async () => {
+  it('skips a section type it does not know, after the metadata or in a block without one', async () => {
     const meta = section(1, utf8(META_JSON));
     expect(parseExtension(concat(meta, section(200, utf8('a later minor'))), undefined)).toEqual(
       META,
@@ -430,16 +494,33 @@ describe('.crbm 1.1 on an encrypted object', () => {
     }
   });
 
-  it('binds the metadata to its generation, its segment and its scope', async () => {
+  it('binds the metadata to its namespace, its segment, its generation and its scope', async () => {
     const dek = randomBytes(32);
-    const sealedFor = (generation: number, scope: 'metadata' | 'index'): Uint8Array => {
-      const s = new NodeAead(dek).seal(utf8(META_JSON), aadFor(REF, generation, scope));
+    const sealedFor = (
+      generation: number,
+      scope: 'metadata' | 'index',
+      ref: { namespace?: string; segment: string } = REF,
+    ): Uint8Array => {
+      const s = new NodeAead(dek).seal(utf8(META_JSON), aadFor(ref, generation, scope));
       return concat(s.nonce, s.ciphertext, s.tag);
     };
     const base = await writeCrbm(CHUNKS, { generation: GEN, crypto: cryptoFor(dek) });
     // The right key and scope, sealed for generation 8, spliced into generation 7: a block moved between objects.
     const moved = spliceBlock(base, extensionBlock(section(1, sealedFor(GEN + 1, 'metadata'))));
     await expect(open(moved, cryptoFor(dek))).rejects.toBeInstanceOf(IntegrityError);
+    // Sealed for generation 7 of the same segment name in another namespace, and of another segment.
+    for (const other of [
+      { namespace: 'other', segment: REF.segment },
+      { namespace: REF.namespace, segment: 'other' },
+    ]) {
+      const elsewhere = spliceBlock(
+        base,
+        extensionBlock(section(1, sealedFor(GEN, 'metadata', other))),
+      );
+      await expect(open(elsewhere, cryptoFor(dek))).rejects.toThrow(
+        /the sealed metadata does not open/,
+      );
+    }
     // Sealed for generation 7 but under the index's scope.
     const rescoped = spliceBlock(base, extensionBlock(section(1, sealedFor(GEN, 'index'))));
     await expect(open(rescoped, cryptoFor(dek))).rejects.toBeInstanceOf(IntegrityError);
