@@ -158,8 +158,9 @@ function metadataSets() {
 
 /** Where a 1.1 object's index starts, and its extension block's sections (the bytes before the block's trailer). */
 function extensionOf(bytes) {
-  const indexOffset = Number(Buffer.from(bytes).readBigUInt64LE(bytes.length - 104));
-  const sectionsLength = Buffer.from(bytes).readUInt32LE(indexOffset - 12);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const indexOffset = Number(view.getBigUint64(bytes.length - 104, true));
+  const sectionsLength = view.getUint32(indexOffset - 12, true);
   return {
     indexOffset,
     sections: bytes.subarray(indexOffset - 12 - sectionsLength, indexOffset - 12),
@@ -242,7 +243,10 @@ async function seedCrbmExt() {
   for (const [name, metadata] of Object.entries(metadataSets())) {
     const { sections } = extensionOf(await validCrbmWithMetadata(metadata));
     writeSeed('crbm-ext', `valid-${name}.bin`, sections);
-    writeSeed('crbm-ext', `later-section-${name}.bin`, Buffer.concat([sections, later]));
+    const withLater = new Uint8Array(sections.length + later.length);
+    withLater.set(sections, 0);
+    withLater.set(later, sections.length);
+    writeSeed('crbm-ext', `later-section-${name}.bin`, withLater);
     writeSeed('crbm-ext', `trunc-${name}.bin`, sections.subarray(0, sections.length - 2));
   }
   writeSeed('crbm-ext', 'empty.bin', new Uint8Array(0));
