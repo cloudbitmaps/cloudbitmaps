@@ -7,6 +7,7 @@ import { brandAsBackend } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { CloudRoaring } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
+import { counting } from '../helpers/counting';
 
 /**
  * A generation number can be taken again once its object is deleted: a load numbers `currentGen + 1` when no object
@@ -119,12 +120,19 @@ describe('a live reader whose own object is corrupt', () => {
         };
       },
     }) as IStorageDriver;
+    const registryCalls: Record<string, number> = {};
     const seg = new CloudRoaring({
-      storage: brandAsBackend({ storage: corrupting, registry: w.registry }),
+      storage: brandAsBackend({
+        storage: corrupting,
+        registry: counting(w.registry, registryCalls),
+      }),
       cache: { genTtlMs: 0 },
     }).segment('s', { namespace: 'ns' });
     expect(await seg.has(1)).toBe(true);
     flip = true;
+    delete registryCalls.get;
     await expect(seg.has(70_000)).rejects.toBeInstanceOf(IntegrityError);
+    // The footer said it is the object the reader opened, so the read did not re-resolve the segment.
+    expect(registryCalls.get).toBeUndefined();
   });
 });

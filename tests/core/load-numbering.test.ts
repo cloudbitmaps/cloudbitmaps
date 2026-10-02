@@ -218,6 +218,25 @@ describe('a load numbers its generation from the row it read, with one existence
     expect(r).toMatchObject({ generation: 2, published: true });
     expect(beforeWrite(w.calls).map((c) => c.op)).toEqual(['tail', 'list']);
   });
+  it('numbers above the pointer when the listing finds nothing as high: a pointer whose objects are gone', async () => {
+    const w = world();
+    for (let g = 0; g <= 5; g++) await loadSegment(SEG, [g], w.deps, { keep: 9 });
+    // A lifecycle rule took the two newest objects: the pointer names 5, and the bucket holds 0 to 3.
+    for (const g of [4, 5]) await w.memory.delete({ ...SEG, generation: g });
+    // The check cannot answer, so the listing numbers: above the pointer, not above the highest object.
+    const flaky = new Proxy(w.storage, {
+      get(t, p, rx) {
+        const value = Reflect.get(t, p, rx) as unknown;
+        if (p !== 'getTail') return value;
+        return (key: GenKey, maxBytes: number) =>
+          maxBytes === 0
+            ? Promise.reject(new TransientError('503 SlowDown'))
+            : w.storage.getTail(key, maxBytes);
+      },
+    }) as IStorageDriver;
+    const r = await loadSegment(SEG, [9], { ...w.deps, storage: flaky }, { keep: 9 });
+    expect(r).toMatchObject({ generation: 6, published: true });
+  });
 });
 
 describe('two loads that check the same number', () => {
