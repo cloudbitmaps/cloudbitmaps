@@ -53,10 +53,10 @@ so, and so do the module headers in the code.
   bound to its namespace, segment and generation. A generation without metadata is written as format 1.0, byte for
   byte, so every object written so far, and every one written without metadata, is unchanged. A reader of 1.0, 0.11
   included, opens a 1.1 object and gives the same answers, ignoring the block: a test runs the 0.11.2 reader itself
-  against the new golden files. This build reads both, takes the block from the same request as the index, and
-  refuses with `IntegrityError` a block whose trailer, CRC, 4 KiB cap or sections do not hold, metadata that breaks a
-  rule or is not exactly its canonical form, and a payload that runs into the block; it skips a section type it does
-  not know, so a later minor can add one. For tooling: `CrbmReader`'s `metadata` is the generation's metadata, and
+  against the new golden files. This build reads both, and reads the block in the request that reads the index
+  (one more only when the tail read ends inside the block). It refuses with `IntegrityError` a block whose trailer,
+  CRC, 4 KiB cap or sections do not hold, metadata that breaks a rule or is not exactly its canonical form, and a
+  payload that runs into the block, and it skips a section type it does not know, so a later minor can add one. For tooling: `CrbmReader`'s `metadata` is the generation's metadata, and
   `aadFor` takes the scope `'metadata'`; a `CrbmCrypto` of your own must map that scope as `aadFor` does to open an
   encrypted 1.1 object. Nothing in the library writes metadata yet: `load` takes none.
 
