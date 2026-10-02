@@ -22,6 +22,7 @@ import type {
   IRegistryDriver,
   IStorageDriver,
   RegistryRecord,
+  RegistrySummary,
   SegmentRef,
 } from '@cloudbitmaps/core';
 import { NotFoundError, ValidationError, WriteConflictError } from '@cloudbitmaps/core';
@@ -722,6 +723,52 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       await d.delete(SEG);
       expect(await d.get(SEG)).toBeNull();
       await d.delete(SEG); // and stays idempotent
+    });
+
+    // ── `summary`: the row's cached description of its current generation ─────────────────────────────────
+    // A driver stores it like any other field. A driver that dropped it would still be correct, only slower, so
+    // the reason to hold every driver to it is the other direction: a driver that kept a summary a patch cleared,
+    // or lost one a patch did not mention, would describe the wrong generation.
+    const clearSummary: RegistrySummary = {
+      generation: 3,
+      cardinality: 12_000_000,
+      metadata: { def: 'v41', landedAt: 1_790_000_000_000 },
+    };
+    const sealedSummary: RegistrySummary = {
+      generation: 4,
+      sealed: 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIj',
+    };
+
+    it('round-trips a summary of either shape through create, get, list and compare-and-swap', async () => {
+      const d = makeDriver();
+      const { token: t0 } = await d.create(SEG, { currentGen: 3, summary: clearSummary });
+      expect((await d.get(SEG))!.summary).toEqual(clearSummary);
+      expect((await drainRecords(d.list()))[0]!.summary).toEqual(clearSummary);
+
+      await d.compareAndSwap(SEG, t0, { currentGen: 4, summary: sealedSummary });
+      expect((await d.get(SEG))!.summary).toEqual(sealedSummary);
+      expect((await drainRecords(d.list()))[0]!.summary).toEqual(sealedSummary);
+    });
+
+    it('keeps a summary across a patch that does not mention it, and clears it when told to', async () => {
+      const d = makeDriver();
+      const { token: t0 } = await d.create(SEG, { currentGen: 3, summary: clearSummary });
+      const { token: t1 } = await d.compareAndSwap(SEG, t0, { retention: { expiresAt: 9 } });
+      expect((await d.get(SEG))!.summary).toEqual(clearSummary);
+      await d.compareAndSwap(SEG, t1, { status: 'destroyed', summary: undefined });
+      const rec = await d.get(SEG);
+      expect(rec!.summary).toBeUndefined();
+      expect(rec!.retention).toEqual({ expiresAt: 9 });
+    });
+
+    it('refuses a malformed summary and leaves the row unchanged', async () => {
+      const d = makeDriver();
+      const bad = { generation: 3, cardinality: -1 } as RegistrySummary;
+      await expectValidationReject(d.create(SEG, { currentGen: 3, summary: bad }));
+      expect(await d.get(SEG)).toBeNull();
+      const { token } = await d.create(SEG, { currentGen: 3, summary: clearSummary });
+      await expectValidationReject(d.compareAndSwap(SEG, token, { summary: bad }));
+      expect(await d.get(SEG)).toMatchObject({ token, summary: clearSummary });
     });
 
     it('list(namespace) excludes a namespace that merely shares its prefix', async () => {
