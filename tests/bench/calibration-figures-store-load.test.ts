@@ -7,7 +7,8 @@ import { fileURLToPath } from 'node:url';
 // derivation prices each load from what that load made. The fixture is the harness's own output from a rehearsal
 // against MinIO, which speaks S3's request shape and bills nothing; the tests dress it as a real run in memory and
 // never as a file, so it can never be mistaken for evidence. It is captured again whenever the harness's evidence
-// changes shape, and the first test below fails when it has gone stale.
+// changes shape, and the first test below fails when it has gone stale. A second fixture is a rehearsal of the same
+// workload with three faults injected (`CR_CALIBRATE_FAULT_GETS=1200,60000,75000`), which it discarded and ran again.
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const require_ = createRequire(import.meta.url);
 
@@ -120,8 +121,18 @@ const SOURCES = figures.readSources(ROOT);
 const fixture = JSON.parse(
   readFileSync(join(ROOT, 'tests', 'bench', 'fixtures', 'calibration-rehearsal.json'), 'utf8'),
 ) as Run;
+const withFaults = JSON.parse(
+  readFileSync(
+    join(ROOT, 'tests', 'bench', 'fixtures', 'calibration-rehearsal-discards.json'),
+    'utf8',
+  ),
+) as Run & { injectedFaults?: { getObjectRequests: number[] } };
 /** The rehearsal, dressed as a finished real run: only what a real run's file says about itself is changed. */
-const asRealRun = (): Run => ({ ...structuredClone(fixture), mode: 'run', target: 'aws' });
+const asRealRun = (from: Run = fixture): Run => ({
+  ...structuredClone(from),
+  mode: 'run',
+  target: 'aws',
+});
 const GET_USD = 0.4 / 1e6;
 
 describe('a run that timed store.load()', () => {
@@ -135,6 +146,50 @@ describe('a run that timed store.load()', () => {
     expect(Object.keys(fixture.projectedStages)).toEqual(STAGES);
     expect(fixture.phases.load.via).toBe('store.load()');
     expect(fixture.phases.load.perLoad.length).toBeGreaterThan(0);
+    // Each stage's discards, none in this run, and the run's count of them and the projection's allowance.
+    for (const name of STAGES) {
+      expect((fixture.phases[name] as { discarded?: unknown }).discarded, name).toEqual([]);
+    }
+    expect(fixture.discards).toEqual({ count: 0, perRun: 3, perStage: 2 });
+    expect((fixture as { projectedDiscards?: unknown }).projectedDiscards).toEqual({
+      put: 0,
+      get: 12_018,
+      costliestSample: 4_006,
+    });
+  });
+
+  // The harness's own output from a run that met three transient faults, in three kinds of sample. Dressed as a real
+  // run it is evidence: each stage held to what it kept, the bill to every request, and its discards stated.
+  it("is evidence from a rehearsal that discarded three samples, and its figures are the fault-free run's", () => {
+    expect(withFaults.injectedFaults?.getObjectRequests).toEqual([1_200, 60_000, 75_000]);
+    expect(withFaults.discards).toEqual({ count: 3, perRun: 3, perStage: 2 });
+    const clean = figures.derive(asRealRun(), SOURCES);
+    const f = figures.derive(asRealRun(withFaults), SOURCES);
+    expect(f.discards.count).toBe(3);
+    expect(f.discards.byStage).toMatchObject({ intersect: 1, pointReads: 1, andNot: 1, sweep: 0 });
+    expect(f.anchors).toContainEqual([
+      'samples discarded after a transient fault',
+      '3 discarded samples',
+    ]);
+    for (const name of ['intersect', 'pointReads', 'andNot']) {
+      const d = (withFaults.phases[name] as { discarded: Discarded[] }).discarded;
+      expect(d, name).toHaveLength(1);
+      expect(d[0], name).toMatchObject({
+        name: 'TransientError',
+        cause: 'TimeoutError',
+        code: 'ECONNRESET',
+        attempts: 1,
+      });
+      // The stage billed its discard, and kept exactly what the fault-free run made.
+      expect(f.stageLedger[name]?.get).toBe(
+        (clean.stageLedger[name]?.get ?? 0) + (d[0]?.requests.get ?? 0),
+      );
+      expect(f.stageLedger[name]?.keptGet).toBe(clean.stageLedger[name]?.get);
+    }
+    expect(f.measuredGets).toBe(clean.measuredGets);
+    expect(f.chunksPerOperand).toBe(clean.chunksPerOperand);
+    expect(f.ledger.chunkReads).toBe(clean.ledger.chunkReads);
+    expect(f.ledger.get).toBe(clean.ledger.get + f.discards.get);
   });
 
   it('is derived, each load priced from the requests it made', () => {
