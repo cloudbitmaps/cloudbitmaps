@@ -39,7 +39,7 @@ It builds its own client from Application Default Credentials. Any other key is 
 |---|---|
 | `bucket` (required) | the bucket |
 | `prefix` | a key prefix for everything this store writes |
-| `client` | your own `Storage` client. Pass it as `client`; `storage` is refused, since in `CloudRoaring` that word means the backend |
+| `client` | your own `Storage` client. Pass it as `client`; `storage` is refused, since in `CloudRoaring` that word means the backend. Build it with `retryOptions: { autoRetry: false }` (see below) |
 | `projectId`, `apiEndpoint` | build a client for you, such as one for fake-gcs-server; refused beside `client` |
 | `simpleUploadThresholdBytes`, `maxObjectBytes` | the size up to which an object is one simple request (default 8 MiB) and the largest object (default 5 TiB, GCS's maximum) |
 
@@ -51,6 +51,15 @@ It builds its own client from Application Default Credentials. Any other key is 
   `roles/storage.objectAdmin` covers all four.
 - **The write-once guarantee rides GCS preconditions** (`ifGenerationMatch`), so nothing else needs enabling.
 - **Never add a lifecycle rule that expires current objects or the `registry/` prefix.**
+- **The SDK does not retry downloads; the driver does.** In `@google-cloud/storage` 7.x and 8.x (checked on 7.22.0 and
+  8.1.0), a download the SDK retries after any status it retries (408, 429, 500, 502, 503 or 504) can crash the process with
+  `ERR_STREAM_UNABLE_TO_PIPE`, thrown outside any promise, even though the retried request succeeded. The client
+  `GcsStorage` builds therefore sends each download once, and the driver runs a download again itself, up to three
+  more times with backoff, after a reset connection, a 408, 429, 500, 502, 503 or 504, and after nothing else. That holds for every
+  caller, including a store built with `retry: false`. The client's other requests (uploads, listings, metadata reads,
+  deletes) keep the SDK's retries. **A client you pass as `client` is used as it is, so build it with
+  `retryOptions: { autoRetry: false }`.** That also turns off the SDK's retries of listings, metadata reads, deletes and
+  resumable uploads on that client, which the library does not retry; the client `GcsStorage` builds keeps them.
 - **A transient failure of a write throws `TransientError`, and the write may or may not have landed.** Re-run the
   call, or check `store.generations(ref)`.
 
