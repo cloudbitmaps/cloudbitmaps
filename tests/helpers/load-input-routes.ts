@@ -19,7 +19,6 @@ export const ROUTED: readonly string[] = [
   'tests/bench/calibrate-guards.test.ts',
   'tests/bench/calibrate-samples.test.ts',
   'tests/bench/calibrate-stages.test.ts',
-  'tests/bench/calibration-figures-store-load.test.ts',
   'tests/core/cost.test.ts',
   'tests/core/drop-segment.test.ts',
   'tests/core/due-index-fast-sweep.test.ts',
@@ -52,9 +51,6 @@ export const ROUTED: readonly string[] = [
   'tests/core/subject-report-fresh.test.ts',
   'tests/core/union-andnot.test.ts',
   'tests/core/write-path-read-retry.test.ts',
-  'tests/docs/calibration-reports.test.ts',
-  'tests/docs/retired-names.test.ts',
-  'tests/docs/superseded-behaviour-claims.test.ts',
   'tests/drivers/azure/read-timeout.test.ts',
   'tests/drivers/s3/read-timeout.test.ts',
   'tests/engine.property.test.ts',
@@ -65,6 +61,14 @@ export const ROUTED: readonly string[] = [
 
 /** Run under ids only, each with the reason routing would change what the file tests. */
 export const IDS_ONLY: Readonly<Record<string, string>> = {
+  'tests/bench/calibration-figures-store-load.test.ts':
+    'names store.load() only in the prose and strings it checks, and loads nothing, so there is nothing to route',
+  'tests/docs/calibration-reports.test.ts':
+    'names store.load() only in the prose and strings it checks, and loads nothing, so there is nothing to route',
+  'tests/docs/retired-names.test.ts':
+    'names store.load() only in the prose and strings it checks, and loads nothing, so there is nothing to route',
+  'tests/docs/superseded-behaviour-claims.test.ts':
+    'names store.load() only in the prose and strings it checks, and loads nothing, so there is nothing to route',
   'tests/core/bulk-load-cooperative.test.ts':
     'counts the yields of the id ingest and per-chunk flush loops, which a bitmap input never runs; the ' +
     "bitmap path's own yields, the writer's every 1,024 chunks, are tested in roaring/load-no-per-id.test.ts",
