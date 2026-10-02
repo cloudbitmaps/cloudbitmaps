@@ -304,6 +304,64 @@ describe('a load reuses the row it read, and every fence on that row still holds
       loadSegment(SEG, [1, 2, 3], { ...w.deps, storage: racing }, { allowEmpty: true }),
     ).rejects.toBeInstanceOf(KeyUnavailableError);
     expect((await w.registry.get(SEG))!.currentGen).toBe(0);
+    // The refusal is definite, so the cleartext object is reclaimed: the encrypted segment's bucket holds only its own.
+    expect(await generations(w.storage)).toEqual([0]);
+  });
+
+  it.each([
+    ['with no keystore', false],
+    ['with a keystore', true],
+  ])(
+    'a cleartext load %s, overtaken by a drop, a purge and an encrypted re-creation, leaves no cleartext object behind',
+    async (_, wired) => {
+      const w = world();
+      const keystore = new InProcessKeystore({ keys: { A: randomBytes(32) }, activeKeyId: 'A' });
+      await threeLoads(w); // a cleartext segment at generation 2
+      const r = await loadSegment(
+        SEG,
+        streaming([42, 43], async () => {
+          await dropSegment(SEG, w.deps, { confirmSegment: SEG.segment });
+          await w.registry.delete(SEG); // the tombstone purged
+          await loadSegment(SEG, [7], { ...w.deps, keystore }); // the name re-created, encrypted
+        }),
+        wired ? { ...w.deps, keystore } : w.deps,
+        { keep: 9 },
+      );
+      // It wrote generation 3 from the cleartext row it read, and the token refused its publish.
+      expect(r).toMatchObject({ generation: 3, published: false, reason: 'superseded' });
+      const row = (await w.registry.get(SEG))!;
+      expect(row.wrappedDeks?.length).toBeGreaterThan(0);
+      // Only the new incarnation's encrypted generation is left, and nothing in the bucket opens without its key.
+      expect(await generations(w.storage)).toEqual([0]);
+      await expect(
+        openGenerationReader(w.storage, { ...SEG, generation: 0 }, undefined),
+      ).rejects.toThrow();
+    },
+  );
+
+  it('an unguarded first load refused by a drop at its publish deletes its object', async () => {
+    const w = world();
+    let fired = false;
+    const racing = new Proxy(w.storage, {
+      get(t, p, rx) {
+        const value = Reflect.get(t, p, rx) as unknown;
+        if (p !== 'putImmutable') return value;
+        return async (...args: Parameters<IStorageDriver['putImmutable']>) => {
+          if (!fired) {
+            fired = true;
+            // After this load read the row again (none): another load creates it, and a drop tombstones it.
+            await loadSegment(SEG, [7], w.deps);
+            await dropSegment(SEG, w.deps, { confirmSegment: SEG.segment });
+          }
+          return w.storage.putImmutable(...args);
+        };
+      },
+    }) as IStorageDriver;
+    await expect(
+      loadSegment(SEG, [1, 2], { ...w.deps, storage: racing }, { allowEmpty: true }),
+    ).rejects.toThrow(/destroyed/);
+    expect((await w.registry.get(SEG))!.status).toBe('destroyed');
+    expect(await generations(w.storage)).toEqual([]);
   });
 
   it("a keystore load that another keystore writer overtakes on a new name publishes under that writer's key", async () => {
