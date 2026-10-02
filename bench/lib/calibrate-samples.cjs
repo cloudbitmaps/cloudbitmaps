@@ -5,16 +5,19 @@
  *
  * WHY THIS EXISTS. The workload's client makes one attempt per request and every timed store runs with its own retry
  * off (`clientConfigs`, `TIMED_STORE` in `calibrate-guards.cjs`), so no retry's backoff can sit inside a latency
- * sample and every request count is exact. With nothing else, one transient fault anywhere in a run's ~94,600
- * requests would fail the whole run, and a partial run is not evidence: at one fault in about 86,300 requests, a full
- * run would finish about a third of the time.
+ * sample and every request count is exact. With nothing else, one transient fault anywhere in a run's requests (up to
+ * ~94,600 GET-class and 364 PUT-class at the default workload) would fail the whole run, and a partial run is not
+ * evidence. One in-region run failed on a single transient connection fault after about 86,300 requests; at that rate
+ * a run of this size would finish about a third of the time.
  *
  * So a SAMPLE — one cold intersect, one point read, one `andNot` call, the warm stage's priming pass — that fails with
  * a transient fault is abandoned whole. Its requests were billed, so they stay in the stage's requests and in the bill,
  * and are recorded beside the stage as a discard: which sample, the error's name, its transport code, the SDK's
- * attempt count, and the requests it made. The sample then runs again from the start on a fresh store. The latency
- * figures and the exact-count checks see only the attempt that finished, which makes exactly the requests a
- * fault-free sample makes, and the discard count is stated beside the figures.
+ * attempt count, and the requests it made. The sample then runs again from the start, from a state the failed attempt
+ * left nothing cached in: on a fresh store, or, for a point read that assumes a store in a given state, on that store
+ * (a first `count()` once the store has forgotten the segment, a `has()` on an open segment as it was). The latency
+ * and request-count figures and the exact-count checks see only the attempt that finished, which makes exactly the
+ * requests a fault-free sample makes; the bill counts both; and the discard count is stated beside the figures.
  *
  * BOUNDED, AND PROJECTED. A run discards at most DISCARDS_PER_RUN samples and a stage at most DISCARDS_PER_STAGE; one
  * more transient fault fails the run. The projection allows DISCARDS_PER_RUN samples at the bound of the most
@@ -42,6 +45,12 @@ const DISCARDS_PER_STAGE = 2;
  * counted against it, not against the sample after it: so the harness waits until nothing is in flight and nothing new
  * has been sent for this long. A gap between one of its requests answering and the next one it sends is a body read
  * and a decode, well under this.
+ *
+ * The limit of that: the meter takes a request out of flight when its HEADERS arrive (`aws-meter.cjs`), not its body.
+ * A chunk body that stalls for longer than this after its headers lets the failed sample send its next reads after the
+ * discard is recorded, into the sample run again. That sample's count then differs from its expected count by those
+ * reads, so the stage records `expectedMissed` and the figures refuse the run: the cost is a lost run, never a wrong
+ * figure.
  */
 const QUIET_MS = 1_000;
 /** How often the wait looks. */
@@ -53,7 +62,9 @@ const TRANSIENT_BRAND = Symbol.for('cloudbitmaps.error.transient');
 /**
  * Whether `err` is a transient fault: the library's `TransientError`, which a driver raises for a fault it classifies
  * as retryable, or anything the SDK itself would have retried (`sdk`, from `sdkFaultClasses`) — anywhere in its
- * causes. Never the gate refusing a send because the run is stopping: that is an interrupt, not a fault.
+ * causes. That takes in every 5xx, 501 included, and a 403 refusing a skewed clock that the SDK has corrected, both of
+ * which the SDK retries itself; not another 403, a 404, a wrong answer or an integrity failure. Never the gate refusing
+ * a send because the run is stopping: that is an interrupt, not a fault.
  */
 function transientFault(err, sdk) {
   if (isInterruption(err)) return false;
@@ -145,7 +156,8 @@ function keptRequests(record) {
  *   onDiscard        called after each discard is recorded: the harness logs it and checks its spend ceiling
  *
  * `sample(of, index, attempt)` runs `attempt(rerun)`, where `rerun` is 0 the first time, and returns what it returns.
- * An attempt builds its own fresh store, so a sample run again starts from nothing the failed attempt left.
+ * An attempt starts from a state the failed one left nothing cached in: it builds a fresh store, or, for a point read on
+ * a store it shares, is told by `rerun` to make that store forget what the failed attempt read.
  */
 function discardLedger({
   perRun = DISCARDS_PER_RUN,
@@ -229,9 +241,30 @@ function discardLedger({
 }
 
 /**
+ * The faults a rehearsal can inject, each shaped as the real one reaches the S3 driver.
+ *
+ *   reset   a socket reset: the SDK's HTTP handler names a request error with code `ECONNRESET` `TimeoutError` and
+ *           keeps the code, so the driver raises a `TransientError` and the sample is discarded
+ *   denied  a 403 `AccessDenied`, which the driver passes through and nothing classifies as transient, so the run fails
+ */
+const FAULTS = Object.freeze({
+  reset: () =>
+    Object.assign(new Error('socket hang up (injected by the rehearsal)'), {
+      name: 'TimeoutError',
+      code: 'ECONNRESET',
+    }),
+  denied: () =>
+    Object.assign(new Error('Access Denied (injected by the rehearsal)'), {
+      name: 'AccessDenied',
+      $fault: 'client',
+      $metadata: { httpStatusCode: 403 },
+    }),
+});
+
+/**
  * Parse `CR_CALIBRATE_FAULT_GETS`, which only a rehearsal takes: the GetObject requests, counted from 1 on the
- * workload's client, that fail once each. Unset or empty is none. A list it cannot read is refused, since a rehearsal
- * that silently injected nothing would show nothing.
+ * workload's client, that fail once each, each as a reset unless it names another fault (`1200,5000:denied`). Unset or
+ * empty is none. A list it cannot read is refused, since a rehearsal that silently injected nothing would show nothing.
  */
 function parseFaultGets(raw) {
   if (raw === undefined || String(raw).trim() === '') return [];
@@ -239,37 +272,37 @@ function parseFaultGets(raw) {
   return String(raw)
     .split(',')
     .map((entry) => {
-      const n = /^\s*\d+\s*$/.test(entry) ? Number(entry) : 0;
-      if (!Number.isSafeInteger(n) || n < 1) {
+      const m = /^\s*(\d+)(?::([a-z]+))?\s*$/.exec(entry);
+      const n = m === null ? 0 : Number(m[1]);
+      const as = m?.[2] ?? 'reset';
+      if (!Number.isSafeInteger(n) || n < 1 || !Object.hasOwn(FAULTS, as)) {
         throw new Error(
-          `CR_CALIBRATE_FAULT_GETS entry "${entry.trim()}" is not a positive integer: list the GetObject requests ` +
-            'to fail once each, such as 1200,30000',
+          `CR_CALIBRATE_FAULT_GETS entry "${entry.trim()}" is not a GetObject request to fail: a positive integer, ` +
+            `then :${Object.keys(FAULTS).join(' or :')} if not a reset, such as 1200,5000:denied`,
         );
       }
       if (seen.has(n)) throw new Error(`CR_CALIBRATE_FAULT_GETS names request ${n} twice`);
       seen.add(n);
-      return n;
+      return { getObject: n, as };
     });
 }
 
 /**
- * For a rehearsal only: fail each listed GetObject once, the way a reset socket fails one. The SDK's HTTP handler
- * names a request error `TimeoutError` and keeps its `ECONNRESET` code, so this throws the same, inside the SDK's retry
- * step, which then attaches its `$metadata` as it would to the real one. The meter, outside that step, counts the
- * request as sent; none reaches the wire. The harness refuses `CR_CALIBRATE_FAULT_GETS` in every other mode.
+ * For a rehearsal only: fail each listed GetObject once, with its fault ({@link FAULTS}). It throws inside the SDK's
+ * retry step, which then attaches its `$metadata` as it would to the real error. The meter, outside that step, counts
+ * the request as sent; none reaches the wire. The harness refuses `CR_CALIBRATE_FAULT_GETS` in every other mode.
  */
-function injectFaults(client, at) {
-  const pending = new Set(at);
+function injectFaults(client, faults) {
+  const pending = new Map(faults.map((f) => [f.getObject, f.as]));
   let gets = 0;
   client.middlewareStack.add(
     (next, context) => async (args) => {
       if (context.commandName === 'GetObjectCommand') {
         gets += 1;
-        if (pending.delete(gets)) {
-          throw Object.assign(new Error('socket hang up (injected by the rehearsal)'), {
-            name: 'TimeoutError',
-            code: 'ECONNRESET',
-          });
+        const as = pending.get(gets);
+        if (as !== undefined) {
+          pending.delete(gets);
+          throw FAULTS[as]();
         }
       }
       return next(args);
@@ -279,7 +312,7 @@ function injectFaults(client, at) {
   return {
     /** The listed requests not yet reached. */
     get pending() {
-      return [...pending];
+      return [...pending.keys()];
     },
   };
 }

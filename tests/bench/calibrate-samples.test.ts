@@ -1,9 +1,7 @@
-import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import type { AddressInfo } from 'node:net';
-import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CloudRoaring } from '@/index';
@@ -76,8 +74,11 @@ const samples = require_(join(ROOT, 'bench', 'lib', 'calibrate-samples.cjs')) as
   }) => Ledger;
   discardedRequests: (discarded?: Discard[]) => Requests;
   keptRequests: (record: { requests: Requests; discarded?: Discard[] }) => Requests;
-  parseFaultGets: (raw: unknown) => number[];
-  injectFaults: (client: unknown, at: number[]) => { readonly pending: number[] };
+  parseFaultGets: (raw: unknown) => Array<{ getObject: number; as: string }>;
+  injectFaults: (
+    client: unknown,
+    faults: Array<{ getObject: number; as: string }>,
+  ) => { readonly pending: number[] };
 };
 const processLib = require_(join(ROOT, 'bench', 'lib', 'calibrate-process.cjs')) as {
   faultOf: (err: unknown) => Fault;
@@ -349,6 +350,8 @@ describe('a sample that meets a transient fault', () => {
       code: 'ECONNRESET',
       attempts: 1,
     });
+    // How long the attempt ran before it failed: past its pointer and tail reads, each of which took 20 ms.
+    expect(d?.failedAfterMs).toBeGreaterThanOrEqual(30);
     // Its reads still in flight when it failed answered after, and were counted against it, not against the next one.
     expect(rangeAtThrow).toBeGreaterThan(0);
     expect(d?.requests.reads.range.n).toBeGreaterThan(rangeAtThrow);
@@ -541,9 +544,31 @@ describe('what counts as a transient fault', () => {
       sdkError('SlowDown', { $metadata: { httpStatusCode: 503 } }),
       sdkError('InternalError', { $metadata: { httpStatusCode: 500 } }),
       sdkError('NotImplemented', { $metadata: { httpStatusCode: 501 } }),
+      sdkError('ThrottlingException', { $metadata: { httpStatusCode: 429 } }),
+      // A 403 refusing a skewed clock that the SDK has corrected: the SDK retries it itself, signed right.
+      sdkError('RequestTimeTooSkewed', {
+        $metadata: { httpStatusCode: 403, clockSkewCorrected: true },
+      }),
       new Error('read failed', { cause: sdkError('TimeoutError', { code: 'ECONNRESET' }) }),
     ]) {
       expect(samples.transientFault(err, SDK), String(err)).toBe(true);
+    }
+  });
+
+  // The SDK's own classes look at the error they are given, and only its transient class follows `cause`; so the chain
+  // is walked here. Each of these is transient only by what lies beneath its wrapper.
+  it('looks beneath every wrapper, for the brand, a throttle and a 5xx alike', () => {
+    for (const inner of [
+      new TransientError('transient S3 fault: unknown'),
+      sdkError('SlowDown'),
+      sdkError('Throttled', { $metadata: { httpStatusCode: 429 } }),
+      sdkError('NotImplemented', { $metadata: { httpStatusCode: 501 } }),
+    ]) {
+      expect(samples.transientFault(inner, SDK), inner.name).toBe(true);
+      const wrapped = new Error('store: read failed', {
+        cause: new Error('engine: chunk failed', { cause: inner }),
+      });
+      expect(samples.transientFault(wrapped, SDK), `${inner.name} under two wrappers`).toBe(true);
     }
   });
 
@@ -729,7 +754,10 @@ describe("a rehearsal's injected fault", () => {
       }).work,
     );
     const tally = meterLib.meter(client);
-    const injected = samples.injectFaults(client, [2]);
+    const injected = samples.injectFaults(client, [
+      { getObject: 2, as: 'reset' },
+      { getObject: 4, as: 'denied' },
+    ]);
     const driver = new S3StorageDriver({ client: client as never, bucket: 'b', prefix: 'calib' });
     try {
       await driver.getTail({ segment: 's', generation: 0 }, 1024);
@@ -740,57 +768,55 @@ describe("a rehearsal's injected fault", () => {
         thrown = err;
       }
       await driver.getTail({ segment: 's', generation: 0 }, 1024);
+      let denied: unknown;
+      try {
+        await driver.getTail({ segment: 's', generation: 0 }, 1024);
+      } catch (err) {
+        denied = err;
+      }
       expect(hits).toBe(2);
-      expect(tally.get).toBe(3);
+      expect(tally.get).toBe(4);
       expect(injected.pending).toEqual([]);
       expect(samples.transientFault(thrown, SDK)).toBe(true);
       // The driver and the SDK classify it as they would a real reset.
       expect(withoutMessage(processLib.faultOf(thrown))).toEqual(
         withoutMessage(processLib.faultOf(resetSocket())),
       );
+      // A denied read passes through the driver as the SDK raised it, and is not transient: it fails the run.
+      expect(samples.transientFault(denied, SDK)).toBe(false);
+      expect(processLib.faultOf(denied)).toMatchObject({
+        name: 'AccessDenied',
+        cause: null,
+        httpStatus: 403,
+        attempts: 1,
+      });
     } finally {
       client.destroy();
       await new Promise<void>((done) => server.close(() => done()));
     }
   });
 
-  it('is a list of positive request numbers, and a list it cannot read is refused', () => {
+  it('is a list of positive request numbers, each a reset unless it says otherwise, and a list it cannot read is refused', () => {
     expect(samples.parseFaultGets(undefined)).toEqual([]);
     expect(samples.parseFaultGets(' ')).toEqual([]);
-    expect(samples.parseFaultGets('1200, 30000')).toEqual([1200, 30_000]);
-    for (const bad of ['0', '-1', '1.5', 'a', '5,', '5,5']) {
+    expect(samples.parseFaultGets('1200, 30000:denied, 40000:reset')).toEqual([
+      { getObject: 1200, as: 'reset' },
+      { getObject: 30_000, as: 'denied' },
+      { getObject: 40_000, as: 'reset' },
+    ]);
+    for (const bad of [
+      '0',
+      '-1',
+      '1.5',
+      'a',
+      '5,',
+      '5,5',
+      '5:bogus',
+      '5:',
+      ':denied',
+      '5,5:denied',
+    ]) {
       expect(() => samples.parseFaultGets(bad), bad).toThrow(/CR_CALIBRATE_FAULT_GETS/);
-    }
-  });
-
-  // A real run must never fail a request on purpose, and a projection would apply it to nothing.
-  it('is refused in every mode but a rehearsal, before anything is read', () => {
-    const home = mkdtempSync(join(tmpdir(), 'calib-no-aws-'));
-    try {
-      const run = (args: string[], faults: string) =>
-        spawnSync(process.execPath, [join(ROOT, 'bench', 'calibrate-aws.cjs'), ...args], {
-          env: {
-            PATH: process.env.PATH ?? '',
-            HOME: home,
-            AWS_CONFIG_FILE: join(home, 'no-config'),
-            AWS_SHARED_CREDENTIALS_FILE: join(home, 'no-credentials'),
-            AWS_EC2_METADATA_DISABLED: 'true',
-            CR_CALIBRATE_FAULT_GETS: faults,
-          },
-          encoding: 'utf8',
-          timeout: 60_000,
-        });
-      for (const args of [[], ['--run'], ['--cleanup', '2026-10-02-a']]) {
-        const out = run(args, '1200');
-        expect(out.status, args.join(' ')).toBe(2);
-        expect(out.stderr).toMatch(/CR_CALIBRATE_FAULT_GETS is for a rehearsal only/);
-      }
-      // A rehearsal takes it, and refuses one it cannot read before it contacts anything.
-      const bad = run(['--rehearse'], '12x');
-      expect(bad.status).toBe(2);
-      expect(bad.stderr).toMatch(/CR_CALIBRATE_FAULT_GETS entry "12x"/);
-    } finally {
-      rmSync(home, { recursive: true, force: true });
     }
   });
 });

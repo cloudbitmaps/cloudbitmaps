@@ -204,6 +204,14 @@ const DRAIN_MS = 30_000;
 const IN_REGION_FLOOR_MS = 30;
 
 const log = (m) => console.log(`calibrate: ${m}`);
+/**
+ * Where a discarded sample runs again, for the two that do not get a fresh store: a point read that assumes a store
+ * in a given state runs again on that store, put back in that state (the pointReads stage says why).
+ */
+const RUN_AGAIN = Object.freeze({
+  'count() first read': 'on its store, once the store has forgotten the segment',
+  'has() on an open segment': 'on the same store, which still holds the segment open',
+});
 function refuse(msg) {
   console.error(`calibrate: ${msg}`);
   process.exit(2);
@@ -781,7 +789,8 @@ async function main() {
     projectedStages: stageBounds,
     // What the samples a run may discard can cost, beside the stages' bounds: each at the costliest sample's bound.
     projectedDiscards: { ...discardBound, costliestSample },
-    ...(faultGets.length > 0 ? { injectedFaults: { getObjectRequests: faultGets } } : {}),
+    // A rehearsal's injected faults, each a GetObject request and the fault it met.
+    ...(faultGets.length > 0 ? { injectedFaults: faultGets } : {}),
     partial: true,
     phases: {},
   };
@@ -920,7 +929,7 @@ async function main() {
     onDiscard: (d, at) => {
       console.error(
         `calibrate: DISCARDED — ${at.stage}: ${d.of} ${d.sample}, ${describeFault(d)}, after ` +
-          `${d.requests.put} PUT-class + ${d.requests.get} GET-class; running it again on a fresh store ` +
+          `${d.requests.put} PUT-class + ${d.requests.get} GET-class; running it again ${RUN_AGAIN[d.of] ?? 'on a fresh store'} ` +
           `(${at.count} of ${DISCARDS_PER_RUN} this run, ${at.stageCount} of ${DISCARDS_PER_STAGE} this stage)`,
       );
       // Its requests were billed, so the ceiling is checked against them as against any other.

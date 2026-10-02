@@ -1596,6 +1596,20 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     expect(out.stderr).toMatch(/exclusive/);
   });
 
+  // A rehearsal's injected faults: a real run must never fail a request on purpose, and a projection or a cleanup would
+  // apply them to nothing. Each is refused before anything is read; a broken refusal stops at the next check, since no
+  // credential or confirmation can be found.
+  it('refuses CR_CALIBRATE_FAULT_GETS in every mode but a rehearsal, and one it cannot read in a rehearsal', () => {
+    for (const args of [[], ['--run'], ['--cleanup', '2026-10-02-a']]) {
+      const out = runHarness(args, { CR_CALIBRATE_FAULT_GETS: '1200' });
+      expect(out.status, args.join(' ')).toBe(2);
+      expect(out.stderr).toMatch(/CR_CALIBRATE_FAULT_GETS is for a rehearsal only/);
+    }
+    const bad = runHarness(['--rehearse'], { CR_CALIBRATE_FAULT_GETS: '12x' });
+    expect(bad.status).toBe(2);
+    expect(bad.stderr).toMatch(/CR_CALIBRATE_FAULT_GETS entry "12x"/);
+  });
+
   // Node creates stdout and stderr on first use, and on macOS creating one on a terminal that has hung up never
   // returns. A hang-up handler whose first output is stderr's first use blocks there: no teardown, no results.
   // Silencing the terminal alone blocks the same way, since reaching `process.stderr` creates it. Run on a real
