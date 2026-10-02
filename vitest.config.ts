@@ -21,10 +21,18 @@ export default defineConfig({
     // every guarantee an id load has without a copy of any test. Which files, and why the rest are ids-only, is in
     // `tests/helpers/load-input-routes.ts`; `tests/arch/load-input-coverage.test.ts` holds that list to the tree.
     projects: [
-      { extends: true, test: { name: 'ids', include: ['tests/**/*.test.ts'] } },
       {
         extends: true,
-        test: { name: ROUTED_PROJECT, include: [...ROUTED], setupFiles: [ROUTING_SETUP] },
+        test: { name: 'ids', include: ['tests/**/*.test.ts'], provide: { loadInput: 'ids' } },
+      },
+      {
+        extends: true,
+        test: {
+          name: ROUTED_PROJECT,
+          include: [...ROUTED],
+          setupFiles: [ROUTING_SETUP],
+          provide: { loadInput: ROUTED_PROJECT },
+        },
       },
     ],
   },

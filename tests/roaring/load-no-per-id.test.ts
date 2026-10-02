@@ -121,14 +121,14 @@ describe('a 12M-member bitmap load runs no per-id JavaScript', () => {
         }) as CodecBitmap;
       },
     };
-    const before = counts().splitId;
+    const before = splitIdCalls.n;
     const deps = {
       storage: new MemoryStorageDriver(),
       registry: new MemoryRegistryDriver(),
       codec: without,
     };
     await loadSegment({ segment: 'fallback' }, { bitmap: new RoaringBitmap32([1, 2, 3]) }, deps);
-    expect(counts().splitId - before).toBe(3);
+    expect(splitIdCalls.n - before).toBe(3);
   });
 });
 

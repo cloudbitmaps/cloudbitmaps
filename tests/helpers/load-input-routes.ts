@@ -31,6 +31,7 @@ export const ROUTED: readonly string[] = [
   'tests/core/expired-exclusion.test.ts',
   'tests/core/generation-gc.test.ts',
   'tests/core/intersect.test.ts',
+  'tests/core/load-routing.test.ts',
   'tests/core/load.test.ts',
   'tests/core/materialize-expiry-guard.test.ts',
   'tests/core/materialize-load-guard.test.ts',
