@@ -542,6 +542,21 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
     claim: new RegExp(g('no orphan is left behind by a refused rewrite'), 'i'),
     why: "a refused rewrite deletes its object only when it sits above the winner's pointer; elsewhere it stays, as a refused load's does",
   },
+  // The S3 package times its reads (`readTimeoutMs`), so a page may not say the library times nothing. What is true is
+  // narrower: no write is timed, and nor is an S3 listing or any GCS or Azure Blob request.
+  {
+    claim: new RegExp(
+      g(
+        String.raw`(?:the|this) library (?:has|sets) (?:none|no (?:request )?timeouts?) of its own`,
+      ),
+      'i',
+    ),
+    why: 'the S3 package times each read (`readTimeoutMs`, 2,000 ms by default) — say which requests are not timed: the writes, S3 listings, and every GCS and Azure Blob request',
+  },
+  {
+    claim: new RegExp(g(String.raw`no \`?AbortSignal\`? anywhere in (?:this|the) library`), 'i'),
+    why: "the S3 package aborts a read that runs past `readTimeoutMs` through its request's abort signal — say that no write is timed",
+  },
 ];
 
 /**
@@ -996,6 +1011,12 @@ describe('no document claims behaviour this library does not have', () => {
     ' * if the write did complete, the winner’s generation is necessarily\n * higher, which puts ours below its pointer',
     "the winner's generation is always higher",
     ' * **No orphan is left behind by a\n * refused rewrite**, and it is worth saying why',
+    // What the library times.
+    'The library has no timeout of its own, because one would abandon requests',
+    '| The library has none of its own; a hung request hangs the read |',
+    'This library sets no request timeout of its own.',
+    '- **Set a request timeout.** There is no `AbortSignal` anywhere in this library —',
+    'there is no AbortSignal anywhere in the\n  library',
   ])('catches the refused form %j', (text) => {
     expect(hitsIn('x.md', text)).not.toEqual([]);
   });
@@ -1108,6 +1129,9 @@ describe('no document claims behaviour this library does not have', () => {
     'The erasure deletes that holder itself, since it is above the pointer.',
     "A refused rewrite deletes its own object when it sits above the winner's pointer.",
     'A refused load leaves its object behind once the row has changed.',
+    'The library times no write, deliberately, since a timeout of its own would abandon a write in flight.',
+    'An S3 write has no timeout of its own.',
+    'The GCS and Azure Blob packages set no timeout of their own.',
   ])('leaves %j alone', (text) => {
     expect(hitsIn('x.md', text)).toEqual([]);
   });

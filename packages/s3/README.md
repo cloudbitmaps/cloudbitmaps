@@ -42,6 +42,7 @@ It builds its own client from your usual AWS credentials. Any other key is refus
 | `client` | your own `S3Client`; it carries its own region, endpoint and credentials |
 | `region`, `endpoint`, `pathStyle`, `credentials` | build a client for you, such as one for MinIO; refused beside `client` |
 | `partBytes`, `maxObjectBytes` | multipart sizing: part size (default 8 MiB; the upload buffers one part at a time) and the largest object (about 80 GiB by default, up to S3's 5 TiB) |
+| `readTimeoutMs` | how long one read (a `GetObject` or `HeadObject`, its body included) may take before it throws `TransientError` and the store retries it: 2,000 ms by default, `0` for no timeout. Writes are not timed |
 
 ## Before production
 
@@ -60,8 +61,13 @@ It builds its own client from your usual AWS credentials. Any other key is refus
 - **A transient failure of a write throws `TransientError`, and the write may or may not have landed.** Re-run the
   call, or check `store.generations(ref)`. The SDK's own retry is off for conditional writes, so a write that landed
   is not reported as a conflict.
+- **Reads are timed, and writes are not.** A read that has not finished after `readTimeoutMs` (2 s by default, after
+  AWS's guidance to retry a GET of under 512 KB after about 2 seconds) throws `TransientError`, and the store runs it
+  again. The timer covers the body as well, so a connection that sends its headers and then stalls is cut off too.
+  Raise it on a link too slow to deliver a read in that time. For the writes and listings, give your client a
+  timeout of its own.
 
-The [production checklist](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md) covers each item, with a sample IAM policy, and the ones every backend shares: a request timeout on your client, backups of the data and the registry, and a schedule for your loads.
+The [production checklist](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md) covers each item, with a sample IAM policy, and the ones every backend shares: a request timeout on your client for the requests the library does not time, backups of the data and the registry, and a schedule for your loads.
 
 ## Documentation
 

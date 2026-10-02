@@ -11,8 +11,29 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Added
+
+- **`S3Storage` times each read: `readTimeoutMs`, 2,000 ms by default.** Every `GetObject` and `HeadObject` the S3
+  storage and registry drivers send has `readTimeoutMs` to finish, the response body included, or it is aborted and
+  throws `TransientError` ("S3 GetObject timed out after 2000 ms"), which the store's read retry runs again. The AWS
+  SDK sets no timeout by default, so without one a read on a connection that stops answering waits as long as the
+  connection stays open, and the store's retry never gets a fault to retry. The timer covers the body, so a server that
+  sends its headers and then stalls is cut off too, and the abort releases the connection. The default follows AWS's
+  S3 guidance to retry a GET of under 512 KB after about 2 seconds. With the store's default retry, a read whose
+  request stalls on every attempt fails after about 8.35 s: 4 × 2,000 ms plus up to 350 ms of backoff, derived from
+  the defaults rather than measured. The timeout is set per request, through the request's abort signal, and never on
+  the HTTP handler, so writes, multipart uploads, deletes and listings are not timed, and a `client` you pass gets it
+  without being changed. `0` turns it off, and a value that is not an integer from 0 to 2,147,483,647 is refused with
+  `ValidationError` (a longer Node timer fires after 1 ms). Tests run a real `S3Client` against a stub endpoint that
+  stalls before the headers, mid-body and on a HEAD, and a child process checks that a read leaves no timer behind.
+
 ### Fixed
 
+- **The production guide's S3 client-timeout sample set a timeout that only logs.** It built the client with
+  `NodeHttpHandler({ requestTimeout: 3_000 })`, and on `@smithy/node-http-handler` 4.12.1 `requestTimeout` on its own
+  logs a warning when it passes and leaves the request running; it ends the request only beside
+  `throwOnRequestTimeout: true`. The sample sets `socketTimeout`, which ends a request whose connection has carried
+  nothing for that long and leaves an upload that is still sending alone.
 - **The CloudShell calibration script no longer stops in silence while it installs Node.** CloudShell ships Node 20, so
   the script installs Node 22 with nvm. nvm is not written for `set -eu`: sourcing `nvm.sh` returns 3 while no default
   Node is installed, and the script's `set -e` ended it there after printing "installing Node 22 with nvm", every time.

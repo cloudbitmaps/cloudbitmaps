@@ -11,7 +11,7 @@ checklist: work down the table, and follow each link for the detail.
 | Versioning and backups cover the data and the pointers | A restore must bring both back to the same point in time | [Versioning and backups](#versioning-and-backups) |
 | With versioning on, noncurrent versions expire after your restore window | Each generation a load collects is otherwise billed for as long as the bucket keeps it, out of sight | [Bucket lifecycle](#bucket-lifecycle) |
 | The bucket honors conditional writes, and the S3 SDK is 3.645.0 or later | Otherwise a write-once generation can be silently overwritten | [Conditional writes and the S3 SDK](#conditional-writes-and-the-s3-sdk) |
-| Your storage client has a request timeout | The library has none of its own; a hung request hangs the read | [Reliability](#reliability-retries-backoff--timeouts) |
+| Your storage client has a request timeout | The library times only S3 reads (`readTimeoutMs`); any other request that hangs hangs its call | [Reliability](#reliability-retries-backoff--timeouts) |
 | Your job re-runs a write after a transient error | Writes are never retried for you | [Reliability](#reliability-retries-backoff--timeouts) |
 | You know the request budget and the memory ceilings | A runaway call is refused, not billed | [Limits](#limits-the-per-op-budget-and-the-memory-ceilings) |
 | The keystore is backed up, if you encrypt | Losing the key makes the data permanently unreadable | [Encryption](encryption.md#before-you-encrypt) |
@@ -149,9 +149,29 @@ retry; the client `GcsStorage` builds keeps them and needs nothing.
 Only transient faults (they surface as `TransientError`) are retried. Errors that retrying cannot fix are never
 retried: `ValidationError`, `IntegrityError`, `NotFoundError` and `WriteConflictError`.
 
-**Set a timeout on your storage client.** The library has no timeout of its own, because one would abandon requests
-that are in flight. A timeout on your client turns a hung read into a transient fault that is retried. Build the
-client with the timeout and pass it to the backend:
+**S3 reads are timed for you.** `@cloudbitmaps/s3` gives each read it sends, every `GetObject` and `HeadObject` of a
+generation or a pointer, `readTimeoutMs` to finish: 2,000 ms by default, after AWS's S3 guidance to retry a GET of
+under 512 KB that has not answered in about 2 seconds. The timer covers the whole read, the SDK's own retries of it and
+the response body included, so a connection that sends its headers and then stops is cut off as well. A read that runs
+out of time throws `TransientError`, which the store's read retry, above, runs again, and its request is aborted,
+which frees the connection. So with the default retry policy, a read whose request stalls on every attempt fails with
+`TransientError` after 4 × 2,000 ms of timeouts plus up to 350 ms of backoff, about 8.35 s, rather than hanging. That
+bound is derived, not measured: four attempts, waits of up to 50, 100 and 200 ms between them, and one timed-out
+request per attempt; any request earlier in the same attempt that did answer adds its own time.
+
+```ts
+import { S3Storage } from '@cloudbitmaps/s3';
+
+const backend = new S3Storage({ bucket: 'my-bitmaps', readTimeoutMs: 5_000 }); // 0 turns the timeout off
+```
+
+Raise it on a link too slow to deliver a read inside the timeout, since such a read fails on every attempt. The timer
+is set on each request rather than on the client, so a `client` you pass gets it without being changed.
+
+**Set a timeout on your storage client for the rest.** The library times no write, because a write abandoned in
+flight can still land after it was given up on, and it times no S3 listing and no GCS or Azure Blob request. A timeout
+on your client turns a hung request into a transient fault: a read that the store retries, or a write that is yours to
+re-run. Build the client with the timeout and pass it to the backend:
 
 ```ts
 import { S3Client } from '@aws-sdk/client-s3';
@@ -161,11 +181,14 @@ import { S3Storage } from '@cloudbitmaps/s3';
 
 const client = new S3Client({
   region: 'us-east-1',
-  requestHandler: new NodeHttpHandler({ requestTimeout: 3_000, connectionTimeout: 1_000 }),
+  requestHandler: new NodeHttpHandler({ connectionTimeout: 1_000, socketTimeout: 30_000 }),
 });
 const store = new CloudRoaring({ storage: new S3Storage({ bucket: 'my-bitmaps', client }) });
 ```
 
+`socketTimeout` ends a request whose connection has carried nothing for that long, so an upload that is still sending is
+left alone. `requestTimeout` on its own only logs a warning when it passes: checked on `@smithy/node-http-handler`
+4.12.1 against a stub endpoint, it ends the request only with `throwOnRequestTimeout: true` beside it.
 `@smithy/node-http-handler` comes with the AWS SDK; declare it in your own `package.json` as well, since your code
 imports it. A `client` carries its own region and credentials, so passing `region` or `credentials` beside it is refused.
 

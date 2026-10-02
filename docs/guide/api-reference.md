@@ -73,7 +73,7 @@ pointer — configured from one bucket and one prefix, which is what makes them 
 |---|---|---|
 | `MemoryStorage` (`MemoryStorageOptions`) | `@cloudbitmaps/roaring` | `new MemoryStorage({ now? }?)` |
 | `LocalFsStorage` (`LocalFsStorageOptions`) | `@cloudbitmaps/roaring` | `new LocalFsStorage('/var/lib/cloudbitmaps', { now? }?)` — generations under `<root>/storage`, pointers under `<root>/registry`, which is also the layout `export-segments` expects. A root is for one process: instances in a process share a lock per row, two processes on one root are not fenced |
-| `S3Storage` | `@cloudbitmaps/s3` | `new S3Storage({ bucket, prefix?, client?, region?, endpoint?, pathStyle?, credentials?, maxObjectBytes?, partBytes?, now? })` — `client` or the four settings that build one, and both is refused |
+| `S3Storage` | `@cloudbitmaps/s3` | `new S3Storage({ bucket, prefix?, client?, region?, endpoint?, pathStyle?, credentials?, maxObjectBytes?, partBytes?, readTimeoutMs?, now? })` — `client` or the four settings that build one, and both is refused |
 | `GcsStorage` | `@cloudbitmaps/gcs` | `new GcsStorage({ bucket, prefix?, client?, projectId?, apiEndpoint?, maxObjectBytes?, simpleUploadThresholdBytes?, now? })` — `client` or the two settings that build one, and both is refused |
 | `AzureBlobStorage` | `@cloudbitmaps/azure-blob` | `new AzureBlobStorage({ containerClient, prefix?, maxObjectBytes?, blockBytes?, now? })` or `({ connectionString, container, prefix?, maxObjectBytes?, blockBytes?, now? })` — one or the other, and both is refused |
 
@@ -94,6 +94,11 @@ is built:
 | `GcsStorage` | `maxObjectBytes` | 5 TiB, GCS's per-object maximum | the largest object the backend will write and advertise; set it lower to fail fast on a runaway write; a positive safe integer |
 | `AzureBlobStorage` | `blockBytes` | 8 MiB | staged block size, and so the peak write memory; a positive safe integer |
 | `AzureBlobStorage` | `maxObjectBytes` | `blockBytes` × 50,000 (about 400 GiB at the default) | the largest blob the backend will write and advertise; raise it and `blockBytes` grows so the 50,000-block limit still covers it; a positive safe integer |
+
+**`S3Storage` times its reads.** `readTimeoutMs` (default 2,000; `0` turns the timeout off; an integer from 0 to
+2,147,483,647) is how long each `GetObject` and `HeadObject` either half sends may take, the response body included,
+before it is aborted and throws `TransientError` for the store's read retry. Writes and listings are not timed, and a
+`client` you pass gets the timeout without being changed ([why](production.md#reliability-retries-backoff--timeouts)).
 
 Each cloud backend builds its own SDK client unless you pass one. Every backend exposes its storage and registry as `.storage`
 and `.registry`, and accepts an injected `now` for deterministic tests. The three cloud backends refuse an option
@@ -747,6 +752,11 @@ the registry's create, compare-and-swap and delete, which writes a tombstone —
 the client is one you passed or one `S3Storage` built. Every other request keeps the client's retry. A transient
 failure of a conditional write throws `TransientError`, and the write may or may not have landed
 ([why](production.md#reliability-retries-backoff--timeouts)).
+
+Each read the backend makes, every `GetObject` and `HeadObject` of a generation or a pointer, is aborted if it has not
+finished, body included, after `readTimeoutMs` (2,000 ms by default), and throws `TransientError` with a message that
+says it timed out after that many ms. The timeout is per request, set through the request's abort signal, so the
+SDK's own retries of that request fall inside it and nothing else the client sends is timed.
 
 ### `@cloudbitmaps/gcs`
 
