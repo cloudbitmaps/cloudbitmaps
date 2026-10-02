@@ -102,9 +102,10 @@ so, and so do the module headers in the code.
   counts; Azure Blob one GET-class request more, for its two-request tail read. `costReport()` and `estimateCost()`
   price a load at those counts, averaged over the cadence: $12.36 per million steady single-part loads at the default
   prices: $12.00 when a load does not list, $17.80 when it lists (every 16th generation), and $11.60 for a segment's
-  first load. The average has a sixteenth of a listing and two pointer reads a load in it. The calibration harness expects a first load of 2 PUT-class and 4
-  GET-class requests and its rehearsal fixtures are re-captured, and the pages that quote a load's price or its
-  requests, the sizing tables and the cost guide's model say what the estimator now gives.
+  first load. The average has a sixteenth of a listing and two pointer reads a load in it. The calibration harness
+  expects a first load of 2 PUT-class and 4 GET-class requests and its rehearsal fixtures are re-captured, and the
+  pages that quote a load's price or its requests, the sizing tables and the cost guide's model say what the
+  estimator now gives.
 
 - **`store.load()` reads the segment's row once, and checks its next generation number instead of listing for it,
   which with the collection change above takes a steady load from 14 requests to 8.** A load read its registry row
@@ -127,10 +128,10 @@ so, and so do the module headers in the code.
   guard's tail read, the check) and a delete, where it was 4, 9 and a delete; a segment's first load is 2 and 4,
   where it was 4 and 7, and its second the same, where it was 4 and 8. GCS makes the same counts; Azure Blob one
   GET-class request more, for its two-request tail read. An encrypted segment's load reads its row once more, which the
-  cost model leaves out: it prices a cleartext segment's load, as its docs now say. `costReport()` and `estimateCost()` price a load at those counts, the check at one
-  request on every backend whatever `requestsPerPointerRead` and `requestsPerSizedRead` say: $12.36 per million
-  steady single-part loads at the default prices, where it was $23.60, and $11.60 for a segment's first load, where
-  it was $22.80.
+  cost model leaves out: it prices a cleartext segment's load, as its docs now say. `costReport()` and
+  `estimateCost()` price a load at those counts, the check at one request on every backend whatever
+  `requestsPerPointerRead` and `requestsPerSizedRead` say: $12.36 per million steady single-part loads at the default
+  prices, where it was $23.60, and $11.60 for a segment's first load, where it was $22.80.
 
   What else moves with it:
   - **A drop or a shred that lands while a load is consuming its ids.** A load that read a present cleartext row
