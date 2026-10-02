@@ -281,6 +281,9 @@ export async function collectAfterLoad(
  * The caller has published `generation` having numbered it with one existence check, so the row named
  * `generation - 1` and every generation the window newly evicts is below it. With `keep` of 0 or 1 that name is
  * the one a listing pass would also take, or one it left to a later pass: never a generation the listing keeps.
+ * That rests on the object the row named being in the bucket, as every operation of the library leaves it. A segment
+ * whose current object was gone before the load (a lifecycle rule or a partial restore did that, and
+ * `checkConsistency` reports it) loses by name the older generation a listing would have kept as its window.
  * `keep` of 2 or more is refused, because there the window counts the generations that exist, which a name cannot
  * know.
  *

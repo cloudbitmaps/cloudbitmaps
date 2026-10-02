@@ -441,7 +441,9 @@ describe("a name-only delete keeps invariant 4's re-proof", () => {
  * What a listing pass would have deleted, at the instant the load's publish landed, against what the load deleted.
  * Whatever the history (loads that were refused, a crashed load's orphan above the pointer, a stray below it, a
  * rollback, a retirement, `keep` changing between loads), the load deletes a subset: collecting by name may leave
- * a generation for the next listing, and never takes one the window would have kept.
+ * a generation for the next listing, and never takes one the window would have kept. The histories are those the
+ * library's own operations reach, in which the object the row names is always in the bucket; a segment whose current
+ * object was removed from outside is the one case where a name takes what a listing would keep.
  */
 describe('collecting by name never deletes what a listing would keep (property)', () => {
   type Op =

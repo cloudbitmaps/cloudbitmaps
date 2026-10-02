@@ -407,7 +407,10 @@ rules. It re-reads the row before it deletes. It refuses with `WriteConflictErro
 pointer has fallen below the generation the load published, which a rollback does, or a name purged and re-created that
 has not yet loaded as far. A publish landing meanwhile moves the pointer up and changes nothing. The generation it
 deletes is always below the one it published, so it never touches the current generation, and with a `keep` of 0 or 1
-it is one a listing pass would also take, or leave to a later pass: never one the listing would keep.
+it is one a listing pass would also take, or leave to a later pass: never one the listing would keep, given that
+the object the row named is in the bucket. On a segment whose current object is gone (a lifecycle rule or a partial
+restore did that, and `checkConsistency` reports it), the load that repairs it publishes over the gap and deletes by
+name the older generation a listing would have kept.
 
 A segment can be purged and re-created while a paginated listing is in flight, so both branches re-read the registry
 row afterwards and reconcile with it:

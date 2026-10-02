@@ -72,7 +72,9 @@ so, and so do the module headers in the code.
   generation the window promised to keep. What the name-only loads leave behind is collected by the listing within 16
   generations: the generations an earlier, wider `keep` held, an object a refused load left below the pointer, a
   generation a rollback or an erasure stranded. By name a load never takes a generation a listing would have kept: it
-  takes one a listing would also take, or leaves one to a later listing.
+  takes one a listing would also take, or leaves one to a later listing, given that the generation the row named is in
+  the bucket; where it was removed from outside, the load that repairs the segment deletes by name the older generation
+  a listing would have kept.
 
   The safety rules are the listing pass's. The row is re-read before the delete. A row that is gone, or a pointer that
   has fallen below the generation the load published (a rollback, or a name purged and re-created that has not loaded as
