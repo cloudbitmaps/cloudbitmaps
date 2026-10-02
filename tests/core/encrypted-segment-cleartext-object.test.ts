@@ -7,7 +7,10 @@ import { nextGeneration } from '@/core/generation-gc';
 import { holdsObject } from '@/core/crbm-storage-source';
 import { CrbmReader } from '@/core/crbm/reader';
 import { BufferReader } from '@/core/blob';
-import { IntegrityError } from '@/core/errors';
+import { IntegrityError, KeyUnavailableError } from '@/core/errors';
+import { loadSegment } from '@/core/load';
+import { publishGeneration } from '@/core/crbm-storage-source';
+import { roaringCodec } from '@/roaring-codec';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import type { GenKey, IStorageDriver, SegmentRef } from '@/index';
@@ -79,6 +82,52 @@ describe('a cleartext object under an encrypted segment', () => {
       new RegExp(`generation ${generation} is not encrypted, but it was opened with a key`),
     );
     await expect(seg.pin()).rejects.toBeInstanceOf(IntegrityError);
+  });
+
+  it("a cleartext load racing the segment's first keyed load is refused at its publish, so reads go on", async () => {
+    // An unguarded load with no keystore reads "no row", writes its cleartext object, and only then does the other
+    // writer's keyed first load publish, creating the row with its key. The cleartext publish onto that row is the
+    // one way a cleartext generation could become current under a key; it is refused before its compare-and-swap.
+    const { storage, registry } = world();
+    const keystore = new InProcessKeystore({ keys: { k2: randomBytes(32) }, activeKeyId: 'k2' });
+    const keyed = await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [7, 8], {
+      registry,
+      keystore,
+      publish: false,
+    });
+    const racing = new Proxy(storage, {
+      get(t, p, rx) {
+        const value = Reflect.get(t, p, rx) as unknown;
+        if (p !== 'putImmutable') return value;
+        return async (...args: Parameters<IStorageDriver['putImmutable']>) => {
+          const out = await storage.putImmutable(...args);
+          await publishGeneration(
+            registry,
+            { ...SEG, generation: 0 },
+            { wrappedDeks: keyed.wrappedDeks },
+          );
+          return out;
+        };
+      },
+    });
+    await expect(
+      loadSegment(
+        SEG,
+        [1, 2, 3],
+        { storage: racing, registry, codec: roaringCodec },
+        { allowEmpty: true },
+      ),
+    ).rejects.toBeInstanceOf(KeyUnavailableError);
+    const row = (await registry.get(SEG))!;
+    expect(row.currentGen).toBe(0);
+    expect(row.wrappedDeks?.length).toBeGreaterThan(0);
+    // The segment reads as the keyed load wrote it: no cleartext generation became current.
+    const reader = new CloudRoaring({
+      storage: new CrbmStorageChunkSource(storage, { registry, keystore }),
+      retry: false,
+      cache: { genTtlMs: 0 },
+    });
+    expect(await reader.segment('s').count()).toBe(2);
   });
 
   it('a rollback onto a cleartext write from before the key was made is refused, and reads go on', async () => {

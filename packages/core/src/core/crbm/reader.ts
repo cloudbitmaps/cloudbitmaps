@@ -96,7 +96,11 @@ export interface CrbmReaderOptions {
   readonly maxPayloadBytes?: number;
   /** Hard cap on the whole index region fetched/parsed from one object (default 8 MB). */
   readonly maxIndexBytes?: number;
-  /** Decryption context for an encrypted object (its DEK's AEAD + AAD builder). Required iff `FLAG_ENCRYPTED`. */
+  /**
+   * Decryption context for an encrypted object (its DEK's AEAD + AAD builder). Required iff the object's footer sets
+   * `FLAG_ENCRYPTED`: an encrypted object opened without one throws {@link ValidationError}, and an object that is
+   * not encrypted, opened with one, is refused with {@link IntegrityError}.
+   */
   readonly crypto?: CrbmCrypto;
   /**
    * Opaque marker for the *incarnation of the name* this object belongs to — the caller's own identity for the
@@ -326,8 +330,8 @@ export class CrbmReader {
     const generation = readU64(fview, FOOTER.generation, 'generation');
     // A key is given only for an encrypted segment. A cleartext object under one was never one of its generations:
     // a publish never adds a key to a segment that has generations, and refuses a cleartext object onto a row with
-    // one. So it is forged, corrupt, or a cleartext write that never published, and its index and metadata are not
-    // believed.
+    // one. So it is forged, corrupt, a cleartext write that never published, or one an earlier release published
+    // while racing the segment's first keyed load, and its index and metadata are not believed.
     if (!encrypted && options.crypto !== undefined) {
       throw new IntegrityError(
         `.crbm generation ${generation} is not encrypted, but it was opened with a key: a cleartext object where an ` +
