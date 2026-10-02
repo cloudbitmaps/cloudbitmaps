@@ -203,15 +203,16 @@ describe('a run that timed store.load()', () => {
   it('is derived, each load priced from the requests it made', () => {
     const f = figures.derive(asRealRun(), SOURCES);
     expect(f.loadVia).toBe('store.load()');
-    // A first load of a segment: the object, the collection's listing and the pointer; five pointer reads and the
-    // check of its generation number. A multipart object is a create, its parts and a complete in place of the one PUT.
-    expect(f.putsPerSingle).toBe(3);
-    expect(f.getsPerLoad).toBe(6);
+    // A first load of a segment: the object and the pointer, no listing since it has nothing to collect; three pointer
+    // reads and the check of its generation number. A multipart object is a create, its parts and a complete in
+    // place of the one PUT.
+    expect(f.putsPerSingle).toBe(2);
+    expect(f.getsPerLoad).toBe(4);
     expect(f.partsPerMultipart).toBe(2);
-    expect(f.putsPerMultipart).toBe(6);
-    expect(f.getsPerMultipart).toBe(6);
-    expect(f.usd.singleLoad).toBeCloseTo(3 * 5e-6 + 6 * GET_USD, 12);
-    expect(f.usd.multipartLoad).toBeCloseTo(6 * 5e-6 + 6 * GET_USD, 12);
+    expect(f.putsPerMultipart).toBe(5);
+    expect(f.getsPerMultipart).toBe(4);
+    expect(f.usd.singleLoad).toBeCloseTo(2 * 5e-6 + 4 * GET_USD, 12);
+    expect(f.usd.multipartLoad).toBeCloseTo(5 * 5e-6 + 4 * GET_USD, 12);
     expect(f.loads).toBe(fixture.phases.load.perLoad.length);
   });
 
@@ -264,8 +265,8 @@ describe('a run that timed store.load()', () => {
     const loadRows = f.rows.filter((r) => /store\.load|single-part|multipart/.test(String(r.says)));
     expect(loadRows.length).toBe(2);
     expect(loadRows.every((r) => r.label === 'derived')).toBe(true);
-    expect(f.shapes).toContainEqual([3, 6]);
-    expect(f.shapes).toContainEqual([6, 6]);
+    expect(f.shapes).toContainEqual([2, 4]);
+    expect(f.shapes).toContainEqual([5, 4]);
     expect(f.stageLedger.warm?.get).toBe(f.stageLedger.warm?.expectedGets);
   });
 
@@ -298,9 +299,9 @@ describe('a run that timed store.load()', () => {
       expect(
         refused((r) => {
           const l = r.phases.load.perLoad[0];
-          if (l !== undefined) l.put = 4; // a second listing: not what a load of a new segment makes
+          if (l !== undefined) l.put = 3; // a listing: not what a load of a new segment makes
         }),
-      ).toMatch(/not an object, a listing and a pointer write|do not add up to its load stage/);
+      ).toMatch(/not an object and a pointer write|do not add up to its load stage/);
       expect(
         refused((r) => {
           r.phases.load.requests.get += 1;
