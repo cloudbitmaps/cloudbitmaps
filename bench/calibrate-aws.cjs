@@ -879,7 +879,9 @@ async function main() {
 
     const { S3Storage } = await import('@cloudbitmaps/s3');
     const { CloudRoaring } = await import('@cloudbitmaps/roaring');
-    const storage = new S3Storage({ client, bucket, prefix: STORE_PREFIX });
+    // `readTimeoutMs: 0` stated, not left to the default: a timed request must not be cut short, whatever the S3
+    // package's default becomes.
+    const storage = new S3Storage({ client, bucket, prefix: STORE_PREFIX, readTimeoutMs: 0 });
 
     /** Re-check the ceiling DURING a stage, not only at its end — loads have no fixed op count. */
     const checkCeiling = () => {
