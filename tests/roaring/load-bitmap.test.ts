@@ -11,6 +11,12 @@ import { MemoryStorageDriver } from '@/drivers/memory';
 import { aadFor } from '@/core/crypto';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { SafeBitmap, roaringCodec } from '@/roaring-codec';
+import { checkPortableLayout, containerPayloads } from '@/portable/layout';
+import { IntegrityError } from '@/core/errors';
+import { bitsetOf, craftPortable } from '../helpers/portable-bytes';
+import type { CodecBitmap, CodecInterface } from '@/core/codec';
+import { loadSegment } from '@/core/load';
+import { MemoryRegistryDriver } from '@/drivers/memory';
 
 /**
  * A load from a bitmap writes the generation the same ids write, byte for byte.
@@ -183,6 +189,91 @@ describe('encodeChunks(): each chunk exactly as fromValues → optimize → seri
     expect(Object.prototype.toString.call(chunks)).toBe('[object Generator]');
     const iterator = chunks[Symbol.iterator]();
     expect(iterator.next().value).toMatchObject({ chunkKey: 0, cardinality: 4 });
+  });
+
+  it('cuts lazily: bytes that end after the first of three containers yield it, then refuse the second', () => {
+    // A cut that built every payload on its first step would refuse on that step instead.
+    const whole = craftPortable([
+      { key: 0, kind: 'array', values: [7] },
+      { key: 1, kind: 'array', values: [8] },
+      { key: 2, kind: 'array', values: [9] },
+    ]);
+    const firstBodyEnds = 8 + 3 * 4 + 3 * 4 + 2; // cookie and count, the two headers, one u16 value
+    const iterator = containerPayloads(whole.subarray(0, firstBodyEnds));
+    expect(iterator.next().value).toMatchObject({ chunkKey: 0, cardinality: 1 });
+    expect(() => iterator.next()).toThrow(IntegrityError);
+  });
+});
+
+describe('the cut re-checks every container it copies', () => {
+  // The bytes it cuts are the native serializer's, of a bitmap decoded from bytes that passed the structural check.
+  // A buffer another thread was still writing during the call can decode into a bitmap the check never saw, whose
+  // own serialization is then inconsistent: each container must hold what its header says, or nothing is written.
+  const good = { key: 0, kind: 'array', values: [1, 2] } as const;
+  it.each([
+    ['an array out of order', { key: 1, kind: 'array', values: [5, 4] } as const],
+    ['an array with a duplicate', { key: 1, kind: 'array', values: [4, 4] } as const],
+    [
+      'a bitset whose header overstates its bits',
+      {
+        key: 1,
+        kind: 'bitset',
+        bits: bitsetOf(Array.from({ length: 5_000 }, (_, i) => 2 * i)),
+        cardinality: 5_001,
+      },
+    ] as const,
+    [
+      'overlapping runs',
+      {
+        key: 1,
+        kind: 'run',
+        runs: [
+          [0, 9],
+          [5, 9],
+        ],
+      } as const,
+    ],
+    [
+      'a run past the end of its container',
+      { key: 1, kind: 'run', runs: [[65_530, 9]], cardinality: 6 } as const,
+    ],
+    [
+      'runs that cover other than the header says',
+      { key: 1, kind: 'run', runs: [[0, 9]], cardinality: 4 } as const,
+    ],
+    ['a key out of order', { key: 0, kind: 'array', values: [3] } as const],
+  ])('%s → IntegrityError at that container, after the ones before it', (_, bad) => {
+    const iterator = containerPayloads(craftPortable([good, bad as never]));
+    expect(iterator.next().value).toMatchObject({ chunkKey: 0, cardinality: 2 });
+    expect(() => iterator.next()).toThrow(IntegrityError);
+  });
+
+  it('a load whose decode saw bytes the check did not throws IntegrityError and publishes nothing', async () => {
+    // The race, made deterministic: this codec checks the bytes it is given, then decodes a copy whose bitset has
+    // had bits cleared, as a threadpool write landing between the check and the decode would leave it.
+    const ids = Array.from({ length: 32_768 }, (_, i) => at(5, 2 * i));
+    const serialized = new RoaringBitmap32(ids).serialize('portable');
+    const racing: CodecInterface = {
+      ...roaringCodec,
+      safeDeserialize: (bytes, max, options) => {
+        roaringCodec.safeDeserialize(bytes, max, options); // passes: these are the bytes as they were
+        const changed = new Uint8Array(bytes);
+        changed.fill(0, changed.length - 64); // 256 bits of the bitset's body gone, its header unchanged
+        expect(() => checkPortableLayout(changed)).toThrow(IntegrityError);
+        const decoded = RoaringBitmap32.deserialize(changed, 'portable');
+        return new (SafeBitmap as unknown as new (b: unknown) => CodecBitmap)(decoded);
+      },
+    };
+    const storage = new MemoryStorageDriver();
+    const registry = new MemoryRegistryDriver();
+    const err = await loadSegment(SEG, { serialized }, { storage, registry, codec: racing }).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(IntegrityError);
+    expect(await registry.get(SEG)).toBeNull();
+    const objects: number[] = [];
+    for await (const k of storage.list(SEG)) objects.push(k.generation);
+    expect(objects).toEqual([]);
   });
 });
 

@@ -128,30 +128,33 @@ const SINGLE_RUN_HEADER_BYTES = 9;
  * native serializer writes for a bitmap holding only that container's low 16 bits, so a chunk cut from a whole
  * bitmap is the chunk built from its ids, provided the whole bitmap was encoded canonically first.
  *
- * Lazy, one container per step, and header-only: it reads each container's key, cardinality and kind (and a run
- * container's run count) and copies the body, reading no value. It is for bytes the native serializer has just
- * written from a bitmap that passed {@link checkPortableLayout}, never for bytes from elsewhere; it still refuses a
- * header or a body that runs past the buffer.
+ * Lazy, one container per step, and each container checked as it is copied, by the same rules as
+ * {@link checkPortableLayout} (keys in order, and each body holding what its header says), so a stored chunk is
+ * never one a reader refuses. The bytes are the native serializer's, of a bitmap decoded from bytes that passed the
+ * check, so on every honest input this finds nothing. It is what stands between a store and a bitmap decoded from a
+ * buffer another thread was still writing during the load's call: the check saw the bytes as they were, the decode
+ * as they became.
  *
- * @throws {IntegrityError} if a part of the bitmap runs past the buffer, or the cookie is unrecognized.
+ * @throws {IntegrityError} at the first container that runs past the buffer or does not hold what its header says.
  */
 export function* containerPayloads(bytes: Uint8Array): Generator<EncodedChunk> {
-  const length = bytes.byteLength;
-  if (length === 0) return;
+  if (bytes.byteLength === 0) return;
   const { view, count, runFlagsAt, descriptiveAt, bodiesAt } = header(bytes);
   let pos = bodiesAt;
+  let previousKey = -1;
   for (let i = 0; i < count; i++) {
     const key = view.getUint16(descriptiveAt + i * 4, true);
+    if (key <= previousKey) {
+      throw new IntegrityError(
+        `portable roaring: container keys are not strictly ascending (${previousKey} then ${key} at index ${i})`,
+      );
+    }
+    previousKey = key;
     const cardinality = view.getUint16(descriptiveAt + i * 4 + 2, true) + 1;
     const isRun =
       runFlagsAt >= 0 && ((bytes[runFlagsAt + (i >>> 3)] as number) & (1 << (i & 7))) !== 0;
-    if (isRun && pos + 2 > length) throw overrun(bytes, pos, 2, `container ${i} (run count)`);
-    const size = isRun
-      ? 2 + 4 * view.getUint16(pos, true)
-      : cardinality > ARRAY_MAX_CARDINALITY
-        ? BITMAP_CONTAINER_BYTES
-        : cardinality * 2;
-    if (pos + size > length) throw overrun(bytes, pos, size, `container ${i}`);
+    const kind: ContainerKind = isRun ? RUN : cardinality > ARRAY_MAX_CARDINALITY ? BITMAP : ARRAY;
+    const size = checkContainer(bytes, view, pos, kind, cardinality, i);
     const headerBytes = isRun ? SINGLE_RUN_HEADER_BYTES : SINGLE_HEADER_BYTES;
     const payload = new Uint8Array(headerBytes + size);
     const out = new DataView(payload.buffer);
@@ -230,7 +233,6 @@ function header(bytes: Uint8Array): Header {
 function walk(bytes: Uint8Array, out: PortableContainer[] | null): number {
   if (bytes.byteLength === 0) return 0;
   const { view, count, runFlagsAt, descriptiveAt, offsetsAt, bodiesAt } = header(bytes);
-  const length = bytes.byteLength;
   let pos = bodiesAt;
 
   let previousKey = -1;
@@ -257,38 +259,57 @@ function walk(bytes: Uint8Array, out: PortableContainer[] | null): number {
       }
     }
 
-    let size: number;
-    if (kind === ARRAY) {
-      size = cardinality * 2;
-      if (pos + size > length) throw overrun(bytes, pos, size, `container ${i} (array)`);
-      checkArray(view, pos, cardinality, i);
-    } else if (kind === BITMAP) {
-      size = BITMAP_CONTAINER_BYTES;
-      if (pos + size > length) throw overrun(bytes, pos, size, `container ${i} (bitmap)`);
-      const bits = popcount(view, pos);
-      if (bits !== cardinality) {
-        throw new IntegrityError(
-          `portable roaring: container ${i} (bitmap) holds ${bits} values, but its header says ${cardinality}`,
-        );
-      }
-    } else {
-      if (pos + 2 > length) throw overrun(bytes, pos, 2, `container ${i} (run count)`);
-      const runs = view.getUint16(pos, true);
-      size = 2 + runs * 4;
-      if (pos + size > length) throw overrun(bytes, pos, size, `container ${i} (run)`);
-      const covered = checkRuns(view, pos + 2, runs, i);
-      // A header cannot state zero values, so this is also what refuses a run container with no runs, the shape
-      // that crashes the native addon when anything iterates it.
-      if (covered !== cardinality) {
-        throw new IntegrityError(
-          `portable roaring: container ${i} (run) covers ${covered} values, but its header says ${cardinality}`,
-        );
-      }
-    }
+    const size = checkContainer(bytes, view, pos, kind, cardinality, i);
     out?.push({ key, cardinality, kind, offset: pos });
     pos += size;
   }
   return pos;
+}
+
+/**
+ * Check one container's body at `pos`: that it fits the buffer and holds what its header says (see the module
+ * header for the rules). Returns the body's size.
+ */
+function checkContainer(
+  bytes: Uint8Array,
+  view: DataView,
+  pos: number,
+  kind: ContainerKind,
+  cardinality: number,
+  i: number,
+): number {
+  const length = bytes.byteLength;
+  if (kind === ARRAY) {
+    const size = cardinality * 2;
+    if (pos + size > length) throw overrun(bytes, pos, size, `container ${i} (array)`);
+    checkArray(view, pos, cardinality, i);
+    return size;
+  }
+  if (kind === BITMAP) {
+    if (pos + BITMAP_CONTAINER_BYTES > length) {
+      throw overrun(bytes, pos, BITMAP_CONTAINER_BYTES, `container ${i} (bitmap)`);
+    }
+    const bits = popcount(view, pos);
+    if (bits !== cardinality) {
+      throw new IntegrityError(
+        `portable roaring: container ${i} (bitmap) holds ${bits} values, but its header says ${cardinality}`,
+      );
+    }
+    return BITMAP_CONTAINER_BYTES;
+  }
+  if (pos + 2 > length) throw overrun(bytes, pos, 2, `container ${i} (run count)`);
+  const runs = view.getUint16(pos, true);
+  const size = 2 + runs * 4;
+  if (pos + size > length) throw overrun(bytes, pos, size, `container ${i} (run)`);
+  const covered = checkRuns(view, pos + 2, runs, i);
+  // A header cannot state zero values, so this is also what refuses a run container with no runs, the shape
+  // that crashes the native addon when anything iterates it.
+  if (covered !== cardinality) {
+    throw new IntegrityError(
+      `portable roaring: container ${i} (run) covers ${covered} values, but its header says ${cardinality}`,
+    );
+  }
+  return size;
 }
 
 /**
