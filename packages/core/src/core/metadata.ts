@@ -7,9 +7,6 @@
  */
 import { isWellFormedString } from './validate';
 
-/** A generation's metadata: string keys, string or finite-number values, no nesting. */
-export type GenerationMetadata = Readonly<Record<string, string | number>>;
-
 /** Cap on the canonical JSON of one generation's metadata, in UTF-8 bytes (braces and quotes included). */
 export const MAX_METADATA_BYTES = 1024;
 /** Cap on one metadata key, in UTF-8 bytes. */
@@ -18,7 +15,7 @@ export const MAX_METADATA_KEY_BYTES = 128;
 const utf8Length = (s: string): number => new TextEncoder().encode(s).length;
 
 /**
- * Validate `value` as {@link GenerationMetadata} and return its canonical JSON: keys sorted by UTF-16 code unit,
+ * Validate `value` as generation metadata (`GenerationMetadata` in the ports) and return its canonical JSON: keys sorted by UTF-16 code unit,
  * each key and value as `JSON.stringify` writes it, no whitespace. Key order therefore never changes the bytes.
  * `fail` raises the error the boundary calls for. The empty object passes and returns `{}`: whether it may be
  * stored is the caller's rule.

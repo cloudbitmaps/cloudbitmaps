@@ -11,7 +11,6 @@
 import { ValidationError } from './errors';
 import type { BlobSink } from './blob';
 import type { WrappedDek } from './crypto';
-import type { GenerationMetadata } from './metadata';
 
 /** Opaque optimistic-concurrency token — unique per write, compared by equality only. */
 export type Token = string;
@@ -234,6 +233,12 @@ export type GovernanceMeta = Record<string, unknown>;
  * neither the count nor the metadata.
  */
 export type RegistrySummary = ClearRegistrySummary | SealedRegistrySummary;
+
+/**
+ * A generation's metadata: string keys, string or finite-number values, no nesting, at most 1 KiB as canonical JSON.
+ * The rules are in `core/metadata.ts`.
+ */
+export type GenerationMetadata = Readonly<Record<string, string | number>>;
 
 /** {@link RegistrySummary} on a cleartext segment. */
 export interface ClearRegistrySummary {
