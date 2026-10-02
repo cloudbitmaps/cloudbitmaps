@@ -585,12 +585,39 @@ describe('a run that discarded a sample after a transient fault', () => {
     );
   });
 
+  // Each bound on its own: the file's and its plan's, a run's and a stage's. A file that differs from the harness in any
+  // one of them is refused, whatever the others say.
+  it("is refused when any one of its four bounds on discards is not the harness's", () => {
+    for (const [what, loosen] of [
+      ["the file's bound a run", (r: Run) => r.discards !== undefined && (r.discards.perRun = 4)],
+      [
+        "the file's bound a stage",
+        (r: Run) => r.discards !== undefined && (r.discards.perStage = 3),
+      ],
+      [
+        "the plan's bound a run",
+        (r: Run) => r.workload.plan.discards !== undefined && (r.workload.plan.discards.perRun = 4),
+      ],
+      [
+        "the plan's bound a stage",
+        (r: Run) =>
+          r.workload.plan.discards !== undefined && (r.workload.plan.discards.perStage = 3),
+      ],
+    ] as const) {
+      const run = withDiscards(asRealRun(), both());
+      expect(refused(run), what).toBe('');
+      loosen(run);
+      expect(refused(run), what).toMatch(/its bounds on discards .* are not the harness's/);
+    }
+  });
+
   // The allowance is what the projection held the run to: three samples at the costliest one its plan makes.
   it('is refused when its allowance for discards is not three samples at the costliest its plan makes', () => {
     expect(refused(withDiscards(asRealRun(), both()))).toBe('');
     for (const edit of [
-      (a: { get: number; costliestSample: number }) => (a.get = 1),
-      (a: { get: number; costliestSample: number }) => (a.costliestSample = 206),
+      (a: { put: number; get: number; costliestSample: number }) => (a.get = 1),
+      (a: { put: number; get: number; costliestSample: number }) => (a.costliestSample = 206),
+      (a: { put: number; get: number; costliestSample: number }) => (a.put = 1),
     ]) {
       const run = withDiscards(asRealRun(), both());
       if (run.projectedDiscards !== undefined) edit(run.projectedDiscards);
