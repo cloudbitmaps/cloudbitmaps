@@ -19,7 +19,9 @@
  * newer one, never as bytes of one under the fence of the other. Everything in the response is untrusted: it is
  * refused with {@link IntegrityError} unless it is a `200` with an `ETag` and a length no larger than
  * {@link MAX_ROW_BYTES}, checked before a byte of the body is read, and the body is counted as it arrives, so a length
- * that understates it cannot make the read hold more than it said, nor more than the cap.
+ * that understates it cannot make the read hold more than it said, nor more than the cap. With `readTimeoutMs` set,
+ * the read is cut off after that long, its body included, and throws {@link TransientError}; writes and listings are
+ * not timed (see `read-timeout.ts`).
  *
  * **Deployment requirements** (a policy that violates these silently corrupts the registry):
  * - The principal needs read, write and list on the container (`Storage Blob Data Contributor` covers it).
@@ -40,6 +42,7 @@ import {
 import type { ObjectRegistryStore, ObjectRow } from '@cloudbitmaps/core/driver-kit';
 import type { BlobDownloadResponseParsed, ContainerClient } from '@azure/storage-blob';
 import { isConditionalConflict, isNotFound, isTransient } from './azure-errors';
+import { resolveReadTimeoutMs, timedRead } from './read-timeout';
 import { newWriteId, storedWriteId, writeIdMetadata } from './write-id';
 
 export interface AzureBlobRegistryDriverOptions {
@@ -49,42 +52,50 @@ export interface AzureBlobRegistryDriverOptions {
   readonly prefix?: string;
   /** Injected clock for `createdAt`/`updatedAt`; defaults to `Date.now`. */
   readonly now?: () => number;
+  /**
+   * How long a row's read may take, in ms, its body included, before it is aborted and throws `TransientError`. The
+   * clock starts at the call into the SDK, so time waiting for a socket or a credential's token counts. Writes and
+   * listings are not timed. `0`, the default, sets no timeout; an integer from 0 to 2,147,483,647.
+   */
+  readonly readTimeoutMs?: number;
 }
 
 /** The three calls {@link ObjectStoreRegistry} needs, in Azure's dialect. */
 class AzureBlobStore implements ObjectRegistryStore {
   readonly label = 'Azure Blob';
 
-  constructor(private readonly container: ContainerClient) {}
+  constructor(
+    private readonly container: ContainerClient,
+    private readonly readTimeoutMs: number,
+  ) {}
 
   async read(key: string): Promise<ObjectRow | null> {
     const blob = this.container.getBlockBlobClient(key);
-    // Aborted on every refusal: the SDK throws on a response with no ETag or no length and leaves its body unread,
-    // with the socket under it open, and this is the one handle on that request left. After a response that was read
-    // whole, or answered with an error the SDK read whole, the abort does nothing.
-    const request = new AbortController();
-    let res: BlobDownloadResponseParsed;
-    try {
-      res = await blob.download(0, undefined, {
-        abortSignal: request.signal,
-        // The SDK would re-request the rest of a body cut off part-way, from where it stopped; with none, the bytes
-        // come from this one response or the read fails.
-        maxRetryRequests: 0,
-      });
-    } catch (err) {
-      request.abort();
-      if (isNotFound(err)) return null;
-      // The SDK's own refusal of a response with no ETag or no length.
-      if (err instanceof RangeError) {
-        throw new IntegrityError(`registry read carries no usable ETag or length: ${key}`);
+    // The read's signal is aborted if it fails or times out, which lets go of a response the SDK refused and left
+    // unread, or of one the timer cut off.
+    return timedRead('download', this.readTimeoutMs, async (abortSignal) => {
+      let res: BlobDownloadResponseParsed;
+      try {
+        res = await blob.download(0, undefined, {
+          abortSignal,
+          // The SDK would re-request the rest of a body cut off part-way, from where it stopped; with none, the bytes
+          // come from this one response or the read fails.
+          maxRetryRequests: 0,
+        });
+      } catch (err) {
+        if (isNotFound(err)) return null;
+        // The SDK's own refusal of a response with no ETag or no length.
+        if (err instanceof RangeError) {
+          throw new IntegrityError(`registry read carries no usable ETag or length: ${key}`);
+        }
+        throw mapError(err);
       }
-      throw mapError(err);
-    }
-    try {
-      return await readRow(res, key, new URL(blob.url).host, () => request.abort());
-    } catch (err) {
-      throw err instanceof IntegrityError ? err : mapError(err);
-    }
+      try {
+        return await readRow(res, key, new URL(blob.url).host);
+      } catch (err) {
+        throw err instanceof IntegrityError ? err : mapError(err);
+      }
+    });
   }
 
   async write(
@@ -133,20 +144,14 @@ class AzureBlobStore implements ObjectRegistryStore {
  *
  * The response is checked before a byte of the body is read, and refused unless it is a `200` (a `206` holds part of
  * the blob) from the container's own host, with an `ETag` and a length no larger than {@link MAX_ROW_BYTES}. The body
- * is refused at the first byte past that length. A refused response is let go: the body stream is destroyed and the
- * request aborted, so the socket closes rather than holding a response nobody reads.
+ * is refused at the first byte past that length. A refused response is let go: the body stream is destroyed, and the
+ * read's request aborted when it fails, so the socket closes rather than holding a response nobody reads.
  */
-function readRow(
-  res: BlobDownloadResponseParsed,
-  key: string,
-  host: string,
-  abort: () => void,
-): Promise<ObjectRow> {
+function readRow(res: BlobDownloadResponseParsed, key: string, host: string): Promise<ObjectRow> {
   return new Promise<ObjectRow>((resolve, reject) => {
     const body: (NodeJS.ReadableStream & { destroy?: () => void }) | undefined =
       res.readableStreamBody;
     if (body === undefined) {
-      abort();
       reject(new IntegrityError(`registry read returned no body: ${key}`));
       return;
     }
@@ -157,12 +162,12 @@ function readRow(
       if (settled) return;
       settled = true;
       body.destroy?.();
-      abort();
       reject(err);
     };
     // Listened for before anything can end the stream, and for its whole life: a body stream that errors with nothing
-    // listening throws out of the event, where no caller can catch it, and the abort makes it error. The read aborts
-    // only once it has settled, so an `AbortError` before then is the SDK's word for a connection cut off mid-body.
+    // listening throws out of the event, where no caller can catch it, and an abort makes it error. The read is aborted
+    // only once it has failed, or by its timer, whose error the read has already thrown, so an `AbortError` this read
+    // settles with is the SDK's word for a connection cut off mid-body.
     body.on('error', (err: unknown) =>
       fail(
         (err as { name?: unknown } | null)?.name === 'AbortError'
@@ -248,7 +253,7 @@ function mapError(err: unknown): unknown {
 export class AzureBlobRegistryDriver extends ObjectStoreRegistry {
   constructor(options: AzureBlobRegistryDriverOptions) {
     super(
-      new AzureBlobStore(options.containerClient),
+      new AzureBlobStore(options.containerClient, resolveReadTimeoutMs(options.readTimeoutMs)),
       normalizeObjectPrefix(options.prefix),
       options.now ?? ((): number => Date.now()),
     );
