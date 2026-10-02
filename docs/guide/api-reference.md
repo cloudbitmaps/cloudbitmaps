@@ -271,7 +271,7 @@ wrote)
 | `storage` **(required)** | `StorageBackend \| IStorageDriver \| StorageChunkSource` | where everything lives |
 | `cache?` | `CacheOptions` | `maxChunks?` (decoded chunks held in RAM, default 1024) · `ttlMs?` · `genTtlMs?` (default 2000 ms; [how soon a reader sees a new load](reading.md#how-soon-a-reader-sees-a-new-load); needs a backend) · `readerMax?` (open `.crbm` readers, default 1024) · `readerMaxBytes?` (their parsed indices, default 64 MiB) |
 | `encryption?` | `EncryptionOptions` | `keystore?` · `required?` — both need a backend, since the wrapped DEK lives in the registry |
-| `retry?` | `RetryOptions \| false` | a **partial** `RetryPolicy` (anything omitted keeps its `DEFAULT_RETRY_POLICY` value) plus `onRetry?`, for the transient retry of every read that answers a query (an erasure's reads and a load's guard read are not retried); `false` turns it off. Writes are never retried ([Resilience](#resilience-the-store-wires-this-by-default)) |
+| `retry?` | `RetryOptions \| false` | a **partial** `RetryPolicy` (anything omitted keeps its `DEFAULT_RETRY_POLICY` value) plus `onRetry?`, for the transient retry of every read that answers a query, and of the reads a load's guard and an erasure make along the way; `false` turns it off. Writes are never retried ([Resilience](#resilience-the-store-wires-this-by-default)) |
 | `metrics?` | `IMetricsSink` | typed metric events; defaults to a no-op |
 | `budget?` | `BudgetOption` | `{ maxRequests }` or `false` |
 | `seams?` | `SeamOptions` | `clock?` · `rng?` — determinism, for tests and replayable jobs |

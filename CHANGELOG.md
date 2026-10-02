@@ -58,6 +58,13 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **One transient read fault no longer fails a whole load or erasure.** A load's guard read of the current
+  generation, and an erasure's reads (the generation it rewrites and each of its chunks, the read-back that verifies
+  the generation it wrote, and any other generation that may still hold the id) went to the raw driver once, so a
+  single throttle or reset there failed the call. They now run under the store's read retry (`retry`, on by default),
+  with its policy and `onRetry`; `loadSegment` and `eraseIdFromSegment` take it as an optional `readRetry` dep, and
+  without one each read is made once. The writes are still sent once. This holds on every backend, with or without a
+  read timeout. Tests fault each of those reads once, transiently and otherwise.
 - **The production guide's S3 client-timeout sample set a timeout that only logs.** It built the client with
   `NodeHttpHandler({ requestTimeout: 3_000 })`, and on `@smithy/node-http-handler` 4.12.1 `requestTimeout` on its own
   logs a warning when it passes and leaves the request running; it ends the request only beside

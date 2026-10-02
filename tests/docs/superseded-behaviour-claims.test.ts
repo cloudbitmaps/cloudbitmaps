@@ -554,6 +554,21 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
     ),
     why: 'the S3 package times each read when `readTimeoutMs` is set — say what is not timed: any read while it is unset, the writes, S3 listings, and every GCS and Azure Blob request',
   },
+  // A load's guard read and an erasure's reads run under the store's read retry, so no page may say they are not
+  // retried. The write itself is still sent once; say that instead.
+  {
+    claim: new RegExp(g(String.raw`nor are an erasure(?:'|’)s reads`), 'i'),
+    why: "an erasure's reads and a load's guard read are retried as the store's reads are; only the writes are not",
+  },
+  {
+    claim: new RegExp(
+      g(
+        String.raw`(?:an erasure(?:'|’)s reads|a load(?:'|’)s guard read)(?: and (?:an erasure(?:'|’)s reads|a load(?:'|’)s guard read))? (?:is|are) not retried`,
+      ),
+      'i',
+    ),
+    why: "an erasure's reads and a load's guard read are retried as the store's reads are; only the writes are not",
+  },
   {
     claim: new RegExp(g(String.raw`no \`?AbortSignal\`? anywhere in (?:this|the) library`), 'i'),
     why: "the S3 package aborts a read that runs past `readTimeoutMs` through its request's abort signal — say that no write is timed",
@@ -1012,6 +1027,10 @@ describe('no document claims behaviour this library does not have', () => {
     ' * if the write did complete, the winner’s generation is necessarily\n * higher, which puts ours below its pointer',
     "the winner's generation is always higher",
     ' * **No orphan is left behind by a\n * refused rewrite**, and it is worth saying why',
+    // What the store retries.
+    "Writes are not retried, and nor are an erasure's reads, a load's guard read, or the calls",
+    "(an erasure's reads and a load's guard read are not retried)",
+    "a load's guard read is not retried",
     // What the library times.
     'The library has no timeout of its own, because one would abandon requests',
     '| The library has none of its own; a hung request hangs the read |',
@@ -1133,6 +1152,8 @@ describe('no document claims behaviour this library does not have', () => {
     'The library times no write, deliberately, since a timeout of its own would abandon a write in flight.',
     'An S3 write has no timeout of its own.',
     'The GCS and Azure Blob packages set no timeout of their own.',
+    "An erasure's writes are not retried; its reads are.",
+    "An erasure's reads are retried, and its writes are not retried.",
   ])('leaves %j alone', (text) => {
     expect(hitsIn('x.md', text)).toEqual([]);
   });

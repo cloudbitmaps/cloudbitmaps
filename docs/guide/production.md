@@ -228,7 +228,7 @@ imports it. A `client` carries its own region and credentials, so passing `regio
 | Calls | Retried for you? |
 |---|---|
 | Reads that answer a query: `has`, `count`, `iterate`, the combines (the `*Into` verbs' reads of their operands included), a pinned handle's reads, and `pin()` | Yes, with backoff; `retry` tunes it |
-| Writes: `load`, the write half of the `*Into` verbs, and the lifecycle helpers (`eraseSubject`, `dropSegment`, `retireExpired`, `rollback` and the rest) | No: run the call again |
+| Writes: `load`, the write half of the `*Into` verbs, and the lifecycle helpers (`eraseSubject`, `dropSegment`, `retireExpired`, `rollback` and the rest) | No: run the call again. The reads they make along the way are retried, with backoff: a load guard's read of the current generation, and an erasure's reads of the generation it rewrites, of the one it wrote, and of any other that may still hold the id |
 | Registry reads and listings: `exists`, `segments`, `generations`, `getRetention`, and the registry scan that `subjectReport`, `exportSegments` and `checkConsistency` start from | No: call it again |
 
 A write that lands and then loses its response looks, from the error alone, like a write that failed, and replaying it
