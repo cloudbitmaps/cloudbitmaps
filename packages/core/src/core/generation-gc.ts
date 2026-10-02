@@ -25,8 +25,8 @@ export interface GenerationDeps {
 /**
  * The generation number a writer should use for the segment's **next** object: one above the highest generation
  * the registry points at *or* that is present in Storage — whichever is higher. The erasure rewrite numbers this
- * way; a load numbers with {@link nextLoadGeneration}, which comes here only when its existence check finds the
- * number taken.
+ * way; a load numbers with {@link nextLoadGeneration}, which lists as this does when its existence check finds the
+ * number taken or cannot answer.
  *
  * Both are consulted because they can disagree. A load that wrote its object and crashed before publishing leaves
  * an object *above* `currentGen`; a writer that consulted only the pointer would pick that same number and hit the
@@ -60,7 +60,8 @@ async function aboveEverything(
  * {@link nextGeneration} numbers. The check finding the number taken (a crashed load's orphan, the object of a
  * load still in flight, or the generations a rollback left above the pointer) and the check failing in any way
  * other than "not found" both take the listing, so the listing stays the authority whenever the check cannot
- * prove the number free.
+ * prove the number free. A failed check falls back silently: nothing records it, and what it costs is the listing,
+ * one more PUT-class request on S3, so a fault that makes every check fail shows only in the bill.
  *
  * A load can therefore take a number **below** an object already in the bucket: an orphan at `currentGen + 2`
  * with `currentGen + 1` free is numbered under, not past. That is as safe as a listing's number. A load never
@@ -163,7 +164,7 @@ export async function gcOrphanGenerations(
   // On the ordinary branch, take the LOWER of the two pointers. Within one incarnation the pointer only moves
   // forward, so a publish landing mid-listing leaves the cutoff exactly where it was and routine GC still
   // collects — refusing on any token change would make GC useless on a busy segment. But the pointer is only
-  // monotonic *within* an incarnation: `nextGeneration` restarts at 0 once a row is purged and the bucket
+  // monotonic *within* an incarnation: the numbering restarts at 0 once a row is purged and the bucket
   // emptied, so a name that was retired and re-created wears a LOWER `currentGen` than the one read before the
   // listing — and `rollbackSegment` lets an operator lower it deliberately — so `g < current` would then select
   // a live object. `Math.min` is what makes a

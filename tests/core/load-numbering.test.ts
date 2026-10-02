@@ -1,5 +1,6 @@
 import fc from 'fast-check';
 import { loadSegment } from '@/core/load';
+import { setSegmentRetention } from '@/core/retention';
 import { rollbackSegment } from '@/core/rollback';
 import { TransientError } from '@/core/errors';
 import type { GenKey, IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
@@ -91,6 +92,19 @@ describe('a load numbers its generation from the row it read, with one existence
 
   it("checks 0 on a segment's first load", async () => {
     const w = world();
+    const r = await loadSegment(SEG, [1], w.deps);
+    expect(r).toMatchObject({ generation: 0, published: true });
+    expect(beforeWrite(w.calls)).toEqual([{ op: 'check', generation: 0 }]);
+  });
+
+  it('checks 0 on a row that has no pointer yet (a retention policy set before the first load)', async () => {
+    const w = world();
+    await setSegmentRetention(
+      SEG,
+      { registry: w.registry },
+      { expiresAt: Date.now() + 86_400_000 },
+    );
+    expect((await w.registry.get(SEG))?.currentGen).toBeNull();
     const r = await loadSegment(SEG, [1], w.deps);
     expect(r).toMatchObject({ generation: 0, published: true });
     expect(beforeWrite(w.calls)).toEqual([{ op: 'check', generation: 0 }]);

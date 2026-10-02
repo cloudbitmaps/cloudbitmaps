@@ -14,10 +14,10 @@
  * What the model covers, and states in `assumptions.notes`: object-store GETs for point reads, for
  * intersections (each operand's pointer and index as well as its chunks) and for the pointer refresh a long-lived
  * reader pays; the requests of a load (the object's write, and the listing, the pointer reads and write, and the
- * check of the next generation number that `store.load()` makes around it); and storage. Same-region egress is treated as free and internet egress is not
- * modeled; request cost is derived from the supplied workload rates (deriving it from live metrics counters is a
- * later refinement). There is no per-write term because the loaded store has no per-id write: data arrives as
- * generations, and a generation is a load.
+ * check of the next generation number that `store.load()` makes around it); and storage. Same-region egress is
+ * treated as free and internet egress is not modeled; request cost is derived from the supplied workload rates
+ * (deriving it from live metrics counters is a later refinement). There is no per-write term because the loaded
+ * store has no per-id write: data arrives as generations, and a generation is a load.
  *
  * Every request count below is one the engine makes, and `tests/core/cost.test.ts` holds each to the engine by
  * counting what it sends: the model is only as honest as those counts, and they move when the engine does. They

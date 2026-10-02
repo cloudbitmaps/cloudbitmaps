@@ -130,7 +130,7 @@ function storageBlobReader(driver: IStorageDriver, key: GenKey): BlobReader {
  * is encrypted. `lineage` is the registry row's OCC token — the identity that survives a delete,
  * because `IRegistryDriver.delete` tombstones rather than unlinks ("a later `create` still gets a fresh,
  * greater token"). It is what separates two *incarnations* of one name, which a generation number cannot:
- * `nextGeneration` restarts at 0 once the row is purged and the bucket emptied, so a retired-and-re-created
+ * the numbering restarts at 0 once the row is purged and the bucket emptied, so a retired-and-re-created
  * segment presents different data at the same `currentGen`. Undefined for a registry-less source, which has no
  * row: there, only the object itself tells two incarnations apart, by the fingerprint a pin records.
  */
@@ -325,7 +325,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     }
     if (target === null) return null; // segment gone / destroyed
     // Reuse only when BOTH the generation and the row match. Comparing the number alone treated a
-    // retired-and-re-created name as unchanged — `nextGeneration` restarts at 0, so incarnation 2's generation 0
+    // retired-and-re-created name as unchanged — the numbering restarts at 0, so incarnation 2's generation 0
     // is indistinguishable from the reader already open — and the snapshot was never refreshed, so the store
     // kept serving a deleted segment's ids. A token that moved for an unrelated row write costs one reopen.
     if (
@@ -1136,7 +1136,7 @@ function refuseCleartextOntoKey(
  * so the check and the write see the same row.
  *
  * **`expectToken` fences the LINEAGE, and a derived writer needs both.** A generation number identifies a
- * generation only within one incarnation of a name: `nextGeneration` restarts at `0` once the row is purged and
+ * generation only within one incarnation of a name: the numbering restarts at `0` once the row is purged and
  * the bucket empty, so a name that is retired and re-created has a *different* segment wearing the *same*
  * `currentGen`. `expectFrom` alone matched it — and an erasure rewrite then published one incarnation's content
  * over another's, deleted the live objects with its `keep: 0` collection, and returned `erased: true`. The row's
@@ -1349,7 +1349,8 @@ export interface BulkLoadResult {
  * commits only after the callback resolves). An empty source writes a valid empty generation.
  *
  * Writes a fresh full snapshot of a segment. The caller picks the generation number in `key` — `nextGeneration`
- * computes the right one from the registry and the bucket — and re-using an existing generation throws
+ * computes one from the registry and the bucket, as `nextLoadGeneration` does for a load — and re-using an existing
+ * generation throws
  * {@link WriteConflictError} (write-once). Without a registry a `StorageChunkSource` serves the **highest**
  * generation present, so a too-high number silently shadows real data; with one, `publishGeneration` decides.
  */
