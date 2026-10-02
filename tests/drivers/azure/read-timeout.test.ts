@@ -325,6 +325,61 @@ describe('Azure Blob: a timed-out read is retried by the store', () => {
     }
     expect(watch.events).toEqual([]);
   });
+
+  // A segment of its own, in a namespace of its own, so the erasure touches nothing the other tests seeded. Its one
+  // generation holds chunks 0, 3 and 6; the id 2 is in chunk 0. The erasure's GETs of it are, in order, the tail read's
+  // download, the chunk it edits, then the two it carries through.
+  const ERASE = { namespace: 'ns', segment: 'e' };
+  const ERASE_GEN0 = storageObjectName(undefined, { ...ERASE, generation: 0 });
+
+  it.each([
+    ['the tail read of the generation it rewrites', 1],
+    ['the chunk it edits', 2],
+    ['a chunk it carries through', 3],
+  ] as const)(
+    'an erasure whose read of %s stalls once still erases the id',
+    async (_label, nth) => {
+      const store = new CloudRoaring({ storage: backendWith(TIMEOUT) });
+      await store.load(ERASE, [1, 2, 3, 200_000, 400_000]);
+      let gets = 0;
+      stub.plan = (r) =>
+        r.method === 'GET' && r.name === ERASE_GEN0 && ++gets === nth
+          ? { stall: 'after-headers' }
+          : undefined;
+      const watch = watchProcess();
+      try {
+        const ledger = await store.eraseSubject(2, { namespace: 'ns' });
+        expect(ledger.erasedFrom).toEqual([
+          expect.objectContaining({ segment: 'e', erased: true, fromGeneration: 0 }),
+        ]);
+        expect(await stub.releasedStalls()).toBe(true);
+        await sleep(50);
+      } finally {
+        watch.stop();
+      }
+      expect(watch.events).toEqual([]);
+      expect(
+        await new CloudRoaring({ storage: backendWith(0) })
+          .segment('e', { namespace: 'ns' })
+          .has(2),
+      ).toBe(false);
+    },
+  );
+
+  it('a guarded load whose read of the current generation stalls once still publishes', async () => {
+    const store = new CloudRoaring({ storage: backendWith(TIMEOUT) });
+    await store.load(ERASE, [1, 2, 3]);
+    let gets = 0;
+    stub.plan = (r) =>
+      r.method === 'GET' && r.name === ERASE_GEN0 && ++gets === 1
+        ? { stall: 'after-headers' }
+        : undefined;
+
+    const res = await store.load(ERASE, [1, 2, 3, 4], { guard: { minRetained: 0.5 } });
+
+    expect(res.published).toBe(true);
+    expect(gets).toBeGreaterThanOrEqual(2); // the stalled read, then its retry
+  });
 });
 
 describe('Azure Blob: readTimeoutMs is validated', () => {

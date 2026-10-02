@@ -11,7 +11,7 @@ checklist: work down the table, and follow each link for the detail.
 | Versioning and backups cover the data and the pointers | A restore must bring both back to the same point in time | [Versioning and backups](#versioning-and-backups) |
 | With versioning on, noncurrent versions expire after your restore window | Each generation a load collects is otherwise billed for as long as the bucket keeps it, out of sight | [Bucket lifecycle](#bucket-lifecycle) |
 | The bucket honors conditional writes, and the S3 SDK is 3.645.0 or later | Otherwise a write-once generation can be silently overwritten | [Conditional writes and the S3 SDK](#conditional-writes-and-the-s3-sdk) |
-| Your storage client has a request timeout | A hung request hangs the read. On GCS 8.x and Azure Blob no client setting bounds a download's body; on Azure Blob, `readTimeoutMs` does, when you set it | [Reliability](#reliability-retries-backoff--timeouts) |
+| Your reads have a timeout | Without one a hung request hangs its call. `readTimeoutMs` on `S3Storage` and `AzureBlobStorage` bounds each read, and is off by default; on Azure Blob it is the only bound on a download's body, which no client setting reaches. On GCS 8.x nothing bounds a download's body. The library times no write, delete or listing | [Reliability](#reliability-retries-backoff--timeouts) |
 | Your job re-runs a write after a transient error | Writes are never retried for you | [Reliability](#reliability-retries-backoff--timeouts) |
 | You know the request budget and the memory ceilings | A runaway call is refused, not billed | [Limits](#limits-the-per-op-budget-and-the-memory-ceilings) |
 | The keystore is backed up, if you encrypt | Losing the key makes the data permanently unreadable | [Encryption](encryption.md#before-you-encrypt) |
@@ -149,7 +149,7 @@ retry; the client `GcsStorage` builds keeps them and needs nothing.
 **A GCS client's `timeout` does not bound a download** on `@google-cloud/storage` 8.x: the SDK hands it to an HTTP
 client that has no such option. Measured against a local server that accepts a read and never answers, a read through
 a client built with `timeout: 2000` was still pending after 12 s, and one through the default client after 75 s. So
-nothing bounds a stalled GCS read today; a timeout below applies to S3.
+nothing bounds a stalled GCS read today; the timeouts below apply to S3 and Azure Blob.
 
 **Nor does an Azure Blob client's timeout bound a body that stalls.** The SDK's per-try timer stops once the response
 headers arrive, and `retryOptions.tryTimeoutInMs` is the timeout it asks the service to apply. Measured against a local
@@ -181,9 +181,52 @@ const backend = new AzureBlobStorage({ containerClient, readTimeoutMs: 2_000 });
 Only transient faults (they surface as `TransientError`) are retried. Errors that retrying cannot fix are never
 retried: `ValidationError`, `IntegrityError`, `NotFoundError` and `WriteConflictError`.
 
-**Set a timeout on your storage client.** On S3 and GCS the library has no timeout of its own; on Azure Blob it has
-the opt-in `readTimeoutMs` above, for reads alone. A timeout on your client turns a hung read into a transient fault
-that is retried. Build the client with the timeout and pass it to the backend:
+**S3 reads can be timed.** `@cloudbitmaps/s3` takes `readTimeoutMs`, which is off (`0`) unless you set it. Set, it
+gives each read the backend sends, every `GetObject` and `HeadObject` of a generation or a pointer, that many ms to
+finish, the SDK's own retries of it and the response body included, so a connection that sends its headers and then
+stops is cut off as well. A read that runs out of time throws `TransientError`, which the store's read retry, above,
+runs again, and its request is aborted, which frees the connection. AWS's S3 guidance is to retry a GET of under
+512 KB that has not answered in about 2 seconds. With `readTimeoutMs: 2_000` and the default retry policy, a read
+whose request stalls on every attempt fails with `TransientError` after 4 × 2,000 ms of timeouts plus up to 350 ms of
+backoff, about 8.35 s, rather than hanging. That bound is derived, not measured: four attempts, waits of up to 50, 100
+and 200 ms between them, and one timed-out request per attempt; any request earlier in the same attempt that did
+answer adds its own time.
+
+```ts
+import { S3Storage } from '@cloudbitmaps/s3';
+
+const backend = new S3Storage({ bucket: 'my-bitmaps', readTimeoutMs: 2_000 }); // 0, the default, sets no timeout
+```
+
+**The clock starts when the read is handed to the SDK**, not when it reaches the wire. It counts the time the read
+waits for one of the client's sockets (50 by default) and the time spent fetching credentials, and under
+`retryMode: 'adaptive'` the SDK's rate-limiter wait. So a burst of concurrent reads larger than the socket pool can
+time out with nothing slow on the wire: measured against a local stub that answers each request in 50 ms, 8,000
+concurrent `has()` calls with `readTimeoutMs: 2_000` lost most of their reads to the timeout. It counts time the process spends
+busy too: Node runs a due timer before it reads a socket, so a synchronous stretch longer than the timeout fails the
+reads in flight even when their responses have arrived. Size `readTimeoutMs` above the
+worst queueing your concurrency implies, which is about the concurrent reads divided by the sockets, times what one
+read takes (8,000 ÷ 50 × 50 ms is 8 s; derived), or raise the client's `maxSockets`:
+
+```ts
+import { S3Client } from '@aws-sdk/client-s3';
+import { NodeHttpHandler } from '@smithy/node-http-handler';
+
+const client = new S3Client({
+  region: 'us-east-1',
+  requestHandler: new NodeHttpHandler({ httpsAgent: { maxSockets: 200 } }),
+});
+```
+
+Raise it too on a link too slow to deliver a read inside the timeout, since such a read fails on every attempt. The
+timer is set on each request rather than on the client, so a `client` you pass gets it without being changed. On a
+client built with `cacheMiddleware: true`, a timed read resolves its middleware each time, since the SDK reuses a
+cached handler only for a request sent with no options.
+
+**Set a timeout on your S3 client for the rest.** `readTimeoutMs`, above, times reads and nothing else: the library
+times no write, because a write abandoned in flight can still land after it was given up on, and it times no delete
+or listing on any backend, nor any GCS request. On S3 a timeout on your client turns a hung write or listing into a
+transient fault, which for a write is yours to re-run. Build the client with the timeout and pass it to the backend:
 
 ```ts
 import { S3Client } from '@aws-sdk/client-s3';
@@ -193,11 +236,14 @@ import { S3Storage } from '@cloudbitmaps/s3';
 
 const client = new S3Client({
   region: 'us-east-1',
-  requestHandler: new NodeHttpHandler({ requestTimeout: 3_000, connectionTimeout: 1_000 }),
+  requestHandler: new NodeHttpHandler({ connectionTimeout: 1_000, socketTimeout: 30_000 }),
 });
 const store = new CloudRoaring({ storage: new S3Storage({ bucket: 'my-bitmaps', client }) });
 ```
 
+`socketTimeout` ends a request whose connection has carried nothing for that long, so an upload that is still sending is
+left alone. `requestTimeout` on its own only logs a warning when it passes: checked on `@smithy/node-http-handler`
+4.12.1 against a stub endpoint, it ends the request only with `throwOnRequestTimeout: true` beside it.
 `@smithy/node-http-handler` comes with the AWS SDK; declare it in your own `package.json` as well, since your code
 imports it. A `client` carries its own region and credentials, so passing `region` or `credentials` beside it is refused.
 
@@ -206,7 +252,7 @@ imports it. A `client` carries its own region and credentials, so passing `regio
 | Calls | Retried for you? |
 |---|---|
 | Reads that answer a query: `has`, `count`, `iterate`, the combines (the `*Into` verbs' reads of their operands included), a pinned handle's reads, and `pin()` | Yes, with backoff; `retry` tunes it |
-| Writes: `load`, the write half of the `*Into` verbs, and the lifecycle helpers (`eraseSubject`, `dropSegment`, `retireExpired`, `rollback` and the rest) | No: run the call again |
+| Writes: `load`, the write half of the `*Into` verbs, and the lifecycle helpers (`eraseSubject`, `dropSegment`, `retireExpired`, `rollback` and the rest) | No: run the call again. The reads they make along the way are retried, with backoff: a load guard's read of the current generation, and an erasure's reads of the generation it rewrites, of the one it wrote, and of any other that may still hold the id |
 | Registry reads and listings: `exists`, `segments`, `generations`, `getRetention`, and the registry scan that `subjectReport`, `exportSegments` and `checkConsistency` start from | No: call it again |
 
 A write that lands and then loses its response looks, from the error alone, like a write that failed, and replaying it

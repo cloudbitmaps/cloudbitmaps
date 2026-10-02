@@ -1,7 +1,7 @@
 {
   "note": "Written by bench/calibrate-aws.cjs. A real run's evidence is write-once: a new run gets a new id.",
-  "runId": "2026-10-02-clean",
-  "startedAt": "2026-10-02T15:35:40.550Z",
+  "runId": "2026-10-02-discards",
+  "startedAt": "2026-10-02T15:37:16.926Z",
   "mode": "rehearse",
   "target": "minio (rehearsal — NOT a real cloud measurement)",
   "region": "n/a (local container)",
@@ -116,21 +116,35 @@
     "get": 12018,
     "costliestSample": 4006
   },
+  "injectedFaults": [
+    {
+      "getObject": 1200,
+      "as": "reset"
+    },
+    {
+      "getObject": 60000,
+      "as": "reset"
+    },
+    {
+      "getObject": 75000,
+      "as": "reset"
+    }
+  ],
   "partial": false,
   "phases": {
     "load": {
       "via": "store.load()",
       "singlePart": {
         "runs": 20,
-        "medianIdsPerSec": 6631977.709339305,
-        "medianBytesPerSec": 13956970.56139373,
+        "medianIdsPerSec": 7441177.565754486,
+        "medianBytesPerSec": 15659958.187130317,
         "medianObjectBytes": 1052088,
         "medianUploadBytes": 1052250
       },
       "multipart": {
         "runs": 5,
-        "medianIdsPerSec": 10377955.022634588,
-        "medianBytesPerSec": 10411119.678750372,
+        "medianIdsPerSec": 16086020.256776202,
+        "medianBytesPerSec": 16137426.080845004,
         "medianObjectBytes": 12622960,
         "medianUploadBytes": 12623123
       },
@@ -393,9 +407,9 @@
       "runs": 40,
       "cold": true,
       "exact": true,
-      "p50ms": 207.840542,
-      "p95ms": 544.07275,
-      "p99ms": 685.598833,
+      "p50ms": 189.545083,
+      "p95ms": 257.554167,
+      "p99ms": 272.526958,
       "chunksFetchedPerOperand": 100,
       "chunksPerSegment": 1999,
       "payloadFraction": 0.049045327,
@@ -403,8 +417,8 @@
       "pointerReadsPerIntersect": 2,
       "medianGets": 204,
       "medianPeakInFlight": 16,
-      "medianMeanInFlight": 11.244161562,
-      "medianRounds": 18.152295623,
+      "medianMeanInFlight": 11.050245786,
+      "medianRounds": 18.564362559,
       "modelRounds": 15,
       "expectedGets": 8160,
       "offExpected": 0,
@@ -416,42 +430,75 @@
       },
       "requests": {
         "put": 0,
-        "get": 8160,
+        "get": 8182,
         "bytesUp": 0,
-        "bytesDown": 25112440,
+        "bytesDown": 25645828,
         "parts": 0,
         "reads": {
           "whole": {
-            "n": 80,
-            "bytes": 12920
+            "n": 82,
+            "bytes": 13242
           },
           "suffix": {
-            "n": 80,
-            "bytes": 20971520
+            "n": 82,
+            "bytes": 21495808
           },
           "range": {
-            "n": 8000,
-            "bytes": 4128000
+            "n": 8017,
+            "bytes": 4136778
           }
         }
       },
-      "discarded": []
+      "discarded": [
+        {
+          "of": "calibration-layout cold intersect",
+          "sample": 5,
+          "name": "TransientError",
+          "cause": "TimeoutError",
+          "code": "ECONNRESET",
+          "attempts": 1,
+          "httpStatus": null,
+          "message": "transient S3 fault: TimeoutError",
+          "failedAfterMs": 9.78837499,
+          "requests": {
+            "put": 0,
+            "get": 22,
+            "bytesUp": 0,
+            "bytesDown": 533388,
+            "parts": 0,
+            "reads": {
+              "whole": {
+                "n": 2,
+                "bytes": 322
+              },
+              "suffix": {
+                "n": 2,
+                "bytes": 524288
+              },
+              "range": {
+                "n": 17,
+                "bytes": 8778
+              }
+            }
+          }
+        }
+      ]
     },
     "spread": {
       "runs": 40,
       "cold": true,
       "exact": true,
-      "p50ms": 173.806542,
-      "p95ms": 346.452167,
-      "p99ms": 392.55,
+      "p50ms": 200.938208,
+      "p95ms": 247.834,
+      "p99ms": 272.613375,
       "chunksFetchedPerOperand": 100,
       "chunksPerSegment": 1999,
       "tailReadBytesPerOperand": 262144,
       "pointerReadsPerIntersect": 2,
       "medianGets": 204,
       "medianPeakInFlight": 16,
-      "medianMeanInFlight": 10.889818107,
-      "medianRounds": 18.733477484,
+      "medianMeanInFlight": 10.941674816,
+      "medianRounds": 18.655239922,
       "modelRounds": 15,
       "expectedGets": 8160,
       "offExpected": 0,
@@ -612,17 +659,17 @@
           "runs": 10,
           "cold": true,
           "exact": true,
-          "p50ms": 2061.354375,
-          "p95ms": 5906.295875,
-          "p99ms": 5906.295875,
+          "p50ms": 1677.543125,
+          "p95ms": 4636.5565,
+          "p99ms": 4636.5565,
           "chunksFetchedPerOperand": 1000,
           "chunksPerSegment": 2899,
           "tailReadBytesPerOperand": 262144,
           "pointerReadsPerIntersect": 2,
           "medianGets": 2004,
           "medianPeakInFlight": 16,
-          "medianMeanInFlight": 11.924129906,
-          "medianRounds": 168.147918199,
+          "medianMeanInFlight": 11.708251539,
+          "medianRounds": 172.49600145,
           "modelRounds": 127,
           "expectedGets": 2004,
           "offExpected": 0,
@@ -639,17 +686,17 @@
           "runs": 5,
           "cold": true,
           "exact": true,
-          "p50ms": 2680.244375,
-          "p95ms": 5035.705583,
-          "p99ms": 5035.705583,
+          "p50ms": 3092.42,
+          "p95ms": 3907.221959,
+          "p99ms": 3907.221959,
           "chunksFetchedPerOperand": 2000,
           "chunksPerSegment": 3899,
           "tailReadBytesPerOperand": 262144,
           "pointerReadsPerIntersect": 2,
           "medianGets": 4004,
           "medianPeakInFlight": 16,
-          "medianMeanInFlight": 11.910435983,
-          "medianRounds": 336.17577104,
+          "medianMeanInFlight": 11.890389679,
+          "medianRounds": 336.742538152,
           "modelRounds": 252,
           "expectedGets": 4004,
           "offExpected": 0,
@@ -780,9 +827,9 @@
       "exact": true,
       "warmGets": 0,
       "n": 40,
-      "p50ms": 4.171541,
-      "p95ms": 4.521792,
-      "p99ms": 4.577875,
+      "p50ms": 4.354167,
+      "p95ms": 5.018125,
+      "p99ms": 5.079791,
       "priming": {
         "requests": {
           "put": 0,
@@ -844,9 +891,9 @@
         "cold": {
           "gets": 20,
           "n": 10,
-          "p50ms": 4.033,
-          "p95ms": 6.895084,
-          "p99ms": 6.895084,
+          "p50ms": 5.797542,
+          "p95ms": 9.967417,
+          "p99ms": 9.967417,
           "expectedGets": 20,
           "store": {
             "retry": false,
@@ -859,9 +906,9 @@
         "warm": {
           "gets": 0,
           "n": 1000,
-          "p50ms": 0.093708,
-          "p95ms": 0.105458,
-          "p99ms": 0.133458,
+          "p50ms": 0.08975,
+          "p95ms": 0.109375,
+          "p99ms": 0.150292,
           "expectedGets": 0,
           "store": {
             "retry": false,
@@ -876,9 +923,9 @@
         "openSegment": {
           "gets": 1000,
           "n": 1000,
-          "p50ms": 1.428666,
-          "p95ms": 4.524833,
-          "p99ms": 8.804791,
+          "p50ms": 2.070541,
+          "p95ms": 5.662833,
+          "p99ms": 9.087917,
           "expectedGets": 1000,
           "store": {
             "retry": false,
@@ -1901,16 +1948,16 @@
             }
           },
           "n": 1000,
-          "p50ms": 4.390542,
-          "p95ms": 8.053584,
-          "p99ms": 16.622166
+          "p50ms": 7.301667,
+          "p95ms": 14.995458,
+          "p99ms": 25.056667
         },
         "warm": {
           "gets": 0,
           "n": 1000,
-          "p50ms": 0.002917,
-          "p95ms": 0.004,
-          "p99ms": 0.0075,
+          "p50ms": 0.002417,
+          "p95ms": 0.003959,
+          "p99ms": 0.007375,
           "expectedGets": 0,
           "store": {
             "retry": false,
@@ -1923,14 +1970,14 @@
       },
       "requests": {
         "put": 0,
-        "get": 4020,
+        "get": 4022,
         "bytesUp": 0,
-        "bytesDown": 265960050,
+        "bytesDown": 265960211,
         "parts": 0,
         "reads": {
           "whole": {
-            "n": 1010,
-            "bytes": 162610
+            "n": 1011,
+            "bytes": 162771
           },
           "suffix": {
             "n": 1010,
@@ -1942,7 +1989,40 @@
           }
         }
       },
-      "discarded": [],
+      "discarded": [
+        {
+          "of": "has() first read",
+          "sample": 83,
+          "name": "TransientError",
+          "cause": "TimeoutError",
+          "code": "ECONNRESET",
+          "attempts": 1,
+          "httpStatus": null,
+          "message": "transient S3 fault: TimeoutError",
+          "failedAfterMs": 1.955917001,
+          "requests": {
+            "put": 0,
+            "get": 2,
+            "bytesUp": 0,
+            "bytesDown": 161,
+            "parts": 0,
+            "reads": {
+              "whole": {
+                "n": 1,
+                "bytes": 161
+              },
+              "suffix": {
+                "n": 0,
+                "bytes": 0
+              },
+              "range": {
+                "n": 0,
+                "bytes": 0
+              }
+            }
+          }
+        }
+      ],
       "expectedGets": 4020
     },
     "andNot": {
@@ -1951,16 +2031,16 @@
       "excludes": 10,
       "includeChunks": 1999,
       "n": 10,
-      "p50ms": 1938.935958,
-      "p95ms": 2942.064833,
-      "p99ms": 2942.064833,
+      "p50ms": 2777.415708,
+      "p95ms": 3787.525542,
+      "p99ms": 3787.525542,
       "medianGets": 3021,
       "chunkReadsPerCall": 2999,
       "tailReadsPerCall": 11,
       "pointerReadsPerCall": 11,
       "medianPeakInFlight": 80,
-      "medianMeanInFlight": 17.083566614,
-      "medianRounds": 177.288811405,
+      "medianMeanInFlight": 17.043867175,
+      "medianRounds": 177.501446218,
       "timedStore": {
         "retry": false,
         "cache": {
@@ -1969,50 +2049,83 @@
       },
       "requests": {
         "put": 0,
-        "get": 30210,
+        "get": 30474,
         "bytesUp": 0,
-        "bytesDown": 44333400,
+        "bytesDown": 47343200,
         "parts": 0,
         "reads": {
           "whole": {
-            "n": 110,
-            "bytes": 17720
+            "n": 121,
+            "bytes": 19492
           },
           "suffix": {
-            "n": 110,
-            "bytes": 28835840
+            "n": 121,
+            "bytes": 31719424
           },
           "range": {
-            "n": 29990,
-            "bytes": 15479840
+            "n": 30231,
+            "bytes": 15604284
           }
         }
       },
-      "discarded": [],
+      "discarded": [
+        {
+          "of": "andNot call",
+          "sample": 4,
+          "name": "TransientError",
+          "cause": "TimeoutError",
+          "code": "ECONNRESET",
+          "attempts": 1,
+          "httpStatus": null,
+          "message": "transient S3 fault: TimeoutError",
+          "failedAfterMs": 174.954582989,
+          "requests": {
+            "put": 0,
+            "get": 264,
+            "bytesUp": 0,
+            "bytesDown": 3009800,
+            "parts": 0,
+            "reads": {
+              "whole": {
+                "n": 11,
+                "bytes": 1772
+              },
+              "suffix": {
+                "n": 11,
+                "bytes": 2883584
+              },
+              "range": {
+                "n": 241,
+                "bytes": 124444
+              }
+            }
+          }
+        }
+      ],
       "expectedGets": 30210
     }
   },
   "network": {
-    "rttFloorMs": 3.124667,
-    "rttMedianMs": 3.719542,
+    "rttFloorMs": 1.675625,
+    "rttMedianMs": 2.720459,
     "client": "local container",
     "inRegionThresholdMs": 30,
     "clientRegion": null
   },
   "cost": {
     "putUSD": 0.000915,
-    "getUSD": 0.0371792,
-    "totalUSD": 0.0380942,
+    "getUSD": 0.0372944,
+    "totalUSD": 0.0382094,
     "ops": {
       "put": 183,
-      "get": 92948,
+      "get": 93236,
       "free": 2,
       "bytesUp": 105409501,
-      "bytesDown": 395315466,
+      "bytesDown": 398858815,
       "byCommand": {
         "HeadBucketCommand": 11,
         "CreateBucketCommand": 1,
-        "GetObjectCommand": 92937,
+        "GetObjectCommand": 93225,
         "ListObjectsV2Command": 82,
         "PutObjectCommand": 77,
         "CreateMultipartUploadCommand": 5,
@@ -2025,27 +2138,27 @@
       },
       "inFlight": 0,
       "peakInFlight": 80,
-      "requestMs": 1027144.650721993,
+      "requestMs": 1081366.781739992,
       "reads": {
         "whole": {
-          "n": 1412,
-          "bytes": 228026
+          "n": 1426,
+          "bytes": 230281
         },
         "suffix": {
-          "n": 1330,
-          "bytes": 348651520
+          "n": 1343,
+          "bytes": 352059392
         },
         "range": {
-          "n": 89990,
-          "bytes": 46435920
+          "n": 90248,
+          "bytes": 46569142
         }
       }
     }
   },
   "discards": {
-    "count": 0,
+    "count": 3,
     "perRun": 3,
     "perStage": 2
   },
-  "elapsedMs": 96144
+  "elapsedMs": 101691
 }

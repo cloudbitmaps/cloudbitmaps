@@ -95,7 +95,12 @@ const coldIntersectBound = (k) => 2 * (3 + k);
  *   w.warm             { segments, sharedChunks }                    one priming pass over `segments` segments
  *   w.pointReads       { segments, sharedChunks }                    `count()`, then `has()` per chunk, open and first read
  *   w.andNot           { calls, excludes, includeChunks, sharedChunks }
+ *   w.discards         { perRun, perStage }                          the samples a run may discard (`calibrate-samples.cjs`)
  *   w.retryBound, w.fixedPuts, w.fixedGets
+ *
+ * Beside the stages, `discards`: what the samples a run may discard can cost, each at the bound of the most expensive
+ * sample the run makes. A discarded sample was billed, and a stage's bound is for the samples it keeps, so without this
+ * a run that discarded a sample could spend past a projection that said it was safe.
  */
 function projectStages(w) {
   const retryBound = w.retryBound;
@@ -135,17 +140,45 @@ function projectStages(w) {
   const sc = w.pointReads.segments * w.pointReads.sharedChunks;
   stages.pointReads = { put: 0, get: 3 * w.pointReads.segments + 5 * sc };
 
-  // Every operand opened, every chunk of the include operand read, and each exclude's chunks where it overlaps it.
-  const a = w.andNot;
-  stages.andNot = {
-    put: 0,
-    get: a.calls * ((1 + a.excludes) * 3 + a.includeChunks + a.excludes * a.sharedChunks),
-  };
+  stages.andNot = { put: 0, get: w.andNot.calls * andNotCallBound(w.andNot) };
 
-  const put = Object.values(stages).reduce((n, s) => n + s.put, 0) + w.fixedPuts;
-  const getSum = Object.values(stages).reduce((n, s) => n + s.get, 0) + w.fixedGets;
+  const perRun = w.discards?.perRun;
+  if (!Number.isInteger(perRun) || perRun < 0) {
+    throw new Error(`discards.perRun must be a non-negative integer, got ${perRun}`);
+  }
+  const costliestSample = Math.max(...Object.values(sampleBounds(w)));
+  const discards = { put: 0, get: perRun * costliestSample };
+
+  const put = Object.values(stages).reduce((n, s) => n + s.put, 0) + w.fixedPuts + discards.put;
+  const getSum = Object.values(stages).reduce((n, s) => n + s.get, 0) + w.fixedGets + discards.get;
   // Reads are projected at least as high as writes, as `projectOps` does: every write path reads before it writes.
-  return { stages, total: { put, get: Math.max(getSum, put) } };
+  return { stages, discards, costliestSample, total: { put, get: Math.max(getSum, put) } };
+}
+
+/** One `andNot` call: every operand opened, every chunk of the include operand read, each exclude where it overlaps. */
+const andNotCallBound = (a) => (1 + a.excludes) * 3 + a.includeChunks + a.excludes * a.sharedChunks;
+
+/**
+ * The most one sample of each stage can request, from the workload `w`: what a sample discarded after a transient fault
+ * can have cost. A sample that fails stops before it finishes, so it requests no more than one that finishes; the
+ * chunk reads it still has in flight when it fails are among the ones a finished sample makes. Loads are not samples
+ * (`calibrate-samples.cjs` says why), and a stage that runs no sample has none.
+ */
+function sampleBounds(w) {
+  const cold = (reads, k) => (reads > 0 ? coldIntersectBound(k) : 0);
+  const p = w.pointReads;
+  return {
+    load: 0,
+    intersect: cold(w.intersect.reads, w.intersect.sharedChunks),
+    spread: cold(w.spread.reads, w.spread.sharedChunks),
+    sweep: Math.max(0, ...w.sweep.entries.map((e) => coldIntersectBound(e.k))),
+    // The priming pass is one sample: a fault anywhere in it runs the whole pass again, on a fresh store.
+    warm: w.warm.segments * (3 + w.warm.sharedChunks),
+    // A first has() is the dearest: a pointer, a tail, one more for an index longer than the tail, and a chunk. A first
+    // count() is the first three, and a has() on an open segment is the chunk alone.
+    pointReads: p.segments === 0 ? 0 : p.sharedChunks > 0 ? 4 : 3,
+    andNot: w.andNot.calls > 0 ? andNotCallBound(w.andNot) : 0,
+  };
 }
 
 /**
@@ -186,6 +219,7 @@ module.exports = {
   coldIntersectGets,
   coldIntersectBound,
   projectStages,
+  sampleBounds,
   expectedReads,
   FIRST_LOAD,
   firstLoadRequests,

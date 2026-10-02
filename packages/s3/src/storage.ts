@@ -19,7 +19,9 @@
  * SDK's retry off for it ({@link sendOnce}): a replay of a write that landed and lost its response would find its own
  * object and read as a lost race. A transient failure there throws {@link TransientError}, and the object may or may
  * not exist. The unconditional requests — the reads, the delete, and a multipart upload's own start, parts and abort —
- * keep the SDK's retry. Drivers may use `node:crypto`; only `core/` is bound by the determinism lint.
+ * keep the SDK's retry. **Each read can be timed** ({@link timedRead}): with `readTimeoutMs` set, a `GetObject` or
+ * `HeadObject` that has not finished, body included, after it throws {@link TransientError}. It is off by default, and
+ * nothing else is timed. Drivers may use `node:crypto`; only `core/` is bound by the determinism lint.
  */
 import {
   NotFoundError,
@@ -63,6 +65,7 @@ import {
   isTransient,
   totalFromContentRange,
 } from './s3-errors';
+import { resolveReadTimeoutMs, timedRead, type ReadSendOptions } from './read-timeout';
 import { sendOnce } from './send-once';
 
 /** Part size for multipart uploads. ≥ the S3 5 MiB minimum; an object that fits in one part uses a single
@@ -87,6 +90,18 @@ export interface S3StorageDriverOptions {
   /** Multipart part size in bytes (default 8 MiB; a smaller value is raised to the S3 5 MiB minimum). Must be a
    * positive safe integer. Tunes peak write memory. */
   readonly partBytes?: number;
+  /**
+   * How long one read — a `GetObject` or `HeadObject`, its body included — may take before it is abandoned and throws
+   * `TransientError`, in ms. `0`, the default, sets no timeout. Must be a non-negative safe integer no larger than
+   * 2,147,483,647. Writes and listings are not timed.
+   *
+   * The clock starts when the read is handed to the SDK, so it also counts the time the read waits for one of the
+   * client's sockets (50 by default) and the time spent fetching credentials, and under `retryMode: 'adaptive'` the
+   * SDK's rate-limiter wait. A burst of concurrent reads larger than the socket pool can therefore time out with
+   * nothing slow on the wire: size the timeout above the worst queueing your concurrency implies, or raise the client's
+   * `maxSockets`. On a client built with `cacheMiddleware: true`, a timed read resolves its middleware each time.
+   */
+  readonly readTimeoutMs?: number;
 }
 
 export class S3StorageDriver implements IStorageDriver {
@@ -95,6 +110,7 @@ export class S3StorageDriver implements IStorageDriver {
   private readonly prefix: string | undefined;
   private readonly maxObjectBytes: number;
   private readonly partBytes: number;
+  private readonly readTimeoutMs: number;
 
   constructor(options: S3StorageDriverOptions) {
     this.client = options.client;
@@ -115,6 +131,7 @@ export class S3StorageDriver implements IStorageDriver {
     // if a larger cap is requested, grow the part size to keep it reachable (so the advertised cap is honest).
     this.maxObjectBytes = options.maxObjectBytes ?? requestedPart * S3_MAX_PARTS;
     this.partBytes = Math.max(requestedPart, Math.ceil(this.maxObjectBytes / S3_MAX_PARTS));
+    this.readTimeoutMs = resolveReadTimeoutMs(options.readTimeoutMs);
   }
 
   capabilities(): StorageCaps {
@@ -158,13 +175,14 @@ export class S3StorageDriver implements IStorageDriver {
     }
     const objectKey = storageObjectKey(this.prefix, key);
     if (length === 0) return new Uint8Array(0);
-    try {
+    return this.read('GetObject', key, async (options) => {
       const res = await this.client.send(
         new GetObjectCommand({
           Bucket: this.bucket,
           Key: objectKey,
           Range: `bytes=${offset}-${offset + length - 1}`,
         }),
+        options,
       );
       const bytes = await collect(res.Body);
       // A short read means the range ran past EOF — treat as out-of-bounds, never a partial result.
@@ -174,47 +192,62 @@ export class S3StorageDriver implements IStorageDriver {
         );
       }
       return bytes;
-    } catch (err) {
-      throw this.mapReadError(err, key);
-    }
+    });
   }
 
   async getTail(key: GenKey, maxBytes: number): Promise<{ bytes: Uint8Array; size: number }> {
     const objectKey = storageObjectKey(this.prefix, key);
     if (maxBytes <= 0) {
       // No tail bytes wanted — just resolve the size via a HEAD.
+      return { bytes: new Uint8Array(0), size: (await this.headSize(key, objectKey)) ?? 0 };
+    }
+    const { bytes, contentRange } = await this.read('GetObject', key, async (options) => {
+      const res = await this.client.send(
+        new GetObjectCommand({ Bucket: this.bucket, Key: objectKey, Range: `bytes=-${maxBytes}` }),
+        options,
+      );
+      return { bytes: await collect(res.Body), contentRange: res.ContentRange };
+    });
+    let size = totalFromContentRange(contentRange);
+    if (size === undefined) {
+      // A spec-compliant backend omits Content-Range only on a 200 (whole object), where bytes.length
+      // IS the size. If the body is exactly maxBytes we can't rule out a clamped partial from a
+      // non-compliant backend — confirm the true size with a HEAD rather than trust a possibly-short read.
+      size =
+        bytes.length === maxBytes
+          ? ((await this.headSize(key, objectKey)) ?? bytes.length)
+          : bytes.length;
+    }
+    return { bytes, size };
+  }
+
+  /** The object's size from a `HeadObject`, or `undefined` when the response does not carry one. */
+  private headSize(key: GenKey, objectKey: string): Promise<number | undefined> {
+    return this.read('HeadObject', key, async (options) => {
+      const head = await this.client.send(
+        new HeadObjectCommand({ Bucket: this.bucket, Key: objectKey }),
+        options,
+      );
+      return head.ContentLength;
+    });
+  }
+
+  /**
+   * One read request under the read timeout, its failures mapped to the driver vocabulary. The timeout's own
+   * `TransientError` is raised outside the mapping, so it reaches the caller as it is.
+   */
+  private read<T>(
+    operation: 'GetObject' | 'HeadObject',
+    key: GenKey,
+    run: (options: ReadSendOptions) => Promise<T>,
+  ): Promise<T> {
+    return timedRead(operation, this.readTimeoutMs, async (options) => {
       try {
-        const head = await this.client.send(
-          new HeadObjectCommand({ Bucket: this.bucket, Key: objectKey }),
-        );
-        return { bytes: new Uint8Array(0), size: head.ContentLength ?? 0 };
+        return await run(options);
       } catch (err) {
         throw this.mapReadError(err, key);
       }
-    }
-    try {
-      const res = await this.client.send(
-        new GetObjectCommand({ Bucket: this.bucket, Key: objectKey, Range: `bytes=-${maxBytes}` }),
-      );
-      const bytes = await collect(res.Body);
-      let size = totalFromContentRange(res.ContentRange);
-      if (size === undefined) {
-        // A spec-compliant backend omits Content-Range only on a 200 (whole object), where bytes.length
-        // IS the size. If the body is exactly maxBytes we can't rule out a clamped partial from a
-        // non-compliant backend — confirm the true size with a HEAD rather than trust a possibly-short read.
-        if (bytes.length === maxBytes) {
-          const head = await this.client.send(
-            new HeadObjectCommand({ Bucket: this.bucket, Key: objectKey }),
-          );
-          size = head.ContentLength ?? bytes.length;
-        } else {
-          size = bytes.length;
-        }
-      }
-      return { bytes, size };
-    } catch (err) {
-      throw this.mapReadError(err, key);
-    }
+    });
   }
 
   async delete(key: GenKey): Promise<void> {

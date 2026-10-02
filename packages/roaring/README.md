@@ -81,7 +81,7 @@ give the method and what the numbers do not establish.
 
 - Grant the permissions the library issues and add a lifecycle rule to abort incomplete uploads.
 - Use a bucket that honors conditional writes, and `@aws-sdk/client-s3` 3.645.0 or later if you pass your own S3 client.
-- Set a request timeout on your storage client. Reads retry by themselves; a write that fails transiently is yours to re-run.
+- Set a request timeout on your storage client. Reads retry by themselves, and S3 and Azure Blob reads can be timed (`readTimeoutMs`); a write that fails transiently is yours to re-run.
 - Back up the registry with the data, and the keystore too if you encrypt. If you lose the key, the data is gone.
 - Schedule your loads, and `retireExpired` if you use retention. Run loads off the request path.
 

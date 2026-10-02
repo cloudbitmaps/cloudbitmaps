@@ -27,6 +27,22 @@ so, and so do the module headers in the code.
   a stub that stalls before the headers, after them and mid-body, and a child process checks that a read leaves no
   timer behind.
 
+- **`S3Storage` can time each read: `readTimeoutMs`, off unless you set it.** The default is `0`, no timeout, until
+  in-region measurements justify one. Set, it bounds every `GetObject` and `HeadObject` the S3 storage and registry
+  drivers send, from the moment the read is handed to the SDK until its body is read: a read still running after that
+  many ms is aborted, which releases its connection, and throws `TransientError` ("S3 GetObject timed out after
+  N ms"), which the store's read retry runs again. The AWS SDK sets no timeout by default, so an untimed read on a
+  connection that stops answering waits as long as the connection stays open. The clock counts the time a read waits
+  for one of the client's sockets (50 by default) and the time spent fetching credentials, and under
+  `retryMode: 'adaptive'` the SDK's rate-limiter wait, so a burst of concurrent reads larger than the socket pool can
+  time out with nothing slow on the wire: against a local stub answering each request in 50 ms, 8,000 concurrent
+  `has()` calls with `readTimeoutMs: 2_000` lost most of their reads. Size it above the worst queueing your concurrency
+  implies, or raise `maxSockets`. AWS's S3 guidance is to retry a GET of under 512 KB after about 2 seconds; with
+  `readTimeoutMs: 2_000` and the store's default retry, a read whose request stalls on every attempt fails after about
+  8.35 s (4 × 2,000 ms plus up to 350 ms of backoff, derived rather than measured). Writes, multipart uploads, deletes
+  and listings are never timed, and a `client` you pass gets the timeout without being changed. A value that is not
+  an integer from 0 to 2,147,483,647 is refused with `ValidationError` (a longer Node timer fires after 1 ms).
+
 - **`PricingProfile.storage.requestsPerPointerRead` prices a pointer read apart from a tail read.** It is the requests
   one pointer read costs, 1 by default, and the cost model charges it for each operand of an intersection, for the
   eight pointer reads a load makes and for each pointer refresh. `requestsPerSizedRead` keeps its name and its default
@@ -64,6 +80,50 @@ so, and so do the module headers in the code.
 - **An Azure Blob range or tail read lets go of a response the SDK refuses.** The SDK refuses a download with no ETag
   or no length by throwing a `RangeError`, and leaves the body unread with its socket open. The read now aborts its
   request when it fails, which closes the socket, with or without a timeout.
+- **A calibration run survives a transient fault in a timed sample.** The workload's client makes one attempt per
+  request and every timed store runs with its own retry off, so a single transient fault anywhere in a run's requests
+  (up to ~94,600 GET-class and 364 PUT-class at the default workload) failed the whole run, and a partial run is not
+  evidence. One in-region run failed on a single transient connection fault after about 86,300 requests; at that rate
+  a run of this size would finish about a third of the time. A timed sample that meets a transient fault (a cold
+  intersect, a cold point read, an `andNot` call or the warm stage's priming pass) is now discarded whole and run again
+  from the start, from a state the failed attempt left nothing cached in: on a fresh store, except a first `count()`,
+  which runs again on its store once the store has forgotten the segment, and a `has()` on an open segment, which runs
+  again on the same store. At most three samples a run and two a stage are discarded; one more, or a fault in a load,
+  fails the run as before. A transient fault is the library's `TransientError` or anything the installed SDK's own
+  retry would retry. The harness waits for the failed sample's requests still in flight, counts them against it, and
+  records each discard beside its stage: the sample, the error's name, the transport code beneath it, the SDK's
+  attempt count, how long the attempt ran and the requests it made. Those requests are billed and stay in the stage's,
+  and each stage's expected count is held to what its kept samples made. The projection allows three discarded samples
+  at the costliest sample's bound, so the default workload's projected upper bound is 364 PUT-class and 106,624
+  GET-class requests, $0.044470, under the $0.05 ceiling the README's example sets (`CR_CALIBRATE_MAX_USD` has no
+  default, and `--run` refuses without one). `bench/lib/calibration-figures.cjs` treats a run with discards within the
+  harness's bounds as evidence and requires its report to state how many it discarded. Wherever the harness records an
+  error it now keeps the name, the code and the message: the SDK's HTTP handler renames `ECONNRESET`, `EPIPE` and
+  `ETIMEDOUT` alike to `TimeoutError`, so the name alone could not say which it was. `CR_CALIBRATE_FAULT_GETS` makes a
+  rehearsal fail the GetObject requests it lists, once each, as a reset socket or (`:denied`) as a 403 that is not
+  transient, and is refused in every other mode. A test in the integration lane runs the harness itself through such a
+  rehearsal against MinIO, so the integration job now builds the packages first. This is repository work on the
+  calibration harness, outside the packages.
+- **An S3 registry row refused for its size no longer holds its connection open.** A row whose response declares
+  more than the 1 MiB cap is refused with `IntegrityError` before a byte of its body is read, and the body was left
+  unread, so each refusal kept its socket until the server gave up on it. The driver now destroys the body on every
+  way out of the read that leaves it unread, which closes the connection, with or without `readTimeoutMs`. A test
+  refuses three such rows against a stub endpoint and checks that no connection is left open.
+- **An S3 registry read whose body is cut off part-way is a `TransientError`.** It reached the caller as the
+  SDK's raw connection error, which the store's read retry does not repeat; the storage driver already mapped the
+  same fault.
+- **One transient read fault no longer fails a whole load or erasure.** A load's guard read of the current
+  generation, and an erasure's reads (the generation it rewrites and each of its chunks, the read-back that verifies
+  the generation it wrote, and any other generation that may still hold the id) went to the raw driver once, so a
+  single throttle or reset there failed the call. They now run under the store's read retry (`retry`, on by default),
+  with its policy and `onRetry`; `loadSegment` and `eraseIdFromSegment` take it as an optional `readRetry` dep, and
+  without one each read is made once. The writes are still sent once. This holds on every backend, with or without a
+  read timeout. Tests fault each of those reads once, transiently and otherwise.
+- **The production guide's S3 client-timeout sample set a timeout that only logs.** It built the client with
+  `NodeHttpHandler({ requestTimeout: 3_000 })`, and on `@smithy/node-http-handler` 4.12.1 `requestTimeout` on its own
+  logs a warning when it passes and leaves the request running; it ends the request only beside
+  `throwOnRequestTimeout: true`. The sample sets `socketTimeout`, which ends a request whose connection has carried
+  nothing for that long and leaves an upload that is still sending alone.
 
 ## [0.11.2] — 2026-10-01
 

@@ -79,6 +79,12 @@ function isOlderLine(mm: string): boolean {
  */
 const FOREIGN_VERSIONS = new Map<string, string>([
   [
+    '4.12.1',
+    'the @smithy/node-http-handler release the production guide checked its S3 client-timeout sample on: there ' +
+      '`requestTimeout` alone only logs a warning, so the sample sets `socketTimeout`. A third-party version, not a ' +
+      'claim about our release',
+  ],
+  [
     '8.1.0',
     'the other @google-cloud/storage release the GCS download-retry crash was checked on (with 7.22.0). A third-party ' +
       'version, not a claim about our release',

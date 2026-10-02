@@ -41,6 +41,9 @@ take a run's numbers from one derivation, and hold them to it with one matcher.
    harness writes none. CI's leak scan looks for all three; `pnpm leak-scan` looks for them locally only with the
    same extra patterns set in `LEAK_SCAN_EXTRA`, and reads only files git tracks, so stage the file first.
 3. **Write its report.** The existing one is the template. The gate lists the headline figures a report must state
-   and any figure in it the evidence cannot account for, so run it until it passes.
+   and any figure in it the evidence cannot account for, so run it until it passes. A run that discarded a sample
+   after a transient fault is evidence, its latency and request-count figures taken from the samples each stage kept,
+   and its report states how many it discarded (`1 discarded sample`, `3 discarded samples`), a count the gate holds to
+   the evidence. Each stage's `discarded` says which samples they were.
 4. **Give it a row above.** If it is the latest run, move the benchmarks page's section onto it. The site's gate
    then requires the site to state the new run's figures.

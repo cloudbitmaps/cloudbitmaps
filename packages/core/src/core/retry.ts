@@ -77,6 +77,22 @@ export function applyJitter(policy: RetryPolicy, delayMs: number, rng: Rng): num
 }
 
 /**
+ * The store's read retry, as a write path takes it for the reads it makes along the way: a policy (the default when
+ * absent) and what {@link withRetry} needs to run it.
+ */
+export type ReadRetry = RetryDeps & { readonly policy?: RetryPolicy };
+
+/**
+ * Run a read under `retry`, or once when there is none. For the reads a write makes along the way (a load guard's
+ * read of the current generation, an erasure's reads of the generations it rewrites and verifies): a read is safe
+ * to repeat, so a transient fault on one is retried under the store's policy rather than failing the whole write.
+ * The write itself is never passed here.
+ */
+export function retryRead<T>(op: () => Promise<T>, retry: ReadRetry | undefined): Promise<T> {
+  return retry === undefined ? op() : withRetry(op, retry.policy ?? DEFAULT_RETRY_POLICY, retry);
+}
+
+/**
  * Run `op`, retrying transient failures per `policy`. Resolves with `op`'s result, or rejects with the last
  * error once attempts are exhausted (or immediately for a non-retryable error). The thrown error is always
  * the *operation's* error — never a wrapper — so callers keep their typed-error branching.
