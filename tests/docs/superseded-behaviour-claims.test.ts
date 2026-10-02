@@ -649,7 +649,9 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
   },
   {
     claim: new RegExp(
-      g(String.raw`\bnext (?:store\.)?load of (?:the|that) destination collects everything\b`),
+      g(
+        String.raw`\bnext (?:store\.)?load of (?:the|that|its) destination collects (?:everything|its predecessors)\b`,
+      ),
       'i',
     ),
     why: "the next load of a destination deletes the one generation its own publish pushes out of the window by name; an `*Into` with `keep` collects every generation below its own pointer at once, and a load's listing, on every sixteenth generation, takes the rest",
@@ -1148,6 +1150,7 @@ describe('no document claims behaviour this library does not have', () => {
     'A load lists the bucket after it publishes, then collects the old generation.',
     'the load lists the segment and collects everything below its pointer',
     'The next load of the destination collects everything below its own pointer beyond its `keep`.',
+    'and the next load of its destination collects its predecessors',
     "the next store.load of that destination collects everything it didn't",
   ])('catches the refused form %j', (text) => {
     expect(hitsIn('x.md', text)).not.toEqual([]);

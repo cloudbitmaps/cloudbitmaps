@@ -1885,10 +1885,12 @@ export interface MaterializeOptions extends CombineOptions {
    * Generations to keep below the new pointer — see {@link LoadOptions.keep}. A value that is not a non-negative
    * integer throws `ValidationError`.
    *
-   * **Defaults to keeping everything**, unlike `load()`, which keeps 1 and collects the rest. An operator's
+   * **Defaults to keeping everything**, unlike `load()`, which keeps 1 and collects what it supersedes. An operator's
    * recovery story can depend on a materialisation collecting nothing: `rollbackSegment` refuses a target that
    * has been collected. Pass a number to collect on the way through; `0` keeps only the
-   * generation this call publishes.
+   * generation this call publishes. It collects by listing the destination, so it clears every generation below the
+   * new one beyond `keep`, however many earlier calls kept, where a `load()` deletes by name the one generation its
+   * publish pushes out of the window.
    */
   readonly keep?: number;
 }
