@@ -46,8 +46,8 @@ so, and so do the module headers in the code.
   request and every timed store runs with its own retry off, so a single reset socket anywhere in a run's ~94,600
   requests failed the whole run, and a partial run is not evidence: at one fault in about 86,300 requests, a full run
   finished about a third of the time. A timed sample that meets a transient fault (a cold intersect, a cold point read,
-  an `andNot` call or the warm stage's priming pass) is now discarded whole and run again on a fresh store, at most
-  three times a run and twice a stage; one more, or a fault in a load, fails the run as before. A transient fault is
+  an `andNot` call or the warm stage's priming pass) is now discarded whole and run again on a fresh store, for at
+  most three samples a run and two a stage; one more, or a fault in a load, fails the run as before. A transient fault is
   the library's `TransientError` or anything the installed SDK's own retry would retry. The harness waits for the
   failed sample's requests still in flight, counts them against it, and records each discard beside its stage: the
   sample, the error's name, the transport code beneath it, the SDK's attempt count and the requests it made. Those

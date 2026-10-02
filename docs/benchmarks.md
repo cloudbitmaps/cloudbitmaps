@@ -286,10 +286,10 @@ chunks the operands share; the same intersects answered again from memory, held 
 bills, pointer reads and conditional PUTs included, is counted attempt by attempt and by stage. Each intersect must
 return exactly the planned ids or no latency is reported, and each cold one turns off its store's timed pointer
 refresh, so its request count does not move with the network. A sample that meets a transient fault is not retried
-inside its timing: it is discarded whole and run again on a fresh store, at most three times a run and twice a stage.
-Its requests are billed, projected and recorded beside its stage, every figure comes from the samples each stage kept,
-held to their expected counts exactly, and a run's report states how many it discarded; a fault in a load, or one past
-the bound, fails the run. Every run records its own round-trip floor to the
+inside its timing: it is discarded whole and run again on a fresh store, for at most three samples a run and two a
+stage. Its requests are billed, projected and recorded beside its stage, every figure comes from the samples each
+stage kept, held to their expected counts exactly, and a run's report states how many it discarded; a fault in a
+load, or one past the bound, fails the run. Every run records its own round-trip floor to the
 region and labels its latency in-region only below 30 ms — a line that keeps another continent out, not a
 neighbouring region, so the raw floor is recorded with it for a reader who wants a stricter one, and so is the region the shell ran in. A page states a run's latency as in-region only when that region is the bucket's too. Each cold intersect also records how many requests were in flight at once and how many it waited for one after another, and every run records the AWS SDK and handler versions and the handler's socket cap. Its run
 `2026-09-23-94416`, from a laptop, paid the cost side above; it timed a write and a publish rather than
