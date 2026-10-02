@@ -50,12 +50,14 @@ type Op =
  * - `mid-body`: the status, the headers and the first half of the body come back, and then nothing.
  * - `delay`: the whole response comes back, `ms` late.
  * - `oversize`: a `200` that declares a body over the registry's row cap, sends a few bytes of it, and then nothing.
+ * - `status`: an S3 error with that status, at once, which the SDK's own retry sends again for a 5xx.
  */
 type Fault =
   | { kind: 'no-headers' }
   | { kind: 'mid-body' }
   | { kind: 'delay'; ms: number }
-  | { kind: 'oversize' };
+  | { kind: 'oversize' }
+  | { kind: 'status'; status: number };
 
 interface Armed {
   readonly op: Op;
@@ -73,6 +75,9 @@ class StubS3 {
   readonly seen: { op: Op; key: string }[] = [];
   /** Stalled responses whose connection is still open: a timed-out read that released its socket is not in here. */
   readonly stalled = new Set<ServerResponse>();
+  /** Requests whose response was sent in full, and those whose client hung up before it could be: a timed request. */
+  readonly answered: Op[] = [];
+  readonly cut: Op[] = [];
   /** Answer a ranged GET with the whole object and no `Content-Range`, as a backend that ignores `Range` does. */
   ignoreRange = false;
   private readonly uploads = new Map<string, Map<number, Buffer>>();
@@ -124,9 +129,9 @@ class StubS3 {
     };
   }
 
-  client(): S3Client {
+  client(extra: { cacheMiddleware?: boolean } = {}): S3Client {
     const { endpoint, region, credentials } = this.options();
-    return new S3Client({ endpoint, region, credentials, forcePathStyle: true });
+    return new S3Client({ endpoint, region, credentials, forcePathStyle: true, ...extra });
   }
 
   private static operationOf(method: string, key: string, q: URLSearchParams): Op {
@@ -155,6 +160,7 @@ class StubS3 {
     const key = decodeURIComponent(url.pathname.slice(`/${BUCKET}/`.length));
     const op = StubS3.operationOf(req.method ?? '', key, url.searchParams);
     this.seen.push({ op, key });
+    res.once('close', () => (res.writableFinished ? this.answered : this.cut).push(op));
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(chunk as Buffer);
     const body = Buffer.concat(chunks);
@@ -167,6 +173,17 @@ class StubS3 {
       res.writeHead(200, { etag: '"big"', 'content-length': String(MAX_ROW_BYTES + 1) });
       res.write(Buffer.alloc(16, 0x7b));
       this.stall(res);
+      return;
+    }
+    if (fault?.kind === 'status') {
+      const xml = Buffer.from(
+        `<?xml version="1.0" encoding="UTF-8"?><Error><Code>InternalError</Code><Message>injected</Message></Error>`,
+      );
+      res.writeHead(fault.status, {
+        'content-type': 'application/xml',
+        'content-length': String(xml.length),
+      });
+      res.end(xml);
       return;
     }
     if (fault?.kind === 'delay') await new Promise((resolve) => setTimeout(resolve, fault.ms));
@@ -335,15 +352,22 @@ async function settle<T>(promise: Promise<T>): Promise<Outcome<T>> {
   }
 }
 
-/** Assert a read ended in a `TransientError` that says it timed out, at about `timeoutMs`. */
-function expectTimedOut<T>(outcome: Outcome<T>, timeoutMs = TIMEOUT): void {
+/**
+ * Assert a read ended in a `TransientError` that names its request and says it timed out, near `timeoutMs`: not before
+ * it, and within a second after it, which a loaded machine meets and a timer set at a multiple of the value does not.
+ */
+function expectTimedOut<T>(
+  outcome: Outcome<T>,
+  timeoutMs = TIMEOUT,
+  operation: 'GetObject' | 'HeadObject' = 'GetObject',
+): void {
   expect(outcome).not.toHaveProperty('hung');
   expect(outcome).not.toHaveProperty('value');
   const { error, ms } = outcome as { error: unknown; ms: number };
   expect(error).toBeInstanceOf(TransientError);
-  expect((error as Error).message).toMatch(new RegExp(`timed out after ${timeoutMs} ms`));
+  expect((error as Error).message).toBe(`S3 ${operation} timed out after ${timeoutMs} ms`);
   expect(ms).toBeGreaterThanOrEqual(timeoutMs - 5);
-  expect(ms).toBeLessThan(HUNG);
+  expect(ms).toBeLessThan(timeoutMs + 1_000);
 }
 
 /** Wait (bounded) until every stalled response's connection has closed: a timed-out read let go of its socket. */
@@ -397,7 +421,7 @@ describe('S3: a read is cut off at readTimeoutMs', LIMIT, () => {
   it('a HEAD that stalls is a TransientError', async () => {
     stub.arm('HeadObject', { kind: 'no-headers' });
 
-    expectTimedOut(await settle(backend.storage.getTail(GEN, 0)));
+    expectTimedOut(await settle(backend.storage.getTail(GEN, 0)), TIMEOUT, 'HeadObject');
     await expectReleased(stub);
   });
 
@@ -405,7 +429,7 @@ describe('S3: a read is cut off at readTimeoutMs', LIMIT, () => {
     stub.ignoreRange = true;
     stub.arm('HeadObject', { kind: 'no-headers' });
 
-    expectTimedOut(await settle(backend.storage.getTail(GEN, BYTES.length)));
+    expectTimedOut(await settle(backend.storage.getTail(GEN, BYTES.length)), TIMEOUT, 'HeadObject');
     expect(stub.count('GetObject')).toBe(1);
     expect(stub.count('HeadObject')).toBe(1);
   });
@@ -490,6 +514,61 @@ describe('S3: a read is cut off at readTimeoutMs', LIMIT, () => {
     }
   });
 
+  it('fires near its configured value: a 1,000 ms timeout ends a stalled read well before 3,000 ms', async () => {
+    const second = new S3Storage({ ...stub.options(), readTimeoutMs: 1_000 });
+    try {
+      stub.arm('GetObject', { kind: 'no-headers' });
+      expectTimedOut(await settle(second.storage.getRange(GEN, 0, 4)), 1_000);
+    } finally {
+      second.client.destroy();
+    }
+  });
+
+  it("the SDK's own retry of a 5xx runs inside one timed read", async () => {
+    const timed = new S3Storage({ ...stub.options(), readTimeoutMs: 2_000 });
+    try {
+      stub.arm('GetObject', { kind: 'status', status: 500 });
+      const range = await settle(timed.storage.getRange(GEN, 0, 4));
+      expect(range).toMatchObject({ value: new Uint8Array([0, 1, 2, 3]) });
+      expect(stub.count('GetObject')).toBe(2); // the 500, then the SDK's retry, under the one timer
+    } finally {
+      timed.client.destroy();
+    }
+  });
+
+  it('a 5xx and then a stall: the timer runs from the first attempt, not from the retry', async () => {
+    const timed = new S3Storage({ ...stub.options(), readTimeoutMs: 1_000 });
+    try {
+      stub.arm('GetObject', { kind: 'status', status: 500 });
+      stub.arm('GetObject', { kind: 'no-headers' });
+      expectTimedOut(await settle(timed.storage.getRange(GEN, 0, 4)), 1_000);
+      expect(stub.count('GetObject')).toBe(2);
+    } finally {
+      timed.client.destroy();
+    }
+  });
+
+  it('readTimeoutMs: 0 sends no options, so a cacheMiddleware client keeps reusing its handler', async () => {
+    const resolve = vi.spyOn(GetObjectCommand.prototype, 'resolveMiddleware');
+    const reads = async (readTimeoutMs: number): Promise<number> => {
+      const client = stub.client({ cacheMiddleware: true });
+      try {
+        const b = new S3Storage({ bucket: BUCKET, client, readTimeoutMs });
+        resolve.mockClear();
+        for (let i = 0; i < 3; i++) await b.storage.getRange(GEN, 0, 4);
+        return resolve.mock.calls.length;
+      } finally {
+        client.destroy();
+      }
+    };
+    try {
+      expect(await reads(0)).toBe(1); // resolved once, then the cached handler
+      expect(await reads(TIMEOUT * 50)).toBe(3); // a timed read is sent with options, so it resolves each time
+    } finally {
+      resolve.mockRestore();
+    }
+  });
+
   it('the S3StorageDriver takes it directly', async () => {
     const client = stub.client();
     try {
@@ -502,7 +581,7 @@ describe('S3: a read is cut off at readTimeoutMs', LIMIT, () => {
   });
 });
 
-describe('S3: uploads are not timed', LIMIT, () => {
+describe('S3: writes, deletes and listings are not timed', LIMIT, () => {
   let stub: StubS3;
   let backend: S3Storage;
 
@@ -529,6 +608,7 @@ describe('S3: uploads are not timed', LIMIT, () => {
     expect(outcome).toMatchObject({ value: { size: 3 } });
     expect((outcome as { ms: number }).ms).toBeGreaterThanOrEqual(3 * TIMEOUT - 5);
     expect(stub.count('PutObject')).toBe(1);
+    expect(stub.cut).toEqual([]);
   });
 
   it('a multipart upload whose every request is slower than the read timeout succeeds', async () => {
@@ -541,6 +621,47 @@ describe('S3: uploads are not timed', LIMIT, () => {
     expect(stub.count('UploadPart')).toBe(2);
     expect(stub.count('CompleteMultipartUpload')).toBe(1);
     expect(stub.objects.get(OBJECT_KEY)?.body.length).toBe(FIVE_MIB + 1);
+    expect(stub.cut).toEqual([]);
+  });
+
+  it("a failed upload's AbortMultipartUpload, slower than the read timeout, is sent in full", async () => {
+    stub.arm('AbortMultipartUpload', { kind: 'delay', ms: 3 * TIMEOUT });
+    const failed = new Error('the writer failed after one part');
+
+    const outcome = await settle(
+      backend.storage.putImmutable(GEN, async (sink) => {
+        await sink.write(new Uint8Array(FIVE_MIB)); // one part uploaded, so there is an upload to abort
+        throw failed;
+      }),
+    );
+    expect(outcome).toMatchObject({ error: failed });
+    expect((outcome as { ms: number }).ms).toBeGreaterThanOrEqual(3 * TIMEOUT - 5);
+    expect(stub.answered).toContain('AbortMultipartUpload');
+    expect(stub.cut).toEqual([]);
+  });
+
+  it('a DeleteObject slower than the read timeout succeeds', async () => {
+    stub.objects.set(OBJECT_KEY, { body: BYTES, etag: '"seed"' });
+    stub.arm('DeleteObject', { kind: 'delay', ms: 3 * TIMEOUT });
+
+    const outcome = await settle(backend.storage.delete(GEN));
+    expect(outcome).toHaveProperty('value');
+    expect((outcome as { ms: number }).ms).toBeGreaterThanOrEqual(3 * TIMEOUT - 5);
+    expect(stub.objects.has(OBJECT_KEY)).toBe(false);
+    expect(stub.cut).toEqual([]);
+  });
+
+  it("the storage's listing, slower than the read timeout, succeeds", async () => {
+    stub.objects.set(OBJECT_KEY, { body: BYTES, etag: '"seed"' });
+    stub.arm('ListObjectsV2', { kind: 'delay', ms: 3 * TIMEOUT });
+
+    const listed = async (): Promise<number[]> => {
+      const out: number[] = [];
+      for await (const key of backend.storage.list({ segment: 's' })) out.push(key.generation);
+      return out;
+    };
+    expect(await settle(listed())).toMatchObject({ value: [0] });
+    expect(stub.cut).toEqual([]);
   });
 
   it("the registry's create, slower than the read timeout, succeeds", async () => {
@@ -548,6 +669,35 @@ describe('S3: uploads are not timed', LIMIT, () => {
 
     const outcome = await settle(backend.registry.create({ segment: 's' }, { currentGen: 0 }));
     expect(outcome).toMatchObject({ value: { token: '0' } });
+    expect(stub.cut).toEqual([]);
+  });
+
+  it("the registry's compare-and-swap and delete, slower than the read timeout, succeed", async () => {
+    const { token } = await backend.registry.create({ segment: 's' }, { currentGen: 0 });
+    stub.arm('PutObject', { kind: 'delay', ms: 3 * TIMEOUT });
+    const swapped = await settle(
+      backend.registry.compareAndSwap({ segment: 's' }, token, { currentGen: 1 }),
+    );
+    expect(swapped).toMatchObject({ value: { token: '1' } });
+    expect(await backend.registry.get({ segment: 's' })).toMatchObject({ currentGen: 1 });
+
+    stub.arm('PutObject', { kind: 'delay', ms: 3 * TIMEOUT }); // the tombstone
+    expect(await settle(backend.registry.delete({ segment: 's' }))).toHaveProperty('value');
+    expect(await backend.registry.get({ segment: 's' })).toBeNull();
+    expect(stub.cut).toEqual([]);
+  });
+
+  it("the registry's listing, slower than the read timeout, succeeds", async () => {
+    await backend.registry.create({ segment: 's' }, { currentGen: 0 });
+    stub.arm('ListObjectsV2', { kind: 'delay', ms: 3 * TIMEOUT });
+
+    const listed = async (): Promise<string[]> => {
+      const out: string[] = [];
+      for await (const row of backend.registry.list()) out.push(row.segment);
+      return out;
+    };
+    expect(await settle(listed())).toMatchObject({ value: ['s'] });
+    expect(stub.cut).toEqual([]);
   });
 });
 
@@ -758,6 +908,18 @@ describe('S3: a read leaves no timer behind', () => {
       expect(run.killed).toBe(false);
       expect(run.code).toBe(0);
       expect(run.out).toMatch(/"ok"/);
+    },
+    30_000,
+  );
+
+  // A read that fails clears its timer too: the same minute-long timeout, on a read the stub answers with a 404.
+  it.each(['missing', 'head-missing'] as const)(
+    'a process whose one %s read fails, with a long timeout, exits promptly',
+    async (call) => {
+      const run = await runChild(call, 15_000);
+      expect(run.killed).toBe(false);
+      expect(run.out).toMatch(/"error":"NotFoundError"/);
+      expect(run.code).toBe(1);
     },
     30_000,
   );

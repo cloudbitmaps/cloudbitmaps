@@ -3,7 +3,8 @@
  * that is still alive long after the read settled is being held open by something the read left behind: the parent
  * reads how long this one took to exit.
  *
- * argv: the stub's endpoint, then the read to make (`range`, `tail`, `head` or `registry`). Prints one JSON line.
+ * argv: the stub's endpoint, then the read to make: `range`, `tail`, `head` or `registry`, which succeed, or `missing` or
+ * `head-missing`, a GET and a HEAD of a generation the stub does not hold, which fail. Prints one JSON line.
  */
 import { S3Storage } from '../../../../packages/s3/src/backend';
 
@@ -32,6 +33,10 @@ async function run(): Promise<unknown> {
       return (await backend.storage.getTail(key, 0)).size;
     case 'registry':
       return (await backend.registry.get({ segment: 's' }))?.currentGen ?? null;
+    case 'missing':
+      return (await backend.storage.getRange({ segment: 's', generation: 9 }, 0, 4)).length;
+    case 'head-missing':
+      return (await backend.storage.getTail({ segment: 's', generation: 9 }, 0)).size;
     default:
       throw new Error(`unknown call ${call}`);
   }
