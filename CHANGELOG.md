@@ -29,6 +29,63 @@ so, and so do the module headers in the code.
   after its response began keeps its connection open too). A 404 whose error body arrives after the deadline is a
   `TransientError`, not `NotFoundError`. The GCS storage and registry drivers take the option too.
 
+- **`AzureBlobStorage` can time each read: `readTimeoutMs`, off unless set.** With it set, every read request the
+  Azure Blob storage and registry drivers send, a range read, a tail read's properties and its ranged download, each
+  on its own, and a registry row's read, has `readTimeoutMs` to finish, the response body included, or it is aborted
+  and throws `TransientError` ("Azure Blob download timed out after 2000 ms"), which the store's read retry runs
+  again. No client setting bounds an Azure read whose body stalls: the SDK's per-try timer stops at the response
+  headers. The timer starts at the call into the SDK, so waiting for a socket or a credential's token counts; the
+  HTTP agent the SDK builds sets no socket limit. Writes, block commits, deletes and listings are not timed. `0`, the
+  default, turns it off, and a value that is not an integer from 0 to 2,147,483,647 is refused with
+  `ValidationError`. The drivers take it too (`AzureBlobStorageDriver`, `AzureBlobRegistryDriver`). The SDK's default
+  retry waits 4 s before its second retry of a 500 or 503, so a timeout below that cuts it off, and the read throws the
+  timeout instead of the 503 for the store's retry to run again. Tests run a real `@azure/storage-blob` client against
+  a stub that stalls before the headers, after them and mid-body, and a child process checks that a read leaves no
+  timer behind.
+
+- **`S3Storage` can time each read: `readTimeoutMs`, off unless you set it.** The default is `0`, no timeout, until
+  in-region measurements justify one. Set, it bounds every `GetObject` and `HeadObject` the S3 storage and registry
+  drivers send, from the moment the read is handed to the SDK until its body is read: a read still running after that
+  many ms is aborted, which releases its connection, and throws `TransientError` ("S3 GetObject timed out after
+  N ms"), which the store's read retry runs again. The AWS SDK sets no timeout by default, so an untimed read on a
+  connection that stops answering waits as long as the connection stays open. The clock counts the time a read waits
+  for one of the client's sockets (50 by default) and the time spent fetching credentials, and under
+  `retryMode: 'adaptive'` the SDK's rate-limiter wait, so a burst of concurrent reads larger than the socket pool can
+  time out with nothing slow on the wire: against a local stub answering each request in 50 ms, 8,000 concurrent
+  `has()` calls with `readTimeoutMs: 2_000` lost most of their reads. Size it above the worst queueing your concurrency
+  implies, or raise `maxSockets`. AWS's S3 guidance is to retry a GET of under 512 KB after about 2 seconds; with
+  `readTimeoutMs: 2_000` and the store's default retry, a read whose request stalls on every attempt fails after about
+  8.35 s (4 × 2,000 ms plus up to 350 ms of backoff, derived rather than measured). Writes, multipart uploads, deletes
+  and listings are never timed, and a `client` you pass gets the timeout without being changed. A value that is not
+  an integer from 0 to 2,147,483,647 is refused with `ValidationError` (a longer Node timer fires after 1 ms).
+
+- **`PricingProfile.storage.requestsPerPointerRead` prices a pointer read apart from a tail read.** It is the requests
+  one pointer read costs, 1 by default, and the cost model charges it for each operand of an intersection, for the
+  eight pointer reads a load makes and for each pointer refresh. `requestsPerSizedRead` keeps its name and its default
+  of 1, and now prices tail reads only: each operand's index read and the one a load makes. A pointer read is one
+  request on S3, GCS and Azure Blob alike, so every shipped backend leaves `requestsPerPointerRead` at 1; S3 and GCS
+  leave `requestsPerSizedRead` at 1 too, and an Azure Blob profile sets `requestsPerSizedRead: 2`, for its two-request
+  tail read. An Azure profile that already sets `requestsPerSizedRead: 2` is priced one request lower for each pointer
+  read, which is what an Azure pointer read now costs. A value that is not a finite number of at least 0 is refused
+  with `ValidationError`, as `requestsPerSizedRead` is.
+
+### Changed
+
+- **Azure Blob reads a registry pointer in one request, where it made two.** A pointer read was the blob's
+  properties and then a download pinned to the ETag they named; it is now one GET of the whole blob, taking the ETag
+  (the version fence) and the length from the response that carries the bytes, so the pair describes one version and a
+  concurrent overwrite is seen as the older row or the newer one, never split between two requests. The response is
+  untrusted: one that is not a `200`, that has no ETag or an empty one, that has no length, or whose length is over the
+  1 MiB row cap is refused with `IntegrityError` before a byte of its body is read, and the body is counted as it
+  arrives and refused at the first byte past its length. A refused response is let go: the SDK throws on a response
+  with no ETag or no length and leaves its socket open, and the driver aborts the request, which closes it. The read
+  asks the SDK not to re-request the rest of a body cut off part-way, so the bytes come from one response or the read
+  fails, with a `TransientError` the store's read retry repeats. An answer from a host other than the container's own,
+  which is where a client set with `retryOptions.secondaryHost` sends a retried read, is refused as transient too, so
+  the registry never takes a geo-replica's older row for the current one. A `404` is still absence. Writes, listings and the tombstoning delete are unchanged, and a tail read stays two
+  requests, since Azure Blob takes no suffix range. Price an Azure deployment with `storage.requestsPerSizedRead: 2`
+  and `requestsPerPointerRead` at its default of 1.
+
 ### Fixed
 
 - **A GCS download that fails part-way no longer resets the other requests in flight, uploads included.** When a
@@ -45,6 +102,58 @@ so, and so do the module headers in the code.
   through the same path as the tail read: a response longer than the range is refused as soon as its length shows,
   where the whole response was downloaded before its length was checked, and a 206 must name the requested bytes in
   `Content-Range`, while a 200 (a server that ignored the range) is accepted only for a range that starts at 0.
+- **An Azure Blob range or tail read whose connection drops part-way through the body is a `TransientError`.** The
+  SDK fails such a body with an `AbortError`, which reached the caller as it was, so the store's read retry did not run
+  it again and a `has()`, `count()` or erasure failed on one dropped connection. The registry already read the same
+  fault as transient. Tests drop the connection mid-body on a range read and a tail read, with the timeout off and on,
+  and through the store.
+- **An Azure Blob range or tail read lets go of a response the SDK refuses.** The SDK refuses a download with no ETag
+  or no length by throwing a `RangeError`, and leaves the body unread with its socket open. The read now aborts its
+  request when it fails, which closes the socket, with or without a timeout.
+- **A calibration run survives a transient fault in a timed sample.** The workload's client makes one attempt per
+  request and every timed store runs with its own retry off, so a single transient fault anywhere in a run's requests
+  (up to ~94,600 GET-class and 364 PUT-class at the default workload) failed the whole run, and a partial run is not
+  evidence. One in-region run failed on a single transient connection fault after about 86,300 requests; at that rate
+  a run of this size would finish about a third of the time. A timed sample that meets a transient fault (a cold
+  intersect, a cold point read, an `andNot` call or the warm stage's priming pass) is now discarded whole and run again
+  from the start, from a state the failed attempt left nothing cached in: on a fresh store, except a first `count()`,
+  which runs again on its store once the store has forgotten the segment, and a `has()` on an open segment, which runs
+  again on the same store. At most three samples a run and two a stage are discarded; one more, or a fault in a load,
+  fails the run as before. A transient fault is the library's `TransientError` or anything the installed SDK's own
+  retry would retry. The harness waits for the failed sample's requests still in flight, counts them against it, and
+  records each discard beside its stage: the sample, the error's name, the transport code beneath it, the SDK's
+  attempt count, how long the attempt ran and the requests it made. Those requests are billed and stay in the stage's,
+  and each stage's expected count is held to what its kept samples made. The projection allows three discarded samples
+  at the costliest sample's bound, so the default workload's projected upper bound is 364 PUT-class and 106,624
+  GET-class requests, $0.044470, under the $0.05 ceiling the README's example sets (`CR_CALIBRATE_MAX_USD` has no
+  default, and `--run` refuses without one). `bench/lib/calibration-figures.cjs` treats a run with discards within the
+  harness's bounds as evidence and requires its report to state how many it discarded. Wherever the harness records an
+  error it now keeps the name, the code and the message: the SDK's HTTP handler renames `ECONNRESET`, `EPIPE` and
+  `ETIMEDOUT` alike to `TimeoutError`, so the name alone could not say which it was. `CR_CALIBRATE_FAULT_GETS` makes a
+  rehearsal fail the GetObject requests it lists, once each, as a reset socket or (`:denied`) as a 403 that is not
+  transient, and is refused in every other mode. A test in the integration lane runs the harness itself through such a
+  rehearsal against MinIO, so the integration job now builds the packages first. This is repository work on the
+  calibration harness, outside the packages.
+- **An S3 registry row refused for its size no longer holds its connection open.** A row whose response declares
+  more than the 1 MiB cap is refused with `IntegrityError` before a byte of its body is read, and the body was left
+  unread, so each refusal kept its socket until the server gave up on it. The driver now destroys the body on every
+  way out of the read that leaves it unread, which closes the connection, with or without `readTimeoutMs`. A test
+  refuses three such rows against a stub endpoint and checks that no connection is left open.
+- **An S3 registry read whose body is cut off part-way is a `TransientError`.** It reached the caller as the
+  SDK's raw connection error, which the store's read retry does not repeat; the storage driver already mapped the
+  same fault.
+- **One transient read fault no longer fails a whole load or erasure.** A load's guard read of the current
+  generation, and an erasure's reads (the generation it rewrites and each of its chunks, the read-back that verifies
+  the generation it wrote, and any other generation that may still hold the id) went to the raw driver once, so a
+  single throttle or reset there failed the call. They now run under the store's read retry (`retry`, on by default),
+  with its policy and `onRetry`; `loadSegment` and `eraseIdFromSegment` take it as an optional `readRetry` dep, and
+  without one each read is made once. The writes are still sent once. This holds on every backend, with or without a
+  read timeout. Tests fault each of those reads once, transiently and otherwise.
+- **The production guide's S3 client-timeout sample set a timeout that only logs.** It built the client with
+  `NodeHttpHandler({ requestTimeout: 3_000 })`, and on `@smithy/node-http-handler` 4.12.1 `requestTimeout` on its own
+  logs a warning when it passes and leaves the request running; it ends the request only beside
+  `throwOnRequestTimeout: true`. The sample sets `socketTimeout`, which ends a request whose connection has carried
+  nothing for that long and leaves an upload that is still sending alone.
 
 ## [0.11.2] — 2026-10-01
 

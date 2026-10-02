@@ -26,6 +26,13 @@
  * shell in another region than the bucket's. A figure derived from a file that fails any of those would be about a
  * run that did not happen the way it says.
  *
+ * A RUN THAT DISCARDED A SAMPLE IS EVIDENCE, within the harness's bounds. A sample that met a transient fault was
+ * discarded whole and run again from the start (`calibrate-samples.cjs`): its requests are in its stage's and in the
+ * bill, which counts them, and out of every latency and request-count figure, which is what the samples the stage
+ * kept made. Those are held to their expected counts exactly, as a fault-free run's are, and the count of discards is
+ * stated beside the figures. A run that met more faults than its bounds allow did not finish, and is refused as any
+ * partial run is.
+ *
  * WHAT THE REVERSE CHECK CAN AND CANNOT SEE. It reads a figure by its unit, or by the noun it counts, and accepts it
  * only at the precision it is written. A value the evidence holds is not enough where the same number could make
  * two claims: the measured and the expected intersect, a byte share and a chunk share, what a load uploaded and
@@ -39,7 +46,13 @@ const path = require('node:path');
 
 const { classify } = require('./aws-meter.cjs');
 const { planLayout, DEFAULT_LAYOUT, EVIDENCE_DIR, CHUNK_SPAN } = require('./calibrate-guards.cjs');
-const { STAGES } = require('./calibrate-stages.cjs');
+const { STAGES, sampleBounds } = require('./calibrate-stages.cjs');
+const {
+  keptRequests,
+  discardedRequests,
+  DISCARDS_PER_RUN,
+  DISCARDS_PER_STAGE,
+} = require('./calibrate-samples.cjs');
 
 /**
  * What `store.load()` bills, in requests, as `tests/bench/calibrate-guards.test.ts` counts them against local
@@ -220,8 +233,11 @@ function derive(run, src) {
   const ops = run.cost.ops;
   const cmd = ops.byCommand;
   // The reads the intersect checks count. A store.load() run records its calibration intersects' own, because its
-  // loads read pointers too; a run that timed the write and publish alone has loads the meter files no read of.
-  const rd = storeLoadRun ? it.requests.reads : ops.reads;
+  // loads read pointers too, and of those the ones its kept intersects made; a run that timed the write and publish
+  // alone has loads the meter files no read of.
+  const rd = storeLoadRun ? keptRequests(it).reads : ops.reads;
+  // The samples each stage discarded after a transient fault: none in a file from before a sample could be.
+  const discardedIn = (name) => run.phases?.[name]?.discarded ?? [];
   const n = (name) => cmd[name] ?? 0;
   const getUSD = src.pricing.getPerMillion / 1e6;
   const putUSD = src.pricing.putPerMillion / 1e6;
@@ -381,16 +397,73 @@ function derive(run, src) {
     );
     const missed = run.expectedMissed ?? [];
     check(missed.length === 0, `it missed an expected count: ${missed.join('; ')}`);
-    // Every stage's record exists here: the first refusal above stops a file that lacks one.
+    // Every stage's record exists here: the first refusal above stops a file that lacks one. A stage is held to what
+    // its kept samples made, and its discarded ones only to having been reads that stopped short.
     for (const name of STAGES) {
-      const { requests, expectedGets } = run.phases[name];
+      const { expectedGets } = run.phases[name];
+      const kept = keptRequests(run.phases[name]);
+      const discarded = discardedIn(name);
       check(typeof expectedGets === 'number', `it records no expected count for its ${name} stage`);
       if (typeof expectedGets === 'number') {
         check(
-          requests.get === expectedGets,
-          `its ${name} stage made ${int(requests.get)} GET-class requests, not the ${int(expectedGets)} it expected`,
+          kept.get === expectedGets,
+          `its ${name} stage made ${int(kept.get)} GET-class requests` +
+            `${discarded.length === 0 ? '' : ' in the samples it kept'}, not the ${int(expectedGets)} it expected`,
         );
       }
+      check(
+        discarded.every(
+          (d) =>
+            typeof d.name === 'string' &&
+            Number.isInteger(d.sample) &&
+            d.requests?.put === 0 &&
+            Number.isInteger(d.requests?.get),
+        ),
+        `its ${name} stage records a discard that is not a read sample with its requests`,
+      );
+    }
+    // Loads are not samples: a write that failed may have landed, so the harness never runs one again.
+    check(discardedIn('load').length === 0, 'its load stage discarded a load');
+    // The run's own count of its discards, and its bounds: a file whose stages discarded more than it counted, or more
+    // than it allowed, is not the run the harness would have let finish.
+    // The bounds are the harness's, not the file's: a file stating looser ones of its own is not the run the harness
+    // would have let finish. They are held to the plan the run projected from too, and its allowance to them.
+    const counted = run.discards;
+    const plan = run.workload?.plan;
+    const discardCount = STAGES.reduce((n, name) => n + discardedIn(name).length, 0);
+    check(
+      (counted?.count ?? 0) === discardCount,
+      `its stages record ${discardCount} discarded samples, not the ${counted?.count ?? 0} it counted`,
+    );
+    check(
+      counted?.unfinished === undefined,
+      `it records a stage cut short (${counted?.unfinished?.stage}), which a run that finished has none of`,
+    );
+    check(
+      discardCount <= DISCARDS_PER_RUN &&
+        STAGES.every((name) => discardedIn(name).length <= DISCARDS_PER_STAGE),
+      `it discarded more samples than the harness allows (${DISCARDS_PER_RUN} a run, ${DISCARDS_PER_STAGE} a stage)`,
+    );
+    if (counted !== undefined) {
+      check(
+        counted.perRun === DISCARDS_PER_RUN &&
+          counted.perStage === DISCARDS_PER_STAGE &&
+          plan?.discards?.perRun === DISCARDS_PER_RUN &&
+          plan?.discards?.perStage === DISCARDS_PER_STAGE,
+        `its bounds on discards (${counted.perRun} a run, ${counted.perStage} a stage, and its plan's ` +
+          `${plan?.discards?.perRun} and ${plan?.discards?.perStage}) are not the harness's ` +
+          `(${DISCARDS_PER_RUN} a run, ${DISCARDS_PER_STAGE} a stage)`,
+      );
+      const allowed = run.projectedDiscards;
+      const costliest =
+        plan?.discards === undefined ? null : Math.max(...Object.values(sampleBounds(plan)));
+      check(
+        allowed?.put === 0 &&
+          allowed?.costliestSample === costliest &&
+          allowed?.get === DISCARDS_PER_RUN * (costliest ?? Number.NaN),
+        `its allowance for discards (${allowed?.get} GET-class, at a costliest sample of ${allowed?.costliestSample}) ` +
+          `is not ${DISCARDS_PER_RUN} samples at the costliest its plan makes (${costliest})`,
+      );
     }
     const clientRegion = run.network?.clientRegion ?? null;
     check(
@@ -572,7 +645,8 @@ function derive(run, src) {
     // publish, priced from the run's totals.
     loadVia: storeLoadRun ? via : null,
     // Each stage's own requests, setup included, beside what the engine is expected to make and the stage's bound:
-    // the figures a report on the stages states.
+    // the figures a report on the stages states. `put` and `get` are what the stage billed; `keptGet` is what its kept
+    // samples made, which its expected count is held to, and `discarded` how many samples it discarded.
     stageLedger: storeLoadRun
       ? Object.fromEntries(
           STAGES.map((name) => {
@@ -583,6 +657,8 @@ function derive(run, src) {
               {
                 put: r.put,
                 get: r.get,
+                keptGet: keptRequests(run.phases[name]).get,
+                discarded: discardedIn(name).length,
                 setupPut: setup.put,
                 setupGet: setup.get,
                 expectedGets: run.phases[name].expectedGets ?? null,
@@ -593,6 +669,9 @@ function derive(run, src) {
           }),
         )
       : null,
+    // The samples the run discarded after a transient fault and ran again, stated beside the figures: how many, in
+    // which stages, and what they requested. Its latency and its counts are the kept samples'.
+    discards: discardsOf(run, storeLoadRun ? STAGES.map((name) => [name, discardedIn(name)]) : []),
     getsPerLoad,
     getsPerMultipart,
     putsPerSingle,
@@ -703,6 +782,21 @@ function derive(run, src) {
   return f;
 }
 
+/** What a run's discarded samples come to, stage by stage: see {@link derive}. */
+function discardsOf(run, byStage) {
+  const samples = byStage.flatMap(([stage, list]) => list.map((d) => ({ stage, ...d })));
+  const requests = discardedRequests(samples);
+  return {
+    count: samples.length,
+    perRun: run.discards?.perRun ?? null,
+    perStage: run.discards?.perStage ?? null,
+    byStage: Object.fromEntries(byStage.map(([stage, list]) => [stage, list.length])),
+    put: requests.put,
+    get: requests.get,
+    samples,
+  };
+}
+
 /** The figures a run report must state, in the form a reader sees. Each is matched as a whole figure. */
 function anchorsOf(f) {
   return [
@@ -744,6 +838,15 @@ function anchorsOf(f) {
       `${fixed(f.parity.intersectsPerMonth / 1e6, 1)} million`,
     ],
     ['loads the Redis line buys a month', `${fixed(f.parity.loadsPerMonth / 1e6, 1)} million`],
+    // A run that discarded a sample says so beside its figures; one that discarded none has nothing to state.
+    ...(f.discards.count === 0
+      ? []
+      : [
+          [
+            'samples discarded after a transient fault',
+            `${f.discards.count} discarded sample${f.discards.count === 1 ? '' : 's'}`,
+          ],
+        ]),
   ];
 }
 
@@ -848,6 +951,7 @@ const WORDS = {
   object: /\bobjects?'?/gi,
   storeLoad: /store\.load\(\)|\bloadSegment\b/g,
   median: /\bmedian\b/gi,
+  discard: /\bdiscard\w*|\b(?:ran|run|runs) again\b/gi,
 };
 /**
  * A bound value: the claim it makes is the nearest word of `group`'s families, which must be one `allow` names.
@@ -860,6 +964,7 @@ const MEASURED = ['measured', 'expected'];
 const SHARES = ['chunkShare', 'byteShare', 'getShare'];
 const measuredValue = (v) => bind(v, MEASURED, ['measured'], false);
 const expectedValue = (v) => bind(v, MEASURED, ['expected']);
+const discardValue = (v) => bind(v, ['discard'], ['discard']);
 
 /** Every value a page may state for this run, by unit and by counted noun — what the reverse check accepts. */
 function valuesOf(f, { withLatency }) {
@@ -892,6 +997,11 @@ function valuesOf(f, { withLatency }) {
     f.ledger.get,
     f.byCommand.GetObjectCommand,
     f.projected.get,
+    // What the discarded samples requested, each and together: beside the words for a discard only, since a small
+    // count would otherwise pass for any other GET figure it happens to equal.
+    ...(f.discards.count === 0
+      ? []
+      : [f.discards.get, ...f.discards.samples.map((d) => d.requests.get)].map(discardValue)),
   ];
   const put = [1, f.putsPerSingle, f.putsPerMultipart, sl.first.put, f.ledger.put, f.projected.put];
   return {
@@ -1046,6 +1156,8 @@ function valuesOf(f, { withLatency }) {
         ...f.kRows.map((r) => bind(Math.floor(1 / r.usd), MEASURED, ['expected'], false)),
       ],
       segments: [f.workload.segments, f.workload.largeSegments, 1],
+      // How many samples the run discarded, and in each stage.
+      discards: [f.discards.count, ...Object.values(f.discards.byStage)],
       pointerReads: [
         f.ledger.pointerReads,
         f.ledger.loadPointerReads,
@@ -1222,6 +1334,7 @@ const BYTE_UNIT = Object.keys(BYTE_UNITS)
   .join('|');
 // Longest first, so "chunk reads" is read as chunk reads and not as chunks.
 const COUNTED = [
+  ['discarded samples?', 'discards'],
   ['pointer reads?|pointer GETs?', 'pointerReads'],
   ['tail reads?|tail GETs?', 'tailReads'],
   ['chunk reads?|chunk GETs?', 'chunkReads'],

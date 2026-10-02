@@ -32,7 +32,7 @@ For what each published number means, how it was measured, and what it does *not
 | `soak.cjs` | The loaded store under **sustained** mixed load — point reads, combines with `exclude` lists, and re-loads — watching post-GC heap *and* the addon's off-heap memory for creep over time. A run with no combines or no re-loads is reported inconclusive, never a pass. | `pnpm soak` (`SOAK_INJECT=1` to persist) | `soak-results.json` | yes, inside `pnpm rss-gate` (see `scripts/`) |
 | `encoding.cjs` | Encoded size of the same ids under roaring against a fixed array, a fixed bitset and a fixed run-length encoding — the evidence behind the site's claim that roaring's advantage is choosing a representation *per chunk*. | `pnpm bench:encoding` | `encoding-results.json` | no |
 | `event-loop.cjs` | `store.load()` of 1M ids spread across the id space onto in-memory storage, through the built package, 20 trials each in a fresh process: the load's wall time and the longest single event-loop stall, with the store's yielding clock and with a clock that yields nothing. Records the CPU, Node version, commit and the load average before and after, so a busy machine is visible in the evidence. Wall-clock and machine-dependent: recorded, not asserted. | `pnpm bench:event-loop` (builds first; wants an idle machine); `EVENT_LOOP_INJECT=1` to persist; `pnpm bench:event-loop:check` to verify | `event-loop-results.json` | yes — `pnpm bench:event-loop:check` fails if the guide's event-loop section, or the two source comments quoting the same run, differ from the results file. It never re-measures, because CI hardware is not the hardware that measured |
-| `calibrate-aws.cjs` | Against a **real** object store: load throughput (single-part and multipart), cold intersect latency, and what a single-bucket topology actually costs per request. It spends money — see [below](#real-cloud-calibration). | `pnpm calibrate:aws` | one evidence file per finished real run, `calibration/<runId>.json`; a real run that does not finish writes `calibration/<runId>.partial.json`, and a rehearsal `calibrate-aws-rehearsal.json`, both of which git ignores | its guards, via `tests/bench/calibrate-guards.test.ts` |
+| `calibrate-aws.cjs` | Against a **real** object store: load throughput (single-part and multipart), cold intersect latency, and what a single-bucket topology actually costs per request. It spends money — see [below](#real-cloud-calibration). | `pnpm calibrate:aws` | one evidence file per finished real run, `calibration/<runId>.json`; a real run that does not finish writes `calibration/<runId>.partial.json`, and a rehearsal `calibrate-aws-rehearsal.json`, both of which git ignores | its guards, via `tests/bench/calibrate-guards.test.ts`, and how it discards a sample that meets a transient fault, via `tests/bench/calibrate-samples.test.ts` |
 | `calibrate-cloudshell.sh` | The same calibration, run from AWS CloudShell inside the region, against the **published** packages installed from npm. | `bash bench/calibrate-cloudshell.sh` | `~/<runId>.json` in CloudShell, which belongs in `calibration/`, or `~/<runId>.partial.json` for a run that did not finish | no |
 | `check-elasticache-prices.cjs` | Holds the estimator's on-demand catalogue, and the reserved prices `sizing.cjs` prices Redis with, to a downloaded AWS price list, node by node and on each node's full key. | `node bench/check-elasticache-prices.cjs <offer.json>`, by hand whenever the cited price list version moves | nothing: it exits non-zero, naming every node that disagrees | no: it needs the price list, a 2 MB download from AWS. CI tests its reader, `tests/bench/elasticache-prices.test.ts` |
 
@@ -106,12 +106,69 @@ the window. In flight counts requests the library issued, including any waiting 
 `andNot` reads every chunk of the segment it filters, since any of them can survive, and each exclude only where it
 overlaps, so what it costs scales with the include operand and not with the size of the exclude list.
 
+### A sample that meets a transient fault is discarded, and run again
+
+The workload's client makes one attempt per request and every timed store has its own retry off, so no retry's backoff
+can sit inside a latency sample and every count stays exact. On its own, that would let one transient fault anywhere
+in a run's requests (up to ~94,600 GET-class and 364 PUT-class at the default workload) fail the whole run, and a
+partial run is not evidence. One in-region run failed on a single transient connection fault after about 86,300
+requests; at that rate a run of this size would finish about a third of the time. So a **sample** that fails with a
+transient fault is **discarded**, never retried inside ([`lib/calibrate-samples.cjs`](lib/calibrate-samples.cjs)):
+
+- **What a sample is.** One cold intersect (in `intersect`, `spread` and `sweep`), the warm stage's priming pass, one
+  cold point read (`count()` as a first read, `has()` on an open segment, `has()` as a first read), and one `andNot`
+  call. A warm read makes no request, so it cannot meet a fault, and one that does make a request fails its stage.
+- **What a load is not.** A load is never discarded: a write that failed transiently may still have landed, its object
+  or its pointer with only the answer lost, so the same load run again is a reload, which makes more requests than the
+  first load the projection bounds. A load that meets a transient fault fails the run. The loads are
+  about half a percent of a run's requests.
+- **What counts as transient.** The library's `TransientError`, which the S3 driver raises for a throttle, a 5xx or a
+  dropped or timed-out connection, or anything the installed SDK's own retry would have retried (its
+  `isThrottlingError`, `isTransientError` and `isServerError`), anywhere in the error's causes. That takes in every
+  5xx, 501 included, and a 403 refusing a skewed clock that the SDK has corrected, both of which the SDK retries
+  itself. Never a wrong answer, another 403, a 404, an integrity failure, or the interrupt gate refusing a send.
+- **Discarded whole, then run again from the start.** The failed attempt is abandoned. Its other requests still
+  answer, since a cold intersect keeps its window of chunk reads in flight, so the harness waits until nothing is in
+  flight and nothing new has been sent for a second, and counts all of it against the discard; a request still
+  unanswered after 30 s fails the run. The wait watches a request until its headers arrive, not its body, so a body
+  that stalls past the second lets the failed sample's next reads land in the sample run again; that sample then
+  misses its expected count, and the run is refused as evidence rather than publishing a wrong figure. The sample then
+  runs from the start, from a state the failed attempt left nothing cached in: a cold intersect, a first read, an
+  `andNot` call and the priming pass on a store of their own, a first `count()` on its store after telling the store to
+  forget that segment, and a `has()` on an open segment on the same store, which the failed chunk read left with the
+  segment open and nothing cached. A test holds each re-run to the requests of the read it replaced.
+- **Bounded.** At most three discards a run and two a stage. One more transient fault fails the run, with the fault
+  under `error`.
+- **Projected.** The projection allows three discarded samples, each at the bound of the costliest sample the run
+  makes: at the default workload, a cold intersect sharing 2,000 chunks, 4,006 GET-class. The finished run holds each
+  stage's kept samples to its bound and the discards together to that allowance.
+- **Recorded.** Each stage's `discarded` lists its discards: which sample (`of`, `sample`), the error's `name`, the
+  `cause` at the bottom of it, the transport `code` beneath it, the SDK's `attempts` and `httpStatus` where it has them,
+  its message, how long the attempt ran, and the `requests` it made. Those requests are in the stage's `requests` and
+  in the bill, since they were billed, and out of what the stage is held to: its expected count is checked against
+  its requests less its discards'. The console says `DISCARDED` for each. The run records `discards`, its count and
+  its bounds, and a stage a failure cut short under `discards.unfinished`. The run's `error` records a fault the same
+  way: the SDK's HTTP handler gives a request error whose code is `ECONNRESET`, `EPIPE` or `ETIMEDOUT` one name, its
+  timeout error's, and the code kept under the rename is what says which it was.
+- **And the figures.** `lib/calibration-figures.cjs` treats a run with discards within the harness's bounds as
+  evidence. Every latency and request-count figure comes from the samples each stage kept, held to its expected count
+  exactly; the bill counts the discarded samples too, since they were billed. The run's report has to state how many
+  it discarded (`N discarded samples`), and the count it states is held to the evidence. A run that met more faults
+  than the bounds allow did not finish, and is refused like any partial run.
+
+A rehearsal can show it: `CR_CALIBRATE_FAULT_GETS=1200,40000 pnpm calibrate:aws --rehearse` fails the 1,200th and the
+40,000th GetObject the workload's client sends, once each, as a reset socket fails one, and `1200:denied` fails it as a
+403 instead, which is not transient and fails the run. The harness refuses the variable in every other mode, and the
+rehearsal's file lists each request it failed, and how, under `injectedFaults`. The integration lane runs the
+harness through such a rehearsal on a small workload (`tests/integration/calibrate-rehearsal.test.ts`), so it needs
+the packages built.
+
 ### It spends money, so it is hard to run by accident
 
 | mode | what it does |
 |---|---|
 | `pnpm calibrate:aws` | **Projection only.** Prints the worst-case request count and dollar cost. Touches nothing, reads no credentials. |
-| `pnpm calibrate:aws --rehearse` | The workload, the metering, teardown and signal handling, against the MinIO in `docker-compose.yml` (`docker compose up -d minio`). Free — and so none of the money guards run. |
+| `pnpm calibrate:aws --rehearse` | The workload, the metering, teardown and signal handling, against the MinIO in `docker-compose.yml` (`docker compose up -d minio`). Free — and so none of the money guards run. `CR_CALIBRATE_FAULT_GETS` fails the GetObject requests it lists once each, to rehearse a discard. |
 | `pnpm calibrate:aws --run` | The real thing. Refuses unless the region, a spend ceiling and a typed confirmation are each set. |
 | `pnpm calibrate:aws [--rehearse] --cleanup <runId>` | Removes a run's bucket after a kill that nothing could catch. It checks the account pin as a run does, and refuses a bucket holding anything the harness did not write. |
 
@@ -126,8 +183,8 @@ CR_CALIBRATE_EXPECT_ACCOUNT=<12 digits> # optional: refuses to run in any other 
 
 It then prints the account — **last four digits only**, enough to recognise, not enough to be worth pasting — and
 waits ten seconds so you can Ctrl-C before anything is created. The default workload's projection, which is an upper
-bound, is under four cents, so a ceiling of five cents holds it with room; `pnpm calibrate:aws` prints each stage's
-bound and the total before anything is created.
+bound, is under four and a half cents with every discard it allows, so a ceiling of five cents holds it; `pnpm
+calibrate:aws` prints each stage's bound, the allowance for discards and the total before anything is created.
 
 ### The guards
 
@@ -152,8 +209,11 @@ constants and the source text:
   rate), and reads the pointer seven times even with nothing racing it, twice more for each publish attempt it loses,
   and fifteen times at most. A test drives each count through the real registry code, so a projection allowing one
   read per attempt fails it. The workload's client makes one attempt per request, and every attempt teardown's client
-  may make is allowed for, so no SDK retry can fall outside it either. After teardown, the run compares what it
-  actually issued against what it projected, and flags itself if it went over.
+  may make is allowed for, so no SDK retry can fall outside it either. A sample discarded after a transient fault was
+  billed too, so the projection allows every discard a run may make, at the costliest sample's bound, and a plan that
+  names no bound on discards is refused rather than projected without them. After teardown, the run compares what it
+  actually issued against what it projected, each stage's kept samples against its bound and its discards against the
+  allowance, and flags itself if it went over.
 - **A segment is loaded once.** The projection bounds a segment's first load. A reload also opens the current
   generation's index, so under four lost races it makes sixteen GET-class requests against that bound of fifteen, and
   a collecting load reads the pointer once more. The harness claims each name before it loads (`firstLoads`) and
@@ -174,7 +234,9 @@ constants and the source text:
   every page of versions, up to ten pages, and refuses and reports a bucket holding any key outside `calib/`, the
   store's prefix, rather than empty it. `--cleanup` checks `CR_CALIBRATE_EXPECT_ACCOUNT` as a run does.
 - **Teardown cannot hang.** Its requests time out, 5 s to connect and 30 s to answer, and are retried; the SDK waits
-  for ever by default. The workload's requests have no timeout, since a timed request must not be cut short.
+  for ever by default. The workload's requests have no timeout, since a timed request must not be cut short: its
+  client sets none, and its store is built with `readTimeoutMs: 0`, stated rather than left to the S3 package's
+  default, so a change of that default cannot add one.
 - **It runs only where it has prices.** Every run is priced at `us-east-1`'s rates, so a run anywhere else would
   record the wrong bill and check its ceiling against the wrong one. It is refused until a pricing profile for that
   region exists.
@@ -221,12 +283,13 @@ hang-up on a real pseudo-terminal that is then closed, and the whole path by int
   a neighbouring region, so the raw floor is kept for a reader who wants a stricter one.
 - **Every attempt, and only one per request.** The meter counts each attempt the SDK makes, retries included.
   The workload's client is pinned to a single attempt, and the timed intersects run with the store's own read
-  retry off — so the request count is exact, no retry's backoff hides inside a latency sample, and a transient
-  failure fails the run, keeping every phase it had finished, rather than being retried. The latency figures are
-  therefore from fault-free runs: on that path they match what a consumer with default settings sees, whose worst
-  case adds up to three SDK attempts for each of the store's four, with backoff. Teardown and `--cleanup` keep the
-  SDK's retries, on a second client metered into the same bill: a transient failure there would otherwise leave
-  the bucket behind.
+  retry off — so the request count is exact, and no retry's backoff hides inside a latency sample. A sample that
+  meets a transient fault is not retried either: it is discarded whole and run again
+  ([above](#a-sample-that-meets-a-transient-fault-is-discarded-and-run-again)), and a fault past the bound, or in a
+  load, fails the run, keeping every phase it had finished. The latency figures are therefore from fault-free
+  samples: on that path they match what a consumer with default settings sees, whose worst case adds up to three SDK
+  attempts for each of the store's four, with backoff. Teardown and `--cleanup` keep the SDK's retries, on a second
+  client metered into the same bill: a transient failure there would otherwise leave the bucket behind.
 - **Cold reads only, and a count the network cannot move.** Each intersect gets a fresh store, so no cache can
   answer it, and the store's timed pointer refresh is off (`cache.genTtlMs: 0`). On the default 2 s refresh, an
   intersect slower than that reads each pointer again — run `2026-09-23-94416`, 83 ms from the region, measured 206
@@ -310,9 +373,10 @@ real run — which is why the probe refuses anything that is not a clean 404.
 |---|---|
 | `lib/aws-meter.cjs` | Counts every request the AWS SDK sends, as middleware — every attempt, retries included, read from the attempt count the SDK's retry loop records, and including requests the library never reports, like a multipart upload's parts. Classifies by **billing class**, not HTTP verb (a `LIST` bills like a `PUT`, twelve and a half times a `GET`), and splits `GetObject` by the shape of its `Range` header so chunk reads and the tail read can be told apart. An unrecognised command is counted as a paid read, never as free. |
 | `lib/calibrate-guards.cjs` | The guards above, plus the planned id layouts (`planLayout`, `planSweepLayout`, `layoutIds`), the account mask and the redaction of error text (`maskAccount`, `redact`), what LEFTOVERS says last (`leftoversHint`), which file each kind of run writes and what makes a usable run id (`resultsFile`, `stampOf`, `EVIDENCE_DIR`, `checkRunId`, `checkCleanupId`), the workload's bounds and the one priced region (`checkWorkload`, `MAX_SEGMENTS`, `checkRunRegion`), how the timed and the warm stores are built (`TIMED_STORE`, `warmStore`, `STORE_PREFIX`), how many attempts each of the two S3 clients makes (`clientConfigs`), and what teardown counts as done, what it refuses and how long it waits (`bucketIsGone`, `uploadIsGone`, `TEARDOWN_PASSES`, `foreignKeys`, `MAX_LISTING_PAGES`, `ADMIN_TIMEOUTS`). Pure functions, so each can be tested against the bug it exists for. |
-| `lib/calibrate-process.cjs` | How a run stops and what it leaves behind: the gate that stops the workload's client and waits for what it sent before teardown (`interruptGate`, `stopThenTearDown`), what a failure records and what a signal exits with (`failureOf`, `exitCodeAfterSignal`), the terminal's streams opened at startup and silenced on a hang-up (`holdTerminal`, `silenceTerminal`), results written without ever replacing a file (`writeResultsFile`), and the harness commit, marked when dirty (`harnessRef`). Kept apart from the pure guards so each can be driven in a test. |
+| `lib/calibrate-process.cjs` | How a run stops and what it leaves behind: the gate that stops the workload's client and waits for what it sent before teardown (`interruptGate`, `stopThenTearDown`), what a failure records, its name, its code and its message, and what a signal exits with (`faultOf`, `failureOf`, `describeFault`, `exitCodeAfterSignal`), the SDK's own classes of retryable fault (`sdkFaultClasses`), the terminal's streams opened at startup and silenced on a hang-up (`holdTerminal`, `silenceTerminal`), results written without ever replacing a file (`writeResultsFile`), and the harness commit, marked when dirty (`harnessRef`). Kept apart from the pure guards so each can be driven in a test. |
+| `lib/calibrate-samples.cjs` | The timed samples that survive a transient fault: what counts as one (`transientFault`), the ledger every timed sample runs through, which discards a failed one whole, records it beside its stage and runs it again, at most three a run and two a stage (`discardLedger`, `DISCARDS_PER_RUN`, `DISCARDS_PER_STAGE`), the wait for a failed sample's requests to answer (`quiesce`), a stage's requests with and without its discards (`keptRequests`, `discardedRequests`), and a rehearsal's injected faults (`parseFaultGets`, `injectFaults`). |
 | `lib/calibrate-spread.cjs` | The spread layout: the calibration overlap with its shared chunks at keys spread uniformly over each segment, from a fixed seed, so the bytes between two shared chunks are chunks an intersect never wants. A pure function (`planSpread`, `spreadIds`) whose placement is reproducible and whose overlap, as a count and a sum, is known exactly. |
-| `lib/calibrate-stages.cjs` | The one table of the calibration run's stages (`STAGES`), the most each can request (`projectStages`, the pre-flight projection and the end-of-run check) and the exact requests the engine is expected to make for each (`expectedReads`), plus the sweep list (`parseSweep`). A stage the harness runs that is not in the table fails its test. |
+| `lib/calibrate-stages.cjs` | The one table of the calibration run's stages (`STAGES`), the most each can request and the most one of its samples can (`projectStages`, the pre-flight projection and the end-of-run check, with its allowance for discarded samples; `sampleBounds`) and the exact requests the engine is expected to make for each (`expectedReads`), plus the sweep list (`parseSweep`). A stage the harness runs that is not in the table fails its test. |
 | `lib/sizing-pages.cjs` | Which generated `SIZING` regions live on which page, and which charts `sizing.cjs` draws: one list, read by `sizing.cjs`, which writes them, and by `scripts/site-figures.cjs`, which leaves exactly those regions to `pnpm bench:sizing:check` and refuses any other `SIZING` marker |
 | `lib/sizing-markers.cjs` | The one reader of `SIZING` markers, for `sizing.cjs` and `scripts/site-figures.cjs` alike, so the two agree on where every region begins and ends: each takes every comment shaped like a marker for one, so a page quotes none, and refuses a malformed one |
 | `lib/log-chart.cjs` | The log–log chart `sizing.cjs` draws its two charts with, in the crossover chart's style, once for each theme: a card and palette of its own, every line and region named in words, and in-plot text ringed in the card's colour. It refuses rather than draws a point outside the axes, a label past the card's edge, within a third of an em of another label, across a line or a marker's dot, or on the wrong side of the region it names, and an axis from zero |

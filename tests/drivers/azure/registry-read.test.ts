@@ -1,13 +1,13 @@
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import type { AddressInfo } from 'node:net';
-import {
-  AnonymousCredential,
-  ContainerClient,
-  type StoragePipelineOptions,
-} from '@azure/storage-blob';
 import { AzureBlobRegistryDriver } from '@/azure-blob/registry';
 import { MAX_ROW_BYTES } from '@/drivers/_shared/object-registry';
 import { IntegrityError, TransientError } from '@/core/errors';
+import {
+  StubBlobService,
+  watchProcess,
+  xmlError,
+  type Answer,
+  type StoredBlob,
+} from '../../helpers/azure-blob-stub';
 
 /**
  * A registry read through a real `@azure/storage-blob` client.
@@ -24,162 +24,6 @@ import { IntegrityError, TransientError } from '@/core/errors';
  * stub sees the connection closed.
  */
 
-interface StoredBlob {
-  readonly body: Buffer;
-  readonly etag: string;
-  readonly metadata: Record<string, string>;
-}
-
-interface Answer {
-  readonly status: number;
-  readonly headers: Record<string, string>;
-  /**
-   * The body; `'endless'` for one that never ends until the client hangs up; or `{ cut }`, those bytes and then the
-   * connection dropped.
-   */
-  readonly body: Buffer | 'endless' | { readonly cut: Buffer };
-}
-
-const xmlError = (status: number, code: string): Answer => ({
-  status,
-  headers: { 'content-type': 'application/xml', 'x-ms-error-code': code },
-  body: Buffer.from(
-    `<?xml version="1.0" encoding="utf-8"?><Error><Code>${code}</Code><Message>${code}</Message></Error>`,
-  ),
-});
-
-async function bodyOf(req: IncomingMessage): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(Buffer.from(chunk as Uint8Array));
-  return Buffer.concat(chunks);
-}
-
-/** A stub of the slice of the Blob service a registry uses, on 127.0.0.1. */
-class StubBlobService {
-  readonly blobs = new Map<string, StoredBlob>();
-  /** Every request: its method, and the range and condition it carried. */
-  readonly requests: Array<{ method: string; range?: string; ifMatch?: string }> = [];
-  /** When set, answers every GET instead of the stored blob; `host` is the name the request was sent to. */
-  getOverride: ((cur: StoredBlob | undefined, host: string) => Answer) | undefined;
-  /**
-   * For each GET answered by `getOverride`, whether the connection that carried it has closed, and the body bytes the
-   * stub had handed to it by then.
-   */
-  readonly overridden: Array<{ closed: boolean; sent: number }> = [];
-  private seq = 0;
-  private readonly server: Server = createServer((req, res) => {
-    void this.serve(req, res);
-  });
-  url = '';
-
-  async start(): Promise<void> {
-    await new Promise<void>((resolve) => this.server.listen(0, '127.0.0.1', resolve));
-    this.url = `http://127.0.0.1:${(this.server.address() as AddressInfo).port}/devstoreaccount1/c`;
-  }
-
-  async stop(): Promise<void> {
-    this.server.closeAllConnections();
-    await new Promise<void>((resolve) => this.server.close(() => resolve()));
-  }
-
-  /** A container client of the SDK's own, with its default pipeline unless `options` change it. */
-  client(options?: StoragePipelineOptions): ContainerClient {
-    return new ContainerClient(this.url, new AnonymousCredential(), options);
-  }
-
-  count(method: string): number {
-    return this.requests.filter((r) => r.method === method).length;
-  }
-
-  private send(res: ServerResponse, answer: Answer, watched?: { sent: number }): void {
-    res.writeHead(answer.status, { 'x-ms-request-id': 'stub', ...answer.headers });
-    if (Buffer.isBuffer(answer.body)) {
-      res.end(answer.body);
-      return;
-    }
-    if (answer.body !== 'endless') {
-      // Dropped a moment after the write, so the bytes written go out before the connection does.
-      res.write(answer.body.cut);
-      setTimeout(() => res.socket?.destroy(), 20);
-      return;
-    }
-    const chunk = Buffer.alloc(64 * 1024, 0x7b);
-    const pump = (): void => {
-      while (!res.destroyed) {
-        if (watched !== undefined) watched.sent += chunk.length;
-        if (!res.write(chunk)) break;
-      }
-      if (!res.destroyed) res.once('drain', pump);
-    };
-    pump();
-  }
-
-  private async serve(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const name = decodeURIComponent(
-      (req.url ?? '').split('?')[0]!.replace(/^\/devstoreaccount1\/c\//, ''),
-    );
-    const header = (h: string): string | undefined => {
-      const v = req.headers[h];
-      return typeof v === 'string' ? v : undefined;
-    };
-    this.requests.push({
-      method: req.method ?? '',
-      range: header('x-ms-range') ?? header('range'),
-      ifMatch: header('if-match'),
-    });
-    const body = await bodyOf(req);
-    const cur = this.blobs.get(name);
-    const ifMatch = header('if-match');
-    if (ifMatch !== undefined && (cur === undefined || cur.etag !== ifMatch)) {
-      return this.send(
-        res,
-        req.method === 'HEAD'
-          ? { ...xmlError(412, 'ConditionNotMet'), body: Buffer.alloc(0) }
-          : xmlError(412, 'ConditionNotMet'),
-      );
-    }
-    if (req.method === 'PUT') {
-      if (header('if-none-match') === '*' && cur !== undefined) {
-        return this.send(res, xmlError(409, 'BlobAlreadyExists'));
-      }
-      const metadata: Record<string, string> = {};
-      for (const [k, v] of Object.entries(req.headers)) {
-        if (k.startsWith('x-ms-meta-') && typeof v === 'string') metadata[k.slice(10)] = v;
-      }
-      const etag = `"0x8D${String(++this.seq).padStart(12, '0')}"`;
-      this.blobs.set(name, { body, etag, metadata });
-      return this.send(res, { status: 201, headers: { etag }, body: Buffer.alloc(0) });
-    }
-    if (req.method === 'GET' && this.getOverride !== undefined) {
-      const watched = { closed: false, sent: 0 };
-      this.overridden.push(watched);
-      req.socket.once('close', () => (watched.closed = true));
-      return this.send(res, this.getOverride(cur, (header('host') ?? '').split(':')[0]!), watched);
-    }
-    if (cur === undefined) {
-      return this.send(
-        res,
-        req.method === 'HEAD'
-          ? { status: 404, headers: {}, body: Buffer.alloc(0) }
-          : xmlError(404, 'BlobNotFound'),
-      );
-    }
-    const headers: Record<string, string> = {
-      etag: cur.etag,
-      'content-length': String(cur.body.length),
-      'content-type': 'application/json',
-      'x-ms-blob-type': 'BlockBlob',
-    };
-    for (const [k, v] of Object.entries(cur.metadata)) headers[`x-ms-meta-${k}`] = v;
-    if (req.method === 'HEAD') {
-      res.writeHead(200, { 'x-ms-request-id': 'stub', ...headers });
-      res.end();
-      return;
-    }
-    return this.send(res, { status: 200, headers, body: cur.body });
-  }
-}
-
 const REF = { segment: 's' };
 
 describe('Azure Blob registry: a pointer read is one request, through the real SDK', () => {
@@ -191,20 +35,6 @@ describe('Azure Blob registry: a pointer read is one request, through the real S
   afterEach(async () => {
     await stub.stop();
   });
-
-  const watchProcess = (): { events: unknown[]; stop: () => void } => {
-    const events: unknown[] = [];
-    const onEvent = (e: unknown): void => void events.push(e);
-    process.on('unhandledRejection', onEvent);
-    process.on('uncaughtException', onEvent);
-    return {
-      events,
-      stop: () => {
-        process.off('unhandledRejection', onEvent);
-        process.off('uncaughtException', onEvent);
-      },
-    };
-  };
 
   const registryRow = async (): Promise<AzureBlobRegistryDriver> => {
     const registry = new AzureBlobRegistryDriver({ containerClient: stub.client() });

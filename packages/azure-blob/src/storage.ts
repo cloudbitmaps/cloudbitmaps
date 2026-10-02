@@ -45,6 +45,7 @@ import {
   segmentObjectPrefix,
 } from './keys';
 import { isConditionalConflict, isInvalidRange, isNotFound, isTransient } from './azure-errors';
+import { resolveReadTimeoutMs, timedRead } from './read-timeout';
 import { newWriteId, storedWriteId, writeIdMetadata } from './write-id';
 
 /** Flush threshold for staged uploads: the sink buffers until `pending` reaches this, then stages it as one
@@ -74,6 +75,14 @@ export interface AzureBlobStorageDriverOptions {
   readonly maxObjectBytes?: number;
   /** Staged block size in bytes (default 8 MiB). Tunes peak write memory. */
   readonly blockBytes?: number;
+  /**
+   * How long each read request may take, in ms, its response body included, before it is aborted and throws
+   * `TransientError` for the store's read retry: a range read, and a tail read's properties and its ranged download,
+   * each on its own. The clock starts at the call into the SDK, so time waiting for a socket or a credential's token
+   * counts. Writes, deletes and listings are not timed. `0`, the default, sets no timeout; an integer from 0 to
+   * 2,147,483,647.
+   */
+  readonly readTimeoutMs?: number;
 }
 
 export class AzureBlobStorageDriver implements IStorageDriver {
@@ -81,10 +90,12 @@ export class AzureBlobStorageDriver implements IStorageDriver {
   private readonly prefix: string | undefined;
   private readonly maxObjectBytes: number;
   private readonly blockBytes: number;
+  private readonly readTimeoutMs: number;
 
   constructor(options: AzureBlobStorageDriverOptions) {
     this.container = options.containerClient;
     this.prefix = normalizeAzurePrefix(options.prefix);
+    this.readTimeoutMs = resolveReadTimeoutMs(options.readTimeoutMs);
     // Fail fast at the boundary: nullish-coalescing only guards `undefined`, so an explicit 0 / negative /
     // fractional value would otherwise slip through and silently reject every write (cap) or corrupt the flush
     // threshold (block size).
@@ -154,16 +165,18 @@ export class AzureBlobStorageDriver implements IStorageDriver {
     if (length === 0) return new Uint8Array(0);
     const objectName = storageObjectName(this.prefix, key);
     try {
-      const res = await this.blob(objectName).download(offset, length);
-      const bytes = await collect(res.readableStreamBody);
-      // A short read means the range ran past EOF — treat as out-of-bounds, never a partial result. (Azurite
-      // returns a clamped-short body here rather than a 416; a start fully past EOF does 416 → mapReadError.)
-      if (bytes.length !== length) {
-        throw new ValidationError(
-          `range [${offset}, ${offset + length}) out of bounds (got ${bytes.length}B)`,
-        );
-      }
-      return bytes;
+      return await timedRead('download', this.readTimeoutMs, async (abortSignal) => {
+        const res = await this.blob(objectName).download(offset, length, { abortSignal });
+        const bytes = await collect(res.readableStreamBody, abortSignal);
+        // A short read means the range ran past EOF — treat as out-of-bounds, never a partial result. (Azurite
+        // returns a clamped-short body here rather than a 416; a start fully past EOF does 416 → mapReadError.)
+        if (bytes.length !== length) {
+          throw new ValidationError(
+            `range [${offset}, ${offset + length}) out of bounds (got ${bytes.length}B)`,
+          );
+        }
+        return bytes;
+      });
     } catch (err) {
       throw this.mapReadError(err, key);
     }
@@ -176,15 +189,21 @@ export class AzureBlobStorageDriver implements IStorageDriver {
       // Content-Range). The Blob service takes no suffix range, only `bytes=start-` and `bytes=start-end`, so a
       // tail read needs the size first, and it stays two. This is on the per-*generation* open path, which the
       // reader caches — NOT the per-op cache path (has/count/intersect) — so it's amortized.
-      const props = await this.blob(objectName).getProperties();
+      // Each request is timed on its own: the properties, then the ranged download and its body.
+      const props = await timedRead('getProperties', this.readTimeoutMs, (abortSignal) =>
+        this.blob(objectName).getProperties({ abortSignal }),
+      );
       const size = props.contentLength ?? 0;
       if (!Number.isSafeInteger(size) || size < 0) {
         throw new ValidationError(`Azure returned an invalid blob size: ${String(size)}`);
       }
       if (maxBytes <= 0 || size === 0) return { bytes: new Uint8Array(0), size };
       const take = Math.min(maxBytes, size);
-      const res = await this.blob(objectName).download(size - take, take);
-      return { bytes: await collect(res.readableStreamBody), size };
+      const bytes = await timedRead('download', this.readTimeoutMs, async (abortSignal) => {
+        const res = await this.blob(objectName).download(size - take, take, { abortSignal });
+        return collect(res.readableStreamBody, abortSignal);
+      });
+      return { bytes, size };
     } catch (err) {
       throw this.mapReadError(err, key);
     }
@@ -353,18 +372,39 @@ class AzureBlockBlobSink implements BlobSink {
   }
 }
 
-/** Collect an Azure download's Node readable body into a `Uint8Array`. */
-async function collect(body: NodeJS.ReadableStream | undefined): Promise<Uint8Array> {
+/**
+ * Collect an Azure download's Node readable body into a `Uint8Array`. Called in the turn the download returns: the
+ * loop listens for the body's errors from its first step, before the read's timer can abort it.
+ */
+async function collect(
+  body: NodeJS.ReadableStream | undefined,
+  abortSignal: AbortSignal,
+): Promise<Uint8Array> {
   if (body === undefined) {
     throw new NotFoundError('Azure download returned no body');
   }
   const chunks: Uint8Array[] = [];
   let total = 0;
-  for await (const chunk of body) {
-    const u8 =
-      typeof chunk === 'string' ? new TextEncoder().encode(chunk) : new Uint8Array(chunk as Buffer);
-    chunks.push(u8);
-    total += u8.length;
+  try {
+    for await (const chunk of body) {
+      const u8 =
+        typeof chunk === 'string'
+          ? new TextEncoder().encode(chunk)
+          : new Uint8Array(chunk as Buffer);
+      chunks.push(u8);
+      total += u8.length;
+    }
+  } catch (err) {
+    // The SDK fails a body whose connection dropped part-way with an `AbortError`. This read's own signal aborts only
+    // on its timer, whose error the read has already thrown, so an `AbortError` with the signal unaborted is the
+    // dropped connection, and retryable, as the registry reads it.
+    if (!abortSignal.aborted && (err as { name?: unknown } | null)?.name === 'AbortError') {
+      throw Object.assign(
+        new Error('Azure Blob read was cut off before the response completed', { cause: err }),
+        { code: 'ECONNRESET' },
+      );
+    }
+    throw err;
   }
   return concatBytes(chunks, total);
 }

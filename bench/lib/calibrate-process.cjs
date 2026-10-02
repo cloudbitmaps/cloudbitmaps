@@ -32,15 +32,68 @@ function isInterruption(err) {
   return false;
 }
 
+/** An error and the errors beneath it, through `cause`, as far as five down. */
+function chainOf(err) {
+  const chain = [];
+  for (let e = err; e !== null && typeof e === 'object' && chain.length < 6; e = e.cause) {
+    chain.push(e);
+  }
+  return chain;
+}
+
 /**
- * What a run's failure records: its message, redacted, or `null` when it is only the gate refusing a send because the
- * run is stopping. A request that fails while the run is stopping is still a failure, and is recorded: one that
- * answers 403 during the drain, the likeliest reason someone presses Ctrl-C on a run that looks stuck, must not be
- * discarded because the run is stopping.
+ * What an error says about itself, for a results file: its name, the name of the error at the bottom of its causes,
+ * the transport `code` and the SDK's `$metadata` from the first error down the chain that has them, and its message,
+ * redacted.
+ *
+ * The name alone is not enough. The SDK's HTTP handler renames a request error whose code is `ECONNRESET`, `EPIPE` or
+ * `ETIMEDOUT` to `TimeoutError`, and the S3 driver wraps that in a `TransientError`, so a run that recorded a name
+ * said "TimeoutError" and could not say which of the three it was. The code survives the rename, a level down.
+ */
+function faultOf(err) {
+  const chain = chainOf(err);
+  const first = (pick) => {
+    for (const e of chain) {
+      const v = pick(e);
+      if (v !== undefined) return v;
+    }
+    return null;
+  };
+  const bottom = chain[chain.length - 1];
+  return {
+    name: typeof err?.name === 'string' ? err.name : 'Error',
+    cause: chain.length > 1 && typeof bottom.name === 'string' ? bottom.name : null,
+    code: first((e) => (typeof e.code === 'string' ? e.code : undefined)),
+    attempts: first((e) =>
+      Number.isInteger(e.$metadata?.attempts) ? e.$metadata.attempts : undefined,
+    ),
+    httpStatus: first((e) =>
+      Number.isInteger(e.$metadata?.httpStatusCode) ? e.$metadata.httpStatusCode : undefined,
+    ),
+    message: redact(err?.message ?? String(err)),
+  };
+}
+
+/** One line for a console, from {@link faultOf}: the message, then what lies beneath it. */
+function describeFault(f) {
+  const parts = [
+    f.cause === null ? f.name : `${f.name} from ${f.cause}`,
+    ...(f.code === null ? [] : [`code ${f.code}`]),
+    ...(f.httpStatus === null ? [] : [`HTTP ${f.httpStatus}`]),
+    ...(f.attempts === null ? [] : [`${f.attempts} attempt${f.attempts === 1 ? '' : 's'}`]),
+  ];
+  return `${f.message} (${parts.join(', ')})`;
+}
+
+/**
+ * What a run's failure records ({@link faultOf}), or `null` when it is only the gate refusing a send because the run
+ * is stopping. A request that fails while the run is stopping is still a failure, and is recorded: one that answers
+ * 403 during the drain, the likeliest reason someone presses Ctrl-C on a run that looks stuck, must not be discarded
+ * because the run is stopping.
  */
 function failureOf(err) {
   if (isInterruption(err)) return null;
-  return redact(err?.message ?? String(err));
+  return faultOf(err);
 }
 
 /**
@@ -203,6 +256,7 @@ const HARNESS_FILES = [
   'bench/lib/aws-meter.cjs',
   'bench/lib/calibrate-guards.cjs',
   'bench/lib/calibrate-process.cjs',
+  'bench/lib/calibrate-samples.cjs',
   'bench/lib/calibrate-spread.cjs',
   'bench/lib/calibrate-stages.cjs',
   'packages',
@@ -287,9 +341,42 @@ function measuredSdk(root) {
   return { clientS3: client.version, nodeHttpHandler: handler.version };
 }
 
+/**
+ * The SDK's own classes of retryable fault, from the `@aws-sdk/client-s3` installed under `root`: what its standard
+ * retry would have tried again, had the workload's client been let retry — throttling, a transient fault (a timeout,
+ * a reset or refused socket, a 500, 502, 503 or 504) and any other 5xx. They are read from the SDK that sends the
+ * requests rather than restated, so the harness counts as transient exactly what that SDK does. An SDK that does not
+ * export them is refused, before anything is created.
+ */
+function sdkFaultClasses(root) {
+  let retry;
+  try {
+    const client = createRequire(join(root, 'package.json')).resolve('@aws-sdk/client-s3');
+    retry = createRequire(client)('@smithy/core/retry');
+  } catch (err) {
+    if (err?.code !== 'MODULE_NOT_FOUND') throw err;
+  }
+  const classes = ['isThrottlingError', 'isTransientError', 'isServerError'];
+  if (retry === undefined || classes.some((name) => typeof retry[name] !== 'function')) {
+    throw new Error(
+      `the @aws-sdk/client-s3 installed under ${root} does not export ${classes.join(', ')} from @smithy/core/retry, ` +
+        'so the harness cannot tell a transient fault from another',
+    );
+  }
+  return {
+    isThrottlingError: retry.isThrottlingError,
+    isTransientError: retry.isTransientError,
+    isServerError: retry.isServerError,
+  };
+}
+
 module.exports = {
   measuredVersion,
   measuredSdk,
+  sdkFaultClasses,
+  chainOf,
+  faultOf,
+  describeFault,
   SDK_DEFAULT_MAX_SOCKETS,
   interruptGate,
   isInterruption,

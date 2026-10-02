@@ -73,9 +73,9 @@ pointer — configured from one bucket and one prefix, which is what makes them 
 |---|---|---|
 | `MemoryStorage` (`MemoryStorageOptions`) | `@cloudbitmaps/roaring` | `new MemoryStorage({ now? }?)` |
 | `LocalFsStorage` (`LocalFsStorageOptions`) | `@cloudbitmaps/roaring` | `new LocalFsStorage('/var/lib/cloudbitmaps', { now? }?)` — generations under `<root>/storage`, pointers under `<root>/registry`, which is also the layout `export-segments` expects. A root is for one process: instances in a process share a lock per row, two processes on one root are not fenced |
-| `S3Storage` | `@cloudbitmaps/s3` | `new S3Storage({ bucket, prefix?, client?, region?, endpoint?, pathStyle?, credentials?, maxObjectBytes?, partBytes?, now? })` — `client` or the four settings that build one, and both is refused |
+| `S3Storage` | `@cloudbitmaps/s3` | `new S3Storage({ bucket, prefix?, client?, region?, endpoint?, pathStyle?, credentials?, maxObjectBytes?, partBytes?, readTimeoutMs?, now? })` — `client` or the four settings that build one, and both is refused |
 | `GcsStorage` | `@cloudbitmaps/gcs` | `new GcsStorage({ bucket, prefix?, client?, projectId?, apiEndpoint?, maxObjectBytes?, simpleUploadThresholdBytes?, readTimeoutMs?, now? })` — `client` or the two settings that build one, and both is refused |
-| `AzureBlobStorage` | `@cloudbitmaps/azure-blob` | `new AzureBlobStorage({ containerClient, prefix?, maxObjectBytes?, blockBytes?, now? })` or `({ connectionString, container, prefix?, maxObjectBytes?, blockBytes?, now? })` — one or the other, and both is refused |
+| `AzureBlobStorage` | `@cloudbitmaps/azure-blob` | `new AzureBlobStorage({ containerClient, prefix?, maxObjectBytes?, blockBytes?, readTimeoutMs?, now? })` or `({ connectionString, container, prefix?, maxObjectBytes?, blockBytes?, readTimeoutMs?, now? })` — one or the other, and both is refused |
 
 **A backend comes from one of these five classes, or from a class of your own that calls `brandAsBackend` from the driver kit
 ([driver kit](#driver-kit--what-you-need-to-implement-a-driver)).** A plain `{ storage, registry }` object is
@@ -90,11 +90,25 @@ is built:
 |---|---|---|---|
 | `S3Storage` | `partBytes` | 8 MiB; a smaller value is raised to S3's 5 MiB minimum | multipart part size, and so the peak write memory; a positive safe integer |
 | `S3Storage` | `maxObjectBytes` | `partBytes` × 10,000 (about 80 GiB at the default) | the largest object the backend will write and advertise; raise it and `partBytes` grows so the 10,000-part limit still covers it, up to S3's 5 TiB; a positive safe integer |
+| `S3Storage` | `readTimeoutMs` | `0`: no timeout | how long each `GetObject` and `HeadObject`, the SDK's own retries of it included, may take, the response body included, before it is aborted and throws `TransientError` for the store's read retry; an integer from 0 to 2,147,483,647 |
 | `GcsStorage` | `simpleUploadThresholdBytes` | 8 MiB | an object up to this size is one simple request; a larger one is a resumable stream; a positive safe integer |
 | `GcsStorage` | `maxObjectBytes` | 5 TiB, GCS's per-object maximum | the largest object the backend will write and advertise; set it lower to fail fast on a runaway write; a positive safe integer |
 | `GcsStorage` | `readTimeoutMs` | `0`: no timeout | how long one read (a tail with its metadata fallback, a range, a registry row) may take, every attempt and the body included, before it throws `TransientError` for the store's read retry; see [`@cloudbitmaps/gcs`](#cloudbitmapsgcs); a non-negative safe integer no larger than 2,147,483,647 |
 | `AzureBlobStorage` | `blockBytes` | 8 MiB | staged block size, and so the peak write memory; a positive safe integer |
 | `AzureBlobStorage` | `maxObjectBytes` | `blockBytes` × 50,000 (about 400 GiB at the default) | the largest blob the backend will write and advertise; raise it and `blockBytes` grows so the 50,000-block limit still covers it; a positive safe integer |
+| `AzureBlobStorage` | `readTimeoutMs` | `0`: no timeout | how long each read request (a range read, a tail read's properties and its download, each on its own, a registry row's read) may take, the response body included, before it is aborted and throws `TransientError` for the store's read retry; an integer from 0 to 2,147,483,647 |
+
+**`S3Storage` can time its reads.** `readTimeoutMs` (`0`, the default, sets no timeout; an integer from 0 to
+2,147,483,647) is how long each `GetObject` and `HeadObject` either half sends may take, the response body included,
+before it is aborted and throws `TransientError` for the store's read retry. The clock starts when the read is handed
+to the SDK, so waiting for a socket and fetching credentials count. Writes and listings are not timed, and a `client`
+you pass gets the timeout without being changed ([why](production.md#reliability-retries-backoff--timeouts)).
+
+**`AzureBlobStorage` can time its reads.** `readTimeoutMs` (default `0`, no timeout; an integer from 0 to
+2,147,483,647) is how long each read request either half sends may take, the response body included, before it is
+aborted and throws `TransientError` for the store's read retry: a range read, a tail read's properties and its ranged
+download, each on its own, and a registry row's read. The clock starts at the call into the SDK. Writes, deletes and
+listings are not timed ([why](production.md#reliability-retries-backoff--timeouts)).
 
 Each cloud backend builds its own SDK client unless you pass one. Every backend exposes its storage and registry as `.storage`
 and `.registry`, and accepts an injected `now` for deterministic tests. The three cloud backends refuse an option
@@ -266,7 +280,7 @@ wrote)
 | `storage` **(required)** | `StorageBackend \| IStorageDriver \| StorageChunkSource` | where everything lives |
 | `cache?` | `CacheOptions` | `maxChunks?` (decoded chunks held in RAM, default 1024) · `ttlMs?` · `genTtlMs?` (default 2000 ms; [how soon a reader sees a new load](reading.md#how-soon-a-reader-sees-a-new-load); needs a backend) · `readerMax?` (open `.crbm` readers, default 1024) · `readerMaxBytes?` (their parsed indices, default 64 MiB) |
 | `encryption?` | `EncryptionOptions` | `keystore?` · `required?` — both need a backend, since the wrapped DEK lives in the registry |
-| `retry?` | `RetryOptions \| false` | a **partial** `RetryPolicy` (anything omitted keeps its `DEFAULT_RETRY_POLICY` value) plus `onRetry?`, for the transient retry of every read that answers a query (an erasure's reads and a load's guard read are not retried); `false` turns it off. Writes are never retried ([Resilience](#resilience-the-store-wires-this-by-default)) |
+| `retry?` | `RetryOptions \| false` | a **partial** `RetryPolicy` (anything omitted keeps its `DEFAULT_RETRY_POLICY` value) plus `onRetry?`, for the transient retry of every read that answers a query, and of the reads a load's guard and an erasure make along the way; `false` turns it off. Writes are never retried ([Resilience](#resilience-the-store-wires-this-by-default)) |
 | `metrics?` | `IMetricsSink` | typed metric events; defaults to a no-op |
 | `budget?` | `BudgetOption` | `{ maxRequests }` or `false` |
 | `seams?` | `SeamOptions` | `clock?` · `rng?` — determinism, for tests and replayable jobs |
@@ -408,8 +422,8 @@ because the store methods return them; the `*Deps` types (`LoadDeps`, `Generatio
 | `segmentExists(ref, registry)` → `Promise<boolean>` | the unwired form of `store.exists` — one registry `get`; true only when a live, non-`destroyed` row has a `currentGen` |
 | `listSegments(registry, { namespace? })` → `AsyncIterable<SegmentInfo>` | the unwired form of `store.segments`; validates `namespace`, and excludes internal bookkeeping rows on an unscoped scan |
 | `rollbackSegment(ref, toGeneration, { storage, registry }, { audit?, allowForward? })` → `Promise<RollbackResult>` | the unwired form of `store.rollback`, taking the drivers instead of a store. The target is verified after the swap, and the pointer is put back if it vanished ([how a rollback can fail half-way](disaster-recovery.md#checkconsistency--verify-before-you-serve-traffic)) |
-| `loadSegment(ref, ids, { storage, registry, codec?, keystore?, requireEncryption?, clock? }, { allowEmpty?, guard?, keep?, audit? })` → `Promise<LoadResult>` | the unwired form of `store.load`: replaces a segment's contents with `ids` as one immutable generation. It takes the drivers, plus a `codec`, `keystore` and `clock`, instead of a store. Options, results and refusal reasons are `store.load`'s ([loading](loading.md)) |
-| `eraseIdFromSegment(ref, id, { storage, registry, codec?, keystore?, requireEncryption?, clock?, maxBitmapBytes? }, { audit? })` → `Promise<EraseIdResult>` | remove **one id** from one segment by rewriting its current generation without it: the step `store.eraseSubject` runs over every registered segment. `erased: true` means no generation holds the id; otherwise `reason` says why ([the result of erasing one segment](erasure.md#how-it-stays-correct)) |
+| `loadSegment(ref, ids, { storage, registry, codec?, keystore?, requireEncryption?, clock?, readRetry? }, { allowEmpty?, guard?, keep?, audit? })` → `Promise<LoadResult>` | the unwired form of `store.load`: replaces a segment's contents with `ids` as one immutable generation. It takes the drivers, plus a `codec`, `keystore` and `clock`, instead of a store. `readRetry` (a `RetryDeps` plus an optional `policy`) retries the guard's read of the current generation; without it that read is made once, and the write is never retried. Options, results and refusal reasons are `store.load`'s ([loading](loading.md)) |
+| `eraseIdFromSegment(ref, id, { storage, registry, codec?, keystore?, requireEncryption?, clock?, maxBitmapBytes?, readRetry? }, { audit? })` → `Promise<EraseIdResult>` | remove **one id** from one segment by rewriting its current generation without it: the step `store.eraseSubject` runs over every registered segment. `erased: true` means no generation holds the id; otherwise `reason` says why ([the result of erasing one segment](erasure.md#how-it-stays-correct)). `readRetry`, shaped as `loadSegment`'s, retries the reads the rewrite makes; without it each is made once, and the writes and deletes are never retried |
 | `dropSegment(ref, { registry, storage }, { confirmSegment, dryRun?, audit? })` → `Promise<DropResult>` | **dispose of a segment** — tombstone, then delete every Storage generation. Works on cleartext; also crypto-shreds an encrypted one. `store.dropSegment` is the wired form |
 | `runConsistencyCheck({ storage, registry }, { namespace?, concurrency?, maxScanSegments? })` → `Promise<ConsistencyReport>` | the free function behind `store.checkConsistency` — run it over your own drivers, or over a backend's `storage` and `registry`. `maxScanSegments` (default 250,000) is how many registry rows one scan may hold resident; past it the call throws `BudgetExceededError` rather than report a partial scan |
 | `setSegmentRetention(ref, { registry }, { expiresAt })` → `Promise<SetRetentionResult>` | the free function behind `store.setRetention` — for a scheduler/CLI that holds only a registry driver. `getSegmentRetention(ref, { registry })` / `clearSegmentRetention(ref, { registry })` are its read/cancel siblings |
@@ -621,7 +635,7 @@ reports a missing or invalid environment variable with a plain `Error` and exits
 | `CapabilityError` | the storage you passed cannot meet a capability the store requires — a storage without range reads (one of your own; the five backends all serve them), or a keystore or `encryption.required: true` on a store built on a bare `IStorageDriver` instead of a backend, which has no registry. Raised **fail-fast at construction**, never mid-operation | pass a backend, or a storage that supports range reads | no |
 | `BudgetExceededError` | the operation would exceed its per-op denial-of-wallet budget — too many backend requests for one call. Refused **before** fanning out. Carries the projected count and the limit, never data | narrow the operation, raise `budget`, or set `budget: false`. If it fires on a normal call, something is wider than you think | no — refused by policy, not by luck |
 | `KeyUnavailableError` | an encrypted segment's DEK cannot be unwrapped: the keystore holds none of the KEKs its wrappings reference — never configured, rotated away without keeping the old key, or lost | restore the KEK. **Without it the data is unreadable**, which is what crypto-shred relies on | no |
-| `TransientError` | a transient fault your backend classified (from its storage or registry) — throttling, a 5xx, a connection reset. The raw SDK error is preserved in `cause` | from a read of segment data, the retry layer already retried it, and reaching you means it kept failing. From a write, or a direct registry or bucket read, it was not retried: re-run the call. For a `load`, once the first attempt has settled, the re-run publishes whether or not that attempt landed; to know whether it did, check `store.generations(ref)` rather than replay the request ([Resilience](#resilience-the-store-wires-this-by-default)) | **yes** — the only class the retry layer retries |
+| `TransientError` | a transient fault your backend classified (from its storage or registry) — throttling, a 5xx, a connection reset. The raw SDK error is preserved in `cause`, except on a read `readTimeoutMs` cut off, which has none and says `timed out after N ms` | from a read of segment data, the retry layer already retried it, and reaching you means it kept failing. From a write, or a direct registry or bucket read, it was not retried: re-run the call. For a `load`, once the first attempt has settled, the re-run publishes whether or not that attempt landed; to know whether it did, check `store.generations(ref)` rather than replay the request ([Resilience](#resilience-the-store-wires-this-by-default)) | **yes** — the only class the retry layer retries |
 
 Two things worth knowing:
 
@@ -749,6 +763,11 @@ the registry's create, compare-and-swap and delete, which writes a tombstone —
 the client is one you passed or one `S3Storage` built. Every other request keeps the client's retry. A transient
 failure of a conditional write throws `TransientError`, and the write may or may not have landed
 ([why](production.md#reliability-retries-backoff--timeouts)).
+
+With `readTimeoutMs` set (it is off by default), each read the backend makes, every `GetObject` and `HeadObject` of a
+generation or a pointer, is aborted if it has not finished, body included, after that many ms, and throws
+`TransientError` with a message that names the request and says it timed out after that many ms. The timeout is per request, set through the request's abort signal, so the
+SDK's own retries of that request fall inside it and nothing else the client sends is timed.
 
 ### `@cloudbitmaps/gcs`
 
