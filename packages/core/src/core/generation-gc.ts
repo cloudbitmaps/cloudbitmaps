@@ -103,7 +103,9 @@ export async function nextLoadGeneration(
  * takes one generation a load and never looks at the rest, so what it misses (a refused load's object that stayed
  * because the row had changed, extras left by a `keep` that shrank, an object a rollback or an erasure left
  * stranded below the pointer) waits for a listing. The number is a generation's, not a clock's, so the choice needs
- * no state and no time, and a segment that loads cleanly lists once in this many loads at most.
+ * no state and no time, and a segment that loads cleanly lists once in this many loads at most. The bound is in
+ * generation numbers: a rollback moves the pointer down, and the loads that then take the numbers above it count
+ * from there.
  */
 export const LIST_COLLECTION_CADENCE = 16;
 
@@ -252,13 +254,16 @@ export async function gcOrphanGenerations(
 }
 
 /**
- * Collect after a load's publish: by name when `byName` (the load numbered its generation with one existence check
- * and its caller does not ask for a listing) and `keep` is at most one, and by listing otherwise
- * ({@link gcOrphanGenerations}). A load lists in three cases: `keep` of 2 or more, which a name cannot serve because
- * the window then counts generations that may be absent (a refused neighbour's number is a gap, and by name would
- * take one the window promised to keep); a number the listing chose, so something sits above the pointer or the
- * check could not answer; and every {@link LIST_COLLECTION_CADENCE}th generation, which collects what a name-only
- * pass leaves. A `destroyed` row never reaches here: a load onto one is refused at its publish.
+ * Collect after a load's publish: by name when `byName` (the load numbered its generation with one existence check,
+ * the object its row named was there when the guard looked, and its caller does not ask for a listing) and `keep` is
+ * at most one, and by listing otherwise ({@link gcOrphanGenerations}). A load lists in three cases: `keep` of 2 or
+ * more, which a name cannot serve because the window then counts generations that may be absent (a refused
+ * neighbour's number is a gap, and by name would take one the window promised to keep); a number the listing chose,
+ * so something sits above the pointer or the check could not answer, or a current object the guard found gone; and
+ * every {@link LIST_COLLECTION_CADENCE}th generation, which collects what a name-only pass leaves. It makes no
+ * request when `keep` is at least the generation published, since fewer generations than that exist below it. A load
+ * onto a `destroyed` row is refused at its publish and never reaches here; a drop that lands after the publish
+ * leaves this pass deleting one garbage generation, and the drop's own sweep takes the rest.
  */
 export async function collectAfterLoad(
   ref: SegmentRef,
@@ -266,7 +271,8 @@ export async function collectAfterLoad(
   options: { generation: number; keep: number; byName: boolean },
 ): Promise<number[]> {
   const { generation, keep, byName } = options;
-  const periodic = generation > 0 && generation % LIST_COLLECTION_CADENCE === 0;
+  if (keep >= generation) return [];
+  const periodic = generation % LIST_COLLECTION_CADENCE === 0;
   if (byName && keep <= 1 && !periodic) return collectByName(ref, deps, { generation, keep });
   return gcOrphanGenerations(ref, deps, { keep });
 }
@@ -281,18 +287,22 @@ export async function collectAfterLoad(
  * The caller has published `generation` having numbered it with one existence check, so the row named
  * `generation - 1` and every generation the window newly evicts is below it. With `keep` of 0 or 1 that name is
  * the one a listing pass would also take, or one it left to a later pass: never a generation the listing keeps.
- * That rests on the object the row named being in the bucket, as every operation of the library leaves it. A segment
- * whose current object was gone before the load (a lifecycle rule or a partial restore did that, and
- * `checkConsistency` reports it) loses by name the older generation a listing would have kept as its window.
- * `keep` of 2 or more is refused, because there the window counts the generations that exist, which a name cannot
- * know.
+ * That rests on the object the row named being in the bucket, and a fault can break it (a lifecycle rule or a
+ * partial restore removing it, or an erasure deleting the object of a load whose publish then landed;
+ * `checkConsistency` reports the state). The caller, which learns that from its guard's read of the current
+ * generation, lists instead; a load that made no such read (`allowEmpty` without `minRetained`) cannot tell, and
+ * deletes by name the older generation a listing would have kept as the window. `keep` of 2 or more is refused,
+ * because there the window counts the generations that exist, which a name cannot know.
  *
- * Collection never touches the current generation, and the row is re-proved before the delete as every pass does:
- * a row that is gone, or a pointer that has fallen below `generation` (a rollback, or a name purged and re-created
- * with fewer loads), refuses with {@link WriteConflictError}. A pointer that has moved above it does not: a publish
- * landing in the meantime leaves routine collection working. The bound is `generation`, the pointer this load's
- * own publish set, so the lower-of-two-pointers rule of a listing pass holds with one observation in place of two.
- * Nothing is deleted when `generation` has nothing below its window, and no request is made.
+ * Collection never touches the current generation, and the row is re-proved before the delete as every pass does.
+ * A row that is gone, or a pointer that has fallen below `generation` (a rollback, or a name purged and re-created
+ * with fewer loads), deletes nothing and returns `[]`: the publish already landed, nothing here protects it or
+ * needs the result, and a throw would hand the caller a failure for a load that took effect. A pointer that has
+ * moved above `generation` does not stop it: a publish landing in the meantime leaves routine collection working.
+ * A fault, a registry read or a delete that throws, still propagates, with the pointer at `generation`. The bound
+ * is `generation`, the pointer this load's own publish set, so the lower-of-two-pointers rule of a listing pass
+ * holds with one observation in place of two. Nothing is deleted when `generation` has nothing below its window,
+ * and no request is made.
  */
 export async function collectByName(
   ref: SegmentRef,
@@ -306,14 +316,7 @@ export async function collectByName(
   const evicted = generation - keep - 1;
   if (evicted < 0) return [];
   const still = await deps.registry.get(ref);
-  if (still === null) {
-    throw new WriteConflictError(`registry row for segment ${ref.segment} was purged mid-pass`);
-  }
-  if (still.currentGen === null || still.currentGen < generation) {
-    throw new WriteConflictError(
-      `segment ${ref.segment} changed incarnation while its generations were being collected`,
-    );
-  }
+  if (still === null || still.currentGen === null || still.currentGen < generation) return [];
   await deps.storage.delete({
     namespace: ref.namespace,
     segment: ref.segment,

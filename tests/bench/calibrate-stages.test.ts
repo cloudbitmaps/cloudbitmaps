@@ -678,7 +678,7 @@ describe('a segment is loaded once', () => {
       chunksPerRead: 0,
       retryBound: guards.RETRY_BOUND,
     }).get;
-    expect(bound).toBe(14);
+    expect(bound).toBe(15);
     // Nothing racing and the number free: a reload is the counted four, as many as a first load, and a load that
     // collects five. Four lost publishes, the last attempt winning, put them at twelve and thirteen, inside the bound.
     expect(await reload(2, 0)).toEqual({ gets: 4, threw: false });
@@ -687,7 +687,7 @@ describe('a segment is loaded once', () => {
     expect(await reload(3, 4)).toEqual({ gets: 13, threw: false });
     // A reload whose check finds the number taken lists to collect as well, and reads the pointer around its listing
     // and before each delete: eight with nothing racing, and with four lost publishes sixteen, past the bound of
-    // fourteen, which only a segment's first load is held to.
+    // fifteen, which only a segment's first load is held to.
     expect(await reload(3, 0, true)).toEqual({ gets: 8, threw: false });
     expect(await reload(3, 4, true)).toEqual({ gets: 16, threw: false });
     expect((await reload(3, 4, true)).gets).toBeGreaterThan(bound);
@@ -784,9 +784,10 @@ describe('the ceiling covers every stage', () => {
     const projected = stages.projectStages(w);
     expect(projected.costliestSample).toBe(stages.coldIntersectBound(2_000));
     expect(projected.discards).toEqual({ put: 0, get: 3 * 4_006 });
-    expect(projected.total).toEqual({ put: 364, get: 94_565 + 12_018 });
+    // Each of the 41 loads the plan names, in the stages and their setups, is projected one GET-class request higher.
+    expect(projected.total).toEqual({ put: 364, get: 94_606 + 12_018 });
     const bound = meterLib.priceTally(projected.total, pricing).totalUSD;
-    expect(bound).toBeCloseTo(0.044453, 6);
+    expect(bound).toBeCloseTo(0.0444696, 7);
     expect(bound).toBeGreaterThan(expectedUSD);
     expect(bound).toBeLessThan(0.05);
   });

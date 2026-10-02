@@ -1,8 +1,9 @@
 import fc from 'fast-check';
 import { loadSegment, type LoadOptions } from '@/core/load';
 import { LIST_COLLECTION_CADENCE, collectByName, gcOrphanGenerations } from '@/core/generation-gc';
-import { ValidationError, WriteConflictError } from '@/core/errors';
+import { TransientError, ValidationError } from '@/core/errors';
 import { eraseIdFromSegment } from '@/core/erase-id';
+import { dropSegment } from '@/core/erasure';
 import { rollbackSegment } from '@/core/rollback';
 import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { brandAsBackend } from '@/core/ports';
@@ -262,12 +263,78 @@ describe('keep of 2 or more, and a number the check could not prove free, still 
     expect(await generations(w.memory)).toEqual([4]);
   });
 
-  it.each([2, 3, 9])('lists once for keep %i, as before', async (keep) => {
+  it.each([2, 3, 4])('lists once for keep %i, as before', async (keep) => {
     const w = world();
-    await loadMany(w, 4, { keep });
+    await loadMany(w, 5, { keep });
     w.reset();
-    await loadSegment(SEG, [1, 2, 3, 4, 5, 6], w.deps, { keep });
+    await loadSegment(SEG, [1, 2, 3, 4, 5, 6, 7], w.deps, { keep });
     expect(w.storageCalls.list).toBe(1);
+  });
+
+  it('makes no request to collect when keep is at least its own generation: nothing can be outside the window', async () => {
+    const w = world();
+    await loadMany(w, 3, { keep: 9 });
+    w.reset();
+    const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 3 }); // generation 3, window of 3
+    expect(r).toMatchObject({ generation: 3, published: true, collected: [] });
+    expect(w.storageCalls.list).toBeUndefined();
+    expect(w.storageCalls.delete).toBeUndefined();
+    expect(w.registryCalls.get).toBe(1); // the row before the publish, and nothing to collect
+    // One generation later the window is outside it, so the pass lists.
+    w.reset();
+    await loadSegment(SEG, [1, 2, 3, 4, 5], w.deps, { keep: 3 }); // generation 4
+    expect(w.storageCalls.list).toBe(1);
+  });
+
+  it('a default *Into, which keeps everything, collects nothing and asks the bucket for nothing', async () => {
+    const memory = new MemoryStorage();
+    const calls: Record<string, number> = {};
+    const store = new CloudRoaring({
+      storage: brandAsBackend({
+        storage: counting<IStorageDriver>(memory.storage, calls),
+        registry: memory.registry,
+      }),
+    });
+    await store.load({ segment: 'a' }, [1, 2, 3]);
+    await store.load({ segment: 'b' }, [2, 3]);
+    const dest = store.segment('dest');
+    for (let i = 0; i < 3; i++) {
+      for (const k of Object.keys(calls)) delete calls[k];
+      const res = await store.segment('a').intersectInto(dest, [store.segment('b')]);
+      expect(res).toMatchObject({ generation: i, published: true, collected: [] });
+      expect(calls.list).toBeUndefined();
+      expect(calls.delete).toBeUndefined();
+    }
+  });
+
+  it('lists when the existence check fails to answer, and proves nothing about the number', async () => {
+    const w = world();
+    await loadMany(w, 4);
+    let failed = false;
+    const storage = new Proxy(w.deps.storage, {
+      get(t, p, rx) {
+        const value: unknown = Reflect.get(t, p, rx);
+        if (typeof value !== 'function') return value;
+        const fn = value as (...a: unknown[]) => unknown;
+        if (p === 'getTail') {
+          return (...a: unknown[]) => {
+            if (a[1] === 0 && !failed) {
+              failed = true;
+              return Promise.reject(new TransientError('the check timed out'));
+            }
+            return fn.apply(t, a);
+          };
+        }
+        return (...a: unknown[]) => fn.apply(t, a);
+      },
+    }) as IStorageDriver;
+    w.reset();
+    const r = await loadSegment(SEG, [1, 2, 3, 4, 5], { ...w.deps, storage });
+    expect(failed).toBe(true);
+    expect(r).toMatchObject({ generation: 4, published: true });
+    // One listing to number it and one to collect: a check that errors does not make the pass by name.
+    expect(w.storageCalls.list).toBe(2);
+    expect(await generations(w.memory)).toEqual([3, 4]);
   });
 
   it("lists when the check meets a crashed load's object, and numbers past it", async () => {
@@ -339,37 +406,92 @@ describe("a name-only delete keeps invariant 4's re-proof", () => {
   }
   const ids = [1, 2, 3, 4, 5, 6];
 
-  it('refuses with WriteConflictError, and deletes nothing, when the row is gone at the delete', async () => {
+  it('collects nothing, and deletes nothing, when the row is gone at the delete: the publish stands', async () => {
     const w = await atFour();
     const registry = hookAfter(w.deps.registry, 'compareAndSwap', () => w.registry.delete(SEG));
-    await expect(loadSegment(SEG, ids, { ...w.deps, registry })).rejects.toBeInstanceOf(
-      WriteConflictError,
-    );
+    const r = await loadSegment(SEG, ids, { ...w.deps, registry });
+    expect(r).toMatchObject({ generation: 5, published: true, collected: [] });
     expect(await generations(w.memory)).toEqual([3, 4, 5]);
   });
 
-  it('refuses, and deletes nothing, when a rollback lands between the publish and the delete', async () => {
+  it('collects nothing, and deletes nothing, when a rollback lands between the publish and the delete', async () => {
     const w = await atFour();
     const registry = hookAfter(w.deps.registry, 'compareAndSwap', async () => {
       await rollbackSegment(SEG, 4, { storage: w.memory, registry: w.registry });
     });
-    await expect(loadSegment(SEG, ids, { ...w.deps, registry })).rejects.toBeInstanceOf(
-      WriteConflictError,
-    );
+    const r = await loadSegment(SEG, ids, { ...w.deps, registry });
+    // The load published, and the operator's rollback came after: the result says so, and the pointer is theirs.
+    expect(r).toMatchObject({ generation: 5, published: true, collected: [] });
     expect(await generations(w.memory)).toEqual([3, 4, 5]);
     expect((await w.registry.get(SEG))?.currentGen).toBe(4);
   });
 
-  it('refuses when the name was purged and re-created with a pointer below the published generation', async () => {
+  it('collects nothing when the name was purged and re-created with a pointer below the published generation', async () => {
     const w = await atFour();
     const registry = hookAfter(w.deps.registry, 'compareAndSwap', async () => {
       await w.registry.delete(SEG);
       await w.registry.create(SEG, { currentGen: 0 });
     });
-    await expect(loadSegment(SEG, ids, { ...w.deps, registry })).rejects.toBeInstanceOf(
-      WriteConflictError,
-    );
+    const r = await loadSegment(SEG, ids, { ...w.deps, registry });
+    expect(r).toMatchObject({ generation: 5, published: true, collected: [] });
     expect(await generations(w.memory)).toEqual([3, 4, 5]);
+  });
+
+  /** `registry`, with `fault` thrown by its first read after the publish landed: the by-name pass's re-proof. */
+  function failingAfterPublish(w: World, fault: Error): IRegistryDriver {
+    let landed = false;
+    return new Proxy(w.deps.registry, {
+      get(t, p, rx) {
+        const value: unknown = Reflect.get(t, p, rx);
+        if (typeof value !== 'function') return value;
+        const fn = value as (...a: unknown[]) => unknown;
+        if (p === 'compareAndSwap') {
+          return async (...a: unknown[]) => {
+            const out = await fn.apply(t, a);
+            landed = true;
+            return out;
+          };
+        }
+        if (p === 'get' && landed) return () => Promise.reject(fault);
+        return (...a: unknown[]) => fn.apply(t, a);
+      },
+    }) as IRegistryDriver;
+  }
+
+  it('lets a fault in the re-proof through: the load rejects, its publish landed, nothing else was deleted', async () => {
+    const w = await atFour();
+    const fault = new TransientError('registry read failed');
+    const registry = failingAfterPublish(w, fault);
+    await expect(loadSegment(SEG, ids, { ...w.deps, registry })).rejects.toBe(fault);
+    expect((await w.registry.get(SEG))?.currentGen).toBe(5);
+    expect(await generations(w.memory)).toEqual([3, 4, 5]);
+  });
+
+  it('lets a fault in the delete through: the load rejects, its publish landed, and the pointer is at it', async () => {
+    const w = await atFour();
+    const fault = new TransientError('delete failed');
+    const storage = new Proxy(w.deps.storage, {
+      get(t, p, rx) {
+        const value: unknown = Reflect.get(t, p, rx);
+        if (p === 'delete') return () => Promise.reject(fault);
+        return typeof value === 'function' ? (value as () => unknown).bind(t) : value;
+      },
+    }) as IStorageDriver;
+    await expect(loadSegment(SEG, ids, { ...w.deps, storage })).rejects.toBe(fault);
+    expect((await w.registry.get(SEG))?.currentGen).toBe(5);
+    expect(await generations(w.memory)).toEqual([3, 4, 5]);
+  });
+
+  it('a drop that lands after the publish leaves the pass nothing to take, and the load still returns', async () => {
+    const w = await atFour();
+    const registry = hookAfter(w.deps.registry, 'compareAndSwap', async () => {
+      await dropSegment(SEG, { storage: w.memory, registry: w.registry }, { confirmSegment: 's' });
+    });
+    const r = await loadSegment(SEG, ids, { ...w.deps, registry });
+    // The drop's own sweep took every generation, the published one included; the name the pass asked for was gone.
+    expect(r).toMatchObject({ generation: 5, published: true });
+    expect(await generations(w.memory)).toEqual([]);
+    expect((await w.registry.get(SEG))?.status).toBe('destroyed');
   });
 
   it('proceeds when another load published above it meanwhile: a changed token alone does not stop it', async () => {
@@ -403,12 +525,13 @@ describe("a name-only delete keeps invariant 4's re-proof", () => {
     expect(await generations(w.memory)).toEqual([3]);
   });
 
-  it('refuses a pointer that has fallen below the generation it was told it published', async () => {
+  it('returns nothing for a pointer that has fallen below the generation it was told it published, and for no row', async () => {
     const w = world();
     await loadMany(w, 4, { keep: 9 });
-    await expect(collectByName(SEG, w.deps, { generation: 6, keep: 1 })).rejects.toBeInstanceOf(
-      WriteConflictError,
-    );
+    await expect(collectByName(SEG, w.deps, { generation: 6, keep: 1 })).resolves.toEqual([]);
+    expect(await generations(w.memory)).toEqual([0, 1, 2, 3]);
+    await w.registry.delete(SEG);
+    await expect(collectByName(SEG, w.deps, { generation: 3, keep: 1 })).resolves.toEqual([]);
     expect(await generations(w.memory)).toEqual([0, 1, 2, 3]);
   });
 
@@ -434,6 +557,72 @@ describe("a name-only delete keeps invariant 4's re-proof", () => {
     await expect(collectByName(SEG, w.deps, { generation: 0, keep: 0 })).resolves.toEqual([]);
     expect(w.storageCalls).toEqual({});
     expect(w.registryCalls).toEqual({});
+  });
+});
+
+describe('a load that repairs a segment whose current object is gone lists, and keeps what a listing keeps', () => {
+  /** Generations 0 to 5 loaded by name, so 4 and 5 are in the bucket and the pointer is at 5. */
+  async function atFive(): Promise<World> {
+    const w = world();
+    await loadMany(w, 6);
+    expect(await generations(w.memory)).toEqual([4, 5]);
+    return w;
+  }
+
+  it('after the current object was removed from outside: the repair publishes 6 and keeps 4', async () => {
+    const w = await atFive();
+    await w.memory.delete({ ...SEG, generation: 5 }); // a lifecycle rule, or a partial restore
+    w.reset();
+    const r = await loadSegment(SEG, [1, 2, 3, 4, 5, 6, 7], w.deps);
+    expect(r).toMatchObject({ generation: 6, published: true, cardinalityBefore: null });
+    // Collecting by name would take 4, the one generation left from before the tear, and the rollback target
+    // an operator would reach for. The guard's read already found the current object gone, so the pass lists.
+    expect(w.storageCalls.list).toBe(1);
+    expect(r.collected).toEqual([]);
+    expect(await generations(w.memory)).toEqual([4, 6]);
+  });
+
+  it("after a subject erasure deleted an in-flight load's object above the pointer: the repair keeps 5", async () => {
+    const w = await atFive();
+    // A load writes generation 6 holding id 99, and before its publish an erasure of 99, which the current
+    // generation does not hold, deletes the object it finds above the pointer. The load's publish then lands on a
+    // missing object.
+    const racing = hookAfter(w.deps.storage, 'putImmutable', async () => {
+      const erased = await eraseIdFromSegment(SEG, 99, {
+        storage: w.memory,
+        registry: w.registry,
+        codec: roaringCodec,
+      });
+      expect(erased).toMatchObject({ erased: true });
+    });
+    const racer = await loadSegment(SEG, [1, 2, 3, 4, 5, 6, 99], { ...w.deps, storage: racing });
+    expect(racer).toMatchObject({ generation: 6, published: true });
+    expect((await w.registry.get(SEG))?.currentGen).toBe(6);
+    expect(await generations(w.memory)).toEqual([5]); // 6 is gone: the pointer names a missing object
+    w.reset();
+    const r = await loadSegment(SEG, [1, 2, 3, 4, 5, 6, 7], w.deps);
+    expect(r).toMatchObject({ generation: 7, published: true, cardinalityBefore: null });
+    expect(w.storageCalls.list).toBe(1);
+    expect(await generations(w.memory)).toEqual([5, 7]);
+  });
+
+  it('a load with no guard reads no tail, cannot tell, and collects by name: the documented limit', async () => {
+    const w = await atFive();
+    await w.memory.delete({ ...SEG, generation: 5 });
+    w.reset();
+    const r = await loadSegment(SEG, [1, 2, 3, 4, 5, 6, 7], w.deps, { allowEmpty: true });
+    expect(r).toMatchObject({ generation: 6, published: true, cardinalityBefore: null });
+    expect(w.storageCalls.list).toBeUndefined();
+    expect(await generations(w.memory)).toEqual([6]);
+  });
+
+  it('a segment whose current object is present collects by name even when the guard reads it', async () => {
+    const w = await atFive();
+    w.reset();
+    const r = await loadSegment(SEG, [1, 2, 3, 4, 5, 6, 7], w.deps);
+    expect(r).toMatchObject({ generation: 6, published: true, cardinalityBefore: 6 });
+    expect(w.storageCalls.list).toBeUndefined();
+    expect(await generations(w.memory)).toEqual([5, 6]);
   });
 });
 

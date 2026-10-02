@@ -109,7 +109,8 @@ export interface LoadOptions {
    * With `keep` of 0 or 1, a load that found nothing above the pointer collects without listing: it deletes the one
    * generation its publish pushed out of the window, and lists the segment's objects on every sixteenth generation to
    * take whatever that pass leaves, such as the generations an earlier, wider `keep` held. With `keep` of 2 or more
-   * it lists on every load.
+   * it lists on every load, and so does one whose guard found the current generation's object gone. A `keep` at least
+   * the generation published collects nothing and asks for nothing.
    */
   readonly keep?: number;
   readonly audit?: IAuditSink;
@@ -434,10 +435,16 @@ export async function loadSegment(
     generation,
   });
 
+  // The guard's read of the current generation found its object gone: the row named a generation that is not in the
+  // bucket, so the generation below the new one that a listing keeps as the window is the one a name would take.
+  // This load repairs the gap, and lists. `before` is null for a row that names a generation only when its object was
+  // not found (a row with no pointer numbers 0, which has nothing below it to take, and a destroyed row is refused
+  // at its publish). A load that made no such read cannot tell.
+  const currentObjectGone = needsBefore && before === null;
   const collected = await collectAfterLoad(ref, deps, {
     generation,
     keep,
-    byName: checked && deps.collectByListing !== true,
+    byName: checked && !currentObjectGone && deps.collectByListing !== true,
   });
   return {
     generation,

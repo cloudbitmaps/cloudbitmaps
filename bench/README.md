@@ -207,8 +207,8 @@ constants and the source text:
   fails if they differ, because a retyped number can be wrong. A load, `store.load()` of a new segment, checks that its
   generation number is free and lists nothing when it is, since it has nothing to collect (twice when the check finds
   the number taken, to number past the object and to collect; on S3 a listing bills at the PUT rate), and reads the
-  pointer three times with nothing racing it, five when the check finds the number taken, twice more for each publish
-  attempt it loses, and thirteen times at most: fourteen GET-class requests with the check. A test drives each count through the real registry code, so a projection allowing one
+  pointer three times with nothing racing it, six when the check finds the number taken, twice more for each publish
+  attempt it loses, and fourteen times at most: fifteen GET-class requests with the check. A test drives each count through the real registry code, so a projection allowing one
   read per attempt fails it. The workload's client makes one attempt per request, and every attempt teardown's client
   may make is allowed for, so no SDK retry can fall outside it either. A sample discarded after a transient fault was
   billed too, so the projection allows every discard a run may make, at the costliest sample's bound, and a plan that

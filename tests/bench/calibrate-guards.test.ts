@@ -471,7 +471,12 @@ describe('calibrate guards — what a real run is held to', () => {
         }),
       });
       // A crashed load's object under the number the load will check, written before the counting starts.
-      if (meetsAnObject) await bulkLoadCrbmGeneration(memory, { segment: 's', generation: 0 }, [7]);
+      if (meetsAnObject) {
+        // Two stray objects, so the generation the listing numbers, 2, leaves one below its window to take.
+        for (const generation of [0, 1]) {
+          await bulkLoadCrbmGeneration(memory, { segment: 's', generation }, [7]);
+        }
+      }
       try {
         await store.load({ segment: 's' }, [1, 2, 3]);
       } catch (err) {
@@ -488,8 +493,9 @@ describe('calibrate guards — what a real run is held to', () => {
     // Nothing racing and the number free: three reads, the check, the object and the one conditional write, and no
     // listing, since a new segment has nothing outside its window to collect.
     expect(await load(0, false)).toEqual({ reads: 3, checks: 1, writes: 1, objects: 1, lists: 0 });
-    // The number taken: two more reads and two listings, one to number past the object and one to collect.
-    expect(await load(0, true)).toEqual({ reads: 5, checks: 1, writes: 1, objects: 1, lists: 2 });
+    // The number taken: three more reads and two listings, one to number past the objects and one to collect, which
+    // re-reads the pointer before its listing, after it and before its delete.
+    expect(await load(0, true)).toEqual({ reads: 6, checks: 1, writes: 1, objects: 1, lists: 2 });
     const p = guards.projectOps({
       loads: 1,
       reads: 0,
@@ -521,7 +527,7 @@ describe('calibrate guards — what a real run is held to', () => {
     }
     // The bound is tight where it is reached: a load that finds its number taken and loses every attempt but the
     // last makes as many GET-class requests as the bound allows.
-    expect(p.get).toBe(14);
+    expect(p.get).toBe(15);
     expect(p.get).toBe((await load(guards.RETRY_BOUND - 1, true)).reads + 1);
   });
 
