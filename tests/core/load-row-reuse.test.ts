@@ -4,8 +4,9 @@ import { openGenerationReader, publishGeneration } from '@/core/crbm-storage-sou
 import { aadFor } from '@/core/crypto';
 import { destroySegment, dropSegment } from '@/core/erasure';
 import { KeyUnavailableError, TransientError, ValidationError } from '@/core/errors';
+import { setSegmentRetention } from '@/core/retention';
 import { rollbackSegment } from '@/core/rollback';
-import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
+import type { GenKey, IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
@@ -383,6 +384,138 @@ describe('a load reuses the row it read, and every fence on that row still holds
     await w.registry.compareAndSwap(...late!); // it lands
     expect((await w.registry.get(SEG))!.currentGen).toBe(3);
     expect(await idsOf(w.storage, 3)).toEqual([1, 2, 3, 4]);
+  });
+
+  /** `storage`, running `after` once, right after the first object put lands. */
+  const afterFirstPut = (storage: IStorageDriver, after: () => Promise<void>): IStorageDriver => {
+    let fired = false;
+    return new Proxy(storage, {
+      get(t, p, rx) {
+        const value = Reflect.get(t, p, rx) as unknown;
+        if (p !== 'putImmutable') return value;
+        return async (...args: Parameters<IStorageDriver['putImmutable']>) => {
+          const out = await storage.putImmutable(...args);
+          if (!fired) {
+            fired = true;
+            await after();
+          }
+          return out;
+        };
+      },
+    }) as IStorageDriver;
+  };
+
+  it("leaves a re-created encrypted incarnation's object at the number this load wrote", async () => {
+    const w = world();
+    const keystore = new InProcessKeystore({ keys: { A: randomBytes(32) }, activeKeyId: 'A' });
+    await loadSegment(SEG, [1], w.deps); // cleartext, generation 0; this load takes 1
+    const racing = afterFirstPut(w.storage, async () => {
+      // This load's object 1 has landed. The name is dropped (its objects deleted, 1 included), purged, and
+      // re-created encrypted, whose second load writes ITS generation 1.
+      await dropSegment(SEG, w.deps, { confirmSegment: SEG.segment });
+      await w.registry.delete(SEG);
+      await loadSegment(SEG, [7], { ...w.deps, keystore });
+      await loadSegment(SEG, [7, 8], { ...w.deps, keystore });
+    });
+    const r = await loadSegment(SEG, [42], { ...w.deps, storage: racing });
+    expect(r).toMatchObject({ generation: 1, published: false, reason: 'superseded' });
+    const row = (await w.registry.get(SEG))!;
+    expect(row.currentGen).toBe(1);
+    // The new incarnation's live generation is still there, and still reads.
+    const aead = await keystore.openDek(row.wrappedDeks!);
+    const reader = await openGenerationReader(
+      w.storage,
+      { ...SEG, generation: 1 },
+      {
+        aead,
+        aadFor: (scope) => aadFor(SEG, 1, scope),
+      },
+    );
+    expect(reader.count()).toBe(2);
+  });
+
+  it("leaves a rowless loader's object at the number this load wrote, after a purge", async () => {
+    const w = world();
+    // A row with no pointer yet, so this load takes 0.
+    await setSegmentRetention(
+      SEG,
+      { registry: w.registry },
+      { expiresAt: Date.now() + 86_400_000 },
+    );
+    let other: Awaited<ReturnType<typeof bulkLoadCrbmGeneration>> | undefined;
+    const racing = afterFirstPut(w.storage, async () => {
+      // This load's 0 has landed. The name is dropped and purged; a new loader writes its own 0, not yet published.
+      await dropSegment(SEG, w.deps, { confirmSegment: SEG.segment });
+      await w.registry.delete(SEG);
+      other = await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [5, 6, 7], {
+        registry: w.registry,
+        publish: false,
+      });
+    });
+    const r = await loadSegment(SEG, [42], { ...w.deps, storage: racing });
+    expect(r).toMatchObject({ generation: 0, published: false, reason: 'superseded' });
+    expect(other).toBeDefined();
+    // The other loader's object survived this load's refusal, so its publish lands on an object.
+    expect(await idsOf(w.storage, 0)).toEqual([5, 6, 7]);
+    expect(await publishGeneration(w.registry, { ...SEG, generation: 0 })).toBe(true);
+  });
+
+  it('keeps its object when the read that would prove it its own fails', async () => {
+    const w = world();
+    const keystore = new InProcessKeystore({ keys: { A: randomBytes(32) }, activeKeyId: 'A' });
+    await threeLoads(w); // cleartext, generation 2; this load takes 3
+    let armed = false;
+    const flaky = new Proxy(w.storage, {
+      get(t, p, rx) {
+        const value = Reflect.get(t, p, rx) as unknown;
+        if (p !== 'getTail') return value;
+        return (key: GenKey, maxBytes: number) =>
+          armed && key.generation === 3
+            ? Promise.reject(new TransientError('503 SlowDown'))
+            : w.storage.getTail(key, maxBytes);
+      },
+    }) as IStorageDriver;
+    const r = await loadSegment(
+      SEG,
+      streaming([42, 43], async () => {
+        await dropSegment(SEG, w.deps, { confirmSegment: SEG.segment });
+        await w.registry.delete(SEG);
+        await loadSegment(SEG, [7], { ...w.deps, keystore }); // re-created encrypted, at 0
+        armed = true; // the footer read of this load's 3 will fail
+      }),
+      { ...w.deps, storage: flaky },
+      { keep: 9 },
+    );
+    expect(r).toMatchObject({ generation: 3, published: false, reason: 'superseded' });
+    // Not proved its own, so not deleted: an orphan above the new pointer is the better failure.
+    expect(await generations(w.storage)).toEqual([0, 3]);
+  });
+
+  it('a keystore first load that another writer publishes ahead of during its write is told to re-run', async () => {
+    const w = world();
+    const keystore = new InProcessKeystore({ keys: { A: randomBytes(32) }, activeKeyId: 'A' });
+    const deps = { ...w.deps, keystore };
+    // Another writer's encrypted object 0 is in the bucket, not yet published, so this load takes 1; it finds no
+    // row after its ids and mints a key, and the other writer publishes 0 while this load writes.
+    const other = await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [7, 8], {
+      registry: w.registry,
+      keystore,
+      publish: false,
+    });
+    const racing = afterFirstPut(w.storage, async () => {
+      await publishGeneration(
+        w.registry,
+        { ...SEG, generation: 0 },
+        { wrappedDeks: other.wrappedDeks },
+      );
+    });
+    await expect(
+      loadSegment(SEG, [1, 2, 3], { ...deps, storage: racing }, { allowEmpty: true }),
+    ).rejects.toThrow(/re-run the write/);
+    // The refusal came before its compare-and-swap: the other writer's generation is current, under its key. This
+    // load's object is encrypted under a key nothing stored, so no reader can open it; it is kept, as an orphan.
+    expect((await w.registry.get(SEG))!.currentGen).toBe(0);
+    expect(await generations(w.storage)).toEqual([0, 1]);
   });
 
   it('an unguarded first load refused by a drop at its publish deletes its object', async () => {

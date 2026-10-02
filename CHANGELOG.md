@@ -95,7 +95,8 @@ so, and so do the module headers in the code.
     key while another writer publishes first is refused with `ValidationError`, whose message now says to re-run
     the write, which then uses the segment's key. Nor does a cleartext object stay in an encrypted segment's bucket:
     a definite refusal (a guard, a `false` from the fenced publish, or a refusal the publish throws) deletes the
-    load's object when the fresh row carries key material and the load wrote cleartext, as when a cleartext segment
+    load's object when the fresh row carries key material and the load wrote cleartext, once the object's footer
+    proves it the load's own (a re-created incarnation can have written its own object under the same number), as when a cleartext segment
     is dropped, purged and re-created encrypted while a load streams its ids. A thrown refusal now reclaims the
     object on the same terms as a `false` one; a transient fault, which may still land, leaves it.
   - **A number whose object was deleted can be taken again.** It always could be (a refused load's, or a number an

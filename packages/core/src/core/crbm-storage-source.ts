@@ -48,7 +48,7 @@ import type {
   SegmentSize,
   Token,
 } from './ports';
-import { CrbmReader } from './crbm/reader';
+import { CrbmReader, fingerprintFor } from './crbm/reader';
 import type { CrbmReaderOptions } from './crbm/reader';
 import { CrbmWriter } from './crbm/writer';
 import type { CodecBitmap, CodecInterface } from './codec';
@@ -1020,18 +1020,19 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
  * `{ size, sha256 }` for the written object. Pass `options.crypto` to AES-256-GCM-encrypt the generation
  * (built from the segment's DEK, with associated data bound to `(segment, generation)`).
  */
-export function writeCrbmGeneration(
+export async function writeCrbmGeneration(
   driver: IStorageDriver,
   key: GenKey,
   chunks: Iterable<{ chunkKey: number; bitmap: CodecBitmap }>,
   options: { crypto?: CrbmCrypto; clock?: Yielder } = {},
-): Promise<{ size: number; sha256: string }> {
+): Promise<{ size: number; sha256: string; fingerprint: string }> {
   const sorted = [...chunks].sort((a, b) => a.chunkKey - b.chunkKey);
   // The single longest blocking stretch in a bulk load: serialize + CRC32C + frame, once per chunk, ~62,000
   // times. `await writer.addChunk(...)` looks like it yields and does not — the sink buffers in memory, so the
   // promise is already resolved and awaiting it is a microtask. See {@link yieldEvery}.
   const tick = yieldEvery(options.clock);
-  return driver.putImmutable(key, async (sink) => {
+  let identity: { readonly size: number; readonly footerCrc: number } | undefined;
+  const { size, sha256 } = await driver.putImmutable(key, async (sink) => {
     const writer = new CrbmWriter(sink, { generation: key.generation, crypto: options.crypto });
     for (const { chunkKey, bitmap } of sorted) {
       if (bitmap.isEmpty) continue;
@@ -1043,7 +1044,32 @@ export function writeCrbmGeneration(
       if (pause !== null) await pause;
     }
     await writer.finish();
+    identity = writer.identity;
   });
+  if (identity === undefined) {
+    throw new IntegrityError(
+      `the driver committed ${key.segment}.${key.generation} without writing it`,
+    );
+  }
+  // The fingerprint of what this call wrote, which tells it from an object stored later under the same key.
+  return { size, sha256, fingerprint: fingerprintFor(identity.size, identity.footerCrc) };
+}
+
+/**
+ * Whether the object under `key` is provably the one `fingerprint` names ({@link CrbmReader.fingerprint}), from one
+ * read of its footer. False when it is another object, when it is gone, and when the read fails in any way: a caller
+ * that deletes on `true` deletes nothing it cannot prove is its own.
+ */
+export async function holdsObject(
+  storage: IStorageDriver,
+  key: GenKey,
+  fingerprint: string,
+): Promise<boolean> {
+  try {
+    return await CrbmReader.sameObject(storageBlobReader(storage, key), fingerprint);
+  } catch {
+    return false;
+  }
 }
 
 /** What {@link writeCrbmGenerationStream} wrote: the driver's `{ size, sha256 }` + a tally of the generation. */
@@ -1317,6 +1343,8 @@ export interface BulkLoadResult {
   readonly wrappedDeks?: readonly WrappedDek[];
   /** Whether the object was written encrypted: under the segment's key, or under one this call minted. */
   readonly encrypted: boolean;
+  /** The written object's fingerprint, which tells it from an object stored later under the same key. */
+  readonly fingerprint: string;
   /** Total distinct ids in the generation (post-dedup). */
   readonly cardinality: number;
   /**
@@ -1568,7 +1596,7 @@ export async function bulkLoadCrbmGeneration(
     }
   }
 
-  const { size, sha256 } = await writeCrbmGeneration(driver, key, chunks, {
+  const { size, sha256, fingerprint } = await writeCrbmGeneration(driver, key, chunks, {
     crypto,
     clock: options.clock,
   });
@@ -1598,6 +1626,7 @@ export async function bulkLoadCrbmGeneration(
       becameCurrent,
       wrappedDeks: newWrapped,
       encrypted: crypto !== undefined,
+      fingerprint,
     };
   }
   return {
@@ -1607,6 +1636,7 @@ export async function bulkLoadCrbmGeneration(
     cardinality,
     wrappedDeks: newWrapped,
     encrypted: crypto !== undefined,
+    fingerprint,
   };
 }
 

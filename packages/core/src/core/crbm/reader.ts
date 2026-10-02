@@ -105,7 +105,9 @@ function magicMatches(bytes: Uint8Array, offset: number): boolean {
 
 /** What names an object: its size, then its footer's CRC. One spelling, for an open reader and a footer read alone. */
 const sizePart = (size: number): string => `${size}:`;
-const fingerprintFor = (size: number, footerCrc: number): string => `${sizePart(size)}${footerCrc}`;
+/** An object's fingerprint, from its size and its footer's CRC (see {@link CrbmReader.fingerprint}). */
+export const fingerprintFor = (size: number, footerCrc: number): string =>
+  `${sizePart(size)}${footerCrc}`;
 
 /**
  * Refuses a `size` that is not a whole byte count its own tail fits in. The size is the tier's word too: one that

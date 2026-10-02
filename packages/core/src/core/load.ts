@@ -23,6 +23,7 @@ import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
 import { type CodecInterface, requireCodec } from './codec';
 import {
   bulkLoadCrbmGeneration,
+  holdsObject,
   openGenerationReader,
   publishGeneration,
 } from './crbm-storage-source';
@@ -110,15 +111,15 @@ export type LoadRefusal =
    * put refused this one and it wrote nothing (`size: 0`); or the segment's registry row changed while the load was
    * writing: another load published, a retention change, a rollback or an erasure wrote the row, or the row was
    * deleted. Once another write has changed the row, the object stays in the bucket, because its generation number
-   * may by then name another incarnation's live object; once the row is gone or `destroyed` (dropped or
-   * crypto-shredded), the object is deleted.
+   * may by then name another incarnation's live object; once the row is `destroyed` (dropped or crypto-shredded),
+   * the object is deleted, and once the row is gone, so is an object its footer proves this load's own.
    */
   | 'superseded';
 
 export interface LoadResult {
   /**
    * The generation written. Present even when refused: a refusal deletes that object while the segment's row is
-   * unchanged, gone or `destroyed`, and leaves it in the bucket once another write has changed the row. A load that lost its
+   * unchanged or `destroyed`, or gone once its footer proves it this load's own, and leaves it in the bucket once another write has changed the row. A load that lost its
    * generation number to another wrote nothing, and reports `size: 0`.
    */
   readonly generation: number;
@@ -297,30 +298,30 @@ export async function loadSegment(
    * a publish that may still land must not find its object gone.
    *
    * The object is durable and sits above `currentGen`, where collection never looks until a generation above it is
-   * current, so the refusal reclaims it here — but ONLY while this is still the same segment, or a segment the object
-   * must not stay in.
+   * current, so the refusal reclaims it here, and deletes only what it can prove is its own. A generation number
+   * identifies a generation within one incarnation of a row, and nothing more (invariant 1): once the row was
+   * purged, the object under this load's key can be another writer's, because a re-created name's numbering restarts
+   * and its loads take numbers a drop or a collection freed, this one included. Deleting that would put a row over a
+   * missing generation, the forbidden `missing-storage-generation` state; leaving an orphan behind is strictly the
+   * better failure.
    *
-   * A generation number identifies a generation within one incarnation of a row, and nothing more (invariant 1). If
-   * the row was purged and the name re-created while this load was in flight, the numbering restarts from 0 and the
-   * number this call is holding can name the NEW incarnation's live object. Deleting it would put an active row over
-   * a missing generation — the forbidden `missing-storage-generation` state, produced by the one code path whose
-   * whole purpose is to prevent data loss. Leaving an orphan behind is strictly the better failure: it costs storage
-   * until something collects it, rather than costing a live segment.
-   *
-   * Two other rows it deletes on. A `destroyed` row: no reader resolves a generation of it, so every one is garbage,
-   * this one too; left, it would outlive a drop that landed while this load was consuming its ids. And a row with key
-   * material, when this load wrote cleartext: a cleartext object has no place in an encrypted segment's bucket, where a
-   * rollback could point at it and a later shred would attest that its bytes are unreadable. The number still holds
-   * this load's own object in both: write-once kept it ours, and nothing collects above the pointer.
+   * - The same row (an unchanged token): nothing was written since this load read it, so the number is its own.
+   * - A `destroyed` row: no reader resolves any of its generations, so whatever is under the key is garbage.
+   * - No row, or a row with key material when this load wrote cleartext (a cleartext object has no place in an
+   *   encrypted segment's bucket, where a rollback could point at it and a shred would attest its bytes unreadable):
+   *   the object under the key must be proved this load's by its fingerprint, from one read of its footer. One that
+   *   is gone, is another object, or cannot be read is kept.
    */
   const reclaim = async (): Promise<void> => {
     const now = await deps.registry.get(ref);
+    if (now !== null && (now.token === fromToken || now.status === 'destroyed')) {
+      await deps.storage.delete(key);
+      return;
+    }
     const keyed = now !== null && now.wrappedDeks !== undefined && now.wrappedDeks.length > 0;
     if (
-      now === null ||
-      now.token === fromToken ||
-      now.status === 'destroyed' ||
-      (keyed && !written.encrypted)
+      (now === null || (keyed && !written.encrypted)) &&
+      (await holdsObject(deps.storage, key, written.fingerprint))
     ) {
       await deps.storage.delete(key);
     }
@@ -392,10 +393,13 @@ export async function loadSegment(
       ...(needsBefore && row === null ? { expectAbsent: true } : {}),
     });
   } catch (err) {
-    // A refusal the publish states by throwing is as definite as a `false`: it is raised before that attempt's
-    // compare-and-swap, so nothing landed. A `destroyed` row (no fence answered first, as for an unguarded load
-    // that found no row) and a row whose key material this write cannot honour are its two, so the object is
-    // reclaimed on the same terms. Anything else, a transient fault above all, may still land, and keeps it.
+    // A refusal the publish states by throwing is as definite as a `false`: each of these is raised before that
+    // attempt's compare-and-swap or create is sent, so nothing landed from it. `publishGeneration` raises three: a
+    // `destroyed` row (no fence answered first, as for an unguarded load that found no row), new key material for a
+    // segment that already has a generation, and a cleartext object for a row with key material. The registries raise
+    // a `ValidationError` only from checks made before a write is sent (the ref, the record or patch, the row's size
+    // cap), and never a `KeyUnavailableError`. Anything else, a transient fault above all, may still land, and keeps
+    // the object.
     if (isValidationError(err) || err instanceof KeyUnavailableError) await reclaim();
     throw err;
   }
