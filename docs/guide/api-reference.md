@@ -565,6 +565,26 @@ parameter is optional, so a driver that ignores it still compiles and keeps the 
 that do not pass it see no change. Implement it to make the library's deletes safe against a concurrent re-create;
 the registry conformance suite's `delete` cases are the test.
 
+**Registry rows are schema 2, and the record has an optional `summary`.** A shipped registry stamps every row it
+writes `schemaVersion: 2` and reads rows stamped 1 or 2; a row stamped 1 may hold only the fields schema 1 had.
+`summary` is the row's cached description of its current generation — its id count, and the metadata it was loaded
+with — in the clear on a cleartext segment (`{ generation, cardinality, metadata? }`) or sealed under the segment's
+data key on an encrypted one (`{ generation, sealed }`). It names the generation it describes, and it follows the
+pointer: a patch that moves `currentGen` without mentioning `summary` drops the old one, and a patch or create that
+gives one must name the `currentGen` the row will have, else `ValidationError`. Each shape is checked at both
+boundaries (`ValidationError` on a write, `IntegrityError` on a read). Nothing in this release writes one yet, and a
+row without one is correct: a driver that does not persist the field loses only the shortcut it will enable. The
+registry conformance suite round-trips it through `create`, `get`, `list` and `compareAndSwap`.
+
+**A shipped registry's token is `<incarnation>.<counter>`.** The incarnation is 128 bits as 32 lowercase hex digits,
+drawn when a row is created, so a re-created name never meets an earlier incarnation's token, even once the earlier
+row is gone entirely (with overwhelming probability then, rather than by construction); the counter advances on
+every write, and carries on across a tombstone. A row first written by a release before 0.12 keeps its bare
+decimal counter (`"7"`) for as long as it lives; only a create starts an incarnation. Tokens stay opaque to the
+library, which compares them only for equality. `ObjectStoreRegistry`'s constructor takes an optional fourth
+argument, an `Entropy` source (`(length) => Uint8Array`), which defaults to the platform's Web Crypto: inject one
+only to make a test replayable, never a seeded one in production, which hands every process the same ids.
+
 **`currentGen` is nullable, and `null` is a value — not a missing field.** A `RegistryRecord` with
 `currentGen: null` says *this segment exists and has no Storage generation yet*: the row `setRetention` mints when a
 policy is recorded **before the first load**, so fleet-wide operations — `checkConsistency`, `eraseNamespace`,
@@ -612,7 +632,10 @@ one segment inside `checkConsistency` is recorded in `report.errored`, not throw
 ### Low-level ports & capabilities (driver-author typing)
 
 `StorageCaps` · `RegCaps` · `ChunkRef` · `GenKey` · `RegistryRecord` · `NewRegistryRecord` · `RegistryPatch` ·
-`RegistryStatus` (`'active' | 'destroyed'`) · `GovernanceMeta` · `SegmentSize`
+`RegistryStatus` (`'active' | 'destroyed'`) · `GovernanceMeta` · `SegmentSize` · `RegistrySummary`
+(`ClearRegistrySummary` `{ generation, cardinality, metadata? }` or `SealedRegistrySummary` `{ generation, sealed }`,
+the row's cached description of its current generation) · `GenerationMetadata` (string keys, string or finite-number
+values, at most 1 KiB as canonical JSON)
 
 ---
 
@@ -706,6 +729,7 @@ does not re-export. A driver author told elsewhere on this page to import `Token
 `ExportedSegment` · `ExportFailure` · `ExportManifest` · `IStorageDriver` · `IRegistryDriver` ·
 `StorageBackend` · `StorageChunkSource` · `PinnedAt` · `PinnedObject` · `SegmentRef` · `ChunkRef` · `GenKey` · `StorageCaps`
 · `RegCaps` · `RegistryRecord` · `NewRegistryRecord` · `RegistryPatch` · `RegistryStatus` · `GovernanceMeta`
+· `RegistrySummary` · `ClearRegistrySummary` · `SealedRegistrySummary` · `GenerationMetadata`
 · `SegmentSize` · `IKeystore` · `Aead` · `AeadSealed` · `WrappedDek` · `CrbmCrypto` ·
 `InProcessKeystoreOptions` · `EraseDeps` · `DestroyResult` · `DropResult` · `RetentionPolicy` ·
 `SetRetentionResult` · `RetireExpiredOptions` · `RetireExpiredResult` · `RetireEntry` ·
@@ -730,7 +754,7 @@ Values: `SegmentEngine` · `BoundedLru` · `safeMetrics` · `NOOP_METRICS` · `g
 `setSegmentRetention` · `getSegmentRetention` · `clearSegmentRetention` · `retireExpired` · `estimateCost`
 
 Types: `EngineDeps` · `EngineCombineOptions` · `RetryDeps` · `RetryingOptions` · `LoadDeps` ·
-`GenerationListDeps` · `EraseIdDeps` · `EraseIdResult` · `RetentionDeps` · `DropDeps`
+`GenerationListDeps` · `EraseIdDeps` · `EraseIdResult` · `RetentionDeps` · `DropDeps` · `Entropy`
 
 ### `@cloudbitmaps/core/driver-kit`
 

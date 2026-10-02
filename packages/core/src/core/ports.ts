@@ -483,8 +483,11 @@ export function isStorageBackend(value: unknown): value is StorageBackend {
  * - **`create` and `compareAndSwap` are atomic conditional writes.** A `create` over a live row, and a
  *   `compareAndSwap` whose token is not the stored one, throw {@link WriteConflictError} and change nothing.
  *   Two racing writers have exactly one winner.
- * - **Tokens are never reused**, not even across `delete` then `create`: a delete leaves a tombstone (or a
- *   global counter) so a recreated row always carries a fresh token and a stale holder cannot swap into it.
+ * - **Tokens are never reused**, not even across `delete` then `create`: a recreated row always carries a token
+ *   no earlier incarnation held, so a stale holder cannot swap into it. The shipped drivers draw a random 128-bit
+ *   incarnation id into the token of every row they create, and a tombstone (or a global counter) keeps the
+ *   counter beside it going; where nothing of the earlier row is left, the id alone keeps them apart, with
+ *   overwhelming probability.
  * - **`delete` is idempotent** without an `expected` token: deleting an absent row is a no-op, not an error.
  *   **With `expected` it is fenced**: it lands only while the row still carries that token, and otherwise throws
  *   {@link WriteConflictError} and leaves the row.
@@ -522,7 +525,7 @@ export interface IRegistryDriver {
    */
   list(namespace?: string): AsyncIterable<RegistryRecord>;
   /**
-   * Remove the row (tombstoned for ABA-safety — a later `create` still gets a fresh, greater token).
+   * Remove the row (tombstoned for ABA-safety — a later `create` gets a token never issued before).
    *
    * Without `expected`, idempotent: deleting an absent row is a no-op.
    *

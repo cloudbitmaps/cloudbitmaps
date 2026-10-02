@@ -126,9 +126,9 @@ function storageBlobReader(driver: IStorageDriver, key: GenKey): BlobReader {
 
 /**
  * A resolved read target, as `resolveTarget` produces it: which generation is current, and its DEK wrappings if it
- * is encrypted. `lineage` is the registry row's OCC token — the identity that survives a delete,
- * because `IRegistryDriver.delete` tombstones rather than unlinks ("a later `create` still gets a fresh,
- * greater token"). It is what separates two *incarnations* of one name, which a generation number cannot:
+ * is encrypted. `lineage` is the registry row's OCC token — the identity that survives a delete, because no
+ * token is ever issued to two incarnations of a name (a later `create` gets one never issued before). It is what
+ * separates two *incarnations* of one name, which a generation number cannot:
  * `nextGeneration` restarts at 0 once the row is purged and the bucket emptied, so a retired-and-re-created
  * segment presents different data at the same `currentGen`. Undefined for a registry-less source, which has no
  * row: there, only the object itself tells two incarnations apart, by the fingerprint a pin records.
@@ -1080,8 +1080,8 @@ export async function writeCrbmGenerationStream(
  * the bucket empty, so a name that is retired and re-created has a *different* segment wearing the *same*
  * `currentGen`. `expectFrom` alone matched it — and an erasure rewrite then published one incarnation's content
  * over another's, deleted the live objects with its `keep: 0` collection, and returned `erased: true`. The row's
- * OCC token is the identity that survives this: {@link IRegistryDriver.delete} tombstones rather than unlinks,
- * so "a later `create` still gets a fresh, greater token" and no token is ever reused across incarnations.
+ * OCC token is the identity that survives this: a later `create` gets a token never issued before (with
+ * overwhelming probability, once nothing of the earlier row is left), so no token is reused across incarnations.
  *
  * Pass the token read alongside `expectFrom` and the publish lands only on the same row it was derived from.
  * The check is deliberately **conservative**: the token also changes on writes that are not supersessions at

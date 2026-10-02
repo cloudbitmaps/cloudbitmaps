@@ -203,8 +203,9 @@ makes the coordinated restore point easy to hit rather than something you have t
    objects, first run `store.dropSegment(ref, { confirmSegment: ref.segment, audit })`, which deletes them and
    removes the wrapped key from the row. Then remove the row with the backend's `registry.delete(ref)`, which
    leaves a tombstone that keeps the row's token counter, and the rest of the row with it, wrapped keys included —
-   the reason for dropping first. Do not remove it with an object-store delete, which takes the tombstone too, so
-   the name's next row would issue tokens from 0 again. A segment you delete the row of without dropping keeps its
+   the reason for dropping first. Prefer it to an object-store delete, which takes the tombstone too: the name's
+   next row is then told apart from the earlier ones only by the random incarnation id every created row draws
+   into its token, with overwhelming probability rather than by construction. A segment you delete the row of without dropping keeps its
    objects in the bucket with no row; `store.generations(ref)` lists them. Step 6 is what tells you the result is
    coherent.
 5. **Restore the keystore** (if encryption is on), and check it can open the key of every restored segment:
@@ -556,13 +557,14 @@ only once the pointer is on the target — so keep the error with your incident 
 
 The registry reads a row only in a shape the library writes, and refuses anything else rather than guess at it:
 a body that is not JSON, that has no `schemaVersion`, that carries a field the library does not write (at the top
-level or in the record), or that holds a value out of range, such as an unknown `status` or a malformed
-`wrappedDeks` list. Each is an `IntegrityError`, and its message names the row's key, except for a row over the
-1 MiB size cap and a malformed `wrappedDeks` list. A `token` that is not a plain decimal counter passes the read and
-fails every write to the row instead (`load`, `rollback`, `dropSegment`, `setRetention`, `registry.delete`), with
-an `IntegrityError` that quotes the token and not the key. A row with a
-higher `schemaVersion` than this build reads was written by a newer release; it is refused with
-`UnsupportedError`, and the fix is to upgrade the process reading it, not to touch the row.
+level or in the record) or one its `schemaVersion` did not have, or that holds a value out of range, such as an
+unknown `status`, a malformed `wrappedDeks` list, a malformed `summary`, or a `token` in neither of the two forms
+the library writes (a decimal counter, or 32 lowercase hex digits, a `.` and a decimal counter; a row stamped 1
+holds only the first). Each is an `IntegrityError`, and its message names the row's key, except for a row over the
+1 MiB size cap, a malformed `wrappedDeks` list and a malformed `summary`. This release writes rows stamped 2 and
+reads rows stamped 1 or 2. A row with a higher `schemaVersion` than this build reads was written by a newer
+release; it is refused with `UnsupportedError`, and the fix is to upgrade the process reading it, not to touch the
+row. A release before 0.12 refuses every row this one writes the same way.
 
 One refused row costs far more than its own segment:
 
@@ -589,8 +591,8 @@ copy. An object under the prefix whose key is not a row's key is skipped by the 
    the bucket, as after any registry restore: the row's token counter moves back with it.
 2. If there is no such version, delete the object with the object store's own delete; `registry.delete(ref)` cannot,
    since it has to read the row first. That also removes any token counter the key held, so a row created later
-   under the same name starts again at 0; restart or invalidate the stores over the bucket afterwards for the same
-   reason. The segment then has no row: it reads empty, nothing collects its objects (`store.generations(ref)` lists
+   under the same name starts its counter again at 0, under a new random incarnation id that keeps its tokens apart
+   from the earlier row's; restart or invalidate the stores over the bucket afterwards. The segment then has no row: it reads empty, nothing collects its objects (`store.generations(ref)` lists
    them), and an encrypted one cannot be decrypted without a registry version that holds its key. Reload it from
    your source, or drop it with `store.dropSegment`.
 
