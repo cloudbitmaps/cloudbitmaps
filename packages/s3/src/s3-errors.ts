@@ -34,6 +34,20 @@ export function isConditionalConflict(err: unknown): boolean {
   );
 }
 
+/**
+ * S3 asked the client to slow down: `503 SlowDown`, or any other `503` (`ServiceUnavailable`). The SDK raises it with
+ * `name` set to the code and `$metadata.httpStatusCode` to 503, and no `$retryable` marker. S3 does not document that a
+ * throttled request was not applied, so a write sent again after one must still tell a landed first send apart.
+ */
+export function isThrottle(err: unknown): boolean {
+  return errorName(err) === 'SlowDown' || httpStatus(err) === 503;
+}
+
+/** A multipart upload id S3 no longer knows: completed, aborted or expired (`404 NoSuchUpload`). */
+export function isNoSuchUpload(err: unknown): boolean {
+  return errorName(err) === 'NoSuchUpload';
+}
+
 /** The object / generation does not exist (GetObject → `NoSuchKey`, HeadObject → `NotFound`; both 404). */
 export function isNotFound(err: unknown): boolean {
   const name = errorName(err);
