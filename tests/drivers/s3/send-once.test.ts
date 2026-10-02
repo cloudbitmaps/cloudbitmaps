@@ -2,6 +2,7 @@ import { Readable } from 'node:stream';
 import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { S3Storage } from '@/s3/backend';
 import { S3StorageDriver } from '@/s3/storage';
+import { S3RegistryStore } from '@/s3/registry';
 import { TransientError, WriteConflictError } from '@/core/errors';
 import type { GenKey } from '@/core/ports';
 import { CREATED_TOKEN, tokenAfter } from '../../helpers/tokens';
@@ -85,6 +86,8 @@ class StubBucket {
   readonly objects = new Map<string, { body: Buffer; etag: string }>();
   private readonly uploads = new Map<string, Map<number, Buffer>>();
   private readonly sent: Operation[] = [];
+  /** The `If-Match` each applied `DeleteObject` carried. */
+  readonly ifMatchOnDelete: Array<string | undefined> = [];
   private seq = 0;
   private fault: { op: Operation; kind: 'lose-response' | 'drop' | 'clock-skew' } | undefined;
 
@@ -232,6 +235,10 @@ class StubBucket {
         };
       }
       case 'DeleteObject': {
+        // `If-Match` on a delete is applied as on a write; a delete without one removes whatever is there.
+        const refused = conditional();
+        if (refused !== undefined) return refused;
+        this.ifMatchOnDelete.push(header('if-match'));
         this.objects.delete(key);
         return respond(204, {});
       }
@@ -325,6 +332,44 @@ describe('S3: a conditional write is sent once, whatever the SDK retry would do'
     expect(await backend.registry.get(REF)).toBeNull();
     await backend.registry.delete(REF);
     expect(bucket.count('PutObject')).toBe(2); // already a tombstone: nothing left to write
+  });
+
+  // With `conditionalDelete` on, a delete removes the row with a DeleteObject under If-Match. A replay that met its own
+  // landed delete would fail the precondition and read as a lost race, so it is sent once like the writes.
+  it("the registry's conditional DeleteObject is sent once, with If-Match, and a re-run settles it", async () => {
+    const bucket = new StubBucket();
+    const backend = new S3Storage({
+      bucket: BUCKET,
+      client: bucket.client(),
+      conditionalDelete: true,
+    });
+    const { token } = await backend.registry.create(REF, { currentGen: 0 });
+    bucket.loseResponseOf('DeleteObject');
+
+    await expect(backend.registry.delete(REF, token)).rejects.toBeInstanceOf(TransientError);
+    expect(bucket.count('DeleteObject')).toBe(1);
+    expect(bucket.ifMatchOnDelete).toEqual([expect.stringMatching(/^"e\d+"$/)]);
+    expect(bucket.objects.size).toBe(0); // it landed: nothing is left for a full listing to read
+    expect(await backend.registry.get(REF)).toBeNull();
+    await backend.registry.delete(REF); // the unfenced re-run finds nothing, and sends nothing
+    expect(bucket.count('DeleteObject')).toBe(1);
+  });
+
+  it('a DeleteObject whose If-Match no longer holds deletes nothing and is a WriteConflictError', async () => {
+    const bucket = new StubBucket();
+    const backend = new S3Storage({
+      bucket: BUCKET,
+      client: bucket.client(),
+      conditionalDelete: true,
+    });
+    const { token } = await backend.registry.create(REF, { currentGen: 0 });
+    const store = new S3RegistryStore(backend.client, BUCKET, 0, true);
+    const [key] = [...bucket.objects.keys()];
+    await expect(store.delete(key!, { version: '"stale"' })).rejects.toBeInstanceOf(
+      WriteConflictError,
+    );
+    expect(bucket.count('DeleteObject')).toBe(1);
+    expect(await backend.registry.get(REF)).toMatchObject({ token });
   });
 
   it('a conditional write refused for a skewed clock throws TransientError, unapplied', async () => {

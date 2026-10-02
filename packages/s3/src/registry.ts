@@ -2,9 +2,13 @@
  * `S3RegistryDriver` — an {@link IRegistryDriver} over S3-compatible object storage.
  *
  * Lets a **read-mostly deployment run on S3 alone** — storage `.crbm` generations + the registry in one bucket,
- * no separate database. The protocol (an ABA-safe OCC counter, tombstoning delete, the bounded retry, the key layout)
- * lives once in {@link ObjectStoreRegistry}; this file is only the three I/O calls S3 makes, so the S3, GCS
+ * no separate database. The protocol (an ABA-safe OCC token, the delete and its tombstone, the bounded retry, the key
+ * layout) lives once in {@link ObjectStoreRegistry}; this file is only the I/O calls S3 makes, so the S3, GCS
  * and Azure registries cannot drift from one another.
+ *
+ * **A delete removes the row for good** with a `DeleteObject` under `If-Match: <etag>`, sent once like the writes,
+ * when `conditionalDelete` is on: by default for AWS S3, and off for a client with a custom endpoint, since an
+ * S3-compatible store may accept the header and ignore it (MinIO does).
  *
  * **The atomic swap is offloaded to S3's conditional writes** (GA Nov 2024): `If-None-Match: *` for
  * create-only and `If-Match: <etag>` for compare-and-swap, so a concurrent writer between our read and our
@@ -31,11 +35,13 @@ import {
   MAX_ROW_BYTES,
   ObjectStoreRegistry,
   TransientError,
+  ValidationError,
   WriteConflictError,
   normalizeObjectPrefix,
 } from '@cloudbitmaps/core/driver-kit';
 import type { ObjectRegistryStore, ObjectRow } from '@cloudbitmaps/core/driver-kit';
 import {
+  DeleteObjectCommand,
   GetObjectCommand,
   ListObjectsV2Command,
   PutObjectCommand,
@@ -66,16 +72,26 @@ export interface S3RegistryDriverOptions {
    * `maxSockets`. On a client built with `cacheMiddleware: true`, a timed read resolves its middleware each time.
    */
   readonly readTimeoutMs?: number;
+  /**
+   * Whether a delete removes a row for good, by a `DeleteObject` sent with `If-Match: <the ETag it read>`, rather than
+   * leaving a tombstone. Only a row born with an incarnation id is removed; a row a release before 0.12 wrote is
+   * always tombstoned. Defaults to `true` for a client with no custom endpoint, which is AWS S3, where `If-Match` on
+   * `DeleteObject` is documented for general purpose and directory buckets, and to `false` for a client with an
+   * `endpoint`. An S3-compatible store must apply the precondition before you set it there: MinIO, for one, ignores it
+   * and deletes anyway, and on such a store two sweepers and a re-create can delete a live row.
+   */
+  readonly conditionalDelete?: boolean;
 }
 
-/** The three calls {@link ObjectStoreRegistry} needs, in S3's dialect. */
-class S3Store implements ObjectRegistryStore {
+/** The calls {@link ObjectStoreRegistry} needs, in S3's dialect. Exported for the tests that drive one directly. */
+export class S3RegistryStore implements ObjectRegistryStore {
   readonly label = 'S3';
 
   constructor(
     private readonly client: S3Client,
     private readonly bucket: string,
     private readonly readTimeoutMs: number,
+    readonly conditionalDelete: boolean,
   ) {}
 
   read(key: string): Promise<ObjectRow | null> {
@@ -141,6 +157,23 @@ class S3Store implements ObjectRegistryStore {
     }
   }
 
+  async delete(key: string, expect: { version: string }): Promise<void> {
+    try {
+      // Sent once, as the writes are: a replay that met its own landed delete would read as a lost race.
+      await sendOnce(
+        this.client,
+        new DeleteObjectCommand({ Bucket: this.bucket, Key: key, IfMatch: expect.version }),
+      );
+    } catch (err) {
+      // A 412 (the object moved on), a 409 (a concurrent conditional request) or a 404 (it is gone) all mean the
+      // version this delete was conditioned on is not there to delete.
+      if (isConditionalConflict(err) || isNotFound(err)) {
+        throw new WriteConflictError(`registry OCC conflict deleting ${key}`);
+      }
+      throw mapError(err);
+    }
+  }
+
   async *listKeys(prefix: string): AsyncIterable<string> {
     let token: string | undefined;
     do {
@@ -180,10 +213,32 @@ function mapError(err: unknown): unknown {
   return err;
 }
 
+/**
+ * Whether `client` was built with an endpoint of its own: an S3-compatible store, or a private AWS endpoint. The SDK
+ * records it on the resolved config; a client without that config (a test double) reads as AWS.
+ */
+function hasCustomEndpoint(client: S3Client): boolean {
+  return (client as { config?: { isCustomEndpoint?: unknown } }).config?.isCustomEndpoint === true;
+}
+
+/** {@link S3RegistryDriverOptions.conditionalDelete}, checked, or its default for `client`. */
+function resolveConditionalDelete(value: unknown, client: S3Client): boolean {
+  if (value === undefined) return !hasCustomEndpoint(client);
+  if (typeof value !== 'boolean') {
+    throw new ValidationError(`conditionalDelete must be a boolean; got ${String(value)}`);
+  }
+  return value;
+}
+
 export class S3RegistryDriver extends ObjectStoreRegistry {
   constructor(options: S3RegistryDriverOptions) {
     super(
-      new S3Store(options.client, options.bucket, resolveReadTimeoutMs(options.readTimeoutMs)),
+      new S3RegistryStore(
+        options.client,
+        options.bucket,
+        resolveReadTimeoutMs(options.readTimeoutMs),
+        resolveConditionalDelete(options.conditionalDelete, options.client),
+      ),
       normalizeObjectPrefix(options.prefix),
       options.now ?? ((): number => Date.now()),
     );

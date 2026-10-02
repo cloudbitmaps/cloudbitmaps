@@ -1,7 +1,13 @@
 import { Readable } from 'node:stream';
 import type { ContainerClient } from '@azure/storage-blob';
-import { registryConformance, registryConcurrency } from '@/testing/conformance';
+import {
+  registryConformance,
+  registryConcurrency,
+  registryDeleteConformance,
+} from '@/testing/conformance';
 import { AzureBlobRegistryDriver } from '@/azure-blob/registry';
+import { AzureBlobStorage } from '@/azure-blob/backend';
+import { registryObjectKey } from '@/drivers/_shared/object-registry-keys';
 import { MAX_ROW_BYTES } from '@/drivers/_shared/object-registry';
 import { IntegrityError, ValidationError, WriteConflictError } from '@/core/errors';
 
@@ -47,6 +53,12 @@ class FakeContainer {
   readonly downloads: Array<{ offset?: number; count?: number; maxRetryRequests?: number }> = [];
   /** When set, answers downloads instead of the stored blob, given the blob as it was stored when asked. */
   answer: ((blob: FakeBlob) => FakeResponse | Promise<FakeResponse>) | undefined;
+  /** Every delete received, with the ETag it was conditioned on. */
+  readonly deletes: Array<{ name: string; ifMatch?: string }> = [];
+  /** Run just before the next delete is applied: another writer landing between the delete's read and it. */
+  beforeDelete: (() => Promise<void>) | undefined;
+  /** Reject the next delete with this, applying nothing. */
+  deleteFault: Error | undefined;
 
   /** Store `bytes` under `name` as a new version, as an unconditional overwrite would. */
   put(name: string, bytes: Uint8Array): void {
@@ -72,6 +84,23 @@ class FakeContainer {
           readableStreamBody: Readable.from([Buffer.from(blob.bytes)]),
           _response: { status: 200 },
         };
+      },
+      delete: async (opts?: { conditions?: { ifMatch?: string } }): Promise<void> => {
+        this.calls++;
+        this.deletes.push({ name, ifMatch: opts?.conditions?.ifMatch });
+        const hook = this.beforeDelete;
+        this.beforeDelete = undefined;
+        if (hook !== undefined) await hook();
+        if (this.deleteFault !== undefined) {
+          const fault = this.deleteFault;
+          this.deleteFault = undefined;
+          throw fault;
+        }
+        const cur = this.blobs.get(name);
+        if (cur === undefined) throw azureError(404, 'BlobNotFound');
+        const ifMatch = opts?.conditions?.ifMatch;
+        if (ifMatch !== undefined && cur.etag !== ifMatch) throw azureError(412, 'ConditionNotMet');
+        this.blobs.delete(name);
       },
       getProperties: async (): Promise<unknown> => {
         this.calls++;
@@ -161,6 +190,86 @@ registryConcurrency('AzureBlobRegistryDriver (fake Azure)', () => {
   return [driverOver(container), driverOver(container)];
 });
 
+// What a delete leaves behind: on by default, since Azure Blob applies `If-Match` on a delete.
+for (const conditionalDelete of [undefined, false] as const) {
+  registryDeleteConformance(
+    `AzureBlobRegistryDriver (fake Azure, conditionalDelete: ${String(conditionalDelete)})`,
+    () => {
+      const container = new FakeContainer();
+      const driver = new AzureBlobRegistryDriver({
+        containerClient: container as unknown as ContainerClient,
+        prefix: 'cloudbitmaps',
+        now: ticking(),
+        ...(conditionalDelete === undefined ? {} : { conditionalDelete }),
+      });
+      return {
+        driver,
+        stored: async (r) => container.blobs.has(registryObjectKey('cloudbitmaps', r)),
+        plantRow: async (r, text) =>
+          container.put(registryObjectKey('cloudbitmaps', r), new TextEncoder().encode(text)),
+      };
+    },
+  );
+}
+
+describe('AzureBlobRegistryDriver — whether a delete removes the row', () => {
+  const ref = { segment: 's:v1' };
+
+  it("is on by default, the caller's to turn off, and AzureBlobStorage passes it through", () => {
+    const containerClient = new FakeContainer() as unknown as ContainerClient;
+    const caps = (conditionalDelete?: boolean) =>
+      new AzureBlobRegistryDriver({
+        containerClient,
+        ...(conditionalDelete === undefined ? {} : { conditionalDelete }),
+      }).capabilities().conditionalDelete;
+    expect(caps()).toBe(true);
+    expect(caps(false)).toBe(false);
+    expect(
+      new AzureBlobStorage({ containerClient, conditionalDelete: false }).registry.capabilities()
+        .conditionalDelete,
+    ).toBe(false);
+    expect(
+      new AzureBlobStorage({ containerClient }).registry.capabilities().conditionalDelete,
+    ).toBe(true);
+    expect(() => caps('yes' as never)).toThrow(ValidationError);
+  });
+
+  it('deletes with ifMatch set to the ETag it read', async () => {
+    const container = new FakeContainer();
+    const d = driverOver(container);
+    const { token } = await d.create(ref, { currentGen: 0 });
+    const { key, blob } = soleBlob(container);
+    await d.delete(ref, token);
+    expect(container.deletes).toEqual([{ name: key, ifMatch: blob.etag }]);
+    expect(container.blobs.size).toBe(0);
+  });
+
+  it('a 412 on the delete is a lost race: WriteConflictError, and the written row stays', async () => {
+    const container = new FakeContainer();
+    const [a, b] = [driverOver(container), driverOver(container)];
+    const { token } = await a.create(ref, { currentGen: 0 });
+    let swapped = '';
+    container.beforeDelete = async () => {
+      swapped = (await b.compareAndSwap(ref, token, { currentGen: 1 })).token;
+    };
+    await expect(a.delete(ref, token)).rejects.toBeInstanceOf(WriteConflictError);
+    expect(await a.get(ref)).toMatchObject({ currentGen: 1, token: swapped });
+  });
+
+  // A 409 on a delete is not a lost race (a snapshot or a lease is in the way), so it is not retried as one.
+  it('a 409 on the delete reaches the caller, untried again, and the row stays', async () => {
+    const container = new FakeContainer();
+    const d = driverOver(container);
+    const { token } = await d.create(ref, { currentGen: 0 });
+    container.deleteFault = azureError(409, 'SnapshotsPresent');
+    const err = await d.delete(ref, token).catch((e: unknown) => e);
+    expect(err).not.toBeInstanceOf(WriteConflictError);
+    expect((err as { statusCode?: number }).statusCode).toBe(409);
+    expect(container.deletes).toHaveLength(1);
+    expect(await d.get(ref)).toMatchObject({ token });
+  });
+});
+
 describe('AzureBlobRegistryDriver — construction + Azure specifics', () => {
   const ref = { segment: 's:v1' };
 
@@ -177,7 +286,7 @@ describe('AzureBlobRegistryDriver — construction + Azure specifics', () => {
     const containerClient = new FakeContainer() as unknown as ContainerClient;
     expect(new AzureBlobRegistryDriver({ containerClient }).capabilities()).toEqual({
       strongRead: true,
-      conditionalDelete: false,
+      conditionalDelete: true,
     });
   });
 
