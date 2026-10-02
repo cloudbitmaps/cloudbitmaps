@@ -109,9 +109,16 @@ await store.load({ segment: 'audience:imported' }, { serialized: bytes });
 - **No per-id work.** The chunks are cut out of the bitmap's own containers. What runs in JavaScript is per
   container and per byte: the structural check, which reads an array container's values once, and the checksum the
   write computes anyway.
-- **It yields, except at the start.** The input check and the native decode run before the load's first request
-  and do not yield, for a time that grows with the bitmap's bytes. After them the load yields the event loop on each
-  side of re-encoding the bitmap, and every 1,024 containers while it cuts and writes them.
+- **It yields, except for two whole-bitmap steps.** Two steps do not yield, each for a time that grows with the
+  bitmap's bytes: the input check and the native decode, which run at the call, before the load's first request;
+  and re-encoding the bitmap before the write. The load yields on each side of the re-encode, and every 1,024
+  containers while it cuts, re-checks and writes them. At the 537,403,396-byte cap they are about 270 ms and 150 ms
+  (derived: scaled from a load of 64 MiB of bitsets on an Apple M3 Pro, where they took 34 ms and 19 ms).
+- **The bytes must not change while the call runs.** A buffer that another thread is still writing (an `fs.read`
+  or a `crypto.randomFill` into it that has not finished, say) can be decoded as bytes the check never saw. The load
+  checks every container again as it writes it, so such a load throws `IntegrityError` and publishes nothing rather
+  than a generation readers refuse; but bytes that change into another valid bitmap load as that bitmap. Await the
+  write before you load the buffer.
 - **It holds more than the bitmap.** At its peak a bitmap load holds a decoded copy of the bitmap and its
   re-encoded bytes, each about the size of the serialization, on top of the bytes you passed and what the backend
   buffers of the object it writes (one 8 MiB part on S3).

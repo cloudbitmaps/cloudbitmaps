@@ -139,7 +139,8 @@ export interface CodecInterface {
    *
    * `whole: true` means the bytes must be exactly one bitmap: anything after its end is refused too. A load passes
    * it for a caller's bytes, so two serializations back to back are refused rather than loaded as the first. A
-   * stored chunk is read without it.
+   * stored chunk is read without it. A codec must honour it: core cannot read the format, so it relies on the codec
+   * for this refusal, and a codec that ignores the option loads two concatenated bitmaps as the first of them.
    */
   safeDeserialize(
     bytes: Uint8Array,

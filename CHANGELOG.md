@@ -41,22 +41,30 @@ so, and so do the module headers in the code.
   The chunks are then cut from the bitmap's own containers, per container and per byte and never per id, and the
   generation is byte for byte the one the same ids write. A golden object written by the id path before this change
   is reproduced by every input; a property test and a fixed corpus (run containers of 2 to 2,048 runs, the run
-  cookie at 65,536 containers) hold it over every container shape; and every existing test file that loads runs a
-  second time with its loads handed `{ serialized }`, the segments it seeds through the fixture loader included,
+  cookie at 65,536 containers) hold it over every container shape; and every existing test file that calls a load
+  runs a second time with its loads handed `{ serialized }`, the segments it seeds through the fixture loader included,
   except the few that depend on when a load reads its ids (they inject races from inside the id stream, or count
   the id path's own yields). Every guarantee of an id load holds: write-once, the fenced publish, `guard`, `keep`,
   the empty refusal, encryption and the same `LoadResult`.
 
   A test counts the per-id routes during a 12M-member load from a bitmap (iteration, building from values, the id
-  split) and finds none. The load yields the event loop on each side of re-encoding the bitmap and every 1,024
-  containers while it writes; the input check and the native decode do not yield. `pnpm bench:load-input`
-  measures the time, and its figures are not recorded yet. `loadSegment` takes the same inputs; `LoadInput` and
-  `PortableBitmap` are the new types.
+  split) and finds none. Two whole-bitmap steps do not yield, each for a time that grows with the bytes: the input
+  check and the native decode at the call, and the re-encode before the write; at the cap they are about 270 ms and
+  150 ms (derived: scaled from a 64 MiB load of bitsets on an Apple M3 Pro). Around and after them the load yields
+  the event loop, and every 1,024 containers while it writes. As it writes, it checks every container of the bitmap
+  again, so a buffer another thread was still writing during the call (an unfinished `fs.read` into it, say), which
+  can decode into bytes the first check never saw, throws `IntegrityError` and publishes nothing. `pnpm
+  bench:load-input` measures the time, and its figures are not recorded yet. `loadSegment` takes the same inputs
+  (the trailing-byte refusal with a codec that honours `whole`, below); `LoadInput` and `PortableBitmap` are the new
+  types.
 
 - **`CodecBitmap.encodeChunks?()` and `EncodedChunk`, for a codec author.** A codec that implements it hands a load
   its chunks as stored bytes, ascending, each exactly what `fromValues` of that chunk's low 16 bits, `optimize()` and
   `serialize()` give, which is how a bitmap load writes without touching an id. Optional: a codec without it loads a
-  bitmap input through its ids. The roaring codec implements it.
+  bitmap input through its ids. The roaring codec implements it. `CodecInterface.safeDeserialize` takes an optional
+  third argument, `{ whole }`, which a load passes for a caller's bytes: a codec must then refuse bytes after the
+  bitmap's end, since core cannot read the format, and one that ignores the option loads two concatenated bitmaps
+  as the first of them. A codec with the two-argument signature still type-checks.
 
 - **`AzureBlobStorage` can time each read: `readTimeoutMs`, off unless set.** With it set, every read request the
   Azure Blob storage and registry drivers send, a range read, a tail read's properties and its ranged download, each
