@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { CrbmReader, parseIndex } from '@/core/crbm/reader';
+import { CrbmReader, parseExtension, parseIndex } from '@/core/crbm/reader';
 import { BufferReader } from '@/core/blob';
 import { SafeBitmap } from '@/roaring-codec';
 import { assertConsistentDecode } from '@/testing/fuzz-codec';
@@ -15,8 +15,9 @@ import { CloudRoaringError } from '@/core/errors';
  *
  * The contract mirrors the fuzz targets exactly: arbitrary bytes fed through the real read path either succeed
  * self-consistently or throw a typed `CloudRoaringError`; a `RangeError`/`TypeError`/native crash/hang is a bug,
- * and so is a decode that is not self-consistent (see {@link assertConsistentDecode}). Three corpora mirror the three
- * targets: raw serialized bitmaps (native deserializer), raw index regions, and whole `.crbm` objects.
+ * and so is a decode that is not self-consistent (see {@link assertConsistentDecode}). Four corpora mirror the four
+ * targets: raw serialized bitmaps (native deserializer), raw index regions, raw extension-block sections, and whole
+ * `.crbm` objects.
  */
 const MAX_BYTES = 16 * 1024 * 1024;
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -38,6 +39,11 @@ function deserialize(bytes: Uint8Array): void {
 /** The index-parser target's contract: raw index bytes → self-consistent entries or a typed error. */
 function parseRawIndex(bytes: Uint8Array): void {
   parseIndex(bytes, 1 << 24, MAX_BYTES); // fixed generous payload-region end, matching fuzz/targets/crbm-index.mjs
+}
+
+/** The extension-block target's contract: raw sections → a metadata record (or none) or a typed error. */
+function parseRawExtension(bytes: Uint8Array): void {
+  parseExtension(bytes, undefined);
 }
 
 /** The `.crbm` reader target's contract: open → getChunk → safeDeserialize. */
@@ -63,12 +69,13 @@ describe('fuzz crash-reproducer replay (the committed regression corpus)', () =>
   const deser = reproducers('safe-deserialize');
   const crbm = reproducers('crbm-reader');
   const index = reproducers('crbm-index');
+  const ext = reproducers('crbm-ext');
 
-  if (deser.length === 0 && crbm.length === 0 && index.length === 0) {
+  if (deser.length + crbm.length + index.length + ext.length === 0) {
     // No reproducers committed yet — the campaign has found nothing that violates the contract. This
     // placeholder keeps the suite honest (the mechanism is wired) until a crash is promoted here.
     it('has no outstanding fuzz crash reproducers to replay', () => {
-      expect(deser.length + crbm.length + index.length).toBe(0);
+      expect(deser.length + crbm.length + index.length + ext.length).toBe(0);
     });
   }
 
@@ -89,6 +96,18 @@ describe('fuzz crash-reproducer replay (the committed regression corpus)', () =>
       expect(() => {
         try {
           parseRawIndex(bytes);
+        } catch (err) {
+          if (!(err instanceof CloudRoaringError)) throw err;
+        }
+      }).not.toThrow();
+    });
+  }
+
+  for (const { name, bytes } of ext) {
+    it(`crbm-ext reproducer ${name} raises only a typed error`, () => {
+      expect(() => {
+        try {
+          parseRawExtension(bytes);
         } catch (err) {
           if (!(err instanceof CloudRoaringError)) throw err;
         }

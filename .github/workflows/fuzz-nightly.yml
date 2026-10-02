@@ -51,7 +51,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [deser, crbm, index]
+        target: [deser, crbm, index, ext]
     env:
       # Per-target budget: the weekly deep soak (Sunday cron) gets 60 min; the nightly gets 10 min; the
       # workflow-file smoke run gets 60s, because it is checking that the steps still RUN, not hunting bugs; a

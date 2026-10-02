@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import fc from 'fast-check';
 import { BufferReader, BufferSink } from '@/core/blob';
 import { crc32c } from '@/core/crbm/crc32c';
 import { CrbmReader, parseExtension } from '@/core/crbm/reader';
@@ -154,6 +155,40 @@ describe('.crbm 1.1 writer', () => {
     const over = utf8(JSON.stringify(metadataOf(MAX_METADATA_BYTES + 1)));
     const hostile = spliceBlock(base, extensionBlock(section(EXT_SECTION_METADATA, over)));
     await expect(open(hostile)).rejects.toThrow(/1025B, over the 1024B cap/);
+  });
+});
+
+describe('.crbm 1.1 round trip, over generated metadata', () => {
+  // Keys and string values drawn from the whole of Unicode, lone surrogates excluded by the rules themselves;
+  // numbers from every finite double, -0 included (canonical JSON writes it as 0).
+  const text = fc.string({ unit: 'grapheme', maxLength: 12 });
+  const record = fc.dictionary(
+    text.filter((k) => k.length > 0 && k !== '__proto__'),
+    fc.oneof(text, fc.double({ noNaN: true, noDefaultInfinity: true })),
+    { minKeys: 1, maxKeys: 12 },
+  );
+  const fits = (m: Record<string, unknown>): boolean =>
+    utf8(JSON.stringify(m)).length <= MAX_METADATA_BYTES &&
+    Object.keys(m).every((k) => utf8(k).length <= 128);
+
+  it('what is written is what is read, whatever order the keys came in, cleartext and encrypted', async () => {
+    const dek = randomBytes(32);
+    await fc.assert(
+      fc.asyncProperty(record.filter(fits), async (metadata) => {
+        const expected = JSON.parse(JSON.stringify(metadata)) as unknown;
+        const reversed = Object.fromEntries(Object.entries(metadata).reverse());
+        const a = await writeCrbm(CHUNKS, { generation: GEN, metadata });
+        expect(await writeCrbm(CHUNKS, { generation: GEN, metadata: reversed })).toEqual(a);
+        expect((await open(a)).metadata).toEqual(expected);
+        const sealed = await writeCrbm(CHUNKS, {
+          generation: GEN,
+          metadata,
+          crypto: cryptoFor(dek),
+        });
+        expect((await open(sealed, cryptoFor(dek))).metadata).toEqual(expected);
+      }),
+      { numRuns: 150 },
+    );
   });
 });
 
