@@ -361,6 +361,30 @@ describe('a load reuses the row it read, and every fence on that row still holds
     expect(await idsOf(w.storage, 3)).toEqual([1, 2, 3, 4]);
   });
 
+  it('a publish still in flight when it reports a fault finds its object there when it lands', async () => {
+    const w = world();
+    await threeLoads(w);
+    // The compare-and-swap times out on the client and lands at the store afterwards, with the row unchanged
+    // meanwhile: the case a delete on an ambiguous outcome would turn into a pointer over a missing object.
+    let late: Parameters<MemoryRegistryDriver['compareAndSwap']> | undefined;
+    const slow = new Proxy(w.registry, {
+      get(t, p, rx) {
+        const value = Reflect.get(t, p, rx) as unknown;
+        if (p !== 'compareAndSwap') return value;
+        return (...args: Parameters<MemoryRegistryDriver['compareAndSwap']>) => {
+          late = args;
+          return Promise.reject(new TransientError('timed out; the request may still land'));
+        };
+      },
+    });
+    await expect(
+      loadSegment(SEG, [1, 2, 3, 4], { ...w.deps, registry: slow }, { keep: 9 }),
+    ).rejects.toBeInstanceOf(TransientError);
+    await w.registry.compareAndSwap(...late!); // it lands
+    expect((await w.registry.get(SEG))!.currentGen).toBe(3);
+    expect(await idsOf(w.storage, 3)).toEqual([1, 2, 3, 4]);
+  });
+
   it('an unguarded first load refused by a drop at its publish deletes its object', async () => {
     const w = world();
     let fired = false;
