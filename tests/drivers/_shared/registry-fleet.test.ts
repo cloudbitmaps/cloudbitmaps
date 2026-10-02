@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { IntegrityError, UnsupportedError, WriteConflictError } from '@/core/errors';
 import type { Entropy } from '@/core/determinism';
 import type { IRegistryDriver, SegmentRef, Token } from '@/core/ports';
-import { destroySegment } from '@/core/erasure';
+import { destroySegment, dropSegment } from '@/core/erasure';
 import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
 import { registryObjectKey } from '@/drivers/_shared/object-registry-keys';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
@@ -137,6 +137,26 @@ describe.each(harnesses)('%s across the schema-2 cut-over', (_, make) => {
     await expect(h.registry.compareAndSwap(REF, '7', { currentGen: 1 })).rejects.toBeInstanceOf(
       WriteConflictError,
     );
+  });
+
+  it('refuses a stamped row whose token is in no form, live or tombstoned, naming its key', async () => {
+    const h = make();
+    const record = { segment: 's', currentGen: 4, status: 'active', createdAt: 10, updatedAt: 20 };
+    for (const [schemaVersion, token] of [
+      [2, '8'], // a bare counter: every token this build writes has a write part
+      [1, `8.${'0'.repeat(16)}`], // a write part on a row no build of this one wrote
+      [2, '1e3'],
+    ] as const) {
+      for (const deleted of [false, true]) {
+        await h.plant(JSON.stringify({ schemaVersion, deleted, record: { ...record, token } }));
+        const where = `schema ${schemaVersion} ${token} deleted=${deleted}`;
+        await expect(h.registry.get(REF), where).rejects.toThrow(/token is not one .*s\.reg$/);
+        const drain = async (): Promise<void> => {
+          for await (const r of h.registry.list()) void r;
+        };
+        await expect(drain(), where).rejects.toBeInstanceOf(IntegrityError);
+      }
+    }
   });
 
   it('re-creates over a tombstone 0.11 wrote', async () => {
@@ -419,9 +439,29 @@ describe('a runtime without Web Crypto', () => {
 });
 
 /** A crypto-shred takes the summary with the wrapped keys: nothing of the generation's description survives it. */
-describe('a crypto-shred clears the summary', () => {
+describe.each([
+  ['MemoryRegistryDriver', (): IRegistryDriver => new MemoryRegistryDriver()],
+  ...harnesses.map(([name, make]) => [name, (): IRegistryDriver => make().registry] as const),
+])('a crypto-shred clears the summary: %s', (_, makeRegistry) => {
+  it('dropSegment of a cleartext segment leaves a tombstone with no summary', async () => {
+    const registry = makeRegistry();
+    await registry.create(REF, {
+      currentGen: 2,
+      summary: { generation: 2, cardinality: 7, metadata: { who: 'a person' } },
+    });
+    const result = await dropSegment(
+      REF,
+      { registry, storage: new MemoryStorageDriver() },
+      { confirmSegment: 's' },
+    );
+    expect(result.dropped).toBe(true);
+    const row = await registry.get(REF);
+    expect(row).toMatchObject({ status: 'destroyed', currentGen: 2 });
+    expect(row!.summary).toBeUndefined();
+  });
+
   it('leaves a destroyed row with no wrapped keys and no summary', async () => {
-    const registry = new MemoryRegistryDriver();
+    const registry = makeRegistry();
     await registry.create(REF, {
       currentGen: 2,
       wrappedDeks: [{ keyId: 'k', wrapped: 'd3JhcHBlZA==' }],
