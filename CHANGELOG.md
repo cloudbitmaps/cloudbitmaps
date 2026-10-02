@@ -13,6 +13,11 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **The CloudShell calibration script no longer stops in silence while it installs Node.** CloudShell ships Node 20, so
+  the script installs Node 22 with nvm. nvm is not written for `set -eu`: sourcing `nvm.sh` returns 3 while no default
+  Node is installed, and the script's `set -e` ended it there after printing "installing Node 22 with nvm", every time.
+  It now runs nvm with those options off, restores them, and checks the result itself, stopping with a message if Node
+  22 is still missing, and with another if nvm itself cannot be downloaded. A test runs the script's own bootstrap under its own shell options against an `nvm.sh` that returns 3.
 - **A reader's memory bound counted less than its parsed index held.** `cache.readerMaxBytes` weighs each open
   reader by a fixed size per index entry, 160 B, and a measurement of the heap found 186–200 B retained per entry,
   so a cache could hold more index than its budget said. The reader now keeps its parsed index as typed arrays
