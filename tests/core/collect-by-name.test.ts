@@ -362,7 +362,7 @@ describe('keep of 2 or more, and a number the check could not prove free, still 
 });
 
 describe('every sixteenth generation lists, which bounds what the name-only pass leaves', () => {
-  it('lists on generations 16 and 32 and on no other', async () => {
+  it.each([0, 1])('lists on generations 16 and 32 and on no other, with keep %i', async (keep) => {
     const w = world();
     const listed: number[] = [];
     for (let g = 0; g < 34; g++) {
@@ -371,6 +371,7 @@ describe('every sixteenth generation lists, which bounds what the name-only pass
         SEG,
         Array.from({ length: g + 1 }, (_, i) => i),
         w.deps,
+        { keep },
       );
       if (w.storageCalls.list !== undefined) listed.push(g);
     }
@@ -378,22 +379,38 @@ describe('every sixteenth generation lists, which bounds what the name-only pass
     expect(listed).toEqual([16, 32]);
   });
 
-  it('collects what an earlier keep left behind on the next listing, and not before', async () => {
-    const w = world();
-    await loadMany(w, 6, { keep: 9 }); // 0 to 5, all kept
-    await loadMany(w, 9); // 6 to 14 by name: each takes the generation two below it
-    expect(await generations(w.memory)).toEqual([0, 1, 2, 3, 13, 14]);
-    await loadMany(w, 1); // 15: by name
-    expect(await generations(w.memory)).toEqual([0, 1, 2, 3, 14, 15]);
-    const r = await loadSegment(
-      SEG,
-      Array.from({ length: 17 }, (_, i) => i),
-      w.deps,
-    ); // 16: listed
-    expect(r).toMatchObject({ generation: 16, published: true });
-    expect(await generations(w.memory)).toEqual([15, 16]);
-    expect([...r.collected].sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 14]);
-  });
+  // What the by-name loads leave of generations 0 to 5, kept in full by an earlier keep, and what the listing takes.
+  it.each([
+    {
+      keep: 1,
+      beforeThe16th: [0, 1, 2, 3, 14, 15], // each load took the generation two below it
+      after: [15, 16],
+      collected: [0, 1, 2, 3, 14],
+    },
+    {
+      keep: 0,
+      beforeThe16th: [0, 1, 2, 3, 4, 15], // each load took the generation just below it
+      after: [16],
+      collected: [0, 1, 2, 3, 4, 15],
+    },
+  ])(
+    'collects what an earlier keep left behind on the next listing, and not before, with keep $keep',
+    async ({ keep, beforeThe16th, after, collected }) => {
+      const w = world();
+      await loadMany(w, 6, { keep: 9 }); // 0 to 5, all kept
+      await loadMany(w, 10, { keep }); // 6 to 15 by name
+      expect(await generations(w.memory)).toEqual(beforeThe16th);
+      const r = await loadSegment(
+        SEG,
+        Array.from({ length: 17 }, (_, i) => i),
+        w.deps,
+        { keep },
+      ); // 16: listed
+      expect(r).toMatchObject({ generation: 16, published: true });
+      expect(await generations(w.memory)).toEqual(after);
+      expect([...r.collected].sort((a, b) => a - b)).toEqual(collected);
+    },
+  );
 });
 
 describe("a name-only delete keeps invariant 4's re-proof", () => {
@@ -626,6 +643,129 @@ describe('a load that repairs a segment whose current object is gone lists, and 
   });
 });
 
+/** A state of a segment as a collection pass would have started from it: what was in the bucket, and the pointer. */
+type Landed = { present: number[]; pointer: number };
+
+/**
+ * `w`'s drivers, instrumented to see the instant a publish landed: the state as the row write returns, before any
+ * collection starts, and the listings made after it (the collection's, not the numbering's).
+ */
+function landing(w: World) {
+  const at: { landed: Landed | undefined; lists: number } = { landed: undefined, lists: 0 };
+  const snapshot = async (): Promise<void> => {
+    const row = await w.registry.get(SEG);
+    at.landed = { present: await generations(w.memory), pointer: row?.currentGen ?? -1 };
+  };
+  let registry: IRegistryDriver = w.registry;
+  for (const method of ['create', 'compareAndSwap']) {
+    const inner = registry;
+    registry = new Proxy(inner, {
+      get(t, p, rx) {
+        const value: unknown = Reflect.get(t, p, rx);
+        if (typeof value !== 'function') return value;
+        const fn = value as (...a: unknown[]) => unknown;
+        if (p !== method) return (...a: unknown[]) => fn.apply(t, a);
+        return async (...a: unknown[]) => {
+          const out = await fn.apply(t, a);
+          await snapshot();
+          return out;
+        };
+      },
+    });
+  }
+  const storage = new Proxy(w.memory, {
+    get(t, p, rx) {
+      const value: unknown = Reflect.get(t, p, rx);
+      if (typeof value !== 'function') return value;
+      const fn = value as (...a: unknown[]) => unknown;
+      if (p === 'list' && at.landed !== undefined) at.lists += 1;
+      return (...a: unknown[]) => fn.apply(t, a);
+    },
+  }) as IStorageDriver;
+  return {
+    deps: { storage, registry, codec: roaringCodec },
+    /** Forget the last publish, before a load. */
+    reset: (): void => {
+      at.landed = undefined;
+      at.lists = 0;
+    },
+    landed: (): Landed | undefined => at.landed,
+    /** The listings made since the publish landed. */
+    listsSinceLanding: (): number => at.lists,
+  };
+}
+
+/** One step of a history: a load, a refusal, or something that happens to the bucket or the row between loads. */
+type Op =
+  | { kind: 'load'; size: number; keep: number }
+  | { kind: 'refused'; keep: number }
+  | { kind: 'crash'; above: number }
+  | { kind: 'stray'; pick: number }
+  | { kind: 'rollback'; pick: number }
+  | { kind: 'retire' };
+
+/** The steps a history is drawn from. `rollbacks` is the weight of a rollback onto any generation below the pointer. */
+function ops(rollbacks: number): fc.Arbitrary<Op> {
+  const keeps = fc.constantFrom(0, 1, 1, 1, 2, 9);
+  return fc.oneof(
+    {
+      weight: 8,
+      arbitrary: fc.record({
+        kind: fc.constant('load' as const),
+        size: fc.integer({ min: 1, max: 6 }),
+        keep: keeps,
+      }),
+    },
+    { weight: 1, arbitrary: fc.record({ kind: fc.constant('refused' as const), keep: keeps }) },
+    {
+      weight: 3,
+      arbitrary: fc.record({
+        kind: fc.constant('crash' as const),
+        above: fc.integer({ min: 1, max: 3 }),
+      }),
+    },
+    {
+      weight: 3,
+      arbitrary: fc.record({ kind: fc.constant('stray' as const), pick: fc.nat(20) }),
+    },
+    ...(rollbacks === 0
+      ? []
+      : [
+          {
+            weight: rollbacks,
+            arbitrary: fc.record({ kind: fc.constant('rollback' as const), pick: fc.nat(20) }),
+          },
+        ]),
+    { weight: 1, arbitrary: fc.constant({ kind: 'retire' as const }) },
+  );
+}
+
+/** Apply a step that is not a load to `w`'s bucket and row. Returns whether a rollback took effect. */
+async function disturb(w: World, o: Exclude<Op, { kind: 'load' | 'refused' }>): Promise<boolean> {
+  const row = await w.registry.get(SEG);
+  const current = row?.currentGen ?? -1;
+  const present = await generations(w.memory);
+  if (o.kind === 'crash') {
+    await orphan(w.memory, Math.max(current, ...present) + o.above);
+  } else if (o.kind === 'stray') {
+    const free = Array.from({ length: Math.max(current, 0) }, (_, g) => g).filter(
+      (g) => !present.includes(g),
+    );
+    const at = free[o.pick % Math.max(free.length, 1)];
+    if (at !== undefined) await orphan(w.memory, at);
+  } else if (o.kind === 'rollback') {
+    const below = present.filter((g) => g < current);
+    const target = below[o.pick % Math.max(below.length, 1)];
+    if (target === undefined) return false;
+    await rollbackSegment(SEG, target, { storage: w.memory, registry: w.registry });
+    return true;
+  } else {
+    for (const g of present) await w.memory.delete({ ...SEG, generation: g });
+    if (row !== null) await w.registry.delete(SEG);
+  }
+  return false;
+}
+
 /**
  * What a listing pass would have deleted, at the instant the load's publish landed, against what the load deleted.
  * Whatever the history (loads that were refused, a crashed load's orphan above the pointer, a stray below it, a
@@ -635,145 +775,94 @@ describe('a load that repairs a segment whose current object is gone lists, and 
  * object was removed from outside is the one case where a name takes what a listing would keep.
  */
 describe('collecting by name never deletes what a listing would keep (property)', () => {
-  type Op =
-    | { kind: 'load'; size: number; keep: number }
-    | { kind: 'refused'; keep: number }
-    | { kind: 'crash'; above: number }
-    | { kind: 'stray'; pick: number }
-    | { kind: 'rollback'; back: number }
-    | { kind: 'retire' };
-  const keeps = fc.constantFrom(0, 1, 1, 1, 2, 9);
-  const op: fc.Arbitrary<Op> = fc.oneof(
-    {
-      weight: 8,
-      arbitrary: fc.record({
-        kind: fc.constant('load' as const),
-        size: fc.integer({ min: 1, max: 6 }),
-        keep: keeps,
-      }),
-    },
-    {
-      weight: 1,
-      arbitrary: fc.record({ kind: fc.constant('refused' as const), keep: keeps }),
-    },
-    {
-      weight: 2,
-      arbitrary: fc.record({
-        kind: fc.constant('crash' as const),
-        above: fc.integer({ min: 1, max: 3 }),
-      }),
-    },
-    {
-      weight: 2,
-      arbitrary: fc.record({ kind: fc.constant('stray' as const), pick: fc.nat(20) }),
-    },
-    {
-      weight: 1,
-      arbitrary: fc.record({
-        kind: fc.constant('rollback' as const),
-        back: fc.integer({ min: 1, max: 3 }),
-      }),
-    },
-    { weight: 1, arbitrary: fc.constant({ kind: 'retire' as const }) },
-  );
-
   /** A bucket holding exactly `present`, and a row pointing at `pointer`: the state a pass would have started from. */
-  async function forked(present: number[], pointer: number) {
+  async function forked(landed: Landed) {
     const storage = new MemoryStorageDriver();
-    for (const generation of present) {
+    for (const generation of landed.present) {
       await storage.putImmutable({ ...SEG, generation }, (sink) => sink.write(new Uint8Array([1])));
     }
     const registry = new MemoryRegistryDriver();
-    await registry.create(SEG, { currentGen: pointer });
+    await registry.create(SEG, { currentGen: landed.pointer });
     return { storage, registry };
   }
 
   it('deletes a subset of what a listing pass deletes from the same state, and never the pointer', async () => {
     let byName = 0;
     let compared = 0;
+    let rolled = 0;
     await fc.assert(
-      fc.asyncProperty(fc.array(op, { maxLength: 40 }), async (ops) => {
+      fc.asyncProperty(fc.array(ops(3), { maxLength: 40 }), async (history) => {
         const w = world();
-        // The state at the instant the publish landed, taken as the row write returns, before collection starts.
-        type Landed = { present: number[]; pointer: number };
-        const at: { landed: Landed | undefined } = { landed: undefined };
-        const snapshot = async (): Promise<void> => {
-          const row = await w.registry.get(SEG);
-          at.landed = { present: await generations(w.memory), pointer: row?.currentGen ?? -1 };
-        };
-        const landedNow = (): Landed | undefined => at.landed;
-        let registry: IRegistryDriver = w.registry;
-        for (const method of ['create', 'compareAndSwap']) {
-          const inner = registry;
-          registry = new Proxy(inner, {
-            get(t, p, rx) {
-              const value: unknown = Reflect.get(t, p, rx);
-              if (typeof value !== 'function') return value;
-              const fn = value as (...a: unknown[]) => unknown;
-              if (p !== method) return (...a: unknown[]) => fn.apply(t, a);
-              return async (...a: unknown[]) => {
-                const out = await fn.apply(t, a);
-                await snapshot();
-                return out;
-              };
-            },
-          });
-        }
-        let listsAfterLanding = 0;
-        const storage = new Proxy(w.memory, {
-          get(t, p, rx) {
-            const value: unknown = Reflect.get(t, p, rx);
-            if (typeof value !== 'function') return value;
-            const fn = value as (...a: unknown[]) => unknown;
-            if (p === 'list' && at.landed !== undefined) listsAfterLanding += 1;
-            return (...a: unknown[]) => fn.apply(t, a);
-          },
-        }) as IStorageDriver;
-        const deps = { storage, registry, codec: roaringCodec };
-
-        for (const o of ops) {
-          const row = await w.registry.get(SEG);
-          const current = row?.currentGen ?? -1;
-          const present = await generations(w.memory);
-          if (o.kind === 'load' || o.kind === 'refused') {
-            at.landed = undefined;
-            listsAfterLanding = 0;
-            const ids = o.kind === 'load' ? Array.from({ length: o.size }, (_, i) => i) : [];
-            const r = await loadSegment(SEG, ids, deps, { keep: o.keep });
-            const landed = landedNow();
-            if (r.published && landed !== undefined) {
-              const after = await generations(w.memory);
-              const deleted = landed.present.filter((g) => !after.includes(g));
-              const listing = await forked(landed.present, landed.pointer);
-              const listed = await gcOrphanGenerations(SEG, listing, { keep: o.keep });
-              for (const g of deleted) expect(listed, `deleted ${g}`).toContain(g);
-              expect(after).toContain(landed.pointer);
-              if (listsAfterLanding === 0 && o.keep <= 1) byName += 1;
-              compared += 1;
-            }
-          } else if (o.kind === 'crash') {
-            await orphan(w.memory, Math.max(current, ...present) + o.above);
-          } else if (o.kind === 'stray') {
-            const free = Array.from({ length: Math.max(current, 0) }, (_, g) => g).filter(
-              (g) => !present.includes(g),
-            );
-            const free0 = free[o.pick % Math.max(free.length, 1)];
-            if (free0 !== undefined) await orphan(w.memory, free0);
-          } else if (o.kind === 'rollback') {
-            const target = present.filter((g) => g < current).at(-o.back);
-            if (target !== undefined) {
-              await rollbackSegment(SEG, target, { storage: w.memory, registry: w.registry });
-            }
-          } else {
-            for (const g of present) await w.memory.delete({ ...SEG, generation: g });
-            if (row !== null) await w.registry.delete(SEG);
+        const seen = landing(w);
+        for (const o of history) {
+          if (o.kind !== 'load' && o.kind !== 'refused') {
+            if (await disturb(w, o)) rolled += 1;
+            continue;
+          }
+          seen.reset();
+          const ids = o.kind === 'load' ? Array.from({ length: o.size }, (_, i) => i) : [];
+          const r = await loadSegment(SEG, ids, seen.deps, { keep: o.keep });
+          const landed = seen.landed();
+          if (r.published && landed !== undefined) {
+            const after = await generations(w.memory);
+            const deleted = landed.present.filter((g) => !after.includes(g));
+            const listed = await gcOrphanGenerations(SEG, await forked(landed), { keep: o.keep });
+            for (const g of deleted) expect(listed, `deleted ${g}`).toContain(g);
+            expect(after).toContain(landed.pointer);
+            if (seen.listsSinceLanding() === 0 && o.keep <= 1) byName += 1;
+            compared += 1;
           }
         }
       }),
       { numRuns: 200 },
     );
-    // Not vacuous: the histories did collect by name, and often.
+    // Not vacuous: the histories did collect by name, often, and rollbacks took effect.
     expect(compared).toBeGreaterThan(300);
     expect(byName).toBeGreaterThan(150);
+    expect(rolled).toBeGreaterThan(15);
+  });
+});
+
+/**
+ * How long a segment can go without a listing. Every generation divisible by the cadence lists, so a segment that
+ * loads cleanly lists at least once in that many published loads, however its keep changes and whatever crashed loads
+ * and refused neighbours leave behind. A rollback is left out: it moves the pointer down, and the loads that then
+ * take the numbers above it count from there.
+ */
+describe('a listing comes at least every sixteenth published load, without rollbacks (property)', () => {
+  it('never lets more published loads than the cadence pass without one', async () => {
+    let worst = 0;
+    await fc.assert(
+      // A run of clean loads first, so the histories include long stretches that nothing interrupts.
+      fc.asyncProperty(
+        fc.integer({ min: 0, max: 40 }),
+        fc.array(ops(0), { maxLength: 40 }),
+        async (clean, rest) => {
+          const w = world();
+          const seen = landing(w);
+          let since = 0; // published loads since the last listing
+          const history: Op[] = [
+            ...Array.from({ length: clean }, (): Op => ({ kind: 'load', size: 1, keep: 1 })),
+            ...rest,
+          ];
+          for (const o of history) {
+            if (o.kind !== 'load' && o.kind !== 'refused') {
+              await disturb(w, o);
+              if (o.kind === 'retire') since = 0; // the name starts over at generation 0
+              continue;
+            }
+            seen.reset();
+            const ids = o.kind === 'load' ? Array.from({ length: o.size }, (_, i) => i) : [];
+            const r = await loadSegment(SEG, ids, seen.deps, { keep: Math.min(o.keep, 1) });
+            if (!r.published) continue;
+            since = seen.listsSinceLanding() > 0 ? 0 : since + 1;
+            worst = Math.max(worst, since);
+            expect(since).toBeLessThanOrEqual(LIST_COLLECTION_CADENCE);
+          }
+        },
+      ),
+      { numRuns: 100 },
+    );
+    expect(worst).toBeGreaterThanOrEqual(LIST_COLLECTION_CADENCE - 1); // runs as long as the bound allows were drawn
   });
 });

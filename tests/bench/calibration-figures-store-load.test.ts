@@ -309,6 +309,24 @@ describe('a run that timed store.load()', () => {
       ).toMatch(/do not add up/);
     });
 
+    it('with a load that read the pointer fewer times than a first load must, or a listing no first load makes', () => {
+      // A first load reads three times and checks once: a record of three requests names one read too few.
+      expect(
+        refused((r) => {
+          const l = r.phases.load.perLoad[0];
+          if (l !== undefined) l.get = 3;
+        }),
+      ).toMatch(/at least three pointer reads and a check/);
+      // The run's own command tally, which the loads' records must agree with: a listing is a command a first load
+      // never sends.
+      expect(
+        refused((r) => {
+          r.cost.ops.byCommand.ListObjectsV2Command =
+            (r.cost.ops.byCommand.ListObjectsV2Command ?? 0) + 1;
+        }),
+      ).toMatch(/the object or its parts and the pointer, and no listing/);
+    });
+
     it('with requests no stage accounts for, or fewer than it billed', () => {
       expect(
         refused((r) => {
