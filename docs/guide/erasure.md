@@ -82,15 +82,19 @@ reaches them.
 
 ## Who stops seeing the id, and when
 
-The erasure is immediate in storage and immediate in the store that performed it: that store drops what it had cached
-about the segment before returning, so it cannot keep answering from memory. Every other store is a different
+The erasure is immediate in storage, and immediate in the store that performed it for every read that starts after it
+returns: that store drops what it had cached about the segment before returning, so it cannot keep answering from
+memory. A read of that store already in progress moves to the rewritten generation, but the chunks it had already
+requested are the old generation's, so it can still yield the id from one of them: up to 8 chunks for `iterate` and
+`count`, and up to `concurrency` keys for a combine ([a long call can describe two
+instants](reading.md#how-soon-a-reader-sees-a-new-load)). Every other store is a different
 question, in this process or another. This library ships nothing that could answer it for you: there is no daemon,
 no bus, and no connection between two stores that happen to point at the same bucket.
 
 | | when the id stops being readable |
 |---|---|
 | storage | on return: the generation holding it is deleted |
-| the store that performed the erasure | on return, and its pins then fail |
+| the store that performed the erasure | on return, for every read that starts after it, and its pins then fail; a read already in progress there can still yield it from a chunk it had requested before |
 | another store, with a registry and a `cache.genTtlMs` above 0 | within `cache.genTtlMs` (default 2 s), while the registry can be read; an outage of the registry stretches it ([how soon a reader sees a new load](reading.md#how-soon-a-reader-sees-a-new-load)) |
 | a pinned handle (`seg.pin()`) in another store | **no bound**: until that store's reader cache evicts the pin's reader and its chunk cache evicts the chunks the pin decoded, or `store.invalidate(ref)` is called there |
 | another store with **no registry** (built on a bare `IStorageDriver` instead of a backend), with `cache: { genTtlMs: 0 }`, or on a pre-built `StorageChunkSource` built with **no clock** | **no bound**: only when its caches happen to let the segment go, or something tells it |
