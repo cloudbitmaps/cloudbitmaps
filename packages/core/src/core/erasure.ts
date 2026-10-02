@@ -279,8 +279,9 @@ export interface DropResult {
  * but the object exists, and it holds the complete set. A single list-then-delete misses it entirely. The re-sweep
  * converges because the tombstone *is* a hard fence on **publishing**, so only loads already under way can write
  * and they are finite. One that writes after the last pass deletes its own object when its publish is refused, as a
- * refused load does under a `destroyed` row; only one whose process stops in between leaves it behind, for a re-run
- * of the drop, and `generationsRemaining` cannot report an object written after this call returned.
+ * refused load does under a `destroyed` row; only one whose process stops in between, or whose publish fails without
+ * a definite answer (a lost response, a timeout), leaves it behind, for a re-run of the drop, and
+ * `generationsRemaining` cannot report an object written after this call returned.
  *
  * **When "reads as empty" starts being true.** Not instantly, for a store that has already read this segment: a
  * resolved generation is cached and decoded chunks sit in the cache, so an in-flight reader can answer from

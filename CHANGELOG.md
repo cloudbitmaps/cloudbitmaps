@@ -74,7 +74,8 @@ so, and so do the module headers in the code.
   listing), 7 GET-class (five row reads, the guard's tail read, the check) and a delete, where it was 4, 9 and a
   delete; a segment's first load is 3 and 6, where it was 4 and 7, and its second the same. GCS makes the same
   counts; Azure Blob one GET-class request more, for its two-request tail read. An encrypted segment's load reads its
-  row once more. `costReport()` and `estimateCost()` price a load at those counts, the check at one request on every
+  row once more, which the cost model leaves out: it prices a cleartext segment's load, as its docs now say.
+  `costReport()` and `estimateCost()` price a load at those counts, the check at one request on every
   backend whatever `requestsPerPointerRead` and `requestsPerSizedRead` say: $17.80 per million steady single-part
   loads at the default prices, where it was $23.60, and $17.40 for a segment's first load, where it was $22.80.
 
@@ -83,7 +84,8 @@ so, and so do the module headers in the code.
     before a `dropSegment` (or a retention sweep's drop) now writes its object, is refused at the publish
     (`published: false`, `reason: 'superseded'`) and deletes that object itself, since every generation of a
     `destroyed` segment is garbage; it threw `ValidationError` before writing. Only a load whose process stops
-    between its write and its refusal leaves the object behind, for a re-run of the drop. An encrypted segment, or
+    between its write and its refusal, or whose publish fails without a definite answer (a lost response, a
+    timeout), leaves the object behind, for a re-run of the drop. An encrypted segment, or
     a load that found no row, is refused with `ValidationError` before it writes, as before. An `*Into` whose
     destination is dropped while it runs now throws `WriteConflictError` ("Re-read the destination and re-run"),
     where it threw `ValidationError`; a re-run gets the `ValidationError`.
@@ -91,7 +93,11 @@ so, and so do the module headers in the code.
     while another writer created the segment encrypted is refused at its publish with `KeyUnavailableError` and
     told to re-run with the keystore; before, a narrow window let such a publish land. A keystore load that mints a
     key while another writer publishes first is refused with `ValidationError`, whose message now says to re-run
-    the write, which then uses the segment's key.
+    the write, which then uses the segment's key. Nor does a cleartext object stay in an encrypted segment's bucket:
+    a definite refusal (a guard, a `false` from the fenced publish, or a refusal the publish throws) deletes the
+    load's object when the fresh row carries key material and the load wrote cleartext, as when a cleartext segment
+    is dropped, purged and re-created encrypted while a load streams its ids. A thrown refusal now reclaims the
+    object on the same terms as a `false` one; a transient fault, which may still land, leaves it.
   - **A number whose object was deleted can be taken again.** It always could be (a refused load's, or a number an
     erasure freed with nothing above it); now a load also numbers under an object that survives above the pointer,
     after an erasure of the generations above a rolled-back pointer or a collection pass that stopped part-way. A
@@ -102,8 +108,11 @@ so, and so do the module headers in the code.
   - **Disaster recovery.** After a registry restore, re-running the load takes the number after the restored
     pointer while no object holds it, so the first re-runs can number below the generations published after the
     restore point and leave them above the pointer until a load's check meets one; the guide says to load until
-    the pointer is above them. Because a re-run load takes again the numbers collection freed, step 9's restart or
-    invalidation of every store is what clears a store that read the segment before the disaster.
+    the pointer is above them. The re-runs below the strays count toward `keep` too, so keeping the restored
+    generation as a rollback target takes a `keep` of at least the highest stray minus the restored pointer, plus
+    one, where the guide said one more than the number of strays. Because a re-run load takes again the numbers
+    collection freed, step 9's restart or invalidation of every store is what clears a store that read the segment
+    before the disaster.
   - **The calibration harness** expects each load's new shape, and its projection of a load's GET-class requests is
     now `4 + 2 × retryBound`: the default workload's bound is 364 PUT-class and 106,583 GET-class requests,
     $0.044453, and its expected bill 142 PUT-class and 92,907 GET-class, $0.037873.

@@ -219,7 +219,10 @@ export interface Workload {
    * `store.load()` is then about $17.80 per million. A segment whose index outgrows the tail read makes one more
    * GET, a publish that loses a race to another writer reads the pointer again, and a load whose check finds the
    * number taken (a crashed load's object, or the generations a rollback left above the pointer) lists the
-   * segment's objects to number past them, one more PUT-class request on S3.
+   * segment's objects to number past them, one more PUT-class request on S3. The counts are a cleartext segment's: an
+   * encrypted segment's load reads its row once more, after its ids and before it unwraps the key, one more GET
+   * ($0.40 per million at the default prices) that the model leaves out, beside the key-management calls it does not
+   * price either.
    */
   readonly requestsPerLoad?: number;
   /**

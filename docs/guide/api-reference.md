@@ -170,7 +170,7 @@ the result (`'empty'`, `'min-cardinality'` or `'min-retained'`), or another writ
 There are two ways to get there first. Another load may have taken the same generation number, so this one wrote
 nothing (`size: 0`). Or the segment's registry row changed while the load was writing: another load published, a
 retention change, a rollback or an erasure wrote the row, or the row was deleted. A refused load deletes the object
-it wrote while the row is unchanged, gone or dropped, and leaves it in the bucket once another write has changed the
+it wrote while the row is unchanged, gone, dropped or crypto-shredded, and leaves it in the bucket once another write has changed the
 row: once a generation above it is current, collection counts it within `keep` like any other generation below the
 pointer.
 The `store.load` row lists the guards and what throws instead.

@@ -118,7 +118,9 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   each. A segment whose index outgrows the tail read makes one more, a publish that loses a race
   to another writer reads the pointer again, and a load whose check finds the number taken (a crashed load's object,
   or the generations a rollback left above the pointer) lists the segment to number past it, one more PUT-class
-  request. Loads are cheap by construction: a thousand 100-part loads a month is about $0.52.
+  request. These are a cleartext segment's counts: an encrypted segment's load reads its row once more, after its
+  ids and before it unwraps the key, one more GET ($0.40 per million at the default prices), which the model leaves
+  out, as it leaves out the key-management calls an encrypted load makes. Loads are cheap by construction: a thousand 100-part loads a month is about $0.52.
 - **The pointer refresh**: a long-lived reader re-reads a segment's pointer when it reads the segment after
   `cache.genTtlMs` has passed. So each hot segment costs at most one GET per `genTtlMs`, 1,314,000 a month at the
   default 2 s, about $0.53, and the whole term at most one GET per point read. Pass `hotSegments` for the segments

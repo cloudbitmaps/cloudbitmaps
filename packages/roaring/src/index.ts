@@ -1436,7 +1436,8 @@ export class CloudRoaring {
    * was writing or still consuming its ids, can still write its object, so a single sweep can miss it — this call
    * re-sweeps and then reports whatever it still could not remove rather than returning a result that looks like a
    * clean drop. A load that writes after the last sweep deletes its own object once its publish is refused; only one
-   * whose process stops in between leaves it, for a re-run of the drop.
+   * whose process stops in between, or whose publish fails without a definite answer (a lost response, a timeout),
+   * leaves it, for a re-run of the drop.
    *
    * Reads become empty within `cache.genTtlMs` (default 2 s), not instantly: a store that had already read this
    * segment may answer from its cached generation + cached chunks until that window lapses, or, while the registry
