@@ -120,7 +120,8 @@ await store.load({ segment: 'audience:imported' }, { serialized: bytes });
   `{ bitmap }` works with either.
 - **A byte array is not ids.** A `Uint8Array`, `Uint8ClampedArray` or `Buffer` passed as ids is refused with
   `ValidationError`, because each byte would be loaded as an id. Pass bytes as `{ serialized }`, and ids as a
-  `Uint32Array` or an array of numbers. Every other typed array is ids.
+  `Uint32Array` or an array of numbers. Every other typed array is ids. The refusal is made when the load runs: a byte
+  array is an iterable of numbers, so the compiler accepts one as ids.
 - **Parts of one segment, built separately.** Combine them in memory with `RoaringBitmap32.orMany(parts)` and load
   the result once. When the parts cover disjoint ranges of the id space (by the high 16 bits, say) the union copies
   containers rather than merging them. Parts built in different processes have to reach one process first, as
@@ -128,8 +129,9 @@ await store.load({ segment: 'audience:imported' }, { serialized: bytes });
 
 <!-- load-input:start -->
 **How fast a bitmap loads.** `pnpm bench:load-input` measures a load from ids against one from a bitmap, on five sets
-up to 14.4M members, and on one container layout at 10 % and at 90 % density, where a path that works per id pays
-nine times as much and one that does not stays flat. Its figures have not been measured yet. What is checked on every
+up to 14.4M members, and on one container layout at 10 % and at 90 % density. That pair holds nine times the members
+in the same containers, so a path that works per id is expected to cost about nine times as much on the second, and
+one that does not is expected to cost about the same. Its figures have not been measured yet. What is checked on every
 change is that a 12M-member load from a bitmap calls none of the per-id routes: no iteration, no build from values,
 no id split (`tests/roaring/load-no-per-id.test.ts`).
 <!-- load-input:end -->

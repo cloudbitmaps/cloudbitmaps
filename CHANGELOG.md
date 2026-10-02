@@ -28,19 +28,30 @@ so, and so do the module headers in the code.
   `{ serialized: bitmap.serialize('portable') }`, serialized once at the call, so changing the bitmap afterwards does
   not change what is loaded. `{ serialized }` is one 32-bit bitmap in the portable Roaring format, the one the
   `'roaring'` export writes. A bare `RoaringBitmap32` from the `roaring` this package uses, passed where ids go, is
-  loaded the same way. Every bitmap input takes one path: the bytes are capped at 537,403,396 bytes (more than any canonical
-  32-bit bitmap serializes to), must hold exactly one bitmap, are checked structurally the way every stored chunk is,
-  and are decoded by the safe deserializer, all before the load's first request, so malformed or oversized bytes,
-  and bytes after the bitmap's end (two serializations concatenated, say), throw `ValidationError` and nothing is
-  read or written. The chunks are then cut from the bitmap's own containers, per container and per byte
-  and never per id, and the generation is byte for byte the one the same ids write: a golden object written by the
-  id path before this change is reproduced by every input, a property test holds it over sparse, dense, run,
-  run/array-tie, boundary, operation-result and deserialized sets, and the existing load tests run a second time
-  with their loads handed `{ serialized }`, all but the one that counts the id path's own event-loop yields. Every guarantee of an id load holds: write-once, the fenced publish,
-  `guard`, `keep`, the empty refusal, encryption and the same `LoadResult`. A test counts the per-id routes during a
-  12M-member load from a bitmap (iteration, building from values, the id split) and finds none; `pnpm
-  bench:load-input` measures the time, and its figures are not recorded yet. `loadSegment` takes the same inputs;
-  `LoadInput` and `PortableBitmap` are the new types.
+  loaded the same way.
+
+  Every bitmap input takes one path, all of it before the load's first request: the bytes are capped at
+  537,403,396 (more than any canonical 32-bit bitmap serializes to), must hold exactly one bitmap, are checked
+  structurally the way every stored chunk is, and are decoded by the safe deserializer. Malformed or oversized
+  bytes, and bytes after the bitmap's end (two serializations concatenated, say), throw `ValidationError`, and
+  nothing is read or written. The bytes are read through the typed array's own accessors, and a
+  `SharedArrayBuffer`'s are copied first; a `{ bitmap }` that can report its size is refused over the cap before it
+  serializes.
+
+  The chunks are then cut from the bitmap's own containers, per container and per byte and never per id, and the
+  generation is byte for byte the one the same ids write. A golden object written by the id path before this change
+  is reproduced by every input; a property test and a fixed corpus (run containers of 2 to 2,048 runs, the run
+  cookie at 65,536 containers) hold it over every container shape; and every existing test file that loads runs a
+  second time with its loads handed `{ serialized }`, the segments it seeds through the fixture loader included,
+  except the few that depend on when a load reads its ids (they inject races from inside the id stream, or count
+  the id path's own yields). Every guarantee of an id load holds: write-once, the fenced publish, `guard`, `keep`,
+  the empty refusal, encryption and the same `LoadResult`.
+
+  A test counts the per-id routes during a 12M-member load from a bitmap (iteration, building from values, the id
+  split) and finds none. The load yields the event loop on each side of re-encoding the bitmap and every 1,024
+  containers while it writes; the input check and the native decode do not yield. `pnpm bench:load-input`
+  measures the time, and its figures are not recorded yet. `loadSegment` takes the same inputs; `LoadInput` and
+  `PortableBitmap` are the new types.
 
 - **`CodecBitmap.encodeChunks?()` and `EncodedChunk`, for a codec author.** A codec that implements it hands a load
   its chunks as stored bytes, ascending, each exactly what `fromValues` of that chunk's low 16 bits, `optimize()` and

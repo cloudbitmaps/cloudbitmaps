@@ -330,9 +330,15 @@ function guideSection() {
   return start < 0 || end < 0 ? null : guide.slice(start, end);
 }
 
-/** Every figure the section quotes: `N ms` and `N.N×`. */
+/**
+ * Every time or ratio the section quotes, in any form a note would write one: `270 ms`, `270ms`, `0.27 s`,
+ * `22 ns`, `3 µs`, `200 milliseconds`, `4x`, `4.2×`. Counts, sizes and shares (`12M`, `28 MB`, `10 %`) are not
+ * figures this bench produces, and are left alone.
+ */
+const FIGURE =
+  /\b\d+(?:\.\d+)?\s?(?:milliseconds?|microseconds?|nanoseconds?|seconds?|ms|µs|us|ns|s|x)\b|\b\d+(?:\.\d+)?\s?×/g;
 function quotedFigures(section) {
-  return new Set([...section.matchAll(/\b\d+(?:\.\d+)?(?: ms\b|×)/g)].map((m) => m[0]));
+  return new Set([...section.matchAll(FIGURE)].map((m) => m[0]));
 }
 
 function checkProblems() {

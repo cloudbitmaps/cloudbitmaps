@@ -153,8 +153,8 @@ a variable, and `new Segment(…)` throws `ValidationError`.
 
 ### Load a generation — `store.load(ref, input, { allowEmpty?, guard?, keep?, audit? })`
 
-The whole write path in one call: take the next generation number, stream `input` into one immutable `.crbm` object, check it is plausible, move the pointer, and collect
-what the move superseded, keeping the newest `keep` generations below the new pointer (default `1`; a non-negative integer, and anything else —
+The whole write path in one call: take the next generation number, stream `input` into one immutable `.crbm`
+object, check it is plausible, move the pointer, and collect what the move superseded, keeping the newest `keep` generations below the new pointer (default `1`; a non-negative integer, and anything else —
 negative, fractional, `NaN`, infinite — throws `ValidationError` before anything is written). The `*Into` verbs take
 the same `keep`, validated the same way. Returns a
 `LoadResult` — `{ generation, published, reason?, size, sha256, chunkCount, cardinality, cardinalityBefore,
@@ -182,9 +182,10 @@ format, or `{ bitmap }`, any `PortableBitmap` (an object with `serialize('portab
 bare `RoaringBitmap32` from the `roaring` this package uses, passed as ids, is loaded as `{ bitmap }`. Bitmap bytes are
 capped at 537,403,396 bytes (more than any canonical 32-bit bitmap serializes to), must hold exactly one bitmap, and
 are checked structurally and decoded by the safe deserializer before the first request; malformed or oversized
-bytes, and bytes after the bitmap's end, throw `ValidationError` with nothing read or written. The chunks are then cut from the
-bitmap's own containers, with no per-id work, and the generation is byte for byte the one the same ids write. A
-`Uint8Array`, `Uint8ClampedArray` or `Buffer` passed as ids throws `ValidationError`: pass bytes as `{ serialized }`.
+bytes, and bytes after the bitmap's end, throw `ValidationError` with nothing read or written. The chunks are then
+cut from the bitmap's own containers, with no per-id work, and the generation is byte for byte the one the same ids
+write. A `Uint8Array`, `Uint8ClampedArray` or `Buffer` passed as ids throws `ValidationError` when the load runs
+(the type accepts one, since a byte array is an iterable of numbers): pass bytes as `{ serialized }`.
 Anything that is none of these throws `ValidationError` too ([what a load accepts](loading.md#what-a-load-accepts)).
 
 ### The segment verbs (the ~90% of daily use)

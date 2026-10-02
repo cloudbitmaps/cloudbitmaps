@@ -106,6 +106,31 @@ describe('bench:load-input:check, before anything is measured', () => {
     expect(check(d).status).toBe(1);
   });
 
+  it.each([
+    'takes 270ms',
+    'takes 0.27 s',
+    'is 4x faster',
+    'is 4.2× faster',
+    'costs 22 ns per member',
+    'costs 3 µs per container',
+    'takes about 200 milliseconds',
+    'takes 1.5 seconds',
+  ])('fails on a figure in any unit or ratio form: "%s"', (figure) => {
+    const d = copy();
+    replaceSection(d, `These figures have not been measured yet. A 12M load ${figure}.`);
+    expect(check(d).status).toBe(1);
+  });
+
+  it('passes the counts, sizes and shares a section legitimately states', () => {
+    const d = copy();
+    replaceSection(
+      d,
+      'These figures have not been measured yet. Five sets: a 12M-member set, 245 chunks at 10 % and 90 %, ' +
+        '1,048,576 ids, about 28 MB, 14.4M members, 5 runs, 65,536 containers.',
+    );
+    expect(check(d)).toMatchObject({ status: 0 });
+  });
+
   it('fails when the guide stops saying the figures are unmeasured', () => {
     const d = copy();
     replaceSection(d, 'A load from a bitmap is fast.');
