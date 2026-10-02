@@ -136,8 +136,16 @@ export interface CodecInterface {
    * disjoint, cardinalities matching the bits), because the engine trusts `has`, `size`, iteration order and
    * {@link CodecBitmap.maximum} on what comes back, and a decoder that only bounds its reads guarantees none of
    * them.
+   *
+   * `whole: true` means the bytes must be exactly one bitmap: anything after its end is refused too. A load passes
+   * it for a caller's bytes, so two serializations back to back are refused rather than loaded as the first. A
+   * stored chunk is read without it.
    */
-  safeDeserialize(bytes: Uint8Array, maxBytes: number): CodecBitmap;
+  safeDeserialize(
+    bytes: Uint8Array,
+    maxBytes: number,
+    options?: { readonly whole?: boolean },
+  ): CodecBitmap;
 }
 
 /**

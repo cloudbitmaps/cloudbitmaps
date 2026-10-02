@@ -14,10 +14,12 @@ import { ValidationError, isIntegrityError } from './errors';
 
 /**
  * Anything that serializes itself to portable Roaring: `roaring`'s `RoaringBitmap32` is one. Typed by shape, so
- * no codec's own class appears in a signature.
+ * no codec's own class appears in a signature. A bitmap that can also say how large its serialization is
+ * (`getSerializationSizeInBytes`) is asked first, so one over the cap is refused before it is serialized.
  */
 export interface PortableBitmap {
   serialize(format: 'portable'): Uint8Array;
+  getSerializationSizeInBytes?(format: 'portable'): number;
 }
 
 /**
@@ -35,10 +37,12 @@ export type LoadInput =
   | { readonly bitmap: PortableBitmap };
 
 /**
- * The largest portable serialization a canonical 32-bit Roaring bitmap can have: every one of the 65,536
- * containers a full bitset, behind an 8-byte header and 8 bytes of header per container. About 512.5 MiB.
+ * No canonical 32-bit Roaring bitmap serializes to more than this. Under the run cookie, the larger of the two
+ * headers, it is a 4-byte cookie, 8,192 bytes of run flags and 8 bytes of header for each of the 65,536
+ * containers, and no container's body is over 8,192 bytes: a bitset is 8,192, and a run container is kept only
+ * where it is smaller. 537,403,396 bytes, about 512.5 MiB.
  */
-export const MAX_SERIALIZED_LOAD_BYTES = 8 + 65_536 * (8 + 8_192);
+export const MAX_SERIALIZED_LOAD_BYTES = 4 + 8_192 + 8 * 65_536 + 65_536 * 8_192;
 
 /** A bitmap input, decoded into the codec's own bitmap: written from its chunks, never id by id. */
 export class DecodedLoadInput {
@@ -50,12 +54,46 @@ function tagOf(value: object): string {
   return Object.prototype.toString.call(value).slice(8, -1);
 }
 
+/** The typed arrays' own accessors, which read the view itself whatever a subclass or another realm defines. */
+const VIEW = Object.getPrototypeOf(Uint8Array.prototype) as object;
+const viewGetter = (name: 'buffer' | 'byteOffset' | 'byteLength'): ((this: unknown) => unknown) =>
+  Object.getOwnPropertyDescriptor(VIEW, name)?.get as (this: unknown) => unknown;
+const bufferOf = viewGetter('buffer');
+const byteOffsetOf = viewGetter('byteOffset');
+const byteLengthOf = viewGetter('byteLength');
+
+/**
+ * The bytes a `Uint8Array` really holds, as a plain view the check and the decoder both read: never through a
+ * getter a subclass overrides, so the two cannot be shown different bytes. A detached buffer holds none.
+ */
+function plainView(bytes: Uint8Array, what: string): Uint8Array {
+  let buffer: ArrayBufferLike;
+  let offset: number;
+  let length: number;
+  try {
+    buffer = bufferOf.call(bytes) as ArrayBufferLike;
+    offset = byteOffsetOf.call(bytes) as number;
+    length = byteLengthOf.call(bytes) as number;
+  } catch {
+    throw new ValidationError(`${what} must be a Uint8Array of portable Roaring bytes`);
+  }
+  return length === 0 ? new Uint8Array(0) : new Uint8Array(buffer, offset, length);
+}
+
+function overCap(what: string, length: number): ValidationError {
+  return new ValidationError(
+    `${what} is ${length} bytes, more than any canonical 32-bit bitmap serializes to ` +
+      `(${MAX_SERIALIZED_LOAD_BYTES}). Call runOptimize() on the bitmap before serializing it.`,
+  );
+}
+
 /**
  * Check a load's input and decode a bitmap input, before the load makes any request.
  *
  * @returns ids unchanged, to be consumed lazily by the write, or the decoded bitmap.
- * @throws {ValidationError} for a byte array passed as ids, malformed or oversized bytes, a `{ bitmap }` without a
- * working `serialize('portable')`, and anything that is none of the three inputs.
+ * @throws {ValidationError} for a byte array passed as ids; bytes that are malformed, over the cap, or followed by
+ * more bytes; a `{ bitmap }` with no `serialize` method, or whose `serialize('portable')` returns no `Uint8Array`;
+ * and anything that is none of the three inputs. An error the caller's own `serialize` throws propagates as it is.
  */
 export function prepareLoadInput(
   input: LoadInput,
@@ -83,7 +121,12 @@ export function prepareLoadInput(
     if (typeof bitmap !== 'object' || bitmap === null || typeof bitmap.serialize !== 'function') {
       throw new ValidationError(`{ bitmap } needs an object with serialize('portable')`);
     }
-    return decode(bitmap.serialize('portable'), "{ bitmap }'s serialize('portable')", codec);
+    const what = "{ bitmap }'s serialize('portable')";
+    if (typeof bitmap.getSerializationSizeInBytes === 'function') {
+      const size = bitmap.getSerializationSizeInBytes('portable');
+      if (typeof size === 'number' && size > MAX_SERIALIZED_LOAD_BYTES) throw overCap(what, size);
+    }
+    return decode(bitmap.serialize('portable'), what, codec);
   }
   throw new ValidationError(
     `a load takes ids (an iterable of integers), { serialized } or { bitmap }, as the only key; got an object ` +
@@ -95,16 +138,13 @@ function decode(bytes: unknown, what: string, codec: CodecInterface): DecodedLoa
   if (typeof bytes !== 'object' || bytes === null || tagOf(bytes) !== 'Uint8Array') {
     throw new ValidationError(`${what} must be a Uint8Array of portable Roaring bytes`);
   }
-  const length = (bytes as Uint8Array).byteLength;
-  if (length > MAX_SERIALIZED_LOAD_BYTES) {
-    throw new ValidationError(
-      `${what} is ${length} bytes, over the ${MAX_SERIALIZED_LOAD_BYTES} a 32-bit bitmap's canonical ` +
-        `encoding can take. Call runOptimize() on the bitmap before serializing it.`,
-    );
-  }
+  const view = plainView(bytes as Uint8Array, what);
+  if (view.byteLength > MAX_SERIALIZED_LOAD_BYTES) throw overCap(what, view.byteLength);
+  // Bytes in a SharedArrayBuffer are copied: another thread could change them between the check and the decode.
+  const own = tagOf(view.buffer) === 'SharedArrayBuffer' ? new Uint8Array(view) : view;
   try {
     return new DecodedLoadInput(
-      codec.safeDeserialize(bytes as Uint8Array, MAX_SERIALIZED_LOAD_BYTES),
+      codec.safeDeserialize(own, MAX_SERIALIZED_LOAD_BYTES, { whole: true }),
     );
   } catch (err) {
     // The codec reports bytes it refuses as corrupt; here they are the caller's input, not a stored object.

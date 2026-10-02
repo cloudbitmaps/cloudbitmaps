@@ -98,11 +98,14 @@ await store.load({ segment: 'audience:imported' }, { serialized: bytes });
 
 - **It is the same load.** The generation is byte for byte the one the same ids write, and everything above holds
   unchanged: the guard and the empty refusal, `keep`, the fenced publish, encryption and the result.
-- **It is checked first.** The bytes are size-capped (at 537,395,208 bytes, the largest a 32-bit bitmap's canonical
-  encoding can take; call `runOptimize()` before serializing a bitmap that is over it), checked structurally the way
+- **It is checked first.** The bytes are size-capped at 537,403,396 bytes, more than any canonical 32-bit bitmap
+  serializes to (call `runOptimize()` before serializing a bitmap that is over it), checked structurally the way
   every stored chunk is, and decoded by the safe deserializer, all before the load's first request. Bytes that fail
   are a `ValidationError`, and nothing is read or written. `{ bitmap }` is checked the same way: it is serialized once,
   at the call, so changing the bitmap after the call does not change what is loaded.
+- **One buffer is one bitmap.** Bytes after the bitmap's last container are refused with `ValidationError`, so two
+  serializations concatenated into one buffer are refused rather than loaded as the first of them. An empty buffer,
+  or a detached one, is the empty bitmap.
 - **No id passes through JavaScript.** The chunks are cut out of the bitmap's own containers: the work is per
   container and per byte (the check, then the checksum the write computes anyway), never per id.
 - **A bare `RoaringBitmap32` passed where ids go takes the same path**, when it comes from the copy of `roaring` that

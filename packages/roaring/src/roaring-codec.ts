@@ -44,18 +44,31 @@ export class SafeBitmap implements CodecBitmap {
   /**
    * Cap the size, check the structure, then deserialize with the **portable** format.
    * Throws `IntegrityError` if the input exceeds `maxBytes`, is not a well-formed portable bitmap, or fails to
-   * decode — the native addon is never handed unbounded, malformed or unsafe-format input.
+   * decode — the native addon is never handed unbounded, malformed or unsafe-format input. With `whole`, bytes
+   * after the bitmap's last container are refused too; without it they are ignored, as the native decoder ignores
+   * them.
    *
    * The structural check is what makes the decoded bitmap's answers mean anything. The native deserializer
    * bounds its reads and checks nothing else, so bytes of the right length and the wrong shape (containers or
    * values out of order, overlapping runs, a cardinality that disagrees with the bits) decode into a bitmap
    * whose `maximum()`, `has()` and `size` are wrong, and some of those shapes crash the process when used.
    */
-  static safeDeserialize(bytes: Uint8Array, maxBytes: number): SafeBitmap {
+  static safeDeserialize(
+    bytes: Uint8Array,
+    maxBytes: number,
+    options: { readonly whole?: boolean } = {},
+  ): SafeBitmap {
     if (bytes.length > maxBytes) {
       throw new IntegrityError(`serialized bitmap is ${bytes.length}B, exceeds cap ${maxBytes}B`);
     }
-    checkPortableLayout(bytes);
+    const end = checkPortableLayout(bytes);
+    if (options.whole === true && end !== bytes.byteLength) {
+      throw new IntegrityError(
+        `portable roaring: ${bytes.byteLength - end} bytes follow the bitmap's last container, which ends at ` +
+          `byte ${end}. One buffer holds one bitmap: to load several as one segment, combine them first ` +
+          `(RoaringBitmap32.orMany) and serialize the result.`,
+      );
+    }
     try {
       return new SafeBitmap(RoaringBitmap32.deserialize(bytes, DeserializationFormat.portable));
     } catch (err) {
@@ -194,5 +207,6 @@ export function bitmapAsLoadInput(input: LoadInput): LoadInput {
 export const roaringCodec: CodecInterface = {
   empty: () => SafeBitmap.empty(),
   fromValues: (values) => SafeBitmap.fromValues(values),
-  safeDeserialize: (bytes, maxBytes) => SafeBitmap.safeDeserialize(bytes, maxBytes),
+  safeDeserialize: (bytes, maxBytes, options) =>
+    SafeBitmap.safeDeserialize(bytes, maxBytes, options),
 };

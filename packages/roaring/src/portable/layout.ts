@@ -109,10 +109,12 @@ export function parsePortableLayout(bytes: Uint8Array): PortableContainer[] {
  * {@link parsePortableLayout}'s check alone, for a caller that hands the bytes to another decoder afterwards and
  * so has no use for the layout: it allocates nothing per container.
  *
+ * @returns where the bitmap ends: the offset one past its last container's last byte (0 for an empty buffer). A
+ * caller that needs the buffer to be exactly one bitmap compares it with the buffer's length.
  * @throws {IntegrityError} exactly where {@link parsePortableLayout} does.
  */
-export function checkPortableLayout(bytes: Uint8Array): void {
-  walk(bytes, null);
+export function checkPortableLayout(bytes: Uint8Array): number {
+  return walk(bytes, null);
 }
 
 /** A one-container payload's header without run containers: cookie, count, `(key, cardinality - 1)`, offset. */
@@ -158,10 +160,13 @@ export function* containerPayloads(bytes: Uint8Array): Generator<EncodedChunk> {
   }
 }
 
-/** Check every container of `bytes`, appending each one's layout to `out` when there is one to append to. */
-function walk(bytes: Uint8Array, out: PortableContainer[] | null): void {
+/**
+ * Check every container of `bytes`, appending each one's layout to `out` when there is one to append to. Returns
+ * where the bitmap ends.
+ */
+function walk(bytes: Uint8Array, out: PortableContainer[] | null): number {
   const length = bytes.byteLength;
-  if (length === 0) return;
+  if (length === 0) return 0;
   const view = new DataView(bytes.buffer, bytes.byteOffset, length);
 
   if (length < 4) throw overrun(bytes, 0, 4, 'the cookie');
@@ -255,6 +260,7 @@ function walk(bytes: Uint8Array, out: PortableContainer[] | null): void {
     out?.push({ key, cardinality, kind, offset: pos });
     pos += size;
   }
+  return pos;
 }
 
 /**
