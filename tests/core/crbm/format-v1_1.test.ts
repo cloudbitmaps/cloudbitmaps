@@ -416,7 +416,9 @@ describe('.crbm 1.1 on an encrypted object', () => {
         crc32c(tampered.subarray(extStart, indexOffset - 8)),
         true,
       );
-      await expect(open(tampered, cryptoFor(dek))).rejects.toThrow(/AEAD authentication failed/);
+      await expect(open(tampered, cryptoFor(dek))).rejects.toThrow(
+        /the sealed metadata does not open/,
+      );
     }
   });
 
@@ -458,6 +460,26 @@ describe('.crbm 1.1 on an encrypted object', () => {
       crypto: cryptoFor(randomBytes(32)),
     });
     await expect(open(bytes, cryptoFor(randomBytes(32)))).rejects.toBeInstanceOf(IntegrityError);
+  });
+
+  it('names the likely cause when the sealed metadata does not open: a CrbmCrypto that does not map its scope', async () => {
+    const dek = randomBytes(32);
+    const bytes = await writeCrbm(CHUNKS, {
+      generation: GEN,
+      metadata: META,
+      crypto: cryptoFor(dek),
+    });
+    // A hand-written CrbmCrypto from before 1.1 knows chunk keys and 'index' only, and gives anything else chunk 0's
+    // associated data. It still opens the index, so the failure comes at the metadata.
+    const old: CrbmCrypto = {
+      aead: new NodeAead(dek),
+      aadFor: (scope) =>
+        aadFor(REF, GEN, scope === 'index' ? 'index' : typeof scope === 'number' ? scope : 0),
+    };
+    await expect(open(bytes, old)).rejects.toBeInstanceOf(IntegrityError);
+    await expect(open(bytes, old)).rejects.toThrow(
+      /sealed metadata does not open: .*a CrbmCrypto whose aadFor does not map the 'metadata' scope/,
+    );
   });
 
   it('refuses a cleartext object opened with a key, 1.0 or 1.1, before it believes its index or metadata', async () => {

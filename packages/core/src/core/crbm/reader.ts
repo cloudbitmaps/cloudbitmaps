@@ -17,7 +17,7 @@
  * checks its trailer, its CRC32C, its sections and the metadata in them before anything trusts them, and holds payloads
  * to the bytes before it. A 1.0 object has no block, and is read exactly as before.
  */
-import { IntegrityError, UnsupportedError, ValidationError } from '../errors';
+import { IntegrityError, isIntegrityError, UnsupportedError, ValidationError } from '../errors';
 import type { BlobReader } from '../blob';
 import type { CrbmCrypto } from '../crypto';
 import { MAX_METADATA_BYTES, metadataFromBytes } from '../metadata';
@@ -583,14 +583,24 @@ function metadataSection(body: Uint8Array, crypto: CrbmCrypto | undefined): Gene
   if (body.length <= framing || body.length > framing + MAX_METADATA_BYTES) {
     extensionCorrupt(`sealed metadata of ${body.length}B is not a nonce, up to 1 KiB and a tag`);
   }
-  const plain = crypto.aead.open(
-    {
-      nonce: body.subarray(0, AEAD_NONCE_BYTES),
-      ciphertext: body.subarray(AEAD_NONCE_BYTES, body.length - AEAD_TAG_BYTES),
-      tag: body.subarray(body.length - AEAD_TAG_BYTES),
-    },
-    crypto.aadFor('metadata'),
-  );
+  let plain: Uint8Array;
+  try {
+    plain = crypto.aead.open(
+      {
+        nonce: body.subarray(0, AEAD_NONCE_BYTES),
+        ciphertext: body.subarray(AEAD_NONCE_BYTES, body.length - AEAD_TAG_BYTES),
+        tag: body.subarray(body.length - AEAD_TAG_BYTES),
+      },
+      crypto.aadFor('metadata'),
+    );
+  } catch (err) {
+    if (!isIntegrityError(err)) throw err;
+    // The index opened under the same key, so the likelier causes are these, and a reader written before format 1.1
+    // that maps only chunk keys and the index is one of them.
+    extensionCorrupt(
+      "the sealed metadata does not open: tampered bytes, a block moved from another object, or a CrbmCrypto whose aadFor does not map the 'metadata' scope",
+    );
+  }
   return metadataFromBytes(plain, extensionCorrupt);
 }
 
