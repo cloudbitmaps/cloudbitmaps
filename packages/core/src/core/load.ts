@@ -25,6 +25,7 @@ import {
   bulkLoadCrbmGeneration,
   holdsObject,
   openGenerationReader,
+  provesOwnObject,
   publishGeneration,
 } from './crbm-storage-source';
 import type { Clock } from './determinism';
@@ -391,6 +392,9 @@ export async function loadSegment(
       // concurrent writer had created meanwhile, reporting success. A guarded write therefore has to fence on
       // the ABSENCE it relied on, exactly as it fences on the pointer it relied on.
       ...(needsBefore && row === null ? { expectAbsent: true } : {}),
+      // A registry write that fails without an answer is reconciled by reading the row: the pointer at this number
+      // is this load's publish only over the object this load wrote, which one footer read proves.
+      holdsOwnObject: () => provesOwnObject(deps.storage, key, written.fingerprint),
     });
   } catch (err) {
     // A refusal the publish states by throwing is as definite as a `false`: each of these is raised before that
@@ -398,8 +402,8 @@ export async function loadSegment(
     // `destroyed` row (no fence answered first, as for an unguarded load that found no row), new key material for a
     // segment that already has a generation, and a cleartext object for a row with key material. The registries raise
     // a `ValidationError` only from checks made before a write is sent (the ref, the record or patch, the row's size
-    // cap), and never a `KeyUnavailableError`. Anything else, a transient fault above all, may still land, and keeps
-    // the object.
+    // cap), and never a `KeyUnavailableError`. Anything else may still land, and keeps the object: above all the
+    // `TransientError` of a registry write the publish could not settle by reading the row back.
     if (isValidationError(err) || err instanceof KeyUnavailableError) await reclaim();
     throw err;
   }

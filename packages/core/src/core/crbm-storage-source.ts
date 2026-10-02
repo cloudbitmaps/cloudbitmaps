@@ -19,6 +19,7 @@ import {
   CapabilityError,
   KeyUnavailableError,
   NotFoundError,
+  TransientError,
   ValidationError,
   WriteConflictError,
   isIntegrityError,
@@ -1173,6 +1174,21 @@ function refuseCleartextOntoKey(
  * The check is deliberately **conservative**: the token also changes on writes that are not supersessions at
  * all (a `setRetention`, a due-index reindex), so such a write makes a derived publish report `superseded` and
  * the caller re-derive. That costs a re-run on a rare, unrelated write; the alternative costs a segment.
+ *
+ * **The registry write is sent once, and an unanswered one is reconciled by its effect.** A `create` or
+ * `compareAndSwap` that fails with {@link TransientError} (a throttle, a lost response, a timeout) may or may not
+ * have landed, and may still be in flight. The publish reads the row once more and decides from what it holds:
+ *
+ * - the pointer names `key.generation`, on the incarnation the write was made against (the row's `createdAt`), and
+ *   `holdsOwnObject` proves the object under it the caller's: the write landed, and the publish returns `true`. Only
+ *   the writer of a write-once object publishes its number, and a number is never taken while an object holds it;
+ * - the row is still the one the write was made against (the same token, or still no row): the write may land yet,
+ *   so this throws `TransientError` and writes nothing more. A caller must not delete its object on it;
+ * - anything else: the row has moved past the state the write was conditioned on, so that write can never land, and
+ *   the publish goes on as after a lost race, from the row it just read.
+ *
+ * A failed read throws `TransientError` too. The same check of the pointer runs after a {@link WriteConflictError},
+ * so a write that landed and then met itself (a registry whose client re-sent it) is not taken for a lost race.
  */
 export async function publishGeneration(
   registry: IRegistryDriver,
@@ -1213,11 +1229,33 @@ export async function publishGeneration(
      * segment encrypted meanwhile.
      */
     cleartext?: boolean;
+    /**
+     * Whether the object under `key` is the one the caller wrote, and throws when it cannot tell. Asked only when a
+     * registry write failed and the row then names `key.generation`, to tell this publish's write from another
+     * writer's at the same number. Without it the pointer and the incarnation decide alone.
+     */
+    holdsOwnObject?: () => Promise<boolean>;
   } = {},
 ): Promise<boolean> {
+  // A row read after a write that failed, which the next attempt acts on instead of reading it again.
+  let fresh: RegistryRecord | null | undefined;
+  // The row a failed write was made against. The next attempt first checks its row for that write's effect.
+  let failedOn: RegistryRecord | null | undefined;
   for (let attempt = 0; attempt < 5; attempt++) {
     const reused = attempt === 0 && options.row !== undefined;
-    const record = reused ? (options.row ?? null) : await registry.get(key);
+    const record =
+      fresh !== undefined ? fresh : reused ? (options.row ?? null) : await registry.get(key);
+    fresh = undefined;
+    if (failedOn !== undefined) {
+      let landed: boolean;
+      try {
+        landed = await landedHere(record, failedOn, key, options.holdsOwnObject);
+      } catch (proofErr) {
+        throw outcomeUnknown(key, proofErr);
+      }
+      if (landed) return true;
+      failedOn = undefined;
+    }
     try {
       if (options.expectFrom !== undefined && record?.currentGen !== options.expectFrom) {
         // The pointer is no longer where the caller derived its content from — including the cases where the row
@@ -1306,8 +1344,21 @@ export async function publishGeneration(
       }
       return true; // created or advanced the pointer to key.generation → it is now current
     } catch (err) {
-      if (isWriteConflictError(err)) continue; // lost the race — re-read and retry
-      throw err;
+      if (isWriteConflictError(err)) {
+        failedOn = record; // lost the race, or met its own landed write: the next read says which
+        continue;
+      }
+      // Only the write itself raises a transient fault in here, and it is the one outcome that is not an answer.
+      if (!isTransientError(err)) throw err;
+      let now: RegistryRecord | null;
+      try {
+        now = await registry.get(key);
+      } catch (readErr) {
+        throw outcomeUnknown(key, err, readErr);
+      }
+      if (sameRow(now, record)) throw outcomeUnknown(key, err);
+      failedOn = record;
+      fresh = now;
     }
   }
   // Exhausted: only possible if competing writers kept advancing currentGen — which likely already satisfies
@@ -1321,6 +1372,60 @@ export async function publishGeneration(
   throw new WriteConflictError(
     `publishGeneration: contention setting currentGen for ${key.segment}`,
   );
+}
+
+/**
+ * Whether `now` shows the effect of a publish's write that was made against `before`: an active row, on the same
+ * incarnation (a `create` has none to compare), whose pointer names `key.generation`, over the caller's own object.
+ */
+async function landedHere(
+  now: RegistryRecord | null,
+  before: RegistryRecord | null,
+  key: GenKey,
+  holdsOwnObject: (() => Promise<boolean>) | undefined,
+): Promise<boolean> {
+  if (now === null || now.status === 'destroyed' || now.currentGen !== key.generation) return false;
+  if (before !== null && now.createdAt !== before.createdAt) return false;
+  return holdsOwnObject === undefined || (await holdsOwnObject());
+}
+
+/** Whether two reads of a row saw it unwritten in between: the same token, or no row both times. */
+function sameRow(a: RegistryRecord | null, b: RegistryRecord | null): boolean {
+  return a === null ? b === null : b !== null && a.token === b.token;
+}
+
+/**
+ * The error for a publish that cannot tell whether its registry write landed. Transient, so no caller treats it as
+ * a refusal and deletes the object the write may yet point the row at; a re-run numbers past that object.
+ */
+function outcomeUnknown(key: GenKey, cause: unknown, readErr?: unknown): TransientError {
+  const why =
+    readErr === undefined
+      ? ''
+      : ` and the row could not be read back (${(readErr as { name?: string } | null)?.name ?? 'error'})`;
+  return new TransientError(
+    `publish of "${key.segment}" generation ${key.generation}: whether its registry write landed is unknown` +
+      `${why}. Its object is kept, since the write may still land; re-run the write, which numbers past it.`,
+    { cause },
+  );
+}
+
+/**
+ * Whether the object under `key` is the one `fingerprint` names, from one read of its footer: false when it is another
+ * object or gone. Unlike {@link holdsObject}, a read that cannot tell throws, for a caller that must not take "could
+ * not look" for "not this object".
+ */
+export async function provesOwnObject(
+  storage: IStorageDriver,
+  key: GenKey,
+  fingerprint: string,
+): Promise<boolean> {
+  try {
+    return await CrbmReader.sameObject(storageBlobReader(storage, key), fingerprint);
+  } catch (err) {
+    if (isNotFoundError(err)) return false;
+    throw err;
+  }
 }
 
 /** What a bulk-load wrote — the driver's `{ size, sha256 }` plus a summary of the built generation. */
