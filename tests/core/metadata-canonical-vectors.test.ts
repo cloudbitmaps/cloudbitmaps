@@ -12,6 +12,8 @@ interface Vector {
   readonly input: string;
   readonly canonical: string;
   readonly canonicalUtf8Hex: string;
+  /** For a vector of numbers given by their bits: each key's IEEE-754 double, big-endian hex. */
+  readonly doubles?: Readonly<Record<string, string>>;
 }
 const { vectors } = JSON.parse(
   readFileSync(
@@ -33,11 +35,19 @@ describe('canonical metadata: the committed vectors', () => {
       'numbers',
       'strings',
       'keys',
+      'numbers',
     ]);
   });
 
   it.each(vectors.map((v) => [v.name, v] as const))('%s', (_name, v) => {
-    const canonical = canonicalMetadataJson(JSON.parse(v.input), fail);
+    const parsed = JSON.parse(v.input) as Record<string, number | string>;
+    // A vector given by bits holds the input's spelling to those exact doubles.
+    for (const [key, hex] of Object.entries(v.doubles ?? {})) {
+      const bits = Buffer.alloc(8);
+      bits.writeDoubleBE(parsed[key] as number, 0);
+      expect(`${key}=${bits.toString('hex')}`).toBe(`${key}=${hex}`);
+    }
+    const canonical = canonicalMetadataJson(parsed, fail);
     expect(canonical).toBe(v.canonical);
     const bytes = new TextEncoder().encode(canonical);
     expect(Buffer.from(bytes).toString('hex')).toBe(v.canonicalUtf8Hex);

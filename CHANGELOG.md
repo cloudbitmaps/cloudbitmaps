@@ -64,7 +64,8 @@ so, and so do the module headers in the code.
   before the index (the sections' length, their CRC32C, and `CRBX`), holding typed sections of a u32 length each.
   Section 1 is the metadata's canonical JSON, at most 1 KiB, by the same rules and in the same form as a registry
   summary's (`GenerationMetadata`): RFC 8785 for a flat object of strings and finite numbers, with vectors in
-  `tests/golden/metadata-canonical.json` for other languages to check against. On an encrypted segment its content is
+  `tests/golden/metadata-canonical.json`, RFC 8785 Appendix B's number samples among them, for other languages to
+  check against. On an encrypted segment its content is
   sealed under the segment's key like the index, bound to its namespace, segment and generation; that the block is
   there is not, so whoever can write the object can remove it. A generation without metadata is written as format
   1.0, byte for byte, so every object written so far, and every one written without metadata, is unchanged. A reader
@@ -74,8 +75,9 @@ so, and so do the module headers in the code.
   trailer, CRC, 4 KiB cap or sections do not hold, metadata that breaks a rule or is not exactly its canonical form,
   and a payload that runs into the block, and it skips a section type it does not know, so a later minor can add
   one. The reader cache's byte bound (`cache.readerMaxBytes`) counts a reader's metadata with its index. For
-  tooling: `CrbmReader`'s `metadata` is the generation's metadata, and `aadFor` takes the scope `'metadata'`; a `CrbmCrypto` of your own must map that scope as `aadFor` does to open an encrypted 1.1 object.
-  Nothing in the library writes metadata yet: `load` takes none.
+  tooling: `CrbmReader`'s `metadata` is the generation's metadata, and `aadFor` takes the scope `'metadata'`; a
+  `CrbmCrypto` of your own must map that scope as `aadFor` does to open an encrypted 1.1 object. Nothing in the
+  library writes metadata yet: `load` takes none.
 
 - **A registry record can carry a `summary` of its current generation** (`RegistryRecord.summary`, for driver
   authors). In the clear on a cleartext segment, `{ generation, cardinality, metadata? }`, with `cardinality` an
