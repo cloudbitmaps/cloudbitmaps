@@ -835,12 +835,11 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
     expect(src).toContain('text: resultsJson(results)');
     expect(src).not.toContain('JSON.stringify(results');
-    const fixture = readFileSync(
-      join(ROOT, 'tests', 'bench', 'fixtures', 'calibration-rehearsal.json'),
-      'utf8',
-    );
-    expect(fixture.match(/\.\d{10,}/g) ?? []).toEqual([]);
-    expect(processLib.resultsJson(JSON.parse(fixture))).toBe(fixture);
+    for (const name of ['calibration-rehearsal.json', 'calibration-rehearsal-discards.json']) {
+      const fixture = readFileSync(join(ROOT, 'tests', 'bench', 'fixtures', name), 'utf8');
+      expect(fixture.match(/\.\d{10,}/g) ?? [], name).toEqual([]);
+      expect(processLib.resultsJson(JSON.parse(fixture)), name).toBe(fixture);
+    }
   });
 
   // Run, not read: a check pointed at the partial file instead of the evidence passes every source-text test here.
