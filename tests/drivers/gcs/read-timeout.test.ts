@@ -289,6 +289,8 @@ interface Scenario {
   readonly counts: Counts;
   /** Requests the stub was holding open when the child printed its outcome. */
   readonly held: number;
+  /** What had reached the stub when the child printed its outcome. */
+  readonly atOutcome: Counts;
 }
 
 async function scenario(
@@ -299,9 +301,13 @@ async function scenario(
 ): Promise<Scenario> {
   const stub = await startStub(options);
   let held = -1;
+  let atOutcome: Counts = { ...stub.counts };
   try {
-    const run = await runChild(stub.endpoint, call, timeout, end, () => (held = stub.held()));
-    return { run, counts: { ...stub.counts }, held };
+    const run = await runChild(stub.endpoint, call, timeout, end, () => {
+      held = stub.held();
+      atOutcome = { ...stub.counts };
+    });
+    return { run, counts: { ...stub.counts }, held, atOutcome };
   } finally {
     await stub.close();
   }
@@ -581,6 +587,24 @@ describe('a GCS read with readTimeoutMs', () => {
         const ms = Number(run.outcome?.ms);
         expect(ms).toBeGreaterThanOrEqual(TIMEOUT - 20);
         expect(ms).toBeLessThan(TIMEOUT + SLACK_MS);
+      },
+      30_000,
+    );
+
+    it.concurrent(
+      'sends nothing after the deadline: a metadata read that keeps failing stops when the tail read does',
+      async () => {
+        // On a client whose SDK retry is on, the abandoned request would go on retrying after the read had failed.
+        const { run, counts, atOutcome } = await scenario(
+          'tail',
+          TIMEOUT,
+          { media: [416], metadata: [503] },
+          'linger=3500',
+        );
+        expect(run.code).toBe(0);
+        expect(run.outcome).toMatchObject({ error: 'TransientError' });
+        expect(atOutcome.metadata).toBeGreaterThanOrEqual(1);
+        expect(counts.metadata).toBe(atOutcome.metadata);
       },
       30_000,
     );
