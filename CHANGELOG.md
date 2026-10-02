@@ -11,6 +11,35 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Added
+
+- **`PricingProfile.storage.requestsPerPointerRead` prices a pointer read apart from a tail read.** It is the requests
+  one pointer read costs, 1 by default, and the cost model charges it for each operand of an intersection, for the
+  eight pointer reads a load makes and for each pointer refresh. `requestsPerSizedRead` keeps its name and its default
+  of 1, and now prices tail reads only: each operand's index read and the one a load makes. A pointer read is one
+  request on S3, GCS and Azure Blob alike, so every shipped backend leaves `requestsPerPointerRead` at 1; S3 and GCS
+  leave `requestsPerSizedRead` at 1 too, and an Azure Blob profile sets `requestsPerSizedRead: 2`, for its two-request
+  tail read. An Azure profile that already sets `requestsPerSizedRead: 2` is priced one request lower for each pointer
+  read, which is what an Azure pointer read now costs. A value that is not a finite number of at least 0 is refused
+  with `ValidationError`, as `requestsPerSizedRead` is.
+
+### Changed
+
+- **Azure Blob reads a registry pointer in one request, where it made two.** A pointer read was the blob's
+  properties and then a download pinned to the ETag they named; it is now one GET of the whole blob, taking the ETag
+  (the version fence) and the length from the response that carries the bytes, so the pair describes one version and a
+  concurrent overwrite is seen as the older row or the newer one, never split between two requests. The response is
+  untrusted: one that is not a `200`, that has no ETag or an empty one, that has no length, or whose length is over the
+  1 MiB row cap is refused with `IntegrityError` before a byte of its body is read, and the body is counted as it
+  arrives and refused at the first byte past its length. A refused response is let go: the SDK throws on a response
+  with no ETag or no length and leaves its socket open, and the driver aborts the request, which closes it. The read
+  asks the SDK not to re-request the rest of a body cut off part-way, so the bytes come from one response or the read
+  fails, with a `TransientError` the store's read retry repeats. An answer from a host other than the container's own,
+  which is where a client set with `retryOptions.secondaryHost` sends a retried read, is refused as transient too, so
+  the registry never takes a geo-replica's older row for the current one. A `404` is still absence. Writes, listings and the tombstoning delete are unchanged, and a tail read stays two
+  requests, since Azure Blob takes no suffix range. Price an Azure deployment with `storage.requestsPerSizedRead: 2`
+  and `requestsPerPointerRead` at its default of 1.
+
 ## [0.11.2] — 2026-10-01
 
 **Upgrade if you read from GCS.** In 0.10.0 to 0.11.1, a GCS read that the SDK retried after a 408, 429 or 5xx could

@@ -89,11 +89,12 @@ const LIST_READ_CONCURRENCY = 16;
  * This is deliberately **neither** of the two things it superficially resembles. It is not absence: the row
  * is very likely still live, just one version further on. And it is not a write conflict: the caller may be
  * a read-only `get()`, which has nothing to conflict with. Either is an easy misreading for a store that reads a
- * row in two calls, as the Azure Blob store does, which is why the signal is part of the port rather than
+ * row in two calls, metadata and then bytes pinned to it, which is why the signal is part of the port rather than
  * left to each store's judgement. {@link ObjectStoreRegistry} answers it the only way that is correct for every
  * caller: it reads again.
  *
- * Stores whose read is atomic (S3 serves bytes and `ETag` from one `GetObject`, GCS bytes and `generation` from one GET) can never raise it.
+ * Stores whose read is atomic can never raise it, and every shipped store's is: S3 serves bytes and `ETag` from one
+ * `GetObject`, GCS bytes and `generation` from one GET, and Azure Blob bytes and `ETag` from one GET.
  */
 export class ObjectVersionRaced extends Error {
   constructor(objectKey: string) {
@@ -266,7 +267,7 @@ export class ObjectStoreRegistry implements IRegistryDriver {
    * A store that pins a version to read consistently ({@link ObjectVersionRaced}) loses that pin whenever a
    * concurrent writer lands mid-read. Re-reading is the whole answer — the next read simply observes the
    * newer version — and it is bounded so a row under permanent write saturation fails typed instead of
-   * spinning. Only a store racing itself gets here; S3 never does.
+   * spinning. Only a store that reads in two calls gets here; none of the shipped stores does.
    */
   private async readRow(
     objectKey: string,

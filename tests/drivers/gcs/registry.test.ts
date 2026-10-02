@@ -160,7 +160,7 @@ describe('GcsRegistryDriver — construction + GCS specifics', () => {
     }
   });
 
-  // The cost model prices a GCS pointer read as one request (`requestsPerSizedRead: 1`): the single GET's headers
+  // The cost model prices a GCS pointer read as one request (`requestsPerPointerRead: 1`): the single GET's headers
   // carry the generation fence and the length. Held here, so the model moves if the driver does.
   it('reads a row in one request', async () => {
     const storage = new FakeGcs();

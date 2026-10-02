@@ -183,7 +183,9 @@ Two things worth knowing before you pick:
 - **Every cloud backend can host the registry itself**, so a deployment needs exactly one cloud account: storage
   generations and the pointer live in the same bucket or container. Each native registry rides its own store's
   conditional-write primitive — S3 `If-None-Match`/`If-Match`, GCS `ifGenerationMatch`, Azure
-  `If-None-Match`/`If-Match` — so the compare-and-swap is enforced by the service, not by the client. To keep
+  `If-None-Match`/`If-Match` — so the compare-and-swap is enforced by the service, not by the client. Each reads a
+  pointer in one GET, whose version fence comes back with the bytes, so a pointer read costs the same on all three. A
+  segment's tail read is one request on S3 and GCS, and two on Azure Blob, which takes no suffix range. To keep
   the pointer off the object store entirely, implement `IRegistryDriver` against a database you already run.
 - **A registry is optional only for a cleartext, read-only store**, which list-scans the bucket for the latest
   generation. Encrypted segments, the `*Into` verbs and every lifecycle helper need one.
@@ -311,8 +313,6 @@ move it up.
     refresh kept as a longer backstop, and an `expire(ref)` that costs one lookup where `invalidate` scans the cache.
   - **Retrying at one layer.** The SDKs retry throttling and the library retries it again, so one slow request can
     become a dozen; throttling belongs to the SDK's retry alone.
-  - **One request per pointer read on Azure Blob**, so its pointer reads cost what S3's and GCS's do. Azure takes no
-    suffix range, so an Azure tail read stays two requests.
 - **WASM CRoaring — research, after the loaded store.** A WebAssembly build of CRoaring as a second codec would
   remove the native addon from the install story (prebuilt binaries, musl, from-source builds on Alpine) and is
   the prerequisite for the edge-runtime item below. It is deliberately queued *behind* the loaded store's own

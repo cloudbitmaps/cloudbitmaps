@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { createServer, request, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 // Runs against Azurite from docker-compose (see docker-compose.yml): `docker compose up -d` then
 // `pnpm test:integration`. No real Azure needed. The well-known dev connection string points at the emulator
 // and skips auth; the driver takes a `ContainerClient` scoped to an already-created container.
@@ -18,7 +20,8 @@ import { storageObjectName } from '@/azure-blob/keys';
 import { CrbmStorageChunkSource, writeCrbmGeneration } from '@/core/crbm-storage-source';
 import { CloudRoaring } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
-import { NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
+import { IntegrityError, NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
+import { MAX_ROW_BYTES } from '@/drivers/_shared/object-registry';
 import type { GenKey } from '@/core/ports';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
@@ -442,5 +445,161 @@ describe('Azure conflict against the write own id (Azurite)', () => {
       WriteConflictError,
     );
     expect((await a.get(ref))?.currentGen).toBe(1);
+  });
+});
+
+/**
+ * A proxy in front of Azurite that records every request and can act while it holds an answer: it reads Azurite's
+ * whole response, runs `hold` for a GET, and only then delivers the response. A write made in `hold` lands after the
+ * service answered a read and before the reader sees a byte of it, which is the race a read made of two requests
+ * loses and a read made of one cannot.
+ */
+async function azuriteProxy(): Promise<{
+  container: ContainerClient;
+  requests: Array<{ method: string; name: string; range?: string; ifMatch?: string }>;
+  hold: { get?: (name: string) => Promise<void> };
+  close: () => Promise<void>;
+}> {
+  const target = new URL(BLOB_ENDPOINT);
+  const requests: Array<{ method: string; name: string; range?: string; ifMatch?: string }> = [];
+  const hold: { get?: (name: string) => Promise<void> } = {};
+  const header = (v: string | string[] | undefined): string | undefined =>
+    typeof v === 'string' ? v : undefined;
+  const server: Server = createServer((inReq, inRes) => {
+    const name = decodeURIComponent((inReq.url ?? '').split('?')[0]!);
+    const method = inReq.method ?? '';
+    requests.push({
+      method,
+      name,
+      range: header(inReq.headers['x-ms-range']) ?? header(inReq.headers.range),
+      ifMatch: header(inReq.headers['if-match']),
+    });
+    const out = request(
+      {
+        host: target.hostname,
+        port: target.port,
+        method,
+        path: inReq.url,
+        headers: inReq.headers,
+      },
+      (res) => {
+        void (async () => {
+          const chunks: Buffer[] = [];
+          for await (const c of res) chunks.push(c as Buffer);
+          if (method === 'GET') await hold.get?.(name);
+          inRes.writeHead(res.statusCode ?? 502, res.headers);
+          inRes.end(Buffer.concat(chunks));
+        })();
+      },
+    );
+    inReq.pipe(out);
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as AddressInfo).port;
+  const proxied = CONN.replace(
+    /BlobEndpoint=[^;]*;/,
+    `BlobEndpoint=http://127.0.0.1:${port}${target.pathname};`,
+  );
+  return {
+    container: BlobServiceClient.fromConnectionString(proxied).getContainerClient(CONTAINER),
+    requests,
+    hold,
+    close: async () => {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}
+
+describe('AzureBlobRegistryDriver: a pointer read is one request (Azurite)', () => {
+  let proxy: Awaited<ReturnType<typeof azuriteProxy>>;
+  beforeEach(async () => {
+    proxy = await azuriteProxy();
+  });
+  afterEach(async () => {
+    await proxy.close();
+  });
+  const ref = { segment: 'one-request' };
+  const fresh = () => {
+    const prefix = `${RUN}/reg-one/${n++}`;
+    return {
+      prefix,
+      viaProxy: new AzureBlobRegistryDriver({
+        containerClient: proxy.container,
+        prefix,
+        now: ticking(),
+      }),
+      direct: new AzureBlobRegistryDriver({ containerClient: container, prefix, now: ticking() }),
+    };
+  };
+
+  it('reads a row with one GET of the whole blob, and an absent one with one GET too', async () => {
+    const { viaProxy } = fresh();
+    expect(await viaProxy.get(ref)).toBeNull();
+    expect(proxy.requests.map((r) => [r.method, r.range, r.ifMatch])).toEqual([
+      ['GET', undefined, undefined],
+    ]);
+    await viaProxy.create(ref, { currentGen: 3 });
+    proxy.requests.length = 0;
+    expect(await viaProxy.get(ref)).toMatchObject({ currentGen: 3 });
+    expect(proxy.requests.map((r) => [r.method, r.range, r.ifMatch])).toEqual([
+      ['GET', undefined, undefined],
+    ]);
+  });
+
+  it('a write landing after Azurite answered a read is not in it: the row and its ETag are the older pair', async () => {
+    const { viaProxy, direct } = fresh();
+    const { token } = await direct.create(ref, { currentGen: 0 });
+    proxy.hold.get = async () => {
+      proxy.hold.get = undefined;
+      await direct.compareAndSwap(ref, token, { currentGen: 1 });
+    };
+    proxy.requests.length = 0;
+    const seen = await viaProxy.get(ref);
+    expect(seen).toMatchObject({ currentGen: 0, token });
+    expect(proxy.requests.map((r) => r.method)).toEqual(['GET']);
+    expect((await direct.get(ref))?.currentGen).toBe(1);
+  });
+
+  it('a compare-and-swap is fenced on the ETag its read returned: a writer landing in between wins', async () => {
+    const { viaProxy, direct } = fresh();
+    const { token } = await direct.create(ref, { currentGen: 0 });
+    // The other writer swaps after Azurite answered this swap's read, and before this swap writes. The read sees
+    // this swap's own token, so only the ETag fence, which Azurite enforces, can refuse it.
+    proxy.hold.get = async () => {
+      proxy.hold.get = undefined;
+      await direct.compareAndSwap(ref, token, { currentGen: 1 });
+    };
+    proxy.requests.length = 0;
+    await expect(viaProxy.compareAndSwap(ref, token, { currentGen: 2 })).rejects.toBeInstanceOf(
+      WriteConflictError,
+    );
+    // One GET for the read, the PUT under its ETag that Azurite refuses, and the HEAD that reads the write id back
+    // to tell a lost race from a replay of this write.
+    expect(proxy.requests.map((r) => r.method)).toEqual(['GET', 'PUT', 'HEAD']);
+    const read = proxy.requests[0]!;
+    expect([read.range, read.ifMatch]).toEqual([undefined, undefined]);
+    expect(proxy.requests[1]!.ifMatch).toMatch(/^"0x[0-9A-F]+"$/);
+    expect((await direct.get(ref))?.currentGen).toBe(1);
+    // And with nothing landing in between, the same swap goes through on the next try.
+    const current = (await viaProxy.get(ref))!;
+    expect((await viaProxy.compareAndSwap(ref, current.token, { currentGen: 2 })).token).not.toBe(
+      current.token,
+    );
+    expect((await direct.get(ref))?.currentGen).toBe(2);
+  });
+
+  it('refuses a registry blob over the cap on the length its one GET advertised', async () => {
+    const { prefix, viaProxy } = fresh();
+    await viaProxy.create(ref, { currentGen: 0 });
+    const keys: string[] = [];
+    for await (const item of container.listBlobsFlat({ prefix })) keys.push(item.name);
+    expect(keys).toHaveLength(1);
+    await container
+      .getBlockBlobClient(keys[0]!)
+      .upload(Buffer.alloc(MAX_ROW_BYTES + 1, 0x20), MAX_ROW_BYTES + 1);
+    proxy.requests.length = 0;
+    await expect(viaProxy.get(ref)).rejects.toBeInstanceOf(IntegrityError);
+    expect(proxy.requests.map((r) => r.method)).toEqual(['GET']);
   });
 });
