@@ -252,3 +252,121 @@ describe("an erasure's reads are retried", () => {
     expect(w.flaky.reads(at.op, at.generation)).toBe(at.nth);
   });
 });
+
+/** A read of `generation` by `op` that fails transiently every time: one no retry can get past. */
+function alwaysFailing(inner: IStorageDriver, at: { op: ReadOp; generation: number }) {
+  const state = { calls: 0 };
+  const storage = new Proxy(inner, {
+    get(target, prop, receiver) {
+      if (prop === at.op) {
+        return async (key: GenKey, ...rest: number[]) => {
+          if (key.generation === at.generation) {
+            state.calls++;
+            throw new TransientError('injected persistent read fault');
+          }
+          return (target[at.op] as (k: GenKey, ...r: number[]) => Promise<unknown>)(key, ...rest);
+        };
+      }
+      return Reflect.get(target, prop, receiver) as unknown;
+    },
+  });
+  return { storage, state };
+}
+
+describe('when the read retry gives up', () => {
+  it('a retained generation that still holds the id and cannot be read fails the erasure, never a clean ledger', async () => {
+    // The erasure must prove every retained holder gone. A holder it cannot read is not gone: reporting it as such
+    // would hand back a receipt while the id is still in the bucket.
+    const backend = new MemoryStorage();
+    await bulkLoadCrbmGeneration(backend.storage, { ...SEG, generation: 0 }, [1, 2, 3], {
+      registry: backend.registry,
+    });
+    const failing = alwaysFailing(backend.storage, { op: 'getTail', generation: 0 });
+    const store = new CloudRoaring({
+      storage: brandAsBackend({ storage: failing.storage, registry: backend.registry }),
+      cache: { genTtlMs: 0 },
+      retry: { baseDelayMs: 0, maxDelayMs: 0 },
+    });
+    await new CloudRoaring({ storage: backend, cache: { genTtlMs: 0 } }).load(SEG, [1, 3]);
+
+    const ledger = await store.eraseSubject(2, { namespace: 'ns' });
+
+    expect(failing.state.calls).toBe(DEFAULT_RETRY_POLICY.maxAttempts);
+    expect(ledger.erasedFrom).toEqual([
+      expect.objectContaining({
+        segment: 's',
+        erased: false,
+        note: expect.stringContaining('injected persistent read fault'),
+      }),
+    ]);
+  });
+
+  it("the read retry follows the store's own policy: its attempts and its onRetry", async () => {
+    const backend = new MemoryStorage();
+    await bulkLoadCrbmGeneration(backend.storage, { ...SEG, generation: 0 }, [1, 2, 3], {
+      registry: backend.registry,
+    });
+    const failing = alwaysFailing(backend.storage, { op: 'getRange', generation: 0 });
+    const retried: number[] = [];
+    const store = new CloudRoaring({
+      storage: brandAsBackend({ storage: failing.storage, registry: backend.registry }),
+      cache: { genTtlMs: 0 },
+      retry: {
+        maxAttempts: 2,
+        baseDelayMs: 0,
+        maxDelayMs: 0,
+        onRetry: ({ attempt }) => retried.push(attempt),
+      },
+    });
+
+    const ledger = await store.eraseSubject(2, { namespace: 'ns' });
+
+    expect(ledger.erasedFrom).toEqual([expect.objectContaining({ segment: 's', erased: false })]);
+    expect(failing.state.calls).toBe(2);
+    expect(retried).toEqual([1]);
+  });
+});
+
+describe("an erasure's writes are not retried by the read retry", () => {
+  type WriteOp = 'putImmutable' | 'delete' | 'compareAndSwap';
+
+  /** The world's drivers with the first call of `op` failing transiently, and every call of each write counted. */
+  function failingWrite(w: Awaited<ReturnType<typeof world>>, op: WriteOp) {
+    const calls: Record<WriteOp, number> = { putImmutable: 0, delete: 0, compareAndSwap: 0 };
+    const wrap = <T extends object>(inner: T, ops: readonly WriteOp[]): T =>
+      new Proxy(inner, {
+        get(target, prop, receiver) {
+          const value = Reflect.get(target, prop, receiver) as unknown;
+          if (typeof value !== 'function' || !ops.includes(prop as WriteOp)) return value;
+          const name = prop as WriteOp;
+          return async (...args: unknown[]) => {
+            calls[name]++;
+            if (name === op && calls[name] === 1)
+              throw new TransientError(`injected ${name} fault`);
+            return (value as (...a: unknown[]) => unknown).apply(target, args);
+          };
+        },
+      });
+    return {
+      calls,
+      storage: wrap(w.flaky.storage, ['putImmutable', 'delete']),
+      registry: wrap(w.backend.registry, ['compareAndSwap']),
+    };
+  }
+
+  it.each(['putImmutable', 'compareAndSwap'] as const)(
+    'a transient fault on %s is sent as many times with the read retry as without it',
+    async (op) => {
+      const counts: number[] = [];
+      for (const retried of [false, true]) {
+        const w = await world([1, 2, 3, 200_000]);
+        const f = failingWrite(w, op);
+        const deps = { ...coreDeps(w, retried), storage: f.storage, registry: f.registry };
+        await eraseIdFromSegment(SEG, 2, deps).catch(() => undefined);
+        expect(f.calls[op]).toBeGreaterThan(0);
+        counts.push(f.calls[op]);
+      }
+      expect(counts[1]).toBe(counts[0]);
+    },
+  );
+});

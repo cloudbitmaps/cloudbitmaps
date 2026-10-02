@@ -180,7 +180,9 @@ const backend = new S3Storage({ bucket: 'my-bitmaps', readTimeoutMs: 2_000 }); /
 waits for one of the client's sockets (50 by default) and the time spent fetching credentials, and under
 `retryMode: 'adaptive'` the SDK's rate-limiter wait. So a burst of concurrent reads larger than the socket pool can
 time out with nothing slow on the wire: measured against a local stub that answers each request in 50 ms, 8,000
-concurrent `has()` calls with `readTimeoutMs: 2_000` lost 5,428 reads to the timeout. Size `readTimeoutMs` above the
+concurrent `has()` calls with `readTimeoutMs: 2_000` lost 5,428 reads to the timeout. It counts time the process spends
+busy too: Node runs a due timer before it reads a socket, so a synchronous stretch longer than the timeout fails the
+reads in flight even when their responses have arrived. Size `readTimeoutMs` above the
 worst queueing your concurrency implies, which is about the concurrent reads divided by the sockets, times what one
 read takes (8,000 ÷ 50 × 50 ms is 8 s; derived), or raise the client's `maxSockets`:
 

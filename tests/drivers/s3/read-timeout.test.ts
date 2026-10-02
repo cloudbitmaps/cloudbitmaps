@@ -852,7 +852,19 @@ describe('S3: readTimeoutMs is validated where the backend is built', () => {
     const readTimeoutMs = '100' as unknown as number;
     expect(() => new S3Storage({ bucket: BUCKET, client, readTimeoutMs })).toThrow(ValidationError);
     expect(() => new S3Storage({ bucket: BUCKET, client, readTimeoutMs })).toThrow(REFUSAL);
+    // Quoted, so a string is not mistaken for the number it spells.
+    expect(() => new S3Storage({ bucket: BUCKET, client, readTimeoutMs })).toThrow(/got "100"/);
   });
+
+  it.each([Symbol('ms'), Object.create(null) as object, null])(
+    'refuses %s with a ValidationError, not a TypeError from its own message',
+    (value) => {
+      const readTimeoutMs = value as unknown as number;
+      expect(() => new S3Storage({ bucket: BUCKET, client, readTimeoutMs })).toThrow(
+        ValidationError,
+      );
+    },
+  );
 
   it.each([0, 1, 2_000, 2 ** 31 - 1])('accepts %s', (readTimeoutMs) => {
     expect(() => new S3Storage({ bucket: BUCKET, client, readTimeoutMs })).not.toThrow();
