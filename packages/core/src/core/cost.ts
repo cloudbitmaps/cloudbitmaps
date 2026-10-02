@@ -34,6 +34,7 @@
  * {@link Workload.hotSegments} and {@link Workload.chunksPerIntersect}.
  */
 import { ValidationError } from './errors';
+import { LIST_COLLECTION_CADENCE } from './generation-gc';
 import { DEFAULT_CURRENT_GEN_TTL_MS, DEFAULT_MAX_OPEN_SEGMENTS } from './reader-defaults';
 
 /**
@@ -61,7 +62,7 @@ export interface PricingProfile {
     /**
      * Requests one pointer read costs: a read of a segment's registry row, whose version comes back with its bytes.
      * Default **1**, and 1 on S3, GCS and Azure Blob, each of which answers it with one GET. Charged for each operand
-     * of an intersection, for the five pointer reads a load makes, and for each pointer refresh. Set it when a
+     * of an intersection, for the pointer reads a load makes, and for each pointer refresh. Set it when a
      * registry of your own takes more than one request to read a row.
      */
     readonly requestsPerPointerRead?: number;
@@ -212,17 +213,20 @@ export interface Workload {
   /**
    * PUT-class requests one load's object write issues, each priced at the PUT rate. Default **1** (a single-object
    * PUT). A multipart write of `P` parts bills `P + 2` (initiate, the parts, complete) — set it when you know your
-   * object sizes. The model adds what `store.load()` does around the write: the collection pass's listing and the
-   * pointer's write, PUT-class on S3, and seven GETs: the pointer read five times, the current generation's index
-   * once, and one check that the next generation number is free. That is a segment with two generations behind it;
-   * its first two loads make one fewer GET each. On S3 at the default prices a single-part
-   * `store.load()` is then about $17.80 per million. A segment whose index outgrows the tail read makes one more
-   * GET, a publish that loses a race to another writer reads the pointer again, and a load whose check finds the
-   * number taken (a crashed load's object, or the generations a rollback left above the pointer) lists the
-   * segment's objects to number past them, one more PUT-class request on S3. The counts are a cleartext segment's: an
-   * encrypted segment's load reads its row once more, after its ids and before it unwraps the key, one more GET
-   * ($0.40 per million at the default prices) that the model leaves out, beside the key-management calls it does not
-   * price either.
+   * object sizes. The model adds what `store.load()` does around the write, at the default `keep` of 1: the pointer's
+   * write, PUT-class on S3, and five GETs: the pointer read three times, the current generation's index once, and one
+   * check that the next generation number is free. Collection deletes the generation the window pushed out by name,
+   * so it lists only on every 16th generation, which adds a PUT-class request and two pointer reads there, a sixteenth
+   * of each on average. That is a segment with two generations behind it; its first two loads make fewer requests
+   * and collect nothing. On S3 at the default prices a single-part `store.load()` is then about $12.36 per million.
+   * A segment whose index outgrows the tail read makes one more GET, a publish that loses a race to another writer
+   * reads the pointer again, and a load whose check finds the number taken (a crashed load's object, or the
+   * generations a rollback left above the pointer) lists the segment's objects to number past them and to collect,
+   * two PUT-class requests on S3 and two more pointer reads. So does every load that keeps two or more generations,
+   * which lists to collect: one more PUT-class request and two more pointer reads than the model counts. The counts
+   * are a cleartext segment's: an encrypted segment's load reads its row once more, after its ids and before it
+   * unwraps the key, one more GET ($0.40 per million at the default prices) that the model leaves out, beside the
+   * key-management calls it does not price either.
    */
   readonly requestsPerLoad?: number;
   /**
@@ -335,18 +339,26 @@ const GIB = 1024 ** 3;
 
 /**
  * What `store.load()` adds to its object's write, as the engine makes the requests on a segment with two
- * generations behind it: PUT-class, the collection pass's listing and the pointer's write; reads, five of the
- * pointer (the load's one read before its publish, the compare-and-swap's read of the row's version, and the
- * collection pass's reads before and after its listing and before its delete), each `requestsPerPointerRead`
- * requests; one tail read of the current generation's index, `requestsPerSizedRead`; and one check that the next
- * generation number is free, a single metadata request on every backend (S3's `HeadObject`, GCS's object
- * metadata, Azure Blob's properties), so neither field applies to it. `tests/core/cost.test.ts` holds these to the
- * engine, and counts a segment's first two loads at six reads each.
+ * generations behind it, at the default `keep` of 1 with nothing above the pointer. Collection deletes the one
+ * generation the window pushed out by name, so the pointer is read three times (the load's one read before its
+ * publish, the compare-and-swap's read of the row's version, and the re-read before the delete) and nothing is
+ * listed, except on every {@link LIST_COLLECTION_CADENCE}th generation, where collection lists instead: one more
+ * PUT-class request and two more pointer reads (before and after the listing). Those two are averaged over the
+ * cadence, so a count of `n` loads is exact for `n` consecutive generations of the cadence. PUT-class: the
+ * pointer's write and the averaged listing. Pointer reads each cost `requestsPerPointerRead` requests. One tail read of the
+ * current generation's index costs `requestsPerSizedRead`, and one check that the next generation number is free is a
+ * single metadata request on every backend (S3's `HeadObject`, GCS's object metadata, Azure Blob's properties), so
+ * neither field applies to it. `tests/core/cost.test.ts` holds these to the engine over sixteen consecutive loads.
+ * A load that keeps two or more generations, or whose check meets an object, lists on every load: one more
+ * PUT-class request and two more pointer reads than these.
  */
-const STORE_LOAD_PUT_CLASS = 2;
-const STORE_LOAD_POINTER_READS = 5;
+const STORE_LOAD_PUT_CLASS = 1 + 1 / LIST_COLLECTION_CADENCE;
+const STORE_LOAD_POINTER_READS = 3 + 2 / LIST_COLLECTION_CADENCE;
 const STORE_LOAD_TAIL_READS = 1;
 const STORE_LOAD_EXISTENCE_CHECKS = 1;
+
+/** A count of requests for a note: at most two decimals, none when it is whole. */
+const shown = (n: number): string => String(Number(n.toFixed(2)));
 
 /** Fail-fast at the boundary: reject non-finite / negative inputs rather than leak NaN into the report. */
 function requireFiniteNonNeg(n: number | undefined, field: string): number {
@@ -742,8 +754,9 @@ function buildReport(input: {
     'Request cost is from the supplied workload rates (live-metrics-derived request cost is a later phase).',
     loadsPerMonth > 0
       ? `Loads modeled: ${loadsPerMonth}/mo, each ${requestsPerLoad} PUT-class request(s) for the object plus ` +
-        `${STORE_LOAD_PUT_CLASS} PUT-class and ${loadGets} GETs that store.load() adds (a listing, the pointer, ` +
-        'the index, and a check that the next generation number is free).'
+        `${shown(STORE_LOAD_PUT_CLASS)} PUT-class and ${shown(loadGets)} GETs that store.load() adds (the pointer, ` +
+        'the index, a check that the next generation number is free, and a listing every ' +
+        `${LIST_COLLECTION_CADENCE}th load).`
       : 'Loads are NOT modeled — set workload.loadsPerMonth (+ requestsPerLoad for multipart) to include them.',
     ...(intersects > 0
       ? [

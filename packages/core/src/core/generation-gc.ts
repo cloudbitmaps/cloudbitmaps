@@ -10,8 +10,9 @@
  * load (`allowEmpty: true` and no `guard.minRetained`) onto a segment with no row publishes bare forward-only. An
  * `*Into` materialisation is a load, and publishes the same way. The rewrite is fenced on its source generation and
  * the row's token (see invariant 1). That leaves the superseded object in the bucket, still billed, so something has
- * to collect it: {@link gcOrphanGenerations}. Pure orchestration over the driver ports — no I/O, time or randomness
- * of its own.
+ * to collect it: {@link gcOrphanGenerations}, or, for a load that numbered its generation with one existence check
+ * and keeps at most one generation, {@link collectByName}. Pure orchestration over the driver ports — no I/O, time or
+ * randomness of its own.
  */
 import { ValidationError, WriteConflictError, isNotFoundError } from './errors';
 import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
@@ -53,6 +54,17 @@ async function aboveEverything(
   return highest + 1;
 }
 
+/** The number a load takes, and whether one existence check proved it free (so nothing is above the pointer). */
+export interface LoadNumber {
+  readonly generation: number;
+  /**
+   * `true` when the number is `currentGen + 1` and the check found no object holding it. Collection by name rests
+   * on it: the row named `generation - 1` as current, so every number the window evicts is below it, and nothing
+   * the listing would have kept is a name the pass takes. `false` when the listing numbered the load.
+   */
+  readonly checked: boolean;
+}
+
 /**
  * The generation number a load takes, from the row it has already read: `currentGen + 1` (0 with no row or no
  * pointer yet) when no object holds that number, which one existence check proves (a zero-byte `getTail`, one
@@ -76,15 +88,24 @@ export async function nextLoadGeneration(
   ref: SegmentRef,
   deps: GenerationDeps,
   row: RegistryRecord | null,
-): Promise<number> {
+): Promise<LoadNumber> {
   const generation = (row?.currentGen ?? -1) + 1;
   try {
     await deps.storage.getTail({ namespace: ref.namespace, segment: ref.segment, generation }, 0);
   } catch (err) {
-    if (isNotFoundError(err)) return generation;
+    if (isNotFoundError(err)) return { generation, checked: true };
   }
-  return aboveEverything(ref, deps, row);
+  return { generation: await aboveEverything(ref, deps, row), checked: false };
 }
+
+/**
+ * How often a load that could collect by name lists instead: every generation divisible by this. A name-only pass
+ * takes one generation a load and never looks at the rest, so what it misses (a refused load's object that stayed
+ * because the row had changed, extras left by a `keep` that shrank, an object a rollback or an erasure left
+ * stranded below the pointer) waits for a listing. The number is a generation's, not a clock's, so the choice needs
+ * no state and no time, and a segment that loads cleanly lists once in this many loads at most.
+ */
+export const LIST_COLLECTION_CADENCE = 16;
 
 /**
  * Garbage-collect superseded Storage generations for a segment: everything strictly below `currentGen`, keeping
@@ -228,4 +249,72 @@ export async function gcOrphanGenerations(
     await deps.storage.delete({ namespace: ref.namespace, segment: ref.segment, generation });
   }
   return toDelete;
+}
+
+/**
+ * Collect after a load's publish: by name when `byName` (the load numbered its generation with one existence check
+ * and its caller does not ask for a listing) and `keep` is at most one, and by listing otherwise
+ * ({@link gcOrphanGenerations}). A load lists in three cases: `keep` of 2 or more, which a name cannot serve because
+ * the window then counts generations that may be absent (a refused neighbour's number is a gap, and by name would
+ * take one the window promised to keep); a number the listing chose, so something sits above the pointer or the
+ * check could not answer; and every {@link LIST_COLLECTION_CADENCE}th generation, which collects what a name-only
+ * pass leaves. A `destroyed` row never reaches here: a load onto one is refused at its publish.
+ */
+export async function collectAfterLoad(
+  ref: SegmentRef,
+  deps: GenerationDeps,
+  options: { generation: number; keep: number; byName: boolean },
+): Promise<number[]> {
+  const { generation, keep, byName } = options;
+  const periodic = generation > 0 && generation % LIST_COLLECTION_CADENCE === 0;
+  if (byName && keep <= 1 && !periodic) return collectByName(ref, deps, { generation, keep });
+  return gcOrphanGenerations(ref, deps, { keep });
+}
+
+/**
+ * Collect, with no listing, the one generation a publish of `generation` pushed out of a grace window of `keep`
+ * (0 or 1): `generation - keep - 1`, when that is a number at all. Returns that name, whether or not an object was
+ * there: a delete of an absent object succeeds on every backend and says nothing, so the name returned is the one
+ * asked for, not one found, and a generation a concurrent pass, an erasure or a lifecycle rule had already taken is
+ * listed all the same. A list is not a receipt (invariant 4), and neither is this.
+ *
+ * The caller has published `generation` having numbered it with one existence check, so the row named
+ * `generation - 1` and every generation the window newly evicts is below it. With `keep` of 0 or 1 that name is
+ * the one a listing pass would also take, or one it left to a later pass: never a generation the listing keeps.
+ * `keep` of 2 or more is refused, because there the window counts the generations that exist, which a name cannot
+ * know.
+ *
+ * Collection never touches the current generation, and the row is re-proved before the delete as every pass does:
+ * a row that is gone, or a pointer that has fallen below `generation` (a rollback, or a name purged and re-created
+ * with fewer loads), refuses with {@link WriteConflictError}. A pointer that has moved above it does not: a publish
+ * landing in the meantime leaves routine collection working. The bound is `generation`, the pointer this load's
+ * own publish set, so the lower-of-two-pointers rule of a listing pass holds with one observation in place of two.
+ * Nothing is deleted when `generation` has nothing below its window, and no request is made.
+ */
+export async function collectByName(
+  ref: SegmentRef,
+  deps: GenerationDeps,
+  options: { generation: number; keep: number },
+): Promise<number[]> {
+  const { generation, keep } = options;
+  if (!Number.isInteger(keep) || keep < 0 || keep > 1) {
+    throw new ValidationError(`collecting by name needs a keep of 0 or 1; got ${String(keep)}`);
+  }
+  const evicted = generation - keep - 1;
+  if (evicted < 0) return [];
+  const still = await deps.registry.get(ref);
+  if (still === null) {
+    throw new WriteConflictError(`registry row for segment ${ref.segment} was purged mid-pass`);
+  }
+  if (still.currentGen === null || still.currentGen < generation) {
+    throw new WriteConflictError(
+      `segment ${ref.segment} changed incarnation while its generations were being collected`,
+    );
+  }
+  await deps.storage.delete({
+    namespace: ref.namespace,
+    segment: ref.segment,
+    generation: evicted,
+  });
+  return [evicted];
 }

@@ -925,7 +925,9 @@ export class CloudRoaring {
     op: string,
     options?: MaterializeOptions,
   ): Promise<MaterializeResult> {
-    const deps = this.lifecycleDeps(op);
+    // A materialisation's `keep` collects every generation below the new one beyond it, which a destination that
+    // earlier materialisations kept in full needs a listing for.
+    const deps = { ...this.lifecycleDeps(op), collectByListing: true };
     let result: Awaited<ReturnType<typeof loadSegment>>;
     try {
       result = await loadSegment(dest, ids, deps, {
@@ -1380,6 +1382,13 @@ export class CloudRoaring {
    * another write has changed the row, the generation number it holds may name another incarnation's live object,
    * so it leaves the orphan rather than risk deleting live data. The orphan is an ordinary generation once a later
    * one is current above it, and collection counts it within `keep`.
+   *
+   * **Collection is by name for the default `keep`.** With `keep` of 0 or 1, a load that found nothing above the
+   * pointer deletes the one generation its publish pushed out of the window and lists nothing; it lists the segment's
+   * objects on every sixteenth generation, and on any load that met an object above the pointer, to take what the
+   * name-only passes leave, such as the generations an earlier, wider `keep` held. `keep` of 2 or more lists on
+   * every load. {@link LoadResult.collected} then names what the pass deleted by name, and that generation may
+   * have been gone already.
    *
    * What it **throws** for is a fault rather than an outcome: invalid options or ids, and a crypto-shredded
    * segment (`ValidationError`); a key the keystore cannot provide (`KeyUnavailableError`); a current generation

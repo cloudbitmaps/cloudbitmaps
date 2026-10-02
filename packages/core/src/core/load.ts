@@ -37,7 +37,7 @@ import {
   isValidationError,
   isWriteConflictError,
 } from './errors';
-import { gcOrphanGenerations, nextLoadGeneration } from './generation-gc';
+import { collectAfterLoad, nextLoadGeneration } from './generation-gc';
 import { type ReadRetry, retryRead } from './retry';
 import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef, Token } from './ports';
 import { validateUserRef } from './validate';
@@ -55,6 +55,15 @@ export interface LoadDeps {
    * again under it rather than failing the load. Absent, the read is made once. The write is never retried.
    */
   readonly readRetry?: ReadRetry;
+  /**
+   * Collect by listing the segment's objects after the publish, whatever `keep` is. Absent, a load that keeps at
+   * most one generation and found nothing above its pointer deletes by name the one generation its publish pushed
+   * out of the window, and lists every sixteenth generation to take what that leaves; the generations older than
+   * the window wait for that listing. Set it for a caller whose `keep` promises every generation below the new
+   * one beyond the window is gone when the call returns: the `*Into` verbs, whose `keep` is how an operator clears
+   * a destination that earlier materialisations kept in full.
+   */
+  readonly collectByListing?: boolean;
 }
 
 /**
@@ -96,6 +105,11 @@ export interface LoadOptions {
    * collected. Keep at least one generation for every one that can be written above the pinned one while your
    * longest pinned job runs, on every writer that loads the segment — see "Generations and `keep`" in the loading
    * guide.
+   *
+   * With `keep` of 0 or 1, a load that found nothing above the pointer collects without listing: it deletes the one
+   * generation its publish pushed out of the window, and lists the segment's objects on every sixteenth generation to
+   * take whatever that pass leaves, such as the generations an earlier, wider `keep` held. With `keep` of 2 or more
+   * it lists on every load.
    */
   readonly keep?: number;
   readonly audit?: IAuditSink;
@@ -139,7 +153,15 @@ export interface LoadResult {
    * whatever happens next.
    */
   readonly cardinalityBefore: number | null;
-  /** The superseded generations collected after publishing. Empty when nothing was published. */
+  /**
+   * The superseded generations collected after publishing. Empty when nothing was published.
+   *
+   * When collection deleted by name (see {@link LoadOptions.keep}) this is the name it deleted, and that generation
+   * may have been gone already: a delete of an absent object succeeds on every backend and does not say so, so the
+   * list names what the pass asked the bucket to delete, not what it found there. A listing pass names the
+   * generations it found and deleted. Neither is a receipt, since a concurrent collector may have taken a generation
+   * first.
+   */
   readonly collected: readonly number[];
 }
 
@@ -246,7 +268,7 @@ export async function loadSegment(
   const needsBefore = guard?.minRetained !== undefined || options.allowEmpty !== true;
   const before = needsBefore ? await currentCardinality(ref, deps, row) : null;
 
-  const generation = await nextLoadGeneration(ref, deps, row);
+  const { generation, checked } = await nextLoadGeneration(ref, deps, row);
   const key = { namespace: ref.namespace, segment: ref.segment, generation };
 
   // `publish: false`, deliberately: the guard has to run while the old generation is still authoritative, so the
@@ -412,7 +434,11 @@ export async function loadSegment(
     generation,
   });
 
-  const collected = await gcOrphanGenerations(ref, deps, { keep });
+  const collected = await collectAfterLoad(ref, deps, {
+    generation,
+    keep,
+    byName: checked && deps.collectByListing !== true,
+  });
   return {
     generation,
     published: true,

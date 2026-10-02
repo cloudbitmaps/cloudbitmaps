@@ -117,15 +117,17 @@ function projectOps({
   if (!Number.isInteger(operandsPerRead) || operandsPerRead < 1) {
     throw new Error(`operandsPerRead must be a positive integer, got ${operandsPerRead}`);
   }
-  // A load, `store.load()` of a new segment: the object PUT, the collection pass's listing (on S3 a listing bills at
-  // the PUT rate), and the pointer advance — a conditional PUT, each attempt of which can lose the compare-and-swap
-  // and go round again. A load whose check finds its generation number taken lists once more to number past it,
-  // which the bound's second listing covers. Its GET-class requests are more than one per attempt: counted against
-  // the real registry protocol in tests/bench/calibrate-guards.test.ts, a load of a new segment checks its number
-  // once and reads the pointer five times with nothing racing it, six GET-class requests; each attempt it loses adds
-  // two pointer reads, so it makes fourteen at most, thirteen pointer reads and the check, and one that loses every
-  // attempt throws after thirteen. The harness is the only writer, so its loads never race; the bound still has to
-  // hold if one did.
+  // A load, `store.load()` of a new segment: the object PUT and the pointer advance — a conditional PUT, each attempt
+  // of which can lose the compare-and-swap and go round again. A new segment's load whose check finds its number free
+  // lists nothing: it has no generation outside its window to collect. One whose check finds the number taken (a
+  // crashed load's object) lists to number past it and lists again to collect, two listings, which on S3 bill at the
+  // PUT rate, and the bound counts them. Its GET-class requests are more than one per attempt: counted against the
+  // real registry protocol in tests/bench/calibrate-guards.test.ts, a load of a new segment that finds its number
+  // free checks it once and reads the pointer three times with nothing racing it, four GET-class requests, and one
+  // that finds it taken reads the pointer twice more around its collection's listing, six; each attempt a load loses
+  // adds two pointer reads, so it makes fourteen at most, thirteen pointer reads and the check, and one that loses
+  // every attempt throws after thirteen. The harness is the only writer to a bucket of its own, so its loads never
+  // race and never meet an object; the bound still has to hold if one did.
   const putPerLoad = 3 + retryBound;
   const getPerLoad = 4 + 2 * retryBound;
   // A multipart load: create + parts + complete for the object, then the same listings and pointer advance.
