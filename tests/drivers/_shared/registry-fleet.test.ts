@@ -430,7 +430,10 @@ describe('a runtime without Web Crypto', () => {
     await roaring.load({ segment: 's' }, [1, 2, 3]);
 
     noWebCrypto();
-    await roaring.eraseSubject(2).catch(() => undefined);
+    const result = await roaring.eraseSubject(2, { allNamespaces: true });
+    expect(result.erasedFrom).toHaveLength(1);
+    expect(result.erasedFrom[0]).toMatchObject({ segment: 's', erased: false });
+    expect(result.erasedFrom[0]!.note).toMatch(/canWrite is false/);
     const generations = [];
     for await (const k of storage.list({ segment: 's' })) generations.push(k.generation);
     expect(generations).toEqual([0]);
