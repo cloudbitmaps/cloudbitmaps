@@ -56,6 +56,8 @@ type Run = {
     perStage: number;
     unfinished?: { stage: string; discarded: Discarded[] };
   };
+  workload: { plan: { discards?: { perRun: number; perStage: number } } };
+  projectedDiscards?: { put: number; get: number; costliestSample: number };
   network: { client: string; clientRegion: string | null };
   cost: {
     putUSD: number;
@@ -108,10 +110,12 @@ type Figures = {
     string,
     { put: number; get: number; keptGet: number; discarded: number; expectedGets: number | null }
   >;
+  values: unknown;
 };
 const figures = require_(join(ROOT, 'bench', 'lib', 'calibration-figures.cjs')) as {
   readSources: (root: string) => unknown;
   derive: (run: Run, src: unknown) => Figures;
+  unaccounted: (text: string, values: unknown) => string[];
 };
 const { STAGES } = require_(join(ROOT, 'bench', 'lib', 'calibrate-stages.cjs')) as {
   STAGES: string[];
@@ -559,14 +563,37 @@ describe('a run that discarded a sample after a transient fault', () => {
       ['andNot', IN_ANDNOT()],
     ];
     expect(refused(withDiscards(asRealRun(), four))).toMatch(
-      /it discarded more samples than its bounds allow \(3 a run, 2 a stage\)/,
+      /it discarded more samples than the harness allows \(3 a run, 2 a stage\)/,
     );
-    expect(refused(withDiscards(asRealRun(), four, { perRun: 4 }))).toBe('');
+    // A file that states looser bounds of its own, in its count and in its plan alike, is held to the harness's.
+    const loose = withDiscards(asRealRun(), four, { perRun: 4 });
+    if (loose.workload.plan.discards !== undefined) loose.workload.plan.discards.perRun = 4;
+    expect(refused(loose)).toMatch(/more samples than the harness allows/);
+    expect(refused(loose)).toMatch(
+      /its bounds on discards \(4 a run, 2 a stage, and its plan's 4 and 2\) are not the harness's \(3 a run, 2 a stage\)/,
+    );
     const three: Array<[string, Discarded]> = [0, 1, 2].map((i) => [
       'intersect',
       discard('calibration-layout cold intersect', i, { whole: 2, suffix: 2, range: 7 }),
     ]);
-    expect(refused(withDiscards(asRealRun(), three))).toMatch(/more samples than its bounds allow/);
+    expect(refused(withDiscards(asRealRun(), three))).toMatch(
+      /more samples than the harness allows/,
+    );
+  });
+
+  // The allowance is what the projection held the run to: three samples at the costliest one its plan makes.
+  it('is refused when its allowance for discards is not three samples at the costliest its plan makes', () => {
+    expect(refused(withDiscards(asRealRun(), both()))).toBe('');
+    for (const edit of [
+      (a: { get: number; costliestSample: number }) => (a.get = 1),
+      (a: { get: number; costliestSample: number }) => (a.costliestSample = 206),
+    ]) {
+      const run = withDiscards(asRealRun(), both());
+      if (run.projectedDiscards !== undefined) edit(run.projectedDiscards);
+      expect(refused(run)).toMatch(
+        /its allowance for discards .* is not 3 samples at the costliest its plan makes \(4006\)/,
+      );
+    }
   });
 
   // The same discards: in a run that finished, evidence; in one a fault past the bound stopped, not.
@@ -595,7 +622,29 @@ describe('a run that discarded a sample after a transient fault', () => {
     if (cutShort.discards !== undefined) {
       cutShort.discards.unfinished = { stage: 'andNot', discarded: [IN_ANDNOT()] };
     }
-    expect(refused(cutShort)).toMatch(/its stages record 2 discarded samples/);
+    // The counts agree; what is wrong is the stage cut short, and the refusal says so.
+    expect(refused(cutShort)).toMatch(
+      /it records a stage cut short \(andNot\), which a run that finished has none of/,
+    );
+    expect(refused(cutShort)).not.toMatch(/discarded samples, not the/);
+  });
+
+  // A report's numbers are read back against the run. A discard's request count is small and could equal any other
+  // GET figure, so it passes only beside a word for a discard; and a stated count of discards has to be the run's.
+  it("lets a report state a discard's requests only as a discard's, and its count of discards only as the run's", () => {
+    const f = figures.derive(withDiscards(asRealRun(), both()), SOURCES);
+    expect(
+      figures.unaccounted('The discarded sample made 120 GETs before it failed.', f.values),
+    ).toEqual([]);
+    expect(figures.unaccounted('The median cold intersect made 120 GETs.', f.values)).toEqual([
+      '120 GETs',
+    ]);
+    expect(figures.unaccounted('The run has 2 discarded samples, 1 in andNot.', f.values)).toEqual(
+      [],
+    );
+    expect(figures.unaccounted('The run has 5 discarded samples.', f.values)).toEqual([
+      '5 discarded samples',
+    ]);
   });
 
   it('is refused for a discarded load, or a discard that wrote', () => {

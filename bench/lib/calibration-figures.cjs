@@ -26,11 +26,12 @@
  * shell in another region than the bucket's. A figure derived from a file that fails any of those would be about a
  * run that did not happen the way it says.
  *
- * A RUN THAT DISCARDED A SAMPLE IS EVIDENCE, within its bounds. A sample that met a transient fault was discarded
- * whole and run again on a fresh store (`calibrate-samples.cjs`): its requests are in its stage's and in the bill,
- * and out of everything a figure is derived from, which is what the samples the stage kept made. Those are held to
- * their expected counts exactly, as a fault-free run's are, and the count of discards is stated beside the figures. A
- * run that met more faults than its bounds allow did not finish, and is refused as any partial run is.
+ * A RUN THAT DISCARDED A SAMPLE IS EVIDENCE, within the harness's bounds. A sample that met a transient fault was
+ * discarded whole and run again from the start (`calibrate-samples.cjs`): its requests are in its stage's and in the
+ * bill, which counts them, and out of every latency and request-count figure, which is what the samples the stage
+ * kept made. Those are held to their expected counts exactly, as a fault-free run's are, and the count of discards is
+ * stated beside the figures. A run that met more faults than its bounds allow did not finish, and is refused as any
+ * partial run is.
  *
  * WHAT THE REVERSE CHECK CAN AND CANNOT SEE. It reads a figure by its unit, or by the noun it counts, and accepts it
  * only at the precision it is written. A value the evidence holds is not enough where the same number could make
@@ -45,8 +46,13 @@ const path = require('node:path');
 
 const { classify } = require('./aws-meter.cjs');
 const { planLayout, DEFAULT_LAYOUT, EVIDENCE_DIR, CHUNK_SPAN } = require('./calibrate-guards.cjs');
-const { STAGES } = require('./calibrate-stages.cjs');
-const { keptRequests, discardedRequests } = require('./calibrate-samples.cjs');
+const { STAGES, sampleBounds } = require('./calibrate-stages.cjs');
+const {
+  keptRequests,
+  discardedRequests,
+  DISCARDS_PER_RUN,
+  DISCARDS_PER_STAGE,
+} = require('./calibrate-samples.cjs');
 
 /**
  * What `store.load()` bills, in requests, as `tests/bench/calibrate-guards.test.ts` counts them against local
@@ -420,20 +426,45 @@ function derive(run, src) {
     check(discardedIn('load').length === 0, 'its load stage discarded a load');
     // The run's own count of its discards, and its bounds: a file whose stages discarded more than it counted, or more
     // than it allowed, is not the run the harness would have let finish.
+    // The bounds are the harness's, not the file's: a file stating looser ones of its own is not the run the harness
+    // would have let finish. They are held to the plan the run projected from too, and its allowance to them.
     const counted = run.discards;
+    const plan = run.workload?.plan;
     const discardCount = STAGES.reduce((n, name) => n + discardedIn(name).length, 0);
     check(
-      counted === undefined
-        ? discardCount === 0
-        : counted.count === discardCount && counted.unfinished === undefined,
+      (counted?.count ?? 0) === discardCount,
       `its stages record ${discardCount} discarded samples, not the ${counted?.count ?? 0} it counted`,
     );
     check(
-      counted === undefined ||
-        (discardCount <= counted.perRun &&
-          STAGES.every((name) => discardedIn(name).length <= counted.perStage)),
-      `it discarded more samples than its bounds allow (${counted?.perRun} a run, ${counted?.perStage} a stage)`,
+      counted?.unfinished === undefined,
+      `it records a stage cut short (${counted?.unfinished?.stage}), which a run that finished has none of`,
     );
+    check(
+      discardCount <= DISCARDS_PER_RUN &&
+        STAGES.every((name) => discardedIn(name).length <= DISCARDS_PER_STAGE),
+      `it discarded more samples than the harness allows (${DISCARDS_PER_RUN} a run, ${DISCARDS_PER_STAGE} a stage)`,
+    );
+    if (counted !== undefined) {
+      check(
+        counted.perRun === DISCARDS_PER_RUN &&
+          counted.perStage === DISCARDS_PER_STAGE &&
+          plan?.discards?.perRun === DISCARDS_PER_RUN &&
+          plan?.discards?.perStage === DISCARDS_PER_STAGE,
+        `its bounds on discards (${counted.perRun} a run, ${counted.perStage} a stage, and its plan's ` +
+          `${plan?.discards?.perRun} and ${plan?.discards?.perStage}) are not the harness's ` +
+          `(${DISCARDS_PER_RUN} a run, ${DISCARDS_PER_STAGE} a stage)`,
+      );
+      const allowed = run.projectedDiscards;
+      const costliest =
+        plan?.discards === undefined ? null : Math.max(...Object.values(sampleBounds(plan)));
+      check(
+        allowed?.put === 0 &&
+          allowed?.costliestSample === costliest &&
+          allowed?.get === DISCARDS_PER_RUN * (costliest ?? Number.NaN),
+        `its allowance for discards (${allowed?.get} GET-class, at a costliest sample of ${allowed?.costliestSample}) ` +
+          `is not ${DISCARDS_PER_RUN} samples at the costliest its plan makes (${costliest})`,
+      );
+    }
     const clientRegion = run.network?.clientRegion ?? null;
     check(
       clientRegion === null || clientRegion === run.region,
@@ -920,6 +951,7 @@ const WORDS = {
   object: /\bobjects?'?/gi,
   storeLoad: /store\.load\(\)|\bloadSegment\b/g,
   median: /\bmedian\b/gi,
+  discard: /\bdiscard\w*|\b(?:ran|run|runs) again\b/gi,
 };
 /**
  * A bound value: the claim it makes is the nearest word of `group`'s families, which must be one `allow` names.
@@ -932,6 +964,7 @@ const MEASURED = ['measured', 'expected'];
 const SHARES = ['chunkShare', 'byteShare', 'getShare'];
 const measuredValue = (v) => bind(v, MEASURED, ['measured'], false);
 const expectedValue = (v) => bind(v, MEASURED, ['expected']);
+const discardValue = (v) => bind(v, ['discard'], ['discard']);
 
 /** Every value a page may state for this run, by unit and by counted noun — what the reverse check accepts. */
 function valuesOf(f, { withLatency }) {
@@ -964,10 +997,11 @@ function valuesOf(f, { withLatency }) {
     f.ledger.get,
     f.byCommand.GetObjectCommand,
     f.projected.get,
-    // What the discarded samples requested, each and together.
+    // What the discarded samples requested, each and together: beside the words for a discard only, since a small
+    // count would otherwise pass for any other GET figure it happens to equal.
     ...(f.discards.count === 0
       ? []
-      : [f.discards.get, ...f.discards.samples.map((d) => d.requests.get)]),
+      : [f.discards.get, ...f.discards.samples.map((d) => d.requests.get)].map(discardValue)),
   ];
   const put = [1, f.putsPerSingle, f.putsPerMultipart, sl.first.put, f.ledger.put, f.projected.put];
   return {
@@ -1122,6 +1156,8 @@ function valuesOf(f, { withLatency }) {
         ...f.kRows.map((r) => bind(Math.floor(1 / r.usd), MEASURED, ['expected'], false)),
       ],
       segments: [f.workload.segments, f.workload.largeSegments, 1],
+      // How many samples the run discarded, and in each stage.
+      discards: [f.discards.count, ...Object.values(f.discards.byStage)],
       pointerReads: [
         f.ledger.pointerReads,
         f.ledger.loadPointerReads,
@@ -1298,6 +1334,7 @@ const BYTE_UNIT = Object.keys(BYTE_UNITS)
   .join('|');
 // Longest first, so "chunk reads" is read as chunk reads and not as chunks.
 const COUNTED = [
+  ['discarded samples?', 'discards'],
   ['pointer reads?|pointer GETs?', 'pointerReads'],
   ['tail reads?|tail GETs?', 'tailReads'],
   ['chunk reads?|chunk GETs?', 'chunkReads'],
