@@ -12,7 +12,9 @@
  * for it ({@link sendOnce}), so a `412` means another write got there first, never this one meeting itself after a
  * lost response. A transient failure reaches the caller as {@link TransientError}: the write may or may not have
  * landed, and the caller re-reads the row to learn where it stands. Reads are strongly consistent (S3, since 2020),
- * satisfying the registry's `strongRead` contract. The client is **injected**, exactly like {@link S3StorageDriver}.
+ * satisfying the registry's `strongRead` contract, and each is timed as the storage driver's are ({@link timedRead}):
+ * a row's `GetObject` that has not finished, body included, after `readTimeoutMs` throws {@link TransientError}. The
+ * writes and listings are not timed. The client is **injected**, exactly like {@link S3StorageDriver}.
  *
  * **Deployment requirements** (a backend/policy that violates these silently corrupts the registry):
  * - The backend **must honor `If-Match`** (AWS S3; recent MinIO). One that returns ETags but ignores the
@@ -39,6 +41,7 @@ import {
   PutObjectCommand,
   type S3Client,
 } from '@aws-sdk/client-s3';
+import { resolveReadTimeoutMs, timedRead } from './read-timeout';
 import { isConditionalConflict, isNotFound, isTransient } from './s3-errors';
 import { sendOnce } from './send-once';
 
@@ -51,6 +54,12 @@ export interface S3RegistryDriverOptions {
   readonly prefix?: string;
   /** Injected clock for `createdAt`/`updatedAt`; defaults to `Date.now`. */
   readonly now?: () => number;
+  /**
+   * How long one read of a row — its `GetObject`, the body included — may take before it is abandoned and throws
+   * `TransientError`, in ms. Default 2,000; `0` turns the timeout off. Must be a non-negative safe integer no larger
+   * than 2,147,483,647. Writes and listings are not timed.
+   */
+  readonly readTimeoutMs?: number;
 }
 
 /** The three calls {@link ObjectStoreRegistry} needs, in S3's dialect. */
@@ -60,29 +69,35 @@ class S3Store implements ObjectRegistryStore {
   constructor(
     private readonly client: S3Client,
     private readonly bucket: string,
+    private readonly readTimeoutMs: number,
   ) {}
 
-  async read(key: string): Promise<ObjectRow | null> {
-    let res;
-    try {
-      res = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }));
-    } catch (err) {
-      if (isNotFound(err)) return null;
-      throw mapError(err);
-    }
-    // Check the advertised length BEFORE allocating, so a hostile object cannot make us buffer it first.
-    if ((res.ContentLength ?? 0) > MAX_ROW_BYTES) {
-      throw new IntegrityError(
-        `registry object ${res.ContentLength}B exceeds cap ${MAX_ROW_BYTES}B`,
-      );
-    }
-    if (res.Body === undefined) {
-      throw new IntegrityError(`registry object has an empty body: ${key}`);
-    }
-    const bytes = await (
-      res.Body as { transformToByteArray(): Promise<Uint8Array> }
-    ).transformToByteArray();
-    return { bytes, version: res.ETag ?? '' };
+  read(key: string): Promise<ObjectRow | null> {
+    return timedRead('GetObject', this.readTimeoutMs, async (options) => {
+      let res;
+      try {
+        res = await this.client.send(
+          new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+          options,
+        );
+      } catch (err) {
+        if (isNotFound(err)) return null;
+        throw mapError(err);
+      }
+      // Check the advertised length BEFORE allocating, so a hostile object cannot make us buffer it first.
+      if ((res.ContentLength ?? 0) > MAX_ROW_BYTES) {
+        throw new IntegrityError(
+          `registry object ${res.ContentLength}B exceeds cap ${MAX_ROW_BYTES}B`,
+        );
+      }
+      if (res.Body === undefined) {
+        throw new IntegrityError(`registry object has an empty body: ${key}`);
+      }
+      const bytes = await (
+        res.Body as { transformToByteArray(): Promise<Uint8Array> }
+      ).transformToByteArray();
+      return { bytes, version: res.ETag ?? '' };
+    });
   }
 
   async write(
@@ -149,7 +164,7 @@ function mapError(err: unknown): unknown {
 export class S3RegistryDriver extends ObjectStoreRegistry {
   constructor(options: S3RegistryDriverOptions) {
     super(
-      new S3Store(options.client, options.bucket),
+      new S3Store(options.client, options.bucket, resolveReadTimeoutMs(options.readTimeoutMs)),
       normalizeObjectPrefix(options.prefix),
       options.now ?? ((): number => Date.now()),
     );
