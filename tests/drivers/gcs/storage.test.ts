@@ -168,6 +168,7 @@ describe('GcsStorageDriver — what a tail read costs', () => {
     const calls: unknown[] = [];
     const body = new Uint8Array(100).fill(7);
     const file = {
+      interceptors: [] as unknown[],
       createReadStream: (opts: unknown) => {
         calls.push(opts);
         const out = new PassThrough();

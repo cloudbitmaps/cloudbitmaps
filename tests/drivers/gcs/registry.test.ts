@@ -70,6 +70,7 @@ class FakeGcs {
 
   private file(name: string): unknown {
     return {
+      interceptors: [],
       createReadStream: (): PassThrough => {
         const out = new PassThrough();
         this.reads++;

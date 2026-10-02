@@ -3,6 +3,7 @@ import type { Storage } from '@google-cloud/storage';
 import { readOnce, singleHeader } from '@/gcs/read-once';
 import { GcsStorageDriver } from '@/gcs/storage';
 import { TransientError, ValidationError } from '@/core/errors';
+import { ReadTimedOut } from '@/gcs/read-timeout';
 
 // `readOnce` against a hand-driven stream, so each way a response can misbehave is one deliberate step. The real SDK
 // is exercised in send-once.test.ts.
@@ -20,7 +21,7 @@ class Driven {
     };
   }
   file(): GcsFile {
-    return { createReadStream: () => this.stream } as unknown as GcsFile;
+    return { interceptors: [], createReadStream: () => this.stream } as unknown as GcsFile;
   }
   respond(status: number, headers: Record<string, string>): void {
     this.stream.emit('response', { statusCode: status, headers });
@@ -32,6 +33,7 @@ class DrivenReads {
   readonly reads: Driven[] = [];
   file(): GcsFile {
     return {
+      interceptors: [],
       createReadStream: () => {
         const d = new Driven();
         this.reads.push(d);
@@ -203,6 +205,81 @@ describe('readOnce', () => {
     for (let i = 0; i < 4; i++) cutOff(await reads.read(i));
     await expect(p).rejects.toBeInstanceOf(TransientError);
     expect(reads.reads).toHaveLength(4); // the first read and three retries, as the SDK would have made
+  });
+});
+
+describe('readOnce with a deadline', () => {
+  const after = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+  const deadline = { ms: 50, read: 'tail read of s.0' };
+
+  it('rejects with a retryable ETIMEDOUT naming the read and the ms, and destroys the stream one turn later', async () => {
+    const d = new Driven();
+    const p = readOnce(d.file(), {}, 10, oversize, deadline);
+    d.respond(206, {});
+    d.stream.write(Buffer.alloc(2)); // headers and part of the body, then nothing
+    const err = await p.catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ReadTimedOut);
+    expect(err).toMatchObject({
+      code: 'ETIMEDOUT',
+      message: 'GCS tail read of s.0 timed out after 50 ms',
+    });
+    expect(d.destroyed).toBe(0); // never in the turn the SDK may still be building its pipeline in
+    await settle();
+    expect(d.destroyed).toBe(1);
+  });
+
+  it('times a read whose response never comes, and leaves the stream alone until a response does', async () => {
+    const d = new Driven();
+    const p = readOnce(d.file(), {}, 10, oversize, deadline);
+    await expect(p).rejects.toBeInstanceOf(ReadTimedOut);
+    await after(20);
+    // Destroyed now, the SDK would pipe a late response into a destroyed stream and throw outside any promise.
+    expect(d.destroyed).toBe(0);
+    d.respond(206, { 'content-length': '3' });
+    expect(d.destroyed).toBe(0);
+    await settle();
+    expect(d.destroyed).toBe(1);
+  });
+
+  it('covers the body as well as the headers', async () => {
+    const d = new Driven();
+    const outcome = readOnce(d.file(), {}, 10, oversize, deadline).catch((e: unknown) => e);
+    d.respond(206, {});
+    await after(30);
+    d.stream.write(Buffer.alloc(2));
+    await after(30); // 60 ms in: the headers came in time, the body did not
+    expect(await outcome).toBeInstanceOf(ReadTimedOut);
+  });
+
+  describe('clears its timer however the read settles', () => {
+    beforeEach(() => void vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] }));
+    afterEach(() => void vi.useRealTimers());
+
+    it.each([
+      ['a read that ends', (d: Driven) => (d.respond(200, {}), d.stream.end(Buffer.alloc(3)))],
+      ['an error', (d: Driven) => d.stream.destroy(Object.assign(new Error('nf'), { code: 404 }))],
+      ['a refused length', (d: Driven) => d.respond(200, { 'content-length': '11' })],
+      [
+        'a body over the cap',
+        (d: Driven) => (d.respond(200, {}), d.stream.write(Buffer.alloc(11))),
+      ],
+    ] as const)('%s', async (_name, settleBy) => {
+      const d = new Driven();
+      const p = readOnce(d.file(), {}, 10, oversize, deadline);
+      expect(vi.getTimerCount()).toBe(1);
+      settleBy(d);
+      await p.catch(() => undefined);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+  });
+
+  it('sets no timer at 0', async () => {
+    const d = new Driven();
+    const p = readOnce(d.file(), {}, 10, oversize, { ms: 0, read: 'tail read of s.0' });
+    await after(30);
+    d.respond(200, {});
+    d.stream.end(Buffer.alloc(3));
+    expect((await p).bytes).toHaveLength(3);
   });
 });
 

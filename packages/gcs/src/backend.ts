@@ -43,6 +43,21 @@ export interface GcsStorageOptions {
   readonly simpleUploadThresholdBytes?: number;
   /** Injected clock for the registry's `createdAt`/`updatedAt`; defaults to `Date.now`. */
   readonly now?: () => number;
+  /**
+   * Cut off a read that has run this long, in milliseconds. `0`, the default, sets no timeout. A client's own `timeout`
+   * does not bound a download on `@google-cloud/storage` 8.x (the SDK hands it to an HTTP client that has no such
+   * option), so this is what does.
+   *
+   * It times every download the backend makes, each attempt on its own clock: a generation's tail and a range of it,
+   * and a registry row, plus the metadata read a tail read falls back on for an empty object. The clock starts at the
+   * call into the SDK, so a credential fetch counts, and runs until the whole body has arrived. A download that times
+   * out is retried like a dropped connection, and one that times out on every attempt throws `TransientError` naming
+   * the read and the timeout, for the store's read retry to run again. Uploads, deletes, listings and the conditional
+   * writes are not timed. The SDK cannot cancel a request whose response has not begun, so a read timed out before
+   * any answer leaves its connection open until the server answers or closes it. A non-negative safe integer no
+   * larger than 2,147,483,647.
+   */
+  readonly readTimeoutMs?: number;
 }
 
 /**
@@ -59,6 +74,7 @@ export const GCS_STORAGE_OPTION_KEYS = [
   'maxObjectBytes',
   'simpleUploadThresholdBytes',
   'now',
+  'readTimeoutMs',
 ] as const;
 
 /** The settings that build a client, which a supplied `client` already carries and so cannot be given beside. */
@@ -135,6 +151,7 @@ export class GcsStorage implements StorageBackend {
       readStorage: readClient,
       bucket: options.bucket,
       ...(options.prefix === undefined ? {} : { prefix: options.prefix }),
+      ...(options.readTimeoutMs === undefined ? {} : { readTimeoutMs: options.readTimeoutMs }),
     };
     this.storage = new GcsStorageDriver({
       ...shared,
