@@ -112,8 +112,9 @@ await store.load({ segment: 'audience:imported' }, { serialized: bytes });
 - **It yields, except for two whole-bitmap steps.** Two steps do not yield, each for a time that grows with the
   bitmap's bytes: the input check and the native decode, which run at the call, before the load's first request;
   and re-encoding the bitmap before the write. The load yields on each side of the re-encode, and every 1,024
-  containers while it cuts, re-checks and writes them. At the 537,403,396-byte cap they are about 270 ms and 150 ms
-  (derived: scaled from a load of 64 MiB of bitsets on an Apple M3 Pro, where they took 34 ms and 19 ms).
+  containers while it cuts, re-checks and writes them. At the 537,403,396-byte cap they take about 400 ms or more and
+  about 250 ms (derived: twice a load of 256 MiB of bitsets on an Apple M3 Pro, where the decode alone took 189–211 ms
+  and the re-encode 113–136 ms; a smaller load understates them, since their time grows faster than the bytes).
 - **The bytes must not change while the call runs.** A buffer that another thread is still writing (an `fs.read`
   or a `crypto.randomFill` into it that has not finished, say) can be decoded as bytes the check never saw. The load
   checks every container again as it writes it, so such a load throws `IntegrityError` and publishes nothing rather

@@ -49,9 +49,9 @@ so, and so do the module headers in the code.
 
   A test counts the per-id routes during a 12M-member load from a bitmap (iteration, building from values, the id
   split) and finds none. Two whole-bitmap steps do not yield, each for a time that grows with the bytes: the input
-  check and the native decode at the call, and the re-encode before the write; at the cap they are about 270 ms and
-  150 ms (derived: scaled from a 64 MiB load of bitsets on an Apple M3 Pro). Around and after them the load yields
-  the event loop, and every 1,024 containers while it writes. As it writes, it checks every container of the bitmap
+  check and the native decode at the call, and the re-encode before the write; at the cap they take about 400 ms or
+  more and about 250 ms (derived: twice a 256 MiB load of bitsets on an Apple M3 Pro). Around and after them the
+  load yields the event loop, and every 1,024 containers while it writes. As it writes, it checks every container of the bitmap
   again, so a buffer another thread was still writing during the call (an unfinished `fs.read` into it, say), which
   can decode into bytes the first check never saw, throws `IntegrityError` and publishes nothing. `pnpm
   bench:load-input` measures the time, and its figures are not recorded yet. `loadSegment` takes the same inputs
