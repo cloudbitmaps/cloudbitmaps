@@ -487,7 +487,10 @@ describe('a run that discarded a sample after a transient fault', () => {
     expect(f.stageLedger.spread?.discarded).toBe(0);
   });
 
-  it('is refused when a discarded sample was billed and not recorded, since its stage then made more than it expected', () => {
+  // The same discard, billed both times: recorded, the stage is held to what it kept; lost track of, it made more than
+  // it expected.
+  it('is accepted with its discard recorded, and refused with the same discard billed and not recorded', () => {
+    expect(refused(withDiscards(asRealRun(), [['intersect', IN_INTERSECT()]]))).toBe('');
     expect(
       refused(withDiscards(asRealRun(), [['intersect', IN_INTERSECT()]], { record: false })),
     ).toMatch(/its intersect stage made 8,280 GET-class requests, not the 8,160 it expected/);
@@ -511,7 +514,9 @@ describe('a run that discarded a sample after a transient fault', () => {
     expect(refused(withDiscards(asRealRun(), three))).toMatch(/more samples than its bounds allow/);
   });
 
-  it('is refused when it did not finish, as a run past its bounds does not', () => {
+  // The same discards: in a run that finished, evidence; in one a fault past the bound stopped, not.
+  it('is accepted when it finished, and refused when it did not, as a run past its bounds does not', () => {
+    expect(refused(withDiscards(asRealRun(), both()))).toBe('');
     const run = withDiscards(asRealRun(), both());
     run.partial = true;
     run.error = {
