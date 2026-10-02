@@ -656,6 +656,34 @@ describe('readTimeoutMs validation', () => {
     expect(registryTimeoutOf(own)).toBe(2_500);
   });
 
+  it.each([
+    ['a string', '100', 'got "100"'],
+    ['a number out of range', 2_147_483_648, 'got 2147483648'],
+    ['a fraction', 1.5, 'got 1.5'],
+    ['a boolean', true, 'got true'],
+    ['a bigint', 10n, 'got 10'],
+    ['null', null, 'got null'],
+    ['a symbol', Symbol('x'), 'got symbol'],
+    ['an object with no prototype', Object.create(null) as unknown, 'got object'],
+    [
+      'an object whose toString throws',
+      {
+        toString(): string {
+          throw new Error('no');
+        },
+      },
+      'got object',
+    ],
+    ['an array holding a symbol', [Symbol('x')], 'got object'],
+    ['a function', () => 5, 'got function'],
+  ])('names %s in its ValidationError, and never throws anything else', (_name, bad, got) => {
+    const asNumber = bad as unknown as number;
+    expect(() => new GcsStorage({ ...gcs, readTimeoutMs: asNumber })).toThrow(ValidationError);
+    expect(() => new GcsStorage({ ...gcs, readTimeoutMs: asNumber })).toThrow(
+      `readTimeoutMs must be a non-negative safe integer no larger than 2147483647; ${got}`,
+    );
+  });
+
   it.each([0, 1, 2_147_483_647])('takes %s', (ms) => {
     expect(() => new GcsStorage({ ...gcs, readTimeoutMs: ms })).not.toThrow();
   });

@@ -115,6 +115,7 @@ describe('GcsStorageDriver.getRange (one ranged GET, capped at the length asked 
       'bytes 0-7/100',
       'bytes 10-17/x',
       'bytes 10-18/100',
+      'bytes 10-17/12', // ends past the total the same header gives
     ]) {
       const fake = new FakeRange(bytesOf(100));
       const headers: Record<string, string> = { 'content-length': '8' };
