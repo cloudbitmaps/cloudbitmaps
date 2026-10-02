@@ -677,7 +677,7 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
     // ── `delete` with an expected token ──────────────────────────────────────────────────────────────────
     // A delete decided from a row read earlier must not take a row created after that read. The token is the
     // row's identity, so a delete that carries it is refused for any other incarnation.
-    it('delete with the current token tombstones the row', async () => {
+    it('delete with the current token deletes the row', async () => {
       const d = makeDriver();
       const { token } = await d.create(SEG, { currentGen: 0 });
       await d.delete(SEG, token);
