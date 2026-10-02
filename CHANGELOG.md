@@ -11,7 +11,40 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Breaking
+
+- **A byte array passed as ids is refused: `store.load` and `loadSegment` throw `ValidationError` for a `Uint8Array`,
+  a `Uint8ClampedArray` or a `Buffer` where ids go**, before any request. A byte array is an iterable of numbers, so
+  until now each byte was loaded as an id: `store.load(ref, bitmap.serialize('portable'))` published the
+  serialization's byte values as the segment, with `published: true`. Pass portable Roaring bytes as
+  `{ serialized }` (below), and ids as a `Uint32Array` or an array of numbers; every other typed array is still ids.
+  An input that is neither ids nor one of the two bitmap forms now throws `ValidationError` too, where it threw a
+  `TypeError` from inside the load.
+
 ### Added
+
+- **A load takes a bitmap as well as ids: `store.load(ref, { bitmap })` and `store.load(ref, { serialized })`.**
+  `{ bitmap }` is anything with `serialize('portable')`, such as `roaring`'s `RoaringBitmap32`, and is loaded as
+  `{ serialized: bitmap.serialize('portable') }`, serialized once at the call, so changing the bitmap afterwards does
+  not change what is loaded. `{ serialized }` is one 32-bit bitmap in the portable Roaring format, the one the
+  `'roaring'` export writes. A bare `RoaringBitmap32` from the `roaring` this package uses, passed where ids go, is
+  loaded the same way. Every bitmap input takes one path: the bytes are capped at 537,395,208 (the largest a 32-bit
+  bitmap's canonical encoding can take), checked structurally the way every stored chunk is, and decoded by the safe
+  deserializer, all before the load's first request, so malformed or oversized bytes throw `ValidationError` and
+  nothing is read or written. The chunks are then cut from the bitmap's own containers, per container and per byte
+  and never per id, and the generation is byte for byte the one the same ids write: a golden object written by the
+  id path before this change is reproduced by every input, a property test holds it over sparse, dense, run,
+  run/array-tie, boundary, operation-result and deserialized sets, and the existing load tests run a second time
+  with their loads handed `{ serialized }`, all but the one that counts the id path's own event-loop yields. Every guarantee of an id load holds: write-once, the fenced publish,
+  `guard`, `keep`, the empty refusal, encryption and the same `LoadResult`. A test counts the per-id routes during a
+  12M-member load from a bitmap (iteration, building from values, the id split) and finds none; `pnpm
+  bench:load-input` measures the time, and its figures are not recorded yet. `loadSegment` takes the same inputs;
+  `LoadInput` and `PortableBitmap` are the new types.
+
+- **`CodecBitmap.encodeChunks?()` and `EncodedChunk`, for a codec author.** A codec that implements it hands a load
+  its chunks as stored bytes, ascending, each exactly what `fromValues` of that chunk's low 16 bits, `optimize()` and
+  `serialize()` give, which is how a bitmap load writes without touching an id. Optional: a codec without it loads a
+  bitmap input through its ids. The roaring codec implements it.
 
 - **`AzureBlobStorage` can time each read: `readTimeoutMs`, off unless set.** With it set, every read request the
   Azure Blob storage and registry drivers send, a range read, a tail read's properties and its ranged download, each
@@ -54,6 +87,15 @@ so, and so do the module headers in the code.
   with `ValidationError`, as `requestsPerSizedRead` is.
 
 ### Changed
+
+- **The roaring codec's `optimize()` is canonical: `removeRunCompression()`, then `runOptimize()`.** Where a
+  container's run and array encodings are the same size (three values in one run, five in two, and so on), CRoaring's
+  `runOptimize()` alone keeps whichever kind the container already has, so the same chunk could be stored as two
+  different byte strings. Now a chunk's bytes depend on its members alone, which is what makes a load from a bitmap
+  byte-identical to one from ids. No load's bytes change, since a chunk built from ids has no run compression to
+  undo. The one place they can: an erasure that rewrites a stored run chunk down to a tie now stores it as the array a
+  load writes, the same members in a payload 7 bytes larger (a one-container bitmap's header is 16 bytes, against 9
+  under the run cookie).
 
 - **Azure Blob reads a registry pointer in one request, where it made two.** A pointer read was the blob's
   properties and then a download pinned to the ETag they named; it is now one GET of the whole blob, taking the ETag

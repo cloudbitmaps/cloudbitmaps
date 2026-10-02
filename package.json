@@ -61,6 +61,8 @@
     "bench:encoding": "node bench/encoding.cjs",
     "bench:event-loop": "pnpm run build && node bench/event-loop.cjs",
     "bench:event-loop:check": "node bench/event-loop.cjs --check",
+    "bench:load-input": "pnpm run build && node bench/load-input.cjs",
+    "bench:load-input:check": "node bench/load-input.cjs --check",
     "fuzz:install": "pnpm -C fuzz install --ignore-workspace --frozen-lockfile"
   },
   "lint-staged": {

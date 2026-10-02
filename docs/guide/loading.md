@@ -62,7 +62,7 @@ The `*Into` verbs throw on the same superseded condition instead of reporting it
 ## What a load accepts
 
 **Any id source, in any order, with duplicates.** The input is a sync or async iterable, consumed lazily and
-deduplicated as it goes: an array, a `Set`, a generator, a file stream, a warehouse cursor.
+deduplicated as it goes: an array, a `Set`, a generator, a file stream, a warehouse cursor. Or a whole bitmap, below.
 
 ```ts
 // Your function: pages through the warehouse and yields each user id.
@@ -77,6 +77,52 @@ res; // { generation, published, cardinality, collected, ... }: what was written
 ```
 
 Pass the cursor itself. The one way to make a load expensive is to build the whole id list in memory first.
+
+**A bitmap you already hold.** When the segment is the result of set algebra you ran in memory, pass the bitmap
+rather than its ids. `{ bitmap }` takes anything with `serialize('portable')`, such as `roaring`'s `RoaringBitmap32`;
+`{ serialized }` takes bytes you already have in the portable Roaring format, from a file, a queue message, or an
+export (`exportSegments`' `'roaring'` format writes it, so an export loads straight back).
+
+```ts
+import roaring from 'roaring';
+const { RoaringBitmap32 } = roaring;
+// Your bitmaps: conditions evaluated once each, combined in memory.
+declare const active: InstanceType<typeof RoaringBitmap32>;
+declare const churned: InstanceType<typeof RoaringBitmap32>;
+declare const bytes: Uint8Array; // portable Roaring, from wherever you keep it
+
+const retained = RoaringBitmap32.andNot(active, churned);
+await store.load({ segment: 'audience:retained' }, { bitmap: retained });
+await store.load({ segment: 'audience:imported' }, { serialized: bytes });
+```
+
+- **It is the same load.** The generation is byte for byte the one the same ids write, and everything above holds
+  unchanged: the guard and the empty refusal, `keep`, the fenced publish, encryption and the result.
+- **It is checked first.** The bytes are size-capped (at 537,395,208, the largest a 32-bit bitmap's canonical
+  encoding can take; call `runOptimize()` before serializing a bitmap that is over it), checked structurally the way
+  every stored chunk is, and decoded by the safe deserializer, all before the load's first request. Bytes that fail
+  are a `ValidationError`, and nothing is read or written. `{ bitmap }` is checked the same way: it is serialized once,
+  at the call, so changing the bitmap after the call does not change what is loaded.
+- **No id passes through JavaScript.** The chunks are cut out of the bitmap's own containers: the work is per
+  container and per byte (the check, then the checksum the write computes anyway), never per id.
+- **A bare `RoaringBitmap32` passed where ids go takes the same path**, when it comes from the copy of `roaring` that
+  `@cloudbitmaps/roaring` uses. One from another copy is loaded as the ids it iterates, which is correct and slower;
+  `{ bitmap }` works with either.
+- **A byte array is not ids.** A `Uint8Array`, `Uint8ClampedArray` or `Buffer` passed as ids is refused with
+  `ValidationError`, because each byte would be loaded as an id. Pass bytes as `{ serialized }`, and ids as a
+  `Uint32Array` or an array of numbers. Every other typed array is ids.
+- **Parts of one segment, built separately.** Combine them in memory with `RoaringBitmap32.orMany(parts)` and load
+  the result once. When the parts cover disjoint ranges of the id space (by the high 16 bits, say) the union copies
+  containers rather than merging them. Parts built in different processes have to reach one process first, as
+  `serialize('portable')` bytes, to be combined there: a load writes one generation from one process.
+
+<!-- load-input:start -->
+**How fast a bitmap loads.** `pnpm bench:load-input` measures a load from ids against one from a bitmap, on five sets
+up to 14.4M members, and on one container layout at 10 % and at 90 % density, where a path that works per id pays
+nine times as much and one that does not stays flat. Its figures have not been measured yet. What is checked on every
+change is that a 12M-member load from a bitmap calls none of the per-id routes: no iteration, no build from values,
+no id split (`tests/roaring/load-no-per-id.test.ts`).
+<!-- load-input:end -->
 
 **Memory is bounded by the distinct set, not by the input.** A load holds one compressed bitmap per non-empty chunk, so a
 billion duplicate-heavy ids stream through holding only the distinct result. The buffer between the input and the
