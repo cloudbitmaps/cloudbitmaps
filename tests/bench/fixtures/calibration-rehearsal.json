@@ -1,13 +1,13 @@
 {
   "note": "Written by bench/calibrate-aws.cjs. A real run's evidence is write-once: a new run gets a new id.",
   "runId": "2026-10-02-clean",
-  "startedAt": "2026-10-02T19:01:39.808Z",
+  "startedAt": "2026-10-02T20:07:10.342Z",
   "mode": "rehearse",
   "target": "minio (rehearsal — NOT a real cloud measurement)",
   "region": "n/a (local container)",
   "measured": {
     "packageVersion": "0.11.2",
-    "harness": "25a894e-dirty",
+    "harness": "b789ee5",
     "node": "v24.18.1",
     "sdk": {
       "clientS3": "3.1132.0",
@@ -79,12 +79,12 @@
   },
   "projected": {
     "put": 364,
-    "get": 106542
+    "get": 106583
   },
   "projectedStages": {
     "load": {
       "put": 220,
-      "get": 325
+      "get": 350
     },
     "intersect": {
       "put": 0,
@@ -92,11 +92,11 @@
     },
     "spread": {
       "put": 80,
-      "get": 8370
+      "get": 8380
     },
     "sweep": {
       "put": 48,
-      "get": 40168
+      "get": 40174
     },
     "warm": {
       "put": 0,
@@ -122,15 +122,15 @@
       "via": "store.load()",
       "singlePart": {
         "runs": 20,
-        "medianIdsPerSec": 4303654.351690881,
-        "medianBytesPerSec": 9057023.368516052,
+        "medianIdsPerSec": 4836418.260454298,
+        "medianBytesPerSec": 10178242.22912607,
         "medianObjectBytes": 1052088,
         "medianUploadBytes": 1052250
       },
       "multipart": {
         "runs": 5,
-        "medianIdsPerSec": 17042907.33558707,
-        "medianBytesPerSec": 17097371.067581005,
+        "medianIdsPerSec": 17535951.83749686,
+        "medianBytesPerSec": 17591991.183503382,
         "medianObjectBytes": 12622960,
         "medianUploadBytes": 12623123
       },
@@ -139,7 +139,7 @@
           "segment": "seg-0",
           "kind": "single",
           "put": 3,
-          "get": 5,
+          "get": 6,
           "parts": 0,
           "objectBytes": 1052086,
           "uploadBytes": 1052247
@@ -148,7 +148,7 @@
           "segment": "seg-1",
           "kind": "single",
           "put": 3,
-          "get": 5,
+          "get": 6,
           "parts": 0,
           "objectBytes": 1052087,
           "uploadBytes": 1052248
@@ -157,7 +157,7 @@
           "segment": "seg-2",
           "kind": "single",
           "put": 3,
-          "get": 5,
+          "get": 6,
           "parts": 0,
           "objectBytes": 1052087,
           "uploadBytes": 1052248
@@ -166,7 +166,7 @@
           "segment": "seg-3",
           "kind": "single",
           "put": 3,
-          "get": 5,
+          "get": 6,
           "parts": 0,
           "objectBytes": 1052087,
           "uploadBytes": 1052248
@@ -175,7 +175,7 @@
           "segment": "seg-4",
           "kind": "single",
           "put": 3,
-          "get": 5,
+          "get": 6,
           "parts": 0,
           "objectBytes": 1052087,
           "uploadBytes": 1052248
@@ -184,7 +184,7 @@
           "segment": "seg-5",
           "kind": "single",
           "put": 3,
-          "get": 5,
+          "get": 6,
           "parts": 0,
           "objectBytes": 1052087,
           "uploadBytes": 1052248
@@ -193,7 +193,7 @@
           "segment": "seg-6",
           "kind": "single",
           "put": 3,
-          "get": 5,
+          "get": 6,
           "parts": 0,
           "objectBytes": 1052087,
           "uploadBytes": 1052248
@@ -202,7 +202,7 @@
           "segment": "seg-7",
           "kind": "single",
           "put": 3,
-          "get": 5,
+          "get": 6,
           "parts": 0,
           "objectBytes": 1052087,
           "uploadBytes": 1052248
@@ -211,7 +211,7 @@
           "segment": "seg-8",
           "kind": "single",
           "put": 3,
-          "get": 5,
+          "get": 6,
           "parts": 0,
           "objectBytes": 1052087,
           "uploadBytes": 1052248
@@ -220,7 +220,7 @@
           "segment": "seg-9",
           "kind": "single",
           "put": 3,
-          "get": 5,
+          "get": 6,
           "parts": 0,
           "objectBytes": 1052088,
           "uploadBytes": 1052249
@@ -229,7 +229,7 @@
           "segment": "seg-10",
           "kind": "single",
           "put": 3,
-          "get": 5,
+          "get": 6,
           "parts": 0,
           "objectBytes": 1052088,
           "uploadBytes": 1052250
@@ -238,7 +238,7 @@
           "segment": "seg-11",
           "kind": "single",
           "put": 3,
-          "get": 5,
+          "get": 6,
           "parts": 0,
           "objectBytes": 1052088,
           "uploadBytes": 1052250
@@ -247,7 +247,7 @@
           "segment": "seg-12",
           "kind": "single",
           "put": 3,
-          "get": 5,
+          "get": 6,
           "parts": 0,
           "objectBytes": 1052088,
           "uploadBytes": 1052250
@@ -256,7 +256,7 @@
           "segment": "seg-13",
           "kind": "single",
           "put": 3,
-          "get": 5,
+          "get": 6,
           "parts": 0,
           "objectBytes": 1052088,
           "uploadBytes": 1052250
@@ -265,7 +265,7 @@
           "segment": "seg-14",
           "kind": "single",
           "put": 3,
-          "get": 5,
+          "get": 6,
           "parts": 0,
           "objectBytes": 1052088,
           "uploadBytes": 1052250
@@ -274,7 +274,7 @@
           "segment": "seg-15",
           "kind": "single",
           "put": 3,
-          "get": 5,
+          "get": 6,
           "parts": 0,
           "objectBytes": 1052088,
           "uploadBytes": 1052250
@@ -283,7 +283,7 @@
           "segment": "seg-16",
           "kind": "single",
           "put": 3,
-          "get": 5,
+          "get": 6,
           "parts": 0,
           "objectBytes": 1052088,
           "uploadBytes": 1052250
@@ -292,7 +292,7 @@
           "segment": "seg-17",
           "kind": "single",
           "put": 3,
-          "get": 5,
+          "get": 6,
           "parts": 0,
           "objectBytes": 1052088,
           "uploadBytes": 1052250
@@ -301,7 +301,7 @@
           "segment": "seg-18",
           "kind": "single",
           "put": 3,
-          "get": 5,
+          "get": 6,
           "parts": 0,
           "objectBytes": 1052088,
           "uploadBytes": 1052250
@@ -310,7 +310,7 @@
           "segment": "seg-19",
           "kind": "single",
           "put": 3,
-          "get": 5,
+          "get": 6,
           "parts": 0,
           "objectBytes": 1052088,
           "uploadBytes": 1052250
@@ -319,7 +319,7 @@
           "segment": "large-0",
           "kind": "multipart",
           "put": 6,
-          "get": 5,
+          "get": 6,
           "parts": 2,
           "objectBytes": 12622960,
           "uploadBytes": 12623123
@@ -328,7 +328,7 @@
           "segment": "large-1",
           "kind": "multipart",
           "put": 6,
-          "get": 5,
+          "get": 6,
           "parts": 2,
           "objectBytes": 12622960,
           "uploadBytes": 12623123
@@ -337,7 +337,7 @@
           "segment": "large-2",
           "kind": "multipart",
           "put": 6,
-          "get": 5,
+          "get": 6,
           "parts": 2,
           "objectBytes": 12622960,
           "uploadBytes": 12623123
@@ -346,7 +346,7 @@
           "segment": "large-3",
           "kind": "multipart",
           "put": 6,
-          "get": 5,
+          "get": 6,
           "parts": 2,
           "objectBytes": 12622960,
           "uploadBytes": 12623123
@@ -355,7 +355,7 @@
           "segment": "large-4",
           "kind": "multipart",
           "put": 6,
-          "get": 5,
+          "get": 6,
           "parts": 2,
           "objectBytes": 12622960,
           "uploadBytes": 12623123
@@ -363,11 +363,11 @@
       ],
       "expected": {
         "put": 90,
-        "get": 125
+        "get": 150
       },
       "requests": {
         "put": 90,
-        "get": 125,
+        "get": 150,
         "bytesUp": 84160595,
         "bytesDown": 8090,
         "parts": 10,
@@ -387,15 +387,15 @@
         }
       },
       "discarded": [],
-      "expectedGets": 125
+      "expectedGets": 150
     },
     "intersect": {
       "runs": 40,
       "cold": true,
       "exact": true,
-      "p50ms": 121.605291,
-      "p95ms": 290.081291,
-      "p99ms": 707.871667,
+      "p50ms": 168.36825,
+      "p95ms": 302.171792,
+      "p99ms": 926.637334,
       "chunksFetchedPerOperand": 100,
       "chunksPerSegment": 1999,
       "payloadFraction": 0.049045327,
@@ -403,8 +403,8 @@
       "pointerReadsPerIntersect": 2,
       "medianGets": 204,
       "medianPeakInFlight": 16,
-      "medianMeanInFlight": 11.391320131,
-      "medianRounds": 17.937219183,
+      "medianMeanInFlight": 11.176627218,
+      "medianRounds": 18.293802644,
       "modelRounds": 15,
       "expectedGets": 8160,
       "offExpected": 0,
@@ -441,17 +441,17 @@
       "runs": 40,
       "cold": true,
       "exact": true,
-      "p50ms": 106.984625,
-      "p95ms": 142.266709,
-      "p99ms": 209.6395,
+      "p50ms": 138.982125,
+      "p95ms": 486.526041,
+      "p99ms": 571.95575,
       "chunksFetchedPerOperand": 100,
       "chunksPerSegment": 1999,
       "tailReadBytesPerOperand": 262144,
       "pointerReadsPerIntersect": 2,
       "medianGets": 204,
       "medianPeakInFlight": 16,
-      "medianMeanInFlight": 11.125216278,
-      "medianRounds": 18.345915072,
+      "medianMeanInFlight": 11.216889835,
+      "medianRounds": 18.265826341,
       "modelRounds": 15,
       "expectedGets": 8160,
       "offExpected": 0,
@@ -494,7 +494,7 @@
             "segment": "spread-0",
             "kind": "single",
             "put": 3,
-            "get": 5,
+            "get": 6,
             "parts": 0,
             "objectBytes": 1051586,
             "uploadBytes": 1051750
@@ -503,7 +503,7 @@
             "segment": "spread-1",
             "kind": "single",
             "put": 3,
-            "get": 5,
+            "get": 6,
             "parts": 0,
             "objectBytes": 1051586,
             "uploadBytes": 1051750
@@ -512,7 +512,7 @@
             "segment": "spread-2",
             "kind": "single",
             "put": 3,
-            "get": 5,
+            "get": 6,
             "parts": 0,
             "objectBytes": 1051586,
             "uploadBytes": 1051750
@@ -521,7 +521,7 @@
             "segment": "spread-3",
             "kind": "single",
             "put": 3,
-            "get": 5,
+            "get": 6,
             "parts": 0,
             "objectBytes": 1051586,
             "uploadBytes": 1051750
@@ -530,7 +530,7 @@
             "segment": "spread-4",
             "kind": "single",
             "put": 3,
-            "get": 5,
+            "get": 6,
             "parts": 0,
             "objectBytes": 1051586,
             "uploadBytes": 1051750
@@ -539,7 +539,7 @@
             "segment": "spread-5",
             "kind": "single",
             "put": 3,
-            "get": 5,
+            "get": 6,
             "parts": 0,
             "objectBytes": 1051586,
             "uploadBytes": 1051750
@@ -548,7 +548,7 @@
             "segment": "spread-6",
             "kind": "single",
             "put": 3,
-            "get": 5,
+            "get": 6,
             "parts": 0,
             "objectBytes": 1051586,
             "uploadBytes": 1051750
@@ -557,7 +557,7 @@
             "segment": "spread-7",
             "kind": "single",
             "put": 3,
-            "get": 5,
+            "get": 6,
             "parts": 0,
             "objectBytes": 1051586,
             "uploadBytes": 1051750
@@ -566,7 +566,7 @@
             "segment": "spread-8",
             "kind": "single",
             "put": 3,
-            "get": 5,
+            "get": 6,
             "parts": 0,
             "objectBytes": 1051586,
             "uploadBytes": 1051750
@@ -575,7 +575,7 @@
             "segment": "spread-9",
             "kind": "single",
             "put": 3,
-            "get": 5,
+            "get": 6,
             "parts": 0,
             "objectBytes": 1051586,
             "uploadBytes": 1051750
@@ -583,7 +583,7 @@
         ],
         "requests": {
           "put": 30,
-          "get": 50,
+          "get": 60,
           "bytesUp": 10517500,
           "bytesDown": 3280,
           "parts": 0,
@@ -612,17 +612,17 @@
           "runs": 10,
           "cold": true,
           "exact": true,
-          "p50ms": 1240.211625,
-          "p95ms": 5025.067,
-          "p99ms": 5025.067,
+          "p50ms": 2200.3565,
+          "p95ms": 4863.373292,
+          "p99ms": 4863.373292,
           "chunksFetchedPerOperand": 1000,
           "chunksPerSegment": 2899,
           "tailReadBytesPerOperand": 262144,
           "pointerReadsPerIntersect": 2,
           "medianGets": 2004,
           "medianPeakInFlight": 16,
-          "medianMeanInFlight": 12.116774931,
-          "medianRounds": 165.475617585,
+          "medianMeanInFlight": 11.907029612,
+          "medianRounds": 168.366629656,
           "modelRounds": 127,
           "expectedGets": 2004,
           "offExpected": 0,
@@ -639,17 +639,17 @@
           "runs": 5,
           "cold": true,
           "exact": true,
-          "p50ms": 2150.839709,
-          "p95ms": 2341.696542,
-          "p99ms": 2341.696542,
+          "p50ms": 2474.459083,
+          "p95ms": 4061.154333,
+          "p99ms": 4061.154333,
           "chunksFetchedPerOperand": 2000,
           "chunksPerSegment": 3899,
           "tailReadBytesPerOperand": 262144,
           "pointerReadsPerIntersect": 2,
           "medianGets": 4004,
           "medianPeakInFlight": 16,
-          "medianMeanInFlight": 11.832339563,
-          "medianRounds": 338.39461575,
+          "medianMeanInFlight": 11.907656536,
+          "medianRounds": 336.254240103,
           "modelRounds": 252,
           "expectedGets": 4004,
           "offExpected": 0,
@@ -693,7 +693,7 @@
                 "segment": "sweep-1000-0",
                 "kind": "single",
                 "put": 3,
-                "get": 5,
+                "get": 6,
                 "parts": 0,
                 "objectBytes": 1525262,
                 "uploadBytes": 1525430
@@ -702,7 +702,7 @@
                 "segment": "sweep-1000-1",
                 "kind": "single",
                 "put": 3,
-                "get": 5,
+                "get": 6,
                 "parts": 0,
                 "objectBytes": 1525263,
                 "uploadBytes": 1525431
@@ -711,7 +711,7 @@
                 "segment": "sweep-1000-2",
                 "kind": "single",
                 "put": 3,
-                "get": 5,
+                "get": 6,
                 "parts": 0,
                 "objectBytes": 1525263,
                 "uploadBytes": 1525431
@@ -725,7 +725,7 @@
                 "segment": "sweep-2000-0",
                 "kind": "single",
                 "put": 3,
-                "get": 5,
+                "get": 6,
                 "parts": 0,
                 "objectBytes": 2051536,
                 "uploadBytes": 2051704
@@ -734,7 +734,7 @@
                 "segment": "sweep-2000-1",
                 "kind": "single",
                 "put": 3,
-                "get": 5,
+                "get": 6,
                 "parts": 0,
                 "objectBytes": 2051537,
                 "uploadBytes": 2051705
@@ -743,7 +743,7 @@
                 "segment": "sweep-2000-2",
                 "kind": "single",
                 "put": 3,
-                "get": 5,
+                "get": 6,
                 "parts": 0,
                 "objectBytes": 2051537,
                 "uploadBytes": 2051705
@@ -753,7 +753,7 @@
         ],
         "requests": {
           "put": 18,
-          "get": 30,
+          "get": 36,
           "bytesUp": 10731406,
           "bytesDown": 2016,
           "parts": 0,
@@ -780,9 +780,9 @@
       "exact": true,
       "warmGets": 0,
       "n": 40,
-      "p50ms": 4.262208,
-      "p95ms": 4.766375,
-      "p99ms": 4.7665,
+      "p50ms": 5.96975,
+      "p95ms": 10.985084,
+      "p99ms": 14.369416,
       "priming": {
         "requests": {
           "put": 0,
@@ -844,9 +844,9 @@
         "cold": {
           "gets": 20,
           "n": 10,
-          "p50ms": 4.899,
-          "p95ms": 6.488791,
-          "p99ms": 6.488791,
+          "p50ms": 51.159833,
+          "p95ms": 136.915916,
+          "p99ms": 136.915916,
           "expectedGets": 20,
           "store": {
             "retry": false,
@@ -859,9 +859,9 @@
         "warm": {
           "gets": 0,
           "n": 1000,
-          "p50ms": 0.086542,
-          "p95ms": 0.0955,
-          "p99ms": 0.110875,
+          "p50ms": 0.141833,
+          "p95ms": 0.413041,
+          "p99ms": 2.052542,
           "expectedGets": 0,
           "store": {
             "retry": false,
@@ -876,9 +876,9 @@
         "openSegment": {
           "gets": 1000,
           "n": 1000,
-          "p50ms": 1.466584,
-          "p95ms": 4.639583,
-          "p99ms": 10.177709,
+          "p50ms": 6.342792,
+          "p95ms": 25.346333,
+          "p99ms": 55.50775,
           "expectedGets": 1000,
           "store": {
             "retry": false,
@@ -1901,16 +1901,16 @@
             }
           },
           "n": 1000,
-          "p50ms": 4.850958,
-          "p95ms": 8.220917,
-          "p99ms": 13.10175
+          "p50ms": 6.760584,
+          "p95ms": 14.026167,
+          "p99ms": 23.011209
         },
         "warm": {
           "gets": 0,
           "n": 1000,
-          "p50ms": 0.002916,
-          "p95ms": 0.00475,
-          "p99ms": 0.011166,
+          "p50ms": 0.002875,
+          "p95ms": 0.010166,
+          "p99ms": 0.024708,
           "expectedGets": 0,
           "store": {
             "retry": false,
@@ -1951,16 +1951,16 @@
       "excludes": 10,
       "includeChunks": 1999,
       "n": 10,
-      "p50ms": 3431.631,
-      "p95ms": 8110.255667,
-      "p99ms": 8110.255667,
+      "p50ms": 2075.113,
+      "p95ms": 2512.8525,
+      "p99ms": 2512.8525,
       "medianGets": 3021,
       "chunkReadsPerCall": 2999,
       "tailReadsPerCall": 11,
       "pointerReadsPerCall": 11,
       "medianPeakInFlight": 80,
-      "medianMeanInFlight": 16.996158649,
-      "medianRounds": 187.039010813,
+      "medianMeanInFlight": 17.318493014,
+      "medianRounds": 177.949452235,
       "timedStore": {
         "retry": false,
         "cache": {
@@ -1993,26 +1993,26 @@
     }
   },
   "network": {
-    "rttFloorMs": 3.596459,
-    "rttMedianMs": 6.703583,
+    "rttFloorMs": 1.261083,
+    "rttMedianMs": 1.95925,
     "client": "local container",
     "inRegionThresholdMs": 30,
     "clientRegion": null
   },
   "cost": {
     "putUSD": 0.00071,
-    "getUSD": 0.0371464,
-    "totalUSD": 0.0378564,
+    "getUSD": 0.0371628,
+    "totalUSD": 0.0378728,
     "ops": {
       "put": 142,
-      "get": 92866,
+      "get": 92907,
       "free": 2,
       "bytesUp": 105409501,
       "bytesDown": 395315466,
       "byCommand": {
         "HeadBucketCommand": 11,
         "CreateBucketCommand": 1,
-        "GetObjectCommand": 92814,
+        "GetObjectCommand": 92855,
         "HeadObjectCommand": 41,
         "PutObjectCommand": 77,
         "ListObjectsV2Command": 41,
@@ -2026,7 +2026,7 @@
       },
       "inFlight": 0,
       "peakInFlight": 80,
-      "requestMs": 963152.497653997,
+      "requestMs": 1036576.943403998,
       "reads": {
         "whole": {
           "n": 1412,
@@ -2048,5 +2048,5 @@
     "perRun": 3,
     "perStage": 2
   },
-  "elapsedMs": 88740
+  "elapsedMs": 103414
 }

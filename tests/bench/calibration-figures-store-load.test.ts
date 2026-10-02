@@ -203,15 +203,15 @@ describe('a run that timed store.load()', () => {
   it('is derived, each load priced from the requests it made', () => {
     const f = figures.derive(asRealRun(), SOURCES);
     expect(f.loadVia).toBe('store.load()');
-    // A first load of a segment: the object, the collection's listing and the pointer; four pointer reads and the
+    // A first load of a segment: the object, the collection's listing and the pointer; five pointer reads and the
     // check of its generation number. A multipart object is a create, its parts and a complete in place of the one PUT.
     expect(f.putsPerSingle).toBe(3);
-    expect(f.getsPerLoad).toBe(5);
+    expect(f.getsPerLoad).toBe(6);
     expect(f.partsPerMultipart).toBe(2);
     expect(f.putsPerMultipart).toBe(6);
-    expect(f.getsPerMultipart).toBe(5);
-    expect(f.usd.singleLoad).toBeCloseTo(3 * 5e-6 + 5 * GET_USD, 12);
-    expect(f.usd.multipartLoad).toBeCloseTo(6 * 5e-6 + 5 * GET_USD, 12);
+    expect(f.getsPerMultipart).toBe(6);
+    expect(f.usd.singleLoad).toBeCloseTo(3 * 5e-6 + 6 * GET_USD, 12);
+    expect(f.usd.multipartLoad).toBeCloseTo(6 * 5e-6 + 6 * GET_USD, 12);
     expect(f.loads).toBe(fixture.phases.load.perLoad.length);
   });
 
@@ -264,8 +264,8 @@ describe('a run that timed store.load()', () => {
     const loadRows = f.rows.filter((r) => /store\.load|single-part|multipart/.test(String(r.says)));
     expect(loadRows.length).toBe(2);
     expect(loadRows.every((r) => r.label === 'derived')).toBe(true);
-    expect(f.shapes).toContainEqual([3, 5]);
-    expect(f.shapes).toContainEqual([6, 5]);
+    expect(f.shapes).toContainEqual([3, 6]);
+    expect(f.shapes).toContainEqual([6, 6]);
     expect(f.stageLedger.warm?.get).toBe(f.stageLedger.warm?.expectedGets);
   });
 
