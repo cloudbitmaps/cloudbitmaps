@@ -11,10 +11,17 @@
  * on-disk CRC passes. The footer's `chunkCount`/`totalCardinality` are zero on an encrypted object (metadata is
  * hidden), so both are derived from the decrypted index; AEAD authentication (incl. the per-location AAD)
  * replaces the cleartext-count cross-check.
+ *
+ * **Format 1.1.** An object whose minor is 1 or more carries an extension block just before the index, found from
+ * the trailer at `indexOffset - 12`. `open()` reads it with the index, from the tail or from the same range read,
+ * checks its trailer, its CRC32C, its sections and the metadata in them before anything trusts them, and holds payloads
+ * to the bytes before it. A 1.0 object has no block, and is read exactly as before.
  */
 import { IntegrityError, UnsupportedError, ValidationError } from '../errors';
 import type { BlobReader } from '../blob';
 import type { CrbmCrypto } from '../crypto';
+import { MAX_METADATA_BYTES, metadataFromBytes } from '../metadata';
+import type { GenerationMetadata } from '../ports';
 import { crc32c } from './crc32c';
 import { readVarint } from './varint';
 import {
@@ -26,6 +33,10 @@ import {
   DEFAULT_MAX_PAYLOAD_BYTES,
   DEFAULT_TAIL_BYTES,
   ELEMENT_WIDTH_32,
+  EXT_MAGIC,
+  EXT_SECTION_HEADER_BYTES,
+  EXT_SECTION_METADATA,
+  EXT_TRAILER_BYTES,
   FLAG_ENCRYPTED,
   FLAG_LITTLE_ENDIAN,
   FOOTER,
@@ -37,8 +48,10 @@ import {
   PAYLOAD_START,
   PREAMBLE_BYTES,
   KNOWN_PAYLOAD_CODEC_IDS,
+  MAX_EXT_BYTES,
   PAYLOAD_CODEC_ROARING_PORTABLE,
   VERSION_MAJOR,
+  VERSION_MINOR_EXTENSION,
 } from './format';
 
 /**
@@ -156,12 +169,20 @@ export class CrbmReader {
     readonly lineage: unknown,
     readonly totalCardinality: number,
     private readonly index: ParsedIndex,
-    /** True when `open()` satisfied the index from the tail GET alone (no second range read). */
+    /**
+     * True when `open()` satisfied the index, and any extension block, from the tail GET alone (no second range
+     * read).
+     */
     readonly servedFromTail: boolean,
     /** Set iff the object is encrypted — used to decrypt each chunk payload in {@link getChunk}. */
     private readonly crypto: CrbmCrypto | undefined,
     /** The footer's own CRC, as verified at open: it covers the index's CRC, the chunk count and the generation. */
     private readonly footerCrc: number,
+    /**
+     * The metadata the generation was written with, checked and decrypted at open; `undefined` when it has none
+     * (every format 1.0 object). Frozen: every caller shares one copy.
+     */
+    readonly metadata: GenerationMetadata | undefined,
   ) {}
 
   /**
@@ -277,6 +298,9 @@ export class CrbmReader {
     const chunkCount = fview.getUint32(FOOTER.chunkCount, true);
     const totalCardinality = readU64(fview, FOOTER.totalCardinality, 'total_cardinality');
     const generation = readU64(fview, FOOTER.generation, 'generation');
+    const versionMinor = footer[FOOTER.versionMinor]!;
+    // A later minor may only add to 1.1, so it carries the block too.
+    const hasExtension = versionMinor >= VERSION_MINOR_EXTENSION;
 
     // Bounds + size cap on the index region before trusting/fetching it.
     if (indexOffset < PAYLOAD_START || indexOffset + indexLength > size - FOOTER_BYTES) {
@@ -291,24 +315,85 @@ export class CrbmReader {
     // Validate the front preamble too, but only when this GET already covers it (no extra request).
     const tailCoversFrom = size - tail.length;
     if (tailCoversFrom === 0) {
-      if (!magicMatches(tail, 0) || tail[4] !== versionMajor) {
+      if (!magicMatches(tail, 0) || tail[4] !== versionMajor || tail[5] !== versionMinor) {
         throw new IntegrityError('.crbm preamble magic/version mismatch with footer');
       }
     }
 
     // --- Index: already in the tail, or one more GET ---
-    let indexBytes: Uint8Array;
+    // On 1.1 the range read starts a whole block's worth before the index, so a block of any size it may hold comes
+    // with the index: the block costs bytes, never a request, unless the tail ends inside it.
+    const lowest = hasExtension
+      ? Math.max(PAYLOAD_START, indexOffset - EXT_TRAILER_BYTES - MAX_EXT_BYTES)
+      : indexOffset;
+    let region: Uint8Array;
+    let regionStart: number;
     let servedFromTail: boolean;
     if (indexOffset >= tailCoversFrom) {
-      const start = indexOffset - tailCoversFrom;
-      indexBytes = tail.subarray(start, start + indexLength);
+      region = tail;
+      regionStart = tailCoversFrom;
       servedFromTail = true;
     } else {
-      indexBytes = await blob.getRange(indexOffset, indexLength);
+      region = await blob.getRange(lowest, indexOffset + indexLength - lowest);
+      regionStart = lowest;
       servedFromTail = false;
     }
+    const indexBytes = region.subarray(
+      indexOffset - regionStart,
+      indexOffset - regionStart + indexLength,
+    );
     if (crc32c(indexBytes) !== indexCrc) {
       throw new IntegrityError('.crbm index CRC mismatch');
+    }
+
+    // --- Extension block (1.1): sections ‖ u32 sectionsLength ‖ u32 crc32c ‖ "CRBX", just before the index ---
+    let payloadEnd = indexOffset;
+    let metadata: GenerationMetadata | undefined;
+    if (hasExtension) {
+      const trailerStart = indexOffset - EXT_TRAILER_BYTES;
+      if (trailerStart < PAYLOAD_START) {
+        throw new IntegrityError(`.crbm minor ${versionMinor} has no room for its extension block`);
+      }
+      // The block's bytes come from what is already fetched, or, when the tail ends inside the block, from one read.
+      let window = { bytes: region, start: regionStart };
+      if (trailerStart < regionStart) {
+        window = { bytes: await blob.getRange(lowest, indexOffset - lowest), start: lowest };
+        servedFromTail = false;
+      }
+      const trailer = within(window.bytes, window.start, trailerStart, indexOffset);
+      const tview = new DataView(trailer.buffer, trailer.byteOffset, trailer.byteLength);
+      if (!EXT_MAGIC.every((b, i) => trailer[8 + i] === b)) {
+        throw new IntegrityError('.crbm extension block trailer magic mismatch');
+      }
+      const sectionsLength = tview.getUint32(0, true);
+      if (sectionsLength > MAX_EXT_BYTES) {
+        throw new IntegrityError(
+          `.crbm extension block ${sectionsLength}B exceeds cap ${MAX_EXT_BYTES}B`,
+        );
+      }
+      const extStart = trailerStart - sectionsLength;
+      if (extStart < PAYLOAD_START) {
+        throw new IntegrityError(`.crbm extension block of ${sectionsLength}B out of bounds`);
+      }
+      // The CRC covers the sections and the length field after them.
+      let covered: Uint8Array;
+      if (extStart >= window.start) {
+        covered = within(window.bytes, window.start, extStart, trailerStart + 4);
+      } else {
+        covered = await blob.getRange(extStart, sectionsLength + 4);
+        servedFromTail = false;
+        if (covered.length !== sectionsLength + 4) {
+          throw new IntegrityError('.crbm extension block read short');
+        }
+      }
+      if (crc32c(covered) !== tview.getUint32(4, true)) {
+        throw new IntegrityError('.crbm extension block CRC mismatch');
+      }
+      metadata = parseExtension(
+        covered.subarray(0, sectionsLength),
+        encrypted ? options.crypto : undefined,
+      );
+      payloadEnd = extStart;
     }
 
     // Decrypt the index (nonce/tag from the footer) before parsing; AAD binds it to this (segment, generation).
@@ -324,10 +409,11 @@ export class CrbmReader {
         )
       : indexBytes;
 
-    // Payloads live in [PAYLOAD_START, indexOffset); an encrypted one is at least its nonce and tag.
+    // Payloads live in [PAYLOAD_START, payloadEnd), which ends at the extension block when there is one; an
+    // encrypted payload is at least its nonce and tag.
     const index = parseIndex(
       indexForParse,
-      indexOffset,
+      payloadEnd,
       maxPayloadBytes,
       encrypted ? AEAD_NONCE_BYTES + AEAD_TAG_BYTES : 1,
     );
@@ -363,6 +449,7 @@ export class CrbmReader {
       servedFromTail,
       options.crypto,
       storedFooterCrc,
+      metadata,
     );
   }
 
@@ -429,6 +516,77 @@ export class CrbmReader {
       this.crypto.aadFor(chunkKey),
     );
   }
+}
+
+/** `bytes[from, to)` of a buffer that starts at object offset `start`, or an IntegrityError when it holds less. */
+function within(bytes: Uint8Array, start: number, from: number, to: number): Uint8Array {
+  if (from < start || to > start + bytes.length) {
+    throw new IntegrityError('.crbm extension block read short');
+  }
+  return bytes.subarray(from - start, to - start);
+}
+
+const extensionCorrupt = (message: string): never => {
+  throw new IntegrityError(`.crbm extension block: ${message}`);
+};
+
+/**
+ * Read the sections of an extension block, its bytes before the trailer, once their CRC has passed. Each section is
+ * `u8 type ‖ u32 length ‖ bytes`, in strictly ascending type order, and together they fill the region exactly. Type 1
+ * is the generation's metadata, held to the metadata rules and its canonical form (and opened first with `crypto`,
+ * under the metadata scope, when the object is encrypted); a type this build does not know is a later minor's, and
+ * is skipped. Returns the metadata, or `undefined` when the block has none. Every other shape is an
+ * {@link IntegrityError}.
+ *
+ * Exported for the coverage-guided fuzz harness, which drives it directly, past the block's CRC; not public API.
+ */
+export function parseExtension(
+  sections: Uint8Array,
+  crypto: CrbmCrypto | undefined,
+): GenerationMetadata | undefined {
+  const view = new DataView(sections.buffer, sections.byteOffset, sections.byteLength);
+  let metadata: GenerationMetadata | undefined;
+  let lastType = 0;
+  let pos = 0;
+  while (pos < sections.length) {
+    if (sections.length - pos < EXT_SECTION_HEADER_BYTES)
+      extensionCorrupt('a section header is cut off');
+    const type = sections[pos]!;
+    const length = view.getUint32(pos + 1, true);
+    pos += EXT_SECTION_HEADER_BYTES;
+    // Starting from 0 refuses type 0, a repeated type and a type out of order with one comparison.
+    if (type <= lastType) {
+      extensionCorrupt(
+        type === 0
+          ? 'section type 0 is not a section type'
+          : `section type ${type} after ${lastType}`,
+      );
+    }
+    if (length > sections.length - pos) extensionCorrupt(`section ${type} runs past the block`);
+    const body = sections.subarray(pos, pos + length);
+    pos += length;
+    lastType = type;
+    if (type === EXT_SECTION_METADATA) metadata = metadataSection(body, crypto);
+  }
+  return metadata;
+}
+
+/** The metadata section's record: its canonical JSON, opened first when the object is encrypted. */
+function metadataSection(body: Uint8Array, crypto: CrbmCrypto | undefined): GenerationMetadata {
+  if (crypto === undefined) return metadataFromBytes(body, extensionCorrupt);
+  const framing = AEAD_NONCE_BYTES + AEAD_TAG_BYTES;
+  if (body.length <= framing || body.length > framing + MAX_METADATA_BYTES) {
+    extensionCorrupt(`sealed metadata of ${body.length}B is not a nonce, up to 1 KiB and a tag`);
+  }
+  const plain = crypto.aead.open(
+    {
+      nonce: body.subarray(0, AEAD_NONCE_BYTES),
+      ciphertext: body.subarray(AEAD_NONCE_BYTES, body.length - AEAD_TAG_BYTES),
+      tag: body.subarray(body.length - AEAD_TAG_BYTES),
+    },
+    crypto.aadFor('metadata'),
+  );
+  return metadataFromBytes(plain, extensionCorrupt);
 }
 
 // Exported for the coverage-guided fuzz harness, which fuzzes the hand-written index parser

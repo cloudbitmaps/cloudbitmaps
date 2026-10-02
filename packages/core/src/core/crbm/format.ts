@@ -1,5 +1,5 @@
 /**
- * Frozen `.crbm` v1.0 layout constants.
+ * Frozen `.crbm` v1 layout constants (format 1.0 and its additive minor 1.1).
  *
  * These byte widths/offsets are pinned by the golden corpus and must never change for v1 —
  * a new layout is a new format version. All multi-byte integers are little-endian (v1 fixes LE).
@@ -9,7 +9,13 @@
 export const MAGIC = Uint8Array.of(0x43, 0x52, 0x42, 0x4d);
 
 export const VERSION_MAJOR = 1;
+/** The minor of an object with no extension block: format 1.0, byte for byte. */
 export const VERSION_MINOR = 0;
+/**
+ * The minor of an object that carries the extension block (format 1.1), written only when there is something to put
+ * in it. A reader takes any minor of at least this one to carry the block, since a later minor may only add to it.
+ */
+export const VERSION_MINOR_EXTENSION = 1;
 
 /** Front preamble: magic(4) + version_major(1) + version_minor(1) + reserved(2). */
 export const PREAMBLE_BYTES = 8;
@@ -121,6 +127,31 @@ export const DEFAULT_MAX_PAYLOAD_BYTES = 16 * 1024 * 1024;
 
 /** A chunk's cardinality is in `[1, 65536]` (empty chunks are never written). */
 export const MAX_CHUNK_CARDINALITY = 0x1_0000;
+
+/**
+ * The extension block (format 1.1): `section* ‖ u32 sectionsLength ‖ u32 crc32c ‖ "CRBX"`, between the last payload
+ * and the index, so the index starts right after it. A reader finds it from `indexOffset` alone: the trailer is the
+ * {@link EXT_TRAILER_BYTES} bytes before the index, and the CRC32C covers the sections and the length field. Each
+ * section is `u8 type ‖ u32 length ‖ bytes`, in strictly ascending type order; a reader skips a type it does not
+ * know. A reader of 1.0 never looks between the last payload and the index, so it opens a 1.1 object and ignores
+ * the block.
+ */
+export const EXT_MAGIC = Uint8Array.of(0x43, 0x52, 0x42, 0x58); // "CRBX"
+/** The trailer: the sections' length (u32), their CRC32C (u32) and {@link EXT_MAGIC}. */
+export const EXT_TRAILER_BYTES = 12;
+/** A section's header: its type (u8) and its length (u32). */
+export const EXT_SECTION_HEADER_BYTES = 5;
+/**
+ * Cap on the sections of one block, in bytes. A reader refuses a larger block before it fetches it, and a writer of
+ * any 1.x minor keeps within it, so a later section type stays readable by this reader.
+ */
+export const MAX_EXT_BYTES = 4 * 1024;
+/**
+ * Section type 1: the generation's metadata, its canonical JSON in UTF-8. On an encrypted object the section is
+ * `nonce ‖ ciphertext ‖ tag`, sealed under the segment's key with the metadata scope of the associated data.
+ * Type 0 is not a section type: a reader refuses it.
+ */
+export const EXT_SECTION_METADATA = 1;
 
 /** Fixed width of a per-chunk CRC32C field in the index (high-entropy → not varint). */
 export const CRC32C_BYTES = 4;

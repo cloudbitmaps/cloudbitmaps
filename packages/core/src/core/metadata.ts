@@ -5,6 +5,7 @@
  * `ValidationError`, and bytes read back from a tier, refused with `IntegrityError`. The caller passes the error
  * to raise. Pure: no I/O.
  */
+import type { GenerationMetadata } from './ports';
 import { isWellFormedString } from './validate';
 
 /** Cap on the canonical JSON of one generation's metadata, in UTF-8 bytes (braces and quotes included). */
@@ -64,4 +65,49 @@ export function canonicalMetadataJson(value: unknown, fail: (message: string) =>
     fail(`metadata is ${bytes}B as canonical JSON, over the ${MAX_METADATA_BYTES}B cap`);
   }
   return json;
+}
+
+/**
+ * The bytes a generation stores for `value`: its canonical JSON in UTF-8, or `undefined` when it has none (`undefined`
+ * or the empty object, which store nothing). Synchronous, so what is stored is what the caller passed at the call,
+ * whatever it does with its object afterwards. `fail` raises the boundary's error.
+ */
+export function metadataBytes(
+  value: unknown,
+  fail: (message: string) => never,
+): Uint8Array | undefined {
+  if (value === undefined) return undefined;
+  const json = canonicalMetadataJson(value, fail);
+  return json === '{}' ? undefined : new TextEncoder().encode(json);
+}
+
+/**
+ * Read metadata back from bytes a tier holds, which are untrusted. They must be at most {@link MAX_METADATA_BYTES},
+ * valid UTF-8, and exactly the canonical JSON of a non-empty record, so a stored copy has one spelling: whitespace, a
+ * key out of order or listed twice, and a number or an escape `JSON.stringify` would write another way are all
+ * refused. Returns a frozen record of its own. `fail` raises the boundary's error.
+ */
+export function metadataFromBytes(
+  bytes: Uint8Array,
+  fail: (message: string) => never,
+): GenerationMetadata {
+  if (bytes.length > MAX_METADATA_BYTES) {
+    fail(`metadata is ${bytes.length}B, over the ${MAX_METADATA_BYTES}B cap`);
+  }
+  let text: string;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    fail('metadata is not valid UTF-8');
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    fail('metadata is not JSON');
+  }
+  const json = canonicalMetadataJson(parsed, fail);
+  if (json === '{}') fail('metadata is empty; a generation without metadata carries none');
+  if (json !== text) fail('metadata is not in canonical form');
+  return Object.freeze(parsed as GenerationMetadata);
 }

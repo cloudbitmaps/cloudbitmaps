@@ -161,12 +161,28 @@ describe('version & feature gating', () => {
     await expect(CrbmReader.open(new BufferReader(bytes))).rejects.toBeInstanceOf(UnsupportedError);
   });
 
-  it('tolerates an unknown minor version', async () => {
+  it('tolerates an unknown minor version, which carries the 1.1 extension block', async () => {
+    const sink = new BufferSink();
+    const writer = new CrbmWriter(sink, { generation: 1, metadata: { def: 'v9' } });
+    for (const c of SAMPLE) await writer.addChunk(c.chunkKey, c.payload, c.cardinality);
+    await writer.finish();
+    const bytes = patchFooter(sink.bytes(), (_view, footer) => {
+      footer[FOOTER.versionMinor] = 9;
+    });
+    bytes[5] = 9; // the preamble's minor, which must agree with the footer's
+    const reader = await CrbmReader.open(new BufferReader(bytes));
+    expect(reader.chunkKeys()).toEqual([0, 5, 65_535]);
+    expect(reader.metadata).toEqual({ def: 'v9' });
+  });
+
+  it('refuses a minor above 0 with no extension block before the index', async () => {
     const bytes = patchFooter(await build(SAMPLE), (_view, footer) => {
       footer[FOOTER.versionMinor] = 9;
     });
-    const reader = await CrbmReader.open(new BufferReader(bytes));
-    expect(reader.chunkKeys()).toEqual([0, 5, 65_535]);
+    bytes[5] = 9;
+    await expect(CrbmReader.open(new BufferReader(bytes))).rejects.toThrow(
+      /extension block trailer magic/,
+    );
   });
 
   it('rejects an encrypted file when no decryption key is provided', async () => {
