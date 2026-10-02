@@ -182,3 +182,41 @@ describe('a re-created name whose earlier row is gone entirely', () => {
     expect(await collect(roaring.segment('s').iterate())).toEqual([9]);
   });
 });
+
+/**
+ * A registry restored from a backup is back at an older row, and its counter with it. The bucket restored beside it
+ * has lost the generation written after the backup, so the next load writes that number again, with other ids. A
+ * counter alone gave that publish the token the lost one had, and a warm store kept serving the lost generation's
+ * ids from its cache, keyed `<generation>:<token>`. Every write now draws its own part of the token.
+ */
+describe('a registry restored from a backup', () => {
+  it('a warm store does not serve the generation the restore took away', async () => {
+    const store = new CountingObjectStore(0);
+    const registry = new ObjectStoreRegistry(store, undefined, () => 1);
+    const storage = new MemoryStorageDriver();
+    const backend = brandAsBackend({ storage, registry });
+    const rowKey = registryObjectKey(undefined, REF);
+    let t = 0;
+    const clock = { now: () => t, sleep: async () => {} };
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3], { registry });
+    const backup = store.text(rowKey)!;
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 1 }, [4, 5], { registry });
+
+    const roaring = new CloudRoaring({
+      storage: backend,
+      cache: { genTtlMs: 10 },
+      seams: { clock },
+    });
+    expect(await roaring.segment('s').has(4)).toBe(true); // warms generation 1 and its chunk 0
+
+    // The disaster: the bucket and the registry come back as they were at the backup.
+    await storage.delete({ ...REF, generation: 1 });
+    store.plant(rowKey, backup);
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 1 }, [7], { registry });
+    t += 100; // past the TTL
+
+    expect(await roaring.segment('s').has(4)).toBe(false);
+    expect(await roaring.segment('s').has(7)).toBe(true);
+    expect(await collect(roaring.segment('s').iterate())).toEqual([7]);
+  });
+});

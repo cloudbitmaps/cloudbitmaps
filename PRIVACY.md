@@ -266,8 +266,8 @@ So the two are complements, not alternatives: **`dropSegment` for "stop paying f
 > and a worse one. Deleting a registry row does not remove it: it writes a **tombstone** carrying the row's token
 > counter on, which is what keeps the name's tokens unique by construction. Expire those tombstones and a segment
 > re-created under the same name starts the counter again; its tokens are then kept apart from the old ones only by
-> the random 128-bit incarnation id a 0.12 or later process draws into the token of every row it creates, with
-> overwhelming probability rather than by construction (a release before 0.12 draws none, and re-issues). That
+> their random parts, an incarnation id drawn when the row is created and a part drawn for each write, with
+> overwhelming probability rather than by construction. That
 > token is the segment's **identity**: it is what a cached reader, a fenced publish and a generation-collection
 > pass each compare to decide whether two observations describe the same segment. Re-issue one and they can all
 > answer "yes" about a segment that no longer exists — serving a deleted incarnation's data, or collecting a

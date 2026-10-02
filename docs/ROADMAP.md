@@ -268,8 +268,9 @@ between here and there:
 7. **`.crbm` format freeze** — the format already reserves space for 64-bit IDs and stamps a schema version on
    the registry row; freezing it is what makes cross-language ports and long-lived data safe. The row is at schema
    2: an optional cached summary of the current generation (its id count and metadata, sealed on an encrypted
-   segment), and a token that carries a random 128-bit incarnation id, so a re-created name is told apart from its
-   earlier incarnations even once their rows are gone. Every row change before the freeze rides that one bump.
+   segment), and a token that carries a random 128-bit incarnation id and a random part for every write, so a
+   re-created name is told apart from its earlier incarnations even once their rows are gone, and a row restored from
+   a backup from the tokens it had before. Every row change before the freeze rides that one bump.
    The object format is at 1.1: a generation written with metadata carries it in an extension block of typed
    sections, which a 1.0 reader skips and a later minor extends with new section types; a generation without
    metadata is 1.0 byte for byte.

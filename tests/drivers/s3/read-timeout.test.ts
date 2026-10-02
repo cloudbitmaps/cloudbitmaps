@@ -711,7 +711,7 @@ describe('S3: writes, deletes and listings are not timed', LIMIT, () => {
     const swapped = await settle(
       backend.registry.compareAndSwap({ segment: 's' }, token, { currentGen: 1 }),
     );
-    expect(swapped).toMatchObject({ value: { token: tokenAfter(token) } });
+    expect(swapped).toMatchObject({ value: { token: expect.stringMatching(tokenAfter(token)) } });
     expect(await backend.registry.get({ segment: 's' })).toMatchObject({ currentGen: 1 });
 
     stub.arm('PutObject', { kind: 'delay', ms: 3 * TIMEOUT }); // the tombstone

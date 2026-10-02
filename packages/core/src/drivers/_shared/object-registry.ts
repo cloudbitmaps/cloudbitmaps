@@ -73,9 +73,9 @@ import {
   serializeRegistryEnvelope,
   validateNewRegistryRecord,
   validateRegistryPatch,
-  webCryptoEntropy,
   type RegistryEnvelope,
 } from './registry';
+import { entropyIsAvailable, webCryptoEntropy } from './entropy';
 import { parseRegistryKey, registryListPrefix, registryObjectKey } from './object-registry-keys';
 
 /** Defensive cap on a single registry object read from storage, before allocation (rows are tiny; ~1 KB). */
@@ -151,8 +151,9 @@ export interface ObjectRegistryStore {
 
 export class ObjectStoreRegistry implements IRegistryDriver {
   /**
-   * `entropy` draws each new row's incarnation id; it defaults to the platform's Web Crypto. Inject one only to
-   * make a test replayable: a seeded source in production gives every process the same ids.
+   * `entropy` draws the random parts of every token: a new row's incarnation id, and each write's own part. It
+   * defaults to the platform's Web Crypto. Inject one only to make a test replayable: a seeded source in production
+   * gives every process the same ids.
    */
   constructor(
     private readonly store: ObjectRegistryStore,
@@ -162,7 +163,9 @@ export class ObjectStoreRegistry implements IRegistryDriver {
   ) {}
 
   capabilities(): RegCaps {
-    return { strongRead: true };
+    return entropyIsAvailable(this.entropy)
+      ? { strongRead: true }
+      : { strongRead: true, canWrite: false };
   }
 
   async get(ref: SegmentRef): Promise<RegistryRecord | null> {
@@ -171,7 +174,7 @@ export class ObjectStoreRegistry implements IRegistryDriver {
   }
 
   async create(ref: SegmentRef, record: NewRegistryRecord): Promise<{ token: Token }> {
-    validateNewRegistryRecord(record);
+    const checked = validateNewRegistryRecord(record);
     const key = registryObjectKey(this.prefix, ref);
     const current = await this.readRow(key);
     if (current !== null && !current.env.deleted) {
@@ -181,7 +184,7 @@ export class ObjectStoreRegistry implements IRegistryDriver {
     const token = newIncarnationToken(this.entropy, current?.env.record);
     const env: RegistryEnvelope = {
       deleted: false,
-      record: recordFromNew(ref, record, this.now(), token),
+      record: recordFromNew(ref, checked, this.now(), token),
     };
     // Create-only when truly absent; overwrite the tombstone under its version when recreating. Either way
     // a concurrent create loses the precondition and surfaces as a conflict.
@@ -194,16 +197,16 @@ export class ObjectStoreRegistry implements IRegistryDriver {
     expected: Token,
     patch: RegistryPatch,
   ): Promise<{ token: Token }> {
-    validateRegistryPatch(patch);
+    const checked = validateRegistryPatch(patch);
     const key = registryObjectKey(this.prefix, ref);
     const current = await this.readRow(key);
     if (current === null || current.env.deleted || current.env.record.token !== expected) {
       throw new WriteConflictError(`OCC token mismatch for registry row ${ref.segment}`);
     }
-    const token = nextRegistryToken(current.env.record);
+    const token = nextRegistryToken(current.env.record, this.entropy);
     const env: RegistryEnvelope = {
       deleted: false,
-      record: applyRegistryPatch(current.env.record, patch, this.now(), token),
+      record: applyRegistryPatch(current.env.record, checked, this.now(), token),
     };
     // The version we read fences a concurrent writer between that read and this write.
     await this.putRow(key, env, { version: current.version });
@@ -239,7 +242,7 @@ export class ObjectStoreRegistry implements IRegistryDriver {
 
   async delete(ref: SegmentRef, expected?: Token): Promise<void> {
     const key = registryObjectKey(this.prefix, ref);
-    // Tombstone (advance the counter) rather than remove the object — keeps the token monotonic for
+    // Tombstone (advance the counter) rather than remove the object, so a re-create carries the counter on, for
     // ABA-safety. Retry the read→tombstone on a cross-process race; it converges, then fails typed rather
     // than silently leaving the row live.
     for (let attempt = 0; attempt < MAX_DELETE_ATTEMPTS; attempt++) {
@@ -253,7 +256,7 @@ export class ObjectStoreRegistry implements IRegistryDriver {
       } else if (current === null || current.env.deleted) {
         return; // idempotent — already gone
       }
-      const token = nextRegistryToken(current.env.record);
+      const token = nextRegistryToken(current.env.record, this.entropy);
       const env: RegistryEnvelope = {
         deleted: true,
         record: { ...current.env.record, token, updatedAt: this.now() },

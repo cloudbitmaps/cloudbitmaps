@@ -3,7 +3,8 @@
  *
  * The registry's record-construction, patch-application, and field-validation are identical across every
  * backend (memory / LocalFs / object store) — only the *storage* + OCC mechanics differ. This is the one home
- * for that logic so the three drivers can't drift. Pure: no I/O, no SDK, no clock (the caller passes `now`).
+ * for that logic so the three drivers can't drift. Pure: no I/O, no SDK, no clock (the caller passes `now`), and no
+ * ambient randomness (the caller passes its `Entropy`; the Web Crypto default is in `entropy.ts`).
  */
 import { IntegrityError, UnsupportedError, ValidationError } from '@/core/errors';
 import type { Entropy } from '@/core/determinism';
@@ -52,7 +53,7 @@ const MAX_SUMMARY_CARDINALITY = 2 ** 32;
 const SEALED_SUMMARY_MIN_BYTES = 12 + 8 + 16;
 /** The fixed part plus metadata at its cap. */
 const SEALED_SUMMARY_MAX_BYTES = SEALED_SUMMARY_MIN_BYTES + MAX_METADATA_BYTES;
-/** Canonical, padded standard base64. */
+/** Padded standard base64; canonical once its pad bits are checked too (see {@link base64PadBitsAreZero}). */
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
 /** `null` is legal and meaningful: the segment has no Storage generation yet (see `RegistryRecord.currentGen`). */
@@ -151,17 +152,41 @@ function validateWrappedDeks(value: unknown, isStored: boolean): void {
   }
 }
 
+/** The standard base64 alphabet, whose index of a character is the six bits it carries. */
+const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
 /**
- * Validate a {@link RegistrySummary}'s shape at the write or read boundary: exactly one of the two shapes, a
- * non-negative safe-integer generation, a cardinality from 0 to 2^32, metadata by the metadata rules (never the
- * empty object, which is never stored), or a sealed blob in canonical base64 whose length fits a sealed count plus
- * metadata at its cap. Whether a summary may be *used* is the reader's rule, not this one: this only bounds what
- * a row can hold. `isStored` picks the error class (write = ValidationError; read = IntegrityError, invariant 5).
+ * Whether a padded standard base64 string is canonical: the bits of its last character past the data are zero.
+ * Without this two strings would decode to the same bytes.
  */
-function validateSummary(value: unknown, isStored: boolean): void {
-  if (value === undefined) return;
+function base64PadBitsAreZero(text: string): boolean {
+  const pad = text.endsWith('==') ? 2 : text.endsWith('=') ? 1 : 0;
+  if (pad === 0) return true;
+  const last = BASE64_ALPHABET.indexOf(text[text.length - pad - 1]!);
+  return pad === 2 ? (last & 0b1111) === 0 : (last & 0b11) === 0;
+}
+
+/**
+ * Validate a {@link RegistrySummary}'s shape at the write or read boundary, and return a frozen copy built from the
+ * checked fields only: exactly one of the two shapes, a non-negative safe-integer generation, a cardinality from 0 to
+ * 2^32, metadata by the metadata rules (never the empty object, which is never stored) with its keys in canonical
+ * order, or a sealed blob in canonical base64 whose length fits a sealed count plus metadata at its cap. A writer
+ * stores the copy, so a caller that changes its object after the call, while the driver awaits the row, changes
+ * nothing that is written. Whether a summary may be *used* is the reader's rule, not this one: this only bounds what a
+ * row can hold. `isStored` picks the error class (write = ValidationError; read = IntegrityError, invariant 5), and a
+ * read names the row by `ctx`.
+ */
+function validateSummary(
+  value: unknown,
+  isStored: boolean,
+  ctx?: string,
+): RegistrySummary | undefined {
+  if (value === undefined) return undefined;
   const fail = (msg: string): never => {
-    throw isStored ? new IntegrityError(`summary: ${msg}`) : new ValidationError(`summary: ${msg}`);
+    const where = ctx === undefined ? '' : `: ${ctx}`;
+    throw isStored
+      ? new IntegrityError(`registry record summary: ${msg}${where}`)
+      : new ValidationError(`summary: ${msg}${where}`);
   };
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     fail(
@@ -178,12 +203,15 @@ function validateSummary(value: unknown, isStored: boolean): void {
       `has fields its ${isSealed ? 'sealed' : 'clear'} shape does not declare (${extra.join(', ')})`,
     );
   }
-  if (!Number.isSafeInteger(s.generation) || (s.generation as number) < 0) {
-    fail(`generation must be a non-negative safe integer (got ${String(s.generation)})`);
+  const generation = s.generation;
+  if (!Number.isSafeInteger(generation) || (generation as number) < 0) {
+    fail(`generation must be a non-negative safe integer (got ${String(generation)})`);
   }
   if (isSealed) {
     const sealed = s.sealed;
-    if (typeof sealed !== 'string' || !BASE64.test(sealed)) fail('sealed must be canonical base64');
+    if (typeof sealed !== 'string' || !BASE64.test(sealed) || !base64PadBitsAreZero(sealed)) {
+      fail('sealed must be canonical, padded standard base64');
+    }
     const text = sealed as string;
     const bytes = (text.length / 4) * 3 - (text.endsWith('==') ? 2 : text.endsWith('=') ? 1 : 0);
     if (bytes < SEALED_SUMMARY_MIN_BYTES || bytes > SEALED_SUMMARY_MAX_BYTES) {
@@ -192,15 +220,21 @@ function validateSummary(value: unknown, isStored: boolean): void {
           '(a nonce, a fixed-width count, a tag, and metadata up to its cap)',
       );
     }
-    return;
+    return Object.freeze({ generation: generation as number, sealed: text });
   }
   const n = s.cardinality;
   if (!Number.isInteger(n) || (n as number) < 0 || (n as number) > MAX_SUMMARY_CARDINALITY) {
     fail(`cardinality must be an integer from 0 to 2^32 (got ${String(n)})`);
   }
-  if (s.metadata !== undefined && canonicalMetadataJson(s.metadata, fail) === '{}') {
-    fail('metadata is empty; a generation without metadata carries none');
+  if (s.metadata === undefined) {
+    return Object.freeze({ generation: generation as number, cardinality: n as number });
   }
+  const canonical = canonicalMetadataJson(s.metadata, fail);
+  if (canonical === '{}') fail('metadata is empty; a generation without metadata carries none');
+  // Rebuilt from the canonical JSON, so its keys are in canonical order (JavaScript still lists integer-like keys
+  // first, in numeric order, as it does in every object) and nothing of the caller's object is kept.
+  const metadata = Object.freeze(JSON.parse(canonical) as Record<string, string | number>);
+  return Object.freeze({ generation: generation as number, cardinality: n as number, metadata });
 }
 
 /** A summary given at a write must describe the generation the row will point at. */
@@ -215,34 +249,69 @@ function validateSummaryNames(
   }
 }
 
-/** Validate the caller-settable fields at `create`. */
-export function validateNewRegistryRecord(rec: NewRegistryRecord): void {
+/**
+ * Whether a summary's shape agrees with the row's encryption: sealed on a row with wrapped keys, clear on one without.
+ * A clear count or metadata beside a key would leak what the segment's objects hide; a sealed one on a cleartext row
+ * could never be opened.
+ */
+function summaryAgreesWithKeys(
+  summary: RegistrySummary,
+  wrappedDeks: RegistryRecord['wrappedDeks'],
+): boolean {
+  return 'sealed' in summary === (wrappedDeks !== undefined);
+}
+
+/** A summary given at a write must agree with the row's encryption (see {@link summaryAgreesWithKeys}). */
+function validateSummaryKeys(
+  summary: RegistrySummary | undefined,
+  wrappedDeks: RegistryRecord['wrappedDeks'],
+): void {
+  if (summary !== undefined && !summaryAgreesWithKeys(summary, wrappedDeks)) {
+    throw new ValidationError(
+      wrappedDeks === undefined
+        ? 'summary is sealed, but the row has no wrapped keys to open it with'
+        : "summary is in the clear, but the row is encrypted: an encrypted segment's summary must be sealed",
+    );
+  }
+}
+
+/**
+ * Validate the caller-settable fields at `create`, and return the record to store: the caller's, with its summary
+ * replaced by the checked, frozen copy {@link validateSummary} builds.
+ */
+export function validateNewRegistryRecord(rec: NewRegistryRecord): NewRegistryRecord {
   validateGeneration(rec.currentGen);
   if (rec.status !== undefined) validateStatus(rec.status);
   validateWrappedDeks(rec.wrappedDeks, false);
   validateGovernance(rec.retention, 'retention');
   validateGovernance(rec.residency, 'residency');
-  validateSummary(rec.summary, false);
-  validateSummaryNames(rec.summary, rec.currentGen);
+  if (!('summary' in rec)) return rec;
+  const summary = validateSummary(rec.summary, false);
+  validateSummaryNames(summary, rec.currentGen);
+  validateSummaryKeys(summary, rec.wrappedDeks);
+  return { ...rec, summary };
 }
 
 /**
- * Validate the caller-settable fields in a `compareAndSwap` patch. That a given `summary` names the row's
- * resulting `currentGen` needs the stored row, so {@link applyRegistryPatch} checks it.
+ * Validate the caller-settable fields in a `compareAndSwap` patch, and return the patch to apply: the caller's, with
+ * its summary replaced by the checked, frozen copy. That a given `summary` names the row's resulting `currentGen`,
+ * and agrees with its resulting keys, needs the stored row, so {@link applyRegistryPatch} checks both.
  */
-export function validateRegistryPatch(patch: RegistryPatch): void {
+export function validateRegistryPatch(patch: RegistryPatch): RegistryPatch {
   validatePatchGeneration(patch);
   if (patch.status !== undefined) validateStatus(patch.status);
   if ('wrappedDeks' in patch) validateWrappedDeks(patch.wrappedDeks, false);
   if ('retention' in patch) validateGovernance(patch.retention, 'retention');
   if ('residency' in patch) validateGovernance(patch.residency, 'residency');
-  if ('summary' in patch) validateSummary(patch.summary, false);
+  if (!('summary' in patch)) return patch;
+  return { ...patch, summary: validateSummary(patch.summary, false) };
 }
 
 /**
  * The persisted envelope for a registry row: the record plus a tombstone flag. A **deleted** row keeps its
- * record (with an advanced counter) rather than being removed, so the monotonic token survives a
- * delete→recreate — ABA-safety. Shared by the persistent drivers (LocalFs file, S3 object).
+ * record (with an advanced counter) rather than being removed, so a re-create carries the counter on and the two
+ * incarnations' tokens are apart by construction, as well as by their random parts — ABA-safety. Shared by the
+ * persistent drivers (LocalFs file, S3 object).
  *
  * `schemaVersion` is a wire-only concern — it stamps the persisted bytes, not the in-memory domain object —
  * so it lives on the serialize/parse boundary ({@link serializeRegistryEnvelope} /
@@ -302,84 +371,107 @@ export function serializeRegistryEnvelope(env: RegistryEnvelope): string {
 
 // ── The OCC token ────────────────────────────────────────────────────────────────────────────────────────────
 //
-// A token is `<incarnation>.<counter>`: 32 lowercase hex digits drawn from injected entropy when the row is
-// created, and a canonical decimal counter that every write of the row advances by one. The incarnation is what
-// keeps a re-created name from ever being taken for an earlier incarnation of it, even once the earlier row's
-// record is gone and nothing is left to continue a counter from; the counter keeps the tokens of one incarnation
-// apart. A row created over a tombstone continues the tombstone's counter too, so while a tombstone exists the
-// separation is by construction as well as by the random id.
+// A token is `<incarnation>.<counter>.<write>`. The incarnation is 32 lowercase hex digits drawn from injected
+// entropy when the row is created; it keeps a re-created name from ever being taken for an earlier incarnation of
+// it, even once the earlier row's record is gone and nothing is left to continue a counter from. The counter is a
+// canonical decimal that every write of the row advances by one, and carries on across a tombstone, so while a row's
+// history is intact its tokens are apart by construction. The write part is 16 lowercase hex digits drawn afresh for
+// every write: a row restored from a backup is back at an older counter, and without it the writes after the restore
+// would be given the tokens the writes after the backup already had.
 //
-// A row first written by a schema-1 build has a bare decimal counter (`"7"`), and keeps that form for as long as
-// it lives: its writes advance the counter as before. Only a create starts a new incarnation, and every create
-// gives the incarnation form. So a token's form says which kind of row issued it, and the two forms never compare
-// equal: a bare counter has no `.`. Tokens are compared only by equality; nothing orders them.
+// A row first written by a schema-1 build has a bare decimal counter (`"7"`), and gains no incarnation for as long as
+// it lives: a write to it advances the counter and adds a write part (`"8.<write>"`). Only a create starts a new
+// incarnation. So a token's form says which kind of row issued it, and no two forms ever compare equal: they differ
+// in how many `.` they hold. Tokens are compared only by equality; nothing orders them.
 
-/** A row's token on a schema-1-born row: a canonical decimal counter. */
+/** A schema-1 row's token: a canonical decimal counter. */
 const COUNTER_TOKEN = /^(0|[1-9]\d*)$/;
-/** An incarnation-form token: 128 bits as 32 lowercase hex digits, a `.`, and a canonical decimal counter. */
-const INCARNATION_TOKEN = /^([0-9a-f]{32})\.(0|[1-9]\d*)$/;
+/** A schema-1-born row's token once this build has written it: the counter, a `.`, and a write part. */
+const WRITTEN_COUNTER_TOKEN = /^(0|[1-9]\d*)\.([0-9a-f]{16})$/;
+/** An incarnation-form token: the incarnation id, the counter and a write part, `.`-separated. */
+const INCARNATION_TOKEN = /^([0-9a-f]{32})\.(0|[1-9]\d*)\.([0-9a-f]{16})$/;
 /** The incarnation id's width, in bytes. */
 const INCARNATION_BYTES = 16;
+/** The write part's width, in bytes. */
+const WRITE_BYTES = 8;
 
-/** A token taken apart: its incarnation (absent for a bare counter) and its counter. */
+/** A token taken apart: its incarnation (absent on a schema-1-born row) and its counter. */
 interface TokenParts {
   readonly incarnation: string | undefined;
   readonly counter: number;
 }
 
 /**
- * Take a stored token apart, refusing anything that is not one of the two forms a shipped driver writes, or one a
- * schema-1 row may not hold (invariant 5): `"1e3"`, `"0x10"`, `" 5 "`, `""`, a counter past 2^53, upper-case hex.
+ * Take a token apart, refusing anything that is not a form a shipped driver writes (invariant 5): `"1e3"`, `"0x10"`,
+ * `" 5 "`, `""`, a counter past 2^53, upper-case hex. A stored row of `schemaVersion` 1 holds only a bare counter, and
+ * one of 2 only a form with a write part; a record already read (`schemaVersion` undefined) may hold any of them.
  */
-function tokenParts(token: string, schemaVersion: number, ctx: string): TokenParts {
-  const legacy = COUNTER_TOKEN.exec(token);
-  const born = legacy === null && schemaVersion >= 2 ? INCARNATION_TOKEN.exec(token) : null;
-  if (legacy === null && born === null) {
+function tokenParts(token: string, schemaVersion: number | undefined, ctx: string): TokenParts {
+  const bare =
+    schemaVersion === undefined || schemaVersion === 1 ? COUNTER_TOKEN.exec(token) : null;
+  const written =
+    schemaVersion === undefined || schemaVersion >= 2
+      ? (WRITTEN_COUNTER_TOKEN.exec(token) ?? INCARNATION_TOKEN.exec(token))
+      : null;
+  const match = bare ?? written;
+  if (match === null) {
     throw new IntegrityError(
-      `registry row token is not one a schema-${schemaVersion} row holds (${JSON.stringify(token)}): ${ctx}`,
+      `registry row token is not one a schema-${schemaVersion ?? REGISTRY_SCHEMA_VERSION} row holds ` +
+        `(${JSON.stringify(token)}): ${ctx}`,
     );
   }
-  const counter = Number(legacy !== null ? legacy[1] : born![2]);
+  const born = match.length === 4; // the incarnation form has three groups
+  const counter = Number(born ? match[2] : match[1]);
   if (!Number.isSafeInteger(counter)) {
     throw new IntegrityError(`registry row token's counter is out of safe-integer range: ${ctx}`);
   }
-  return { incarnation: born === null ? undefined : born[1], counter };
+  return { incarnation: born ? match[1] : undefined, counter };
 }
 
 /**
- * The incarnation id in a token, or `undefined` for one that has none: a bare counter from a schema-1-born row, or
- * any token another driver issues. Two tokens with the same incarnation are writes of one incarnation of a row.
+ * The incarnation id in a token, or `undefined` for one that has none: a schema-1-born row's, or any token another
+ * driver issues. Two tokens with the same incarnation are writes of one incarnation of a row.
  */
 export function incarnationOf(token: Token): string | undefined {
   return INCARNATION_TOKEN.exec(token)?.[1];
 }
 
-/** The token after `record`'s: the same incarnation and form, the counter one on. For a write or a tombstone. */
-export function nextRegistryToken(record: RegistryRecord): Token {
-  const { incarnation, counter } = tokenParts(
-    record.token,
-    REGISTRY_SCHEMA_VERSION,
-    record.segment,
-  );
-  return incarnation === undefined ? String(counter + 1) : `${incarnation}.${counter + 1}`;
+/** `bytes` fresh bytes from `entropy`, as lowercase hex, refusing a source that does not give them. */
+function drawHex(entropy: Entropy, bytes: number): string {
+  const drawn = entropy(bytes);
+  if (!(drawn instanceof Uint8Array) || drawn.length !== bytes) {
+    throw new ValidationError(
+      `the registry's entropy source must return ${bytes} bytes as a Uint8Array`,
+    );
+  }
+  let hex = '';
+  for (const b of drawn) hex += b.toString(16).padStart(2, '0');
+  return hex;
 }
 
 /** A fresh incarnation id from `entropy`: 128 bits as 32 lowercase hex digits. */
 export function drawIncarnation(entropy: Entropy): string {
-  const bytes = entropy(INCARNATION_BYTES);
-  if (!(bytes instanceof Uint8Array) || bytes.length !== INCARNATION_BYTES) {
-    throw new ValidationError(
-      `the registry's entropy source must return ${INCARNATION_BYTES} bytes as a Uint8Array`,
-    );
-  }
-  let incarnation = '';
-  for (const b of bytes) incarnation += b.toString(16).padStart(2, '0');
-  return incarnation;
+  return drawHex(entropy, INCARNATION_BYTES);
+}
+
+/** A fresh write part from `entropy`: 64 bits as 16 lowercase hex digits. */
+export function drawWrite(entropy: Entropy): string {
+  return drawHex(entropy, WRITE_BYTES);
 }
 
 /**
- * The token of a new row: a fresh incarnation from `entropy`, and a counter that continues `tombstone`'s when the
- * row is created over one, else starts at 0.
+ * The token for the write after `record`'s: the same incarnation, if it has one, the counter one on, and a fresh write
+ * part. For a compare-and-swap or a tombstone.
+ */
+export function nextRegistryToken(record: RegistryRecord, entropy: Entropy): Token {
+  const { incarnation, counter } = tokenParts(record.token, undefined, record.segment);
+  const tail = `${counter + 1}.${drawWrite(entropy)}`;
+  return incarnation === undefined ? tail : `${incarnation}.${tail}`;
+}
+
+/**
+ * The token of a new row: a fresh incarnation and write part from `entropy`, and a counter that continues
+ * `tombstone`'s when the row is created over one, else starts at 0.
  */
 export function newIncarnationToken(
   entropy: Entropy,
@@ -388,26 +480,9 @@ export function newIncarnationToken(
   const counter =
     tombstone === undefined
       ? 0
-      : tokenParts(tombstone.token, REGISTRY_SCHEMA_VERSION, tombstone.segment).counter + 1;
-  return `${drawIncarnation(entropy)}.${counter}`;
+      : tokenParts(tombstone.token, undefined, tombstone.segment).counter + 1;
+  return `${drawIncarnation(entropy)}.${counter}.${drawWrite(entropy)}`;
 }
-
-/**
- * The default entropy: the platform's Web Crypto. Refused with `UnsupportedError` when there is none, at the first
- * row created rather than at construction, so a read-only process runs anywhere.
- */
-export const webCryptoEntropy: Entropy = (length) => {
-  const webCrypto = (globalThis as { crypto?: { getRandomValues?: unknown } }).crypto;
-  if (webCrypto === undefined || typeof webCrypto.getRandomValues !== 'function') {
-    throw new UnsupportedError(
-      'this runtime has no Web Crypto (crypto.getRandomValues), which a registry needs to create a row: ' +
-        'give the registry driver an entropy source',
-    );
-  }
-  return (webCrypto as { getRandomValues(a: Uint8Array): Uint8Array }).getRandomValues(
-    new Uint8Array(length),
-  );
-};
 
 /**
  * Parse + structurally validate a persisted `{ deleted, record }` envelope from stored bytes. A published row
@@ -521,7 +596,10 @@ export function assertStoredRecordShape(
       throw new IntegrityError(`registry record has a non-object ${field}: ${ctx}`);
     }
   }
-  validateSummary(r.summary, true);
+  // Shape only. Whether the summary agrees with the row's keys and names its `currentGen` is not checked here: a
+  // stored row that disagrees is a summary its reader must not use, not a row to refuse, and refusing it would let
+  // one row stop every listing that reaches it.
+  validateSummary(r.summary, true, ctx);
 }
 
 /**
@@ -529,8 +607,9 @@ export function assertStoredRecordShape(
  * `createdAt` are preserved). Optional fields use `'k' in patch` so a patch can *clear* them (set to
  * `undefined`, e.g. dropping `keyId` on crypto-shred); required fields use `??` (they always have a value).
  *
- * `summary` describes the current generation, so it follows the pointer: a patch that moves `currentGen` without
- * mentioning it drops the old one, and a summary the patch gives must name the resulting `currentGen`
+ * `summary` describes the current generation, so it follows the pointer and the keys: a patch that moves
+ * `currentGen`, or changes `wrappedDeks` so the summary's shape no longer agrees, without mentioning `summary` drops
+ * the old one; and a summary the patch gives must name the resulting `currentGen` and agree with the resulting keys
  * (`ValidationError`, before anything is written).
  */
 export function applyRegistryPatch(
@@ -544,18 +623,22 @@ export function applyRegistryPatch(
   // patch that clears the pointer and leave the old generation in place. The same reason `wrappedDeks` and
   // `keyId` below use presence: any field whose null is a *value* cannot be merged with `??`.
   const currentGen = 'currentGen' in patch ? (patch.currentGen ?? null) : prev.currentGen;
+  const wrappedDeks = 'wrappedDeks' in patch ? patch.wrappedDeks : prev.wrappedDeks;
   let summary: RegistrySummary | undefined;
   if ('summary' in patch) {
     validateSummaryNames(patch.summary, currentGen);
+    validateSummaryKeys(patch.summary, wrappedDeks);
     summary = patch.summary;
   } else {
-    summary = currentGen === prev.currentGen ? prev.summary : undefined;
+    // Kept only while it still describes the row: the same generation, and the same encryption.
+    const kept = currentGen === prev.currentGen ? prev.summary : undefined;
+    summary = kept !== undefined && summaryAgreesWithKeys(kept, wrappedDeks) ? kept : undefined;
   }
   return {
     namespace: prev.namespace,
     segment: prev.segment,
     currentGen,
-    wrappedDeks: 'wrappedDeks' in patch ? patch.wrappedDeks : prev.wrappedDeks,
+    wrappedDeks,
     keyId: 'keyId' in patch ? patch.keyId : prev.keyId,
     status: patch.status ?? prev.status,
     retention: 'retention' in patch ? patch.retention : prev.retention,

@@ -585,20 +585,30 @@ writes `schemaVersion: 2` and reads rows stamped 1 or 2; a row stamped 1 may hol
 `summary` is the row's cached description of its current generation — its id count, and the metadata it was loaded
 with — in the clear on a cleartext segment (`{ generation, cardinality, metadata? }`) or sealed under the segment's
 data key on an encrypted one (`{ generation, sealed }`). It names the generation it describes, and it follows the
-pointer: a patch that moves `currentGen` without mentioning `summary` drops the old one, and a patch or create that
-gives one must name the `currentGen` the row will have, else `ValidationError`. Each shape is checked at both
-boundaries (`ValidationError` on a write, `IntegrityError` on a read). Nothing in this release writes one yet, and a
-row without one is correct: a driver that does not persist the field loses only the shortcut it will enable. The
-registry conformance suite round-trips it through `create`, `get`, `list` and `compareAndSwap`.
+pointer and the keys: a patch that moves `currentGen`, or changes `wrappedDeks` so the summary's shape no longer
+agrees, without mentioning `summary` drops the old one; and a patch or create that gives one must name the
+`currentGen` the row will have and agree with its keys (sealed with wrapped keys, clear without), else
+`ValidationError`. The registry stores a frozen copy of the summary it was called with, so changing your object after
+the call changes nothing. Each shape is checked at both boundaries (`ValidationError` on a write, `IntegrityError`
+naming the row on a read). A stored row whose summary disagrees with its keys, or names another generation than
+`currentGen`, is still read, so one such row cannot stop every listing: whatever reads the summary must not use it
+then. Nothing in this release writes one yet, and a row without one is correct. **The registry conformance suite
+now requires a driver to persist it**: to round-trip it through `create`, `get`, `list` and `compareAndSwap`, keep it
+across a patch that does not mention it, and store it as it was when the write was called.
 
-**A shipped registry's token is `<incarnation>.<counter>`.** The incarnation is 128 bits as 32 lowercase hex digits,
-drawn when a row is created, so a re-created name never meets an earlier incarnation's token, even once the earlier
-row is gone entirely (with overwhelming probability then, rather than by construction); the counter advances on
-every write, and carries on across a tombstone. A row first written by a release before 0.12 keeps its bare
-decimal counter (`"7"`) for as long as it lives; only a create starts an incarnation. Tokens stay opaque to the
-library, which compares them only for equality. `ObjectStoreRegistry`'s constructor takes an optional fourth
-argument, an `Entropy` source (`(length) => Uint8Array`), which defaults to the platform's Web Crypto: inject one
-only to make a test replayable, never a seeded one in production, which hands every process the same ids.
+**A shipped registry's token is `<incarnation>.<counter>.<write>`.** The incarnation is 128 bits as 32 lowercase hex
+digits, drawn when a row is created, so a re-created name never meets an earlier incarnation's token, even once the
+earlier row is gone entirely. The counter advances on every write and carries on across a tombstone. The write part
+is 64 bits as 16 lowercase hex digits, drawn for every write, so a row restored from a backup to an older counter is
+never given a token it had before. Both random parts make it hold with overwhelming probability rather than by
+construction. A row first written by a release before 0.12 keeps its bare decimal counter (`"7"`) until its first
+write, which gives it `<counter>.<write>`; only a create starts an incarnation. Tokens stay opaque to the library,
+which compares them only for equality. `ObjectStoreRegistry`'s constructor takes an optional fourth argument, an
+`Entropy` source (`(length) => Uint8Array`), which defaults to the platform's Web Crypto: inject one only to make a
+test replayable, never a seeded one in production, which hands every process the same ids. On a runtime with no Web
+Crypto a shipped registry still reads, reports `canWrite: false` in its `capabilities()`, and refuses every write
+with `UnsupportedError`; a load and an erasure rewrite check `canWrite` before their first request, so they refuse
+before writing an object. A registry of your own may report `canWrite: false` the same way.
 
 **`currentGen` is nullable, and `null` is a value — not a missing field.** A `RegistryRecord` with
 `currentGen: null` says *this segment exists and has no Storage generation yet*: the row `setRetention` mints when a

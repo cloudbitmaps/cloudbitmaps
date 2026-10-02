@@ -27,25 +27,26 @@ import type {
 import {
   applyRegistryPatch,
   drawIncarnation,
+  drawWrite,
   incarnationOf,
   recordFromNew,
   validateNewRegistryRecord,
   validateRegistryPatch,
-  webCryptoEntropy,
 } from './_shared/registry';
+import { entropyIsAvailable, webCryptoEntropy } from './_shared/entropy';
 
 export interface MemoryRegistryDriverOptions {
   /** Injected clock for `createdAt`/`updatedAt`; defaults to `Date.now` (drivers may use ambient time). */
   readonly now?: () => number;
-  /** Draws each new row's incarnation id; defaults to Web Crypto. Inject one only to make a test replayable. */
+  /** Draws every token's random parts; defaults to Web Crypto. Inject one only to make a test replayable. */
   readonly entropy?: Entropy;
 }
 
 /**
- * In-memory {@link IRegistryDriver} — one record per segment under OCC. The token is the row's incarnation id,
- * drawn at create as every shipped driver draws one, beside a counter that is global to the driver: monotonic and
- * never reused, so a record recreated after `delete` never meets an earlier token, by construction, even though
- * `delete` removes the row physically.
+ * In-memory {@link IRegistryDriver} — one record per segment under OCC. The token has the form every shipped driver
+ * gives it, an incarnation id drawn at create, a counter and a per-write random part, but its counter is global to the
+ * driver: monotonic and never reused, so a record recreated after `delete` never meets an earlier token, by
+ * construction, even though `delete` removes the row physically.
  */
 export class MemoryRegistryDriver implements IRegistryDriver {
   private readonly rows = new Map<string, RegistryRecord>();
@@ -60,11 +61,13 @@ export class MemoryRegistryDriver implements IRegistryDriver {
 
   private nextToken(incarnation: string): Token {
     this.seq += 1;
-    return `${incarnation}.${this.seq}`;
+    return `${incarnation}.${this.seq}.${drawWrite(this.entropy)}`;
   }
 
   capabilities(): RegCaps {
-    return { strongRead: true };
+    return entropyIsAvailable(this.entropy)
+      ? { strongRead: true }
+      : { strongRead: true, canWrite: false };
   }
 
   async get(ref: SegmentRef): Promise<RegistryRecord | null> {
@@ -75,7 +78,7 @@ export class MemoryRegistryDriver implements IRegistryDriver {
 
   async create(ref: SegmentRef, record: NewRegistryRecord): Promise<{ token: Token }> {
     validateSegmentRef(ref);
-    validateNewRegistryRecord(record);
+    const checked = validateNewRegistryRecord(record);
     const key = segmentKey(ref);
     if (this.rows.has(key)) {
       throw new WriteConflictError(`registry row already exists for segment ${ref.segment}`);
@@ -83,7 +86,7 @@ export class MemoryRegistryDriver implements IRegistryDriver {
     const token = this.nextToken(drawIncarnation(this.entropy));
     // clone in: the caller's (nested) retention/residency can't alias stored state (value semantics, parity
     // with the serialize-based persistent drivers).
-    this.rows.set(key, structuredClone(recordFromNew(ref, record, this.now(), token)));
+    this.rows.set(key, structuredClone(recordFromNew(ref, checked, this.now(), token)));
     return { token };
   }
 
@@ -93,14 +96,14 @@ export class MemoryRegistryDriver implements IRegistryDriver {
     patch: RegistryPatch,
   ): Promise<{ token: Token }> {
     validateSegmentRef(ref);
-    validateRegistryPatch(patch);
+    const checked = validateRegistryPatch(patch);
     const key = segmentKey(ref);
     const existing = this.rows.get(key);
     if (!existing || existing.token !== expected) {
       throw new WriteConflictError(`OCC token mismatch for registry row ${ref.segment}`);
     }
     const token = this.nextToken(incarnationOf(existing.token) ?? drawIncarnation(this.entropy));
-    this.rows.set(key, structuredClone(applyRegistryPatch(existing, patch, this.now(), token)));
+    this.rows.set(key, structuredClone(applyRegistryPatch(existing, checked, this.now(), token)));
     return { token };
   }
 

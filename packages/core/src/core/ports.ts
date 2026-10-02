@@ -8,7 +8,7 @@
  * tokens; they never understand roaring or the `.crbm` layout.
  */
 
-import { ValidationError } from './errors';
+import { UnsupportedError, ValidationError } from './errors';
 import type { BlobSink } from './blob';
 import type { WrappedDek } from './crypto';
 
@@ -230,7 +230,9 @@ export type GovernanceMeta = Record<string, unknown>;
  *
  * Two shapes. On a cleartext segment the values are in the clear. On an encrypted segment (a row with
  * `wrappedDeks`) they are sealed under the segment's data key, as the generation's index is, so the row reveals
- * neither the count nor the metadata.
+ * neither the count nor the metadata. A shipped registry refuses a write whose summary disagrees with the row's
+ * keys. It still reads a stored row that disagrees, so that one such row cannot stop every listing: a reader must not
+ * use that row's summary.
  */
 export type RegistrySummary = ClearRegistrySummary | SealedRegistrySummary;
 
@@ -307,9 +309,11 @@ export interface RegistryRecord extends SegmentRef {
   readonly createdAt: number;
   readonly updatedAt: number;
   /**
-   * Opaque OCC token — compare-by-equality, never reused (ABA-safe): no two writes, of this row or of any earlier
-   * row under the same name, are given the same token (for a row whose predecessor's record is gone, with
-   * overwhelming probability rather than by construction).
+   * Opaque OCC token — compare-by-equality, never reused (ABA-safe). A shipped registry gives no two writes under one
+   * name the same token: not two writes of this row, not a write of an earlier row under the name, and not a write
+   * after this row is restored from a backup. It holds with overwhelming probability rather than by construction,
+   * since the token carries random parts: an incarnation id drawn when the row is created, and a part drawn for each
+   * write. A bare decimal token, on a row no 0.12 or later registry has written, carries neither.
    */
   readonly token: Token;
 }
@@ -347,6 +351,26 @@ export type RegistryPatch = Partial<
 export interface RegCaps {
   /** REQUIRED — `currentGen` feeds read correctness + the publish CAS, so reads must be strongly consistent. */
   readonly strongRead: true;
+  /**
+   * `false` when this registry cannot write a row in this runtime, though it reads: a shipped registry draws random
+   * bytes for every token it issues, and on a runtime with no Web Crypto it has none to draw. A write path that
+   * writes an object before its row (a load, an erasure rewrite) checks it first and refuses with `UnsupportedError`
+   * before it writes anything, rather than leave an object no row names. Absent means the registry can write.
+   */
+  readonly canWrite?: false;
+}
+
+/**
+ * Refuse, with `UnsupportedError`, a write that would write an object before its row when the registry reports it
+ * cannot write a row (see {@link RegCaps.canWrite}). Called before the write's first request.
+ */
+export function assertRegistryCanWrite(registry: IRegistryDriver, what: string): void {
+  if (registry.capabilities().canWrite === false) {
+    throw new UnsupportedError(
+      `${what}: the registry reports it cannot write a row in this runtime (capabilities().canWrite is false), ` +
+        'so nothing is written',
+    );
+  }
 }
 
 /**
@@ -490,8 +514,9 @@ export function isStorageBackend(value: unknown): value is StorageBackend {
  *   Two racing writers have exactly one winner.
  * - **Tokens are never reused**, not even across `delete` then `create`: a recreated row always carries a token
  *   no earlier incarnation held, so a stale holder cannot swap into it. The shipped drivers draw a random 128-bit
- *   incarnation id into the token of every row they create, and a tombstone (or a global counter) keeps the
- *   counter beside it going; where nothing of the earlier row is left, the id alone keeps them apart, with
+ *   incarnation id into the token of every row they create and a random 64-bit part into the token of every write,
+ *   beside a counter a tombstone (or a global counter) keeps going; where nothing of the earlier row is left, or the
+ *   row is restored from a backup to an older counter, the random parts alone keep the tokens apart, with
  *   overwhelming probability.
  * - **`delete` is idempotent** without an `expected` token: deleting an absent row is a no-op, not an error.
  *   **With `expected` it is fenced**: it lands only while the row still carries that token, and otherwise throws

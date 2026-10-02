@@ -149,7 +149,7 @@ describe('ObjectStoreRegistry: a write that lands and then fails', () => {
     );
     const after = await reg.get(ref);
     expect(after?.currentGen).toBe(1);
-    expect(after?.token).toBe(tokenAfter(token)); // advanced once, not twice
+    expect(after?.token).toMatch(tokenAfter(token)); // advanced once, not twice
     await expect(reg.compareAndSwap(ref, token, { currentGen: 2 })).rejects.toBeInstanceOf(
       WriteConflictError,
     );
