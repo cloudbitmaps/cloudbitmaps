@@ -358,6 +358,18 @@ export interface RegCaps {
    * before it writes anything, rather than leave an object no row names. Absent means the registry can write.
    */
   readonly canWrite?: false;
+  /**
+   * `true` when this registry's `delete` removes a row from its backend for good, so that no later `list` reads it, and
+   * removes it only while it is still the exact version the delete read: by a delete the backend applies under a
+   * precondition (an S3 or Azure Blob ETag, a GCS object generation), or under a lock no other writer of the backend
+   * can take. Only a row whose token carries an incarnation id is removed so. A row first written by a release before
+   * 0.12 has a bare decimal token, and a delete still tombstones it: a process on that release, re-creating the name
+   * over nothing, would issue those counters again from 0, so its row could not be told apart from the deleted one.
+   *
+   * `false` or absent: every `delete` leaves a tombstone, which every later full `list` still reads. A shipped registry
+   * says which it is.
+   */
+  readonly conditionalDelete?: boolean;
 }
 
 /**
@@ -555,7 +567,9 @@ export interface IRegistryDriver {
    */
   list(namespace?: string): AsyncIterable<RegistryRecord>;
   /**
-   * Remove the row (tombstoned for ABA-safety — a later `create` gets a token never issued before).
+   * Remove the row. A registry whose {@link RegCaps.conditionalDelete} is `true` removes a row whose token carries an
+   * incarnation id from its backend; every other row is tombstoned. Either way a later `create` gets a token no
+   * earlier incarnation of the name held, with overwhelming probability.
    *
    * Without `expected`, idempotent: deleting an absent row is a no-op.
    *

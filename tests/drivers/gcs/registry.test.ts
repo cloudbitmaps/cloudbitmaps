@@ -175,6 +175,7 @@ describe('GcsRegistryDriver — construction + GCS specifics', () => {
     const storage = new FakeGcs() as unknown as Storage;
     expect(new GcsRegistryDriver({ storage, bucket: 'b' }).capabilities()).toEqual({
       strongRead: true,
+      conditionalDelete: false,
     });
   });
 

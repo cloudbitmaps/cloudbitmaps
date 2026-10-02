@@ -56,6 +56,8 @@ const V1_TOMBSTONE = V1_ROW.replace('"deleted":false', '"deleted":true');
 /** A registry over a store whose raw rows a test can plant, read and remove. */
 interface Harness {
   readonly registry: IRegistryDriver;
+  /** Whether its `delete` removes a row born with an incarnation id, rather than leaving a tombstone. */
+  readonly removes: boolean;
   plant(text: string): Promise<void>;
   raw(): Promise<string | undefined>;
   purge(): Promise<void>;
@@ -78,6 +80,7 @@ const harnesses: ReadonlyArray<readonly [string, (entropy?: Entropy) => Harness]
       const key = registryObjectKey(undefined, REF);
       return {
         registry: new ObjectStoreRegistry(store, undefined, () => 30, entropy),
+        removes: false, // the counting store vouches for no conditional delete
         plant: async (text) => store.plant(key, text),
         raw: async () => store.text(key),
         purge: async () => store.remove(key),
@@ -94,6 +97,7 @@ const harnesses: ReadonlyArray<readonly [string, (entropy?: Entropy) => Harness]
           now: () => 30,
           ...(entropy === undefined ? {} : { entropy }),
         }),
+        removes: true,
         plant: async (text) => {
           await mkdir(dirname(path), { recursive: true });
           await writeFile(path, text, 'utf8');
@@ -185,9 +189,12 @@ describe.each(harnesses)('%s across the schema-2 cut-over', (_, make) => {
     });
     written.push((await h.raw())!);
     await h.registry.delete(REF, t1);
-    written.push((await h.raw())!); // the tombstone
-
-    await h.purge();
+    const tombstone = await h.raw(); // a tombstone, or nothing where the delete removed the row
+    expect(tombstone === undefined).toBe(h.removes);
+    if (tombstone !== undefined) {
+      written.push(tombstone);
+      await h.purge();
+    }
     await h.plant(V1_ROW);
     await h.registry.compareAndSwap(REF, '7', { retention: { expiresAt: 100 } });
     written.push((await h.raw())!); // a schema-1 row, written once by this build
@@ -214,7 +221,8 @@ describe('a re-created name never gets a token an earlier incarnation held', () 
         issued.push(token);
       }
       if (cycle % 2 === 0) {
-        await h.registry.delete(REF, token); // a tombstone, which the next create continues from
+        // A tombstone, which the next create continues from, on a registry that keeps one; a removal on one that does.
+        await h.registry.delete(REF, token);
       } else {
         await h.purge(); // nothing left behind: what a hard purge leaves
       }
@@ -300,10 +308,10 @@ describe('every driver draws a new incarnation at each create, from Web Crypto b
       const { token: first } = await h.registry.create(REF, { currentGen: null });
       expect(first).toMatch(CREATED_TOKEN);
       const { token: written } = await h.registry.compareAndSwap(REF, first, { currentGen: 0 });
-      await h.registry.delete(REF, written); // tombstone counter 2
+      await h.registry.delete(REF, written); // a tombstone at counter 2, or the row removed
       const { token: overTombstone } = await h.registry.create(REF, { currentGen: null });
       expect(tokenParts(overTombstone).incarnation).not.toBe(tokenParts(first).incarnation);
-      expect(tokenParts(overTombstone).counter).toBe(3);
+      expect(tokenParts(overTombstone).counter).toBe(h.removes ? 0 : 3);
 
       await h.purge(); // nothing left of the second incarnation
       const { token: overNothing } = await h.registry.create(REF, { currentGen: null });
@@ -378,7 +386,11 @@ describe('a runtime without Web Crypto', () => {
       const h = make();
       await h.plant(V1_ROW);
       expect(await h.registry.get(REF)).toMatchObject({ token: '7' });
-      expect(h.registry.capabilities()).toEqual({ strongRead: true, canWrite: false });
+      expect(h.registry.capabilities()).toEqual({
+        strongRead: true,
+        canWrite: false,
+        conditionalDelete: h.removes,
+      });
       await expect(h.registry.compareAndSwap(REF, '7', { currentGen: 5 })).rejects.toBeInstanceOf(
         UnsupportedError,
       );
@@ -394,14 +406,18 @@ describe('a runtime without Web Crypto', () => {
   it.each(harnesses)('%s: an injected source still writes', async (_, make) => {
     noWebCrypto();
     const h = make(countingEntropy(1));
-    expect(h.registry.capabilities()).toEqual({ strongRead: true });
+    expect(h.registry.capabilities()).toEqual({ strongRead: true, conditionalDelete: h.removes });
     await h.registry.create(REF, { currentGen: null });
   });
 
   it('MemoryRegistryDriver: builds, reports it cannot write, refuses to', async () => {
     noWebCrypto();
     const registry = new MemoryRegistryDriver();
-    expect(registry.capabilities()).toEqual({ strongRead: true, canWrite: false });
+    expect(registry.capabilities()).toEqual({
+      strongRead: true,
+      canWrite: false,
+      conditionalDelete: true,
+    });
     await expect(registry.create(REF, { currentGen: null })).rejects.toBeInstanceOf(
       UnsupportedError,
     );

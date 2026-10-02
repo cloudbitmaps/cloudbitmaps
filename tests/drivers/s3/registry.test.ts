@@ -108,6 +108,7 @@ describe('S3RegistryDriver — construction + S3 specifics', () => {
   it('advertises strongRead', () => {
     expect(new S3RegistryDriver({ client, bucket: 'b' }).capabilities()).toEqual({
       strongRead: true,
+      conditionalDelete: false,
     });
   });
 

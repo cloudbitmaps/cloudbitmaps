@@ -177,6 +177,7 @@ describe('AzureBlobRegistryDriver — construction + Azure specifics', () => {
     const containerClient = new FakeContainer() as unknown as ContainerClient;
     expect(new AzureBlobRegistryDriver({ containerClient }).capabilities()).toEqual({
       strongRead: true,
+      conditionalDelete: false,
     });
   });
 

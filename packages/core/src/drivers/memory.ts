@@ -64,10 +64,11 @@ export class MemoryRegistryDriver implements IRegistryDriver {
     return `${incarnation}.${this.seq}.${drawWrite(this.entropy)}`;
   }
 
+  /** `conditionalDelete`: a delete checks the token and removes the row in one step, with no await between. */
   capabilities(): RegCaps {
     return entropyIsAvailable(this.entropy)
-      ? { strongRead: true }
-      : { strongRead: true, canWrite: false };
+      ? { strongRead: true, conditionalDelete: true }
+      : { strongRead: true, canWrite: false, conditionalDelete: true };
   }
 
   async get(ref: SegmentRef): Promise<RegistryRecord | null> {

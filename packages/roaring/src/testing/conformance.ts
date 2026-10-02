@@ -914,3 +914,132 @@ export function registryConcurrency(
     });
   });
 }
+
+/**
+ * What {@link registryDeleteConformance} needs to see past the port: the driver, and the backend behind it.
+ *
+ * `stored` says whether the backend still holds anything for a row, a tombstone included. Through the port a deleted
+ * row and a tombstoned one look the same (`get` answers `null`, `list` skips both); what tells them apart is whether
+ * a later full listing still has an object to read, which is the cost a hard delete exists to remove.
+ */
+export interface RegistryDeleteHarness {
+  readonly driver: IRegistryDriver;
+  /** Whether the backend holds anything for `ref`: a live row, or the tombstone a delete left in its place. */
+  stored(ref: SegmentRef): Promise<boolean>;
+  /**
+   * Put `text` at `ref`'s row, as another writer left it: here, a row as a release before 0.12 wrote it. Omitted by
+   * a registry that persists nothing a test can plant (the in-memory one).
+   */
+  plantRow?(ref: SegmentRef, text: string): Promise<void>;
+}
+
+/** A `destroyed` row exactly as a release before 0.12 serialized one: schema 1, and a bare decimal token. */
+function legacyRowText(ref: SegmentRef, token: string): string {
+  return JSON.stringify({
+    schemaVersion: 1,
+    deleted: false,
+    record: {
+      ...(ref.namespace === undefined ? {} : { namespace: ref.namespace }),
+      segment: ref.segment,
+      currentGen: 4,
+      status: 'destroyed',
+      retention: { expiresAt: 1_000_000_000_000, retiredBySweepAt: 1_000_000_000_000 },
+      createdAt: 10,
+      updatedAt: 20,
+      token,
+    },
+  });
+}
+
+/**
+ * Contract tests for what `delete` leaves behind, which differs by driver and is declared by
+ * `capabilities().conditionalDelete`:
+ *
+ * - **`true`**: a delete removes a row whose token carries an incarnation id from the backend for good, and does so
+ *   only while the row is still the version it read. A row a release before 0.12 wrote has a bare decimal token and
+ *   is tombstoned, never removed: a process still on that release, re-creating the name over nothing, would issue
+ *   those same counters again from 0.
+ * - **`false` or absent**: every delete leaves a tombstone, which a later full listing still reads.
+ *
+ * Either way `get` answers `null` afterwards, `list` skips the row, and a name created again is a new incarnation that
+ * refuses every token an earlier one held.
+ */
+export function registryDeleteConformance(label: string, make: () => RegistryDeleteHarness): void {
+  describe(`IRegistryDriver delete conformance: ${label}`, () => {
+    const removes = (h: RegistryDeleteHarness): boolean =>
+      h.driver.capabilities().conditionalDelete === true;
+
+    it('says whether a delete removes a row: conditionalDelete is a boolean, or absent', () => {
+      const flag = make().driver.capabilities().conditionalDelete;
+      expect(flag === undefined || typeof flag === 'boolean').toBe(true);
+    });
+
+    it('a delete fenced on the current token removes the row where the registry says so, and tombstones it otherwise', async () => {
+      const h = make();
+      const { token } = await h.driver.create(SEG, { currentGen: 0, status: 'destroyed' });
+      expect(await h.stored(SEG)).toBe(true);
+      await h.driver.delete(SEG, token);
+      expect(await h.driver.get(SEG)).toBeNull();
+      expect(await drainSegments(h.driver.list())).toEqual([]);
+      expect(await h.stored(SEG), 'what the backend still holds for the row').toBe(!removes(h));
+    });
+
+    it('a delete with no token does the same', async () => {
+      const h = make();
+      await h.driver.create(SEG, { currentGen: null });
+      await h.driver.delete(SEG);
+      expect(await h.driver.get(SEG)).toBeNull();
+      expect(await h.stored(SEG)).toBe(!removes(h));
+      await h.driver.delete(SEG); // and stays idempotent
+      expect(await h.stored(SEG)).toBe(!removes(h));
+    });
+
+    it('a delete fenced on a stale token removes nothing: the row stays stored and live', async () => {
+      const h = make();
+      const { token: t0 } = await h.driver.create(SEG, { currentGen: 0 });
+      const { token: t1 } = await h.driver.compareAndSwap(SEG, t0, { currentGen: 1 });
+      await expect(h.driver.delete(SEG, t0)).rejects.toBeInstanceOf(WriteConflictError);
+      expect(await h.stored(SEG)).toBe(true);
+      expect(await h.driver.get(SEG)).toMatchObject({ currentGen: 1, token: t1 });
+    });
+
+    it('a name deleted and created again is a new incarnation: every earlier token is refused', async () => {
+      const h = make();
+      const held: string[] = [];
+      for (let cycle = 0; cycle < 3; cycle++) {
+        const { token: t0 } = await h.driver.create(SEG, { currentGen: null });
+        const { token: t1 } = await h.driver.compareAndSwap(SEG, t0, { currentGen: cycle });
+        held.push(t0, t1);
+        await h.driver.delete(SEG, t1);
+      }
+      expect(new Set(held).size).toBe(held.length);
+      const { token: live } = await h.driver.create(SEG, { currentGen: 0 });
+      expect(held).not.toContain(live);
+      for (const stale of held) {
+        await expect(h.driver.compareAndSwap(SEG, stale, { currentGen: 9 })).rejects.toBeInstanceOf(
+          WriteConflictError,
+        );
+        await expect(h.driver.delete(SEG, stale)).rejects.toBeInstanceOf(WriteConflictError);
+      }
+      expect(await h.driver.get(SEG)).toMatchObject({ currentGen: 0, token: live });
+    });
+
+    it('a row a release before 0.12 wrote is tombstoned, never removed', async (ctx) => {
+      const h = make();
+      if (h.plantRow === undefined) return ctx.skip();
+      for (const ref of [SEG, { namespace: 'tenant:acme', segment: 'legacy' }]) {
+        await h.plantRow(ref, legacyRowText(ref, '7'));
+        expect(await h.driver.get(ref)).toMatchObject({ token: '7' }); // a control: the planted row reads
+        await h.driver.delete(ref, '7');
+        expect(await h.driver.get(ref)).toBeNull();
+        expect(await h.stored(ref), 'the tombstone stays').toBe(true);
+      }
+      // The same once this release has written the row: its token gains a write part and still has no incarnation.
+      const ref = { segment: 'legacy-written' };
+      await h.plantRow(ref, legacyRowText(ref, '7'));
+      const { token } = await h.driver.compareAndSwap(ref, '7', { retention: { note: 'x' } });
+      await h.driver.delete(ref, token);
+      expect(await h.stored(ref)).toBe(true);
+    });
+  });
+}
