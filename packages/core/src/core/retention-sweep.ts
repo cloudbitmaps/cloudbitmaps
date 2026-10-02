@@ -33,6 +33,12 @@
  * once Storage is provably empty for it —
  * because deleting the row is what makes the name reusable and takes the segment out of reach of
  * the generation collection.
+ *
+ * **On a registry that reports `conditionalDelete`, the purge removes the row for good**, so a full scan stops paying a
+ * read for every name a namespace ever held: the scan costs what is live and what is inside its grace. The delete is
+ * fenced on the token the purge judged and applied by the store only to that version of the row. Each retirement
+ * files a pointer in the due index under the day its tombstone's grace ends, so `scan: 'index'` purges as well as
+ * retires; nothing on the row records that day, which the purge derives from the stamp.
  */
 import { type IAuditSink } from './audit';
 import { BudgetExceededError, ValidationError, isWriteConflictError } from './errors';
@@ -51,7 +57,7 @@ import {
   dueNamespace,
 } from './due-index';
 import { segmentKey, shardOf } from './keys';
-import type { IRegistryDriver, RegistryRecord } from './ports';
+import type { IRegistryDriver, RegistryRecord, Token } from './ports';
 import type { GovernanceMeta, IStorageDriver, SegmentRef } from './ports';
 import { isReservedNamespace, validateUserNamespace } from './validate';
 
@@ -96,6 +102,9 @@ export interface RetireExpiredOptions {
    * pointer write failed (`indexed: false`), or whose ref is too long to index, has no pointer — so a
    * deployment that *only* ever runs `'index'` will never retire those. Run `'fleet'` periodically as the
    * repair pass. The default is `'fleet'` because it is complete by construction.
+   *
+   * An index scan purges too: each retirement files a pointer to its tombstone under the day the tombstone's grace
+   * ends, and the scan reads it back with the expiry pointers. A pointer whose segment is gone is removed once read.
    */
   readonly scan?: 'fleet' | 'index';
   /**
@@ -115,7 +124,8 @@ export interface RetireExpiredOptions {
    */
   readonly lookbackBuckets?: number;
   /**
-   * Whether to delete the tombstone rows this sweep's own past retirements left (default `true`). Set `false` to
+   * Whether to delete the tombstone rows this sweep's own past retirements left (default `true`): removed for good on
+   * a registry that reports `conditionalDelete`, tombstoned on one that does not. Set `false` to
    * keep every one of them — the right choice if something outside this library treats the presence of a
    * `destroyed` row as an attestation. That includes the row of a retirement whose drop found no Storage
    * generation to delete and left none behind: with the default that row is deleted in the same pass, since it
@@ -218,6 +228,25 @@ export interface RetireExpiredResult {
  */
 export const DEFAULT_LOOKBACK_BUCKETS = 7;
 
+/** A due-index pointer as a scan found it: where it is, the segment it points at, and its token. */
+interface FoundPointer {
+  /** The pointer row's own ref, in its `cbm.due.<day>` namespace. */
+  readonly ref: SegmentRef;
+  /** The segment it points at. */
+  readonly target: SegmentRef;
+  /** The pointer row's token, which fences its removal; absent for a pointer computed rather than read. */
+  readonly token?: Token;
+}
+
+/** What an index scan found: the candidates' live rows, the pointers to each, and the pointers to nothing. */
+interface IndexScan {
+  readonly rows: RegistryRecord[];
+  /** Every pointer the scan read to each candidate, by the candidate's segment key. */
+  readonly pointers: ReadonlyMap<string, readonly FoundPointer[]>;
+  /** Pointers whose segment has no row: litter a retirement or a purge left when removing them failed. */
+  readonly litter: readonly FoundPointer[];
+}
+
 /**
  * Candidates from the due index: read the buckets that are due, resolve each pointer, and **re-read the live
  * row**.
@@ -225,17 +254,21 @@ export const DEFAULT_LOOKBACK_BUCKETS = 7;
  * That re-read is the load-bearing line. The index is a fast path and the segment's own row is the truth, so a
  * pointer whose policy has since been cleared, moved, or destroyed must cost one read and change nothing — the
  * ordinary eligibility check downstream then skips it, using exactly the same logic the fleet scan uses. There
- * is no second decision path to keep in step, which is the property that makes a second index safe here.
+ * is no second decision path to keep in step, which is the property that makes a second index safe here. A
+ * `destroyed` row is handed to the same purge branch the fleet scan uses, so the pointer a retirement files for its
+ * tombstone lets an index scan purge it too.
  *
- * A pointer we cannot decode, or one whose segment no longer exists, is skipped rather than repaired: this
- * function decides nothing irreversible, and cleaning up is the sweep's job once a retirement actually happens.
+ * A pointer we cannot decode is skipped. One whose segment no longer exists is returned as litter, for the sweep to
+ * remove: this function decides nothing irreversible.
  */
 async function rowsFromDueIndex(
   registry: IRegistryDriver,
   options: { now: number; lookbackBuckets: number; namespace?: string; maxScanSegments: number },
-): Promise<RegistryRecord[]> {
+): Promise<IndexScan> {
   const rows: RegistryRecord[] = [];
-  const seen = new Set<string>();
+  const pointers = new Map<string, FoundPointer[]>();
+  const litter: FoundPointer[] = [];
+  const gone = new Set<string>();
   for (const bucket of dueBucketsAt(options.now, options.lookbackBuckets)) {
     for await (const pointer of registry.list(dueNamespace(bucket))) {
       const ref = decodeDueName(pointer.segment);
@@ -244,11 +277,24 @@ async function rowsFromDueIndex(
       // The fleet scan skips such a row as bookkeeping, so this scan does too, rather than fail on it each cycle.
       if (isReservedNamespace(ref.namespace)) continue;
       if (options.namespace !== undefined && ref.namespace !== options.namespace) continue;
+      const found: FoundPointer = {
+        ref: { namespace: pointer.namespace, segment: pointer.segment },
+        target: ref,
+        token: pointer.token,
+      };
       // A segment can appear in two buckets at once: `reindex` writes the new pointer before deleting the old,
-      // so an interruption leaves both. De-duplicate here rather than retiring twice and reporting a phantom.
-      const key = `${ref.namespace ?? ''}\u0000${ref.segment}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
+      // so an interruption leaves both, and a retirement's tombstone has a pointer of its own. De-duplicate here
+      // rather than retiring twice and reporting a phantom, and keep every pointer for the purge to remove.
+      const key = segmentKey(ref);
+      const known = pointers.get(key);
+      if (known !== undefined) {
+        known.push(found);
+        continue;
+      }
+      if (gone.has(key)) {
+        litter.push(found);
+        continue;
+      }
       if (rows.length >= options.maxScanSegments) {
         throw new BudgetExceededError(
           `retireExpired: the due index yielded more than ${options.maxScanSegments} segments — the scan was ` +
@@ -257,11 +303,16 @@ async function rowsFromDueIndex(
         );
       }
       const live = await registry.get(ref);
-      if (live === null) continue; // the segment is gone; the pointer is litter a later retirement will clear
+      if (live === null) {
+        gone.add(key);
+        litter.push(found); // the segment is gone; nothing will read this pointer usefully again
+        continue;
+      }
       rows.push(live);
+      pointers.set(key, [found]);
     }
   }
-  return rows;
+  return { rows, pointers, litter };
 }
 
 /**
@@ -279,6 +330,54 @@ async function forgetDuePointer(
     await registry.delete(dueIndexRef(dueBucket(expiresAt), ref));
   } catch {
     // See above: litter, not a fault.
+  }
+}
+
+/**
+ * File the pointer that lets an index scan purge a tombstone: under the day its grace ends, the stamp plus the grace.
+ * No field of the row records that day; the bucket is the index, and the purge derives the day from the stamp.
+ *
+ * Best-effort, like every pointer write: a pointer already there is the same pointer, and one that fails to appear
+ * leaves the tombstone to the fleet scan, which purges it on the repair cadence.
+ */
+async function filePurgePointer(
+  registry: IRegistryDriver,
+  ref: SegmentRef,
+  purgeAt: number,
+): Promise<void> {
+  if (!canIndex(ref)) return;
+  try {
+    await registry.create(dueIndexRef(dueBucket(purgeAt), ref), { currentGen: null });
+  } catch {
+    // Already there, or not written: see above.
+  }
+}
+
+/**
+ * Remove the pointers to a purged tombstone: every one the index scan read to it, each fenced on the token it was
+ * read with, and the one this sweep's grace would have filed, which a fleet scan has not read. Best-effort: a pointer
+ * left behind costs one read when its bucket is next scanned, which then finds its row gone and removes it.
+ *
+ * Runs only once the row is gone, never after a delete whose outcome is unknown, so a pointer is only ever removed
+ * from a tombstone that no longer needs finding.
+ */
+async function forgetPurgePointers(
+  registry: IRegistryDriver,
+  ref: SegmentRef,
+  purgeAt: number,
+  found: readonly FoundPointer[],
+): Promise<void> {
+  if (!canIndex(ref)) return;
+  const filed = dueIndexRef(dueBucket(purgeAt), ref);
+  const all = found.some((p) => p.ref.namespace === filed.namespace)
+    ? found
+    : [...found, { ref: filed, target: ref }];
+  for (const pointer of all) {
+    try {
+      await registry.delete(pointer.ref, pointer.token);
+    } catch {
+      // See above: litter, not a fault.
+    }
   }
 }
 
@@ -334,7 +433,7 @@ export async function retireExpired(
   // writes. Draining makes the candidate set a snapshot; the retire path then RE-READS each row before acting on
   // it, because deciding an irreversible deletion from a minutes-old copy is not the same as enumerating from one.
   const scan = options.scan ?? 'fleet';
-  const rows =
+  const indexed =
     scan === 'index'
       ? await rowsFromDueIndex(deps.registry, {
           now,
@@ -342,18 +441,22 @@ export async function retireExpired(
           namespace: options.namespace,
           maxScanSegments,
         })
-      : await drainRegistry(deps.registry, {
-          namespace: options.namespace,
-          maxScanSegments,
-          op: 'retireExpired',
-        });
+      : undefined;
+  const rows =
+    indexed?.rows ??
+    (await drainRegistry(deps.registry, {
+      namespace: options.namespace,
+      maxScanSegments,
+      op: 'retireExpired',
+    }));
 
   const shards = options.shards;
   const totalShards = options.totalShards ?? 0;
-  const mine =
-    shards === undefined || totalShards <= 1
-      ? rows
-      : rows.filter((r) => shards.includes(shardOf(segmentKey(r), totalShards)));
+  const owned = (ref: SegmentRef): boolean =>
+    shards === undefined ||
+    totalShards <= 1 ||
+    shards.includes(shardOf(segmentKey(ref), totalShards));
+  const mine = rows.filter(owned);
 
   const entries: RetireEntry[] = [];
   let eligible = 0;
@@ -403,8 +506,20 @@ export async function retireExpired(
         }
         // Fenced on the token of the row this decision was made from (the marker and its grace window), so a
         // tombstone that was purged and re-created, or rewritten, since the scan is refused rather than deleted.
-        if (!dryRun) await deps.registry.delete(ref, rec.token);
-        if (!dryRun) tombstonesPurged += 1;
+        // Storage went first, above: the row is what keeps a straggler generation reachable by the collection.
+        // On a registry with a conditional delete the row is removed for good, under the version this delete
+        // reads, which carries that token; elsewhere it is tombstoned. Its pointers go only once it is gone: a
+        // delete that threw, its outcome unknown, removes nothing more, and the next scan reads the row again.
+        if (!dryRun) {
+          await deps.registry.delete(ref, rec.token);
+          tombstonesPurged += 1;
+          await forgetPurgePointers(
+            deps.registry,
+            ref,
+            retiredAt + grace,
+            indexed?.pointers.get(segmentKey(ref)) ?? [],
+          );
+        }
         entries.push({
           ...base,
           action: dryRun ? 'would-purge-tombstone' : 'purged-tombstone',
@@ -533,9 +648,12 @@ export async function retireExpired(
           if (deleted) continue;
         }
       }
-      // Stamp the tombstone as OURS, so a later sweep may purge the row (see the attribution note above). A
-      // failure here only means the row is never auto-purged — never data loss — so it is best-effort.
-      await stampRetirement(deps.registry, ref, now).catch(() => undefined);
+      // Stamp the tombstone as OURS, so a later sweep may purge the row (see the attribution note above), and file
+      // the pointer an index scan finds it by on the day its grace ends. A failure here only means the row is never
+      // auto-purged, or only by the fleet scan — never data loss — so it is best-effort.
+      if (await stampRetirement(deps.registry, ref, now).catch(() => false)) {
+        await filePurgePointer(deps.registry, ref, now + grace);
+      }
     } catch (err) {
       // A fault AFTER the tombstone landed is a segment that IS retired, and reporting it as skipped told the
       // caller the opposite of the truth ("a skipped entry is a segment that still holds data"). One cheap read
@@ -545,7 +663,9 @@ export async function retireExpired(
         // Stamp it here too. Without this a retirement that faulted after the tombstone landed is a row no later
         // sweep can attribute to itself, so it is never auto-purged — exactly the litter the purge exists to
         // prevent, and reachable from any transient Storage fault.
-        await stampRetirement(deps.registry, ref, now).catch(() => undefined);
+        if (await stampRetirement(deps.registry, ref, now).catch(() => false)) {
+          await filePurgePointer(deps.registry, ref, now + grace);
+        }
         retired += 1;
         entries.push({
           ...base,
@@ -564,6 +684,23 @@ export async function retireExpired(
         continue;
       }
       entries.push({ ...base, action: 'skipped', reason: failureReason(err) });
+    }
+  }
+
+  // Pointers to nothing, from an index scan: remove each, so its bucket is not read for it again. Only those for this
+  // sweep's own slice of the fleet, and never under `dryRun`. The segment is read again just before, since the scan
+  // may be minutes old: a `setRetention` that created the name since files its pointer after its row, and finding
+  // one already at that key, takes it as its own. Fenced on the token the scan read, so a pointer filed anew is left.
+  // What remains is a round trip in which such a pointer can still go, and then the fleet scan retires that segment.
+  if (!dryRun && indexed !== undefined) {
+    for (const pointer of indexed.litter) {
+      if (!owned(pointer.target)) continue;
+      try {
+        if ((await deps.registry.get(pointer.target)) !== null) continue;
+        await deps.registry.delete(pointer.ref, pointer.token);
+      } catch {
+        // Left for a later scan: litter, not a fault.
+      }
     }
   }
 
@@ -593,26 +730,27 @@ function retirementStamp(meta: GovernanceMeta | undefined): number | null {
 
 /**
  * Mark a freshly written tombstone as this sweep's own work, preserving whatever else the row's `retention`
- * metadata carried. Retried a couple of times on contention, then given up on: an unstamped tombstone is simply
- * never auto-purged, which is the safe direction.
+ * metadata carried, and say whether it did. Retried a couple of times on contention, then given up on: an unstamped
+ * tombstone is simply never auto-purged, which is the safe direction.
  */
 async function stampRetirement(
   registry: DropDeps['registry'],
   ref: SegmentRef,
   now: number,
-): Promise<void> {
+): Promise<boolean> {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const rec = await registry.get(ref);
-    if (rec === null || rec.status !== 'destroyed') return; // nothing to stamp
+    if (rec === null || rec.status !== 'destroyed') return false; // nothing to stamp
     try {
       await registry.compareAndSwap(ref, rec.token, {
         retention: { ...rec.retention, [RETIRED_AT]: now },
       });
-      return;
+      return true;
     } catch (err) {
       if (!isWriteConflictError(err)) throw err;
     }
   }
+  return false;
 }
 
 /**

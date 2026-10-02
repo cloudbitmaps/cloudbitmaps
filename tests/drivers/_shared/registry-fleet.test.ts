@@ -12,6 +12,7 @@ import { registryRowPath } from '@/drivers/localfs/paths';
 import { MemoryRegistryDriver } from '@/drivers/memory';
 import { CountingObjectStore } from '../../helpers/counting';
 import { countingEntropy, CREATED_TOKEN, tokenParts } from '../../helpers/tokens';
+import { readAs011 } from '../../helpers/release-0-11';
 import { incarnationOf } from '@/drivers/_shared/registry';
 import { webCryptoEntropy } from '@/drivers/_shared/entropy';
 import { brandAsBackend } from '@/core/ports';
@@ -28,23 +29,6 @@ const hex = (n: number, width: number): string => n.toString(16).padStart(width,
  */
 
 const REF: SegmentRef = { segment: 's' };
-
-/**
- * 0.11's check of a row's stamp, as it shipped: the first thing its parser does after `JSON.parse`, and the one
- * that refuses a newer row before any field is looked at. It reads schema 1 only.
- */
-function readAs011(text: string): void {
-  const raw = (JSON.parse(text) as { schemaVersion?: unknown }).schemaVersion;
-  if (raw === undefined) throw new IntegrityError('registry row has no schemaVersion');
-  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 1) {
-    throw new IntegrityError(`registry row has a malformed schemaVersion (${String(raw)})`);
-  }
-  if (raw > 1) {
-    throw new UnsupportedError(
-      `registry row schemaVersion ${raw} is newer than this build reads (v1)`,
-    );
-  }
-}
 
 /** A live row exactly as 0.11 serialized one: schema 1, a decimal token, the record's fields in its order. */
 const V1_ROW =
