@@ -40,14 +40,14 @@ Every segment has the shape of the [calibration run's](../../bench/calibration/2
 ## What each reader holds
 
 The bill below assumes each reader keeps its hot segments open and answers its point reads from memory at the hit
-rates above. Both take memory, and the defaults hold less than the larger deployments need:
+rates above. Both take memory, and the default chunk cache holds a small share of each hot set:
 
 <!-- SIZING:READERS:START -->
-| | index a reader holds open, at 160 B a chunk | against the default `cache.readerMaxBytes` (64 MiB) | chunks in its hot set | what they hold | against the default `cache.maxChunks` (1,024) | reads it answers, spread evenly |
+| | index a reader holds open, at 20 B a chunk | against the default `cache.readerMaxBytes` (64 MiB) | chunks in its hot set | what they hold | against the default `cache.maxChunks` (1,024) | reads it answers, spread evenly |
 |---|---:|---|---:|---:|---|---:|
-| **Small** | 6 MiB | fits | 40,000 | 20 MB | 39× it | 2.6% |
-| **Medium** | 61 MiB | at the limit: raise it | 400,000 | 800 MB | 391× it | 0.26% |
-| **Large** | 305 MiB | 4.8× it: raise it, or 209 stay open | 2,000,000 | 10 GB | 1,953× it | 0.051% |
+| **Small** | 1 MiB | fits | 40,000 | 20 MB | 39× it | 2.6% |
+| **Medium** | 8 MiB | fits | 400,000 | 800 MB | 391× it | 0.26% |
+| **Large** | 38 MiB | fits | 2,000,000 | 10 GB | 1,953× it | 0.051% |
 <!-- SIZING:READERS:END -->
 
 A reader past `cache.readerMaxBytes` evicts segments and opens them again as it reads them, a pointer read and a tail
@@ -55,15 +55,17 @@ read each, which **neither the bill below nor the estimator's report prices**: t
 more hot segments than the default `cache.readerMax`, since it sees neither your store's own setting nor how large
 each index is. Two more things about these columns:
 
-- **The index column is the reader's own count, an estimate.** The reader counts each chunk's index entry at the
-  fixed size in the column's heading, an estimate reasoned from V8's object layout rather than measured on the heap,
-  so leave room above it.
+- **The index column is the reader's own count, and it is exact.** The reader holds its parsed index as typed
+  arrays, so each chunk's entry weighs the fixed size in the column's heading and the reader reports the arrays'
+  byte length. A test checks that count against the memory the process retains, so the figure is the index's own
+  weight; the reader's other objects and your chunk cache are not in it.
 - **The hit rates assume the reads are skewed.** The fifth column is what holding a hot set whole takes, and the
   last is the share of reads a default chunk cache would answer if they were spread evenly over the hot set. The hit
   rates above hold only where most reads fall on a small part of it, or where the chunk cache is raised toward that
   size.
 
-Raising both caches is the price of these figures, paid in each reader's memory.
+Raising the chunk cache is the price of these figures, paid in each reader's memory. The default index budget holds
+the hot set's indices at all three sizes.
 
 ## The monthly bill
 

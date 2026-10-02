@@ -48,7 +48,8 @@ export function readVarint(bytes: Uint8Array, offset: number): VarintRead {
     if (i === 4 && byte > 0x0f) {
       throw new IntegrityError('varint exceeds u32 range');
     }
-    result += (byte & 0x7f) * 2 ** shift;
+    // Integer arithmetic: the value stays a small integer where it fits, rather than a heap-boxed double.
+    result = (result | ((byte & 0x7f) << shift)) >>> 0;
     if ((byte & 0x80) === 0) {
       return { value: result, next: pos };
     }

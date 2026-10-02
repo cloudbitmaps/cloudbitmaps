@@ -272,7 +272,7 @@ on. Re-run with a higher `budget` to finish those segments. The ledger of the er
 `intersect`'s budget is a product (surviving keys times operands), while its memory is a window
 (`concurrency × operands × chunk`) that does not depend on segment size. A request budget cannot express a memory
 bound, and `budget: false` ("I know my fan-out") must not silently also mean "unbounded RAM". A wide segment's parsed
-index can be several MB, which is why the reader cache is bounded by bytes as well as by count. Lower
+index can reach about 1.3 MB (65,536 entries at 20 B), which is why the reader cache is bounded by bytes as well as by count. Lower
 `cache.readerMaxBytes` for a memory-tight deployment, such as a 128 MB Lambda that reads across many wide segments.
 
 **Neither limits how many ids a segment can hold.** A segment holds up to the full 32-bit id space, about 4.29

@@ -270,7 +270,7 @@ export interface CacheOptions {
   /**
    * Aggregate byte ceiling on the parsed `.crbm` indices the open readers hold (default 64 MiB) — the byte half
    * of the memory bound, complementing the {@link CacheOptions.readerMax} *count* bound. A wide/dense segment's
-   * parsed index can be several MB, so a count-only bound could let the open readers pin ~GBs and blow a small
+   * parsed index can reach about 1.3 MB, so a count-only bound could let the open readers pin over a GB and blow a small
    * heap (e.g. a 128 MB Lambda); this evicts the least-recently-used reader once the summed index footprint
    * would exceed the ceiling — whichever of the count/byte bounds binds first. Lower it for memory-tight
    * deployments that read across wide segments. Applies whenever the store builds its own read path.

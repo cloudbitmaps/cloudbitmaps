@@ -311,8 +311,6 @@ move it up.
     refresh kept as a longer backstop, and an `expire(ref)` that costs one lookup where `invalidate` scans the cache.
   - **Retrying at one layer.** The SDKs retry throttling and the library retries it again, so one slow request can
     become a dozen; throttling belongs to the SDK's retry alone.
-  - **An exact bound on reader memory** — the index's weight measured against the heap rather than estimated, and
-    the index held compactly.
   - **One request per pointer read on Azure Blob**, so its pointer reads cost what S3's and GCS's do. Azure takes no
     suffix range, so an Azure tail read stays two requests.
 - **WASM CRoaring — research, after the loaded store.** A WebAssembly build of CRoaring as a second codec would
