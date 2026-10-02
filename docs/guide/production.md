@@ -11,7 +11,7 @@ checklist: work down the table, and follow each link for the detail.
 | Versioning and backups cover the data and the pointers | A restore must bring both back to the same point in time | [Versioning and backups](#versioning-and-backups) |
 | With versioning on, noncurrent versions expire after your restore window | Each generation a load collects is otherwise billed for as long as the bucket keeps it, out of sight | [Bucket lifecycle](#bucket-lifecycle) |
 | The bucket honors conditional writes, and the S3 SDK is 3.645.0 or later | Otherwise a write-once generation can be silently overwritten | [Conditional writes and the S3 SDK](#conditional-writes-and-the-s3-sdk) |
-| Your storage client has a request timeout | The library has none of its own; a hung request hangs the read. On GCS 8.x and Azure Blob no client setting bounds a download's body | [Reliability](#reliability-retries-backoff--timeouts) |
+| Your reads have a timeout | Without one a hung request hangs the read. Set it on the S3 client; on GCS no client setting bounds a download on 8.x, so set `readTimeoutMs` (off by default); on Azure Blob no client setting bounds a download's body | [Reliability](#reliability-retries-backoff--timeouts) |
 | Your job re-runs a write after a transient error | Writes are never retried for you | [Reliability](#reliability-retries-backoff--timeouts) |
 | You know the request budget and the memory ceilings | A runaway call is refused, not billed | [Limits](#limits-the-per-op-budget-and-the-memory-ceilings) |
 | The keystore is backed up, if you encrypt | Losing the key makes the data permanently unreadable | [Encryption](encryption.md#before-you-encrypt) |
@@ -148,8 +148,32 @@ retry; the client `GcsStorage` builds keeps them and needs nothing.
 
 **A GCS client's `timeout` does not bound a download** on `@google-cloud/storage` 8.x: the SDK hands it to an HTTP
 client that has no such option. Measured against a local server that accepts a read and never answers, a read through
-a client built with `timeout: 2000` was still pending after 12 s, and one through the default client after 75 s. So
-nothing bounds a stalled GCS read today; a timeout below applies to S3.
+a client built with `timeout: 2000` was still pending after 12 s, and one through the default client after 75 s.
+**`readTimeoutMs` on `GcsStorage` does bound it, and it is off unless you set it:**
+
+```ts
+import { GcsStorage } from '@cloudbitmaps/gcs';
+
+const backend = new GcsStorage({ bucket: 'my-bitmaps', readTimeoutMs: 2_000 });
+```
+
+It times every download the backend makes, each attempt on its own clock: a generation's tail, a range of it and a
+registry row, and also the metadata read a tail read falls back on for an empty object. The clock starts at the call
+into the SDK, so fetching or refreshing a credential counts, and runs until the whole body has arrived, so a server
+that sends its headers and then stalls is cut off too. A download cut off is retried like a dropped connection, up to
+three more times; one cut off on every attempt throws `TransientError` naming the read and the timeout, for the store's
+read retry to run again. Uploads, deletes, listings and the conditional writes are not timed: an upload can rightly
+take longer than a read, and a write cut off may still land. The SDK cannot cancel a request whose response has not
+begun, so a read that times out before any answer leaves that request's connection open until the server answers or
+closes it, and until then it keeps a Node process from exiting: measured against a local server that never answers, a
+process whose four attempts had all timed out at 200 ms exited when the server closed its connections, 6 s later.
+A read cut off after its response began closes its own connection.
+
+The driver sends every download, timed or not, on Node's global agent rather than the SDK's shared keep-alive one.
+The SDK destroys the agent a destroyed download went out on, and its own agent is shared by every request in the
+process, so a download cut off or refused there would reset all the others in flight, uploads included. Node's global
+agent is still kept alive, and the SDK never destroys it. Measured on 8.1.0, a 64-byte upload, and a read and a
+registry write on a second backend, all completed while a read timed out on every attempt.
 
 **Nor does an Azure Blob client's timeout bound a body that stalls.** The SDK's per-try timer stops once the response
 headers arrive, and `retryOptions.tryTimeoutInMs` is the timeout it asks the service to apply. Measured against a local
@@ -159,9 +183,9 @@ was still pending after 2.5 s.
 Only transient faults (they surface as `TransientError`) are retried. Errors that retrying cannot fix are never
 retried: `ValidationError`, `IntegrityError`, `NotFoundError` and `WriteConflictError`.
 
-**Set a timeout on your storage client.** The library has no timeout of its own, because one would abandon requests
-that are in flight. A timeout on your client turns a hung read into a transient fault that is retried. Build the
-client with the timeout and pass it to the backend:
+**Set a timeout on your storage client.** Apart from `readTimeoutMs` on GCS, above, the library has no timeout of its
+own. A timeout on your client turns a hung read into a transient fault that is retried. Build the client with the
+timeout and pass it to the backend:
 
 ```ts
 import { S3Client } from '@aws-sdk/client-s3';

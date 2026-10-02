@@ -42,6 +42,7 @@ It builds its own client from Application Default Credentials. Any other key is 
 | `client` | your own `Storage` client. Pass it as `client`; `storage` is refused, since in `CloudRoaring` that word means the backend. Build it with `retryOptions: { autoRetry: false }` (see below) |
 | `projectId`, `apiEndpoint` | build a client for you, such as one for fake-gcs-server; refused beside `client` |
 | `simpleUploadThresholdBytes`, `maxObjectBytes` | the size up to which an object is one simple request (default 8 MiB) and the largest object (default 5 TiB, GCS's maximum) |
+| `readTimeoutMs` | cut off a read that has run this long, in milliseconds (see below); `0`, the default, sets no timeout |
 
 ## Before production
 
@@ -62,6 +63,18 @@ It builds its own client from Application Default Credentials. Any other key is 
   resumable uploads on that client, which the library does not retry; the client `GcsStorage` builds keeps them.
 - **A client `timeout` does not bound a download on `@google-cloud/storage` 8.x**, so a read whose server stalls waits
   for it. Measured against a local server that never answers: still pending after 12 s with `timeout: 2000`.
+  **`readTimeoutMs` does, and it is off unless you set it.** It times every download, each attempt on its own clock:
+  a generation's tail, a range of it and a registry row, plus the metadata read a tail read falls back on for an empty
+  object. The clock starts at the call into the SDK, so a credential fetch counts, and runs until the whole body has
+  arrived. A download cut off is retried like a dropped connection, and one cut off on every attempt throws
+  `TransientError` naming the read and the timeout. Uploads, deletes and listings are not timed. The SDK cannot
+  cancel a request whose response has not begun, so a read that times out before any answer leaves its connection
+  open until the server answers or closes it, and until then that connection keeps a Node process from exiting.
+- **A download the driver cuts off or refuses resets nothing else.** The SDK destroys the HTTP agent a destroyed
+  download went out on, and its own agent is one keep-alive agent the whole process shares, so every other request in
+  flight would be reset with it, uploads included. The driver sends its downloads on Node's global agent instead
+  (still kept alive), which the SDK never destroys. Measured on 8.1.0: a 64-byte upload, and a read and a registry
+  write on a second backend, all completed while a read on the first backend timed out on every attempt.
 - **A transient failure of a write throws `TransientError`, and the write may or may not have landed.** Re-run the
   call, or check `store.generations(ref)`.
 

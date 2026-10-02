@@ -13,6 +13,18 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **`readTimeoutMs` on `GcsStorage` cuts off a GCS read that stalls; it is off unless you set it.** A client's own
+  `timeout` does not bound a download on `@google-cloud/storage` 8.x, so a read whose server stops answering waited
+  for it forever. With `readTimeoutMs` set, each attempt at a download (a generation's tail, a range of it, a registry
+  row) and the metadata read a tail read falls back on for an empty object is cut off once it has run that long,
+  timed from the call into the SDK, so a credential fetch counts, to the end of the body, so a stall after the headers
+  is cut off too. A download cut off is retried like a dropped connection, and one cut off on every attempt throws
+  `TransientError` naming the read and the timeout. Uploads, deletes, listings and the conditional writes are not
+  timed. `0`, the default, sets no timeout; a value that is not a non-negative safe integer no larger than
+  2,147,483,647 is refused with `ValidationError`. The SDK cannot cancel a request whose response has not begun, so a
+  read that times out before any answer leaves its connection open until the server answers or closes it. The GCS
+  storage and registry drivers take the option too.
+
 - **`PricingProfile.storage.requestsPerPointerRead` prices a pointer read apart from a tail read.** It is the requests
   one pointer read costs, 1 by default, and the cost model charges it for each operand of an intersection, for the
   eight pointer reads a load makes and for each pointer refresh. `requestsPerSizedRead` keeps its name and its default
@@ -39,6 +51,18 @@ so, and so do the module headers in the code.
   the registry never takes a geo-replica's older row for the current one. A `404` is still absence. Writes, listings and the tombstoning delete are unchanged, and a tail read stays two
   requests, since Azure Blob takes no suffix range. Price an Azure deployment with `storage.requestsPerSizedRead: 2`
   and `requestsPerPointerRead` at its default of 1.
+
+### Fixed
+
+- **A GCS download the driver cuts off or refuses no longer resets the other requests in flight.** The SDK destroys
+  the HTTP agent a destroyed download went out on, and its default agent is one keep-alive agent shared by every
+  request in the process, so refusing an oversize response reset every other request on it, uploads included, and a
+  sent-once write among them failed as `TransientError`. Every download now goes out on Node's global agent, still kept
+  alive, which the SDK never destroys, so a destroyed download closes its own connection and nothing else.
+- **A GCS range read buffers at most the bytes it asked for, and checks the response is those bytes.** It is one GET
+  through the same path as the tail read: a response longer than the range is refused as soon as its length shows,
+  where the whole response was downloaded before its length was checked, and a 206 must name the requested bytes in
+  `Content-Range`, while a 200 (a server that ignored the range) is accepted only for a range that starts at 0.
 
 ## [0.11.2] — 2026-10-01
 
