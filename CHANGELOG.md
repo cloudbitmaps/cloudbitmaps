@@ -13,19 +13,21 @@ so, and so do the module headers in the code.
 
 ### Added
 
-- **`S3Storage` times each read: `readTimeoutMs`, 2,000 ms by default.** Every `GetObject` and `HeadObject` the S3
-  storage and registry drivers send has `readTimeoutMs` to finish, the response body included, or it is aborted and
-  throws `TransientError` ("S3 GetObject timed out after 2000 ms"), which the store's read retry runs again. The AWS
-  SDK sets no timeout by default, so without one a read on a connection that stops answering waits as long as the
-  connection stays open, and the store's retry never gets a fault to retry. The timer covers the body, so a server that
-  sends its headers and then stalls is cut off too, and the abort releases the connection. The default follows AWS's
-  S3 guidance to retry a GET of under 512 KB after about 2 seconds. With the store's default retry, a read whose
-  request stalls on every attempt fails after about 8.35 s: 4 × 2,000 ms plus up to 350 ms of backoff, derived from
-  the defaults rather than measured. The timeout is set per request, through the request's abort signal, and never on
-  the HTTP handler, so writes, multipart uploads, deletes and listings are not timed, and a `client` you pass gets it
-  without being changed. `0` turns it off, and a value that is not an integer from 0 to 2,147,483,647 is refused with
-  `ValidationError` (a longer Node timer fires after 1 ms). Tests run a real `S3Client` against a stub endpoint that
-  stalls before the headers, mid-body and on a HEAD, and a child process checks that a read leaves no timer behind.
+- **`S3Storage` can time each read: `readTimeoutMs`, off unless you set it.** The default is `0`, no timeout, until
+  in-region measurements justify one. Set, it bounds every `GetObject` and `HeadObject` the S3 storage and registry
+  drivers send, from the moment the read is handed to the SDK until its body is read: a read still running after that
+  many ms is aborted, which releases its connection, and throws `TransientError` ("S3 GetObject timed out after
+  N ms"), which the store's read retry runs again. The AWS SDK sets no timeout by default, so an untimed read on a
+  connection that stops answering waits as long as the connection stays open. The clock counts the time a read waits
+  for one of the client's sockets (50 by default) and the time spent fetching credentials, and under
+  `retryMode: 'adaptive'` the SDK's rate-limiter wait, so a burst of concurrent reads larger than the socket pool can
+  time out with nothing slow on the wire: against a local stub answering each request in 50 ms, 8,000 concurrent
+  `has()` calls with `readTimeoutMs: 2_000` lost 5,428 reads. Size it above the worst queueing your concurrency
+  implies, or raise `maxSockets`. AWS's S3 guidance is to retry a GET of under 512 KB after about 2 seconds; with
+  `readTimeoutMs: 2_000` and the store's default retry, a read whose request stalls on every attempt fails after about
+  8.35 s (4 × 2,000 ms plus up to 350 ms of backoff, derived rather than measured). Writes, multipart uploads, deletes
+  and listings are never timed, and a `client` you pass gets the timeout without being changed. A value that is not
+  an integer from 0 to 2,147,483,647 is refused with `ValidationError` (a longer Node timer fires after 1 ms).
 
 - **`PricingProfile.storage.requestsPerPointerRead` prices a pointer read apart from a tail read.** It is the requests
   one pointer read costs, 1 by default, and the cost model charges it for each operand of an intersection, for the

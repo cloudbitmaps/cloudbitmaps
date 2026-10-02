@@ -435,10 +435,10 @@ The window only opens on a kill that skips the graceful path, so close that path
   signals, so the container never receives it and *every* stop becomes a kill after the grace period. Use
   exec-form `CMD`, or an init that forwards.
 - **Set a request timeout on the SDK client you inject.** The library times no write, deliberately, since a timeout
-  of its own would abandon a write in flight; the only requests it times are S3 reads (`readTimeoutMs`). The
-  consequence is that a black-holed connection hangs a write or a listing indefinitely; without a client timeout, a
-  stuck sweep eats its whole grace period and is then killed between the two writes above. This is the single
-  highest-value thing you own.
+  of its own would abandon a write in flight; the only requests it can time are S3 reads (`readTimeoutMs`). The
+  consequence is that a black-holed connection hangs a write, a listing or an untimed read indefinitely; without a
+  client timeout, a stuck sweep eats its whole grace period and is then killed between the two writes above. This is
+  the single highest-value thing you own.
 
 The library does not pair the audit trail against unstamped tombstones itself; an automated reconcile is listed on
 the [roadmap](../ROADMAP.md) and not shipped, so this section is the procedure.

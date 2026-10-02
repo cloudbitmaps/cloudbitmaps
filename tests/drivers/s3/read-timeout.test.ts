@@ -5,6 +5,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
+import { vi } from 'vitest';
 import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { CloudRoaring } from '@/index';
 import { S3Storage } from '@/s3/backend';
@@ -430,11 +431,30 @@ describe('S3: a read is cut off at readTimeoutMs', LIMIT, () => {
     }
   });
 
-  it('defaults to 2,000 ms', async () => {
+  it('is off by default: each read is sent with no options, and a stalled one is not cut off', async () => {
     const defaulted = new S3Storage(stub.options());
+    await defaulted.registry.create({ segment: 's' }, { currentGen: 0 });
+    const send = vi.spyOn(defaulted.client, 'send');
     try {
+      expect(await settle(defaulted.storage.getRange(GEN, 0, 4))).toHaveProperty('value');
+      expect(await settle(defaulted.storage.getTail(GEN, 0))).toHaveProperty('value');
+      expect(await settle(defaulted.registry.get({ segment: 's' }))).toHaveProperty('value');
+      expect(send).toHaveBeenCalledTimes(3);
+      // No options at all, not an options object without a signal: nothing is timed.
+      for (const call of send.mock.calls) expect(call).toHaveLength(2);
+      for (const call of send.mock.calls) expect(call[1]).toBeUndefined();
+
       stub.arm('GetObject', { kind: 'no-headers' });
-      expectTimedOut(await settle(defaulted.storage.getRange(GEN, 0, 4)), 2_000);
+      const stalled = defaulted.storage.getRange(GEN, 0, 4);
+      stalled.catch(() => {}); // it ends when the client is destroyed below
+      const after = await Promise.race([
+        stalled.then(
+          () => 'settled',
+          () => 'settled',
+        ),
+        new Promise((resolve) => setTimeout(() => resolve('still pending'), 5 * TIMEOUT)),
+      ]);
+      expect(after).toBe('still pending');
     } finally {
       defaulted.client.destroy();
     }

@@ -1,22 +1,26 @@
 /**
- * The read timeout: each `GetObject` and `HeadObject` the S3 drivers send is cut off after `readTimeoutMs`.
+ * The read timeout: with `readTimeoutMs` set, each `GetObject` and `HeadObject` the S3 drivers send is cut off after
+ * it. It is off by default (`0`).
  *
- * The SDK sets no timeout of its own, so a read on a connection that stops answering waits forever, and the store's
- * read retry never gets a fault to retry. A read still running when its timer fires throws {@link TransientError},
- * which the store's retry runs again, and is aborted through the `abortSignal` its `client.send` was given, which ends
- * the request and destroys the response body, letting go of the socket. The SDK does not send an aborted request again.
+ * The SDK sets no timeout of its own, so a read on a connection that stops answering waits as long as the connection
+ * stays open, and the store's read retry never gets a fault to retry. A read still running when its timer fires throws
+ * {@link TransientError}, which the store's retry runs again, and is aborted through the `abortSignal` its
+ * `client.send` was given, which ends the request and destroys the response body, letting go of the socket. The SDK
+ * does not send an aborted request again.
  *
- * The timer covers the whole read: the request, any retries the SDK makes of it, and reading the body. A server that
- * sends its headers and then stalls part-way through the body is cut off too. The read settles when the timer fires
- * whatever the layers under the client do with the abort, because the timer's error is what the read throws.
+ * The timer starts when the read is handed to the SDK and covers everything until its body is read: waiting for one
+ * of the client's sockets, fetching credentials, an adaptive retry mode's rate-limiter wait, the request, any retries
+ * the SDK makes of it, and reading the body. A server that sends its headers and then stalls part-way through the body
+ * is cut off too, and so is a read that only queued too long. The read settles when the timer fires whatever the layers
+ * under the client do with the abort, because the timer's error is what the read throws.
  *
  * It is per request, never the HTTP handler's timeout, for two reasons: writes are not timed, since an upload's part can
  * rightly take longer than a read, and a `client` the caller passes in is used as it is.
  */
 import { TransientError, ValidationError } from '@cloudbitmaps/core/driver-kit';
 
-/** AWS's S3 performance guidance: retry a GET of under 512 KB that has not answered after about 2 seconds. */
-export const DEFAULT_READ_TIMEOUT_MS = 2_000;
+/** No timeout unless one is set: the value a read takes stays the caller's until in-region measurements justify one. */
+export const DEFAULT_READ_TIMEOUT_MS = 0;
 
 /** The longest delay a Node timer holds. A longer one fires after 1 ms instead, so it is refused rather than passed on. */
 const MAX_TIMER_MS = 2_147_483_647;

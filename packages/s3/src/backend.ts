@@ -11,7 +11,7 @@
  * credential chain the SDK cannot infer (SSO, an assumed role, a custom retry strategy); pass `endpoint` +
  * `pathStyle` + `credentials` for an S3-compatible store (MinIO, Ceph, R2). Both halves stay reachable as `.storage` and
  * `.registry` for anyone wiring something the facade does not cover. `maxObjectBytes` and `partBytes` size the
- * multipart upload, and `readTimeoutMs` bounds each read both halves make.
+ * multipart upload, and `readTimeoutMs`, when set, bounds each read both halves make.
  */
 import { STORAGE_BACKEND, ValidationError, brandAsBackend } from '@cloudbitmaps/core/driver-kit';
 import type {
@@ -63,13 +63,19 @@ export interface S3StorageOptions {
    * positive safe integer. Tunes peak write memory. */
   readonly partBytes?: number;
   /**
-   * How long one read may take before it is abandoned, in ms: each `GetObject` and `HeadObject` either half sends, the
-   * response body included, so a connection that stops answering part-way through a body is cut off too. A read that
-   * runs out of time throws `TransientError`, which the store's read retry runs again. Default 2,000, after AWS's
-   * guidance to retry a GET of under 512 KB that has not answered in about 2 seconds; `0` turns the timeout off. Must
-   * be a non-negative safe integer no larger than 2,147,483,647.
+   * How long one read may take before it is abandoned, in ms. `0`, the default, sets no timeout. When set, it bounds
+   * each `GetObject` and `HeadObject` either half sends, the response body included, so a connection that stops
+   * answering part-way through a body is cut off too. A read that runs out of time throws `TransientError`, which the
+   * store's read retry runs again. AWS's S3 guidance is to retry a GET of under 512 KB that has not answered in about
+   * 2 seconds. Must be a non-negative safe integer no larger than 2,147,483,647.
    *
-   * Writes and listings are not timed: a write that hangs needs a timeout on the client (its `requestHandler`). The
+   * The clock starts when the read is handed to the SDK, so it also counts the time the read waits for one of the
+   * client's sockets (50 by default) and the time spent fetching credentials, and under `retryMode: 'adaptive'` the
+   * SDK's rate-limiter wait. A burst of concurrent reads larger than the socket pool can therefore time out with
+   * nothing slow on the wire: size the timeout above the worst queueing your concurrency implies, or raise the client's
+   * `maxSockets`. On a client built with `cacheMiddleware: true`, a timed read resolves its middleware each time.
+   *
+   * Writes and listings are never timed: a write that hangs needs a timeout on the client (its `requestHandler`). The
    * timeout is applied per request, so a `client` you pass gets it without being changed.
    */
   readonly readTimeoutMs?: number;

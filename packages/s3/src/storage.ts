@@ -19,9 +19,9 @@
  * SDK's retry off for it ({@link sendOnce}): a replay of a write that landed and lost its response would find its own
  * object and read as a lost race. A transient failure there throws {@link TransientError}, and the object may or may
  * not exist. The unconditional requests — the reads, the delete, and a multipart upload's own start, parts and abort —
- * keep the SDK's retry. **Each read is timed** ({@link timedRead}): a `GetObject` or `HeadObject` that has not
- * finished, body included, after `readTimeoutMs` throws {@link TransientError}. Nothing else is timed. Drivers may use
- * `node:crypto`; only `core/` is bound by the determinism lint.
+ * keep the SDK's retry. **Each read can be timed** ({@link timedRead}): with `readTimeoutMs` set, a `GetObject` or
+ * `HeadObject` that has not finished, body included, after it throws {@link TransientError}. It is off by default, and
+ * nothing else is timed. Drivers may use `node:crypto`; only `core/` is bound by the determinism lint.
  */
 import {
   NotFoundError,
@@ -92,8 +92,14 @@ export interface S3StorageDriverOptions {
   readonly partBytes?: number;
   /**
    * How long one read — a `GetObject` or `HeadObject`, its body included — may take before it is abandoned and throws
-   * `TransientError`, in ms. Default 2,000; `0` turns the timeout off. Must be a non-negative safe integer no larger
-   * than 2,147,483,647. Writes are not timed.
+   * `TransientError`, in ms. `0`, the default, sets no timeout. Must be a non-negative safe integer no larger than
+   * 2,147,483,647. Writes and listings are not timed.
+   *
+   * The clock starts when the read is handed to the SDK, so it also counts the time the read waits for one of the
+   * client's sockets (50 by default) and the time spent fetching credentials, and under `retryMode: 'adaptive'` the
+   * SDK's rate-limiter wait. A burst of concurrent reads larger than the socket pool can therefore time out with
+   * nothing slow on the wire: size the timeout above the worst queueing your concurrency implies, or raise the client's
+   * `maxSockets`. On a client built with `cacheMiddleware: true`, a timed read resolves its middleware each time.
    */
   readonly readTimeoutMs?: number;
 }

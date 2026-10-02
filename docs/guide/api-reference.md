@@ -95,10 +95,11 @@ is built:
 | `AzureBlobStorage` | `blockBytes` | 8 MiB | staged block size, and so the peak write memory; a positive safe integer |
 | `AzureBlobStorage` | `maxObjectBytes` | `blockBytes` × 50,000 (about 400 GiB at the default) | the largest blob the backend will write and advertise; raise it and `blockBytes` grows so the 50,000-block limit still covers it; a positive safe integer |
 
-**`S3Storage` times its reads.** `readTimeoutMs` (default 2,000; `0` turns the timeout off; an integer from 0 to
+**`S3Storage` can time its reads.** `readTimeoutMs` (`0`, the default, sets no timeout; an integer from 0 to
 2,147,483,647) is how long each `GetObject` and `HeadObject` either half sends may take, the response body included,
-before it is aborted and throws `TransientError` for the store's read retry. Writes and listings are not timed, and a
-`client` you pass gets the timeout without being changed ([why](production.md#reliability-retries-backoff--timeouts)).
+before it is aborted and throws `TransientError` for the store's read retry. The clock starts when the read is handed
+to the SDK, so waiting for a socket and fetching credentials count. Writes and listings are not timed, and a `client`
+you pass gets the timeout without being changed ([why](production.md#reliability-retries-backoff--timeouts)).
 
 Each cloud backend builds its own SDK client unless you pass one. Every backend exposes its storage and registry as `.storage`
 and `.registry`, and accepts an injected `now` for deterministic tests. The three cloud backends refuse an option
@@ -754,9 +755,9 @@ the client is one you passed or one `S3Storage` built. Every other request keeps
 failure of a conditional write throws `TransientError`, and the write may or may not have landed
 ([why](production.md#reliability-retries-backoff--timeouts)).
 
-Each read the backend makes, every `GetObject` and `HeadObject` of a generation or a pointer, is aborted if it has not
-finished, body included, after `readTimeoutMs` (2,000 ms by default), and throws `TransientError` with a message that
-says it timed out after that many ms. The timeout is per request, set through the request's abort signal, so the
+With `readTimeoutMs` set (it is off by default), each read the backend makes, every `GetObject` and `HeadObject` of a
+generation or a pointer, is aborted if it has not finished, body included, after that many ms, and throws
+`TransientError` with a message that names the request and says it timed out after that many ms. The timeout is per request, set through the request's abort signal, so the
 SDK's own retries of that request fall inside it and nothing else the client sends is timed.
 
 ### `@cloudbitmaps/gcs`

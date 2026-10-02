@@ -11,7 +11,7 @@ checklist: work down the table, and follow each link for the detail.
 | Versioning and backups cover the data and the pointers | A restore must bring both back to the same point in time | [Versioning and backups](#versioning-and-backups) |
 | With versioning on, noncurrent versions expire after your restore window | Each generation a load collects is otherwise billed for as long as the bucket keeps it, out of sight | [Bucket lifecycle](#bucket-lifecycle) |
 | The bucket honors conditional writes, and the S3 SDK is 3.645.0 or later | Otherwise a write-once generation can be silently overwritten | [Conditional writes and the S3 SDK](#conditional-writes-and-the-s3-sdk) |
-| Your storage client has a request timeout | The library times only S3 reads (`readTimeoutMs`); any other request that hangs hangs its call. On GCS 8.x and Azure Blob no client setting bounds a download's body | [Reliability](#reliability-retries-backoff--timeouts) |
+| Your storage client has a request timeout | Nothing is timed unless you set it: S3 reads take `readTimeoutMs`, and a request with no timeout that hangs hangs its call. On GCS 8.x and Azure Blob no client setting bounds a download's body | [Reliability](#reliability-retries-backoff--timeouts) |
 | Your job re-runs a write after a transient error | Writes are never retried for you | [Reliability](#reliability-retries-backoff--timeouts) |
 | You know the request budget and the memory ceilings | A runaway call is refused, not billed | [Limits](#limits-the-per-op-budget-and-the-memory-ceilings) |
 | The keystore is backed up, if you encrypt | Losing the key makes the data permanently unreadable | [Encryption](encryption.md#before-you-encrypt) |
@@ -159,24 +159,45 @@ was still pending after 2.5 s.
 Only transient faults (they surface as `TransientError`) are retried. Errors that retrying cannot fix are never
 retried: `ValidationError`, `IntegrityError`, `NotFoundError` and `WriteConflictError`.
 
-**S3 reads are timed for you.** `@cloudbitmaps/s3` gives each read it sends, every `GetObject` and `HeadObject` of a
-generation or a pointer, `readTimeoutMs` to finish: 2,000 ms by default, after AWS's S3 guidance to retry a GET of
-under 512 KB that has not answered in about 2 seconds. The timer covers the whole read, the SDK's own retries of it and
-the response body included, so a connection that sends its headers and then stops is cut off as well. A read that runs
-out of time throws `TransientError`, which the store's read retry, above, runs again, and its request is aborted,
-which frees the connection. So with the default retry policy, a read whose request stalls on every attempt fails with
-`TransientError` after 4 × 2,000 ms of timeouts plus up to 350 ms of backoff, about 8.35 s, rather than hanging. That
-bound is derived, not measured: four attempts, waits of up to 50, 100 and 200 ms between them, and one timed-out
-request per attempt; any request earlier in the same attempt that did answer adds its own time.
+**S3 reads can be timed.** `@cloudbitmaps/s3` takes `readTimeoutMs`, which is off (`0`) unless you set it. Set, it
+gives each read the backend sends, every `GetObject` and `HeadObject` of a generation or a pointer, that many ms to
+finish, the SDK's own retries of it and the response body included, so a connection that sends its headers and then
+stops is cut off as well. A read that runs out of time throws `TransientError`, which the store's read retry, above,
+runs again, and its request is aborted, which frees the connection. AWS's S3 guidance is to retry a GET of under
+512 KB that has not answered in about 2 seconds. With `readTimeoutMs: 2_000` and the default retry policy, a read
+whose request stalls on every attempt fails with `TransientError` after 4 × 2,000 ms of timeouts plus up to 350 ms of
+backoff, about 8.35 s, rather than hanging. That bound is derived, not measured: four attempts, waits of up to 50, 100
+and 200 ms between them, and one timed-out request per attempt; any request earlier in the same attempt that did
+answer adds its own time.
 
 ```ts
 import { S3Storage } from '@cloudbitmaps/s3';
 
-const backend = new S3Storage({ bucket: 'my-bitmaps', readTimeoutMs: 5_000 }); // 0 turns the timeout off
+const backend = new S3Storage({ bucket: 'my-bitmaps', readTimeoutMs: 2_000 }); // 0, the default, sets no timeout
 ```
 
-Raise it on a link too slow to deliver a read inside the timeout, since such a read fails on every attempt. The timer
-is set on each request rather than on the client, so a `client` you pass gets it without being changed.
+**The clock starts when the read is handed to the SDK**, not when it reaches the wire. It counts the time the read
+waits for one of the client's sockets (50 by default) and the time spent fetching credentials, and under
+`retryMode: 'adaptive'` the SDK's rate-limiter wait. So a burst of concurrent reads larger than the socket pool can
+time out with nothing slow on the wire: measured against a local stub that answers each request in 50 ms, 8,000
+concurrent `has()` calls with `readTimeoutMs: 2_000` lost 5,428 reads to the timeout. Size `readTimeoutMs` above the
+worst queueing your concurrency implies, which is about the concurrent reads divided by the sockets, times what one
+read takes (8,000 ÷ 50 × 50 ms is 8 s; derived), or raise the client's `maxSockets`:
+
+```ts
+import { S3Client } from '@aws-sdk/client-s3';
+import { NodeHttpHandler } from '@smithy/node-http-handler';
+
+const client = new S3Client({
+  region: 'us-east-1',
+  requestHandler: new NodeHttpHandler({ httpsAgent: { maxSockets: 200 } }),
+});
+```
+
+Raise it too on a link too slow to deliver a read inside the timeout, since such a read fails on every attempt. The
+timer is set on each request rather than on the client, so a `client` you pass gets it without being changed. On a
+client built with `cacheMiddleware: true`, a timed read resolves its middleware each time, since the SDK reuses a
+cached handler only for a request sent with no options.
 
 **Set a timeout on your S3 client for the rest.** The library times no write, because a write abandoned in flight
 can still land after it was given up on, and it times no S3 listing and no GCS or Azure Blob request. On S3 a timeout

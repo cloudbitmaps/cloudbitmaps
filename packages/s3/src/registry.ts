@@ -12,9 +12,9 @@
  * for it ({@link sendOnce}), so a `412` means another write got there first, never this one meeting itself after a
  * lost response. A transient failure reaches the caller as {@link TransientError}: the write may or may not have
  * landed, and the caller re-reads the row to learn where it stands. Reads are strongly consistent (S3, since 2020),
- * satisfying the registry's `strongRead` contract, and each is timed as the storage driver's are ({@link timedRead}):
- * a row's `GetObject` that has not finished, body included, after `readTimeoutMs` throws {@link TransientError}. The
- * writes and listings are not timed. The client is **injected**, exactly like {@link S3StorageDriver}.
+ * satisfying the registry's `strongRead` contract, and each can be timed as the storage driver's are ({@link timedRead}):
+ * with `readTimeoutMs` set, a row's `GetObject` that has not finished, body included, after it throws
+ * {@link TransientError}. It is off by default, and the writes and listings are never timed. The client is **injected**, exactly like {@link S3StorageDriver}.
  *
  * **Deployment requirements** (a backend/policy that violates these silently corrupts the registry):
  * - The backend **must honor `If-Match`** (AWS S3; recent MinIO). One that returns ETags but ignores the
@@ -56,8 +56,14 @@ export interface S3RegistryDriverOptions {
   readonly now?: () => number;
   /**
    * How long one read of a row — its `GetObject`, the body included — may take before it is abandoned and throws
-   * `TransientError`, in ms. Default 2,000; `0` turns the timeout off. Must be a non-negative safe integer no larger
-   * than 2,147,483,647. Writes and listings are not timed.
+   * `TransientError`, in ms. `0`, the default, sets no timeout. Must be a non-negative safe integer no larger than
+   * 2,147,483,647. Writes and listings are not timed.
+   *
+   * The clock starts when the read is handed to the SDK, so it also counts the time the read waits for one of the
+   * client's sockets (50 by default) and the time spent fetching credentials, and under `retryMode: 'adaptive'` the
+   * SDK's rate-limiter wait. A burst of concurrent reads larger than the socket pool can therefore time out with
+   * nothing slow on the wire: size the timeout above the worst queueing your concurrency implies, or raise the client's
+   * `maxSockets`. On a client built with `cacheMiddleware: true`, a timed read resolves its middleware each time.
    */
   readonly readTimeoutMs?: number;
 }

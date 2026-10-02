@@ -542,8 +542,9 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
     claim: new RegExp(g('no orphan is left behind by a refused rewrite'), 'i'),
     why: "a refused rewrite deletes its object only when it sits above the winner's pointer; elsewhere it stays, as a refused load's does",
   },
-  // The S3 package times its reads (`readTimeoutMs`), so a page may not say the library times nothing. What is true is
-  // narrower: no write is timed, and nor is an S3 listing or any GCS or Azure Blob request.
+  // The S3 package can time its reads (`readTimeoutMs`), so a page may not say the library has no timeout. What is true
+  // is narrower: nothing is timed unless that is set, no write is timed, and nor is an S3 listing or any GCS or Azure
+  // Blob request.
   {
     claim: new RegExp(
       g(
@@ -551,7 +552,7 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
       ),
       'i',
     ),
-    why: 'the S3 package times each read (`readTimeoutMs`, 2,000 ms by default) — say which requests are not timed: the writes, S3 listings, and every GCS and Azure Blob request',
+    why: 'the S3 package times each read when `readTimeoutMs` is set — say what is not timed: any read while it is unset, the writes, S3 listings, and every GCS and Azure Blob request',
   },
   {
     claim: new RegExp(g(String.raw`no \`?AbortSignal\`? anywhere in (?:this|the) library`), 'i'),
