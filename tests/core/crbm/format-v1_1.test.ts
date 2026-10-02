@@ -579,13 +579,24 @@ describe('.crbm 1.1 on an encrypted object', () => {
     }
   });
 
-  it('the wrong key fails at the index or the metadata, never with a wrong answer', async () => {
+  it('the wrong key is reported as one: the index is opened before the sealed metadata', async () => {
     const bytes = await writeCrbm(CHUNKS, {
       generation: GEN,
       metadata: META,
       crypto: cryptoFor(randomBytes(32)),
     });
     await expect(open(bytes, cryptoFor(randomBytes(32)))).rejects.toBeInstanceOf(IntegrityError);
+    await expect(open(bytes, cryptoFor(randomBytes(32)))).rejects.toThrow(/wrong key/);
+    // So is the right key for another generation's associated data.
+    const dek = randomBytes(32);
+    const own = await writeCrbm(CHUNKS, {
+      generation: GEN,
+      metadata: META,
+      crypto: cryptoFor(dek),
+    });
+    await expect(open(own, cryptoFor(dek, GEN + 1))).rejects.toThrow(
+      /wrong key, tampered data, or wrong context/,
+    );
   });
 
   it('names the likely cause when the sealed metadata does not open: a CrbmCrypto that does not map its scope', async () => {

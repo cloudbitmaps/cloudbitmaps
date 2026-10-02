@@ -387,6 +387,20 @@ export class CrbmReader {
       throw new IntegrityError('.crbm index CRC mismatch');
     }
 
+    // Decrypt the index (nonce/tag from the footer) before parsing; AAD binds it to this (segment, generation).
+    // A wrong key / tampered index / wrong context fails here as an IntegrityError — never a wrong parse. Before the
+    // extension block, so a wrong key is reported here, as one, and not at the sealed metadata.
+    const indexForParse = encrypted
+      ? options.crypto!.aead.open(
+          {
+            nonce: footer.subarray(FOOTER.indexNonce, FOOTER.indexNonce + AEAD_NONCE_BYTES),
+            ciphertext: indexBytes,
+            tag: footer.subarray(FOOTER.indexTag, FOOTER.indexTag + AEAD_TAG_BYTES),
+          },
+          options.crypto!.aadFor('index'),
+        )
+      : indexBytes;
+
     // --- Extension block (1.1): sections ‖ u32 sectionsLength ‖ u32 crc32c ‖ "CRBX", just before the index ---
     let payloadEnd = indexOffset;
     let metadata: GenerationMetadata | undefined;
@@ -437,19 +451,6 @@ export class CrbmReader {
       ));
       payloadEnd = extStart;
     }
-
-    // Decrypt the index (nonce/tag from the footer) before parsing; AAD binds it to this (segment, generation).
-    // A wrong key / tampered index / wrong context fails here as an IntegrityError — never a wrong parse.
-    const indexForParse = encrypted
-      ? options.crypto!.aead.open(
-          {
-            nonce: footer.subarray(FOOTER.indexNonce, FOOTER.indexNonce + AEAD_NONCE_BYTES),
-            ciphertext: indexBytes,
-            tag: footer.subarray(FOOTER.indexTag, FOOTER.indexTag + AEAD_TAG_BYTES),
-          },
-          options.crypto!.aadFor('index'),
-        )
-      : indexBytes;
 
     // Payloads live in [PAYLOAD_START, payloadEnd), which ends at the extension block when there is one; an
     // encrypted payload is at least its nonce and tag.
@@ -648,8 +649,8 @@ function metadataSection(
     );
   } catch (err) {
     if (!isIntegrityError(err)) throw err;
-    // The index opened under the same key, so the likelier causes are these, and a reader written before format 1.1
-    // that maps only chunk keys and the index is one of them.
+    // The index has opened under the same key and generation, so the key is right: the causes left are these, and a
+    // CrbmCrypto written before format 1.1, which maps only chunk keys and the index, is one of them.
     extensionCorrupt(
       "the sealed metadata does not open: tampered bytes, a block moved from another object, or a CrbmCrypto whose aadFor does not map the 'metadata' scope",
     );
