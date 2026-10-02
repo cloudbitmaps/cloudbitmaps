@@ -68,7 +68,8 @@ so, and so do the module headers in the code.
   the index (one more only when the tail read ends inside the block). It refuses with `IntegrityError` a block whose
   trailer, CRC, 4 KiB cap or sections do not hold, metadata that breaks a rule or is not exactly its canonical form,
   and a payload that runs into the block, and it skips a section type it does not know, so a later minor can add
-  one. For tooling: `CrbmReader`'s `metadata` is the generation's metadata, and `aadFor` takes the scope
+  one. For tooling: `CrbmReader`'s `metadata` is the generation's metadata, its `retainedBytes` is what the reader
+  cache weighs it by (its index and twice the metadata's canonical length), and `aadFor` takes the scope
   `'metadata'`; a `CrbmCrypto` of your own must map that scope as `aadFor` does to open an encrypted 1.1 object.
   Nothing in the library writes metadata yet: `load` takes none.
 
