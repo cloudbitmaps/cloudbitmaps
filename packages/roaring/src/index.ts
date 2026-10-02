@@ -1309,9 +1309,10 @@ export class CloudRoaring {
    * one cannot.
    *
    * It refuses rather than guesses: a generation not in the bucket (collected, or never written) throws
-   * `NotFoundError` naming what *is* available, and a crypto-shredded segment throws
-   * {@link ValidationError} because every generation of it is unreadable. Rolling to the generation already
-   * current is a no-op that reports itself.
+   * `NotFoundError` naming what *is* available, a crypto-shredded segment throws
+   * {@link ValidationError} because every generation of it is unreadable, and a target that is cleartext under an
+   * encrypted segment, or encrypted under a cleartext one, throws {@link IntegrityError} from one read of its footer,
+   * because every read would refuse it. Rolling to the generation already current is a no-op that reports itself.
    *
    * It deletes nothing. The generations above the new pointer stay put — which is what makes this reversible —
    * and are then *above* `currentGen`, where collection never looks. They remain until loads pass them (the first

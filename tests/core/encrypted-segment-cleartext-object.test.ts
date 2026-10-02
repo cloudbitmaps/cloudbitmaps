@@ -81,18 +81,16 @@ describe('a cleartext object under an encrypted segment', () => {
     await expect(seg.pin()).rejects.toBeInstanceOf(IntegrityError);
   });
 
-  it('a rollback onto a cleartext write from before the key was made reads loudly refused, and rolling forward reads again', async () => {
+  it('a rollback onto a cleartext write from before the key was made is refused, and reads go on', async () => {
     const { storage, registry, store, load } = world();
     // A cleartext write that never published (a crash between the write and the publish), then the first
     // encrypted load, which numbers above it and makes the segment's key.
     await putCleartext(storage, { ...SEG, generation: 0 });
     const encrypted = await load([7, 8]);
     expect(encrypted).toBe(1);
-    await rollbackSegment(SEG, 0, { storage, registry });
-    await expect(store().segment('s').count()).rejects.toThrow(
-      /not encrypted, but it was opened with a key/,
+    await expect(rollbackSegment(SEG, 0, { storage, registry })).rejects.toThrow(
+      /generation 0 of "s" is cleartext, but the segment is encrypted/,
     );
-    await rollbackSegment(SEG, encrypted, { storage, registry }, { allowForward: true });
     expect(await store().segment('s').count()).toBe(2);
   });
 });

@@ -277,9 +277,10 @@ between here and there:
 8. **Adoption feedback** — real deployments finding the sharp edges that our own tests don't.
 9. **Closing the named deferrals:** self-healing disaster recovery, an exclusion predicate on the retention
    sweep (legal hold), an automated reconcile of unstamped tombstones, and a `rollback` that opens its target
-   before it moves the pointer. It checks only that the object is in the bucket, so on an encrypted segment it can
-   move onto a generation a first load wrote and never published, sealed under a key the registry never stored,
-   which then fails every read and which `checkConsistency` does not flag. (Multi-tenant isolation is tracked
+   before it moves the pointer. It checks that the object is in the bucket, and from its footer that it is encrypted
+   exactly when the row has keys, so on an encrypted segment it can still move onto a generation a first load wrote
+   and never published, sealed under a key the registry never stored, which then fails every read and which
+   `checkConsistency` does not flag. (Multi-tenant isolation is tracked
    separately, post-`1.0`.)
 
 ## Planned / exploring
