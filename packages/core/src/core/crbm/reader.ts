@@ -78,6 +78,15 @@ export interface ParsedIndex {
  */
 export const RETAINED_BYTES_PER_INDEX_ENTRY = 20;
 
+/**
+ * The weight of a decoded metadata record, per byte of its canonical JSON and per key: what the record retains,
+ * measured (`tests/core/crbm/metadata-heap.test.ts`) at about one byte a byte, plus about 130 a key when its keys are
+ * unique to it, as each segment's own keys are. Counting both, with room, keeps the reader cache's byte bound honest
+ * for the costly shape and over-counts the cheap ones.
+ */
+const RETAINED_BYTES_PER_METADATA_BYTE = 2;
+const RETAINED_BYTES_PER_METADATA_KEY = 160;
+
 /** The fewest bytes one index record takes: four one-byte varints and the four-byte payload CRC. */
 const MIN_INDEX_RECORD_BYTES = 4 + CRC32C_BYTES;
 
@@ -201,8 +210,8 @@ export class CrbmReader {
      * (every format 1.0 object). Frozen: every caller shares one copy.
      */
     readonly metadata: GenerationMetadata | undefined,
-    /** The byte length of that metadata's canonical JSON; 0 when there is none. */
-    private readonly metadataLength: number,
+    /** What that metadata adds to {@link retainedBytes}; 0 when there is none. */
+    private readonly metadataWeight: number,
   ) {}
 
   /**
@@ -237,12 +246,12 @@ export class CrbmReader {
 
   /**
    * What this reader holds, the weight the storage reader cache bounds on: its parsed index
-   * ({@link retainedIndexBytes}), plus twice the canonical length of the metadata it decoded, since a decoded record
-   * holds its strings and the object around them (measured at about one length more than the JSON). Equal to
-   * {@link retainedIndexBytes} for a generation with no metadata.
+   * ({@link retainedIndexBytes}), plus a weight for the metadata it decoded, from its canonical length and its number
+   * of keys. Equal to {@link retainedIndexBytes} for a generation with no metadata. A cache heuristic, not a contract:
+   * how the metadata is weighed may change in any release.
    */
   get retainedBytes(): number {
-    return this.retainedIndexBytes + 2 * this.metadataLength;
+    return this.retainedIndexBytes + this.metadataWeight;
   }
 
   /** Per-chunk cardinality (`chunkKey → count`) from the parsed index — no payload reads. */
@@ -493,7 +502,10 @@ export class CrbmReader {
       options.crypto,
       storedFooterCrc,
       metadata,
-      metadataLength,
+      metadata === undefined
+        ? 0
+        : RETAINED_BYTES_PER_METADATA_BYTE * metadataLength +
+            RETAINED_BYTES_PER_METADATA_KEY * Object.keys(metadata).length,
     );
   }
 

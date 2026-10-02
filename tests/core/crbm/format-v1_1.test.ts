@@ -92,12 +92,22 @@ describe('.crbm 1.1 writer', () => {
     ).toBe(META_JSON);
   });
 
-  it('a reader weighs what it holds: its index, and twice the metadata it decoded', async () => {
+  it('a reader weighs what it holds: its index, and its metadata by length and by key', async () => {
     const plain = await open(await writeCrbm(CHUNKS, { generation: GEN }));
     const withMeta = await open(await writeCrbm(CHUNKS, { generation: GEN, metadata: META }));
+    const wider = await open(
+      await writeCrbm(CHUNKS, { generation: GEN, metadata: { ...META, a: 1, b: 2 } }),
+    );
     expect(plain.retainedBytes).toBe(plain.retainedIndexBytes);
     expect(withMeta.retainedIndexBytes).toBe(plain.retainedIndexBytes);
-    expect(withMeta.retainedBytes).toBe(plain.retainedIndexBytes + 2 * utf8(META_JSON).length);
+    // Two bytes a byte of canonical JSON, and 160 a key (metadata-heap.test.ts holds this to the heap).
+    expect(withMeta.retainedBytes).toBe(
+      plain.retainedIndexBytes + 2 * utf8(META_JSON).length + 160 * 2,
+    );
+    const widerJson = '{"a":1,"b":2,"def":"v41","landedAt":1790000000000}';
+    expect(wider.retainedBytes).toBe(
+      plain.retainedIndexBytes + 2 * utf8(widerJson).length + 160 * 4,
+    );
   });
 
   it('round-trips the metadata, frozen, and key order never changes the bytes', async () => {
