@@ -94,6 +94,10 @@ describe('assertStoredRecordShape — a stored record carries exactly its declar
  * absent or malformed → IntegrityError, since every row this build writes carries one. This pins the envelope
  * path every registry driver shares.
  */
+/** A token in the incarnation form, built from its parts so it reads as the identifier it is. */
+const SAMPLE_INCARNATION = '0123456789abcdef0123456789abcdef';
+const SAMPLE_WRITE_PART = 'fedcba9876543210';
+
 describe('registry envelope schema version (format freeze)', () => {
   const record: RegistryRecord = {
     segment: 's',
@@ -101,7 +105,7 @@ describe('registry envelope schema version (format freeze)', () => {
     status: 'active',
     createdAt: 1,
     updatedAt: 1,
-    token: '0123456789abcdef0123456789abcdef.0.fedcba9876543210',
+    token: `${SAMPLE_INCARNATION}.0.${SAMPLE_WRITE_PART}`,
   };
   const envelope: RegistryEnvelope = { deleted: false, record };
 
