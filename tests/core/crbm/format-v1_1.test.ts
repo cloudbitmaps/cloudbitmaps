@@ -288,6 +288,43 @@ describe('.crbm 1.1 reader: the reads it makes', () => {
     await expect(open(over)).rejects.toThrow(/4097B exceeds cap 4096B/);
   });
 
+  it('a read of the block that comes back short is refused as one, even when the CRC is forged to match', async () => {
+    /** A reader whose `n`th range read (from 1) returns one byte less than asked. */
+    const shortOn = (bytes: Uint8Array, n: number): BufferReader => {
+      const inner = new BufferReader(bytes);
+      let calls = 0;
+      const reader = Object.create(inner) as BufferReader;
+      reader.getRange = async (offset, length) => {
+        const got = await inner.getRange(offset, length);
+        return ++calls === n ? got.subarray(0, got.length - 1) : got;
+      };
+      return reader;
+    };
+    const base = await writeCrbm(CHUNKS, { generation: GEN });
+    const sections = section(EXT_SECTION_METADATA, utf8(META_JSON));
+    const lengthField = new Uint8Array(4);
+    new DataView(lengthField.buffer).setUint32(0, sections.length, true);
+
+    // The tail holds the trailer but not the sections, so they are read on their own. Their CRC is forged to be the
+    // CRC of what a one-byte-short read returns, so only the length check can tell.
+    const forged = spliceBlock(
+      base,
+      extensionBlock(sections, { crc: crc32c(concat(sections, lengthField.subarray(0, 3))) }),
+    );
+    const { indexOffset } = layoutOf(forged);
+    await expect(
+      CrbmReader.open(shortOn(forged, 1), { tailBytes: forged.length - (indexOffset - 12) }),
+    ).rejects.toThrow(/extension block read short/);
+
+    // The tail starts inside the trailer, so the window before the index is read, and comes back short.
+    const genuine = spliceBlock(base, extensionBlock(sections));
+    await expect(
+      CrbmReader.open(shortOn(genuine, 1), {
+        tailBytes: genuine.length - (layoutOf(genuine).indexOffset - 2),
+      }),
+    ).rejects.toThrow(/extension block read short/);
+  });
+
   it('a 1.0 object costs what it did: no read for a block it does not have', async () => {
     const counting = new CountingReader(await writeCrbm(CHUNKS, { generation: GEN }));
     await CrbmReader.open(counting, { tailBytes: FOOTER_BYTES });
