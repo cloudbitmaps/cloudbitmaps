@@ -15,10 +15,11 @@ export const MAX_METADATA_KEY_BYTES = 128;
 const utf8Length = (s: string): number => new TextEncoder().encode(s).length;
 
 /**
- * Validate `value` as generation metadata (`GenerationMetadata` in the ports) and return its canonical JSON: keys sorted by UTF-16 code unit,
- * each key and value as `JSON.stringify` writes it, no whitespace. Key order therefore never changes the bytes.
- * `fail` raises the error the boundary calls for. The empty object passes and returns `{}`: whether it may be
- * stored is the caller's rule.
+ * Validate `value` as generation metadata (`GenerationMetadata` in the ports) and return its canonical JSON: keys
+ * sorted by UTF-16 code unit, each key and value as `JSON.stringify` writes it, no whitespace. Key order therefore
+ * never changes the bytes. Both caps are in UTF-8 bytes. The container is an object whose prototype is
+ * `Object.prototype` or `null`, holding only enumerable data properties with string keys. `fail` raises the error the
+ * boundary calls for. The empty object passes and returns `{}`: whether it may be stored is the caller's rule.
  */
 export function canonicalMetadataJson(value: unknown, fail: (message: string) => never): string {
   if (value === null || typeof value !== 'object') {
