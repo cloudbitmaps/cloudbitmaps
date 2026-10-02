@@ -153,6 +153,18 @@ function checkedFooter(
   return { footer, fview, storedFooterCrc };
 }
 
+/**
+ * Whether the object behind `blob` says it is encrypted, from one tail read of a footer's worth, with no key and no
+ * index; a footer that fails its own checks throws, as an open would. For a caller that must not open an object with
+ * the key it holds: an erasure looking for an id in a cleartext object under an encrypted segment, and a rollback
+ * checking that its target is what the row says.
+ */
+export async function footerSaysEncrypted(blob: BlobReader): Promise<boolean> {
+  const { bytes: tail, size } = await blob.getTail(FOOTER_BYTES);
+  const { fview } = checkedFooter(tail, size);
+  return (fview.getUint32(FOOTER.flags, true) & FLAG_ENCRYPTED) !== 0;
+}
+
 /** Read a u64 footer field, rejecting values past JS safe-integer range (precision would be lost). */
 function readU64(view: DataView, offset: number, field: string): number {
   const big = view.getBigUint64(offset, true);
@@ -268,14 +280,6 @@ export class CrbmReader {
     if (encrypted && options.crypto === undefined) {
       throw new ValidationError('.crbm is encrypted but no decryption key (crypto) was provided');
     }
-    // A key is given only for an encrypted segment, and every generation such a segment publishes is encrypted. A
-    // cleartext object under one is corrupt or forged, so its index and metadata are not believed.
-    if (!encrypted && options.crypto !== undefined) {
-      throw new IntegrityError(
-        '.crbm is not encrypted, but it was opened with a key: an object stored where an encrypted one belongs ' +
-          'is corrupt, forged, or a write from before the segment was given its key',
-      );
-    }
     if ((flags & FLAG_LITTLE_ENDIAN) === 0) {
       throw new UnsupportedError('.crbm big-endian layout not supported (v1 is little-endian)');
     }
@@ -320,6 +324,17 @@ export class CrbmReader {
     const chunkCount = fview.getUint32(FOOTER.chunkCount, true);
     const totalCardinality = readU64(fview, FOOTER.totalCardinality, 'total_cardinality');
     const generation = readU64(fview, FOOTER.generation, 'generation');
+    // A key is given only for an encrypted segment. A cleartext object under one was never one of its generations:
+    // a publish never adds a key to a segment that has generations, and refuses a cleartext object onto a row with
+    // one. So it is forged, corrupt, or a cleartext write that never published, and its index and metadata are not
+    // believed.
+    if (!encrypted && options.crypto !== undefined) {
+      throw new IntegrityError(
+        `.crbm generation ${generation} is not encrypted, but it was opened with a key: a cleartext object where an ` +
+          'encrypted one belongs is forged, corrupt, or a write that never published (a crash, before the ' +
+          "segment's key was made); a load's collection, dropSegment or deleting the object removes it",
+      );
+    }
     const versionMinor = footer[FOOTER.versionMinor]!;
     // A later minor may only add to 1.1, so it carries the block too.
     const hasExtension = versionMinor >= VERSION_MINOR_EXTENSION;

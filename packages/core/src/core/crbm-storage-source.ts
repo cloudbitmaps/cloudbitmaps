@@ -48,7 +48,7 @@ import type {
   SegmentSize,
   Token,
 } from './ports';
-import { CrbmReader, fingerprintFor } from './crbm/reader';
+import { CrbmReader, fingerprintFor, footerSaysEncrypted } from './crbm/reader';
 import type { CrbmReaderOptions } from './crbm/reader';
 import { CrbmWriter } from './crbm/writer';
 import type { CodecBitmap, CodecInterface } from './codec';
@@ -1072,6 +1072,11 @@ export async function holdsObject(
   } catch {
     return false;
   }
+}
+
+/** Whether the object under `key` says it is encrypted, from one read of its footer, with no key. */
+export function objectIsEncrypted(storage: IStorageDriver, key: GenKey): Promise<boolean> {
+  return footerSaysEncrypted(storageBlobReader(storage, key));
 }
 
 /** What {@link writeCrbmGenerationStream} wrote: the driver's `{ size, sha256 }` + a tally of the generation. */

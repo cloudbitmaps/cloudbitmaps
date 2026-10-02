@@ -75,7 +75,9 @@ describe('a cleartext object under an encrypted segment', () => {
     await putCleartext(storage, { ...SEG, generation });
     const seg = store().segment('s');
     await expect(seg.count()).rejects.toBeInstanceOf(IntegrityError);
-    await expect(seg.has(1)).rejects.toThrow(/not encrypted, but it was opened with a key/);
+    await expect(seg.has(1)).rejects.toThrow(
+      new RegExp(`generation ${generation} is not encrypted, but it was opened with a key`),
+    );
     await expect(seg.pin()).rejects.toBeInstanceOf(IntegrityError);
   });
 
