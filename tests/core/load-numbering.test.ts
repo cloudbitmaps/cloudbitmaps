@@ -239,6 +239,42 @@ describe('a load numbers its generation from the row it read, with one existence
   });
 });
 
+describe('re-running the load after a registry restore, as the recovery guide says', () => {
+  /**
+   * Six loads at the default `keep: 1` leave generations 4 and 5; the registry is restored to pointer 1, and
+   * generation 1's object with it. Then the load is re-run, with `keep`, until the pointer is above the strays.
+   */
+  async function restoreAndRerun(keep: number): Promise<{ taken: number[]; left: number[] }> {
+    const w = world();
+    for (let g = 0; g <= 5; g++) await loadSegment(SEG, [g], w.deps);
+    expect(await generations(w.memory)).toEqual([4, 5]);
+    const row = (await w.registry.get(SEG))!;
+    await w.registry.compareAndSwap(SEG, row.token, { currentGen: 1 });
+    await bulkLoadCrbmGeneration(w.memory, { ...SEG, generation: 1 }, [1]);
+    const taken: number[] = [];
+    while ((await w.registry.get(SEG))!.currentGen! <= 5) {
+      const r = await loadSegment(SEG, [100 + taken.length], w.deps, { keep });
+      expect(r.published).toBe(true);
+      taken.push(r.generation);
+    }
+    return { taken, left: await generations(w.memory) };
+  }
+
+  it('numbers below the strays first, then past them all', async () => {
+    expect((await restoreAndRerun(5)).taken).toEqual([2, 3, 6]);
+  });
+
+  it('keeps the restored generation with a keep of the highest stray minus the restored pointer, plus one', async () => {
+    expect((await restoreAndRerun(5 - 1 + 1)).left).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  it('collects it with a keep of the number of strays plus one', async () => {
+    const { left } = await restoreAndRerun(2 + 1);
+    expect(left).not.toContain(1);
+    expect(left).toEqual([3, 4, 5, 6]);
+  });
+});
+
 describe('two loads that check the same number', () => {
   it('both find it free; write-once lets one put land and the other reports superseded, having written nothing', async () => {
     const w = world();
