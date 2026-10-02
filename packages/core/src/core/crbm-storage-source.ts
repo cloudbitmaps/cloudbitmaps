@@ -965,13 +965,52 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         if (reader === null) return ifGone;
         return await read(reader);
       } catch (err) {
-        // Only a vanished pinned generation is recoverable here, and only on the first try; anything else
-        // (corruption, a real second miss) propagates / falls through.
-        if (!isNotFoundError(err) || attempt === 1) throw err;
+        // Two misses are recoverable here, and only on the first try: a generation swept from under the snapshot,
+        // and one whose object was replaced under the same number (see `replacedUnder`). Anything else
+        // (corruption, a real second miss) propagates.
+        if (attempt === 1) throw err;
+        if (!isNotFoundError(err) && !(await this.replacedUnder(ref, pending, err))) throw err;
         this.dropStale(segmentKey(ref), pending); // lazily: the happy path never needs the key
       }
     }
     return ifGone;
+  }
+
+  /**
+   * Whether `err`, raised by a read through the snapshot's reader, came from an object that is no longer the one the
+   * reader opened. A generation number can be taken again once its object is deleted (an erasure removes the
+   * generations above a rolled-back pointer that held the id, a collection pass can stop part-way, and a load then
+   * numbers `currentGen + 1` again), so a reader that still holds the old object's index reads the new object's
+   * bytes at the old offsets: a chunk checksum fails, or a range runs past the end. The object's footer says which it
+   * was, as it does for a pin ({@link CrbmReader.sameObject}): replaced, or gone, re-resolves; the same object means
+   * the error is real, and it stands. Only these two errors pay for the footer read, never a read that succeeded. A
+   * transient fault in the check is rethrown; a footer that cannot be read says nothing, and the error stands.
+   */
+  private async replacedUnder(
+    ref: SegmentRef,
+    pending: Promise<CrbmReader | null>,
+    err: unknown,
+  ): Promise<boolean> {
+    if (!(isIntegrityError(err) || isValidationError(err))) return false;
+    let reader: CrbmReader | null;
+    try {
+      reader = await pending;
+    } catch {
+      return false;
+    }
+    if (reader === null) return false;
+    const at: GenKey = {
+      namespace: ref.namespace,
+      segment: ref.segment,
+      generation: reader.generation,
+    };
+    try {
+      return !(await CrbmReader.sameObject(storageBlobReader(this.driver, at), reader.fingerprint));
+    } catch (checkErr) {
+      if (isNotFoundError(checkErr)) return true;
+      if (isTransientError(checkErr)) throw checkErr;
+      return false;
+    }
   }
 }
 
