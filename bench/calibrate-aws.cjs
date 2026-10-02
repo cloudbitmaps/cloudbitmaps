@@ -77,6 +77,17 @@ const {
 } = require('./lib/calibrate-guards.cjs');
 const { planSpread, spreadIds } = require('./lib/calibrate-spread.cjs');
 const {
+  DISCARDS_PER_RUN,
+  DISCARDS_PER_STAGE,
+  transientFault,
+  quiesce,
+  discardLedger,
+  discardedRequests,
+  keptRequests,
+  parseFaultGets,
+  injectFaults,
+} = require('./lib/calibrate-samples.cjs');
+const {
   STAGES,
   parseSweep,
   coldIntersectGets,
@@ -97,6 +108,8 @@ const {
   harnessRef,
   measuredVersion,
   measuredSdk,
+  sdkFaultClasses,
+  describeFault,
   SDK_DEFAULT_MAX_SOCKETS,
 } = require('./lib/calibrate-process.cjs');
 
@@ -191,6 +204,14 @@ const DRAIN_MS = 30_000;
 const IN_REGION_FLOOR_MS = 30;
 
 const log = (m) => console.log(`calibrate: ${m}`);
+/**
+ * Where a discarded sample runs again, for the two that do not get a fresh store: a point read that assumes a store
+ * in a given state runs again on that store, put back in that state (the pointReads stage says why).
+ */
+const RUN_AGAIN = Object.freeze({
+  'count() first read': 'on its store, once the store has forgotten the segment',
+  'has() on an open segment': 'on the same store, which still holds the segment open',
+});
 function refuse(msg) {
   console.error(`calibrate: ${msg}`);
   process.exit(2);
@@ -234,6 +255,8 @@ function planWorkload({ layout, spread, sweep }) {
       sharedChunks,
     },
     retryBound: RETRY_BOUND,
+    // The samples a run may discard after a transient fault, and run again (`calibrate-samples.cjs`).
+    discards: { perRun: DISCARDS_PER_RUN, perStage: DISCARDS_PER_STAGE },
     // The probe HEAD and the round-trip samples, one attempt each; the bucket's creation; and teardown's listings
     // at every attempt its retrying client may make (see TEARDOWN_PUTS).
     fixedGets: 1 + RTT_SAMPLES,
@@ -247,8 +270,14 @@ function planWorkload({ layout, spread, sweep }) {
  * bound, not an estimate.
  */
 function projection(pricing, workload) {
-  const { stages, total } = projectStages(workload);
-  return { ops: total, stages, priced: priceTally({ put: total.put, get: total.get }, pricing) };
+  const { stages, discards, costliestSample, total } = projectStages(workload);
+  return {
+    ops: total,
+    stages,
+    discards,
+    costliestSample,
+    priced: priceTally({ put: total.put, get: total.get }, pricing),
+  };
 }
 
 /**
@@ -331,6 +360,20 @@ async function main() {
     refuse(err.message);
   }
 
+  // A rehearsal's test-only fault hook: refused in every other mode, before anything, since a real run must never fail
+  // a request on purpose, and a projection would apply it to nothing.
+  let faultGets = [];
+  if (process.env.CR_CALIBRATE_FAULT_GETS !== undefined) {
+    if (MODE !== 'rehearse') {
+      refuse('CR_CALIBRATE_FAULT_GETS is for a rehearsal only (--rehearse); unset it');
+    }
+    try {
+      faultGets = parseFaultGets(process.env.CR_CALIBRATE_FAULT_GETS);
+    } catch (err) {
+      refuse(err.message);
+    }
+  }
+
   // The run id, and everything that depends only on it: a bad id, or one whose evidence is already committed, is
   // refused in every mode, projection included, before anything reads a credential. `--cleanup` takes any id that
   // names a legal bucket, because it writes no file.
@@ -402,6 +445,8 @@ async function main() {
   let plan;
   let ops;
   let stageBounds;
+  let discardBound;
+  let costliestSample;
   let priced;
   if (MODE !== 'cleanup') {
     let AWS_US_EAST_1_ONDEMAND;
@@ -430,7 +475,13 @@ async function main() {
       }),
     );
     plan = planWorkload({ layout, spread, sweep });
-    ({ ops, stages: stageBounds, priced } = projection(pricing, plan));
+    ({
+      ops,
+      stages: stageBounds,
+      discards: discardBound,
+      costliestSample,
+      priced,
+    } = projection(pricing, plan));
   }
 
   if (MODE === 'project') {
@@ -461,6 +512,10 @@ async function main() {
       );
     }
     console.log(
+      `  ${'discards'.padEnd(11)} ${String(discardBound.put).padStart(4)} PUT-class ${String(discardBound.get).padStart(7)} GET-class  ` +
+        `up to ${DISCARDS_PER_RUN} samples run again after a transient fault, each at most the costliest sample's ${costliestSample}`,
+    );
+    console.log(
       `  fixed        ${String(plan.fixedPuts).padStart(4)} PUT-class ${String(plan.fixedGets).padStart(7)} GET-class  bucket, probe, round-trip samples, teardown`,
     );
     console.log(
@@ -483,11 +538,16 @@ async function main() {
   }
 
   const s3 = require('@aws-sdk/client-s3');
+  // What counts as a transient fault, from the SDK that sends the requests (`sdkFaultClasses`). Read before anything is
+  // created: a harness that could not tell one would fail the run on the first.
+  const sdkFaults = MODE === 'cleanup' ? null : sdkFaultClasses(ROOT);
   // Two clients, metered into one bill: the workload's makes one attempt per request, teardown's keeps its retries.
   // `clientConfigs` says why, and the tests drive both against a server that fails on purpose.
   const configs = clientConfigs(clientOpts);
   const client = new s3.S3Client(configs.work);
   const tally = meter(client);
+  // A rehearsal's injected faults, on the workload's client alone; refused above in every other mode.
+  if (faultGets.length > 0) injectFaults(client, faultGets);
   // A signal stops the workload's client before teardown lists anything: `interruptGate` says why. Teardown's own
   // client is never gated.
   const gate = interruptGate(client);
@@ -727,6 +787,10 @@ async function main() {
     },
     projected: ops,
     projectedStages: stageBounds,
+    // What the samples a run may discard can cost, beside the stages' bounds: each at the costliest sample's bound.
+    projectedDiscards: { ...discardBound, costliestSample },
+    // A rehearsal's injected faults, each a GetObject request and the fault it met.
+    ...(faultGets.length > 0 ? { injectedFaults: faultGets } : {}),
     partial: true,
     phases: {},
   };
@@ -772,16 +836,34 @@ async function main() {
       ops: { ...tally, byCommand: { ...tally.byCommand } },
     };
     const over = exceedsProjection(tally, ops);
-    // Each stage against its own bound too, so a stage that overspent is named even when the run as a whole did not.
+    // Each stage against its own bound too, so a stage that overspent is named even when the run as a whole did not. A
+    // stage's bound is for the samples it kept; the ones every stage discarded are held together to the allowance for
+    // discards, the cut-short stage's included.
     for (const name of STAGES) {
       const record = results.phases[name];
       if (record === undefined) continue;
+      const kept = keptRequests(record);
       const used = {
-        put: record.requests.put + (record.setup?.requests.put ?? 0),
-        get: record.requests.get + (record.setup?.requests.get ?? 0),
+        put: kept.put + (record.setup?.requests.put ?? 0),
+        get: kept.get + (record.setup?.requests.get ?? 0),
       };
       for (const m of exceedsProjection(used, stageBounds[name])) over.push(`${name}: ${m}`);
     }
+    const discarded = discardedRequests([
+      ...STAGES.flatMap((name) => results.phases[name]?.discarded ?? []),
+      ...(discards.unfinished?.discarded ?? []),
+    ]);
+    for (const m of exceedsProjection(discarded, discardBound)) {
+      over.push(`discarded samples: ${m}`);
+    }
+    // How many samples the run discarded, against its bounds; and a stage a failure cut short, with what it discarded
+    // before it, since a stage records its own discards only when it finishes.
+    results.discards = {
+      count: discards.count,
+      perRun: discards.perRun,
+      perStage: discards.perStage,
+      ...(discards.unfinished === null ? {} : { unfinished: discards.unfinished }),
+    };
     if (over.length > 0) {
       // The projection is only a ceiling if the run cannot exceed it. It just did, so the next change is to the
       // projection — before this harness is trusted with another pre-flight check.
@@ -824,6 +906,39 @@ async function main() {
       range: { n: b.rangeN - a.rangeN, bytes: b.rangeBytes - a.rangeBytes },
     },
   });
+  /** Re-check the ceiling DURING a stage, not only at its end — loads have no fixed op count. */
+  const checkCeiling = () => {
+    const spent = priceTally(tally, pricing).totalUSD;
+    if (breached(spent, ceiling))
+      throw new Error(`spend ceiling breached mid-run: $${spent.toFixed(6)} >= $${ceiling}`);
+  };
+
+  // Every timed sample runs through this ledger: one that meets a transient fault is discarded whole, its requests
+  // recorded beside its stage, and run again from the start (on a fresh store, or a point read on its store put back
+  // in the state it assumes: RUN_AGAIN), for at most DISCARDS_PER_RUN samples a run and DISCARDS_PER_STAGE a stage
+  // (`calibrate-samples.cjs`). A cleanup times nothing, and returned above.
+  const discards = discardLedger({
+    isTransient: (err) => transientFault(err, sdkFaults),
+    snap,
+    between: requestsBetween,
+    // The failed sample's other requests answer first, so each is counted against it and not against the next sample.
+    settle: () =>
+      quiesce({
+        activity: () => ({ inFlight: tally.inFlight, sent: tally.put + tally.get + tally.free }),
+        maxMs: DRAIN_MS,
+      }),
+    onDiscard: (d, at) => {
+      console.error(
+        `calibrate: DISCARDED — ${at.stage}: ${d.of} ${d.sample}, ${describeFault(d)}, after ` +
+          `${d.requests.put} PUT-class + ${d.requests.get} GET-class; running it again ${RUN_AGAIN[d.of] ?? 'on a fresh store'} ` +
+          `(${at.count} of ${DISCARDS_PER_RUN} this run, ${at.stageCount} of ${DISCARDS_PER_STAGE} this stage)`,
+      );
+      // Its requests were billed, so the ceiling is checked against them as against any other.
+      checkCeiling();
+    },
+  });
+  const sample = (of, index, attempt) => discards.sample(of, index, attempt);
+
   // A value the run actually observed, never an interpolation: for an even count, the upper of the two middles.
   const median = (xs) => {
     if (xs.length === 0) return undefined;
@@ -883,13 +998,6 @@ async function main() {
     // package's default becomes.
     const storage = new S3Storage({ client, bucket, prefix: STORE_PREFIX, readTimeoutMs: 0 });
 
-    /** Re-check the ceiling DURING a stage, not only at its end — loads have no fixed op count. */
-    const checkCeiling = () => {
-      const spent = priceTally(tally, pricing).totalUSD;
-      if (breached(spent, ceiling))
-        throw new Error(`spend ceiling breached mid-run: $${spent.toFixed(6)} >= $${ceiling}`);
-    };
-
     // A value the run observed at index floor(N·p): the same upper rule as `median`, and one rank above textbook
     // nearest-rank when N·p is whole. With 40 reads, p99 is simply the slowest and p95 the second slowest: read
     // them as that, not as a tail estimate a sample this small cannot give.
@@ -927,35 +1035,44 @@ async function main() {
     // ---- the stages ---------------------------------------------------------------------------------------------------
     // Each stage records the requests it made, by class and by kind of read, beside what the engine is expected to
     // make and what the projection allows. `setup` is what a stage loads for itself, kept apart from what it times.
+    // `discarded` is every sample it discarded after a transient fault: those requests are in `requests`, since they
+    // were billed, and out of what the stage is held to, which is what its kept samples made (`keptRequests`).
     const expectedByStage = expectedReads(plan);
     const stage = async (name, { setup, run }) => {
       if (!STAGES.includes(name)) throw new Error(`${name} is not a stage the projection covers`);
       const s0 = snap();
       const prepared = setup === undefined ? undefined : await setup();
       const s1 = snap();
+      const discarded = discards.begin(name);
       const phase = await run(prepared);
+      discards.end();
       const s2 = snap();
-      const record = { ...phase, requests: requestsBetween(s1, s2) };
+      const record = { ...phase, requests: requestsBetween(s1, s2), discarded };
       if (prepared !== undefined) {
         record.setup = { ...prepared.record, requests: requestsBetween(s0, s1) };
       }
       results.phases[name] = record;
+      const kept = keptRequests(record);
       const expected = name === 'load' ? phase.expected?.get : expectedByStage[name];
       if (expected !== undefined) {
         record.expectedGets = expected;
-        if (record.requests.get !== expected) {
+        if (kept.get !== expected) {
           (results.expectedMissed ??= []).push(
-            `${name}: ${record.requests.get} GET-class, expected ${expected}`,
+            `${name}: ${kept.get} GET-class kept, expected ${expected}`,
           );
           console.error(
-            `calibrate: EXPECTED COUNT MISSED — ${name} made ${record.requests.get} GET-class requests, ` +
+            `calibrate: EXPECTED COUNT MISSED — ${name}'s kept samples made ${kept.get} GET-class requests, ` +
               `the engine is expected to make ${expected}`,
           );
         }
       }
       log(
         `${name}: ${record.requests.put} PUT-class + ${record.requests.get} GET-class` +
-          (expected === undefined ? '' : ` (expected ${expected} GET-class)`),
+          (expected === undefined ? '' : ` (expected ${expected} GET-class)`) +
+          (discarded.length === 0
+            ? ''
+            : `, of which ${discarded.length} discarded sample${discarded.length === 1 ? '' : 's'} made ` +
+              `${record.requests.get - kept.get} GET-class and the kept ones ${kept.get}`),
       );
       return record;
     };
@@ -1066,38 +1183,42 @@ async function main() {
       for (let i = 0; i < count; i += 1) {
         const a = names[i % names.length];
         const b = names[(i + 1) % names.length];
-        // No retry of the store's own inside the timed window, and each pointer read exactly once however long the
-        // intersect takes, so the request count describes the library rather than the network.
-        const store = timedStore();
-        const before = snap();
-        startDepth();
-        const t0 = process.hrtime.bigint();
-        let n = 0;
-        let sum = 0;
-        for await (const id of store.segment(a).intersect([store.segment(b)])) {
-          n += 1;
-          sum += id;
-        }
-        const ms = msSince(t0);
-        const after = snap();
-        // EXACT content, not a plausible count. Every pair intersects in precisely the planned ids, so anything else
-        // from a real object store is a real finding about the read path — torn, partial or wrong.
-        if (n !== expected.count || sum !== expected.sum) {
-          throw new Error(
-            `${label} intersect ${a} ∩ ${b} returned ${n} ids (sum ${sum}); expected exactly ${expected.count} ` +
-              `(sum ${expected.sum}). A read that is not exact must not produce a latency figure.`,
-          );
-        }
-        reads.push({
-          ms,
-          gets: after.get - before.get,
-          chunkReads: after.rangeN - before.rangeN,
-          chunkBytes: after.rangeBytes - before.rangeBytes,
-          tailReads: after.suffixN - before.suffixN,
-          tailBytes: after.suffixBytes - before.suffixBytes,
-          pointerReads: after.wholeN - before.wholeN,
-          ...depthOf(before, after, ms),
+        // One sample: a transient fault discards it, and it runs again from here on a fresh store.
+        const read = await sample(`${label} cold intersect`, i, async () => {
+          // No retry of the store's own inside the timed window, and each pointer read exactly once however long the
+          // intersect takes, so the request count describes the library rather than the network.
+          const store = timedStore();
+          const before = snap();
+          startDepth();
+          const t0 = process.hrtime.bigint();
+          let n = 0;
+          let sum = 0;
+          for await (const id of store.segment(a).intersect([store.segment(b)])) {
+            n += 1;
+            sum += id;
+          }
+          const ms = msSince(t0);
+          const after = snap();
+          // EXACT content, not a plausible count. Every pair intersects in precisely the planned ids, so anything else
+          // from a real object store is a real finding about the read path — torn, partial or wrong.
+          if (n !== expected.count || sum !== expected.sum) {
+            throw new Error(
+              `${label} intersect ${a} ∩ ${b} returned ${n} ids (sum ${sum}); expected exactly ${expected.count} ` +
+                `(sum ${expected.sum}). A read that is not exact must not produce a latency figure.`,
+            );
+          }
+          return {
+            ms,
+            gets: after.get - before.get,
+            chunkReads: after.rangeN - before.rangeN,
+            chunkBytes: after.rangeBytes - before.rangeBytes,
+            tailReads: after.suffixN - before.suffixN,
+            tailBytes: after.suffixBytes - before.suffixBytes,
+            pointerReads: after.wholeN - before.wholeN,
+            ...depthOf(before, after, ms),
+          };
         });
+        reads.push(read);
         checkCeiling();
       }
       return reads;
@@ -1249,11 +1370,7 @@ async function main() {
     await stage('warm', {
       run: async () => {
         if (READS === 0) return { runs: 0 };
-        const store = new CloudRoaring({
-          storage,
-          ...warmStore(2 * plan.warm.segments * plan.warm.sharedChunks),
-        });
-        const pair = async (i) => {
+        const pair = async (store, i) => {
           const a = calibrationNames[i % calibrationNames.length];
           const b = calibrationNames[(i + 1) % calibrationNames.length];
           let n = 0;
@@ -1270,18 +1387,27 @@ async function main() {
           }
           return `${a} ∩ ${b}`;
         };
-        // The priming pass reads each segment once, cold, and is counted: it is what the warm reads then spare.
-        const p0 = snap();
-        for (let i = 0; i < READS; i += 1) {
-          await pair(i);
-          checkCeiling();
-        }
-        const priming = requestsBetween(p0, snap());
+        // The priming pass reads each segment once, cold, and is counted: it is what the warm reads then spare. It is
+        // one sample, on a store of its own: a fault part-way leaves that store holding some chunks and not others, so
+        // the pass is discarded whole, with its store, and runs again on a fresh one. The warm reads make no request,
+        // so they cannot meet a fault; one that does make a request fails the stage.
+        const { store, priming } = await sample('priming pass', 0, async () => {
+          const fresh = new CloudRoaring({
+            storage,
+            ...warmStore(2 * plan.warm.segments * plan.warm.sharedChunks),
+          });
+          const p0 = snap();
+          for (let i = 0; i < READS; i += 1) {
+            await pair(fresh, i);
+            checkCeiling();
+          }
+          return { store: fresh, priming: requestsBetween(p0, snap()) };
+        });
         const ms = [];
         for (let i = 0; i < READS; i += 1) {
           const before = snap();
           const t0 = process.hrtime.bigint();
-          const which = await pair(i);
+          const which = await pair(store, i);
           const took = msSince(t0);
           const after = snap();
           if (after.get !== before.get || after.put !== before.put) {
@@ -1329,17 +1455,26 @@ async function main() {
             `calibrate: EXPECTED COUNT MISSED — pointReads ${name} made ${gets} GET-class requests, expected ${expected}`,
           );
         };
-        const timedCalls = async (calls, check) => {
+        // A call is a sample when `of` names it: a cold read that meets a transient fault is discarded and run again,
+        // and `call(rerun)` is told when it is a re-run. A warm read makes no request, so it is not one.
+        const timedCalls = async (calls, check, of) => {
           const ms = [];
-          const g0 = snap().get;
-          for (const call of calls) {
-            const t0 = process.hrtime.bigint();
-            const got = await call();
-            ms.push(msSince(t0));
-            check(got);
+          let gets = 0;
+          for (const [i, call] of calls.entries()) {
+            const timed = async (rerun) => {
+              const g0 = snap().get;
+              const t0 = process.hrtime.bigint();
+              const got = await call(rerun);
+              const took = msSince(t0);
+              check(got);
+              return { took, gets: snap().get - g0 };
+            };
+            const one = of === undefined ? await timed(0) : await sample(of, i, timed);
+            ms.push(one.took);
+            gets += one.gets;
             checkCeiling();
           }
-          return { gets: snap().get - g0, ...spreadOf(ms) };
+          return { gets, ...spreadOf(ms) };
         };
         const mustMake = (name, phase, gets) => {
           if (phase.gets !== gets) {
@@ -1352,13 +1487,16 @@ async function main() {
         const present = (got) => {
           if (got !== true) throw new Error('has() of a shared id returned false');
         };
-        // count(): cardinality from the index, so a segment's first read is its pointer and its tail and nothing else.
+        // count(): cardinality from the index, so a segment's first read is its pointer and its tail and nothing else. A
+        // first read that failed left the store holding nothing of that segment (the store forgets a reader that failed
+        // to open); a re-run tells it to forget the segment too, so the re-run is a first read by construction.
         const counted = point();
+        const firstCount = (name) => (rerun) => {
+          if (rerun > 0) counted.invalidate({ segment: name });
+          return counted.segment(name).count();
+        };
         const countCold = {
-          ...(await timedCalls(
-            names.map((name) => () => counted.segment(name).count()),
-            counts,
-          )),
+          ...(await timedCalls(names.map(firstCount), counts, 'count() first read')),
           expectedGets: 2 * POINT_SEGMENTS,
           store: pointConfig,
         };
@@ -1386,7 +1524,9 @@ async function main() {
           }
         }
         const pairs = names.flatMap((name) => ids.map((id) => [name, id]));
-        // On the store count() opened: every has() is one ranged read.
+        // On the store count() opened: every has() is one ranged read. A re-run is on the same store, which a failed
+        // chunk read leaves with the segment open and nothing cached for it, so it is one ranged read again; telling the
+        // store to forget the segment would drop the chunks this phase read, which the warm phase is held to.
         const openSegment = {
           ...(await timedCalls(
             pairs.map(
@@ -1395,6 +1535,7 @@ async function main() {
                   counted.segment(name).has(id),
             ),
             present,
+            'has() on an open segment',
           )),
           expectedGets: pairs.length,
           store: pointConfig,
@@ -1416,14 +1557,19 @@ async function main() {
         // The first read of a segment: each pair on a store of its own. A pointer, a tail and a chunk.
         const fresh = [];
         const firstMs = [];
-        for (const [name, id] of pairs) {
-          const store = timedStore();
-          const g0 = snap().get;
-          const t0 = process.hrtime.bigint();
-          const got = await store.segment(name).has(id);
-          firstMs.push(msSince(t0));
-          present(got);
-          fresh.push(snap().get - g0);
+        for (const [j, [name, id]] of pairs.entries()) {
+          // One sample, on a store of its own: a transient fault discards it, and it runs again on another.
+          const read = await sample('has() first read', j, async () => {
+            const store = timedStore();
+            const g0 = snap().get;
+            const t0 = process.hrtime.bigint();
+            const got = await store.segment(name).has(id);
+            const took = msSince(t0);
+            present(got);
+            return { took, gets: snap().get - g0 };
+          });
+          firstMs.push(read.took);
+          fresh.push(read.gets);
           checkCeiling();
         }
         const firstRead = {
@@ -1464,34 +1610,38 @@ async function main() {
         };
         const reads = [];
         for (let i = 0; i < ANDNOT_CALLS; i += 1) {
-          const store = timedStore();
-          const before = snap();
-          startDepth();
-          const t0 = process.hrtime.bigint();
-          let n = 0;
-          let sum = 0;
-          for await (const id of store
-            .segment(include)
-            .andNot(excludes.map((name) => store.segment(name)))) {
-            n += 1;
-            sum += id;
-          }
-          const ms = msSince(t0);
-          const after = snap();
-          if (n !== expected.count || sum !== expected.sum) {
-            throw new Error(
-              `andNot returned ${n} ids (sum ${sum}); expected exactly ${expected.count} (sum ${expected.sum}). ` +
-                'A read that is not exact must not produce a latency figure.',
-            );
-          }
-          reads.push({
-            ms,
-            gets: after.get - before.get,
-            chunkReads: after.rangeN - before.rangeN,
-            tailReads: after.suffixN - before.suffixN,
-            pointerReads: after.wholeN - before.wholeN,
-            ...depthOf(before, after, ms),
+          // One sample: a transient fault discards the call, and it runs again from here on a fresh store.
+          const read = await sample('andNot call', i, async () => {
+            const store = timedStore();
+            const before = snap();
+            startDepth();
+            const t0 = process.hrtime.bigint();
+            let n = 0;
+            let sum = 0;
+            for await (const id of store
+              .segment(include)
+              .andNot(excludes.map((name) => store.segment(name)))) {
+              n += 1;
+              sum += id;
+            }
+            const ms = msSince(t0);
+            const after = snap();
+            if (n !== expected.count || sum !== expected.sum) {
+              throw new Error(
+                `andNot returned ${n} ids (sum ${sum}); expected exactly ${expected.count} (sum ${expected.sum}). ` +
+                  'A read that is not exact must not produce a latency figure.',
+              );
+            }
+            return {
+              ms,
+              gets: after.get - before.get,
+              chunkReads: after.rangeN - before.rangeN,
+              tailReads: after.suffixN - before.suffixN,
+              pointerReads: after.wholeN - before.wholeN,
+              ...depthOf(before, after, ms),
+            };
           });
+          reads.push(read);
           checkCeiling();
         }
         const ms = reads.map((r) => r.ms);
@@ -1524,8 +1674,9 @@ async function main() {
     // not a failure: the handler has said so, and the run is marked interrupted (`failureOf`).
     const failure = failureOf(err);
     if (failure !== null) {
+      // Its name, the transport code beneath it and the SDK's attempts, not the message alone (`faultOf`).
       results.error = failure;
-      console.error(`calibrate: FAILED — ${failure}`);
+      console.error(`calibrate: FAILED — ${describeFault(failure)}`);
       process.exitCode = 1;
     }
   } finally {

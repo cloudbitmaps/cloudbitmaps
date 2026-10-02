@@ -58,6 +58,30 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A calibration run survives a transient fault in a timed sample.** The workload's client makes one attempt per
+  request and every timed store runs with its own retry off, so a single transient fault anywhere in a run's requests
+  (up to ~94,600 GET-class and 364 PUT-class at the default workload) failed the whole run, and a partial run is not
+  evidence. One in-region run failed on a single transient connection fault after about 86,300 requests; at that rate
+  a run of this size would finish about a third of the time. A timed sample that meets a transient fault (a cold
+  intersect, a cold point read, an `andNot` call or the warm stage's priming pass) is now discarded whole and run again
+  from the start, from a state the failed attempt left nothing cached in: on a fresh store, except a first `count()`,
+  which runs again on its store once the store has forgotten the segment, and a `has()` on an open segment, which runs
+  again on the same store. At most three samples a run and two a stage are discarded; one more, or a fault in a load,
+  fails the run as before. A transient fault is the library's `TransientError` or anything the installed SDK's own
+  retry would retry. The harness waits for the failed sample's requests still in flight, counts them against it, and
+  records each discard beside its stage: the sample, the error's name, the transport code beneath it, the SDK's
+  attempt count, how long the attempt ran and the requests it made. Those requests are billed and stay in the stage's,
+  and each stage's expected count is held to what its kept samples made. The projection allows three discarded samples
+  at the costliest sample's bound, so the default workload's projected upper bound is 364 PUT-class and 106,624
+  GET-class requests, $0.044470, under the $0.05 ceiling the README's example sets (`CR_CALIBRATE_MAX_USD` has no
+  default, and `--run` refuses without one). `bench/lib/calibration-figures.cjs` treats a run with discards within the
+  harness's bounds as evidence and requires its report to state how many it discarded. Wherever the harness records an
+  error it now keeps the name, the code and the message: the SDK's HTTP handler renames `ECONNRESET`, `EPIPE` and
+  `ETIMEDOUT` alike to `TimeoutError`, so the name alone could not say which it was. `CR_CALIBRATE_FAULT_GETS` makes a
+  rehearsal fail the GetObject requests it lists, once each, as a reset socket or (`:denied`) as a 403 that is not
+  transient, and is refused in every other mode. A test in the integration lane runs the harness itself through such a
+  rehearsal against MinIO, so the integration job now builds the packages first. This is repository work on the
+  calibration harness, outside the packages.
 - **An S3 registry row refused for its size no longer holds its connection open.** A row whose response declares
   more than the 1 MiB cap is refused with `IntegrityError` before a byte of its body is read, and the body was left
   unread, so each refusal kept its socket until the server gave up on it. The driver now destroys the body on every

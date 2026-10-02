@@ -171,7 +171,7 @@ const processLib = require_(join(ROOT, 'bench', 'lib', 'calibrate-process.cjs'))
   measuredSdk: (root: string) => { clientS3: string; nodeHttpHandler: string };
   SDK_DEFAULT_MAX_SOCKETS: number;
   HARNESS_FILES: string[];
-  failureOf: (err: unknown) => string | null;
+  failureOf: (err: unknown) => Fault | null;
   stopThenTearDown: (i: {
     gate: { abort: () => void; drained: (ms: number) => Promise<boolean> };
     drainMs: number;
@@ -184,6 +184,14 @@ const processLib = require_(join(ROOT, 'bench', 'lib', 'calibrate-process.cjs'))
 };
 
 type Billed = { put: number; get: number };
+type Fault = {
+  name: string;
+  cause: string | null;
+  code: string | null;
+  attempts: number | null;
+  httpStatus: number | null;
+  message: string;
+};
 const calibrationFigures = require_(join(ROOT, 'bench', 'lib', 'calibration-figures.cjs')) as {
   STORE_LOAD_REQUESTS: { first: Billed; reload: Billed; collecting: Billed };
 };
@@ -827,12 +835,11 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
     expect(src).toContain('text: resultsJson(results)');
     expect(src).not.toContain('JSON.stringify(results');
-    const fixture = readFileSync(
-      join(ROOT, 'tests', 'bench', 'fixtures', 'calibration-rehearsal.json'),
-      'utf8',
-    );
-    expect(fixture.match(/\.\d{10,}/g) ?? []).toEqual([]);
-    expect(processLib.resultsJson(JSON.parse(fixture))).toBe(fixture);
+    for (const name of ['calibration-rehearsal.json', 'calibration-rehearsal-discards.json']) {
+      const fixture = readFileSync(join(ROOT, 'tests', 'bench', 'fixtures', name), 'utf8');
+      expect(fixture.match(/\.\d{10,}/g) ?? [], name).toEqual([]);
+      expect(processLib.resultsJson(JSON.parse(fixture)), name).toBe(fixture);
+    }
   });
 
   // Run, not read: a check pointed at the partial file instead of the evidence passes every source-text test here.
@@ -1589,6 +1596,20 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     expect(out.stderr).toMatch(/exclusive/);
   });
 
+  // A rehearsal's injected faults: a real run must never fail a request on purpose, and a projection or a cleanup would
+  // apply them to nothing. Each is refused before anything is read; a broken refusal stops at the next check, since no
+  // credential or confirmation can be found.
+  it('refuses CR_CALIBRATE_FAULT_GETS in every mode but a rehearsal, and one it cannot read in a rehearsal', () => {
+    for (const args of [[], ['--run'], ['--cleanup', '2026-10-02-a']]) {
+      const out = runHarness(args, { CR_CALIBRATE_FAULT_GETS: '1200' });
+      expect(out.status, args.join(' ')).toBe(2);
+      expect(out.stderr).toMatch(/CR_CALIBRATE_FAULT_GETS is for a rehearsal only/);
+    }
+    const bad = runHarness(['--rehearse'], { CR_CALIBRATE_FAULT_GETS: '12x' });
+    expect(bad.status).toBe(2);
+    expect(bad.stderr).toMatch(/CR_CALIBRATE_FAULT_GETS entry "12x"/);
+  });
+
   // Node creates stdout and stderr on first use, and on macOS creating one on a terminal that has hung up never
   // returns. A hang-up handler whose first output is stderr's first use blocks there: no teardown, no results.
   // Silencing the terminal alone blocks the same way, since reaching `process.stderr` creates it. Run on a real
@@ -2257,8 +2278,10 @@ describe('a signal stops the workload before teardown starts', () => {
     expect(processLib.failureOf(refused)).toBeNull();
     expect(processLib.failureOf(new Error('store: read failed', { cause: refused }))).toBeNull();
     const denied = Object.assign(new Error('Access Denied'), { name: 'AccessDenied' });
-    expect(processLib.failureOf(denied)).toBe('Access Denied');
-    expect(processLib.failureOf(new Error('put failed', { cause: denied }))).toBe('put failed');
+    expect(processLib.failureOf(denied)?.message).toBe('Access Denied');
+    expect(processLib.failureOf(new Error('put failed', { cause: denied }))?.message).toBe(
+      'put failed',
+    );
   });
 
   it("exits 130 when a signal cut the work short, and keeps the run's own code when only teardown was left", () => {
