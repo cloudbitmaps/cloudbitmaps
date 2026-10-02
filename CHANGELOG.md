@@ -58,6 +58,11 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **An S3 registry row refused for its size no longer holds its connection open.** A row whose response declares
+  more than the 1 MiB cap is refused with `IntegrityError` before a byte of its body is read, and the body was left
+  unread, so each refusal kept its socket until the server gave up on it. The driver now destroys the body on every
+  way out of the read that leaves it unread, which closes the connection, with or without `readTimeoutMs`. A test
+  refuses three such rows against a stub endpoint and checks that no connection is left open.
 - **One transient read fault no longer fails a whole load or erasure.** A load's guard read of the current
   generation, and an erasure's reads (the generation it rewrites and each of its chunks, the read-back that verifies
   the generation it wrote, and any other generation that may still hold the id) went to the raw driver once, so a

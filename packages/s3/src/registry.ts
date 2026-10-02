@@ -90,19 +90,26 @@ class S3Store implements ObjectRegistryStore {
         if (isNotFound(err)) return null;
         throw mapError(err);
       }
-      // Check the advertised length BEFORE allocating, so a hostile object cannot make us buffer it first.
-      if ((res.ContentLength ?? 0) > MAX_ROW_BYTES) {
-        throw new IntegrityError(
-          `registry object ${res.ContentLength}B exceeds cap ${MAX_ROW_BYTES}B`,
-        );
+      try {
+        // Check the advertised length BEFORE allocating, so a hostile object cannot make us buffer it first.
+        if ((res.ContentLength ?? 0) > MAX_ROW_BYTES) {
+          throw new IntegrityError(
+            `registry object ${res.ContentLength}B exceeds cap ${MAX_ROW_BYTES}B`,
+          );
+        }
+        if (res.Body === undefined) {
+          throw new IntegrityError(`registry object has an empty body: ${key}`);
+        }
+        const bytes = await (
+          res.Body as { transformToByteArray(): Promise<Uint8Array> }
+        ).transformToByteArray();
+        return { bytes, version: res.ETag ?? '' };
+      } catch (err) {
+        // A row refused before its body is read would otherwise hold its connection open until the server gives up
+        // on it; destroying the body closes the socket. On a body that already failed it changes nothing.
+        destroyBody(res.Body);
+        throw err;
       }
-      if (res.Body === undefined) {
-        throw new IntegrityError(`registry object has an empty body: ${key}`);
-      }
-      const bytes = await (
-        res.Body as { transformToByteArray(): Promise<Uint8Array> }
-      ).transformToByteArray();
-      return { bytes, version: res.ETag ?? '' };
     });
   }
 
@@ -154,6 +161,11 @@ class S3Store implements ObjectRegistryStore {
       token = res.IsTruncated === true ? res.NextContinuationToken : undefined;
     } while (token !== undefined);
   }
+}
+
+/** Destroy a response body left unread, which releases its connection; a body with no `destroy` is left alone. */
+function destroyBody(body: unknown): void {
+  (body as { destroy?: () => void } | undefined)?.destroy?.();
 }
 
 /** Reclassify a transient S3 fault as a retryable {@link TransientError}; pass everything else through. */

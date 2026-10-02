@@ -11,7 +11,8 @@ import { CloudRoaring } from '@/index';
 import { S3Storage } from '@/s3/backend';
 import { S3RegistryDriver } from '@/s3/registry';
 import { S3StorageDriver } from '@/s3/storage';
-import { TransientError, ValidationError } from '@/core/errors';
+import { IntegrityError, TransientError, ValidationError } from '@/core/errors';
+import { MAX_ROW_BYTES } from '@/drivers/_shared/object-registry';
 import type { GenKey } from '@/core/ports';
 
 /**
@@ -48,8 +49,13 @@ type Op =
  * - `no-headers`: the request arrives and nothing ever comes back.
  * - `mid-body`: the status, the headers and the first half of the body come back, and then nothing.
  * - `delay`: the whole response comes back, `ms` late.
+ * - `oversize`: a `200` that declares a body over the registry's row cap, sends a few bytes of it, and then nothing.
  */
-type Fault = { kind: 'no-headers' } | { kind: 'mid-body' } | { kind: 'delay'; ms: number };
+type Fault =
+  | { kind: 'no-headers' }
+  | { kind: 'mid-body' }
+  | { kind: 'delay'; ms: number }
+  | { kind: 'oversize' };
 
 interface Armed {
   readonly op: Op;
@@ -154,6 +160,12 @@ class StubS3 {
     const body = Buffer.concat(chunks);
     const fault = this.take(op, key);
     if (fault?.kind === 'no-headers') {
+      this.stall(res);
+      return;
+    }
+    if (fault?.kind === 'oversize') {
+      res.writeHead(200, { etag: '"big"', 'content-length': String(MAX_ROW_BYTES + 1) });
+      res.write(Buffer.alloc(16, 0x7b));
       this.stall(res);
       return;
     }
@@ -573,6 +585,25 @@ describe("S3: the registry's read is timed too", LIMIT, () => {
       value: { currentGen: 0 },
     });
   });
+
+  // A row whose response declares more than the cap is refused before its body is read. The refusal must let go of
+  // the connection too, with the timeout off and with one set, since the read has settled and no timer will abort it.
+  it.each([0, 50 * TIMEOUT])(
+    'three rows refused for their size leave no connection open (readTimeoutMs: %s)',
+    async (readTimeoutMs) => {
+      const refusing = new S3Storage({ ...stub.options(), readTimeoutMs });
+      try {
+        for (let i = 0; i < 3; i++) {
+          stub.arm('GetObject', { kind: 'oversize' });
+          const outcome = await settle(refusing.registry.get({ segment: 's' }));
+          expect((outcome as { error?: unknown }).error).toBeInstanceOf(IntegrityError);
+        }
+        await expectReleased(stub);
+      } finally {
+        refusing.client.destroy();
+      }
+    },
+  );
 
   it('the S3RegistryDriver takes it directly', async () => {
     const client = stub.client();
