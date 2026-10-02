@@ -108,7 +108,8 @@ class S3Store implements ObjectRegistryStore {
         // A row refused before its body is read would otherwise hold its connection open until the server gives up
         // on it; destroying the body closes the socket. On a body that already failed it changes nothing.
         destroyBody(res.Body);
-        throw err;
+        // A body cut off part-way is a dropped connection, and transient; a refused row is not.
+        throw err instanceof IntegrityError ? err : mapError(err);
       }
     });
   }

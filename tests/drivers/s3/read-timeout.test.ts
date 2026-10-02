@@ -54,13 +54,15 @@ type Op =
  * - `delay`: the whole response comes back, `ms` late.
  * - `oversize`: a `200` that declares a body over the registry's row cap, sends a few bytes of it, and then nothing.
  * - `status`: an S3 error with that status, at once, which the SDK's own retry sends again for a 5xx.
+ * - `cut-body`: the status, the headers and the first half of the body come back, and then the connection drops.
  */
 type Fault =
   | { kind: 'no-headers' }
   | { kind: 'mid-body' }
   | { kind: 'delay'; ms: number }
   | { kind: 'oversize' }
-  | { kind: 'status'; status: number };
+  | { kind: 'status'; status: number }
+  | { kind: 'cut-body' };
 
 interface Armed {
   readonly op: Op;
@@ -193,6 +195,12 @@ class StubS3 {
     if (res.destroyed) return;
     const answer = this.apply(op, key, url.searchParams, req, body);
     res.writeHead(answer.status, answer.headers);
+    if (fault?.kind === 'cut-body' && answer.body.length > 1) {
+      res.write(answer.body.subarray(0, Math.floor(answer.body.length / 2)), () =>
+        res.socket?.destroy(),
+      );
+      return;
+    }
     if (fault?.kind === 'mid-body' && answer.body.length > 1) {
       res.write(answer.body.subarray(0, Math.floor(answer.body.length / 2)));
       this.stall(res);
@@ -733,6 +741,21 @@ describe("S3: the registry's read is timed too", LIMIT, () => {
 
     expectTimedOut(await settle(backend.registry.get({ segment: 's' })));
     await expectReleased(stub);
+  });
+
+  // Not a timeout: the connection drops part-way through the body, with the timeout off, and the store's read retry
+  // must see a fault it repeats rather than the SDK's raw error.
+  it('a registry GET whose body is cut off is a TransientError, with or without a timeout', async () => {
+    for (const readTimeoutMs of [0, 50 * TIMEOUT]) {
+      const cutting = new S3Storage({ ...stub.options(), readTimeoutMs });
+      try {
+        stub.arm('GetObject', { kind: 'cut-body' });
+        const outcome = await settle(cutting.registry.get({ segment: 's' }));
+        expect((outcome as { error?: unknown }).error).toBeInstanceOf(TransientError);
+      } finally {
+        cutting.client.destroy();
+      }
+    }
   });
 
   it('a fast registry read is unaffected', async () => {

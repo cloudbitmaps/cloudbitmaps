@@ -63,6 +63,9 @@ so, and so do the module headers in the code.
   unread, so each refusal kept its socket until the server gave up on it. The driver now destroys the body on every
   way out of the read that leaves it unread, which closes the connection, with or without `readTimeoutMs`. A test
   refuses three such rows against a stub endpoint and checks that no connection is left open.
+- **An S3 registry read whose body is cut off part-way is a `TransientError`.** It reached the caller as the
+  SDK's raw connection error, which the store's read retry does not repeat; the storage driver already mapped the
+  same fault.
 - **One transient read fault no longer fails a whole load or erasure.** A load's guard read of the current
   generation, and an erasure's reads (the generation it rewrites and each of its chunks, the read-back that verifies
   the generation it wrote, and any other generation that may still hold the id) went to the raw driver once, so a
