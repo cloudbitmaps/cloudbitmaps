@@ -57,4 +57,25 @@ describe('varint (LEB128 unsigned)', () => {
       IntegrityError,
     );
   });
+
+  it('decodes every width boundary of the u32 range exactly, never as a negative or fractional number', () => {
+    const edges = [
+      0, 1, 127, 128, 16_383, 16_384, 2_097_151, 2_097_152, 0x0fff_ffff, 0x1000_0000, 0x7fff_ffff,
+      0x8000_0000, 0xf000_0000, 0xffff_fffe, 0xffff_ffff,
+    ];
+    for (const v of edges) {
+      const out: number[] = [];
+      writeVarint(out, v);
+      const read = readVarint(Uint8Array.from(out), 0);
+      expect(read.value).toBe(v);
+      expect(read.next).toBe(out.length);
+    }
+  });
+
+  it('rejects a fifth byte that carries more than the last four bits', () => {
+    expect(() => readVarint(Uint8Array.of(0xff, 0xff, 0xff, 0xff, 0x10), 0)).toThrow(
+      IntegrityError,
+    );
+    expect(readVarint(Uint8Array.of(0xff, 0xff, 0xff, 0xff, 0x0f), 0).value).toBe(0xffff_ffff);
+  });
 });
