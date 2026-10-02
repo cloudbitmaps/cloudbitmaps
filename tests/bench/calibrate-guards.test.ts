@@ -479,8 +479,8 @@ describe('calibrate guards — what a real run is held to', () => {
         lists: calls.list ?? 0,
       };
     };
-    // Nothing racing: four reads, the check, one listing, the object and the one conditional write.
-    expect(await load(0)).toEqual({ reads: 4, checks: 1, writes: 1, objects: 1, lists: 1 });
+    // Nothing racing: five reads, the check, one listing, the object and the one conditional write.
+    expect(await load(0)).toEqual({ reads: 5, checks: 1, writes: 1, objects: 1, lists: 1 });
     const p = guards.projectOps({
       loads: 1,
       reads: 0,
@@ -2082,7 +2082,8 @@ describe('what a load requests: store.load()', () => {
       };
     };
     // A segment's first load: the object and the pointer written once each, one check that its generation number is
-    // free (the one tail read, of zero bytes; a HeadObject on S3), one listing to collect, and four pointer reads.
+    // free (the one tail read, of zero bytes; a HeadObject on S3), one listing to collect, and five pointer reads, one
+    // of them after its ids, since it found no row.
     const first = await load([1, 2, 3]);
     expect(first).toEqual({
       putImmutable: 1,
@@ -2090,7 +2091,7 @@ describe('what a load requests: store.load()', () => {
       getTail: 1,
       getRange: 0,
       delete: 0,
-      pointerReads: 4,
+      pointerReads: 5,
       pointerWrites: 1,
     });
     // A reload also opens the current generation's index, to count what the load would replace.

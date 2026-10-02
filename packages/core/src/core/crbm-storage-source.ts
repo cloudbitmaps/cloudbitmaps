@@ -1054,6 +1054,26 @@ export async function writeCrbmGenerationStream(
 }
 
 /**
+ * Refuses, with {@link KeyUnavailableError}, to point a row that carries key material at a generation written in
+ * cleartext. The writer decided its key from the row it read before the write; another writer that created the
+ * segment encrypted meanwhile leaves this one holding a cleartext object that no reader of the segment can open.
+ */
+function refuseCleartextOntoKey(
+  key: GenKey,
+  record: RegistryRecord,
+  cleartext: boolean | undefined,
+): void {
+  if (cleartext !== true || record.wrappedDeks === undefined || record.wrappedDeks.length === 0) {
+    return;
+  }
+  throw new KeyUnavailableError(
+    `segment "${key.segment}" is encrypted, and generation ${key.generation} was written in cleartext: another ` +
+      `writer created the segment with a key while this one was writing. Nothing was published. Re-run the ` +
+      `write with the keystore that holds the segment's key.`,
+  );
+}
+
+/**
  * Point a segment's registry `currentGen` at `key.generation` — the publish step that makes a freshly-written
  * generation the authoritative latest (so registry-aware readers see it). **Forward-only and idempotent:**
  * if the registry has no row it creates one; if it's already at/ahead of `key.generation` it's a no-op (an
@@ -1120,6 +1140,14 @@ export async function publishGeneration(
      * idempotent "already current" answer writes nothing, so a reused row never gives it.
      */
     row?: RegistryRecord | null;
+    /**
+     * The object was written without encryption. Its publish is refused, with {@link KeyUnavailableError}, onto a row
+     * that carries key material: a reader of that segment opens every generation with its key, and a later
+     * `destroySegment` would attest that shredding it made a readable object unreadable. A caller decides its key
+     * from the row it read before the write, so this closes the window in which another writer creates the
+     * segment encrypted meanwhile.
+     */
+    cleartext?: boolean;
   } = {},
 ): Promise<boolean> {
   for (let attempt = 0; attempt < 5; attempt++) {
@@ -1175,6 +1203,7 @@ export async function publishGeneration(
         // field by *mentioning* it (`'wrappedDeks' in patch`), so passing `wrappedDeks: undefined` unconditionally
         // would wipe key material off the row whenever a cleartext generation is published onto it — a divergence
         // from the branch below, which never touches the field.
+        refuseCleartextOntoKey(key, record, options.cleartext);
         await registry.compareAndSwap(key, record.token, {
           currentGen: key.generation,
           ...(options.wrappedDeks === undefined ? {} : { wrappedDeks: options.wrappedDeks }),
@@ -1201,10 +1230,13 @@ export async function publishGeneration(
         if (options.wrappedDeks !== undefined && options.wrappedDeks.length > 0) {
           throw new ValidationError(
             `publishGeneration: refusing to publish generation ${key.generation} of "${key.segment}" with new ` +
-              `key material onto a segment that already has generation ${record.currentGen} — its existing ` +
-              `generations are not encrypted under this key. Encrypt a new segment and load into that instead.`,
+              `key material onto a segment that already has generation ${record.currentGen}: its generations ` +
+              `are not encrypted under this key, and nothing was published. If another writer published to the ` +
+              `segment while this one was writing, re-run the write, which then uses the segment's own key; ` +
+              `if the segment's generations are cleartext, encrypt a new segment and load into that instead.`,
           );
         }
+        refuseCleartextOntoKey(key, record, options.cleartext);
         await registry.compareAndSwap(key, record.token, { currentGen: key.generation });
       }
       return true; // created or advanced the pointer to key.generation → it is now current
@@ -1244,6 +1276,8 @@ export interface BulkLoadResult {
    * unreadable: the bytes are encrypted with a key nothing recorded.
    */
   readonly wrappedDeks?: readonly WrappedDek[];
+  /** Whether the object was written encrypted: under the segment's key, or under one this call minted. */
+  readonly encrypted: boolean;
   /** Total distinct ids in the generation (post-dedup). */
   readonly cardinality: number;
   /**
@@ -1317,10 +1351,12 @@ export async function bulkLoadCrbmGeneration(
     publish?: boolean;
     /**
      * The segment's row as the caller already read it (`null`: it found none), for a caller that defers the
-     * publish (`publish: false`) and fences it on that same row. The load then decides from it, refusing a
-     * `destroyed` segment and reusing its DEK, rather than reading the row again. A row that changes in between
-     * (a publish, a drop, a purge and re-create) makes the fenced publish lose, so the object is never published
-     * on the strength of the stale read.
+     * publish (`publish: false`) and fences it on that same row. A present cleartext row is then used as read,
+     * rather than read again: a row that changes in between (a publish, a drop, a purge and re-create) makes the
+     * fenced publish lose, so the object is never published on the strength of the stale read. A row read as
+     * absent, or one carrying key material, is read again after the ids, as with no row passed: a first load must
+     * see a row another writer created meanwhile, and an encrypted segment's key is unwrapped only from a row read
+     * after the ids, so a segment shredded while they streamed is refused before its key is used.
      */
     row?: RegistryRecord | null;
   } = {},
@@ -1423,12 +1459,15 @@ export async function bulkLoadCrbmGeneration(
   if (options.keystore !== undefined && options.registry === undefined) {
     throw new ValidationError('an encrypted load requires a registry to store the wrapped DEK');
   }
-  // Read the segment's record once (when a registry is wired, unless the caller passed the one it read): to refuse
-  // writing to a crypto-shredded segment (which would create unreadable/unreachable bytes), and to reuse its DEK if
-  // it's encrypted.
+  // Read the segment's record once (when a registry is wired): to refuse writing to a crypto-shredded segment (which
+  // would create unreadable/unreachable bytes), and to reuse its DEK if it's encrypted. A present cleartext row the
+  // caller already read is used as read (see `row`).
+  const passed = options.row;
   const existing =
-    options.row !== undefined
-      ? options.row
+    passed !== undefined &&
+    passed !== null &&
+    (passed.wrappedDeks === undefined || passed.wrappedDeks.length === 0)
+      ? passed
       : options.registry !== undefined
         ? await options.registry.get(key)
         : null;
@@ -1498,6 +1537,7 @@ export async function bulkLoadCrbmGeneration(
   if (options.registry !== undefined && options.publish !== false) {
     const becameCurrent = await publishGeneration(options.registry, key, {
       wrappedDeks: newWrapped,
+      cleartext: crypto === undefined,
     });
     // Audit the publish only when this generation actually *became* the current one — not when a
     // forward-only publish no-oped because a newer generation was already current (the event's contract is
@@ -1517,9 +1557,17 @@ export async function bulkLoadCrbmGeneration(
       cardinality,
       becameCurrent,
       wrappedDeks: newWrapped,
+      encrypted: crypto !== undefined,
     };
   }
-  return { size, sha256, chunkCount: chunks.length, cardinality, wrappedDeks: newWrapped };
+  return {
+    size,
+    sha256,
+    chunkCount: chunks.length,
+    cardinality,
+    wrappedDeks: newWrapped,
+    encrypted: crypto !== undefined,
+  };
 }
 
 /**

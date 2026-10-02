@@ -114,8 +114,8 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   P + 2), plus what `store.load()` adds: the collection pass's listing and the pointer's write, PUT-class on S3, and
   seven GETs: five pointer reads, one read of the current index, and one check that the next generation number is
   free, a single request on every backend (a `HeadObject` on S3). That is a segment with two generations behind it,
-  and about $17.80 per million single-part loads at the default prices; a segment's first load makes two fewer GETs,
-  and its second one fewer. A segment whose index outgrows the tail read makes one more, a publish that loses a race
+  and about $17.80 per million single-part loads at the default prices; a segment's first two loads make one fewer GET
+  each. A segment whose index outgrows the tail read makes one more, a publish that loses a race
   to another writer reads the pointer again, and a load whose check finds the number taken (a crashed load's object,
   or the generations a rollback left above the pointer) lists the segment to number past it, one more PUT-class
   request. Loads are cheap by construction: a thousand 100-part loads a month is about $0.52.

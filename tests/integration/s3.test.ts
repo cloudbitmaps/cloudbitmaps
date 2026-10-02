@@ -323,13 +323,14 @@ describe('S3 (MinIO): the requests one store.load() sends', () => {
       expect((await store.load({ namespace: 'ns', segment: 's' }, ids)).published).toBe(true);
       return { put: tally.put, get: tally.get, byCommand: { ...tally.byCommand } };
     };
-    // The object and the row (2 PutObject) and the collection's listing are PUT-class; the row read, the check,
-    // the collection's two pointer reads and the CAS's version read are GET-class.
+    // The object and the row (2 PutObject) and the collection's listing are PUT-class; the row read, its second read
+    // after the ids (a first load found no row), the check, the collection's two pointer reads and the create's
+    // read are GET-class.
     expect(await load([1, 2, 3])).toEqual({
       put: 3,
-      get: 5,
+      get: 6,
       byCommand: {
-        GetObjectCommand: 4,
+        GetObjectCommand: 5,
         HeadObjectCommand: 1,
         PutObjectCommand: 2,
         ListObjectsV2Command: 1,

@@ -59,13 +59,13 @@ const {
  * drivers and the real registry protocol. A run whose load stage timed `store.load()` records each load's own
  * requests, and its loads are priced from those; this table is what a reload and a load that collects cost, which a
  * run that loads each segment once does not measure. PUT-class: the object, the collection pass's listing and the
- * pointer. GETs: on a segment's first load, four pointer reads and one check that the generation number is free (a
- * HeadObject); a reload also reads the current generation's index; from the third load on, the collection pass
- * re-reads the pointer before its delete. The test asserts these numbers, so the prices below cannot drift from
+ * pointer. GETs: on a segment's first load, five pointer reads (it found no row, so it reads it again after its ids)
+ * and one check that the generation number is free (a HeadObject); a reload reads the row once fewer and the
+ * current generation's index; from the third load on, the collection pass re-reads the pointer before its delete. The test asserts these numbers, so the prices below cannot drift from
  * what runs.
  */
 const STORE_LOAD_REQUESTS = Object.freeze({
-  first: Object.freeze({ put: 3, get: 5 }),
+  first: Object.freeze({ put: 3, get: 6 }),
   reload: Object.freeze({ put: 3, get: 6 }),
   collecting: Object.freeze({ put: 3, get: 7 }),
 });
@@ -351,8 +351,8 @@ function derive(run, src) {
       "its loads' own requests do not add up to its load stage's",
     );
     check(
-      loadRecords.every((l) => l.put === (l.kind === 'single' ? 3 : 4 + l.parts) && l.get >= 5),
-      "a load's requests are not an object, a listing and a pointer write, and at least four pointer reads and a check",
+      loadRecords.every((l) => l.put === (l.kind === 'single' ? 3 : 4 + l.parts) && l.get >= 6),
+      "a load's requests are not an object, a listing and a pointer write, and at least five pointer reads and a check",
     );
     // Every stage's requests, with its setup's, and what is left is the bucket's: the probe, the round-trip samples,
     // its creation and teardown's listings. Nothing a stage did is missing, and nothing else is in the bill.

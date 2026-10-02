@@ -215,7 +215,7 @@ export interface Workload {
    * object sizes. The model adds what `store.load()` does around the write: the collection pass's listing and the
    * pointer's write, PUT-class on S3, and seven GETs: the pointer read five times, the current generation's index
    * once, and one check that the next generation number is free. That is a segment with two generations behind it;
-   * its first load makes two fewer GETs, and its second one fewer. On S3 at the default prices a single-part
+   * its first two loads make one fewer GET each. On S3 at the default prices a single-part
    * `store.load()` is then about $17.80 per million. A segment whose index outgrows the tail read makes one more
    * GET, a publish that loses a race to another writer reads the pointer again, and a load whose check finds the
    * number taken (a crashed load's object, or the generations a rollback left above the pointer) lists the
@@ -338,7 +338,7 @@ const GIB = 1024 ** 3;
  * requests; one tail read of the current generation's index, `requestsPerSizedRead`; and one check that the next
  * generation number is free, a single metadata request on every backend (S3's `HeadObject`, GCS's object
  * metadata, Azure Blob's properties), so neither field applies to it. `tests/core/cost.test.ts` holds these to the
- * engine, and counts a segment's first load at five reads and its second at six.
+ * engine, and counts a segment's first two loads at six reads each.
  */
 const STORE_LOAD_PUT_CLASS = 2;
 const STORE_LOAD_POINTER_READS = 5;

@@ -960,8 +960,8 @@ export class CloudRoaring {
       // materialisation that silently did not take effect is the one outcome a caller cannot detect on its
       // own.
       // `size > 0` distinguishes the two ways a materialisation loses the race, and the operator needs them
-      // apart: the object either exists as an orphan above the pointer (collected by the first load that collects
-      // once a generation above it is current) or was
+      // apart: the object either exists as an orphan (collected by the first load that collects once a generation
+      // above it is current, or deleted by the refusal itself when the destination was dropped meanwhile) or was
       // never written at all, because the write-once PUT itself collided. Telling someone to look for an
       // orphan that does not exist is a wasted investigation.
       // Deliberately does NOT assert which of the four causes it was. "A newer generation was published first"
@@ -976,7 +976,7 @@ export class CloudRoaring {
       throw new WriteConflictError(
         `${op}: the destination "${dest.segment}" changed while this materialisation was in flight, so it ` +
           `never became current: ${wrote}. The pointer may have moved, the row may have been rewritten ` +
-          `(a retention policy does this) or purged. Re-read the destination and re-run.`,
+          `(a retention policy does this), dropped or purged. Re-read the destination and re-run.`,
       );
     }
     return {

@@ -227,11 +227,12 @@ export async function loadSegment(
   }
   const audit = safeAudit(options.audit ?? NOOP_AUDIT);
 
-  // One row read, and the only one before the publish: the guard's "before", the incarnation this call is acting
-  // on, the pointer it derived its decision from, the number it takes next, the write's destroyed check and DEK,
-  // and the publish's first attempt all come from it. Reusing it is sound because the publish is fenced on this
-  // row (its token, the pointer the guard judged, or its absence), so a row that changes before then makes the
-  // publish lose rather than land on the strength of a stale read.
+  // One row read, and on a cleartext segment the only one before the publish: the guard's "before", the incarnation
+  // this call is acting on, the pointer it derived its decision from, the number it takes next, the write's
+  // destroyed check, and the publish's first attempt all come from it. Reusing it is sound because the publish is
+  // fenced on this row (its token, the pointer the guard judged, or its absence), so a row that changes before then
+  // makes the publish lose rather than land on the strength of a stale read. The write reads the row again after
+  // the ids when this read found none, or found key material (see `bulkLoadCrbmGeneration`'s `row`).
   const row = await deps.registry.get(ref);
   const fromToken: Token | undefined = row?.token;
   const fromGeneration = row?.currentGen ?? undefined;
@@ -298,8 +299,14 @@ export async function loadSegment(
     // put an active row over a missing generation — the forbidden `missing-storage-generation` state, produced by
     // the one code path whose whole purpose is to prevent data loss. Leaving an orphan behind is strictly the
     // better failure: it costs storage until something collects it, rather than costing a live segment.
+    //
+    // A `destroyed` row is the other case it deletes on: no reader resolves a generation of it, so every one is
+    // garbage, this one too, and the refusal is definite (the fenced publish said no), so the delete never races a
+    // write still in flight. Left, it would outlive a drop that landed while this load was consuming its ids.
     const now = await deps.registry.get(ref);
-    if (now === null || now.token === fromToken) await deps.storage.delete(key);
+    if (now === null || now.token === fromToken || now.status === 'destroyed') {
+      await deps.storage.delete(key);
+    }
     audit.onEvent({
       kind: 'segment.load-refused',
       segment: ref.segment,
@@ -349,6 +356,7 @@ export async function loadSegment(
   const published = await publishGeneration(deps.registry, key, {
     row,
     wrappedDeks: written.wrappedDeks,
+    cleartext: !written.encrypted,
     ...(fromToken === undefined ? {} : { expectToken: fromToken }),
     ...(needsBefore && fromGeneration !== undefined ? { expectFrom: fromGeneration } : {}),
     // The third case, and the one the two fences above structurally cannot cover: the guard judged a segment

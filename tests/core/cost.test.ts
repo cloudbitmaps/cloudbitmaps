@@ -1459,8 +1459,9 @@ describe('the estimator counts the requests the engine makes', () => {
     const model = decode(price(workload).loads);
     expect(model).toEqual(third.bill);
     expect(fourth).toEqual(third); // the steady state: every load from the third on
-    // The first two loads make two and one fewer reads, and the same PUT-class requests.
-    expect(first.bill).toEqual({ put: model.put, get: model.get - 2 });
+    // The first two loads make one fewer read each, and the same PUT-class requests: the first reads its row again
+    // after its ids, having found none, and the second has no generation to collect yet.
+    expect(first.bill).toEqual({ put: model.put, get: model.get - 1 });
     expect(second.bill).toEqual({ put: model.put, get: model.get - 1 });
     // Five pointer reads and one tail read, each charged at its own field, and one check, charged as one request
     // under either; the number is checked, never listed for, so the one listing is the collection pass's.
