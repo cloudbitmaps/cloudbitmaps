@@ -353,7 +353,7 @@ function redact(text) {
  *
  * The WORKLOAD's client makes one. The projection has no term for its retries, and a retry's backoff would sit
  * inside a latency sample unseen — so a timed sample that meets a transient fault is discarded whole and run again
- * on a fresh store instead, a bounded number of times a run, and a load that meets one fails the run
+ * from the start instead, a bounded number of times a run, and a load that meets one fails the run
  * (`calibrate-samples.cjs`). TEARDOWN's keeps the SDK's usual three: with one attempt, a single 503 on
  * `ListObjectVersions` would leave the bucket, and everything in it, behind. The projection allows for every one of
  * teardown's attempts.

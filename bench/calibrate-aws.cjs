@@ -914,8 +914,9 @@ async function main() {
   };
 
   // Every timed sample runs through this ledger: one that meets a transient fault is discarded whole, its requests
-  // recorded beside its stage, and run again on a fresh store, at most DISCARDS_PER_RUN times a run and
-  // DISCARDS_PER_STAGE a stage (`calibrate-samples.cjs`). A cleanup times nothing, and returned above.
+  // recorded beside its stage, and run again from the start (on a fresh store, or a point read on its store put back
+  // in the state it assumes: RUN_AGAIN), for at most DISCARDS_PER_RUN samples a run and DISCARDS_PER_STAGE a stage
+  // (`calibrate-samples.cjs`). A cleanup times nothing, and returned above.
   const discards = discardLedger({
     isTransient: (err) => transientFault(err, sdkFaults),
     snap,

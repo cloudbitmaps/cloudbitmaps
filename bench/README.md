@@ -110,10 +110,10 @@ overlaps, so what it costs scales with the include operand and not with the size
 
 The workload's client makes one attempt per request and every timed store has its own retry off, so no retry's backoff
 can sit inside a latency sample and every count stays exact. On its own, that would let one transient fault anywhere
-in a run's ~94,600 requests fail the whole run, and a partial run is not evidence: at one fault in about 86,300
-requests, a full run would finish about a third of the time. So a
-**sample** that fails with a transient fault is **discarded**, never retried inside
-([`lib/calibrate-samples.cjs`](lib/calibrate-samples.cjs)):
+in a run's requests (up to ~94,600 GET-class and 364 PUT-class at the default workload) fail the whole run, and a
+partial run is not evidence. One in-region run failed on a single transient connection fault after about 86,300
+requests; at that rate a run of this size would finish about a third of the time. So a **sample** that fails with a
+transient fault is **discarded**, never retried inside ([`lib/calibrate-samples.cjs`](lib/calibrate-samples.cjs)):
 
 - **What a sample is.** One cold intersect (in `intersect`, `spread` and `sweep`), the warm stage's priming pass, one
   cold point read (`count()` as a first read, `has()` on an open segment, `has()` as a first read), and one `andNot`
@@ -124,12 +124,16 @@ requests, a full run would finish about a third of the time. So a
   about half a percent of a run's requests.
 - **What counts as transient.** The library's `TransientError`, which the S3 driver raises for a throttle, a 5xx or a
   dropped or timed-out connection, or anything the installed SDK's own retry would have retried (its
-  `isThrottlingError`, `isTransientError` and `isServerError`), anywhere in the error's causes. Never a wrong answer, a
-  403, a 404, an integrity failure, or the interrupt gate refusing a send.
-- **Discarded whole, then run again on a fresh store.** The failed attempt is abandoned. Its other requests still
+  `isThrottlingError`, `isTransientError` and `isServerError`), anywhere in the error's causes. That takes in every
+  5xx, 501 included, and a 403 refusing a skewed clock that the SDK has corrected, both of which the SDK retries
+  itself. Never a wrong answer, another 403, a 404, an integrity failure, or the interrupt gate refusing a send.
+- **Discarded whole, then run again from the start.** The failed attempt is abandoned. Its other requests still
   answer, since a cold intersect keeps its window of chunk reads in flight, so the harness waits until nothing is in
   flight and nothing new has been sent for a second, and counts all of it against the discard; a request still
-  unanswered after 30 s fails the run. The sample then runs from the start: a cold intersect, a first read, an
+  unanswered after 30 s fails the run. The wait watches a request until its headers arrive, not its body, so a body
+  that stalls past the second lets the failed sample's next reads land in the sample run again; that sample then
+  misses its expected count, and the run is refused as evidence rather than publishing a wrong figure. The sample then
+  runs from the start, from a state the failed attempt left nothing cached in: a cold intersect, a first read, an
   `andNot` call and the priming pass on a store of their own, a first `count()` on its store after telling the store to
   forget that segment, and a `has()` on an open segment on the same store, which the failed chunk read left with the
   segment open and nothing cached. A test holds each re-run to the requests of the read it replaced.
@@ -146,14 +150,18 @@ requests, a full run would finish about a third of the time. So a
   its bounds, and a stage a failure cut short under `discards.unfinished`. The run's `error` records a fault the same
   way: the SDK's HTTP handler gives a request error whose code is `ECONNRESET`, `EPIPE` or `ETIMEDOUT` one name, its
   timeout error's, and the code kept under the rename is what says which it was.
-- **And the figures.** `lib/calibration-figures.cjs` treats a run with discards within its bounds as evidence. Every
-  figure comes from the samples each stage kept, held to its expected count exactly, and the run's report has to state
-  how many it discarded (`N discarded samples`) beside them. A run that met more faults than the bounds allow did not
-  finish, and is refused like any partial run.
+- **And the figures.** `lib/calibration-figures.cjs` treats a run with discards within the harness's bounds as
+  evidence. Every latency and request-count figure comes from the samples each stage kept, held to its expected count
+  exactly; the bill counts the discarded samples too, since they were billed. The run's report has to state how many
+  it discarded (`N discarded samples`), and the count it states is held to the evidence. A run that met more faults
+  than the bounds allow did not finish, and is refused like any partial run.
 
 A rehearsal can show it: `CR_CALIBRATE_FAULT_GETS=1200,40000 pnpm calibrate:aws --rehearse` fails the 1,200th and the
-40,000th GetObject the workload's client sends, once each, as a reset socket fails one. The harness refuses the variable
-in every other mode, and the rehearsal's file names the requests it failed under `injectedFaults`.
+40,000th GetObject the workload's client sends, once each, as a reset socket fails one, and `1200:denied` fails it as a
+403 instead, which is not transient and fails the run. The harness refuses the variable in every other mode, and the
+rehearsal's file lists each request it failed, and how, under `injectedFaults`. The integration lane runs the
+harness through such a rehearsal on a small workload (`tests/integration/calibrate-rehearsal.test.ts`), so it needs
+the packages built.
 
 ### It spends money, so it is hard to run by accident
 
