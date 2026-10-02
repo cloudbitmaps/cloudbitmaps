@@ -4,7 +4,10 @@ import { fileURLToPath } from 'node:url';
 import roaring from 'roaring';
 import { CloudRoaring, MemoryStorage } from '@/index';
 import type { CloudRoaringOptions, LoadInput, LoadResult, PortableBitmap } from '@/index';
-import { openGenerationReader } from '@/core/crbm-storage-source';
+import { bulkLoadCrbmGeneration, openGenerationReader } from '@/core/crbm-storage-source';
+import { prepareLoadInput } from '@/core/load-input';
+import type { DecodedLoadInput } from '@/core/load-input';
+import { MemoryStorageDriver } from '@/drivers/memory';
 import { aadFor } from '@/core/crypto';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { SafeBitmap, roaringCodec } from '@/roaring-codec';
@@ -242,5 +245,119 @@ describe('the facade: { bitmap } is typed by shape, and a bare RoaringBitmap32 t
     }
     const { bytes } = await loadAndRead(new Elsewhere(IDS));
     expect(Buffer.from(bytes).equals(Buffer.from(GOLDEN))).toBe(true);
+  });
+});
+
+describe('run containers of every size, and the run cookie at 40,000 and 65,536 containers', () => {
+  /** `runs` runs of three values in one chunk, one value apart: a run container up to 2,047 runs, a bitset past. */
+  function chunkOfRuns(chunk: number, runs: number): InstanceType<typeof RoaringBitmap32> {
+    const b = new RoaringBitmap32();
+    for (let r = 0; r < runs; r++) b.addRange(at(chunk, 4 * r), at(chunk, 4 * r + 3));
+    return b;
+  }
+  /** One id in each of `containers` chunks, and a run in chunk 0, so the bitmap carries the run cookie. */
+  function manyContainers(containers: number): InstanceType<typeof RoaringBitmap32> {
+    const b = new RoaringBitmap32(
+      Array.from({ length: containers - 1 }, (_, i) => at(i + 1, i % 65_536)),
+    );
+    b.addRange(at(0, 10), at(0, 500));
+    return b;
+  }
+
+  it.each<[string, () => InstanceType<typeof RoaringBitmap32>, string]>([
+    ['2 runs', () => chunkOfRuns(3, 2), 'run'],
+    ['3 runs', () => chunkOfRuns(3, 3), 'run'],
+    ['300 runs, a run count past one byte', () => chunkOfRuns(3, 300), 'run'],
+    ['2,047 runs, the largest run container', () => chunkOfRuns(3, 2_047), 'run'],
+    ['2,048 runs, where the bitset is smaller', () => chunkOfRuns(3, 2_048), 'bitset'],
+    ['40,000 containers under the run cookie', () => manyContainers(40_000), 'run'],
+    ['65,536 containers under the run cookie', () => manyContainers(65_536), 'run'],
+  ])('%s: every input writes the id load', async (_, build, kind) => {
+    const shape = build();
+    shape.runOptimize();
+    const stats = shape.statistics();
+    expect(kind === 'run' ? stats.runContainers : stats.bitsetContainers).toBeGreaterThanOrEqual(1);
+    const byIds = await loadAndRead(shape.toArray());
+    for (const input of [
+      { bitmap: build() },
+      { serialized: build().serialize('portable') },
+      { serialized: shape.serialize('portable') },
+    ] as LoadInput[]) {
+      const other = await loadAndRead(input);
+      expect(other.result).toEqual(byIds.result);
+      expect(Buffer.from(other.bytes).equals(Buffer.from(byIds.bytes))).toBe(true);
+    }
+  });
+});
+
+describe('store.load serializes a { bitmap } at the call, before anything is awaited', () => {
+  it.each<[string, (b: InstanceType<typeof RoaringBitmap32>) => LoadInput]>([
+    ['{ bitmap }', (b) => ({ bitmap: b })],
+    ['a bare RoaringBitmap32', (b) => b],
+  ])('%s changed right after the call is loaded as it was', async (_, as) => {
+    const backend = new MemoryStorage();
+    const store = new CloudRoaring({ storage: backend, cache: { genTtlMs: 0 } });
+    const bitmap = new RoaringBitmap32([1, 2, 3]);
+    const pending = store.load(SEG, as(bitmap)); // not awaited
+    bitmap.add(4);
+    bitmap.remove(1);
+    expect(await pending).toMatchObject({ published: true, cardinality: 3 });
+    const ids: number[] = [];
+    for await (const id of store.segment(SEG.segment).iterate()) ids.push(id);
+    expect(ids).toEqual([1, 2, 3]);
+  });
+});
+
+describe('a bitmap load reports the fingerprint of the object it wrote', () => {
+  it.each<[string, LoadInput]>([
+    ['{ serialized }', { serialized: fromRanges().serialize('portable') }],
+    ['{ bitmap }', { bitmap: fromRanges() }],
+  ])('%s', async (_, input) => {
+    // A refused load deletes its object only once the footer proves it its own, by this fingerprint.
+    const storage = new MemoryStorageDriver();
+    const key = { ...SEG, generation: 0 };
+    const decoded = prepareLoadInput(input, roaringCodec) as DecodedLoadInput;
+    const written = await bulkLoadCrbmGeneration(storage, key, decoded, { codec: roaringCodec });
+    const reader = await openGenerationReader(storage, key, undefined);
+    expect(written.fingerprint).toBe(reader.fingerprint);
+  });
+
+  it('and a refused { serialized } load deletes that object', async () => {
+    const backend = new MemoryStorage();
+    const store = new CloudRoaring({ storage: backend });
+    await store.load(SEG, [1, 2, 3, 4]);
+    const refused = await store.load(
+      SEG,
+      { serialized: new RoaringBitmap32([1]).serialize('portable') },
+      { guard: { minCardinality: 2 } },
+    );
+    expect(refused).toMatchObject({ published: false, reason: 'min-cardinality', generation: 1 });
+    const left: number[] = [];
+    for await (const k of backend.storage.list(SEG)) left.push(k.generation);
+    expect(left).toEqual([0]);
+  });
+});
+
+describe('an erasure that leaves a tie writes what a load of the erased set writes', () => {
+  it('the rewrite of a run chunk down to a tie stores the array, byte for byte as a fresh load', async () => {
+    // {0,1,2,3,10,11} is two runs, stored as a run container; erasing 3 leaves {0,1,2,10,11}, five values in two
+    // runs: a tie, which the canonical encoding stores as the array a load from ids writes.
+    const erased = [0, 1, 2, 10, 11, at(7, 5), at(7, 6), at(7, 7)];
+    const a = new MemoryStorage();
+    const storeA = new CloudRoaring({ storage: a });
+    await storeA.load(SEG, [...erased, 3]);
+    const res = await storeA.eraseSubject(3, { allNamespaces: true });
+    expect(res.erasedFrom).toHaveLength(1);
+    const b = new MemoryStorage();
+    const storeB = new CloudRoaring({ storage: b });
+    await storeB.load(SEG, [99]);
+    await storeB.load(SEG, erased);
+    const rowA = await a.registry.get(SEG);
+    const rowB = await b.registry.get(SEG);
+    expect(rowA?.currentGen).toBe(rowB?.currentGen);
+    const g = rowA!.currentGen!;
+    const bytesA = (await a.storage.getTail({ ...SEG, generation: g }, 1 << 30)).bytes;
+    const bytesB = (await b.storage.getTail({ ...SEG, generation: g }, 1 << 30)).bytes;
+    expect(Buffer.from(bytesA).equals(Buffer.from(bytesB))).toBe(true);
   });
 });
