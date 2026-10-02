@@ -182,10 +182,29 @@ change generations needs a pin, not a window wide enough to hope with. See
 `keep` is a non-negative integer: a negative, fractional, `NaN` or infinite value is refused with `ValidationError`
 before anything is written. It never touches the current generation or anything above it.
 
+**How `store.load` collects.** With the default `keep` of 1, or 0, a load that found nothing above its pointer deletes
+**by name** the one generation its publish pushed out of the window, which is its own generation number minus `keep`
+and one, after re-reading the row, and lists nothing. A segment that loads cleanly therefore pays one delete and one
+pointer read for collection, not a listing. A load lists the segment's objects instead, and collects everything below
+its pointer beyond `keep`, in three cases:
+
+- every 16th generation, so what the by-name loads leave behind is gone within 16 generations: the generations an
+  earlier, wider `keep` held, an object a refused load left below the pointer, a generation a rollback or an erasure
+  stranded;
+- when the load's check of its generation number met an object, which is a crashed load's or what a rollback left
+  above the pointer;
+- whenever `keep` is 2 or more. A window of 2 or more counts the generations that are in the bucket, and a name cannot
+  know which they are: a load that was refused leaves a gap, and deleting `keep` and one below the new generation by
+  name would take a generation the window promised to keep.
+
+`LoadResult.collected` then names the generation it deleted by name, and that generation may have been gone already: a
+delete of an absent object succeeds on every backend and does not say it found nothing. A list is not a receipt, and
+neither is this one. An `*Into` always lists when it is given a `keep`.
+
 | Path | Collects? |
 |---|---|
-| `store.load` | **It does.** Collection is part of the call, keeping `keep` generations (default 1). |
-| an `*Into` | **You do.** Pass `keep` to collect on the way through. Without it nothing is collected, and the next `store.load` of the destination collects everything below its own pointer beyond its `keep`. This is the step `store.load` exists to stop you forgetting. |
+| `store.load` | **It does.** Collection is part of the call, keeping `keep` generations (default 1): by name for a `keep` of 0 or 1, by listing otherwise and on every 16th generation. |
+| an `*Into` | **You do.** Pass `keep` to collect on the way through: it lists the destination and deletes every generation below the new one beyond `keep`, however many earlier `*Into` calls kept. Without it nothing is collected, and the next `store.load` of the destination deletes the one generation its own publish pushes out of the window by name, and the rest at the destination's next 16th generation. This is the step `store.load` exists to stop you forgetting. |
 | `eraseSubject` | **Yes**, with `keep: 0`: the generation holding the bit must not survive the call. A holder above the pointer, which a `rollback` leaves there, is outside collection's range, so the erasure deletes it itself. |
 | `retireExpired` | **Yes**, for the tombstones it wrote itself, and only with `purgeTombstones` (on by default) and after the grace period. It collects a straggler generation before purging the row. A tombstone a hand-run `dropSegment` or a crypto-shred left is never touched. |
 | `dropSegment` | Deletes every generation of the segment it drops, and reports any it could not in `generationsRemaining`. |
@@ -356,7 +375,8 @@ that was never current. So does a refused load that finds another write has chan
 its generation number may name a re-created segment's object. Once a generation above the orphan is current, the orphan
 is one more generation below the pointer, which collection counts within `keep` like any other. So under the default
 `keep: 1` the load that lands above it keeps the orphan and collects the generation readers were on, and the next load
-collects the orphan. There is no half-loaded state a reader can observe: a read resolves one generation and reads
+collects the orphan. A load that collects by name takes an orphan only when it is the one generation its publish pushes
+out of the window, so one stranded elsewhere below the pointer waits for the next listing, at most 16 generations on. There is no half-loaded state a reader can observe: a read resolves one generation and reads
 whole, checksum-verified chunks from it.
 
 **A miss is a re-read, not a failure.** If the generation an unpinned read is on is swept, the storage driver throws
@@ -375,11 +395,19 @@ store with no timed refresh (no registry, `cache: { genTtlMs: 0 }`, or a pre-bui
 snapshot lasts until an eviction, a read that finds its generation swept, or an invalidation moves it on, however long
 that takes. There no finite `keep` covers it, and the re-read above is the mechanism that keeps it correct.
 
-**What collection does, precisely.** It deletes generations strictly below `currentGen`, keeping the most recent `keep`
-of them, so a read still fetching from the just-superseded generation need not re-resolve mid-call. It deletes nothing
-while `currentGen` is `null`, because an object under a pointer-less row is either a load about to publish or an
-orphan, and the two cannot be told apart safely. The one exception: on a `destroyed` segment (a drop or crypto-shred
-tombstone) every generation is garbage and all are collected, because no reader can resolve a tombstoned segment.
+**What collection does, precisely.** A listing pass deletes generations strictly below `currentGen`, keeping the most
+recent `keep` of them, so a read still fetching from the just-superseded generation need not re-resolve mid-call. It
+deletes nothing while `currentGen` is `null`, because an object under a pointer-less row is either a load about to
+publish or an orphan, and the two cannot be told apart safely. The one exception: on a `destroyed` segment (a drop or
+crypto-shred tombstone) every generation is garbage and all are collected, because no reader can resolve a tombstoned
+segment.
+
+A by-name pass takes one generation, the one the load's publish pushed out of the window, and is bound by the same
+rules. It re-reads the row before it deletes. It refuses with `WriteConflictError` when the row is gone, or when the
+pointer has fallen below the generation the load published, which a rollback does, or a name purged and re-created that
+has not yet loaded as far. A publish landing meanwhile moves the pointer up and changes nothing. The generation it
+deletes is always below the one it published, so it never touches the current generation, and with a `keep` of 0 or 1
+it is one a listing pass would also take, or leave to a later pass: never one the listing would keep.
 
 A segment can be purged and re-created while a paginated listing is in flight, so both branches re-read the registry
 row afterwards and reconcile with it:

@@ -71,10 +71,10 @@ difference can tear. The obvious case is a **registry that is ahead of the objec
 
 This is the exact failure `checkConsistency()` detects (issue `missing-storage-generation`). The reverse — storage
 restored to a *later* point than the registry — tears the same way. Storage generations are immutable, but they
-are not kept: a `load` collects, by default, the generations below its new pointer except
-the newest one (`keep: 1`), a subject erasure collects every one below its rewrite (`keep: 0`), and `dropSegment`
-deletes them all. Two loads after the registry's point are enough to delete the generation the restored registry
-names.
+are not kept: a `load` collects, by default, the generations below its new pointer except the newest one (`keep: 1`),
+taking the one its publish pushes out by name and the rest on every 16th generation; a subject erasure collects every
+one below its rewrite (`keep: 0`); and `dropSegment` deletes them all. Two loads after the registry's point are enough
+to delete the generation the restored registry names.
 
 ## The hard requirement: one restore point for both stores
 

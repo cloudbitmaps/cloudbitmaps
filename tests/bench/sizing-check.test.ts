@@ -170,8 +170,8 @@ describe('bench:sizing:check fails what it exists to catch', () => {
   });
 
   it('fails a generated figure edited by hand', () => {
-    expect(sizing).toContain('**$281**');
-    refused({ [SIZING]: sizing.replace('**$281**', '**$280**') }, /not what the shipped estimator/);
+    expect(sizing).toContain('**$280**');
+    refused({ [SIZING]: sizing.replace('**$280**', '**$281**') }, /not what the shipped estimator/);
   });
 
   it('fails a hand-edited figure in the README, and a hand-edited or missing chart', () => {

@@ -13,6 +13,13 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **`LoadDeps.collectByListing` makes `loadSegment` collect by listing whatever `keep` is.** Absent, a load that numbered
+  its generation with one existence check and keeps at most one generation deletes by name the one generation its
+  publish pushed out of the window (see Changed). Set, it lists the segment's objects after its publish instead and
+  deletes every generation below the new one beyond `keep`, as every load did. The `*Into` verbs set it, because their
+  `keep` is how an operator clears a destination that earlier materialisations kept in full. `store.load` does not
+  take it: its options are unchanged.
+
 - **`AzureBlobStorage` can time each read: `readTimeoutMs`, off unless set.** With it set, every read request the
   Azure Blob storage and registry drivers send, a range read, a tail read's properties and its ranged download, each
   on its own, and a registry row's read, has `readTimeoutMs` to finish, the response body included, or it is aborted
@@ -54,6 +61,43 @@ so, and so do the module headers in the code.
   with `ValidationError`, as `requestsPerSizedRead` is.
 
 ### Changed
+
+- **A steady `store.load()` sends 8 requests to S3 where the entry below counts 11: it deletes the generation its
+  publish pushed out of the window by name, and lists the segment only every 16th generation.** A load that numbered
+  its generation with one existence check, which found it free, and keeps at most one generation, the default
+  `keep: 1` or 0, deletes `generation - keep - 1` after re-reading the row, and lists nothing. It lists the segment, as
+  every load did, on every generation divisible by 16, whenever the check met an object above the pointer (a crashed
+  load's, or what a rollback left), and whenever `keep` is 2 or more. A window of 2 or more counts the generations
+  that are in the bucket, which a name cannot know: a refused load leaves a gap, and deleting by name would take a
+  generation the window promised to keep. What the name-only loads leave behind is collected by the listing within 16
+  generations: the generations an earlier, wider `keep` held, an object a refused load left below the pointer, a
+  generation a rollback or an erasure stranded. By name a load never takes a generation a listing would have kept: it
+  takes one a listing would also take, or leaves one to a later listing.
+
+  The safety rules are the listing pass's. The row is re-read before the delete. A row that is gone, or a pointer that
+  has fallen below the generation the load published (a rollback, or a name purged and re-created that has not loaded as
+  far), refuses with `WriteConflictError` and deletes nothing, and a publish landing meanwhile does not stop it. The
+  generation deleted is always below the one published, so the current generation is never touched.
+  `LoadResult.collected` names the generation deleted by name, which may have been gone already: a delete of an absent
+  object succeeds on every backend and says nothing, so the list is not a receipt, as a listing's is not either.
+
+  Two things to know. A destination that `*Into` calls fed with the default `keep`, which keeps every generation,
+  and that `store.load` then loads, no longer has everything below the load's pointer collected by that load: it
+  deletes one generation, and the rest go at the destination's next generation divisible by 16. An `*Into` given a
+  `keep` still lists the destination and clears every generation below the new one beyond it, however many earlier
+  calls kept.
+
+  Counts, measured on S3 (MinIO) and counted at the driver ports; those for GCS and Azure Blob are derived from their
+  drivers, which delete an absent object without failing as S3 does. A steady single-part load on S3 is now 2 PUT-class
+  requests (the object, the row), 5 GET-class (three row reads, the guard's tail read, the check) and a delete, where the
+  entry below counts 3, 7 and a delete; a segment's first load, and its second, are 2 and 4, where the entry below
+  counts 3 and 6, and have no delete; every 16th generation lists, and is 3 and 7. GCS makes the same counts; Azure
+  Blob one GET-class request more, for its two-request tail read. `costReport()` and `estimateCost()` price a load at
+  those counts, a sixteenth of a listing and two pointer reads a load on average: $12.36 per million steady
+  single-part loads at the default prices, where the entry below counts $17.80, and $11.60 for a segment's first load,
+  where it counts $17.40. The calibration harness expects a first load of 2 PUT-class and 4 GET-class requests and its
+  rehearsal fixtures are re-captured, and the pages that quote a load's price or its requests, the sizing tables and
+  the cost guide's model say what the estimator now gives.
 
 - **A steady `store.load()` sends 11 requests to S3 where it sent 14: it reads the segment's row once, and checks its
   next generation number instead of listing for it.** A load read its registry row four times before its publish. On

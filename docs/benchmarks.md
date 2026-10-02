@@ -91,7 +91,8 @@ with the pointer in the same bucket as the data. It was driven from a laptop out
   of this shape.
 - **Writing and publishing a segment is 2 PUT + 3 GET**: the generation, then the pointer, and the loader, the
   publish step and the registry each read the pointer first. A multipart load adds the upload's own requests.
-  `store.load()` also lists the segment's objects and collects the old ones; a test counts what that adds.
+  `store.load()` also checks that its generation number is free and deletes by name the generation its publish pushes
+  out of the window, listing the segment's objects on every 16th generation; a test counts what that adds.
 
 | Operation | Requests | One | Per million | Label |
 | --- | --- | --- | --- | --- |
@@ -99,7 +100,7 @@ with the pointer in the same bucket as the data. It was driven from a laptop out
 | The same, with each pointer read once | 204 GET | $0.0000816 | $81.60 | expected |
 | Write and publish a 1.05 MB segment, pointer included | 2 PUT + 3 GET | $0.0000112 | **$11.20** | derived |
 | Write and publish a 12.6 MB segment, multipart | 5 PUT-class + 3 GET | $0.0000262 | **$26.20** | derived |
-| A segment's first `store.load()`, single-part | 3 PUT-class + 6 GET | $0.0000174 | $17.40 | expected |
+| A segment's first `store.load()`, single-part | 2 PUT + 4 GET | $0.0000116 | $11.60 | expected |
 
 **Derived** rows are measured request counts times the `aws-us-east-1-ondemand` list prices. **Expected** rows are
 what the code predicts where the run did not measure: the first from the measured chunk and tail reads with each
@@ -272,7 +273,7 @@ The loaded store's own measurements are the next benchmark pass. The single-buck
   count and chunk overlap.
 - **What `store.load()` costs on S3.** The run measured a load's write and publish. `store.load()` adds a check that
   its generation number is free and a collection pass after the publish. A test counts the requests that adds, about
-  half a load's bill again; they are not yet measured on S3. The harness times `store.load()` itself, so
+  a tenth of a load's bill; they are not yet measured on S3. The harness times `store.load()` itself, so
   its next run measures them.
 - **A Lambda figure** — a function's cold start and initialisation against a real store, from inside one.
 

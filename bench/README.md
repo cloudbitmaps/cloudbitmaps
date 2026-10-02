@@ -85,7 +85,7 @@ file under `expectedMissed`, and the run carries on, because a count that differ
 
 | stage | what it does | requests it is expected to make |
 |---|---|---|
-| `load` | 20 single-part and 5 multipart (two-part) loads through `store.load()`, each recording its own requests | per segment's first load: 3 PUT-class and 6 GET; a multipart object swaps its PUT for a create, its parts and a complete |
+| `load` | 20 single-part and 5 multipart (two-part) loads through `store.load()`, each recording its own requests | per segment's first load: 2 PUT-class and 4 GET; a multipart object swaps its PUT for a create, its parts and a complete |
 | `intersect` | 40 cold intersects over the calibration layout (100 shared chunks packed at keys 0 to 99), each on a fresh store | 4 + 2k GET each: both pointers, both tails, k chunks from each operand |
 | `spread` | 10 segments of the same overlap with the shared chunks spread uniformly over each segment's chunks from a fixed seed, and 40 cold intersects | the same 4 + 2k, so a difference in latency is the layout's |
 | `sweep` | segments sharing 1,000 chunks (10 intersects) and 2,000 (5), `CR_CALIBRATE_SWEEP` to change the list | 4 + 2k each, at each k |
@@ -205,9 +205,10 @@ constants and the source text:
   stage's bound as well as to the total, so a stage that overspent is named. It counts both operands of an intersect, and
   its retry bound must match the publish loop in `packages/core/src/core/crbm-storage-source.ts`: a test reads the loop's number out of the source and
   fails if they differ, because a retyped number can be wrong. A load, `store.load()` of a new segment, checks that its
-  generation number is free, lists the segment once to collect after the publish (twice when the check finds the number
-  taken; on S3 a listing bills at the PUT rate), and reads the pointer five times even with nothing racing it, twice
-  more for each publish attempt it loses, and thirteen times at most: fourteen GET-class requests with the check. A test drives each count through the real registry code, so a projection allowing one
+  generation number is free and lists nothing when it is, since it has nothing to collect (twice when the check finds
+  the number taken, to number past the object and to collect; on S3 a listing bills at the PUT rate), and reads the
+  pointer three times with nothing racing it, five when the check finds the number taken, twice more for each publish
+  attempt it loses, and thirteen times at most: fourteen GET-class requests with the check. A test drives each count through the real registry code, so a projection allowing one
   read per attempt fails it. The workload's client makes one attempt per request, and every attempt teardown's client
   may make is allowed for, so no SDK retry can fall outside it either. A sample discarded after a transient fault was
   billed too, so the projection allows every discard a run may make, at the costliest sample's bound, and a plan that

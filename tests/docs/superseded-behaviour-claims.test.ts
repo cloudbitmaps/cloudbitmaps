@@ -323,6 +323,13 @@ const STAYS = String.raw`\b(?:(?:stays?|remains?|stuck|sticks?|freezes?|frozen|l
 /** Phrases that describe the library's behaviour falsely, each with what to say instead. */
 /** A load as a sentence's subject: one, the, each or every load (a later or next one too), or loads. */
 const A_LOAD = String.raw`\b(?:(?:an?|the|each|every)(?: later| next)? load|loads)\b`;
+/** A load as a sentence's subject, `store.load()` too. */
+const A_LOAD_CALL = String.raw`(?:${A_LOAD}|\bstore\.load\(\))`;
+/**
+ * What a true sentence about a load's collection names: that it is by name, the sixteenth generation it lists on, the
+ * `keep` of 2 or more or a check that met an object that make it list, or a writer that always lists.
+ */
+const COLLECTION_CONDITION = String.raw`\b(?:by name|sixteenth|16th|check(?:s|ed)?|taken|meets?|holds?|held|erasure|rewrite|\*Into|materiali[sz]ations?|wider|keeps? (?:of )?(?:2|two|more))\b`;
 /** What a true sentence about a load's numbering names: the check and what it finds, or the writers that list. */
 const NUMBERING_CONDITION = String.raw`\b(?:check(?:s|ed)?|taken|meets?|holds?|held|cannot answer|erasure|rewrite|nextGeneration)\b`;
 
@@ -613,11 +620,11 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
   {
     claim: new RegExp(
       g(
-        String.raw`store\.load\([^)]*\)[^.]{0,200}?\babout (?:twice|doubles?)\b|\babout doubles a load(?:'|’)s bill\b`,
+        String.raw`store\.load\([^)]*\)[^.]{0,200}?\babout (?:twice|doubles?|half as much again)\b|\babout doubles a load(?:'|’)s bill\b|\bhalf (?:a|the) load(?:'|’)s bill again\b`,
       ),
       'i',
     ),
-    why: "store.load() adds about half the write and publish's bill again, not as much again",
+    why: "store.load() adds about a tenth to the write and publish's bill, not half again and not as much again",
   },
   {
     claim: new RegExp(
@@ -626,7 +633,26 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
       ),
       'i',
     ),
-    why: "a segment's first load reads the pointer five times and checks its generation number once",
+    why: "a segment's first load reads the pointer three times and checks its generation number once",
+  },
+  // A load's collection. A true sentence about it says the condition the retired rule left out: that the generation
+  // is deleted by name and the segment listed on the sixteenth, or the `keep` or the object above the pointer that
+  // makes it list, or the writer that always lists.
+  {
+    claim: new RegExp(
+      g(
+        String.raw`(?<!${COLLECTION_CONDITION}[^.]{0,160})${A_LOAD_CALL}(?![^.]{0,200}${COLLECTION_CONDITION})[^.]{0,80}?\b(?:lists?|listing)\b[^.]{0,60}?\b(?:to collect|and collects?|then collects?|before it collects?|for (?:its )?collection)\b`,
+      ),
+      'i',
+    ),
+    why: 'a load that keeps at most one generation and found nothing above its pointer deletes the one generation its publish pushed out of the window by name, and lists the segment only every sixteenth generation',
+  },
+  {
+    claim: new RegExp(
+      g(String.raw`\bnext (?:store\.)?load of (?:the|that) destination collects everything\b`),
+      'i',
+    ),
+    why: "the next load of a destination deletes the one generation its own publish pushes out of the window by name; an `*Into` with `keep` collects every generation below its own pointer at once, and a load's listing, on every sixteenth generation, takes the rest",
   },
 ];
 
@@ -1111,9 +1137,18 @@ describe('no document claims behaviour this library does not have', () => {
     '`store.load()` is expected at about twice that',
     '`store.load(ref, ids)` costs about twice the write and publish',
     "which about doubles a load's bill",
+    '`store.load()` is expected at about half as much again.',
+    "A test counts what that adds, about half a load's bill again.",
     'and reads the pointer seven times even with nothing racing it',
     'it reads the registry pointer seven times',
     'a first load makes seven pointer reads',
+    // A load's collection as it was: a listing in every load, and the claims that follow from it.
+    "`store.load()` also lists the segment's objects and collects the old ones",
+    'Each load lists the segment to collect what its publish superseded.',
+    'A load lists the bucket after it publishes, then collects the old generation.',
+    'the load lists the segment and collects everything below its pointer',
+    'The next load of the destination collects everything below its own pointer beyond its `keep`.',
+    "the next store.load of that destination collects everything it didn't",
   ])('catches the refused form %j', (text) => {
     expect(hitsIn('x.md', text)).not.toEqual([]);
   });
@@ -1240,8 +1275,17 @@ describe('no document claims behaviour this library does not have', () => {
     'A load numbers above them all once its check meets one.',
     'A load takes `currentGen + 1` while no object holds it, and otherwise numbers above everything in the bucket.',
     '`nextGeneration` lists the segment to number the next generation above everything in it.',
-    '`store.load()` is expected at about half as much again.',
-    'A first load reads the pointer five times and checks its generation number once.',
+    '`store.load()` is expected at about a tenth more.',
+    'A first load reads the pointer three times and checks its generation number once.',
+    // A load's collection, true: each names that it is by name, the sixteenth generation, or what makes it list.
+    'A load that keeps one generation deletes by name the generation its publish pushed out, and lists the segment to collect only every sixteenth generation.',
+    'With `keep` of 2 or more, a load lists the segment to collect on every load.',
+    'A load whose check meets an object lists the segment to number past it, and lists again to collect.',
+    'The retention sweep lists the segment to collect what a drop left.',
+    'The erasure rewrite lists the segment and collects every generation below its own.',
+    '`store.load()` collects by name and lists every sixteenth generation.',
+    'An `*Into` that passes `keep` lists the destination and collects every generation below its own beyond it.',
+    'The next load of the destination deletes the generation its own publish pushed out of the window, by name.',
   ])('leaves %j alone', (text) => {
     expect(hitsIn('x.md', text)).toEqual([]);
   });
