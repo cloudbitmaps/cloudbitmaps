@@ -564,9 +564,10 @@ unknown `status`, a malformed `wrappedDeks` list, a malformed `summary`, or a `t
 library writes. A row stamped 1 holds a decimal counter; one stamped 2 holds a decimal counter and a write part
 (16 lowercase hex digits), `.`-separated, or 32 lowercase hex digits of incarnation id before those two. Each is an
 `IntegrityError`, and its message names the row's key, except for a row over the 1 MiB size cap and a malformed
-`wrappedDeks` list. This release writes rows stamped 2 and reads rows stamped 1 or 2. A row with a higher `schemaVersion` than this build reads was written by a newer
-release; it is refused with `UnsupportedError`, and the fix is to upgrade the process reading it, not to touch the
-row. A release before 0.12 refuses every row this one writes the same way.
+`wrappedDeks` list. This release writes rows stamped 2 and reads rows stamped 1 or 2. A row with a higher
+`schemaVersion` than this build reads was written by a newer release; it is refused with `UnsupportedError`, and the
+fix is to upgrade the process reading it, not to touch the row. A release before 0.12 refuses every row this one
+writes the same way.
 
 One refused row costs far more than its own segment:
 
