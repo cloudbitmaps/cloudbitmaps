@@ -47,12 +47,14 @@ export interface StubRequest {
 }
 
 /**
- * What to do with a request: hold it for `delayMs` and then answer it, or stall it for good before its headers, after
- * them (the headers sent and nothing more), or part-way through its body (the headers and half the body).
+ * What to do with a request: hold it for `delayMs` and then answer it, stall it for good before its headers, after
+ * them (the headers sent and nothing more), or part-way through its body (the headers and half the body), or drop its
+ * connection part-way through the body (the headers and half the body, and then the socket destroyed).
  */
 export type Plan =
   | { readonly delayMs: number }
-  | { readonly stall: 'before-headers' | 'after-headers' | 'mid-body' };
+  | { readonly stall: 'before-headers' | 'after-headers' | 'mid-body' }
+  | { readonly drop: 'mid-body' };
 
 export const xmlError = (status: number, code: string): Answer => ({
   status,
@@ -271,6 +273,15 @@ export class StubBlobService {
         return;
       }
       res.write(answer.body.subarray(0, Math.floor(answer.body.length / 2)));
+      return;
+    }
+    if (plan !== undefined && 'drop' in plan) {
+      const answer = this.answer(req, request, body);
+      res.writeHead(answer.status, { 'x-ms-request-id': 'stub', ...answer.headers });
+      if (Buffer.isBuffer(answer.body)) {
+        res.write(answer.body.subarray(0, Math.floor(answer.body.length / 2)));
+      }
+      setTimeout(() => res.socket?.destroy(), 20);
       return;
     }
     if (req.method === 'GET' && !request.list && this.getOverride !== undefined) {

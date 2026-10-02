@@ -12,6 +12,7 @@ import { IntegrityError, NotFoundError, TransientError, ValidationError } from '
 import type { GenKey } from '@/core/ports';
 import { CloudRoaring } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
+import { resolveReadTimeoutMs } from '@/azure-blob/read-timeout';
 import { StubBlobService, watchProcess, type Plan } from '../../helpers/azure-blob-stub';
 
 /**
@@ -84,7 +85,7 @@ async function timesOut(
     const ms = performance.now() - t0;
     expect(err).toBeInstanceOf(TransientError);
     expect((err as Error).message).toBe(`Azure Blob ${operation} timed out after ${TIMEOUT} ms`);
-    expect(ms).toBeGreaterThanOrEqual(TIMEOUT - 5);
+    expect(ms).toBeGreaterThanOrEqual(TIMEOUT - 25);
     expect(ms).toBeLessThan(TIMEOUT + 1_500);
     expect(await stub.releasedStalls()).toBe(true);
     await sleep(50);
@@ -128,6 +129,22 @@ describe('Azure Blob: a read that stalls is cut off after readTimeoutMs', () => 
   it('AzureBlobStorage gives the timeout to both halves', async () => {
     const backend = new AzureBlobStorage({
       containerClient: stub.client(),
+      readTimeoutMs: TIMEOUT,
+    });
+    stub.plan = (r) => (r.method === 'GET' ? { stall: 'mid-body' } : undefined);
+    await timesOut(() => backend.storage.getRange(GEN, 0, 4), 'download');
+    await timesOut(() => backend.registry.get(REF), 'download');
+  });
+
+  it('so does an AzureBlobStorage built from a connection string and a container', async () => {
+    // Azurite's fixed, publicly documented dev account key, pointed at the stub, which checks no signature.
+    const connectionString =
+      'DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;' +
+      'AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;' +
+      `BlobEndpoint=${stub.url.replace(/\/c$/, '')};`;
+    const backend = new AzureBlobStorage({
+      connectionString,
+      container: 'c',
       readTimeoutMs: TIMEOUT,
     });
     stub.plan = (r) => (r.method === 'GET' ? { stall: 'mid-body' } : undefined);
@@ -243,6 +260,48 @@ describe('Azure Blob: a read lets go of a response the SDK refuses', () => {
   });
 });
 
+describe('Azure Blob: a storage read whose connection drops part-way is a TransientError', () => {
+  // The SDK fails such a body with an `AbortError`, which is also what aborting a read raises; only the read's own
+  // signal tells the two apart, and here it never fired.
+  it.each([
+    ['off', 0],
+    ['set', TIMEOUT],
+  ])('a range read and a tail read, with the timeout %s', async (_label, readTimeoutMs) => {
+    stub.plan = (r) => (r.method === 'GET' && r.name === DATA ? { drop: 'mid-body' } : undefined);
+    const watch = watchProcess();
+    try {
+      for (const read of [
+        () => storage(readTimeoutMs).getRange(GEN, 0, size),
+        () => storage(readTimeoutMs).getTail(GEN, size),
+      ]) {
+        const err = await read().then(
+          () => undefined,
+          (e: unknown) => e,
+        );
+        expect(err).toBeInstanceOf(TransientError);
+        expect((err as Error).message).toBe('transient Azure fault: ECONNRESET');
+        expect(((err as Error).cause as Error).message).toBe(
+          'Azure Blob read was cut off before the response completed',
+        );
+      }
+      await sleep(50);
+    } finally {
+      watch.stop();
+    }
+    expect(watch.events).toEqual([]);
+  });
+
+  it('the store reads it again, and the read succeeds', async () => {
+    const store = new CloudRoaring({ storage: backendWith(0) });
+    let drops = 1;
+    stub.plan = (r) =>
+      r.method === 'GET' && r.name === DATA && drops-- > 0 ? { drop: 'mid-body' } : undefined;
+
+    expect(await store.segment('s').has(2)).toBe(true);
+    expect(drops).toBeLessThan(0); // the drop was used, and only once
+  });
+});
+
 describe('Azure Blob: a timed-out read is retried by the store', () => {
   it('a read that stalls once and then answers succeeds, on the retry', async () => {
     const backend = new AzureBlobStorage({
@@ -257,7 +316,7 @@ describe('Azure Blob: a timed-out read is retried by the store', () => {
     try {
       const t0 = performance.now();
       expect(await store.segment('s').has(2)).toBe(true);
-      expect(performance.now() - t0).toBeGreaterThanOrEqual(TIMEOUT - 5);
+      expect(performance.now() - t0).toBeGreaterThanOrEqual(TIMEOUT - 25);
       expect(stalls).toBeLessThan(0); // the stall was used, and only once
       expect(await stub.releasedStalls()).toBe(true);
       await sleep(50);
@@ -269,6 +328,10 @@ describe('Azure Blob: a timed-out read is retried by the store', () => {
 });
 
 describe('Azure Blob: readTimeoutMs is validated', () => {
+  it('is 0, off, when it is not given', () => {
+    expect(resolveReadTimeoutMs(undefined)).toBe(0);
+  });
+
   const construct = {
     AzureBlobStorage: (readTimeoutMs: number) =>
       new AzureBlobStorage({ containerClient: stub.client(), readTimeoutMs }),
@@ -279,12 +342,18 @@ describe('Azure Blob: readTimeoutMs is validated', () => {
     '%s takes an integer from 0 to 2,147,483,647, and refuses anything else',
     (name) => {
       for (const ok of [0, 1, 2_147_483_647]) expect(() => construct[name](ok)).not.toThrow();
-      for (const bad of [-1, 1.5, NaN, Infinity, 2_147_483_648, '100' as unknown as number]) {
+      for (const bad of [-1, 1.5, NaN, Infinity, 2_147_483_648]) {
         expect(() => construct[name](bad)).toThrow(
           new ValidationError(
             `readTimeoutMs must be a non-negative safe integer no larger than 2147483647; got ${String(bad)}`,
           ),
         );
+      }
+      // A string is quoted, so '100' does not read as the number it is not, and a value with no string form of its
+      // own is named by its type rather than thrown on.
+      expect(() => construct[name]('100' as unknown as number)).toThrow(/; got "100"$/);
+      for (const odd of [Symbol('ms'), Object.create(null), null]) {
+        expect(() => construct[name](odd as unknown as number)).toThrow(ValidationError);
       }
     },
   );

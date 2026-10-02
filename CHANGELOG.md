@@ -21,10 +21,11 @@ so, and so do the module headers in the code.
   headers. The timer starts at the call into the SDK, so waiting for a socket or a credential's token counts; the
   HTTP agent the SDK builds sets no socket limit. Writes, block commits, deletes and listings are not timed. `0`, the
   default, turns it off, and a value that is not an integer from 0 to 2,147,483,647 is refused with
-  `ValidationError`. The drivers take it too (`AzureBlobStorageDriver`, `AzureBlobRegistryDriver`). Every read now
-  also lets go of a response the SDK refuses with a `RangeError` and leaves unread, with or without a timeout, where a
-  range or tail read left its socket open. Tests run a real `@azure/storage-blob` client against a stub that stalls
-  before the headers, after them and mid-body, and a child process checks that a read leaves no timer behind.
+  `ValidationError`. The drivers take it too (`AzureBlobStorageDriver`, `AzureBlobRegistryDriver`). The SDK's default
+  retry waits 4 s before its second retry of a 500 or 503, so a timeout below that cuts it off, and the read throws the
+  timeout instead of the 503 for the store's retry to run again. Tests run a real `@azure/storage-blob` client against
+  a stub that stalls before the headers, after them and mid-body, and a child process checks that a read leaves no
+  timer behind.
 
 - **`PricingProfile.storage.requestsPerPointerRead` prices a pointer read apart from a tail read.** It is the requests
   one pointer read costs, 1 by default, and the cost model charges it for each operand of an intersection, for the
@@ -52,6 +53,17 @@ so, and so do the module headers in the code.
   the registry never takes a geo-replica's older row for the current one. A `404` is still absence. Writes, listings and the tombstoning delete are unchanged, and a tail read stays two
   requests, since Azure Blob takes no suffix range. Price an Azure deployment with `storage.requestsPerSizedRead: 2`
   and `requestsPerPointerRead` at its default of 1.
+
+### Fixed
+
+- **An Azure Blob range or tail read whose connection drops part-way through the body is a `TransientError`.** The
+  SDK fails such a body with an `AbortError`, which reached the caller as it was, so the store's read retry did not run
+  it again and a `has()`, `count()` or erasure failed on one dropped connection. The registry already read the same
+  fault as transient. Tests drop the connection mid-body on a range read and a tail read, with the timeout off and on,
+  and through the store.
+- **An Azure Blob range or tail read lets go of a response the SDK refuses.** The SDK refuses a download with no ETag
+  or no length by throwing a `RangeError`, and leaves the body unread with its socket open. The read now aborts its
+  request when it fails, which closes the socket, with or without a timeout.
 
 ## [0.11.2] — 2026-10-01
 

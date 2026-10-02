@@ -167,7 +167,7 @@ export class AzureBlobStorageDriver implements IStorageDriver {
     try {
       return await timedRead('download', this.readTimeoutMs, async (abortSignal) => {
         const res = await this.blob(objectName).download(offset, length, { abortSignal });
-        const bytes = await collect(res.readableStreamBody);
+        const bytes = await collect(res.readableStreamBody, abortSignal);
         // A short read means the range ran past EOF — treat as out-of-bounds, never a partial result. (Azurite
         // returns a clamped-short body here rather than a 416; a start fully past EOF does 416 → mapReadError.)
         if (bytes.length !== length) {
@@ -201,7 +201,7 @@ export class AzureBlobStorageDriver implements IStorageDriver {
       const take = Math.min(maxBytes, size);
       const bytes = await timedRead('download', this.readTimeoutMs, async (abortSignal) => {
         const res = await this.blob(objectName).download(size - take, take, { abortSignal });
-        return collect(res.readableStreamBody);
+        return collect(res.readableStreamBody, abortSignal);
       });
       return { bytes, size };
     } catch (err) {
@@ -376,17 +376,35 @@ class AzureBlockBlobSink implements BlobSink {
  * Collect an Azure download's Node readable body into a `Uint8Array`. Called in the turn the download returns: the
  * loop listens for the body's errors from its first step, before the read's timer can abort it.
  */
-async function collect(body: NodeJS.ReadableStream | undefined): Promise<Uint8Array> {
+async function collect(
+  body: NodeJS.ReadableStream | undefined,
+  abortSignal: AbortSignal,
+): Promise<Uint8Array> {
   if (body === undefined) {
     throw new NotFoundError('Azure download returned no body');
   }
   const chunks: Uint8Array[] = [];
   let total = 0;
-  for await (const chunk of body) {
-    const u8 =
-      typeof chunk === 'string' ? new TextEncoder().encode(chunk) : new Uint8Array(chunk as Buffer);
-    chunks.push(u8);
-    total += u8.length;
+  try {
+    for await (const chunk of body) {
+      const u8 =
+        typeof chunk === 'string'
+          ? new TextEncoder().encode(chunk)
+          : new Uint8Array(chunk as Buffer);
+      chunks.push(u8);
+      total += u8.length;
+    }
+  } catch (err) {
+    // The SDK fails a body whose connection dropped part-way with an `AbortError`. This read's own signal aborts only
+    // on its timer, whose error the read has already thrown, so an `AbortError` with the signal unaborted is the
+    // dropped connection, and retryable, as the registry reads it.
+    if (!abortSignal.aborted && (err as { name?: unknown } | null)?.name === 'AbortError') {
+      throw Object.assign(
+        new Error('Azure Blob read was cut off before the response completed', { cause: err }),
+        { code: 'ECONNRESET' },
+      );
+    }
+    throw err;
   }
   return concatBytes(chunks, total);
 }

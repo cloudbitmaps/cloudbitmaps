@@ -33,10 +33,19 @@ export function resolveReadTimeoutMs(value: number | undefined): number {
   if (value === undefined) return 0;
   if (!Number.isSafeInteger(value) || value < 0 || value > MAX_TIMER_MS) {
     throw new ValidationError(
-      `readTimeoutMs must be a non-negative safe integer no larger than ${MAX_TIMER_MS}; got ${String(value)}`,
+      `readTimeoutMs must be a non-negative safe integer no larger than ${MAX_TIMER_MS}; got ${describe(value)}`,
     );
   }
   return value;
+}
+
+/** A value as an error message can show it: a string quoted, so `'200'` is not mistaken for `200`, and never a throw. */
+function describe(value: unknown): string {
+  if (typeof value === 'string') return JSON.stringify(value);
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+    return String(value);
+  }
+  return value === null ? 'null' : typeof value;
 }
 
 /** The SDK call a timed read makes, named in the error a timeout throws. */

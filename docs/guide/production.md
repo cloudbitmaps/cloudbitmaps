@@ -161,10 +161,18 @@ half of `AzureBlobStorage` sends, a range read, a tail read's properties and its
 a registry row's read, has that many ms to finish, the response body included, or it is aborted and throws
 `TransientError`, which the store's read retry runs again. Measured against a local server that stalls before the
 headers, after them or part-way through the body, a range read, a tail read and a registry read with
-`readTimeoutMs: 300` each failed after 301 to 306 ms, and the server saw the connection close. The clock starts at the
-call into the SDK, so time waiting for a socket and for a token credential's token counts; the HTTP agent the SDK
-builds sets no limit on sockets (twenty reads at once opened twenty connections), so a client of the SDK's own making
-does not queue a read for one. Writes, block commits, deletes and listings are not timed.
+`readTimeoutMs: 300` each failed 300 to 321 ms after the call, and the server saw the connection close. The clock
+starts at the call into the SDK, so time waiting for a socket and for a token credential's token counts; the HTTP agent
+the SDK builds sets no limit on sockets (twenty reads at once opened twenty connections), so a client of the SDK's own
+making does not queue a read for one. It counts time the process spends busy too: Node runs a due timer before it reads
+a socket, so a synchronous stretch longer than the timeout fails the reads in flight even when their responses have
+arrived. Writes, block commits, deletes and listings are not timed.
+
+**The timer covers the client's own retries of a request, and the Azure SDK's are slow.** Its default policy retries a
+500 or a 503 at once, then after 4 s, then after 12 s, so a `readTimeoutMs` under 4 s cuts it off after two tries,
+and a throttled read throws the timeout rather than the 503. The store's read retry then runs the read again: against a
+stub answering two 503s and then the data, a read with `readTimeoutMs: 2_000` timed out after 2.0 s, and `has()` through
+the store returned after 4.0 s, as it did with the timeout off.
 
 ```ts
 const backend = new AzureBlobStorage({ containerClient, readTimeoutMs: 2_000 });
