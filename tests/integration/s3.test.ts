@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { createRequire } from 'node:module';
 import {
   CreateBucketCommand,
   HeadObjectCommand,
@@ -20,7 +21,7 @@ import { CrbmStorageChunkSource, writeCrbmGeneration } from '@/core/crbm-storage
 import { CloudRoaring } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
 import { NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
-import type { GenKey } from '@/core/ports';
+import { brandAsBackend, type GenKey } from '@/core/ports';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 /**
@@ -286,5 +287,79 @@ describe('S3Storage (MinIO) — the backend builds its own client', () => {
       ValidationError,
     );
     expect(await store.exists({ segment: 'sized' })).toBe(false);
+  });
+});
+
+// What `store.load()` sends to S3, counted by the request meter the calibration harness bills with. The in-memory
+// counts that the cost model is held to (`tests/core/cost.test.ts`) are of the driver ports; these are of the wire,
+// command by command. A load reads its row once before the publish and checks the next generation number with one
+// HeadObject instead of listing; the collection pass lists once, reads the pointer around its listing, and again
+// before its delete.
+describe('S3 (MinIO): the requests one store.load() sends', () => {
+  const require_ = createRequire(import.meta.url);
+  const { meter } = require_('../../bench/lib/aws-meter.cjs') as {
+    meter: (c: S3Client) => { put: number; get: number; byCommand: Record<string, number> };
+  };
+
+  it('a first load, a reload, and every load from the third on', async () => {
+    const metered = new S3Client({
+      endpoint: ENDPOINT,
+      region: 'us-east-1',
+      credentials: { accessKeyId: 'minioadmin', secretAccessKey: 'minioadmin' },
+      forcePathStyle: true,
+    });
+    const tally = meter(metered);
+    const prefix = `${RUN}/load-requests/${n++}`;
+    const store = new CloudRoaring({
+      storage: brandAsBackend({
+        storage: new S3StorageDriver({ client: metered, bucket: BUCKET, prefix }),
+        registry: new S3RegistryDriver({ client: metered, bucket: BUCKET, prefix }),
+      }),
+    });
+    const load = async (ids: number[]) => {
+      tally.put = 0;
+      tally.get = 0;
+      for (const k of Object.keys(tally.byCommand)) delete tally.byCommand[k];
+      expect((await store.load({ namespace: 'ns', segment: 's' }, ids)).published).toBe(true);
+      return { put: tally.put, get: tally.get, byCommand: { ...tally.byCommand } };
+    };
+    // The object and the row (2 PutObject) and the collection's listing are PUT-class; the row read, the check,
+    // the collection's two pointer reads and the CAS's version read are GET-class.
+    expect(await load([1, 2, 3])).toEqual({
+      put: 3,
+      get: 5,
+      byCommand: {
+        GetObjectCommand: 4,
+        HeadObjectCommand: 1,
+        PutObjectCommand: 2,
+        ListObjectsV2Command: 1,
+      },
+    });
+    // A reload also reads the current generation's index, to count what it replaces.
+    expect(await load([1, 2, 3, 4])).toEqual({
+      put: 3,
+      get: 6,
+      byCommand: {
+        GetObjectCommand: 5,
+        HeadObjectCommand: 1,
+        PutObjectCommand: 2,
+        ListObjectsV2Command: 1,
+      },
+    });
+    // From the third load on the collection deletes a generation, re-reading the pointer before it.
+    const steady = {
+      put: 3,
+      get: 7,
+      byCommand: {
+        GetObjectCommand: 6,
+        HeadObjectCommand: 1,
+        PutObjectCommand: 2,
+        ListObjectsV2Command: 1,
+        DeleteObjectCommand: 1,
+      },
+    };
+    expect(await load([1, 2, 3, 4, 5])).toEqual(steady);
+    expect(await load([1, 2, 3, 4, 5, 6])).toEqual(steady);
+    metered.destroy();
   });
 });

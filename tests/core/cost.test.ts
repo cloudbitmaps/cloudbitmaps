@@ -17,7 +17,7 @@ import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
 import { CountingObjectStore, counting } from '../helpers/counting';
 import { seededStore } from '../helpers/loaded';
 import { estimateCost } from '@cloudbitmaps/core';
-import { brandAsBackend } from '@/core/ports';
+import { brandAsBackend, type GenKey } from '@/core/ports';
 import { MemoryStorageDriver } from '@/drivers/memory';
 
 /**
@@ -956,8 +956,8 @@ describe('cost model — additional coverage', () => {
 describe('loads cost term', () => {
   const putUSD = P.storage.putPerMillion / 1e6;
   const getUSD = P.storage.getPerMillion / 1e6;
-  /** What `store.load()` adds to the object's write: two listings and the pointer's PUT, and nine GETs. */
-  const storeLoadUSD = 3 * putUSD + 9 * getUSD;
+  /** What `store.load()` adds to the object's write: a listing and the pointer's PUT, and seven GETs. */
+  const storeLoadUSD = 2 * putUSD + 7 * getUSD;
 
   it('is 0 and disclosed as not-modeled when loadsPerMonth is unset', () => {
     const r = estimateCost({ segments: [{ sizeBytes: 1e9 }] });
@@ -978,8 +978,8 @@ describe('loads cost term', () => {
       12,
     );
     expect(r.assumptions.notes.some((n) => /Loads modeled/.test(n))).toBe(true);
-    // $23.60 per million single-part loads at the default prices, as the docs say.
-    expect(r.monthlyUSD.byOp.loads * 1000).toBeCloseTo(23.6, 9);
+    // $17.80 per million single-part loads at the default prices, as the docs say.
+    expect(r.monthlyUSD.byOp.loads * 1000).toBeCloseTo(17.8, 9);
   });
 
   it('a multipart load bills its extra PUT-class requests (initiate + parts + complete)', () => {
@@ -988,7 +988,7 @@ describe('loads cost term', () => {
       workload: { loadsPerMonth: 1000, requestsPerLoad: 102 }, // a 100-part upload
     });
     expect(r.monthlyUSD.byOp.loads).toBeCloseTo(1000 * (102 * putUSD + storeLoadUSD), 12);
-    expect(r.monthlyUSD.byOp.loads).toBeCloseTo(0.5286, 9); // still small money
+    expect(r.monthlyUSD.byOp.loads).toBeCloseTo(0.5228, 9); // still small money
   });
 
   it('loads never move the read crossover — the crossover is a read-rate question', () => {
@@ -1194,16 +1194,17 @@ describe('requests per pointer read and per sized read', () => {
     );
   });
 
-  it("charges a load's eight pointer reads and one tail read at their own fields", () => {
+  it("charges a load's five pointer reads and one tail read at their own fields, and its check at one request", () => {
     const r = estimateCost({
       segments: [{ sizeBytes: 0 }],
       workload: loadAndRefresh,
       pricing: APART,
     });
-    expect(r.monthlyUSD.byOp.loads).toBeCloseTo(1000 * (4 * putUSD + (8 * 3 + 5) * getUSD), 12);
+    // The check of the next generation number is one metadata request on every backend, under either field.
+    expect(r.monthlyUSD.byOp.loads).toBeCloseTo(1000 * (3 * putUSD + (5 * 3 + 5 + 1) * getUSD), 12);
     expect(r.assumptions.notes).toContain(
-      'Loads modeled: 1000/mo, each 1 PUT-class request(s) for the object plus 3 PUT-class and 29 GETs that ' +
-        'store.load() adds (listings, pointer, index).',
+      'Loads modeled: 1000/mo, each 1 PUT-class request(s) for the object plus 2 PUT-class and 21 GETs that ' +
+        'store.load() adds (a listing, the pointer, the index, and a check that the next generation number is free).',
     );
   });
 
@@ -1246,7 +1247,8 @@ describe('requests per pointer read and per sized read', () => {
       SECONDS_PER_MONTH * (200 + 2 * (1 + 2)) * getUSD,
       6,
     );
-    expect(r.monthlyUSD.byOp.loads).toBeCloseTo(1000 * (4 * putUSD + (8 + 2) * getUSD), 12);
+    // Five pointer reads, a two-request tail read, and the check, which is one properties request there too.
+    expect(r.monthlyUSD.byOp.loads).toBeCloseTo(1000 * (3 * putUSD + (5 + 2 + 1) * getUSD), 12);
     expect(r.monthlyUSD.byOp.pointerRefresh).toBeCloseTo(1_314_000 * getUSD, 9);
   });
 
@@ -1259,18 +1261,18 @@ describe('requests per pointer read and per sized read', () => {
       }).monthlyUSD.byOp;
     const gets = (byOp: CostReport['monthlyUSD']['byOp']) => ({
       intersect: Math.round(byOp.intersects / (SECONDS_PER_MONTH * getUSD)),
-      load: Math.round((byOp.loads / 1000 - 4 * putUSD) / getUSD),
+      load: Math.round((byOp.loads / 1000 - 3 * putUSD) / getUSD),
       refresh: Math.round(byOp.pointerRefresh / (1_314_000 * getUSD)),
     });
-    expect(gets(at({}))).toEqual({ intersect: 204, load: 9, refresh: 1 });
+    expect(gets(at({}))).toEqual({ intersect: 204, load: 7, refresh: 1 });
     expect(gets(at({ requestsPerSizedRead: 5 }))).toEqual({
       intersect: 200 + 2 * (1 + 5),
-      load: 8 + 5,
+      load: 5 + 5 + 1,
       refresh: 1,
     });
     expect(gets(at({ requestsPerPointerRead: 3 }))).toEqual({
       intersect: 200 + 2 * (3 + 1),
-      load: 8 * 3 + 1,
+      load: 5 * 3 + 1 + 1,
       refresh: 3,
     });
   });
@@ -1334,11 +1336,21 @@ describe('the estimator counts the requests the engine makes', () => {
       .filter((k) => k !== 'capabilities')
       .sort();
 
+  /** The memory driver, counting apart the zero-byte tail reads a load checks a generation number with. */
+  class CheckCountingDriver extends MemoryStorageDriver {
+    checks = 0;
+    override getTail(key: GenKey, maxBytes: number): ReturnType<MemoryStorageDriver['getTail']> {
+      if (maxBytes === 0) this.checks += 1;
+      return super.getTail(key, maxBytes);
+    }
+  }
+
   /** A single-bucket store over counting drivers: every storage call by name, and every pointer read and write. */
   function countingStore() {
     const calls: Record<string, number> = {};
     const pointer = new CountingObjectStore(0);
-    const storage = counting(new MemoryStorageDriver(), calls);
+    const driver = new CheckCountingDriver();
+    const storage = counting(driver, calls);
     const registry = new ObjectStoreRegistry(pointer, undefined, () => 0);
     const open = (extra: object = {}) =>
       new CloudRoaring({ storage: brandAsBackend({ storage, registry }), ...extra });
@@ -1346,8 +1358,9 @@ describe('the estimator counts the requests the engine makes', () => {
       for (const k of Object.keys(calls)) delete calls[k];
       pointer.reads = 0;
       pointer.writes = 0;
+      driver.checks = 0;
     };
-    return { calls, pointer, open, reset };
+    return { calls, pointer, driver, open, reset };
   }
 
   /** A clock that moves only when told to. */
@@ -1413,24 +1426,27 @@ describe('the estimator counts the requests the engine makes', () => {
   );
 
   it('prices a load at the requests store.load() makes once a segment has two generations behind it', async () => {
-    const { calls, pointer, open, reset } = countingStore();
+    const { calls, pointer, driver, open, reset } = countingStore();
     const store = open();
-    /** A load's PUT-class requests and GETs, and its GETs by kind: the pointer's, and the storage reads. */
+    /** A load's PUT-class requests and GETs, and its GETs by kind: the pointer's, the storage reads, the checks. */
     const billed = async (ids: number[]) => {
       reset();
       const result = await store.load({ segment: 's' }, ids);
       expect(result.published).toBe(true);
-      // On S3 the object, the listings and the pointer bill as PUT-class; every read is a GET; a delete is free.
+      // On S3 the object, the listing and the pointer bill as PUT-class; every read is a GET (the check of the
+      // next generation number is a HeadObject); a delete is free.
       const known = ['delete', 'getRange', 'getTail', 'list', 'putImmutable'];
       expect(requestsIn(calls).filter((k) => !known.includes(k))).toEqual([]);
-      const storageReads = (calls.getTail ?? 0) + (calls.getRange ?? 0);
+      const checks = driver.checks;
+      const storageReads = (calls.getTail ?? 0) + (calls.getRange ?? 0) - checks;
       return {
         bill: {
           put: (calls.putImmutable ?? 0) + (calls.list ?? 0) + pointer.writes,
-          get: pointer.reads + storageReads,
+          get: pointer.reads + storageReads + checks,
         },
         pointerReads: pointer.reads,
         storageReads,
+        checks,
       };
     };
     const first = await billed([1, 2, 3]);
@@ -1446,10 +1462,14 @@ describe('the estimator counts the requests the engine makes', () => {
     // The first two loads make two and one fewer reads, and the same PUT-class requests.
     expect(first.bill).toEqual({ put: model.put, get: model.get - 2 });
     expect(second.bill).toEqual({ put: model.put, get: model.get - 1 });
-    // Eight pointer reads and one tail read, each charged at its own field.
-    expect(third).toMatchObject({ pointerReads: 8, storageReads: 1 });
-    expect(decode(price(workload, POINTERS_ONLY).loads).get).toBe(third.pointerReads);
-    expect(decode(price(workload, TAILS_ONLY).loads).get).toBe(third.storageReads);
+    // Five pointer reads and one tail read, each charged at its own field, and one check, charged as one request
+    // under either; the number is checked, never listed for, so the one listing is the collection pass's.
+    expect(third).toMatchObject({ pointerReads: 5, storageReads: 1, checks: 1 });
+    expect(third.bill.put).toBe(3);
+    expect(decode(price(workload, POINTERS_ONLY).loads).get).toBe(
+      third.pointerReads + third.checks,
+    );
+    expect(decode(price(workload, TAILS_ONLY).loads).get).toBe(third.storageReads + third.checks);
   });
 
   it('prices the refresh at one pointer read per hot segment per genTtlMs, and nothing else', async () => {
