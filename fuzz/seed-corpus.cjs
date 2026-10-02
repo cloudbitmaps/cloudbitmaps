@@ -167,6 +167,19 @@ function extensionOf(bytes) {
   };
 }
 
+/**
+ * Refuse to write a seed whose sections are not what the writer wrote: the parser must read `metadata` back from
+ * them. A slip in `extensionOf` would otherwise leave a corpus of seeds that are not valid sections, and nothing
+ * would say so.
+ */
+async function assertSectionsHold(sections, metadata, name) {
+  const { parseExtension } = await import('./build/fuzz-core.js');
+  const sorted = (m) => JSON.stringify(Object.fromEntries(Object.entries(m ?? {}).sort()));
+  if (sorted(parseExtension(sections, undefined)) !== sorted(metadata)) {
+    throw new Error(`seed ${name}: the sections cut from its object do not hold its metadata`);
+  }
+}
+
 /** A format 1.1 `.crbm` holding three chunks and `metadata`, written by the `.crbm` writer from the fuzz build. */
 async function validCrbmWithMetadata(metadata) {
   const { CrbmWriter, BufferSink } = await import('./build/fuzz-core.js');
@@ -242,6 +255,7 @@ async function seedCrbmExt() {
   const later = Uint8Array.of(9, 1, 0, 0, 0, 0x78);
   for (const [name, metadata] of Object.entries(metadataSets())) {
     const { sections } = extensionOf(await validCrbmWithMetadata(metadata));
+    await assertSectionsHold(sections, metadata, name);
     writeSeed('crbm-ext', `valid-${name}.bin`, sections);
     const withLater = new Uint8Array(sections.length + later.length);
     withLater.set(sections, 0);

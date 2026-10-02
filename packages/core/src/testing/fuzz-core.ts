@@ -18,5 +18,5 @@ export { BufferReader, BufferSink } from '../core/blob';
 // false even though it holds for an ordinary consumer of the published packages — this harness is exactly the
 // bundling shape the predicates exist for. `isCloudRoaringError` matches a `Symbol.for` brand and is
 // therefore copy-independent; fuzz targets MUST use it to classify a typed rejection.
-export { CloudRoaringError, isCloudRoaringError } from '../core/errors';
+export { CloudRoaringError, IntegrityError, isCloudRoaringError } from '../core/errors';
 export { DEFAULT_MAX_PAYLOAD_BYTES } from '../core/crbm/format';

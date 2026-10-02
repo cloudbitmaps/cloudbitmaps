@@ -18,8 +18,8 @@ validation front:
 | --- | --- | --- | --- |
 | `targets/safe-deserialize.mjs` | the codec's safe deserialize → its structural check → **native** CRoaring portable deserializer | **coverage-guided** over the structural check; black-box beyond it (native C++ isn't instrumentable from JS) | `pnpm fuzz:deser` |
 | `targets/crbm-index.mjs` | `parseIndex` **directly** on raw index bytes | **coverage-guided** (pure, branch-dense TS) | `pnpm fuzz:index` |
-| `targets/crbm-ext.mjs` | `parseExtension` **directly** on the raw sections of a 1.1 extension block: the section walk, then the metadata record (UTF-8, JSON, the metadata rules, canonical form) | **coverage-guided** (pure TS) | `pnpm fuzz:ext` |
-| `targets/crbm-reader.mjs` | `CrbmReader.open` validation front (+ full chain on valid seeds, 1.0 and 1.1) | **coverage-guided** | `pnpm fuzz:crbm` |
+| `targets/crbm-ext.mjs` | `parseExtension` **directly** on the raw sections of a 1.1 extension block: the section walk, then the metadata record (UTF-8, JSON, the metadata rules, canonical form), read as cleartext and again as sealed under a key whose every open fails | **coverage-guided** (pure TS) | `pnpm fuzz:ext` |
+| `targets/crbm-reader.mjs` | `CrbmReader.open` validation front (+ full chain on valid seeds, 1.0 and 1.1), opened at the default tail, a footer-sized tail, a footer-sized tail with every range read a byte short, and tails at and a byte either side of where the input's footer puts the index, the block's trailer and the block | **coverage-guided** | `pnpm fuzz:crbm` |
 
 The **contract** all four assert: arbitrary bytes either succeed self-consistently or throw a typed
 `CloudRoaringError` — never a `RangeError`/`TypeError`, native crash, unbounded allocation, or hang. The two
@@ -50,7 +50,7 @@ narrow it to something that matches nothing and coverage guidance silently degra
 ## Fuzz-only internals build
 
 The targets need entry points that aren't public API (notably `parseIndex` and `parseExtension`), and the seed
-generator needs the `.crbm` writer for format 1.1 objects. `src/testing/fuzz-support.ts`
+generator needs the `.crbm` writer for format 1.1 objects. `packages/core/src/testing/fuzz-core.ts`
 re-exports them and is built by `scripts/build.mjs` (esbuild) to **`fuzz/build/`** (git-ignored, never under `dist/`,
 never in the package `files`) — so the fuzzer reaches the hand-written parser directly while the published API
 stays minimal. Targets fuzz this build; the regression test (below) replays against `src` via vitest — fidelity
@@ -71,6 +71,12 @@ reproducers below. The nightly workflow caches `fuzz/corpus/` so coverage accret
    reproducer written by hand, for a hostile shape the campaign has not reached, goes in the same place.
 3. Fix the bug. [`tests/core/crbm/fuzz-corpus.test.ts`](../tests/core/crbm/fuzz-corpus.test.ts) replays every
    committed reproducer on **every PR** (the campaign itself is nightly-only), so the fix stays locked in.
+
+The campaign itself never runs in the per-PR suite, so
+[`tests/scripts/fuzz-wiring.test.ts`](../tests/scripts/fuzz-wiring.test.ts) holds its wiring to itself there: each
+`fuzz:*` script runs a target that exists over the corpus it seeds, each target has a script and a nightly matrix
+entry, and every name a target imports from the fuzz build is one its source exports. The seed generator refuses to
+write an extension-block seed the parser does not read back.
 
 CI: [`.github/workflows/fuzz-nightly.yml`](../.github/workflows/fuzz-nightly.yml) — nightly + on-demand;
 uploads any crash reproducers as an artifact and fails the job.
