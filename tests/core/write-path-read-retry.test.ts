@@ -369,4 +369,20 @@ describe("an erasure's writes are not retried by the read retry", () => {
       expect(counts[1]).toBe(counts[0]);
     },
   );
+
+  it('a transient fault on the delete of a holder above the pointer is sent as many times with the read retry as without it', async () => {
+    // A rollback leaves the id only in the generation above the pointer, so the one delete the erasure makes is of it.
+    const counts: number[] = [];
+    for (const retried of [false, true]) {
+      const w = await world([1, 3]);
+      await w.store.load(SEG, [1, 2, 3]);
+      await w.store.rollback(SEG, 0);
+      const f = failingWrite(w, 'delete');
+      const deps = { ...coreDeps(w, retried), storage: f.storage, registry: f.registry };
+      await eraseIdFromSegment(SEG, 2, deps).catch(() => undefined);
+      expect(f.calls.delete).toBeGreaterThan(0);
+      counts.push(f.calls.delete);
+    }
+    expect(counts[1]).toBe(counts[0]);
+  });
 });
