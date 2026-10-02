@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { loadSegment, type LoadOptions } from '@/core/load';
-import { openGenerationReader } from '@/core/crbm-storage-source';
+import { openGenerationReader, publishGeneration } from '@/core/crbm-storage-source';
 import { aadFor } from '@/core/crypto';
 import { dropSegment } from '@/core/erasure';
 import { ValidationError } from '@/core/errors';
@@ -219,5 +219,42 @@ describe('a load reuses the row it read, and every fence on that row still holds
       },
     );
     expect(reader.count()).toBe(2);
+  });
+});
+
+describe('publishGeneration with the row its caller read', () => {
+  it('never answers "already current" from that row: only a fresh read can show the pointer there', async () => {
+    const w = world();
+    await threeLoads(w); // generation 2 is current
+    const stale = (await w.registry.get(SEG))!;
+    await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9 }); // generation 3 lands after the caller's read
+    // A row naming the very generation being published would make "already current" true of the row, not the segment.
+    const published = await publishGeneration(
+      w.registry,
+      { ...SEG, generation: 2 },
+      { row: stale },
+    );
+    expect(published).toBe(false); // the segment is at 3: forward-only refuses 2
+    expect((await w.registry.get(SEG))!.currentGen).toBe(3);
+  });
+
+  it("writes only under that row's own fence: a row that changed since makes the first attempt lose", async () => {
+    const w = world();
+    await threeLoads(w);
+    const stale = (await w.registry.get(SEG))!;
+    await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9 }); // generation 3
+    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 5 }, [5]);
+    const calls: Record<string, number> = {};
+    const registry = counting<IRegistryDriver>(w.registry, calls);
+    const published = await publishGeneration(
+      registry,
+      { ...SEG, generation: 5 },
+      { row: stale, expectToken: stale.token },
+    );
+    expect(published).toBe(false);
+    // The stale token's compare-and-swap lost, and the second attempt read the row and found the token moved.
+    expect(calls.compareAndSwap).toBe(1);
+    expect(calls.get).toBe(1);
+    expect((await w.registry.get(SEG))!.currentGen).toBe(3);
   });
 });
