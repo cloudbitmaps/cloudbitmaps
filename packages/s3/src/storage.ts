@@ -440,9 +440,9 @@ class S3MultipartSink implements BlobSink {
     const sha256 = this.hash.digest('hex');
     if (this.uploadId === undefined) {
       const body = concatBytes(this.pending, this.pendingLen);
-      await this.commit(
-        'PutObject',
-        () =>
+      await this.commit('PutObject', () =>
+        sendOnce(
+          this.client,
           new PutObjectCommand({
             Bucket: this.bucket,
             Key: this.objectKey,
@@ -450,14 +450,15 @@ class S3MultipartSink implements BlobSink {
             IfNoneMatch: '*', // write-once
             Metadata: { [WRITE_ID_KEY]: this.writeId },
           }),
+        ),
       );
       return { size: this.total, sha256 };
     }
     if (this.pendingLen > 0) await this.flushPart(); // the final part may be < partBytes (allowed)
     const uploadId = this.uploadId;
-    await this.commit(
-      'CompleteMultipartUpload',
-      () =>
+    await this.commit('CompleteMultipartUpload', () =>
+      sendOnce(
+        this.client,
         new CompleteMultipartUploadCommand({
           Bucket: this.bucket,
           Key: this.objectKey,
@@ -465,13 +466,14 @@ class S3MultipartSink implements BlobSink {
           MultipartUpload: { Parts: this.parts },
           IfNoneMatch: '*', // write-once: fail if the object already exists
         }),
+      ),
     );
     this.uploadId = undefined; // completed — nothing left to abort
     return { size: this.total, sha256 };
   }
 
   /**
-   * Send the commit with the SDK's retry off, and again after a throttle, up to {@link THROTTLE_RESENDS} times, waiting
+   * Send the commit (`send` sends it once, with the SDK's retry off), and again after a throttle, up to {@link THROTTLE_RESENDS} times, waiting
    * a full-jitter backoff before each. Any other failure is thrown at once. Once the commit has been sent again, a
    * precondition failure, or an upload S3 no longer knows, can be an earlier send that landed after all, so the
    * object's write id decides: this write's own is a success, and any other object, or one with no id, is the
@@ -480,11 +482,11 @@ class S3MultipartSink implements BlobSink {
    */
   private async commit(
     operation: 'PutObject' | 'CompleteMultipartUpload',
-    command: () => Parameters<typeof sendOnce>[1],
+    send: () => Promise<unknown>,
   ): Promise<void> {
     for (let resent = 0; ; resent++) {
       try {
-        await sendOnce(this.client, command());
+        await send();
         return;
       } catch (err) {
         if (resent > 0 && (isConditionalConflict(err) || isNoSuchUpload(err))) {
