@@ -372,7 +372,7 @@ sections' length (u32), a CRC32C of the sections and that length (u32), and the 
 4 KiB in all, are each a type (u8), a length (u32) and that many bytes, in strictly ascending type order; type 1 is
 the generation's metadata as canonical JSON (keys sorted by UTF-16 code unit, each key and value as
 `JSON.stringify` writes it, no whitespace), at most 1 KiB, sealed like the index on an encrypted object (AES-256-GCM,
-`nonce ‖ ciphertext ‖ tag`, under `aadFor(ref, generation, 'metadata')`). A reader skips a section type it does not
+`nonce ‖ ciphertext ‖ tag`, under `aadFor(ref, generation, 'metadata')`; its length, like the index's, stays visible). A reader skips a section type it does not
 know, so every later 1.x minor carries the block and adds section types to it. A 1.0 reader, 0.11 included, opens a
 1.1 object and ignores the block: it never reads between the last payload and the index. A 1.1 reader reads the
 block with the index, from the tail or in the same range read, and refuses with `IntegrityError` a block whose
