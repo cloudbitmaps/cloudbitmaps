@@ -185,7 +185,7 @@ const report = CloudRoaring.estimateCost({
     hotSegments: 200, // in each reader process…
     readerProcesses: 3, // …of 3
   },
-  // pricing: your region's rates; on Azure Blob, set storage.requestsPerSizedRead to 2.
+  // pricing: your region's rates; on Azure Blob, storage.requestsPerSizedRead: 2 for its tail reads.
 });
 report.monthlyUSD.total; // $281, the medium deployment above
 report.redisBaseline; // $900 a month: 1 shard of 3 cache.r6g.xlarge nodes
@@ -209,7 +209,7 @@ real segment at its measured size and the store's own `cache.genTtlMs`.
 - **An invoice.** These are list prices applied to modeled request counts, not what AWS would bill; data transfer
   out of the region is not modeled.
 - **Other clouds' prices.** The rates are AWS's. GCS and Azure Blob charge differently, and Azure Blob takes more requests than
-  S3 to read a pointer or a tail; set the rates, and for Azure Blob `requestsPerSizedRead`, in your own pricing profile, as [Price your own](#price-your-own) shows.
+  S3 to read a segment's tail; set the rates, and for Azure Blob `requestsPerSizedRead`, in your own pricing profile, as [Price your own](#price-your-own) shows.
 - **What running Redis takes besides its price.** The comparison is CloudBitmaps' bill for the workload against a
   Redis sized to hold the data, not to its request rate; nor does it price the operations, the failovers or the speed
   of either.

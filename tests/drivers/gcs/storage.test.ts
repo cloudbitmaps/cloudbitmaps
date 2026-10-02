@@ -160,9 +160,9 @@ describe('GcsStorageDriver write-once (fake Storage, emulator-independent)', () 
   });
 });
 
-// The cost model prices a segment's tail read on GCS as one request (`requestsPerSizedRead: 1`): a suffix-range GET
-// answers with the tail and the object's size. Held against the driver here, and against hostile responses in
-// tail.test.ts.
+// The cost model prices a segment's tail read on GCS as one request (`requestsPerSizedRead: 1`, the field that prices
+// tail reads alone): a suffix-range GET answers with the tail and the object's size. Held against the driver here,
+// and against hostile responses in tail.test.ts.
 describe('GcsStorageDriver — what a tail read costs', () => {
   it('makes one request: a suffix-range GET', async () => {
     const calls: unknown[] = [];
