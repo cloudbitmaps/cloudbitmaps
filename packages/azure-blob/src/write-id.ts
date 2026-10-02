@@ -11,7 +11,9 @@
  *
  * Only a write-once object's read-back is definitive: nothing overwrites it, so the id it holds is the one it was
  * written with. A registry row is overwritten by compare-and-swap, so a writer that lands on top of ours between
- * our write and the read-back shows its own id, and ours reports a conflict for a write that did land.
+ * our write and the read-back shows its own id, and ours reports a conflict for a write that did land. A publish
+ * reads the row again after a conflict and recognises its own write there by its effect (the pointer at its
+ * generation, over its own object), so that conflict does not reach a load as a lost race.
  *
  * Azure metadata names must be valid C# identifiers, so this one is letters only, and short because it is sent
  * with every write.
