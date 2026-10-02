@@ -89,6 +89,7 @@ import {
 } from './errors';
 import { gcOrphanGenerations, nextGeneration } from './generation-gc';
 import type { GenKey, IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
+import { type ReadRetry, retryRead } from './retry';
 import { validateUserRef } from './validate';
 
 const DEFAULT_MAX_BITMAP_BYTES = 1 << 20;
@@ -114,6 +115,13 @@ export interface EraseIdDeps {
   readonly clock?: Yielder;
   /** Per-chunk decode ceiling (invariant 5); defaults to 1 MiB. */
   readonly maxBitmapBytes?: number;
+  /**
+   * The store's read retry, for the reads the rewrite makes along the way: the generation it rewrites and each of its
+   * chunks, the read-back that verifies the generation it wrote, and any other generation it checks for the id. A
+   * transient fault on one is run again under it rather than failing the erasure. Absent, each read is made once.
+   * The writes and deletes are never retried.
+   */
+  readonly readRetry?: ReadRetry;
 }
 
 export interface EraseIdResult {
@@ -206,6 +214,8 @@ export async function eraseIdFromSegment(
   const codec = requireCodec(deps.codec, 'eraseIdFromSegment');
   const maxBytes = deps.maxBitmapBytes ?? DEFAULT_MAX_BITMAP_BYTES;
   const base = { segment: ref.segment, namespace: ref.namespace };
+  /** A read this call makes, under the store's read retry when it was given one. */
+  const read = <T>(op: () => Promise<T>): Promise<T> => retryRead(op, deps.readRetry);
 
   const record = await deps.registry.get(ref);
   if (record === null) return { ...base, erased: false, reason: 'absent', collected: [] };
@@ -281,12 +291,14 @@ export async function eraseIdFromSegment(
    */
   const holds = async (generation: number): Promise<boolean | null> => {
     try {
-      const reader = await openGenerationReader(
-        deps.storage,
-        { ...base, generation },
-        cryptoAt(generation),
-      );
-      const bytes = await reader.getChunk(chunkKey);
+      const bytes = await read(async () => {
+        const reader = await openGenerationReader(
+          deps.storage,
+          { ...base, generation },
+          cryptoAt(generation),
+        );
+        return reader.getChunk(chunkKey);
+      });
       return bytes !== null && codec.safeDeserialize(bytes, maxBytes).has(remainder);
     } catch (err) {
       if (isNotFoundError(err)) return null;
@@ -462,8 +474,8 @@ export async function eraseIdFromSegment(
     /** Set only once the object exists in the bucket — see the note above. */
     let written: number | undefined;
     try {
-      const reader = await openGenerationReader(deps.storage, fromKey, cryptoAt(from));
-      const bytes = await reader.getChunk(chunkKey);
+      const reader = await read(() => openGenerationReader(deps.storage, fromKey, cryptoAt(from)));
+      const bytes = await read(() => reader.getChunk(chunkKey));
       // `return await`, not `return`: the sweep's rejection must land in the `catch` below, which is where a
       // `NotFoundError` is translated by re-reading the row. A bare `return` of the promise hands it past the `try`.
       if (bytes === null) return await notInCurrent();
@@ -477,7 +489,7 @@ export async function eraseIdFromSegment(
       const tally = await writeCrbmGenerationStream(
         deps.storage,
         key,
-        rewrite(reader, chunkKey, target, codec, maxBytes),
+        rewrite(reader, chunkKey, target, codec, maxBytes, read),
         { crypto: cryptoAt(generation), clock: deps.clock },
       );
       written = generation; // `putImmutable` commits atomically, so the object exists exactly now
@@ -486,7 +498,7 @@ export async function eraseIdFromSegment(
       const beforeVerify = await deps.registry.get(ref);
       const early = rowVerdict(beforeVerify);
       if (early !== null) return refused(early, written);
-      await verifyGeneration(deps.storage, key, tally, cryptoAt(generation));
+      await read(() => verifyGeneration(deps.storage, key, tally, cryptoAt(generation)));
       return { generation, key };
     } catch (err) {
       if (!isNotFoundError(err)) throw err;
@@ -600,7 +612,8 @@ export async function eraseIdFromSegment(
  * still cannot be read — so the rewrite stops instead, naming the chunk. An `IntegrityError` here says "this
  * segment is corrupt", which is what the operator needs to know; a successful-looking erasure says nothing. The
  * check is one `maximum()` call per chunk against a bitmap this function has already decoded, so honouring the
- * invariant costs nothing measurable on a path that is re-encoding every chunk anyway.
+ * invariant costs nothing measurable on a path that is re-encoding every chunk anyway. Each chunk is read through
+ * `read`, the caller's read retry.
  */
 async function* rewrite(
   reader: CrbmReader,
@@ -608,6 +621,7 @@ async function* rewrite(
   replacement: CodecBitmap,
   codec: CodecInterface,
   maxBytes: number,
+  read: <T>(op: () => Promise<T>) => Promise<T>,
 ): AsyncGenerator<{ chunkKey: number; bitmap: CodecBitmap }> {
   const keys = [...reader.chunkKeys()].sort((a, b) => a - b);
   for (const k of keys) {
@@ -615,7 +629,7 @@ async function* rewrite(
       yield { chunkKey: k, bitmap: replacement };
       continue;
     }
-    const bytes = await reader.getChunk(k);
+    const bytes = await read(() => reader.getChunk(k));
     if (bytes === null) continue; // listed but absent: nothing to carry forward
     const bitmap = codec.safeDeserialize(bytes, maxBytes);
     assertRemaindersInRange(bitmap, k);

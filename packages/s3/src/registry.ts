@@ -12,7 +12,9 @@
  * for it ({@link sendOnce}), so a `412` means another write got there first, never this one meeting itself after a
  * lost response. A transient failure reaches the caller as {@link TransientError}: the write may or may not have
  * landed, and the caller re-reads the row to learn where it stands. Reads are strongly consistent (S3, since 2020),
- * satisfying the registry's `strongRead` contract. The client is **injected**, exactly like {@link S3StorageDriver}.
+ * satisfying the registry's `strongRead` contract, and each can be timed as the storage driver's are ({@link timedRead}):
+ * with `readTimeoutMs` set, a row's `GetObject` that has not finished, body included, after it throws
+ * {@link TransientError}. It is off by default, and the writes and listings are never timed. The client is **injected**, exactly like {@link S3StorageDriver}.
  *
  * **Deployment requirements** (a backend/policy that violates these silently corrupts the registry):
  * - The backend **must honor `If-Match`** (AWS S3; recent MinIO). One that returns ETags but ignores the
@@ -39,6 +41,7 @@ import {
   PutObjectCommand,
   type S3Client,
 } from '@aws-sdk/client-s3';
+import { resolveReadTimeoutMs, timedRead } from './read-timeout';
 import { isConditionalConflict, isNotFound, isTransient } from './s3-errors';
 import { sendOnce } from './send-once';
 
@@ -51,6 +54,18 @@ export interface S3RegistryDriverOptions {
   readonly prefix?: string;
   /** Injected clock for `createdAt`/`updatedAt`; defaults to `Date.now`. */
   readonly now?: () => number;
+  /**
+   * How long one read of a row — its `GetObject`, the body included — may take before it is abandoned and throws
+   * `TransientError`, in ms. `0`, the default, sets no timeout. Must be a non-negative safe integer no larger than
+   * 2,147,483,647. Writes and listings are not timed.
+   *
+   * The clock starts when the read is handed to the SDK, so it also counts the time the read waits for one of the
+   * client's sockets (50 by default) and the time spent fetching credentials, and under `retryMode: 'adaptive'` the
+   * SDK's rate-limiter wait. A burst of concurrent reads larger than the socket pool can therefore time out with
+   * nothing slow on the wire: size the timeout above the worst queueing your concurrency implies, or raise the client's
+   * `maxSockets`. On a client built with `cacheMiddleware: true`, a timed read resolves its middleware each time.
+   */
+  readonly readTimeoutMs?: number;
 }
 
 /** The three calls {@link ObjectStoreRegistry} needs, in S3's dialect. */
@@ -60,29 +75,43 @@ class S3Store implements ObjectRegistryStore {
   constructor(
     private readonly client: S3Client,
     private readonly bucket: string,
+    private readonly readTimeoutMs: number,
   ) {}
 
-  async read(key: string): Promise<ObjectRow | null> {
-    let res;
-    try {
-      res = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }));
-    } catch (err) {
-      if (isNotFound(err)) return null;
-      throw mapError(err);
-    }
-    // Check the advertised length BEFORE allocating, so a hostile object cannot make us buffer it first.
-    if ((res.ContentLength ?? 0) > MAX_ROW_BYTES) {
-      throw new IntegrityError(
-        `registry object ${res.ContentLength}B exceeds cap ${MAX_ROW_BYTES}B`,
-      );
-    }
-    if (res.Body === undefined) {
-      throw new IntegrityError(`registry object has an empty body: ${key}`);
-    }
-    const bytes = await (
-      res.Body as { transformToByteArray(): Promise<Uint8Array> }
-    ).transformToByteArray();
-    return { bytes, version: res.ETag ?? '' };
+  read(key: string): Promise<ObjectRow | null> {
+    return timedRead('GetObject', this.readTimeoutMs, async (options) => {
+      let res;
+      try {
+        res = await this.client.send(
+          new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+          options,
+        );
+      } catch (err) {
+        if (isNotFound(err)) return null;
+        throw mapError(err);
+      }
+      try {
+        // Check the advertised length BEFORE allocating, so a hostile object cannot make us buffer it first.
+        if ((res.ContentLength ?? 0) > MAX_ROW_BYTES) {
+          throw new IntegrityError(
+            `registry object ${res.ContentLength}B exceeds cap ${MAX_ROW_BYTES}B`,
+          );
+        }
+        if (res.Body === undefined) {
+          throw new IntegrityError(`registry object has an empty body: ${key}`);
+        }
+        const bytes = await (
+          res.Body as { transformToByteArray(): Promise<Uint8Array> }
+        ).transformToByteArray();
+        return { bytes, version: res.ETag ?? '' };
+      } catch (err) {
+        // A row refused before its body is read would otherwise hold its connection open until the server gives up
+        // on it; destroying the body closes the socket. On a body that already failed it changes nothing.
+        destroyBody(res.Body);
+        // A body cut off part-way is a dropped connection, and transient; a refused row is not.
+        throw err instanceof IntegrityError ? err : mapError(err);
+      }
+    });
   }
 
   async write(
@@ -135,6 +164,11 @@ class S3Store implements ObjectRegistryStore {
   }
 }
 
+/** Destroy a response body left unread, which releases its connection; a body with no `destroy` is left alone. */
+function destroyBody(body: unknown): void {
+  (body as { destroy?: () => void } | undefined)?.destroy?.();
+}
+
 /** Reclassify a transient S3 fault as a retryable {@link TransientError}; pass everything else through. */
 function mapError(err: unknown): unknown {
   if (isTransient(err)) {
@@ -149,7 +183,7 @@ function mapError(err: unknown): unknown {
 export class S3RegistryDriver extends ObjectStoreRegistry {
   constructor(options: S3RegistryDriverOptions) {
     super(
-      new S3Store(options.client, options.bucket),
+      new S3Store(options.client, options.bucket, resolveReadTimeoutMs(options.readTimeoutMs)),
       normalizeObjectPrefix(options.prefix),
       options.now ?? ((): number => Date.now()),
     );
