@@ -1,4 +1,8 @@
 import { randomBytes } from 'node:crypto';
+import { aadFor } from '@/core/crypto';
+import { IntegrityError } from '@/core/errors';
+import { NodeAead } from '@/drivers/crypto';
+import { writeCrbm } from '../helpers/crbm-v1_1';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import type { EraseIdDeps } from '@/core/erase-id';
 import { nextGeneration } from '@/core/generation-gc';
@@ -76,3 +80,23 @@ describe.each(['below', 'above'] as const)(
     });
   },
 );
+
+describe('erasure with an encrypted object the segment key does not open', () => {
+  it('still refuses with the integrity error, and does not read it as cleartext', async () => {
+    // Sealed under a key no row holds, below an encrypted pointer: only the footer says it is encrypted, so the
+    // erasure must not take its refusal for a cleartext object's.
+    const storage = new MemoryStorageDriver();
+    const registry = new MemoryRegistryDriver();
+    const keystore = new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
+    const sealed = await writeCrbm([{ chunkKey: 0, payload: Uint8Array.of(1), cardinality: 1 }], {
+      generation: 0,
+      crypto: { aead: new NodeAead(randomBytes(32)), aadFor: (scope) => aadFor(SEG, 0, scope) },
+    });
+    await storage.putImmutable({ ...SEG, generation: 0 }, async (out) => out.write(sealed));
+    const generation = await nextGeneration(SEG, { storage, registry });
+    await bulkLoadCrbmGeneration(storage, { ...SEG, generation }, [7, 8], { registry, keystore });
+    await expect(
+      eraseIdFromSegment(SEG, 99, { storage, registry, keystore, codec: roaringCodec }),
+    ).rejects.toBeInstanceOf(IntegrityError);
+  });
+});
