@@ -22,7 +22,7 @@ so, and so do the module headers in the code.
   for one of the client's sockets (50 by default) and the time spent fetching credentials, and under
   `retryMode: 'adaptive'` the SDK's rate-limiter wait, so a burst of concurrent reads larger than the socket pool can
   time out with nothing slow on the wire: against a local stub answering each request in 50 ms, 8,000 concurrent
-  `has()` calls with `readTimeoutMs: 2_000` lost 5,428 reads. Size it above the worst queueing your concurrency
+  `has()` calls with `readTimeoutMs: 2_000` lost most of their reads. Size it above the worst queueing your concurrency
   implies, or raise `maxSockets`. AWS's S3 guidance is to retry a GET of under 512 KB after about 2 seconds; with
   `readTimeoutMs: 2_000` and the store's default retry, a read whose request stalls on every attempt fails after about
   8.35 s (4 × 2,000 ms plus up to 350 ms of backoff, derived rather than measured). Writes, multipart uploads, deletes

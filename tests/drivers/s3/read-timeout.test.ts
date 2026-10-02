@@ -447,6 +447,25 @@ describe('S3: a read is cut off at readTimeoutMs', LIMIT, () => {
     expect(stub.count('HeadObject')).toBe(1);
   });
 
+  it('that HEAD gets a timeout of its own, not what the GET before it left', async () => {
+    const timed = new S3Storage({ ...stub.options(), readTimeoutMs: 600 });
+    try {
+      stub.ignoreRange = true;
+      stub.arm('GetObject', { kind: 'delay', ms: 400 });
+      stub.arm('HeadObject', { kind: 'delay', ms: 400 });
+      const started = Date.now();
+
+      const tail = await settle(timed.storage.getTail(GEN, BYTES.length));
+
+      expect(tail).toMatchObject({ value: { size: BYTES.length } });
+      // The two together outlast one timeout, so one clock across both would have cut the HEAD off.
+      expect(Date.now() - started).toBeGreaterThan(600);
+      expect(stub.count('HeadObject')).toBe(1);
+    } finally {
+      timed.client.destroy();
+    }
+  });
+
   it('a fast read is unaffected', async () => {
     const range = await settle(backend.storage.getRange(GEN, 8, 4));
     expect(range).toMatchObject({ value: new Uint8Array([8, 9, 10, 11]) });
@@ -549,7 +568,7 @@ describe('S3: a read is cut off at readTimeoutMs', LIMIT, () => {
     }
   });
 
-  it('a 5xx and then a stall: the timer runs from the first attempt, not from the retry', async () => {
+  it("a 5xx and then a stall: the SDK's own retry runs inside the timed read, and the stall still times out", async () => {
     const timed = new S3Storage({ ...stub.options(), readTimeoutMs: 1_000 });
     try {
       stub.arm('GetObject', { kind: 'status', status: 500 });
