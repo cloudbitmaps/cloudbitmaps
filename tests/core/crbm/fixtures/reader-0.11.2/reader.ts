@@ -1,7 +1,8 @@
 // The `.crbm` reader exactly as 0.11.2 shipped it (packages/core/src/core/crbm/reader.ts at the v0.11.2 tag), kept so
-// a test can open what this build writes with the reader a deployed 0.11 process runs. Only the import paths
-// differ; `format.ts` beside it is that release's constants. Never edit either to make a test pass: a failure
-// here means 0.11 cannot read an object this build writes.
+// a test can open what this build writes with the reader a deployed 0.11 process runs. Only three import paths
+// differ, for the error classes and two types; `format.ts`, `crc32c.ts` and `varint.ts` beside it are that
+// release's too. Never edit any of them to make a test pass: a failure here means 0.11 cannot read an object this
+// build writes, and the compatibility test checks each file's hash.
 /**
  * `CrbmReader` — speculative-tail-read reader for one `.crbm` generation.
  *
@@ -19,8 +20,8 @@
 import { IntegrityError, UnsupportedError, ValidationError } from '@/core/errors';
 import type { BlobReader } from '@/core/blob';
 import type { CrbmCrypto } from '@/core/crypto';
-import { crc32c } from '@/core/crbm/crc32c';
-import { readVarint } from '@/core/crbm/varint';
+import { crc32c } from './crc32c';
+import { readVarint } from './varint';
 import {
   AEAD_NONCE_BYTES,
   AEAD_TAG_BYTES,
