@@ -99,7 +99,7 @@ with the pointer in the same bucket as the data. It was driven from a laptop out
 | The same, with each pointer read once | 204 GET | $0.0000816 | $81.60 | expected |
 | Write and publish a 1.05 MB segment, pointer included | 2 PUT + 3 GET | $0.0000112 | **$11.20** | derived |
 | Write and publish a 12.6 MB segment, multipart | 5 PUT-class + 3 GET | $0.0000262 | **$26.20** | derived |
-| A segment's first `store.load()`, single-part | 4 PUT-class + 7 GET | $0.0000228 | $22.80 | expected |
+| A segment's first `store.load()`, single-part | 3 PUT-class + 6 GET | $0.0000174 | $17.40 | expected |
 
 **Derived** rows are measured request counts times the `aws-us-east-1-ondemand` list prices. **Expected** rows are
 what the code predicts where the run did not measure: the first from the measured chunk and tail reads with each
@@ -270,9 +270,9 @@ The loaded store's own measurements are the next benchmark pass. The single-buck
 - **Intersect latency** — in-region wall-clock for a chunk-skipping `A ∩ B`, and for `andNot` with a large
   `exclude`, against a real object store rather than in memory; then the `*Into` verbs, and the sweep over operand
   count and chunk overlap.
-- **What `store.load()` costs on S3.** The run measured a load's write and publish. `store.load()` adds a listing
-  to choose the generation number and a collection pass after the publish. A test counts the requests that adds,
-  which about doubles a load's bill; they are not yet measured on S3. The harness times `store.load()` itself, so
+- **What `store.load()` costs on S3.** The run measured a load's write and publish. `store.load()` adds a check that
+  its generation number is free and a collection pass after the publish. A test counts the requests that adds, about
+  half a load's bill again; they are not yet measured on S3. The harness times `store.load()` itself, so
   its next run measures them.
 - **A Lambda figure** — a function's cold start and initialisation against a real store, from inside one.
 

@@ -130,15 +130,15 @@ Redis OSS cluster that would hold each one's data:
 <!-- SIZING:WHY_SIZES:START -->
 | | data | CloudBitmaps a month | the Redis that holds it | CloudBitmaps costs |
 |---|---:|---:|---:|---:|
-| **Small** — a product team keeping its user cohorts | 200 MB | $3.35 | $35.04 | **90% less** |
+| **Small** — a product team keeping its user cohorts | 200 MB | $3.32 | $35.04 | **91% less** |
 | **Medium** — an ad platform matching audiences | 20 GB | $281 | $900 | **69% less** |
-| **Large** — a marketplace filtering its catalogue | 2 TB | $6,771 | $27,325 | **75% less** |
+| **Large** — a marketplace filtering its catalogue | 2 TB | $6,736 | $27,325 | **75% less** |
 <!-- SIZING:WHY_SIZES:END -->
 
 <!-- SIZING:WHY_CAVEATS:START -->
-Each Redis is the cheapest on-demand ElastiCache for Redis OSS cluster in the estimator's catalogue that holds the data, every shard a primary and two replicas: the cheapest of one kind, not the least Redis could cost. Against [ElastiCache for Valkey](https://aws.amazon.com/elasticache/pricing/), which AWS prices 20% lower a node, CloudBitmaps costs 88% less, 61% less and 69% less; with one replica a shard, 86% less, 53% less and 63% less; with both, 82% less, 41% less and 54% less. Reserved nodes cost less again, and stack on both: on a one-year term with nothing upfront, CloudBitmaps costs 74% less, 14% less and 32% less, and on three years paid upfront, 60% less, 1.3× as much and 1.03× as much, so a Redis bought all three ways costs less than CloudBitmaps at the medium and large sizes.
+Each Redis is the cheapest on-demand ElastiCache for Redis OSS cluster in the estimator's catalogue that holds the data, every shard a primary and two replicas: the cheapest of one kind, not the least Redis could cost. Against [ElastiCache for Valkey](https://aws.amazon.com/elasticache/pricing/), which AWS prices 20% lower a node, CloudBitmaps costs 88% less, 61% less and 69% less; with one replica a shard, 86% less, 53% less and 63% less; with both, 82% less, 42% less and 54% less. Reserved nodes cost less again, and stack on both: on a one-year term with nothing upfront, CloudBitmaps costs 74% less, 15% less and 32% less, and on three years paid upfront, 61% less, 1.3× as much and 1.03× as much, so a Redis bought all three ways costs less than CloudBitmaps at the medium and large sizes.
 
-All three assume that two segments share 100 of their 2,000 chunks, and filters over one catalogue or one audience can share most of theirs: at 1,000 shared chunks, the medium and large deployments cost 2.4× and 1.6× their Redis, and their bills pass it at 395 and 589 shared chunks.
+All three assume that two segments share 100 of their 2,000 chunks, and filters over one catalogue or one audience can share most of theirs: at 1,000 shared chunks, the medium and large deployments cost 2.4× and 1.6× their Redis, and their bills pass it at 395 and 590 shared chunks.
 
 The large deployment's 200,000 segments are past the roughly 100,000 the library has been validated at, and its readers would need an index budget and a chunk cache far past their defaults ([what each reader holds](docs/guide/sizing.md#what-each-reader-holds)), in memory not priced here.
 <!-- SIZING:WHY_CAVEATS:END -->

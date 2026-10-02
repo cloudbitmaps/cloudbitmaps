@@ -257,8 +257,11 @@ export function storageDriverConformance(
       const d = makeDriver();
       await expect(d.getRange(key(0), 0, 10)).rejects.toBeInstanceOf(NotFoundError);
       await expect(d.getTail(key(0), 10)).rejects.toBeInstanceOf(NotFoundError);
+      // A zero-byte tail is how a load checks that the generation number it is about to take is free.
+      await expect(d.getTail(key(0), 0)).rejects.toBeInstanceOf(NotFoundError);
       await putBytes(d, key(1), patterned(100));
       await expect(d.getRange(key(0), 0, 10)).rejects.toBeInstanceOf(NotFoundError); // a neighbour is not it
+      await expect(d.getTail(key(0), 0)).rejects.toBeInstanceOf(NotFoundError);
     });
 
     test('out-of-range read', async () => {

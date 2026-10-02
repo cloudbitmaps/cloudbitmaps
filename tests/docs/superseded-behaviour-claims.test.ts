@@ -321,6 +321,11 @@ const FIXED = String.raw`(?:(?:never|does not|doesn't|will not|won't) (?:changes
 const STAYS = String.raw`\b(?:(?:stays?|remains?|stuck|sticks?|freezes?|frozen|locks?|locked)(?<!\b(?:not|never|no) \w+)|(?<!\b(?:not|never|no)|n't) keeps? (?:serving|using|reading)) (?:(?:on|at|to|with|in) )?(?:(?:each|every|its|their|the|one|a) )?(?:(?!(?:newest|latest) )[\w'-]+ )?(?:segments?|generations?|snapshots?|pointers?)\b(?!${UNTIL_MOVED})`;
 
 /** Phrases that describe the library's behaviour falsely, each with what to say instead. */
+/** A load as a sentence's subject: one, the, each or every load (a later or next one too), or loads. */
+const A_LOAD = String.raw`\b(?:(?:an?|the|each|every)(?: later| next)? load|loads)\b`;
+/** What a true sentence about a load's numbering names: the check and what it finds, or the writers that list. */
+const NUMBERING_CONDITION = String.raw`\b(?:check(?:s|ed)?|taken|meets?|holds?|held|cannot answer|erasure|rewrite|nextGeneration)\b`;
+
 const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: string }> = [
   {
     claim: new RegExp(g(String.raw`publish(?:es|ing)? an empty generation over \`?dest`), 'i'),
@@ -572,6 +577,56 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
   {
     claim: new RegExp(g(String.raw`no \`?AbortSignal\`? anywhere in (?:this|the) library`), 'i'),
     why: "the S3 and Azure Blob packages abort a read that runs past `readTimeoutMs` through its request's abort signal — say that no write is timed",
+  },
+  // A load's numbering. A true sentence about it says the condition the retired rule left out: the check finding the
+  // number taken, an object holding it, or another writer, the erasure rewrite or `nextGeneration`, which still number
+  // above everything. The first three entries leave alone a sentence that names one of these anywhere in it, and refuse
+  // one that states the rule without it; such a sentence passes reworded to say it ("once its check meets one, a load
+  // numbers above them all"), and the cases below show each collision with its rewording.
+  {
+    claim: new RegExp(
+      g(
+        String.raw`(?<!${NUMBERING_CONDITION}[^.]{0,160})${A_LOAD}(?![^.]{0,160}${NUMBERING_CONDITION})[^.]{0,80}?\b(?:one )?above the highest\b`,
+      ),
+      'i',
+    ),
+    why: 'a load takes `currentGen + 1` when no object holds it, and numbers above everything in the bucket only when its check finds that number taken or cannot answer',
+  },
+  {
+    claim: new RegExp(
+      g(
+        String.raw`(?<!${NUMBERING_CONDITION}[^.]{0,160})${A_LOAD} (?:numbers?|is numbered|are numbered) (?:its generation |their generations? )?above (?:them|it)\b(?![^.]{0,160}${NUMBERING_CONDITION})`,
+      ),
+      'i',
+    ),
+    why: 'a load can number below an object above the pointer: such objects stay until loads pass them (the first whose number one of them holds numbers above them all), or until a generation above them is current',
+  },
+  {
+    claim: new RegExp(
+      g(
+        String.raw`(?<!${NUMBERING_CONDITION}[^.]{0,160})\b(?:lists?|listing|listings)\b(?: the segment)?(?: twice)?[^.]{0,30}?\b(?:to (?:choose|number)|that numbers?) (?:the|a|its) generation(?: number)?\b(?![^.]{0,160}${NUMBERING_CONDITION})`,
+      ),
+      'i',
+    ),
+    why: 'a load checks that its generation number is free with one metadata request, and lists the segment for it only when the check finds the number taken',
+  },
+  {
+    claim: new RegExp(
+      g(
+        String.raw`store\.load\([^)]*\)[^.]{0,200}?\babout (?:twice|doubles?)\b|\babout doubles a load(?:'|’)s bill\b`,
+      ),
+      'i',
+    ),
+    why: "store.load() adds about half the write and publish's bill again, not as much again",
+  },
+  {
+    claim: new RegExp(
+      g(
+        String.raw`\b(?:reads (?:the |its )?(?:registry )?pointer seven times|seven (?:registry )?pointer reads)\b`,
+      ),
+      'i',
+    ),
+    why: "a segment's first load reads the pointer five times and checks its generation number once",
   },
 ];
 
@@ -1037,6 +1092,28 @@ describe('no document claims behaviour this library does not have', () => {
     'This library sets no request timeout of its own.',
     '- **Set a request timeout.** There is no `AbortSignal` anywhere in this library —',
     'there is no AbortSignal anywhere in the\n  library',
+    // A load's numbering and cost as they were, and the paraphrases an honest rewrite would produce.
+    'a load takes the next number itself: one above the highest the registry points at or that is present in the bucket',
+    'A load numbers its generation one above the highest of the pointer and any object in the bucket',
+    'The load takes one above the highest generation.',
+    'Each load numbers its generation one above the highest.',
+    'Loads number their generation one above the highest of the pointer and the bucket.',
+    'a load numbers its generation above the highest present',
+    'a load numbers its generation above them, and its collection never touches them',
+    'They remain until a load numbers above them.',
+    'until the next load numbers above them',
+    'a later load numbers above it',
+    'a later load is numbered above them',
+    '`store.load()` adds the listings that number\n            the generation and collect what it supersedes',
+    '`store.load()` also lists the segment to choose a generation number',
+    'adds a listing to choose the generation number',
+    'lists the segment twice (to choose the generation number, and to collect',
+    '`store.load()` is expected at about twice that',
+    '`store.load(ref, ids)` costs about twice the write and publish',
+    "which about doubles a load's bill",
+    'and reads the pointer seven times even with nothing racing it',
+    'it reads the registry pointer seven times',
+    'a first load makes seven pointer reads',
   ])('catches the refused form %j', (text) => {
     expect(hitsIn('x.md', text)).not.toEqual([]);
   });
@@ -1155,6 +1232,16 @@ describe('no document claims behaviour this library does not have', () => {
     'No S3 or Azure Blob write has a timeout of its own.',
     "An erasure's writes are not retried; its reads are.",
     "An erasure's reads are retried, and its writes are not retried.",
+    // A load's numbering, true: each names the check, what it finds, or the writer that lists.
+    'When its check meets one of them, a load numbers above them all.',
+    'When the check finds the number taken, a load numbers one above the highest of the pointer and every object in the bucket.',
+    'A load whose check meets an object lists the segment to number its generation above everything in it.',
+    'The erasure rewrite lists the segment to number its generation above everything in the bucket.',
+    'A load numbers above them all once its check meets one.',
+    'A load takes `currentGen + 1` while no object holds it, and otherwise numbers above everything in the bucket.',
+    '`nextGeneration` lists the segment to number the next generation above everything in it.',
+    '`store.load()` is expected at about half as much again.',
+    'A first load reads the pointer five times and checks its generation number once.',
   ])('leaves %j alone', (text) => {
     expect(hitsIn('x.md', text)).toEqual([]);
   });
@@ -1234,6 +1321,16 @@ describe('no document claims behaviour this library does not have', () => {
     [
       'A store with no clock re-resolves a segment only when it is invalidated, evicted or swept.',
       'A store with no clock re-resolves a segment on an invalidation, an eviction or a swept read.',
+    ],
+    // A load's numbering: true after a plain rollback, whose generation above the pointer the check then meets,
+    // but stated without the check; and a sum that reads as the cost claim.
+    [
+      'After a rollback, the next load numbers above them.',
+      'After a rollback, the next load finds the generation above the pointer held, and numbers above them all.',
+    ],
+    [
+      'Two store.load() calls cost about twice what one does.',
+      'Two calls of store.load() cost twice what one does.',
     ],
   ])('refuses %j, though true, and passes it reworded', (refused, reworded) => {
     expect(hitsIn('x.md', refused)).not.toEqual([]);

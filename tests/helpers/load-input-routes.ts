@@ -31,6 +31,7 @@ export const ROUTED: readonly string[] = [
   'tests/core/expired-exclusion.test.ts',
   'tests/core/generation-gc.test.ts',
   'tests/core/intersect.test.ts',
+  'tests/core/live-read-reused-number.test.ts',
   'tests/core/load-routing.test.ts',
   'tests/core/load.test.ts',
   'tests/core/materialize-expiry-guard.test.ts',
@@ -67,6 +68,12 @@ export const IDS_ONLY: Readonly<Record<string, string>> = {
   'tests/core/bulk-load-cooperative.test.ts':
     'counts the yields of the id ingest and per-chunk flush loops, which a bitmap input never runs; the ' +
     "bitmap path's own yields, the writer's every 1,024 chunks, are tested in roaring/load-no-per-id.test.ts",
+  'tests/core/load-row-reuse.test.ts':
+    'injects its races from inside the id stream (a row write while the ids are read), which routing drains ' +
+    'before the load reads the row, so the race would land before the load starts',
+  'tests/core/load-numbering.test.ts':
+    'injects its race from inside the id stream (an object written while the ids are read), which routing ' +
+    'drains before the load numbers its generation, so the race would land before the load starts',
   'tests/core/load-input.test.ts':
     'tests the inputs themselves (the byte-array refusal, malformed bytes, the wrappers), so converting its ids ' +
     'would test the conversion instead',

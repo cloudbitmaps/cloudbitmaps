@@ -285,8 +285,9 @@ A crypto-shredded segment throws `ValidationError`, since every generation of it
 generation already current is a reported no-op.
 
 **What happens to the generations above the new pointer.** They stay, which is what makes a rollback reversible. They
-are then above `currentGen`, where collection never looks. They remain until one of three things happens. A load
-numbers above them, and collection then keeps the newest `keep` of what is below its pointer. Or `dropSegment` deletes
+are then above `currentGen`, where collection never looks. They remain until one of three things happens. Loads pass
+them: each takes the next number up while no object holds it, the first whose number one of them holds numbers above
+them all, and collection then keeps the newest `keep` of what is below its pointer. Or `dropSegment` deletes
 them. Or an erasure deletes them: all of them when it rewrites, only those that hold the id when the current
 generation does not. Rollback is audited as
 `segment.rollback`, because every other pointer move can be reconstructed from "a load happened" and this one cannot.
@@ -373,10 +374,15 @@ refused. `store.exists()` answers `false` for the first two, since a read of the
 
 This section is the mechanism. You do not need it to use a load, and it is here so you can check the guarantees.
 
-**Generation numbering is the load's.** Generations are write-once, and a load takes the next number itself: one above
-the highest the registry points at or that is present in the bucket, whichever is higher. A brand-new segment starts
-at `0`. Both are consulted on purpose. A load that wrote its object and crashed before publishing leaves an object
-above `currentGen`, and a writer consulting only the pointer would pick that same number and conflict on every retry.
+**Generation numbering is the load's.** Generations are write-once, and a load takes the next number itself: the one
+after the pointer it read, `currentGen + 1`, when one existence check finds no object holding it, and otherwise one
+above the pointer and above every object in the bucket, from a listing. A brand-new segment starts at `0`. The check is
+there on purpose. A load that wrote its object and crashed before publishing leaves an object above `currentGen`, and a
+writer consulting only the pointer would pick that same number and conflict on every retry. A load can therefore
+number below an object above the pointer, such as one a rollback left there, but never onto one: write-once refuses a
+put to a number an object holds, and a load that loses that race reports `superseded`. A number whose object was
+deleted can be taken again, so nothing identifies a generation by its number alone: caches key on the number and the
+row's token, and a reader that finds the object under its number replaced re-reads the segment.
 
 **Publish is forward-only, so a rerun is safe.** The object is written first. Only once it is durable does the load
 advance the registry pointer, with a compare-and-swap that never moves backwards. Run the same job twice and the second
@@ -426,9 +432,8 @@ row afterwards and reconcile with it:
 
 - On a tombstone, the row must still be the same row, compared by its **token**. A generation number is not an
   identity, and a re-created name can wear the very `currentGen` the tombstone held.
-- On the ordinary branch, the cutoff becomes the **lower** of the two pointers. A load numbers its generation one above
-  the highest of the pointer and any object in the bucket, so numbering restarts at 0 once a row is purged and the
-  bucket emptied. A re-created name then wears a lower pointer than the one read before the listing, and deleting
+- On the ordinary branch, the cutoff becomes the **lower** of the two pointers. A load numbers its generation from the
+  pointer and what is in the bucket, so numbering restarts at 0 once a row is purged and the bucket emptied. A re-created name then wears a lower pointer than the one read before the listing, and deleting
   "everything below it" would take the new incarnation's live object. A publish landing mid-listing moves the pointer
   forward and so changes nothing, which is what keeps routine collection working on a busy segment.
 

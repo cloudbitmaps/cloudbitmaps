@@ -15,14 +15,15 @@
  *
  * Refusing therefore has to clean up after itself. The object is already durable at that point, and it sits
  * ABOVE `currentGen`, where generation collection deliberately never looks (it deletes strictly below the
- * pointer), so a refused load deletes its own object before returning, while the segment's row is unchanged or
- * gone. Once another write has changed the row, the object's number may name a re-created segment's live object,
- * so it stays, and collection takes it like any other generation once one above it is current.
+ * pointer), so a refused load deletes its own object before returning, while the segment's row is unchanged, gone
+ * or `destroyed`. Once another write has changed the row, the object's number may name a re-created segment's live
+ * object, so it stays, and collection takes it like any other generation once one above it is current.
  */
 import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
 import { type CodecInterface, requireCodec } from './codec';
 import {
   bulkLoadCrbmGeneration,
+  holdsObject,
   openGenerationReader,
   publishGeneration,
 } from './crbm-storage-source';
@@ -33,9 +34,10 @@ import {
   KeyUnavailableError,
   ValidationError,
   isNotFoundError,
+  isValidationError,
   isWriteConflictError,
 } from './errors';
-import { gcOrphanGenerations, nextGeneration } from './generation-gc';
+import { gcOrphanGenerations, nextLoadGeneration } from './generation-gc';
 import { type LoadInput, prepareLoadInput } from './load-input';
 import { type ReadRetry, retryRead } from './retry';
 import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef, Token } from './ports';
@@ -110,14 +112,15 @@ export type LoadRefusal =
    * put refused this one and it wrote nothing (`size: 0`); or the segment's registry row changed while the load was
    * writing: another load published, a retention change, a rollback or an erasure wrote the row, or the row was
    * deleted. Once another write has changed the row, the object stays in the bucket, because its generation number
-   * may by then name another incarnation's live object; once the row is gone, the object is deleted.
+   * may by then name another incarnation's live object; once the row is `destroyed` (dropped or crypto-shredded),
+   * the object is deleted, and once the row is gone, so is an object its footer proves this load's own.
    */
   | 'superseded';
 
 export interface LoadResult {
   /**
    * The generation written. Present even when refused: a refusal deletes that object while the segment's row is
-   * unchanged or gone, and leaves it in the bucket once another write has changed the row. A load that lost its
+   * unchanged or `destroyed`, or gone once its footer proves it this load's own, and leaves it in the bucket once another write has changed the row. A load that lost its
    * generation number to another wrote nothing, and reports `size: 0`.
    */
   readonly generation: number;
@@ -234,8 +237,12 @@ export async function loadSegment(
   // Still before any round trip: a malformed input costs none, and a `{ bitmap }` is the bitmap as of this call.
   const ids = prepareLoadInput(input, codec);
 
-  // One row read, used for three things: the guard's "before", the incarnation this call is acting on, and the
-  // pointer it derived its decision from.
+  // One row read, and on a cleartext segment the only one before the publish: the guard's "before", the incarnation
+  // this call is acting on, the pointer it derived its decision from, the number it takes next, the write's
+  // destroyed check, and the publish's first attempt all come from it. Reusing it is sound because the publish is
+  // fenced on this row (its token, the pointer the guard judged, or its absence), so a row that changes before then
+  // makes the publish lose rather than land on the strength of a stale read. The write reads the row again after
+  // the ids when this read found none, or found key material (see `bulkLoadCrbmGeneration`'s `row`).
   const row = await deps.registry.get(ref);
   const fromToken: Token | undefined = row?.token;
   const fromGeneration = row?.currentGen ?? undefined;
@@ -246,7 +253,7 @@ export async function loadSegment(
   const needsBefore = guard?.minRetained !== undefined || options.allowEmpty !== true;
   const before = needsBefore ? await currentCardinality(ref, deps, row) : null;
 
-  const generation = await nextGeneration(ref, deps);
+  const generation = await nextLoadGeneration(ref, deps, row);
   const key = { namespace: ref.namespace, segment: ref.segment, generation };
 
   // `publish: false`, deliberately: the guard has to run while the old generation is still authoritative, so the
@@ -262,6 +269,7 @@ export async function loadSegment(
       requireEncryption: deps.requireEncryption,
       codec: deps.codec,
       clock: deps.clock,
+      row,
     });
   } catch (err) {
     // Another loader took this generation number first — write-once refused the second put. That is a lost race,
@@ -291,18 +299,43 @@ export async function loadSegment(
     };
   }
 
-  const refuse = async (reason: LoadRefusal): Promise<LoadResult> => {
-    // The object is durable and sits above `currentGen`, where collection never looks until a later load numbers
-    // above it, so the refusal reclaims it here — but ONLY while this is still the same segment.
-    //
-    // A generation number identifies a generation within one incarnation of a row, and nothing more (invariant
-    // 1). If the row was purged and the name re-created while this load was in flight, `nextGeneration` restarts
-    // from 0 and the number this call is holding can name the NEW incarnation's live object. Deleting it would
-    // put an active row over a missing generation — the forbidden `missing-storage-generation` state, produced by
-    // the one code path whose whole purpose is to prevent data loss. Leaving an orphan behind is strictly the
-    // better failure: it costs storage until something collects it, rather than costing a live segment.
+  /**
+   * Reclaim this load's object after a DEFINITE refusal: a guard that said no before any publish, or a publish that
+   * answered `false` or threw a refusal of its own. Never after an ambiguous outcome (a lost response, a timeout):
+   * a publish that may still land must not find its object gone.
+   *
+   * The object is durable and sits above `currentGen`, where collection never looks until a generation above it is
+   * current, so the refusal reclaims it here, and deletes only what it can prove is its own. A generation number
+   * identifies a generation within one incarnation of a row, and nothing more (invariant 1): once the row was
+   * purged, the object under this load's key can be another writer's, because a re-created name's numbering restarts
+   * and its loads take numbers a drop or a collection freed, this one included. Deleting that would put a row over a
+   * missing generation, the forbidden `missing-storage-generation` state; leaving an orphan behind is strictly the
+   * better failure.
+   *
+   * - The same row (an unchanged token): nothing was written since this load read it, so the number is its own.
+   * - A `destroyed` row: no reader resolves any of its generations, so whatever is under the key is garbage.
+   * - No row, or a row with key material when this load wrote cleartext (a cleartext object has no place in an
+   *   encrypted segment's bucket, where a rollback could point at it and a shred would attest its bytes unreadable):
+   *   the object under the key must be proved this load's by its fingerprint, from one read of its footer. One that
+   *   is gone, is another object, or cannot be read is kept.
+   */
+  const reclaim = async (): Promise<void> => {
     const now = await deps.registry.get(ref);
-    if (now === null || now.token === fromToken) await deps.storage.delete(key);
+    if (now !== null && (now.token === fromToken || now.status === 'destroyed')) {
+      await deps.storage.delete(key);
+      return;
+    }
+    const keyed = now !== null && now.wrappedDeks !== undefined && now.wrappedDeks.length > 0;
+    if (
+      (now === null || (keyed && !written.encrypted)) &&
+      (await holdsObject(deps.storage, key, written.fingerprint))
+    ) {
+      await deps.storage.delete(key);
+    }
+  };
+
+  const refuse = async (reason: LoadRefusal): Promise<LoadResult> => {
+    await reclaim();
     audit.onEvent({
       kind: 'segment.load-refused',
       segment: ref.segment,
@@ -349,19 +382,34 @@ export async function loadSegment(
   // `expectToken` goes on regardless. It is incarnation identity rather than a derivation fence, it costs
   // nothing legitimate — a token only changes when the row does — and it is what stops this call publishing
   // into a segment that merely reuses the name it started with.
-  const published = await publishGeneration(deps.registry, key, {
-    wrappedDeks: written.wrappedDeks,
-    ...(fromToken === undefined ? {} : { expectToken: fromToken }),
-    ...(needsBefore && fromGeneration !== undefined ? { expectFrom: fromGeneration } : {}),
-    // The third case, and the one the two fences above structurally cannot cover: the guard judged a segment
-    // that had NO ROW. Both `expectFrom` and `expectToken` compare against a value read from a row, so with no
-    // row both are omitted and the publish becomes a bare forward-only advance — which lands over anything
-    // that appeared in between. `before` was `null`, so the empty and `minRetained` bounds had nothing to
-    // judge and passed vacuously. Verified: an empty generation published over a thousand ids that a
-    // concurrent writer had created meanwhile, reporting success. A guarded write therefore has to fence on
-    // the ABSENCE it relied on, exactly as it fences on the pointer it relied on.
-    ...(needsBefore && row === null ? { expectAbsent: true } : {}),
-  });
+  let published: boolean;
+  try {
+    published = await publishGeneration(deps.registry, key, {
+      row,
+      wrappedDeks: written.wrappedDeks,
+      cleartext: !written.encrypted,
+      ...(fromToken === undefined ? {} : { expectToken: fromToken }),
+      ...(needsBefore && fromGeneration !== undefined ? { expectFrom: fromGeneration } : {}),
+      // The third case, and the one the two fences above structurally cannot cover: the guard judged a segment
+      // that had NO ROW. Both `expectFrom` and `expectToken` compare against a value read from a row, so with no
+      // row both are omitted and the publish becomes a bare forward-only advance — which lands over anything
+      // that appeared in between. `before` was `null`, so the empty and `minRetained` bounds had nothing to
+      // judge and passed vacuously. Verified: an empty generation published over a thousand ids that a
+      // concurrent writer had created meanwhile, reporting success. A guarded write therefore has to fence on
+      // the ABSENCE it relied on, exactly as it fences on the pointer it relied on.
+      ...(needsBefore && row === null ? { expectAbsent: true } : {}),
+    });
+  } catch (err) {
+    // A refusal the publish states by throwing is as definite as a `false`: each of these is raised before that
+    // attempt's compare-and-swap or create is sent, so nothing landed from it. `publishGeneration` raises three: a
+    // `destroyed` row (no fence answered first, as for an unguarded load that found no row), new key material for a
+    // segment that already has a generation, and a cleartext object for a row with key material. The registries raise
+    // a `ValidationError` only from checks made before a write is sent (the ref, the record or patch, the row's size
+    // cap), and never a `KeyUnavailableError`. Anything else, a transient fault above all, may still land, and keeps
+    // the object.
+    if (isValidationError(err) || err instanceof KeyUnavailableError) await reclaim();
+    throw err;
+  }
   if (!published) return refuse('superseded');
 
   audit.onEvent({
