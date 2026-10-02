@@ -131,9 +131,20 @@ const store = new CloudRoaring({
     maxAttempts: 6,
     onRetry: ({ attempt, delayMs }) => log.warn({ attempt, delayMs }, 'retrying transient fault'),
   },
-  // or `retry: false` when your client already retries
+  // or `retry: false` when something else retries your reads (a GCS download is retried by the driver either way)
 });
 ```
+
+**On GCS the driver retries downloads, and the SDK should not.** In `@google-cloud/storage` 7.x and 8.x (checked on 7.22.0
+and 8.1.0), a download the SDK retries after any status it retries (408, 429, 500, 502, 503 or 504) can crash the process with
+`ERR_STREAM_UNABLE_TO_PIPE`, thrown outside any promise, even though the retried request succeeded. The client
+`GcsStorage` builds sends each download once, and the driver runs it again itself, up to three more times with
+backoff, after a reset connection, a 408, 429, 500, 502, 503 or 504 and after nothing else, so a download is retried whichever
+call made it and whether or not the store's own `retry` is on. What still fails after those attempts is a
+`TransientError`, which the store's read retry, above, can run again. The client's other requests keep the SDK's
+retries. A `client` you pass is used as it is: build it with `retryOptions: { autoRetry: false }`. That also turns off
+the SDK's retries of listings, metadata reads, deletes and resumable uploads on that client, which the library does not
+retry; the client `GcsStorage` builds keeps them and needs nothing.
 
 Only transient faults (they surface as `TransientError`) are retried. Errors that retrying cannot fix are never
 retried: `ValidationError`, `IntegrityError`, `NotFoundError` and `WriteConflictError`.
@@ -261,7 +272,7 @@ on. Re-run with a higher `budget` to finish those segments. The ledger of the er
 `intersect`'s budget is a product (surviving keys times operands), while its memory is a window
 (`concurrency × operands × chunk`) that does not depend on segment size. A request budget cannot express a memory
 bound, and `budget: false` ("I know my fan-out") must not silently also mean "unbounded RAM". A wide segment's parsed
-index can be several MB, which is why the reader cache is bounded by bytes as well as by count. Lower
+index can reach about 1.3 MB (65,536 entries at 20 B), which is why the reader cache is bounded by bytes as well as by count. Lower
 `cache.readerMaxBytes` for a memory-tight deployment, such as a 128 MB Lambda that reads across many wide segments.
 
 **Neither limits how many ids a segment can hold.** A segment holds up to the full 32-bit id space, about 4.29
@@ -347,7 +358,9 @@ writes a tombstone). So the S3 and GCS packages send a conditional write once wh
 off for that request alone. The Azure Blob package, whose retry has no per-request switch, tags each write and
 settles a conflict by reading it back. The GCS package does the same for an object above
 `simpleUploadThresholdBytes`, which uploads as a resumable session. The client is otherwise left as it is, a client
-you pass in included, and every other request it makes keeps the SDK's retry rules. A transient failure of a
+you pass in included, and every other request it makes keeps the SDK's retry rules. The one exception is a GCS
+download on the client `GcsStorage` builds, which the SDK does not retry and the driver does
+([why](#reliability-retries-backoff--timeouts)). A transient failure of a
 conditional write reaches its caller as `TransientError`, and the write may or may not have landed. Where each
 package stands:
 

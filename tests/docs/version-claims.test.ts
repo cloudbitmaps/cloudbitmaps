@@ -79,6 +79,16 @@ function isOlderLine(mm: string): boolean {
  */
 const FOREIGN_VERSIONS = new Map<string, string>([
   [
+    '8.1.0',
+    'the other @google-cloud/storage release the GCS download-retry crash was checked on (with 7.22.0). A third-party ' +
+      'version, not a claim about our release',
+  ],
+  [
+    '7.22.0',
+    "the @google-cloud/storage release the GCS download-retry crash was checked on (with 8.1.0), in the GCS package's " +
+      'README, the API reference and the production guide. A third-party version, not a claim about our release',
+  ],
+  [
     '5.0.6',
     "the Redis OSS version from which ElastiCache allows up to 500 nodes a cluster, in the getting-started guide's " +
       'note on the node quota the estimator prices past. A third-party version, not a claim about our release',

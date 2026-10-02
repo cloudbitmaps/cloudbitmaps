@@ -311,8 +311,6 @@ move it up.
     refresh kept as a longer backstop, and an `expire(ref)` that costs one lookup where `invalidate` scans the cache.
   - **Retrying at one layer.** The SDKs retry throttling and the library retries it again, so one slow request can
     become a dozen; throttling belongs to the SDK's retry alone.
-  - **An exact bound on reader memory** — the index's weight measured against the heap rather than estimated, and
-    the index held compactly.
   - **One request per pointer read on GCS and Azure**, and a one-request tail read on GCS, which accepts a suffix
     range, so their pointer reads cost what S3's do, and so do GCS's index reads. Azure takes no suffix range, so an
     Azure tail read stays two requests.

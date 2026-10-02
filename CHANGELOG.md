@@ -18,6 +18,26 @@ so, and so do the module headers in the code.
   Node is installed, and the script's `set -e` ended it there after printing "installing Node 22 with nvm", every time.
   It now runs nvm with those options off, restores them, and checks the result itself, stopping with a message if Node
   22 is still missing, and with another if nvm itself cannot be downloaded. A test runs the script's own bootstrap under its own shell options against an `nvm.sh` that returns 3.
+- **A reader's memory bound counted less than its parsed index held.** `cache.readerMaxBytes` weighs each open
+  reader by a fixed size per index entry, 160 B, and a measurement of the heap found 186–200 B retained per entry,
+  so a cache could hold more index than its budget said. The reader now keeps its parsed index as typed arrays
+  (key, cardinality, length, CRC and offset at their own widths) and reports their byte length: 20 B per entry,
+  exact, and a test measures the retained memory against it. A 2,000-entry index also parses in about 45 µs where it
+  took about 185 µs (Node 24, Apple M3 Pro, both versions bundled and timed under plain Node; inside a test runner
+  the gap is nearer 1.7×). A chunk lookup is a binary search over
+  the sorted keys. Nothing a caller sees changes except that the same budget now holds about eight times as many
+  index entries; the sizing guide's reader table is regenerated at 20 B.
+- **A GCS read the SDK retried could crash the process.** With `@google-cloud/storage` 7.x and 8.x (checked on 7.22.0 and
+  8.1.0), when a download got any status the SDK retries (408, 429, 500, 502, 503 or 504) and the SDK's own retry then succeeded, the
+  SDK threw `ERR_STREAM_UNABLE_TO_PIPE` ("Cannot pipe to a closed or destroyed stream") outside any promise and Node
+  exited with code 1, whatever the caller wrapped around the call. It hit every read through `GcsStorage` on the client
+  it built itself (tail, range and registry reads), in 0.10.0 and later. `GcsStorage` now builds a second client with
+  the SDK's request retries off and sends every download through it, and the driver retries a download itself, up to
+  three more times with backoff, after a reset connection, a 408, 429, 500, 502, 503 or 504, so each caller keeps the retry it had
+  and a store built with `retry: false` still gets it. What still fails is a `TransientError`. The client's other
+  requests (uploads, listings, metadata reads) keep the default retries. A `client` you pass is used as given: build it
+  with `retryOptions: { autoRetry: false }`, which also turns off the SDK's retries of listings, metadata reads, deletes
+  and resumable uploads on that client.
 
 ## [0.11.1] — 2026-10-01
 
