@@ -2115,7 +2115,7 @@ describe("a page's figures for store.load() are the estimator's", () => {
 //     lists, as the words around it say; with no such word, a steady load;
 //   - a cold `count()` or `stat()`: one request, one pointer read, or, where the clause says the row has no summary to
 //     use or that the index is read, the tail read it adds (two, or three on Azure Blob).
-// It never reads: a number after "was", "were", "made", "took", "from", "used to" or a 0.11 release's name (history is
+// It never reads: a number after "was", "were", "made", "took", "from" or a 0.11 release's name (history is
 // the changelog's, and says so), a range or a bound ("1 to 3", "two or three", "at most 4", "up to 8"), a count
 // of "more", "fewer" or "extra" requests, a clause about another operation nearer than the subject (an intersect, a
 // `has()`, an erasure, a rollback, a retirement, a purge, a sweep, a pointer refresh), a multipart or an encrypted
