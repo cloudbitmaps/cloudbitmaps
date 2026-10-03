@@ -38,8 +38,9 @@ take a run's numbers from one derivation, and hold them to it with one matcher.
    A run from CloudShell leaves the file in the shell's home directory; it belongs here under the same name. A
    `.partial.json` is a run that did not finish, or one whose name was taken, and is not evidence.
 2. **Check the file for anything identifying before committing it**: no account id, no ARN, no bucket URI. The
-   harness writes none. CI's leak scan looks for all three; `pnpm leak-scan` looks for them locally only with the
-   same extra patterns set in `LEAK_SCAN_EXTRA`, and reads only files git tracks, so stage the file first.
+   harness writes none. CI's leak scan looks for all three. `pnpm leak-scan` looks for an account id (any standalone
+   run of 12 digits) and an ARN on its own, and for the rest only with the same extra patterns, in
+   `.leak-needles` or `LEAK_SCAN_EXTRA`; it reads only files git tracks, so stage the file first.
 3. **Write its report.** The existing one is the template. The gate lists the headline figures a report must state
    and any figure in it the evidence cannot account for, so run it until it passes. A run that discarded a sample
    after a transient fault is evidence, its latency and request-count figures taken from the samples each stage kept,

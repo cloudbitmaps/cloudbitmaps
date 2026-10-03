@@ -7,7 +7,8 @@
 // scanned for things that must not leave the private world. Two classes of finding:
 //
 //   HARD   — always a failure, in any repo, at any time: credentials, private keys, non-noreply email
-//            addresses, and absolute local machine paths. None of these are ever correct to ship.
+//            addresses, absolute local machine paths, and AWS account ids and ARNs. None of these are ever
+//            correct to ship.
 //   MIGRATION — expected in the pre-launch repo, forbidden in the curated snapshot: references to a repo
 //            under the maintainer's own account, and dangling references to private docs (both the private
 //            path prefix AND bare numbered doc-names, which dangle just as hard without the directory).
@@ -44,11 +45,13 @@
 // Extra needles that must NOT be committed (an employer name, a real address, a former handle) go in a
 // gitignored `.leak-needles` file — one case-insensitive regex per line, `#` comments allowed — or in
 // `LEAK_SCAN_EXTRA` as a newline-separated list. Putting them in this file would itself be the leak, and their
-// matches are reported REDACTED for the same reason.
+// matches are reported REDACTED for the same reason. A linked worktree (`git worktree add`) has no copy of a
+// gitignored file, so when the checkout running the scan has no `.leak-needles`, the main worktree's is read
+// instead: a scan in a worktree checks what a scan in the main checkout checks.
 
 const { execFileSync } = require('node:child_process');
 const { existsSync, readFileSync, readdirSync } = require('node:fs');
-const { join, relative, resolve } = require('node:path');
+const { basename, dirname, join, relative, resolve } = require('node:path');
 
 const ROOT = resolve(__dirname, '..');
 const argv = process.argv.slice(2);
@@ -197,6 +200,13 @@ const HARD = [
     except: JS_LIKE,
   },
   { name: 'absolute local machine path', re: /(?:\/Users\/|\/home\/)[A-Za-z0-9._-]+\// },
+  // An AWS account id, or anything that could be one: a run of exactly 12 digits standing alone. A placeholder
+  // cannot be told from a real account, which is the point, so a test that needs one builds it at run time
+  // (`'1234'.repeat(3)`), and a file of measured floats is written with fewer than 12 fraction digits. Digits
+  // inside a hex digest or after an underscore are word characters on both sides and do not match.
+  { name: 'AWS account id (a standalone 12-digit run)', re: /\b\d{12}\b/ },
+  // An ARN in any partition. Policy samples name the resource in words instead; the bare word "ARN" is fine.
+  { name: 'ARN literal', re: /\barn:aws(?:-[a-z]+)*:/i },
 ];
 
 // Any email address that is not a GitHub noreply, an SSH git remote, or an obvious doc placeholder.
@@ -244,11 +254,40 @@ const MIGRATION = [
   { name: 'private phase-doc reference', re: /\bphases\/\d/ },
 ];
 
+/**
+ * The `.leak-needles` file to read: this checkout's, or, in a linked worktree that has none, the main worktree's,
+ * whose root holds the repository's `.git` directory. `undefined` when neither exists, or when git cannot say.
+ */
+function needlesFile() {
+  const own = join(ROOT, '.leak-needles');
+  if (existsSync(own)) return { file: own, from: 'this checkout' };
+  let common;
+  try {
+    common = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return undefined;
+  }
+  if (basename(common) !== '.git') return undefined;
+  const main = join(dirname(common), '.leak-needles');
+  return resolve(main) !== resolve(own) && existsSync(main)
+    ? { file: main, from: 'the main worktree' }
+    : undefined;
+}
+
+let needlesSource;
+
 /** Operator-supplied needles. Reported by index and with the match REDACTED — they are secrets themselves. */
 function extraNeedles() {
   const raw = [];
-  const file = join(ROOT, '.leak-needles');
-  if (existsSync(file)) raw.push(...readFileSync(file, 'utf8').split('\n'));
+  const found = needlesFile();
+  if (found !== undefined) {
+    raw.push(...readFileSync(found.file, 'utf8').split('\n'));
+    needlesSource = found.from;
+  }
   raw.push(...(process.env.LEAK_SCAN_EXTRA ?? '').split('\n'));
 
   const out = [];
@@ -460,7 +499,10 @@ if (extra.length === 0) {
   }
   console.log(`leak-scan: ${msg} Add them before running with \`--snapshot\`.`);
 } else {
-  console.log(`leak-scan: ${extra.length} extra needle(s) configured`);
+  console.log(
+    `leak-scan: ${extra.length} extra needle(s) configured` +
+      (needlesSource === 'the main worktree' ? " (from the main worktree's .leak-needles)" : ''),
+  );
 }
 
 if (hard.length > 0) show('HARD (always a failure)', hard, 10);

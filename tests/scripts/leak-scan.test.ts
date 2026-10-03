@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -90,7 +90,24 @@ describe('leak-scan', () => {
     // asserted when this checkout has no such file. That is stated rather than worked around: a test that
     // quietly passes on a maintainer's machine and means something different on CI is worse than one that
     // says which half it checked.
-    const hasLocalNeedles = existsSync(join(ROOT, '.leak-needles'));
+    // The scan also reads the main worktree's file when this checkout is a linked worktree with none of its own.
+    const mainWorktreeNeedles = (): boolean => {
+      try {
+        const common = execFileSync(
+          'git',
+          ['rev-parse', '--path-format=absolute', '--git-common-dir'],
+          {
+            cwd: ROOT,
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore'],
+          },
+        ).trim();
+        return common.endsWith('.git') && existsSync(join(dirname(common), '.leak-needles'));
+      } catch {
+        return false;
+      }
+    };
+    const hasLocalNeedles = existsSync(join(ROOT, '.leak-needles')) || mainWorktreeNeedles();
 
     it('accepts a snapshot when needles ARE configured', () => {
       const { status, out } = scanWith('export const x = 1;\n', ['--snapshot'], {
@@ -271,6 +288,125 @@ describe('leak-scan', () => {
     it('exempts credentials against a loopback/compose host', () => {
       expect(scan('const dsn = "postgres://user:pw@localhost:5432/x";\n').status).toBe(0);
       expect(scan('const dsn = "mysql://root:pw@host.docker.internal:3306/x";\n').status).toBe(0);
+    });
+  });
+
+  describe('an AWS account id or an ARN', () => {
+    // A fixture cannot be told from a real account, so any standalone run of exactly 12 digits and any ARN is a
+    // failure, as the private needles CI configures already make them. Every sample is built here at run time, so
+    // this file holds none of what it tests for.
+    const twelve = '1234'.repeat(3);
+    const arn = (partition: string, rest: string): string => `${'arn'}:${partition}:${rest}`;
+
+    it.each([
+      [
+        'an access point host',
+        `const host = 'my-ap-${twelve}.s3-accesspoint.us-east-1.amazonaws.com';`,
+      ],
+      ['an account id in JSON', `{ "account": "${twelve}" }`],
+      ['an account id in prose', `the bucket belongs to ${twelve}.`],
+      ['a float printed with 12 fraction digits', `{ "medianRounds": 0.${twelve} }`],
+      ['an S3 ARN', `"Resource": "${arn('aws', 's3:::my-bitmaps/*')}"`],
+      ['an IAM ARN', `role ${arn('aws', `iam::${'0'.repeat(12)}:role/x`)}`],
+      ['a China-partition ARN', `${arn('aws-cn', 's3:::b')}`],
+      ['a GovCloud ARN', `${arn('aws-us-gov', 's3:::b')}`],
+    ])('flags %s', (_label, line) => {
+      const { status, out } = scan(`${line}\n`, 'sample.md');
+      expect(status).toBe(1);
+      expect(out).toMatch(/AWS account id|ARN literal/);
+    });
+
+    it.each([
+      ['eleven digits', `const n = ${twelve.slice(1)};`],
+      ['thirteen digits, a millisecond timestamp', `const at = ${twelve}5;`],
+      ['twelve digits inside a hex digest', `sha256 a${twelve}b${'f'.repeat(50)}`],
+      ['twelve digits after an underscore', `const id = run_${twelve};`],
+      ['nine fraction digits', `{ "medianRounds": 0.${twelve.slice(3)} }`],
+      ['the word ARN', 'grant the role by its ARN, named in words: the bucket, then the prefix'],
+      ['a URN', `urn:aws:${'not-an-arn'}`],
+    ])('leaves alone %s', (_label, line) => {
+      expect(scan(`${line}\n`, 'sample.md').status).toBe(0);
+    });
+  });
+
+  describe('in a linked worktree', () => {
+    // A linked worktree has no copy of a gitignored file. Without a fallback, a scan there runs with no needles at
+    // all while the same scan in the main checkout runs with every one, and a hit shows up only in CI. So the
+    // scan reads the main worktree's `.leak-needles` when its own checkout has none.
+    const git = (cwd: string, ...args: string[]): void => {
+      execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], {
+        cwd,
+        stdio: 'ignore',
+      });
+    };
+    const run = (cwd: string): { status: number; out: string } => {
+      try {
+        const out = execFileSync(process.execPath, [join(cwd, 'scripts', 'leak-scan.cjs')], {
+          cwd,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: { ...process.env, LEAK_SCAN_EXTRA: '' },
+        });
+        return { status: 0, out };
+      } catch (err) {
+        const e = err as { status?: number; stdout?: string; stderr?: string };
+        return { status: e.status ?? 1, out: `${e.stdout ?? ''}${e.stderr ?? ''}` };
+      }
+    };
+    /** A repository whose tracked file names `acme-corp`, and a linked worktree of it. */
+    const setUp = (): { main: string; worktree: string; cleanup: () => void } => {
+      const dir = mkdtempSync(join(tmpdir(), 'leak-scan-worktree-'));
+      const main = join(dir, 'main');
+      mkdirSync(join(main, 'scripts'), { recursive: true });
+      copyFileSync(SCRIPT, join(main, 'scripts', 'leak-scan.cjs'));
+      writeFileSync(join(main, '.gitignore'), '.leak-needles\n');
+      writeFileSync(join(main, 'notes.md'), 'built for acme-corp\n');
+      git(main, 'init', '-q');
+      git(main, 'add', '.');
+      git(main, 'commit', '-q', '-m', 'init');
+      const worktree = join(dir, 'wt');
+      git(main, 'worktree', 'add', '-q', worktree);
+      return { main, worktree, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+    };
+
+    it("reads the main worktree's needles when its own checkout has none", () => {
+      const { main, worktree, cleanup } = setUp();
+      try {
+        writeFileSync(join(main, '.leak-needles'), 'acme-corp\n');
+        const { status, out } = run(worktree);
+        expect(out).toMatch(
+          /1 extra needle\(s\) configured \(from the main worktree's \.leak-needles\)/,
+        );
+        expect(out).toMatch(/redacted/);
+        expect(out).not.toMatch(/acme-corp/);
+        expect(status).toBe(1);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it("prefers the worktree's own needles over the main worktree's", () => {
+      const { main, worktree, cleanup } = setUp();
+      try {
+        writeFileSync(join(main, '.leak-needles'), 'acme-corp\n');
+        writeFileSync(join(worktree, '.leak-needles'), 'other-corp\n');
+        const { status, out } = run(worktree);
+        expect(out).toMatch(/1 extra needle\(s\) configured\n/);
+        expect(status).toBe(0);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('says no needles are configured when neither checkout has any', () => {
+      const { worktree, cleanup } = setUp();
+      try {
+        const { status, out } = run(worktree);
+        expect(out).toMatch(/no extra needles configured/);
+        expect(status).toBe(0);
+      } finally {
+        cleanup();
+      }
     });
   });
 
