@@ -274,6 +274,25 @@ describe('the probe leaves the caller’s client alone', () => {
     });
   });
 
+  it('does not call S3Client.prototype.send, so a class-level mock of it (aws-sdk-client-mock) records nothing from the probe', async () => {
+    const original = S3Client.prototype.send;
+    const recorded: string[] = [];
+    S3Client.prototype.send = function (
+      this: S3Client,
+      command: { constructor: { name: string } },
+    ) {
+      recorded.push(command.constructor.name);
+      return Promise.resolve({});
+    } as typeof original;
+    try {
+      const facts = await probeClient(client(), BUCKET);
+      expect(recorded).toEqual([]);
+      expect(facts).toMatchObject({ sendsDeleteIfMatch: true, sendsPutIfMatch: true });
+    } finally {
+      S3Client.prototype.send = original;
+    }
+  });
+
   it('works for a client built with cacheMiddleware, and leaves its cached handlers alone', async () => {
     const cached = client({ cacheMiddleware: true });
     expect(await probeClient(cached, BUCKET)).toBeDefined();

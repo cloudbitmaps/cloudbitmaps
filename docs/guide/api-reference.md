@@ -117,7 +117,7 @@ The registry needs delete permission on its prefix for it.
 requests it will send through a second client built from the first one's configuration, without sending anything,
 and reads back the host and the headers: the SDK's own resolution of the region, the environment, the shared config
 file and the endpoint options, with none of the middleware, logging or credentials you gave your client in play (a
-request counter of yours counts no probe). A middleware of yours that changes where a request goes is not seen. Until that first read or listing, `capabilities().conditionalDelete` reads `false` unless you set the option,
+request counter of yours counts no probe, and a class-level mock of `S3Client.send` records none). A middleware of yours that changes where a request goes is not seen. Until that first read or listing, `capabilities().conditionalDelete` reads `false` unless you set the option,
 and a client that cannot be resolved then (no region, no credentials) keeps tombstoning for the life of the registry.
 It also checks that the SDK sends the preconditions the registry relies on: an `@aws-sdk/client-s3` whose model lacks a
 member drops it from the request without a word. A `DeleteObject` that would go out without `If-Match` keeps the row

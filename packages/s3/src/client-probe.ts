@@ -20,6 +20,9 @@
  * never touched: nothing it has been given runs, so no middleware of the caller's counts a request that never exists,
  * no logger prints one, and no credential is looked up.
  *
+ * The probe runs the command through the second client's stack itself, as its `send` would, and does not call `send`: a
+ * stub of `S3Client.prototype.send` (a class-level mock, as `aws-sdk-client-mock` installs) records nothing from it.
+ *
  * A middleware the caller added to its own client that changes where a request goes is therefore not seen.
  *
  * A probe that cannot run (a client with no resolved config, an unresolvable region, a stack that does not hold the
@@ -114,7 +117,9 @@ async function serialise<Input extends ServiceInputTypes, Output extends Service
     },
     { relation: 'after', toMiddleware: 'serializerMiddleware', name: 'cloudbitmapsProbe' },
   );
-  await client.send(command);
+  // What `send` does, minus `send`: a stub of `S3Client.prototype.send` (a class-level mock) sees nothing of the probe.
+  const handler = command.resolveMiddleware(client.middlewareStack, client.config, {});
+  await handler(command);
   if (seen === undefined) throw new Error('the probe saw no request');
   return seen;
 }
