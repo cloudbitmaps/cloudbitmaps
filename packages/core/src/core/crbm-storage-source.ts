@@ -1361,8 +1361,8 @@ export async function publishGeneration(
       let now: RegistryRecord | null;
       try {
         now = await registry.get(key);
-      } catch (readErr) {
-        throw outcomeUnknown(key, err, readErr);
+      } catch {
+        throw outcomeUnknown(key, err);
       }
       if (sameRow(now, record)) throw outcomeUnknown(key, err);
       failedOn = record;
@@ -1403,17 +1403,17 @@ function sameRow(a: RegistryRecord | null, b: RegistryRecord | null): boolean {
 }
 
 /**
- * The error for a publish that cannot tell whether its registry write landed. Transient, so no caller treats it as
- * a refusal and deletes the object the write may yet point the row at; a re-run numbers past that object.
+ * The error for a publish that cannot tell whether its registry write landed: always a {@link TransientError}, so no
+ * caller treats it as a refusal and deletes the object the write may yet point the row at; a re-run numbers past that
+ * object. A cause that is already one (the registry's own error, whose `cause` is the SDK's) is thrown as it is, so
+ * what a caller reads from it does not move; any other is wrapped.
  */
-function outcomeUnknown(key: GenKey, cause: unknown, readErr?: unknown): TransientError {
-  const why =
-    readErr === undefined
-      ? ''
-      : ` and the row could not be read back (${(readErr as { name?: string } | null)?.name ?? 'error'})`;
+function outcomeUnknown(key: GenKey, cause: unknown): TransientError {
+  if (isTransientError(cause)) return cause;
   return new TransientError(
-    `publish of "${key.segment}" generation ${key.generation}: whether its registry write landed is unknown` +
-      `${why}. Its object is kept, since the write may still land; re-run the write, which numbers past it.`,
+    `publish of "${key.segment}" generation ${key.generation}: whether its registry write landed could not be ` +
+      `settled (${(cause as { name?: string } | null)?.name ?? 'error'} while checking its object). Its object is ` +
+      `kept, since the write may still land; re-run the write, which numbers past it.`,
     { cause },
   );
 }

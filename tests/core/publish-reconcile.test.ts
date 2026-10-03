@@ -1,7 +1,7 @@
 import { loadSegment } from '@/core/load';
 import { openGenerationReader } from '@/core/crbm-storage-source';
 import { eraseIdFromSegment } from '@/core/erase-id';
-import { TransientError, WriteConflictError } from '@/core/errors';
+import { IntegrityError, TransientError, WriteConflictError } from '@/core/errors';
 import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
@@ -28,8 +28,8 @@ type Write = 'create' | 'compareAndSwap';
 
 /** What the next registry write does, instead of simply landing. */
 type Fault =
-  /** Apply the write, then fail as if its response were lost. */
-  | { kind: 'land-then-transient' }
+  /** Apply the write, then fail as if its response were lost; `after` runs in between. */
+  | { kind: 'land-then-transient'; after?: () => void }
   /** Apply the write, then report a conflict, as an Azure replay meeting its own row does. */
   | { kind: 'land-then-conflict' }
   /** Fail before applying it, keeping the call to land later; `meanwhile` runs before the failure is reported. */
@@ -43,6 +43,7 @@ function world(now: () => number = () => 1_000) {
   let fault: Fault | undefined;
   let late: (() => Promise<unknown>) | undefined;
   let failNextRead: Error | undefined;
+  let failNextTail: Error | undefined;
   const registry = new Proxy(base, {
     get(t, p, rx) {
       const value = Reflect.get(t, p, rx) as unknown;
@@ -66,6 +67,7 @@ function world(now: () => number = () => 1_000) {
         if (f === undefined) return send();
         if (f.kind === 'land-then-transient') {
           await send();
+          f.after?.();
           throw new TransientError('503 SlowDown, after the write was applied');
         }
         if (f.kind === 'land-then-conflict') {
@@ -79,16 +81,32 @@ function world(now: () => number = () => 1_000) {
     },
   }) as IRegistryDriver;
   const countedStorage = counting<IStorageDriver>(storage, deletes);
+  // A footer read the test makes fail once: what a publish asks of its own object after an unanswered write.
+  const faultyStorage = new Proxy(countedStorage, {
+    get(t, p, rx) {
+      const value = Reflect.get(t, p, rx) as unknown;
+      if (p !== 'getTail') return value;
+      return async (...args: unknown[]) => {
+        if (failNextTail !== undefined) {
+          const e = failNextTail;
+          failNextTail = undefined;
+          throw e;
+        }
+        return (value as (...a: unknown[]) => Promise<unknown>).apply(t, args);
+      };
+    },
+  });
   return {
     storage,
     base,
     registry,
     writes,
     deletes: () => deletes.delete ?? 0,
-    deps: { storage: countedStorage, registry, codec: roaringCodec },
+    deps: { storage: faultyStorage, registry, codec: roaringCodec },
     plain: { storage, registry: base, codec: roaringCodec },
     arm: (f: Fault) => (fault = f),
     failNextRead: (e: Error) => (failNextRead = e),
+    failNextTail: (e: Error) => (failNextTail = e),
     land: async () => late!(),
   };
 }
@@ -159,7 +177,8 @@ describe('a publish whose registry write ends without a definite answer reads th
     w.arm({ kind: 'transient-unapplied' });
     const err = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9 }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(TransientError);
-    expect(String((err as Error).message)).toMatch(/unknown/);
+    // The registry's own error reaches the caller as it is, so its `cause` is where a caller reads the SDK's error.
+    expect((err as Error).message).toBe('503 SlowDown; the request may still land');
     expect(w.writes.compareAndSwap).toBe(1); // never sent again
     expect(w.deletes()).toBe(0);
     expect(await generations(w.storage)).toEqual([0, 1, 2, 3]);
@@ -203,6 +222,35 @@ describe('a publish whose registry write ends without a definite answer reads th
       TransientError,
     );
     expect(w.writes.compareAndSwap).toBe(1);
+    expect(w.deletes()).toBe(0);
+    expect(await generations(w.storage)).toContain(3);
+  });
+
+  it('a proof of its own object that fails transiently throws that TransientError, deletes nothing, and the write stays landed', async () => {
+    const w = world();
+    await threeLoads(w);
+    w.arm({
+      kind: 'land-then-transient',
+      after: () => w.failNextTail(new TransientError('the footer read is throttled')),
+    });
+    const err = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9 }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(TransientError);
+    expect((err as Error).message).toBe('the footer read is throttled');
+    expect(w.writes.compareAndSwap).toBe(1);
+    expect(w.deletes()).toBe(0);
+    expect((await w.base.get(SEG))!.currentGen).toBe(3);
+    expect(await idsOf(w.storage, 3)).toEqual([1, 2, 3, 4]);
+  });
+
+  it('a proof of its own object that fails any other way is a TransientError with that cause, never the raw error', async () => {
+    const w = world();
+    await threeLoads(w);
+    const raw = new IntegrityError('the footer is unreadable');
+    w.arm({ kind: 'land-then-transient', after: () => w.failNextTail(raw) });
+    const err = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9 }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(TransientError);
+    expect(err).not.toBeInstanceOf(IntegrityError);
+    expect((err as Error).cause).toBe(raw);
     expect(w.deletes()).toBe(0);
     expect(await generations(w.storage)).toContain(3);
   });

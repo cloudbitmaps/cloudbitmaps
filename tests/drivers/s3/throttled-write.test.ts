@@ -317,7 +317,10 @@ describe('S3: a load whose writes are throttled, through the real SDK', () => {
     await loadSegment(SEG, [1], deps);
     const before = rowWrites(bucket);
     bucket.arm('PutObject', 'throttle', isRow);
-    await expect(loadSegment(SEG, [1, 2], deps)).rejects.toBeInstanceOf(TransientError);
+    const err = await loadSegment(SEG, [1, 2], deps).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(TransientError);
+    // The registry's own error, whose cause is the SDK's: what a caller reads there does not move.
+    expect((err as { cause?: { name?: string } }).cause?.name).toBe('SlowDown');
     expect(rowWrites(bucket) - before).toBe(1);
     expect(bucket.count('DeleteObject')).toBe(0);
     expect(bucket.objects.has('_default/segments/s.1.crbm')).toBe(true);
