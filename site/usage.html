@@ -245,11 +245,12 @@ npm audit signatures</code></pre>
                 <tr>
                   <td><span class="m">count()</span></td>
                   <td class="from">
-                    Sums per-chunk cardinality from the <span class="m">.crbm</span> index.
-                    <strong>Exact, not estimated</strong> — no HyperLogLog — and it never opens a payload. A
-                    segment's first read also reads its pointer.
+                    Reads the id count the registry row records for the current generation, so a cold count
+                    is the one pointer read and opens no object; a row with no summary it can use sums
+                    per-chunk cardinality from the <span class="m">.crbm</span> index instead.
+                    <strong>Exact, not estimated</strong> — no HyperLogLog — and it never opens a payload.
                   </td>
-                  <td class="num">the index</td>
+                  <td class="num">cache, else 1 GET</td>
                 </tr>
                 <tr>
                   <td>
