@@ -198,7 +198,7 @@
                   <td>1M loads with <span class="m">store.load()</span></td>
                   <td class="num">$11.60</td>
                   <td class="from">
-                    A generation written once, then the pointer moved to it: 2 PUT + 4 GET through
+                    A generation written once, then the pointer moved to it: 2 PUT + 4 GET for a segment's first
                     <span class="m">store.load()</span>, measured on real S3 with the pointer in the same bucket,
                     at 2.86 million ids a second. The meter counts objects, not ids — so batch a refresh.
                   </td>
@@ -701,12 +701,12 @@
                   <td class="num">204 GETs</td>
                 </tr>
                 <tr>
-                  <td>Single-part <span class="m">store.load()</span> of a segment</td>
+                  <td>A segment's first single-part <span class="m">store.load()</span></td>
                   <td class="num">$11.60</td>
                   <td class="num">2 PUT + 4 GET</td>
                 </tr>
                 <tr>
-                  <td>Multipart <span class="m">store.load()</span></td>
+                  <td>A segment's first multipart <span class="m">store.load()</span></td>
                   <td class="num">$26.60</td>
                   <td class="num">5 PUT-class + 4 GET</td>
                 </tr>

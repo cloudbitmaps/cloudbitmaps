@@ -1004,6 +1004,8 @@ function stageFiguresOf(run, pricing) {
       return;
     }
     for (const [k, v] of Object.entries(o)) {
+      // A discarded sample's requests are the report's to state beside the words for a discard, not a stage's.
+      if (k === 'discarded') continue;
       if (typeof v !== 'number') {
         walk(v);
         continue;

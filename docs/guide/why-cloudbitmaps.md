@@ -132,7 +132,7 @@ The 20 TB cluster's 471 nodes are past ElastiCache's [default quotas](https://do
 <!-- SIZING:WHY_CHART_WHERE:END -->
 
 <!-- SIZING:WHY_LINE:START -->
-The line is the table's last column. It climbs with the data because the Redis it is measured against does. In this model an extra cold intersect costs CloudBitmaps the same at any size: every segment keeps the [calibration run](../../bench/calibration/2026-10-03-e13c7.md)'s shape, about 2,000 chunks with 100 shared, so a larger store is more segments of that shape, not larger ones. Segments that grow by sharing more chunks cost more, as [overlap](#where-it-loses) shows. The chart counts cold intersects alone; the three deployments also make point reads and refresh pointers, which [the next section](#how-much-room-each-deployment-has) counts in.
+The line is the table's last column. It climbs with the data because the Redis it is measured against does. In this model an extra cold intersect costs CloudBitmaps the same at any size: every segment keeps the [calibration run](../../bench/calibration/2026-09-23-94416.md)'s shape, about 2,000 chunks with 100 shared, so a larger store is more segments of that shape, not larger ones. Segments that grow by sharing more chunks cost more, as [overlap](#where-it-loses) shows. The chart counts cold intersects alone; the three deployments also make point reads and refresh pointers, which [the next section](#how-much-room-each-deployment-has) counts in.
 <!-- SIZING:WHY_LINE:END -->
 
 ## How much room each deployment has
@@ -163,7 +163,7 @@ A dashboard running 100 cold intersects a second over 5 GB costs **$21,445** a m
 A cold intersect of two segments sharing 100 chunks waits on a chain of requests **15 deep**: both operands' pointers, then both indexes, then the shared chunks, 8 at a time, each read from both operands together, so 16 requests are in flight, and the next chunk starts as the oldest finishes. At an even latency that is 15 request times end to end. A slow request holds up those queued behind it, so what the chain takes is for a measurement to say. A repeat served from the chunk cache makes no request within `cache.genTtlMs`, and one round of pointer reads after it.
 <!-- SIZING:DEPTH:END -->
 
-The in-region run timed one shape: a cold intersect of two segments sharing 100 chunks took 492.69 ms at the median, 204 GETs, from inside the region, and a cold `count()` took 27.48 ms in one request. A GET round took about 26 to 27 ms, and the cold intersect measured 18.3 rounds against the model's 15 ([report](../../bench/calibration/2026-10-03-e13c7.md)). The other shapes are not timed.
+The in-region run timed one shape of cold intersect, and a cold `count()`; the [benchmarks page](../benchmarks.md#real-cloud-calibration--aws) has the figures, and the other shapes are not timed.
 
 **S3's request rate.**
 
@@ -210,7 +210,7 @@ proposed in an issue on this repo before it is built.
 
 ## What this page does not establish
 
-- **Latency.** Nothing here says how fast a query returns; the [in-region run](../benchmarks.md#the-in-region-run--run-2026-10-03-e13c7) measured one shape.
+- **Latency.** Nothing here says how fast a query returns; the [in-region run](../benchmarks.md#real-cloud-calibration--aws) measured one shape.
 - **A warm reader's intersects.** They are priced cold: an upper bound on their requests, but for what a call reads
   again when it outlives `cache.genTtlMs` (a pointer, and an index once the segment's row has changed, as a load's
   publish changes it) or the reader cache evicts its reader part-way through (a pointer and an index), and a second

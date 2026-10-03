@@ -1806,18 +1806,23 @@ const PRICES_BEFORE = [23.6, 22.8];
 /**
  * A million single-part writes and publishes, pointer included: the run's figure, from its committed evidence by the
  * module the site's figures take it from. A page compares `store.load()` with it, so the ratio it states is checked
- * against the two sources the figures come from.
+ * against the two sources the figures come from. A run that timed `store.load()` records a segment's first load, which
+ * makes one more GET than a write and publish, for its generation number's check.
  */
 const WRITE_AND_PUBLISH: number = (() => {
   const calibration = createRequire(import.meta.url)('../../bench/lib/calibration-figures.cjs') as {
     evidenceFiles: (root: string) => string[];
     readSources: (root: string) => unknown;
-    derive: (run: unknown, src: unknown) => { usd: { singleLoad: number } };
+    derive: (
+      run: unknown,
+      src: unknown,
+    ) => { loadVia: string | null; usd: { singleLoad: number }; price: { getUSD: number } };
   };
   const latest = calibration.evidenceFiles(ROOT).at(-1);
   if (latest === undefined) throw new Error('bench/calibration/ holds no run evidence');
   const run: unknown = JSON.parse(readFileSync(join(ROOT, latest), 'utf8'));
-  return 1e6 * calibration.derive(run, calibration.readSources(ROOT)).usd.singleLoad;
+  const f = calibration.derive(run, calibration.readSources(ROOT));
+  return 1e6 * (f.loadVia === null ? f.usd.singleLoad : f.usd.singleLoad - f.price.getUSD);
 })();
 
 const SAYS_PER_MILLION = /\bper\s+(?:million|1M)\b|\ba million\b|\/\s*1M\b/i;

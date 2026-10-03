@@ -158,7 +158,7 @@ the same bucket as the data. What each operation costs:
 |---|---|---|
 | Cold `intersect` of two 500,000-id segments sharing 100 of 1,999 chunks: 204 GETs at the median | **$81.60 / million** | measured requests at list prices |
 | The same, each pointer read once, as expected | $81.60 / million | expected |
-| Loading a segment with `store.load()`: 2 PUT + 4 GET, pointer included | **$11.60 / million** | measured requests at list prices |
+| A segment's first `store.load()`: 2 PUT + 4 GET, pointer included | **$11.60 / million** | measured requests at list prices |
 
 Run from inside the region, that cold intersect took 492.69 ms at the median, a cold `count()` is one request at
 27.48 ms, and a single-part load ran at 6,020,505 bytes a second. The

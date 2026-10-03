@@ -7,9 +7,7 @@ Three illustrative deployments, small, medium and large, priced by the library's
 would hold its data.** The workloads are made up; the arithmetic is not. Each workload is a guess at what a typical
 deployment of that size looks like, not anyone's measured system. To price your own, see [Price your own](#price-your-own).
 
-**There is no latency on this page.** How fast these deployments would answer is not modelled here. The loaded read
-path was timed inside a region for one shape: a cold intersect of two segments sharing 100 chunks took 492.69 ms at the
-median, and the [report](../../bench/calibration/2026-10-03-e13c7.md) has the rest.
+**There is no latency on this page.** How fast these deployments would answer is not modelled here. The loaded read path was timed inside a region for one shape, and the [benchmarks page](../benchmarks.md#real-cloud-calibration--aws) has the figures.
 
 ## Contents
 
@@ -34,7 +32,7 @@ median, and the [report](../../bench/calibration/2026-10-03-e13c7.md) has the re
 <!-- SIZING:INPUTS:END -->
 
 <!-- SIZING:SHAPE:START -->
-Every segment has the shape of the [calibration run's](../../bench/calibration/2026-10-03-e13c7.md): its ids spread over about 2,000 chunks, and every cold intersect of two segments sharing 100 of them, so each fetches the shared chunks from both. A larger segment is modeled as holding its ids more densely, up to the 16 MB its chunks can take, about 8 KiB each, the most one takes whatever ids it holds, not as sharing more chunks, which is the most favourable choice for large segments; [the overlap table](#how-much-the-overlap-matters) undoes it. **Hot segments** are the ones a long-lived reader keeps open, each reader its own; the last column is how often one reader reads each of them, with the point reads spread evenly. The large deployment's 10 MB segments load as 2-part uploads, 4 PUT-class requests each, since the S3 backend uploads in 8 MiB parts.
+Every segment has the shape of the [calibration run's](../../bench/calibration/2026-09-23-94416.md): its ids spread over about 2,000 chunks, and every cold intersect of two segments sharing 100 of them, so each fetches the shared chunks from both. A larger segment is modeled as holding its ids more densely, up to the 16 MB its chunks can take, about 8 KiB each, the most one takes whatever ids it holds, not as sharing more chunks, which is the most favourable choice for large segments; [the overlap table](#how-much-the-overlap-matters) undoes it. **Hot segments** are the ones a long-lived reader keeps open, each reader its own; the last column is how often one reader reads each of them, with the point reads spread evenly. The large deployment's 10 MB segments load as 2-part uploads, 4 PUT-class requests each, since the S3 backend uploads in 8 MiB parts.
 <!-- SIZING:SHAPE:END -->
 
 ## What each reader holds
@@ -200,7 +198,7 @@ real segment at its measured size and the store's own `cache.genTtlMs`.
 
 ## What this page does not establish
 
-- **Latency.** Nothing here says how fast a query returns; the [in-region run](../benchmarks.md#the-in-region-run--run-2026-10-03-e13c7) measured one shape.
+- **Latency.** Nothing here says how fast a query returns; the [in-region run](../benchmarks.md#real-cloud-calibration--aws) measured one shape.
 - **A warm reader's intersects.** They are priced cold: an upper bound on their requests, but for what a call reads
   again when it outlives `cache.genTtlMs` (a pointer, and an index once the segment's row has changed, as a load's
   publish changes it) or the reader cache evicts its reader part-way through (a pointer and an index), and a second
