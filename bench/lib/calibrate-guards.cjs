@@ -117,13 +117,19 @@ function projectOps({
   if (!Number.isInteger(operandsPerRead) || operandsPerRead < 1) {
     throw new Error(`operandsPerRead must be a positive integer, got ${operandsPerRead}`);
   }
-  // A load, `store.load()` of a new segment: the object PUT, two listings (one to choose the generation number, one
-  // to collect after the publish; on S3 a listing bills at the PUT rate), then the pointer advance — a conditional
-  // PUT, each attempt of which can lose the compare-and-swap and go round again. Its reads are more than one per
-  // attempt: counted against the real registry protocol in tests/bench/calibrate-guards.test.ts, a load of a new
-  // segment reads the pointer seven times with nothing racing it, twice more for each attempt it loses, and fifteen
-  // times at most; one that loses every attempt throws after fourteen. The harness is the only writer, so its loads
-  // never race; the bound still has to hold if one did.
+  // A load, `store.load()` of a new segment: the object PUT and the pointer advance — a conditional PUT, each attempt
+  // of which can lose the compare-and-swap and go round again. A new segment's load whose check finds its number free
+  // lists nothing: it has no generation outside its window to collect. One whose check finds the number taken (a
+  // crashed load's object) lists to number past it and lists again to collect, two listings, which on S3 bill at the
+  // PUT rate, and the bound counts them. Its GET-class requests are more than one per attempt: counted against the
+  // real registry protocol in tests/bench/calibrate-guards.test.ts, a load of a new segment that finds its number
+  // free checks it once and reads the pointer three times with nothing racing it, four GET-class requests, and one
+  // that finds it taken reads the pointer three times more around its collection: before and after its listing and
+  // before its delete, since the objects it met leave one outside its window, seven; each attempt a load loses adds
+  // two pointer reads, so it makes fifteen at most, fourteen pointer reads and the check, and one that loses every
+  // attempt throws after fourteen. The harness is the only writer to a bucket of its own, so its loads never race
+  // and never meet an object; the bound still has to hold if one did, for up to two (each further stray below the
+  // window adds a re-read).
   const putPerLoad = 3 + retryBound;
   const getPerLoad = 5 + 2 * retryBound;
   // A multipart load: create + parts + complete for the object, then the same listings and pointer advance.
@@ -145,11 +151,12 @@ function projectOps({
 /**
  * A claim on each segment's FIRST load, refusing a second.
  *
- * The projection bounds a segment's first load: its pointer read seven times with nothing racing it, fifteen at most
- * when every publish attempt but the last is lost. A reload also opens the current generation's index to count what
- * it replaces, so at four lost races it makes sixteen GET-class requests against that bound of fifteen, and a load
- * that collects adds a pointer read more. A stage that loaded a name twice would overspend a projection that said it
- * was safe, so the harness loads each name once and a repeat is refused before it sends anything.
+ * The projection bounds a segment's first load: its number checked once and its pointer read three times with nothing
+ * racing it, six more when the check finds the number taken and the load collects what it met, and fifteen GET-class
+ * requests at most when every publish attempt but the last is lost. A reload whose number is taken makes sixteen at
+ * four lost races, past the bound, since it also reads the current generation's index. A stage that loaded a name
+ * twice would overspend a projection that said it was safe, so the harness loads each name once and a repeat is
+ * refused before it sends anything.
  */
 function firstLoads() {
   const seen = new Set();

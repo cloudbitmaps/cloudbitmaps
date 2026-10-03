@@ -359,7 +359,7 @@ describe('calibration reports are held to their evidence', () => {
         'Inside the region the same intersect would make 206 GETs, $82.40 per million.',
         '98% of the chunks were skipped.',
         'Each intersect read 10 chunks per operand.',
-        "A segment's first store.load() costs $22.80 per million, as measured.",
+        "A segment's first store.load() costs $11.60 per million, as measured.",
         // Seven more figures the report states, each misstated: a byte share, a depth, a per-request time, a price
         // per dollar, a crossover rate, a load price and the objects' sizes.
         "Of the two objects' bytes, 29.9% were fetched and 70.1% never left S3.",
@@ -412,8 +412,8 @@ describe('calibration reports are held to their evidence', () => {
           'That puts about 16 requests in line.',
         ],
         [
-          'A write and publish is 2 PUT + 3 GET, $22.80 per million.',
-          "A segment's first store.load() is expected at $22.80 per million.",
+          'A write and publish is 2 PUT + 3 GET, $11.60 per million.',
+          "A segment's first store.load() is expected at $11.60 per million.",
         ],
         [
           'A dollar buys 12,254 cold intersects as the run measured them.',

@@ -391,12 +391,13 @@
             <span class="label">What that costs</span> Three line items. A
             <strong>read</strong> that misses the cache is one ranged GET, once the segment's
             pointer and index are read; a <strong>load</strong> is one object PUT plus the pointer's
-            own PUT and reads, and <span class="m">store.load()</span> adds the listings that number
-            the generation and collect what it supersedes; and <strong>storage</strong> is the
-            segment sitting there, which is the cheap part. Nothing bills per id, and an idle
-            segment bills its storage alone &mdash; which is the whole difference from a node you
-            keep standing. Rates are region-specific and the vendor's to change; every figure we
-            publish uses the default <span class="m">aws-us-east-1-ondemand</span> rates, and
+            own PUT and reads, and <span class="m">store.load()</span> adds the check that numbers
+            the generation and the delete that collects what it supersedes; and
+            <strong>storage</strong> is the segment sitting there, which is the cheap part. Nothing
+            bills per id, and an idle segment bills its storage alone &mdash; which is the whole
+            difference from a node you keep standing. Rates are region-specific and the vendor's to
+            change; every figure we publish uses the default
+            <span class="m">aws-us-east-1-ondemand</span> rates, and
             <span class="call">CloudRoaring.estimateCost</span> accepts your own.
           </p>
           <p class="tpanel-foot">

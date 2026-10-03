@@ -203,15 +203,16 @@ describe('a run that timed store.load()', () => {
   it('is derived, each load priced from the requests it made', () => {
     const f = figures.derive(asRealRun(), SOURCES);
     expect(f.loadVia).toBe('store.load()');
-    // A first load of a segment: the object, two listings and the pointer; seven pointer reads. A multipart object is
-    // a create, its parts and a complete in place of the one PUT.
-    expect(f.putsPerSingle).toBe(4);
-    expect(f.getsPerLoad).toBe(7);
+    // A first load of a segment: the object and the pointer, no listing since it has nothing to collect; three pointer
+    // reads and the check of its generation number. A multipart object is a create, its parts and a complete in
+    // place of the one PUT.
+    expect(f.putsPerSingle).toBe(2);
+    expect(f.getsPerLoad).toBe(4);
     expect(f.partsPerMultipart).toBe(2);
-    expect(f.putsPerMultipart).toBe(7);
-    expect(f.getsPerMultipart).toBe(7);
-    expect(f.usd.singleLoad).toBeCloseTo(4 * 5e-6 + 7 * GET_USD, 12);
-    expect(f.usd.multipartLoad).toBeCloseTo(7 * 5e-6 + 7 * GET_USD, 12);
+    expect(f.putsPerMultipart).toBe(5);
+    expect(f.getsPerMultipart).toBe(4);
+    expect(f.usd.singleLoad).toBeCloseTo(2 * 5e-6 + 4 * GET_USD, 12);
+    expect(f.usd.multipartLoad).toBeCloseTo(5 * 5e-6 + 4 * GET_USD, 12);
     expect(f.loads).toBe(fixture.phases.load.perLoad.length);
   });
 
@@ -264,8 +265,8 @@ describe('a run that timed store.load()', () => {
     const loadRows = f.rows.filter((r) => /store\.load|single-part|multipart/.test(String(r.says)));
     expect(loadRows.length).toBe(2);
     expect(loadRows.every((r) => r.label === 'derived')).toBe(true);
-    expect(f.shapes).toContainEqual([4, 7]);
-    expect(f.shapes).toContainEqual([7, 7]);
+    expect(f.shapes).toContainEqual([2, 4]);
+    expect(f.shapes).toContainEqual([5, 4]);
     expect(f.stageLedger.warm?.get).toBe(f.stageLedger.warm?.expectedGets);
   });
 
@@ -298,14 +299,32 @@ describe('a run that timed store.load()', () => {
       expect(
         refused((r) => {
           const l = r.phases.load.perLoad[0];
-          if (l !== undefined) l.put = 3;
+          if (l !== undefined) l.put = 3; // a listing: not what a load of a new segment makes
         }),
-      ).toMatch(/not an object, two listings and a pointer write|do not add up to its load stage/);
+      ).toMatch(/not an object and a pointer write|do not add up to its load stage/);
       expect(
         refused((r) => {
           r.phases.load.requests.get += 1;
         }),
       ).toMatch(/do not add up/);
+    });
+
+    it('with a load that read the pointer fewer times than a first load must, or a listing no first load makes', () => {
+      // A first load reads three times and checks once: a record of three requests names one read too few.
+      expect(
+        refused((r) => {
+          const l = r.phases.load.perLoad[0];
+          if (l !== undefined) l.get = 3;
+        }),
+      ).toMatch(/at least three pointer reads and a check/);
+      // The run's own command tally, which the loads' records must agree with: a listing is a command a first load
+      // never sends.
+      expect(
+        refused((r) => {
+          r.cost.ops.byCommand.ListObjectsV2Command =
+            (r.cost.ops.byCommand.ListObjectsV2Command ?? 0) + 1;
+        }),
+      ).toMatch(/the object or its parts and the pointer, and no listing/);
     });
 
     it('with requests no stage accounts for, or fewer than it billed', () => {

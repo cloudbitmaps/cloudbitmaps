@@ -58,10 +58,10 @@ const ERASE_CONCURRENCY = 8;
  * Storage list-then-delete passes a drop will make before giving up and reporting the residual.
  *
  * Two is the honest floor and three is the working value: pass 1 clears what was there, pass 2 catches an object
- * a load was still writing when the tombstone landed (its publish is then refused, but the object write
- * completes), pass 3 covers a second such writer. It terminates regardless — the tombstone hard-fences
- * *publishing* a new generation, so the supply of late objects is whatever was already mid-write, and any
- * residual is reported rather than silently dropped.
+ * a load that had read the row before the tombstone landed went on to write (its publish is then refused, but the
+ * object write completes), pass 3 covers a second such writer. It terminates regardless — the tombstone
+ * hard-fences *publishing* a new generation, and any residual is reported rather than silently dropped. A load still
+ * consuming its ids can write after the last pass; it deletes its own object once its publish is refused.
  */
 const MAX_STORAGE_SWEEPS = 3;
 
@@ -274,10 +274,14 @@ export interface DropResult {
  *    cleaned up by re-running; a torn pointer costs correctness and is not self-healing. Given the choice, leak
  *    bytes — but say so: whatever survives the sweep is reported in {@link DropResult.generationsRemaining}.
  *
- * **Why step 2 sweeps more than once.** A load that was already writing its object when the tombstone landed
- * still finishes the write — its publish is then refused, but the object survives, and it holds the complete
- * set. A single list-then-delete misses it entirely. The re-sweep converges because the tombstone *is* a hard
- * fence on **publishing**, so only already-in-flight writes can appear and they are finite.
+ * **Why step 2 sweeps more than once.** A load that had read the row before the tombstone landed, whether it was
+ * already writing its object or still consuming its ids, still finishes the write — its publish is then refused,
+ * but the object exists, and it holds the complete set. A single list-then-delete misses it entirely. The re-sweep
+ * converges because the tombstone *is* a hard fence on **publishing**, so only loads already under way can write
+ * and they are finite. One that writes after the last pass deletes its own object when its publish is refused, as a
+ * refused load does under a `destroyed` row; only one whose process stops in between, or whose publish fails without
+ * a definite answer (a lost response, a timeout), leaves it behind, for a re-run of the drop, and
+ * `generationsRemaining` cannot report an object written after this call returned.
  *
  * **When "reads as empty" starts being true.** Not instantly, for a store that has already read this segment: a
  * resolved generation is cached and decoded chunks sit in the cache, so an in-flight reader can answer from

@@ -306,7 +306,7 @@ describe('GCS (fake-gcs-server): the driver sends ifGenerationMatch; the emulato
   });
 
   it('fake-gcs-server ignores ifGenerationMatch on a delete: a stale generation deletes anyway', async () => {
-    const store = new GcsRegistryStore(gcs, gcs, BUCKET, true);
+    const store = new GcsRegistryStore(gcs, gcs, BUCKET, 0, true);
     const name = `${prefix('stale')}/row.reg`;
     const stale = await gcsPut(name, 'one');
     await gcsPut(name, 'two');
@@ -317,7 +317,7 @@ describe('GCS (fake-gcs-server): the driver sends ifGenerationMatch; the emulato
   });
 
   it('a delete of a missing object is a conflict', async () => {
-    const store = new GcsRegistryStore(gcs, gcs, BUCKET, true);
+    const store = new GcsRegistryStore(gcs, gcs, BUCKET, 0, true);
     await expect(
       store.delete(`${prefix('missing')}/row.reg`, { version: '1' }),
     ).rejects.toBeInstanceOf(WriteConflictError);

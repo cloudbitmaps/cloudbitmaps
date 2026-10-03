@@ -45,7 +45,8 @@ import type { ObjectRegistryStore, ObjectRow } from '@cloudbitmaps/core/driver-k
 import type { Storage } from '@google-cloud/storage';
 import { isNotFound, isPreconditionFailed, isTransient, isTransportFault } from './gcs-errors';
 import { retryDownload } from './download-retry';
-import { readOnce, singleHeader } from './read-once';
+import { downloadFile, readOnce, singleHeader } from './read-once';
+import { ReadTimedOut, resolveReadTimeoutMs, startDeadline } from './read-timeout';
 import { saveOnce } from './send-once';
 
 export interface GcsRegistryDriverOptions {
@@ -59,6 +60,12 @@ export interface GcsRegistryDriverOptions {
   readonly prefix?: string;
   /** Injected clock for `createdAt`/`updatedAt`; defaults to `Date.now`. */
   readonly now?: () => number;
+  /**
+   * Cut off a read of a registry row once it has run this long, in milliseconds, every attempt included; `0` (the
+   * default) sets no timeout. Timed as the storage driver's reads are (see `GcsStorageDriverOptions.readTimeoutMs`);
+   * the writes and listings are not timed.
+   */
+  readonly readTimeoutMs?: number;
   /**
    * Whether a delete removes a row for good, by an object delete sent with `ifGenerationMatch: <the generation it
    * read>`, rather than leaving a tombstone. Only a row born with an incarnation id is removed; a row a release before
@@ -76,6 +83,7 @@ export class GcsRegistryStore implements ObjectRegistryStore {
     private readonly storage: Storage,
     private readonly readStorage: Storage,
     private readonly bucket: string,
+    private readonly readTimeoutMs: number,
     readonly conditionalDelete: boolean,
   ) {}
 
@@ -84,9 +92,9 @@ export class GcsRegistryStore implements ObjectRegistryStore {
     return this.storage.bucket(this.bucket).file(name);
   }
 
-  /** The same file handle on the download client. */
+  /** The same file handle on the download client, off the SDK's shared agent ({@link downloadFile}). */
   private downloadable(name: string) {
-    return this.readStorage.bucket(this.bucket).file(name);
+    return downloadFile(this.readStorage, this.bucket, name);
   }
 
   async read(key: string): Promise<ObjectRow | null> {
@@ -94,18 +102,23 @@ export class GcsRegistryStore implements ObjectRegistryStore {
     // observation of the object, so the pair cannot straddle a concurrent overwrite.
     let res;
     try {
-      res = await retryDownload(() =>
-        readOnce(
-          this.downloadable(key),
-          {},
-          MAX_ROW_BYTES,
-          (size) =>
-            new IntegrityError(
-              size === undefined
-                ? `registry object exceeds cap ${MAX_ROW_BYTES}B`
-                : `registry object ${size}B exceeds cap ${MAX_ROW_BYTES}B`,
-            ),
-        ),
+      // One deadline for the read, every attempt included.
+      const deadline = startDeadline(this.readTimeoutMs, `registry read of ${key}`);
+      res = await retryDownload(
+        () =>
+          readOnce(
+            this.downloadable(key),
+            {},
+            MAX_ROW_BYTES,
+            (size) =>
+              new IntegrityError(
+                size === undefined
+                  ? `registry object exceeds cap ${MAX_ROW_BYTES}B`
+                  : `registry object ${size}B exceeds cap ${MAX_ROW_BYTES}B`,
+              ),
+            deadline,
+          ),
+        deadline,
       );
     } catch (err) {
       if (isNotFound(err)) return null;
@@ -187,7 +200,7 @@ export class GcsRegistryStore implements ObjectRegistryStore {
 
 /**
  * Narrow a version fence back to the number `ifGenerationMatch` takes. The fence always originates as
- * the `x-goog-generation` header in {@link GcsStore.read}, so this cannot fire in practice — but `Number()` answers `NaN`
+ * the `x-goog-generation` header in {@link GcsRegistryStore.read}, so this cannot fire in practice — but `Number()` answers `NaN`
  * for anything non-numeric, and `ifGenerationMatch: NaN` serializes to a precondition GCS ignores. That
  * failure is invisible (writes simply stop being fenced), so it is checked rather than assumed.
  */
@@ -201,6 +214,8 @@ function generationFence(version: string, key: string): number {
 
 /** A read's error: a connection that failed or was cut off is transient too, after the driver's retries. */
 function mapReadError(err: unknown): unknown {
+  // Timed out on every attempt: transient, in words that name the read and the timeout.
+  if (err instanceof ReadTimedOut) return new TransientError(err.message, { cause: err });
   if (isTransportFault(err)) {
     return new TransientError(`transient GCS fault: ${String((err as { code?: unknown }).code)}`, {
       cause: err,
@@ -238,6 +253,7 @@ export class GcsRegistryDriver extends ObjectStoreRegistry {
         options.storage,
         options.readStorage ?? options.storage,
         options.bucket,
+        resolveReadTimeoutMs(options.readTimeoutMs),
         resolveConditionalDelete(options.conditionalDelete, options.storage),
       ),
       normalizeObjectPrefix(options.prefix),

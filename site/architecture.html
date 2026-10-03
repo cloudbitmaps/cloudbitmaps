@@ -301,8 +301,8 @@
               There is no per-id write, so there is nothing to fold back in later and
               <strong>no background job on the read path</strong>. On S3 the write and the publish cost
               <strong>$11.20 per million loads</strong>, pointer included — measured request counts at list
-              prices, for those two steps; <span class="m">store.load</span>'s listings and clean-up pass come on
-              top, about doubling it — so batch the refresh.
+              prices, for those two steps; <span class="m">store.load</span>'s check and clean-up come on
+              top, about a tenth more on average — so batch the refresh.
             </p>
           </div>
           <div class="limit">

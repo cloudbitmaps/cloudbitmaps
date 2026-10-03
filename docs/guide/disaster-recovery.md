@@ -71,10 +71,10 @@ difference can tear. The obvious case is a **registry that is ahead of the objec
 
 This is the exact failure `checkConsistency()` detects (issue `missing-storage-generation`). The reverse — storage
 restored to a *later* point than the registry — tears the same way. Storage generations are immutable, but they
-are not kept: a `load` collects, by default, the generations below its new pointer except
-the newest one (`keep: 1`), a subject erasure collects every one below its rewrite (`keep: 0`), and `dropSegment`
-deletes them all. Two loads after the registry's point are enough to delete the generation the restored registry
-names.
+are not kept: a `load` collects, by default, the generations below its new pointer except the newest one (`keep: 1`),
+taking the one its publish pushes out by name and the rest on every 16th generation; a subject erasure collects every
+one below its rewrite (`keep: 0`); and `dropSegment` deletes them all. Two loads after the registry's point are enough
+to delete the generation the restored registry names.
 
 ## The hard requirement: one restore point for both stores
 
@@ -446,9 +446,9 @@ The window only opens on a kill that skips the graceful path, so close that path
   exec-form `CMD`, or an init that forwards.
 - **Set a request timeout on the SDK client you inject.** The library times no write, deliberately, since a timeout
   of its own would abandon a write in flight; the only requests it can time are reads, through `readTimeoutMs` on
-  `S3Storage` and `AzureBlobStorage`. The consequence is that a black-holed connection hangs a write, a listing or an
-  untimed read indefinitely; without a client timeout, a stuck sweep eats its whole grace period and is then killed
-  between the two writes above. This is the single highest-value thing you own.
+  `S3Storage`, `GcsStorage` and `AzureBlobStorage`. The consequence is that a black-holed connection hangs a write, a
+  listing or an untimed read indefinitely; without a client timeout, a stuck sweep eats its whole grace period and is
+  then killed between the two writes above. This is the single highest-value thing you own.
 
 The library does not pair the audit trail against unstamped tombstones itself; an automated reconcile is listed on
 the [roadmap](../ROADMAP.md) and not shipped, so this section is the procedure.
@@ -711,13 +711,20 @@ current versions.
 - **Loads published after the registry's restore point are not recovered.** Their objects may still exist in
   storage, *above* the restored pointer. Reads through a backend never see them (the pointer is authoritative; a
   store on a bare `IStorageDriver` does, see [readers still on an old generation](#readers-still-on-an-old-generation)),
-  a load numbers its generation above them, and its collection never touches a generation at or above `currentGen`
-  — so they sit there, billed, until you act. The safe recovery is to **re-run the load from your source**: it
-  writes a generation above them, which puts them below the pointer, where collection counts them within `keep`
-  like any other generation: `keep` counts every generation below the new pointer, strays first, so collection takes
+  and collection never touches a generation at or above `currentGen` — so they sit there, billed, until you act. The
+  safe recovery is to **re-run the load from your source**. A load takes the number after the pointer while no
+  object holds it, and collection usually freed the numbers just above the restored pointer, so the first re-runs can
+  number *below* the strays and leave them above the pointer; the first load whose number a stray holds numbers
+  above every object in the bucket, which puts them all below the pointer. List `store.generations(ref)` and load
+  until the pointer is above the highest stray. Below the pointer, collection counts them within `keep` like any
+  other generation: `keep` counts every generation below the new pointer, strays first, so collection takes
   all but the newest `keep` of them, and each later load takes one more. Under the default `keep: 1` it keeps the
-  newest stray and collects the rest, the restored generation included, so pass a `keep` above the number of strays
-  if the restored generation must stay a rollback target. Do not hand-publish an
+  newest stray and collects the rest, the restored generation included. The re-runs that number below the strays
+  are generations below the pointer too, so by the time the pointer passes the strays every number from the restored
+  pointer to the highest stray can be there: if the restored generation must stay a rollback target, pass a `keep` of
+  at least the highest stray minus the restored pointer, plus one, on every re-run until the pointer is above the
+  strays. With the pointer restored to 1 and strays at 4 and 5, that is `keep: 5`; a `keep` of the number of strays
+  plus one, 3, collects generation 1 on the re-run that passes them. Do not hand-publish an
   object you cannot vouch for. A stray
   above the pointer is a whole object — every backend commits an object atomically, so a crash never leaves a
   partial one — but the bucket cannot tell you whether it was ever current. After a restore it is usually a load
@@ -731,8 +738,10 @@ The library cannot rebuild a **lost** registry from the storage objects that sur
 authoritative and must be restored from its own version history (hence the versioning requirement above). Making
 storage objects self-describing enough to rebuild it (and to decrypt without the registry row, though still with
 the keystore's KEK) would take a
-`.crbm` **format change** that carries a KEK-wrapped DEK in each object. The fixed 104-byte footer cannot hold one:
-its reserved field is 2 bytes, and its 16-byte `key_id` field, written as zeros, is smaller than a wrapped DEK. It
+`.crbm` **format change** that carries a KEK-wrapped DEK in each object. The fixed 104-byte footer cannot hold one
+(its reserved field is 2 bytes, and its 16-byte `key_id` field, written as zeros, is smaller than a wrapped DEK), so
+it would be a new section in the extension block, with a footer flag bit of its own, since every reader must
+understand it. It
 would also change the crypto-shred model, since shredding would then have to delete the storage objects too, not
 just the key. The capability is listed on the [roadmap](../ROADMAP.md). **Back up the registry and keystore** —
 they are not reconstructable from storage alone.

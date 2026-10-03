@@ -188,7 +188,7 @@ describe.skipIf(GCS_BUCKET === undefined)('REAL GCS: delete with ifGenerationMat
   const bucket = GCS_BUCKET ?? '';
   beforeAll(() => {
     storage = new Storage();
-    store = new GcsRegistryStore(storage, storage, bucket, true);
+    store = new GcsRegistryStore(storage, storage, bucket, 0, true);
   });
   const file = (name: string) => storage.bucket(bucket).file(name);
   const put = async (name: string, text: string): Promise<string> => {

@@ -101,6 +101,7 @@ class FakeGcs {
         }
         this.objects.delete(name);
       },
+      interceptors: [],
       createReadStream: (): PassThrough => {
         const out = new PassThrough();
         this.reads++;

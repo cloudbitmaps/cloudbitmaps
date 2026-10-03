@@ -44,6 +44,24 @@ export interface GcsStorageOptions {
   /** Injected clock for the registry's `createdAt`/`updatedAt`; defaults to `Date.now`. */
   readonly now?: () => number;
   /**
+   * Cut off a read that has run this long, in milliseconds. `0`, the default, sets no timeout. A client's own `timeout`
+   * does not bound a download on `@google-cloud/storage` 8.x (the SDK hands it to an HTTP client that has no such
+   * option), so this is what does.
+   *
+   * It bounds each read as a whole — a generation's tail (with the metadata read it falls back on for an empty
+   * object), a range of it, a registry row — with one deadline across every attempt the driver makes and the backoff
+   * between them. The clock starts at the call into the driver, so a credential fetch and any wait for a socket count
+   * (Node's agents set no socket limit unless your process sets one), and runs until the whole body has arrived. It
+   * counts time the process spends busy too: Node runs a due timer before it reads a socket, so a synchronous stretch
+   * longer than the timeout fails the reads in flight even when their responses have arrived. When it passes, the read
+   * throws `TransientError` naming the read and the timeout and no further attempt starts, for the store's read retry
+   * to run again: about 8.35 s in all at `2_000` with the default retry policy. Uploads, deletes, listings and the
+   * conditional writes are not timed. The SDK cannot cancel a request whose response has not begun, so a read timed
+   * out before its server answers leaves that connection open until the server answers or closes it: one per read, up
+   * to four per call through the store's retry. A non-negative safe integer no larger than 2,147,483,647.
+   */
+  readonly readTimeoutMs?: number;
+  /**
    * Whether the registry removes a deleted row for good, by an object delete sent with `ifGenerationMatch`, rather
    * than leaving a tombstone a full listing reads forever. Defaults to `true` on the public endpoint and to `false`
    * with a custom `apiEndpoint`: fake-gcs-server, for one, ignores the precondition on a delete.
@@ -65,6 +83,7 @@ export const GCS_STORAGE_OPTION_KEYS = [
   'maxObjectBytes',
   'simpleUploadThresholdBytes',
   'now',
+  'readTimeoutMs',
   'conditionalDelete',
 ] as const;
 
@@ -142,6 +161,7 @@ export class GcsStorage implements StorageBackend {
       readStorage: readClient,
       bucket: options.bucket,
       ...(options.prefix === undefined ? {} : { prefix: options.prefix }),
+      ...(options.readTimeoutMs === undefined ? {} : { readTimeoutMs: options.readTimeoutMs }),
     };
     this.storage = new GcsStorageDriver({
       ...shared,

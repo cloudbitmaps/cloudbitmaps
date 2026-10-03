@@ -54,15 +54,17 @@ A refused load also emits `segment.load-refused` to the `audit` sink you pass.
 - a key the keystore cannot provide: `KeyUnavailableError`;
 - a current generation that will not open when the load reads its size for a guard: `IntegrityError`;
 - a failure from your backend's storage or registry service, such as `TransientError`;
-- a collection pass that could not prove the segment was unchanged: `WriteConflictError`. This can be raised after the
-  publish landed, so a throw does not by itself mean the load did not take effect.
+- a collection pass by listing that could not prove the segment was unchanged: `WriteConflictError`. This and a
+  failure in the collection's own reads or deletes can be raised after the publish landed, so a throw does not by
+  itself mean the load did not take effect. A collection by name that finds the segment changed returns an empty
+  `collected` instead.
 
 The `*Into` verbs throw on the same superseded condition instead of reporting it.
 
 ## What a load accepts
 
 **Any id source, in any order, with duplicates.** The input is a sync or async iterable, consumed lazily and
-deduplicated as it goes: an array, a `Set`, a generator, a file stream, a warehouse cursor.
+deduplicated as it goes: an array, a `Set`, a generator, a file stream, a warehouse cursor. Or a whole bitmap, below.
 
 ```ts
 // Your function: pages through the warehouse and yields each user id.
@@ -77,6 +79,72 @@ res; // { generation, published, cardinality, collected, ... }: what was written
 ```
 
 Pass the cursor itself. The one way to make a load expensive is to build the whole id list in memory first.
+
+**A bitmap you already hold.** When the segment is the result of set algebra you ran in memory, pass the bitmap
+rather than its ids. `{ bitmap }` takes anything with `serialize('portable')`, such as `roaring`'s `RoaringBitmap32`;
+`{ serialized }` takes bytes you already have in the portable Roaring format, from a file, a queue message, or an
+export (`exportSegments`' `'roaring'` format writes it, so an export loads straight back).
+
+```ts
+import roaring from 'roaring';
+const { RoaringBitmap32 } = roaring;
+// Your bitmaps: conditions evaluated once each, combined in memory.
+declare const active: InstanceType<typeof RoaringBitmap32>;
+declare const churned: InstanceType<typeof RoaringBitmap32>;
+declare const bytes: Uint8Array; // portable Roaring, from wherever you keep it
+
+const retained = RoaringBitmap32.andNot(active, churned);
+await store.load({ segment: 'audience:retained' }, { bitmap: retained });
+await store.load({ segment: 'audience:imported' }, { serialized: bytes });
+```
+
+- **It is the same load.** The generation is byte for byte the one the same ids write, and everything above holds
+  unchanged: the guard and the empty refusal, `keep`, the fenced publish, encryption and the result.
+- **It is checked first.** The bytes are size-capped at 537,403,396 bytes, more than any canonical 32-bit bitmap
+  serializes to (call `runOptimize()` before serializing a bitmap that is over it), checked structurally the way
+  every stored chunk is, and decoded by the safe deserializer, all before the load's first request. Bytes that fail
+  are a `ValidationError`, and nothing is read or written. `{ bitmap }` is checked the same way: it is serialized once,
+  at the call, so changing the bitmap after the call does not change what is loaded.
+- **One buffer is one bitmap.** Bytes after the bitmap's last container are refused with `ValidationError`, so two
+  serializations concatenated into one buffer are refused rather than loaded as the first of them. An empty buffer,
+  or a detached one, is the empty bitmap.
+- **No per-id work.** The chunks are cut out of the bitmap's own containers. What runs in JavaScript is per
+  container and per byte: the structural check, which reads an array container's values once, and the checksum the
+  write computes anyway.
+- **It yields, except for two whole-bitmap steps.** Two steps do not yield, each for a time that grows with the
+  bitmap's bytes: the input check and the native decode, which run at the call, before the load's first request;
+  and re-encoding the bitmap before the write. The load yields on each side of the re-encode, and every 1,024
+  containers while it cuts, re-checks and writes them. At the 537,403,396-byte cap they take about 400 ms or more and
+  about 250 ms (derived: twice a load of 256 MiB of bitsets on an Apple M3 Pro, where the decode alone took 189–211 ms
+  and the re-encode 113–136 ms; a smaller load understates them, since their time grows faster than the bytes).
+- **The bytes must not change while the call runs.** A buffer that another thread is still writing (an `fs.read`
+  or a `crypto.randomFill` into it that has not finished, say) can be decoded as bytes the check never saw. The load
+  checks every container again as it writes it, so such a load throws `IntegrityError` and publishes nothing rather
+  than a generation readers refuse; but bytes that change into another valid bitmap load as that bitmap. Await the
+  write before you load the buffer.
+- **It holds more than the bitmap.** At its peak a bitmap load holds a decoded copy of the bitmap and its
+  re-encoded bytes, each about the size of the serialization, on top of the bytes you passed and what the backend
+  buffers of the object it writes (one 8 MiB part on S3).
+- **A bare `RoaringBitmap32` passed where ids go takes the same path**, when it comes from the copy of `roaring` that
+  `@cloudbitmaps/roaring` uses. One from another copy is loaded as the ids it iterates, which is correct and slower;
+  `{ bitmap }` works with either.
+- **A byte array is not ids.** A `Uint8Array`, `Uint8ClampedArray` or `Buffer` passed as ids is refused with
+  `ValidationError`, because each byte would be loaded as an id. Pass bytes as `{ serialized }`, and ids as a
+  `Uint32Array` or an array of numbers. Every other typed array is ids. The refusal is made when the load runs: a byte
+  array is an iterable of numbers, so the compiler accepts one as ids.
+- **Parts of one segment, built separately.** Combine them in memory with `RoaringBitmap32.orMany(parts)` and load
+  the result once. When the parts cover disjoint ranges of the id space (by the high 16 bits, say) the union copies
+  containers rather than merging them. Parts built in different processes have to reach one process first, as
+  `serialize('portable')` bytes, to be combined there: a load writes one generation from one process.
+
+<!-- load-input:start -->
+**How fast a bitmap loads.** `pnpm bench:load-input` measures a load from ids against one from a bitmap, on five sets
+up to 14.4M members, and on one container layout at 10 % and at 90 % density. That pair holds nine times the members
+in the same containers, so a path that works per id is expected to cost about nine times as much on the second, and
+one that does not is expected to cost about the same. Its figures have not been measured yet. What is checked on every
+change is that a 12M-member load from a bitmap calls none of the per-id routes: no iteration, no build from values,
+no id split (`tests/roaring/load-no-per-id.test.ts`).
+<!-- load-input:end -->
 
 **Memory is bounded by the distinct set, not by the input.** A load holds one compressed bitmap per non-empty chunk, so a
 billion duplicate-heavy ids stream through holding only the distinct result. The buffer between the input and the
@@ -182,10 +250,34 @@ change generations needs a pin, not a window wide enough to hope with. See
 `keep` is a non-negative integer: a negative, fractional, `NaN` or infinite value is refused with `ValidationError`
 before anything is written. It never touches the current generation or anything above it.
 
+**How `store.load` collects.** With the default `keep` of 1, or 0, a load that found nothing above its pointer deletes
+**by name** the one generation its publish pushed out of the window, which is its own generation number minus `keep`
+and one, after re-reading the row, and lists nothing. A segment that loads cleanly therefore pays one delete and one
+pointer read for collection, not a listing. A load lists the segment's objects instead, and collects everything below
+its pointer beyond `keep`, in three cases:
+
+- every 16th generation, so what the by-name loads leave behind is gone within 16 generations: the generations an
+  earlier, wider `keep` held, an object a refused load left below the pointer, a generation a rollback or an erasure
+  stranded. The count is of generation numbers, so a rollback, which moves the pointer down, starts it again from the
+  generation it moves to;
+- when the load's check of its generation number met an object, which is a crashed load's or what a rollback left
+  above the pointer, or its guard's read found the current generation's object gone, which a lifecycle rule or a
+  partial restore does;
+- whenever `keep` is 2 or more. A window of 2 or more counts the generations that are in the bucket, and a name cannot
+  know which they are: a load that was refused leaves a gap, and deleting `keep` and one below the new generation by
+  name would take a generation the window promised to keep.
+
+A `keep` that is at least the generation just published collects nothing and asks the bucket for nothing, since no
+more generations than that exist below it: that includes a default `*Into`, which keeps every generation.
+
+`LoadResult.collected` then names the generation it deleted by name, and that generation may have been gone already: a
+delete of an absent object succeeds on every backend and does not say it found nothing. A list is not a receipt, and
+neither is this one. An `*Into` always lists when it is given a `keep`.
+
 | Path | Collects? |
 |---|---|
-| `store.load` | **It does.** Collection is part of the call, keeping `keep` generations (default 1). |
-| an `*Into` | **You do.** Pass `keep` to collect on the way through. Without it nothing is collected, and the next `store.load` of the destination collects everything below its own pointer beyond its `keep`. This is the step `store.load` exists to stop you forgetting. |
+| `store.load` | **It does.** Collection is part of the call, keeping `keep` generations (default 1): by name for a `keep` of 0 or 1, by listing otherwise and on every 16th generation. |
+| an `*Into` | **You do.** Pass `keep` to collect on the way through: it lists the destination and deletes every generation below the new one beyond `keep`, however many earlier `*Into` calls kept. Without it nothing is collected, and the next `store.load` of the destination deletes the one generation its own publish pushes out of the window by name, and the rest at the destination's next 16th generation. This is the step `store.load` exists to stop you forgetting. |
 | `eraseSubject` | **Yes**, with `keep: 0`: the generation holding the bit must not survive the call. A holder above the pointer, which a `rollback` leaves there, is outside collection's range, so the erasure deletes it itself. |
 | `retireExpired` | **Yes**, for the tombstones it wrote itself, and only with `purgeTombstones` (on by default) and after the grace period. It collects a straggler generation before purging the row. A tombstone a hand-run `dropSegment` or a crypto-shred left is never touched. |
 | `dropSegment` | Deletes every generation of the segment it drops, and reports any it could not in `generationsRemaining`. |
@@ -226,6 +318,10 @@ await store.rollback(ref, 4, { audit, allowForward: true });
 - A generation that is not in the bucket throws `NotFoundError` naming the ones that are.
 - A target above the pointer throws `ValidationError` without `allowForward`, because that is also where objects live
   that were never published, such as those of a load that died before its publish.
+- A target that is not what the row says the segment is throws `IntegrityError` before the pointer moves: a cleartext
+  object under an encrypted segment (a write that never published, from a store with no keystore, before the
+  segment's first keyed load), or an encrypted one under a cleartext segment. Every read would refuse it. The check
+  reads the target's footer, one request, with no key.
 - A load keeps one generation below the one it publishes by default (`keep: 1`), so there is one to roll back to. Pass
   a larger `keep` on the loads of a segment you may want to roll further back.
 - Each move emits `segment.rollback` to the `audit` sink you pass
@@ -239,8 +335,9 @@ A crypto-shredded segment throws `ValidationError`, since every generation of it
 generation already current is a reported no-op.
 
 **What happens to the generations above the new pointer.** They stay, which is what makes a rollback reversible. They
-are then above `currentGen`, where collection never looks. They remain until one of three things happens. A load
-numbers above them, and collection then keeps the newest `keep` of what is below its pointer. Or `dropSegment` deletes
+are then above `currentGen`, where collection never looks. They remain until one of three things happens. Loads pass
+them: each takes the next number up while no object holds it, the first whose number one of them holds numbers above
+them all, and collection then keeps the newest `keep` of what is below its pointer. Or `dropSegment` deletes
 them. Or an erasure deletes them: all of them when it rewrites, only those that hold the id when the current
 generation does not. Rollback is audited as
 `segment.rollback`, because every other pointer move can be reconstructed from "a load happened" and this one cannot.
@@ -327,10 +424,15 @@ refused. `store.exists()` answers `false` for the first two, since a read of the
 
 This section is the mechanism. You do not need it to use a load, and it is here so you can check the guarantees.
 
-**Generation numbering is the load's.** Generations are write-once, and a load takes the next number itself: one above
-the highest the registry points at or that is present in the bucket, whichever is higher. A brand-new segment starts
-at `0`. Both are consulted on purpose. A load that wrote its object and crashed before publishing leaves an object
-above `currentGen`, and a writer consulting only the pointer would pick that same number and conflict on every retry.
+**Generation numbering is the load's.** Generations are write-once, and a load takes the next number itself: the one
+after the pointer it read, `currentGen + 1`, when one existence check finds no object holding it, and otherwise one
+above the pointer and above every object in the bucket, from a listing. A brand-new segment starts at `0`. The check is
+there on purpose. A load that wrote its object and crashed before publishing leaves an object above `currentGen`, and a
+writer consulting only the pointer would pick that same number and conflict on every retry. A load can therefore
+number below an object above the pointer, such as one a rollback left there, but never onto one: write-once refuses a
+put to a number an object holds, and a load that loses that race reports `superseded`. A number whose object was
+deleted can be taken again, so nothing identifies a generation by its number alone: caches key on the number and the
+row's token, and a reader that finds the object under its number replaced re-reads the segment.
 
 **Publish is forward-only, so a rerun is safe.** The object is written first. Only once it is durable does the load
 advance the registry pointer, with a compare-and-swap that never moves backwards. Run the same job twice and the second
@@ -350,7 +452,8 @@ that was never current. So does a refused load that finds another write has chan
 its generation number may name a re-created segment's object. Once a generation above the orphan is current, the orphan
 is one more generation below the pointer, which collection counts within `keep` like any other. So under the default
 `keep: 1` the load that lands above it keeps the orphan and collects the generation readers were on, and the next load
-collects the orphan. There is no half-loaded state a reader can observe: a read resolves one generation and reads
+collects the orphan. A load that collects by name takes an orphan only when it is the one generation its publish pushes
+out of the window, so one stranded elsewhere below the pointer waits for the next listing, at most 16 generations on. There is no half-loaded state a reader can observe: a read resolves one generation and reads
 whole, checksum-verified chunks from it.
 
 **A miss is a re-read, not a failure.** If the generation an unpinned read is on is swept, the storage driver throws
@@ -369,20 +472,34 @@ store with no timed refresh (no registry, `cache: { genTtlMs: 0 }`, or a pre-bui
 snapshot lasts until an eviction, a read that finds its generation swept, or an invalidation moves it on, however long
 that takes. There no finite `keep` covers it, and the re-read above is the mechanism that keeps it correct.
 
-**What collection does, precisely.** It deletes generations strictly below `currentGen`, keeping the most recent `keep`
-of them, so a read still fetching from the just-superseded generation need not re-resolve mid-call. It deletes nothing
-while `currentGen` is `null`, because an object under a pointer-less row is either a load about to publish or an
-orphan, and the two cannot be told apart safely. The one exception: on a `destroyed` segment (a drop or crypto-shred
-tombstone) every generation is garbage and all are collected, because no reader can resolve a tombstoned segment.
+**What collection does, precisely.** A listing pass deletes generations strictly below `currentGen`, keeping the most
+recent `keep` of them, so a read still fetching from the just-superseded generation need not re-resolve mid-call. It
+deletes nothing while `currentGen` is `null`, because an object under a pointer-less row is either a load about to
+publish or an orphan, and the two cannot be told apart safely. The one exception: on a `destroyed` segment (a drop or
+crypto-shred tombstone) every generation is garbage and all are collected, because no reader can resolve a tombstoned
+segment.
+
+A by-name pass takes one generation, the one the load's publish pushed out of the window, and is bound by the same
+rules. It re-reads the row before it deletes. It deletes nothing and returns an empty `collected` when the row is
+gone, or when the pointer has fallen below the generation the load published, which a rollback does, or a name purged
+and re-created that has not yet loaded as far: the publish already landed, so the load returns as published, and the
+pointer is wherever the operator put it. A publish landing meanwhile moves the pointer up and changes nothing. A fault
+is not a lost race: a registry read or a delete that throws rejects the load, after its publish landed and with the
+pointer at the published generation, so re-read the pointer rather than assuming. The generation it deletes is always
+below the one it published, so it never touches the current generation, and with a `keep` of 0 or 1 it is one a
+listing pass would also take, or leave to a later pass: never one the listing would keep, so long as the object the
+row named is in the bucket. A load whose guard's read finds that object gone, the state a lifecycle rule or a partial
+restore leaves and `checkConsistency` reports, lists instead, and keeps the older generation a listing keeps as the
+window. A load that makes no such read, one with `allowEmpty` and no `minRetained`, cannot tell, and deletes that
+generation by name.
 
 A segment can be purged and re-created while a paginated listing is in flight, so both branches re-read the registry
 row afterwards and reconcile with it:
 
 - On a tombstone, the row must still be the same row, compared by its **token**. A generation number is not an
   identity, and a re-created name can wear the very `currentGen` the tombstone held.
-- On the ordinary branch, the cutoff becomes the **lower** of the two pointers. A load numbers its generation one above
-  the highest of the pointer and any object in the bucket, so numbering restarts at 0 once a row is purged and the
-  bucket emptied. A re-created name then wears a lower pointer than the one read before the listing, and deleting
+- On the ordinary branch, the cutoff becomes the **lower** of the two pointers. A load numbers its generation from the
+  pointer and what is in the bucket, so numbering restarts at 0 once a row is purged and the bucket emptied. A re-created name then wears a lower pointer than the one read before the listing, and deleting
   "everything below it" would take the new incarnation's live object. A publish landing mid-listing moves the pointer
   forward and so changes nothing, which is what keeps routine collection working on a busy segment.
 

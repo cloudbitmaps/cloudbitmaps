@@ -74,7 +74,7 @@ pointer — configured from one bucket and one prefix, which is what makes them 
 | `MemoryStorage` (`MemoryStorageOptions`) | `@cloudbitmaps/roaring` | `new MemoryStorage({ now? }?)` |
 | `LocalFsStorage` (`LocalFsStorageOptions`) | `@cloudbitmaps/roaring` | `new LocalFsStorage('/var/lib/cloudbitmaps', { now? }?)` — generations under `<root>/storage`, pointers under `<root>/registry`, which is also the layout `export-segments` expects. A root is for one process: instances in a process share a lock per row, two processes on one root are not fenced |
 | `S3Storage` | `@cloudbitmaps/s3` | `new S3Storage({ bucket, prefix?, client?, region?, endpoint?, pathStyle?, credentials?, maxObjectBytes?, partBytes?, readTimeoutMs?, conditionalDelete?, now? })` — `client` or the four settings that build one, and both is refused |
-| `GcsStorage` | `@cloudbitmaps/gcs` | `new GcsStorage({ bucket, prefix?, client?, projectId?, apiEndpoint?, maxObjectBytes?, simpleUploadThresholdBytes?, conditionalDelete?, now? })` — `client` or the two settings that build one, and both is refused |
+| `GcsStorage` | `@cloudbitmaps/gcs` | `new GcsStorage({ bucket, prefix?, client?, projectId?, apiEndpoint?, maxObjectBytes?, simpleUploadThresholdBytes?, readTimeoutMs?, conditionalDelete?, now? })` — `client` or the two settings that build one, and both is refused |
 | `AzureBlobStorage` | `@cloudbitmaps/azure-blob` | `new AzureBlobStorage({ containerClient, prefix?, maxObjectBytes?, blockBytes?, readTimeoutMs?, conditionalDelete?, now? })` or `({ connectionString, container, prefix?, maxObjectBytes?, blockBytes?, readTimeoutMs?, conditionalDelete?, now? })` — one or the other, and both is refused |
 
 **A backend comes from one of these five classes, or from a class of your own that calls `brandAsBackend` from the driver kit
@@ -90,10 +90,13 @@ is built:
 |---|---|---|---|
 | `S3Storage` | `partBytes` | 8 MiB; a smaller value is raised to S3's 5 MiB minimum | multipart part size, and so the peak write memory; a positive safe integer |
 | `S3Storage` | `maxObjectBytes` | `partBytes` × 10,000 (about 80 GiB at the default) | the largest object the backend will write and advertise; raise it and `partBytes` grows so the 10,000-part limit still covers it, up to S3's 5 TiB; a positive safe integer |
+| `S3Storage` | `readTimeoutMs` | `0`: no timeout | how long each `GetObject` and `HeadObject`, the SDK's own retries of it included, may take, the response body included, before it is aborted and throws `TransientError` for the store's read retry; an integer from 0 to 2,147,483,647 |
 | `GcsStorage` | `simpleUploadThresholdBytes` | 8 MiB | an object up to this size is one simple request; a larger one is a resumable stream; a positive safe integer |
 | `GcsStorage` | `maxObjectBytes` | 5 TiB, GCS's per-object maximum | the largest object the backend will write and advertise; set it lower to fail fast on a runaway write; a positive safe integer |
+| `GcsStorage` | `readTimeoutMs` | `0`: no timeout | how long one read (a tail with its metadata fallback, a range, a registry row) may take, every attempt and the body included, before it throws `TransientError` for the store's read retry; see [`@cloudbitmaps/gcs`](#cloudbitmapsgcs); a non-negative safe integer no larger than 2,147,483,647 |
 | `AzureBlobStorage` | `blockBytes` | 8 MiB | staged block size, and so the peak write memory; a positive safe integer |
 | `AzureBlobStorage` | `maxObjectBytes` | `blockBytes` × 50,000 (about 400 GiB at the default) | the largest blob the backend will write and advertise; raise it and `blockBytes` grows so the 50,000-block limit still covers it; a positive safe integer |
+| `AzureBlobStorage` | `readTimeoutMs` | `0`: no timeout | how long each read request (a range read, a tail read's properties and its download, each on its own, a registry row's read) may take, the response body included, before it is aborted and throws `TransientError` for the store's read retry; an integer from 0 to 2,147,483,647 |
 
 **Each cloud backend says whether its registry removes a deleted row for good: `conditionalDelete`.** On, a row the
 registry deletes, the retention sweep's purge of a tombstone included, is removed from the bucket by a delete the
@@ -182,15 +185,21 @@ A `Segment` has no public constructor: `store.segment(name)` and `seg.pin()` are
 handle is wired to the store's engine, caches and write path. The class is exported for `instanceof` and to annotate
 a variable, and `new Segment(…)` throws `ValidationError`.
 
-### Load a generation — `store.load(ref, ids, { allowEmpty?, guard?, keep?, audit? })`
+### Load a generation — `store.load(ref, input, { allowEmpty?, guard?, keep?, audit? })`
 
-The whole write path in one call: take the next generation number, stream `ids` — any sync **or async** iterable,
-unsorted, duplicates welcome — into one immutable `.crbm` object, check it is plausible, move the pointer, and collect
-what the move superseded, keeping the newest `keep` generations below the new pointer (default `1`; a non-negative integer, and anything else —
-negative, fractional, `NaN`, infinite — throws `ValidationError` before anything is written). The `*Into` verbs take
+The whole write path in one call: take the next generation number, stream `input` into one immutable `.crbm`
+object, check it is plausible, move the pointer, and collect what the move superseded, keeping the newest `keep`
+generations below the new pointer (default `1`; a non-negative integer, and anything else — negative, fractional,
+`NaN`, infinite — throws `ValidationError` before anything is written). The `*Into` verbs take
 the same `keep`, validated the same way. Returns a
 `LoadResult` — `{ generation, published, reason?, size, sha256, chunkCount, cardinality, cardinalityBefore,
-collected }`. Memory is bounded by the **distinct set** being built, not by the input length — a batch job's shape,
+collected }`. With a `keep` of 0 or 1, a load that found nothing above its pointer deletes by name the one generation
+its publish pushed out of the window, and lists the segment only on every 16th generation; with a `keep` of 2 or more,
+or when its check of its generation number met an object or its guard found the current generation's object gone,
+it lists on every load
+([how it collects](loading.md#generations-and-keep)). `collected` names what the pass deleted, and a generation
+deleted by name may have been gone already: a delete of an absent object succeeds and says nothing, so the list is not
+a receipt that the generation was there. Memory is bounded by the **distinct set** being built, not by the input length — a batch job's shape,
 not a request handler's — and the store's clock makes a long load yield the event loop. On a store built with a
 keystore it writes encrypted: it mints the segment's DEK on its **first** generation, reuses it afterwards, and
 never encrypts a segment whose existing generations are cleartext. `audit?` emits `segment.publish` for a generation
@@ -201,9 +210,26 @@ the result (`'empty'`, `'min-cardinality'` or `'min-retained'`), or another writ
 There are two ways to get there first. Another load may have taken the same generation number, so this one wrote
 nothing (`size: 0`). Or the segment's registry row changed while the load was writing: another load published, a
 retention change, a rollback or an erasure wrote the row, or the row was deleted. A refused load deletes the object
-it wrote while the row is unchanged or gone, and leaves it in the bucket once another write has changed the row: a
-later load numbers above it, and collection then counts it within `keep` like any other generation below the pointer.
+it wrote while the row is unchanged, dropped or crypto-shredded, or gone once the object's footer proves it the
+load's own, and leaves it in the bucket once another write has changed the
+row: once a generation above it is current, collection counts it within `keep` like any other generation below the
+pointer.
 The `store.load` row lists the guards and what throws instead.
+
+**`input` is a `LoadInput`: ids, or a whole bitmap.** Ids are any sync **or async** iterable of integers in
+`[0, 2^32)`, unsorted, duplicates welcome. A bitmap is `{ serialized }`, one 32-bit bitmap in the portable Roaring
+format, or `{ bitmap }`, any `PortableBitmap` (an object with `serialize('portable')`, such as `roaring`'s
+`RoaringBitmap32`, and optionally `getSerializationSizeInBytes('portable')`, which lets a load refuse one over the cap
+before serializing it), which is loaded as `{ serialized: bitmap.serialize('portable') }`, serialized once at the
+call. A
+bare `RoaringBitmap32` from the `roaring` this package uses, passed as ids, is loaded as `{ bitmap }`. Bitmap bytes are
+capped at 537,403,396 bytes (more than any canonical 32-bit bitmap serializes to), must hold exactly one bitmap, and
+are checked structurally and decoded by the safe deserializer before the first request; malformed or oversized
+bytes, and bytes after the bitmap's end, throw `ValidationError` with nothing read or written. The chunks are then
+cut from the bitmap's own containers, with no per-id work, and the generation is byte for byte the one the same ids
+write. A `Uint8Array`, `Uint8ClampedArray` or `Buffer` passed as ids throws `ValidationError` when the load runs
+(the type accepts one, since a byte array is an iterable of numbers): pass bytes as `{ serialized }`.
+Anything that is none of these throws `ValidationError` too ([what a load accepts](loading.md#what-a-load-accepts)).
 
 ### The segment verbs (the ~90% of daily use)
 
@@ -245,7 +271,7 @@ segment mid-call and how the timed refresh behaves.
 |---|---|
 | `store.subjectReport(id, { namespace? \| allNamespaces?, concurrency?, budget? })` → `Promise<SubjectReport>` | GDPR Art. 15 — which registered segments is this id in? Needs an explicit `namespace` or an `allNamespaces: true` ack, and throws `ValidationError` with neither. Needs a backend |
 | `store.eraseSubject(id, { namespace? \| allNamespaces?, audit?, concurrency?, budget? })` → `Promise<EraseSubjectResult>` | GDPR Art. 17: for every registered segment the id is in, **rewrite the current generation without it** and delete every generation that held the bit, so it is gone from the bucket on return. Returns the erasure ledger, one entry per segment ([erasure](erasure.md)). Needs a `namespace` or `allNamespaces: true`, and a backend |
-| `store.load(ref, ids, { allowEmpty?, guard?, keep?, audit? })` → `Promise<LoadResult>` | **replace this segment's contents** with `ids` as one new immutable generation: next number, write, check, move the pointer, collect. **Branch on `published`**: a refusal is a normal outcome, not a throw ([why a load is refused](loading.md#when-a-load-is-refused)). Needs a backend |
+| `store.load(ref, input, { allowEmpty?, guard?, keep?, audit? })` → `Promise<LoadResult>` | **replace this segment's contents** with `input` (ids, `{ serialized }` or `{ bitmap }`) as one new immutable generation: next number, write, check, move the pointer, collect. **Branch on `published`**: a refusal is a normal outcome, not a throw ([why a load is refused](loading.md#when-a-load-is-refused)). Needs a backend |
 | `store.exists(ref)` → `Promise<boolean>` | whether a read of this segment would find anything, as **one registry point read**. Not the same as `count() > 0` ([details](loading.md#does-this-segment-exist)). Needs a backend |
 | `store.segments({ namespace? })` → `AsyncIterable<SegmentInfo>` | every segment the registry holds, **streamed**, optionally scoped to one namespace. An admin call, not a request-path one ([details](loading.md#does-this-segment-exist)). Needs a backend |
 | `store.generations(ref)` → `Promise<GenerationEntry[]>` | every generation still in the bucket, ascending, with the current one marked: the set `store.rollback` can choose from ([details](loading.md#roll-back-a-segment)). Needs a backend |
@@ -306,7 +332,7 @@ wrote)
 | key | type | what it holds |
 |---|---|---|
 | `storage` **(required)** | `StorageBackend \| IStorageDriver \| StorageChunkSource` | where everything lives |
-| `cache?` | `CacheOptions` | `maxChunks?` (decoded chunks held in RAM, default 1024) · `ttlMs?` · `genTtlMs?` (default 2000 ms; [how soon a reader sees a new load](reading.md#how-soon-a-reader-sees-a-new-load); needs a backend) · `readerMax?` (open `.crbm` readers, default 1024) · `readerMaxBytes?` (their parsed indices, default 64 MiB) |
+| `cache?` | `CacheOptions` | `maxChunks?` (decoded chunks held in RAM, default 1024) · `ttlMs?` · `genTtlMs?` (default 2000 ms; [how soon a reader sees a new load](reading.md#how-soon-a-reader-sees-a-new-load); needs a backend) · `readerMax?` (open `.crbm` readers, default 1024) · `readerMaxBytes?` (their parsed indices and any metadata they hold, default 64 MiB) |
 | `encryption?` | `EncryptionOptions` | `keystore?` · `required?` — both need a backend, since the wrapped DEK lives in the registry |
 | `retry?` | `RetryOptions \| false` | a **partial** `RetryPolicy` (anything omitted keeps its `DEFAULT_RETRY_POLICY` value) plus `onRetry?`, for the transient retry of every read that answers a query, and of the reads a load's guard and an erasure make along the way; `false` turns it off. Writes are never retried ([Resilience](#resilience-the-store-wires-this-by-default)) |
 | `metrics?` | `IMetricsSink` | typed metric events; defaults to a no-op |
@@ -395,9 +421,39 @@ The name is deliberately **not** tied to a codec. `.crbm` is the container for a
 CRC32C checksums, the AES-GCM framing and the generation model are all codec-independent, and only the chunk
 payload bytes would differ. Roaring is the one codec that ships.
 
+**Format version.** Every object is format **1.0**: the preamble, the chunk payloads, the index and the fixed
+104-byte footer. A reader refuses an unknown major version, and refuses an object whose footer sets a flag bit it does
+not know. A generation written with metadata carries one **extension block** between the last payload and the index,
+and its footer sets the `FLAG_EXTENSION` bit (`1 << 3`); with no metadata the writer emits the same bytes as before the
+block existed, the flag clear. A reader before 0.12 does not know the bit, so it refuses an object with metadata.
+
+- **Where the block is.** It is found from the index's offset alone: its last 12 bytes, just before the index, are
+  its sections' length (u32), a CRC32C of the sections and that length (u32), and the magic `CRBX`. Payloads end
+  where the block starts.
+- **Sections.** At most 4 KiB in all, each a type (u8), a length (u32) and that many bytes, in strictly ascending
+  type order; type 0 is not a type. A reader skips a type it does not know, so a section must be safe to ignore: a
+  meaning every reader has to understand needs a footer flag bit of its own, which an older reader refuses.
+- **Type 1, the metadata.** Its canonical JSON, at most 1 KiB: RFC 8785 (the JSON Canonicalization Scheme) for one
+  flat object of string and finite-number values. Keys are sorted by UTF-16 code unit, strings are escaped as
+  `JSON.stringify` escapes them, numbers are written as ECMAScript's `Number.prototype.toString` writes them (`-0` is
+  `0`, `1e21` is `1e+21`, `5e-7` stays `5e-7`), and there is no whitespace. A language's ordinary JSON writer differs
+  in places (Python writes `1e-07`; Go and Rust sort keys by code point), so
+  [`tests/golden/metadata-canonical.json`](../../tests/golden/metadata-canonical.json) holds vectors to check a port
+  against.
+- **Encrypted.** The section is sealed like the index (AES-256-GCM, `nonce ‖ ciphertext ‖ tag`, under
+  `aadFor(ref, generation, 'metadata')`), so its content cannot be read or altered without the key; its length, like
+  the index's, stays visible. That the block is there at all is not authenticated: the flag, the trailer and the
+  section types are covered by CRCs, which take no key, so whoever can write the object can remove the block, and the
+  object then reads as one with no metadata.
+- **What a reader refuses**, with `IntegrityError`: a flag with no valid block; a block whose trailer, CRC, size or
+  sections do not hold;
+  metadata that breaks a rule or is not exactly its canonical form; a payload that runs into the block; and any
+  object that is not encrypted when it is opened with a key. It reads the block with the index, from the tail or in
+  the same range read, and makes one more read only when the tail ends inside the block.
+
 | Symbol | What it does |
 |---|---|
-| `CrbmReader` / `CrbmReaderOptions` | read it (`tailBytes`, `maxPayloadBytes`, `maxIndexBytes`, `crypto`, and `lineage`, an opaque marker of the incarnation of the name the object belongs to, which the reader carries and never interprets, so a caller can tell one generation of a segment from the same generation number of a segment deleted and re-created); `reader.fingerprint` names the object by its size and footer checksum, and `CrbmReader.sameObject(blob, fingerprint)` says whether the object behind `blob` is that one, from one footer's worth with no key: another size is another object, and a footer that fails its own checks throws. A fingerprint is opaque: compare two for equality, and do not parse one |
+| `CrbmReader` / `CrbmReaderOptions` | read it (`tailBytes`, `maxPayloadBytes`, `maxIndexBytes`, `crypto`, and `lineage`, an opaque marker of the incarnation of the name the object belongs to, which the reader carries and never interprets, so a caller can tell one generation of a segment from the same generation number of a segment deleted and re-created); `reader.fingerprint` names the object by its size and footer checksum, and `CrbmReader.sameObject(blob, fingerprint)` says whether the object behind `blob` is that one, from one footer's worth with no key: another size is another object, and a footer that fails its own checks throws. A fingerprint is opaque: compare two for equality, and do not parse one. `reader.metadata` is the generation's metadata (`GenerationMetadata`, frozen), checked and, on an encrypted object, decrypted at open; `undefined` on a generation with none, every 1.0 object included. |
 | `CrbmStorageChunkSource` / `CrbmStorageChunkSourceOptions` | the `.crbm` storage reader over an `IStorageDriver` (the store builds this from a raw driver for you); options add `registry`, `keystore`, `requireEncryption`, `clock`, `currentGenTtlMs`, `maxOpenSegments`, `maxOpenIndexBytes` |
 | `BufferReader` · `BlobSink` · `BlobReader` | the in-memory `BlobReader` you hand to `CrbmReader.open`, plus the two interfaces themselves: `BlobSink` takes bytes (one method, `write`), `BlobReader` serves them (`getRange`, `getTail`) |
 
@@ -408,8 +464,9 @@ a codec of your own — the `CloudRoaring` facade injects the roaring codec for 
 
 | Symbol | What it does |
 |---|---|
-| `CodecInterface` | the factory the engine builds bitmaps through (`empty` / `fromValues` / `safeDeserialize`) |
-| `CodecBitmap` | the value type a codec produces — a `u32` set with set algebra + portable (de)serialization. Optional `maximum?()` lets the engine range-check a chunk payload in O(1); a codec that can't answer cheaply omits it and the check is skipped |
+| `CodecInterface` | the factory the engine builds bitmaps through (`empty` / `fromValues` / `safeDeserialize`). `safeDeserialize(bytes, maxBytes, { whole? })`: with `whole: true`, which a load passes for a caller's bytes, bytes after the bitmap's end are refused too; a stored chunk is read without it. A codec must honour `whole`: core cannot read the format and relies on the codec for that refusal, so a codec that ignores it loads two concatenated bitmaps as the first |
+| `CodecBitmap` | the value type a codec produces — a `u32` set with set algebra + portable (de)serialization. Optional `maximum?()` lets the engine range-check a chunk payload in O(1); a codec that can't answer cheaply omits it and the check is skipped. Optional `optimize?()` re-encodes for storage, and must be canonical: afterwards `serialize()` depends on membership alone. Optional `encodeChunks?()` is flavor-author surface: the set as `EncodedChunk`s, ascending, each exactly the bytes `fromValues` of that chunk's low 16 bits, `optimize()` and `serialize()` give, which is how a bitmap load writes without touching an id. A codec without it loads a bitmap through its ids |
+| `EncodedChunk` | `{ chunkKey, payload, cardinality }`: one chunk as a `.crbm` generation stores it, what `encodeChunks?()` yields |
 
 ### Flavor-author kit (`@cloudbitmaps/core`)
 
@@ -450,7 +507,7 @@ because the store methods return them; the `*Deps` types (`LoadDeps`, `Generatio
 | `segmentExists(ref, registry)` → `Promise<boolean>` | the unwired form of `store.exists` — one registry `get`; true only when a live, non-`destroyed` row has a `currentGen` |
 | `listSegments(registry, { namespace? })` → `AsyncIterable<SegmentInfo>` | the unwired form of `store.segments`; validates `namespace`, and excludes internal bookkeeping rows on an unscoped scan |
 | `rollbackSegment(ref, toGeneration, { storage, registry }, { audit?, allowForward? })` → `Promise<RollbackResult>` | the unwired form of `store.rollback`, taking the drivers instead of a store. The target is verified after the swap, and the pointer is put back if it vanished ([how a rollback can fail half-way](disaster-recovery.md#checkconsistency--verify-before-you-serve-traffic)) |
-| `loadSegment(ref, ids, { storage, registry, codec?, keystore?, requireEncryption?, clock?, readRetry? }, { allowEmpty?, guard?, keep?, audit? })` → `Promise<LoadResult>` | the unwired form of `store.load`: replaces a segment's contents with `ids` as one immutable generation. It takes the drivers, plus a `codec`, `keystore` and `clock`, instead of a store. `readRetry` (a `RetryDeps` plus an optional `policy`) retries the guard's read of the current generation; without it that read is made once, and the write is never retried. Options, results and refusal reasons are `store.load`'s ([loading](loading.md)) |
+| `loadSegment(ref, input, { storage, registry, codec?, keystore?, requireEncryption?, clock?, readRetry?, collectByListing? }, { allowEmpty?, guard?, keep?, audit? })` → `Promise<LoadResult>` | the unwired form of `store.load`: replaces a segment's contents with `input`, the same `LoadInput` (`{ serialized }` and `{ bitmap }` decoded by the `codec`, and written through its `encodeChunks?()`), as one immutable generation. It refuses a byte array passed as ids, as `store.load` does; a bare `RoaringBitmap32` passed as ids is ids here, since core names no codec's class. It takes the drivers, plus a `codec`, `keystore` and `clock`, instead of a store. `readRetry` (a `RetryDeps` plus an optional `policy`) retries the guard's read of the current generation; without it that read is made once, and the write is never retried. `collectByListing: true` makes the load collect by listing whatever `keep` is, where it would otherwise delete by name the one generation its publish pushed out of the window with a `keep` of 0 or 1; the `*Into` verbs set it, since their `keep` clears every generation below the new one beyond it. Options, results and refusal reasons are `store.load`'s ([loading](loading.md)) |
 | `eraseIdFromSegment(ref, id, { storage, registry, codec?, keystore?, requireEncryption?, clock?, maxBitmapBytes?, readRetry? }, { audit? })` → `Promise<EraseIdResult>` | remove **one id** from one segment by rewriting its current generation without it: the step `store.eraseSubject` runs over every registered segment. `erased: true` means no generation holds the id; otherwise `reason` says why ([the result of erasing one segment](erasure.md#how-it-stays-correct)). `readRetry`, shaped as `loadSegment`'s, retries the reads the rewrite makes; without it each is made once, and the writes and deletes are never retried |
 | `dropSegment(ref, { registry, storage }, { confirmSegment, dryRun?, audit? })` → `Promise<DropResult>` | **dispose of a segment** — tombstone, then delete every Storage generation. Works on cleartext; also crypto-shreds an encrypted one. `store.dropSegment` is the wired form |
 | `runConsistencyCheck({ storage, registry }, { namespace?, concurrency?, maxScanSegments? })` → `Promise<ConsistencyReport>` | the free function behind `store.checkConsistency` — run it over your own drivers, or over a backend's `storage` and `registry`. `maxScanSegments` (default 250,000) is how many registry rows one scan may hold resident; past it the call throws `BudgetExceededError` rather than report a partial scan |
@@ -684,7 +741,7 @@ one segment inside `checkConsistency` is recorded in `report.errored`, not throw
 
 | Symbol | What it does |
 |---|---|
-| `NodeAead` · `Aead` · `AeadSealed` · `WrappedDek` · `CrbmCrypto` · `aadFor` | the AES-256-GCM implementation + the crypto interfaces the `.crbm` reader/writer use. An **`Aead` implementation is handed** the associated data and never builds it. A **`CrbmCrypto` caller does** — it is the `{ aead, aadFor }` pair that `CrbmReader.open` takes, so tooling reading an *encrypted* archive builds one with `aadFor(ref, generation, scope)`, which binds each chunk and the index to `(segment, generation)` |
+| `NodeAead` · `Aead` · `AeadSealed` · `WrappedDek` · `CrbmCrypto` · `aadFor` | the AES-256-GCM implementation + the crypto interfaces the `.crbm` reader/writer use. An **`Aead` implementation is handed** the associated data and never builds it. A **`CrbmCrypto` caller does** — it is the `{ aead, aadFor }` pair that `CrbmReader.open` takes, so tooling reading an *encrypted* archive builds one with `aadFor(ref, generation, scope)`, which binds each chunk, the index and the metadata section (scope `'metadata'`) to `(segment, generation)` |
 | `EraseDeps` | `{ registry }` — deps for the free-function crypto-shred (`destroySegment` / `eraseNamespace`) |
 
 ### Low-level ports & capabilities (driver-author typing)
@@ -780,7 +837,7 @@ does not re-export. A driver author told elsewhere on this page to import `Token
 `CloudRoaringOptions` · `CacheOptions` · `EncryptionOptions` · `RetryOptions` · `SeamOptions` ·
 `SegmentOptions` · `SubjectReport` · `SubjectSegmentRef` · `SubjectErasureEntry` · `EraseSubjectResult` ·
 `MaterializeResult` · `MaterializeRefusal` · `BaseCombineOptions` · `CombineOptions` · `MaterializeOptions`
-· `AndNotIntoOptions` · `IdRange` · `LoadOptions` · `LoadGuard`
+· `AndNotIntoOptions` · `IdRange` · `LoadInput` · `PortableBitmap` · `LoadOptions` · `LoadGuard`
 · `LoadResult` · `LoadRefusal` · `GenerationEntry` · `RollbackResult` · `SegmentInfo`
 · `CrbmStorageChunkSourceOptions` ·
 `MemoryStorageOptions` · `LocalFsStorageOptions` · `ExportFormat` · `ExportSink` · `ExportWriter` · `ExportOptions` ·
@@ -795,7 +852,7 @@ does not re-export. A driver author told elsewhere on this page to import `Token
 `IMetricsSink` · `MetricEvent` · `MetricOpName` · `MetricsSnapshot` · `PricingProfile` · `RedisSizing` ·
 `RedisNodeType` · `CostReport` · `Workload` · `SegmentSizing` · `EstimateInput` · `IAuditSink` · `AuditEvent` · `Clock` ·
 `Rng` · `Budget` · `BudgetOption` · `ConsistencyReport` · `ConsistencyIssue` · `ConsistencyErrorEntry` ·
-`CodecInterface` · `CodecBitmap` · `Token`
+`CodecInterface` · `CodecBitmap` · `EncodedChunk` · `Token`
 
 ### `@cloudbitmaps/core` — only on core
 
@@ -861,6 +918,21 @@ and 8.1.0) a download the SDK retries after any status it retries (408, 429, 500
 a connection fault (refused, reset, timed out, a DNS failure, a body cut off) or a 408, 429, 500, 502, 503 or 504, and after nothing else (not a missing credentials file or a TLS failure); what still fails is a `TransientError`. Its other requests keep
 the SDK's retries. A `client` you pass is used as given, so build it with `retryOptions: { autoRetry: false }`, which also
 turns off the SDK's retries of listings, metadata reads and resumable uploads on that client
+([why](production.md#reliability-retries-backoff--timeouts)).
+
+A client's `timeout` does not bound a download on 8.x; `readTimeoutMs` does, and it is off (`0`) unless set. It bounds
+one read as a whole (a tail with the metadata read it falls back on for an empty object, a range, a registry row): one
+deadline covers every attempt the driver makes and the backoff between them, from the call into the driver (a
+credential fetch and any wait for a socket count) to the end of the body, and it counts time the process spends busy,
+so a synchronous stretch longer than the timeout fails the reads in flight. When it passes, the read throws
+`TransientError` naming the read and the timeout, no further attempt starts, and the store's read retry runs it again:
+about 8.35 s in all at `2_000` with the default retry policy. Uploads, deletes, listings and the conditional writes are
+not timed. The SDK cannot cancel a request whose response has not begun, so a read that times out before its server
+answers leaves that connection open until the server answers or closes it: one per read, up to four per call through
+the store's retry. A 404 whose error body arrives after the deadline is a `TransientError`, not `NotFoundError`. Every
+download goes out on Node's global agent, not the SDK's shared one, so one the driver cuts off or refuses resets no
+other request; that agent closes a connection idle for 5 seconds, and is shared with the process's other `http` and
+`https` requests
 ([why](production.md#reliability-retries-backoff--timeouts)).
 
 The registry lets a GCS deployment run on **one bucket

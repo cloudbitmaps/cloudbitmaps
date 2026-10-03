@@ -10,8 +10,8 @@ checklist: work down the table, and follow each link for the detail.
 | Nothing expires current objects or the `registry/` prefix | An expired pointer or generation makes a live segment unreadable | [Bucket lifecycle](#bucket-lifecycle) |
 | Versioning and backups cover the data and the pointers | A restore must bring both back to the same point in time | [Versioning and backups](#versioning-and-backups) |
 | With versioning on, noncurrent versions expire after your restore window | Each generation a load collects is otherwise billed for as long as the bucket keeps it, out of sight | [Bucket lifecycle](#bucket-lifecycle) |
-| The bucket honors conditional writes, and the S3 SDK is 3.645.0 or later | Otherwise a write-once generation can be silently overwritten | [Conditional writes and the S3 SDK](#conditional-writes-and-the-s3-sdk) |
-| Your reads have a timeout | Without one a hung request hangs its call. `readTimeoutMs` on `S3Storage` and `AzureBlobStorage` bounds each read, and is off by default; on Azure Blob it is the only bound on a download's body, which no client setting reaches. On GCS 8.x nothing bounds a download's body. The library times no write, delete or listing | [Reliability](#reliability-retries-backoff--timeouts) |
+| The bucket honors conditional writes, and the S3 SDK is 3.700.0 or later | Otherwise a write-once generation can be silently overwritten | [Conditional writes and the S3 SDK](#conditional-writes-and-the-s3-sdk) |
+| Your reads have a timeout | Without one a hung request hangs its call. `readTimeoutMs` on `S3Storage`, `GcsStorage` and `AzureBlobStorage` bounds each read, and is off by default. It is the only bound on a GCS 8.x or Azure Blob download's body, which no client setting reaches. The library times no write, delete or listing | [Reliability](#reliability-retries-backoff--timeouts) |
 | Your job re-runs a write after a transient error | Writes are never retried for you | [Reliability](#reliability-retries-backoff--timeouts) |
 | You know the request budget and the memory ceilings | A runaway call is refused, not billed | [Limits](#limits-the-per-op-budget-and-the-memory-ceilings) |
 | The keystore is backed up, if you encrypt | Losing the key makes the data permanently unreadable | [Encryption](encryption.md#before-you-encrypt) |
@@ -126,16 +126,17 @@ object and `If-Match` for the pointer.
 - **The bucket must honor them.** AWS S3 does, and the test suite runs against MinIO. Another S3-compatible service
   that ignores the headers turns write-once into overwrite, so check yours before you depend on it. GCS and Azure
   Blob use their own equivalents (`ifGenerationMatch`; `If-None-Match` and `If-Match`).
-- **Use `@aws-sdk/client-s3` 3.645.0 or later if you pass your own `client`.** Measured against MinIO, 3.640.0
-  silently overwrites an existing object, which loses a published generation without an error. `@cloudbitmaps/s3`
-  never resolves its own SDK below the floor. If your own code imports the SDK, to build that `client`, add it to your own `package.json` too: pnpm does not let your code import a dependency of a dependency.
-- **The registry checks the SDK for the other headers it sends.** That floor is measured for `If-None-Match` alone. The
-  registry's compare-and-swap sends `If-Match` on `PutObject`, and its conditional delete sends `If-Match` on
-  `DeleteObject`, and an SDK drops a member its model lacks without a word. Before its first request the registry
-  serialises each of the three through a client built from yours, sending nothing and running none of your middleware,
-  and refuses a write the SDK would send without its
-  precondition (`ValidationError`, naming the header) and tombstones instead of deleting when a `DeleteObject` would go
-  out without `If-Match`. If you see that error, upgrade `@aws-sdk/client-s3`.
+- **Use `@aws-sdk/client-s3` 3.700.0 or later if you pass your own `client`.** An SDK drops a conditional header it
+  does not model, without an error. Measured against MinIO, 3.640.0 drops `If-None-Match` and silently overwrites an
+  existing object, which loses a published generation; up to 3.699.0 the serializer drops `If-Match` on `PutObject`,
+  so the registry's compare-and-swap goes out unconditionally. `@cloudbitmaps/s3` never resolves its own SDK below
+  the floor. If your own code imports the SDK, to build that `client`, add it to your own `package.json` too: pnpm does not let your code import a dependency of a dependency.
+- **The registry checks the SDK it is given for the headers it sends.** The floor above covers the compare-and-swap's
+  `If-Match` on `PutObject` (3.700.0) and the conditional delete's on `DeleteObject` (3.698.0), and a `client` you pass,
+  or an SDK your package manager pins, can still be older. Before its first request the registry serialises each of the
+  three through a client built from yours, sending nothing and running none of your middleware. It refuses a write the SDK
+  would send without its precondition (`ValidationError`, naming the header) and tombstones instead of deleting when a
+  `DeleteObject` would go out without `If-Match`. If you see that error, upgrade `@aws-sdk/client-s3`.
 
 ## Reliability: retries, backoff & timeouts
 
@@ -176,8 +177,51 @@ retry; the client `GcsStorage` builds keeps them and needs nothing.
 
 **A GCS client's `timeout` does not bound a download** on `@google-cloud/storage` 8.x: the SDK hands it to an HTTP
 client that has no such option. Measured against a local server that accepts a read and never answers, a read through
-a client built with `timeout: 2000` was still pending after 12 s, and one through the default client after 75 s. So
-nothing bounds a stalled GCS read today; the timeouts below apply to S3 and Azure Blob.
+a client built with `timeout: 2000` was still pending after 12 s, and one through the default client after 75 s.
+**`readTimeoutMs` on `GcsStorage` does bound it, and it is off unless you set it:**
+
+```ts
+import { GcsStorage } from '@cloudbitmaps/gcs';
+
+const backend = new GcsStorage({ bucket: 'my-bitmaps', readTimeoutMs: 2_000 });
+```
+
+It bounds each read the backend makes as a whole: a generation's tail (with the metadata read it falls back on for an
+empty object), a range of it, and a registry row. One deadline covers every attempt the driver makes at the read and
+the backoff between them, so `readTimeoutMs` bounds one driver read, its own retries included. The clock starts at the
+call into the driver, so fetching or refreshing a credential counts, as does any wait for a socket (Node's agents set
+no limit on sockets unless your process sets one), and it runs until the whole body has arrived, so a server that
+sends its headers and then stalls is cut off too. It counts time the process spends busy too: Node runs a due timer
+before it reads a socket, so a synchronous stretch longer than the timeout fails the reads in flight even when their
+responses have arrived. When the deadline passes, the read throws `TransientError` naming the read and the timeout, no
+further attempt starts, and the store's read retry, above, runs it again. With `readTimeoutMs: 2_000` and the default
+retry policy, a read whose requests stall on every attempt fails after 4 × 2,000 ms of timeouts plus up to 350 ms of
+backoff, about 8.35 s; measured against a local server that never answers, a `has()` failed after 8.1 to 8.2 s.
+Uploads, deletes, listings and the conditional writes are not timed: an upload can rightly take longer than a read,
+and a write cut off may still land.
+
+**What a timed-out read leaves open.** The SDK cannot cancel a request whose response has not begun, so when the
+deadline passes before the server has answered, that request keeps its connection open until the server answers or
+closes it, and until then it keeps a Node process from exiting. That is one request per driver read, and so up to four
+per call through the store's read retry: measured against a local server that never answers, one `has()` left 4
+requests open, 20 at once left 80, and a process whose read had timed out at 200 ms exited only when the server closed
+its connection, 6 s later. A sustained outage at N reads a second therefore adds about 4N held connections each
+second, until the server closes them. On `@google-cloud/storage` 8.x a read cut off after its response began closes
+its own connection; on 7.x (checked on 7.22.0) it stays open as well, and without a timeout a body the server cuts off
+part-way never settles. A 404 whose error body arrives after the deadline is reported as the timeout, a
+`TransientError`, rather than as `NotFoundError`.
+
+**The driver sends every download on Node's global agent**, timed or not, rather than on the SDK's own keep-alive
+pool. When a download fails part-way, the SDK destroys the agent it went out on, and its own pool is shared by every
+request in the process, so a download cut off mid-body, refused or timed out there resets every other request in
+flight, uploads included: measured on 8.1.0 with no timeout, a body the server cut off part-way reset a 64-byte upload
+and a registry write on a second backend. On the global agent all of them complete, and the SDK never destroys it.
+What that costs: Node's global agent closes a connection that has been idle for 5 seconds, which the SDK's own pool
+does not, so a read after a longer quiet spell opens a new connection, with its TCP and TLS handshake; and the downloads
+share that agent with any other `http` or `https` request in your process, so a `maxSockets` set on it queues them,
+and the queue counts toward the timeout. Raising `https.globalAgent.options.timeout` keeps idle connections longer
+(measured on Node's `http` agent against a local server: two reads 6.5 s apart opened two connections by default and
+one with `options.timeout` at 30 s).
 
 **Nor does an Azure Blob client's timeout bound a body that stalls.** The SDK's per-try timer stops once the response
 headers arrive, and `retryOptions.tryTimeoutInMs` is the timeout it asks the service to apply. Measured against a local
@@ -253,8 +297,8 @@ cached handler only for a request sent with no options.
 
 **Set a timeout on your S3 client for the rest.** `readTimeoutMs`, above, times reads and nothing else: the library
 times no write, because a write abandoned in flight can still land after it was given up on, and it times no delete
-or listing on any backend, nor any GCS request. On S3 a timeout on your client turns a hung write or listing into a
-transient fault, which for a write is yours to re-run. Build the client with the timeout and pass it to the backend:
+or listing, on any backend. On S3 a timeout on your client turns a hung write or listing into a transient fault,
+which for a write is yours to re-run. Build the client with the timeout and pass it to the backend:
 
 ```ts
 import { S3Client } from '@aws-sdk/client-s3';
