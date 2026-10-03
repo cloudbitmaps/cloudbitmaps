@@ -370,7 +370,8 @@ describe('a calibration rehearsal that meets a fault it must not discard', () =>
   }, 180_000);
 
   it('fails the run on a transient fault in a load, which is never run again, and records the code beneath it', () => {
-    const { status, stderr, results } = rehearse('3');
+    // GET 2 of the run is the load's read of its row before it writes its object: nothing in the load settles it.
+    const { status, stderr, results } = rehearse('2');
     expect(status, stderr).toBe(1);
     expect(stderr).not.toMatch(/DISCARDED/);
     expect(results.discards).toMatchObject({
@@ -386,5 +387,16 @@ describe('a calibration rehearsal that meets a fault it must not discard', () =>
       message: 'transient S3 fault: TimeoutError',
     });
     expect(results.phases).toEqual({});
+  }, 180_000);
+
+  it('does not let a load that absorbed a transient fault on its pointer write pass as a clean sample', () => {
+    // GET 3 of the run is the read inside the load's first row write. The write gets no answer, the publish reads the
+    // row and sends it again, and the load succeeds: with two requests more than the engine makes in a steady load.
+    const { stderr, results } = rehearse('3');
+    expect(stderr).toMatch(/EXPECTED COUNT MISSED/);
+    expect(stderr).toMatch(
+      /load's kept samples made \d+ GET-class requests, the engine is expected to make \d+/,
+    );
+    expect(results.expectedMissed).toBeDefined();
   }, 180_000);
 });

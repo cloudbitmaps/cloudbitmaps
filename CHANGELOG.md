@@ -95,7 +95,10 @@ so, and so do the module headers in the code.
     for a while before another writer replaced it. The materialisation error no longer says the result never became
     current: it says the generation was written and is not current.
   - *Requests.* A throttle only adds requests. A publish that is not throttled sends exactly the requests it did before
-    (the write id travels in the object's own request), so `costReport()` and `estimateCost()` are unchanged.
+    (the write id travels in the object's own request), so `costReport()` and `estimateCost()` are unchanged. The
+    calibration harness treats a load that absorbed a transient fault on its pointer write as a missed expected count,
+    since it made more requests than a steady load, rather than as a clean sample; a fault on any other request of a
+    load still fails the run.
 
 - **A steady `store.load()` sends 11 requests to S3 where it sent 14: it reads the segment's row once, and checks its
   next generation number instead of listing for it.** A load read its registry row four times before its publish. On
