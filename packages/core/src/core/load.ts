@@ -328,6 +328,10 @@ export async function loadSegment(
     }
   };
 
+  // Set when a registry write of this load's publish ended without an answer: a refusal after that cannot say whether
+  // the write landed first.
+  let unanswered = false;
+
   const refuse = async (reason: LoadRefusal): Promise<LoadResult> => {
     await reclaim();
     audit.onEvent({
@@ -337,6 +341,7 @@ export async function loadSegment(
       generation,
       reason,
       cardinality: written.cardinality,
+      ...(unanswered ? { unanswered: true as const } : {}),
     });
     // Constructed field by field, never spread from the write result. That result now carries `wrappedDeks` —
     // wrapped key material — and a spread would put it on a public, JSON-serialisable object that a load job
@@ -398,6 +403,9 @@ export async function loadSegment(
       // And the wait before a fresh write, when the first left the row as it was.
       clock: deps.clock,
       rng: deps.readRetry?.rng,
+      onUnanswered: () => {
+        unanswered = true;
+      },
     });
   } catch (err) {
     // A refusal the publish states by throwing is as definite as a `false`: each of these is raised before that

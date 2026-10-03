@@ -2,6 +2,7 @@ import { loadSegment } from '@/core/load';
 import { openGenerationReader, publishGeneration } from '@/core/crbm-storage-source';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { IntegrityError, TransientError, WriteConflictError } from '@/core/errors';
+import type { AuditEvent } from '@/core/audit';
 import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
@@ -34,8 +35,8 @@ type Fault =
   | { kind: 'land-then-transient'; after?: () => void }
   /** Apply the write, then report a conflict, as an Azure replay meeting its own row does. */
   | { kind: 'land-then-conflict' }
-  /** Report a conflict without applying anything: another writer won. */
-  | { kind: 'conflict-unapplied' }
+  /** Report a conflict without applying anything: another writer won; `meanwhile` is what it did first. */
+  | { kind: 'conflict-unapplied'; meanwhile?: () => Promise<void> }
   /** Fail before applying it, keeping the call to land later; `meanwhile` runs before the failure is reported. */
   | { kind: 'transient-unapplied'; meanwhile?: () => Promise<void> };
 
@@ -80,7 +81,10 @@ function world(now: () => number = () => 1_000) {
           await send();
           throw new WriteConflictError('the replay met its own row');
         }
-        if (f.kind === 'conflict-unapplied') throw new WriteConflictError('another writer won');
+        if (f.kind === 'conflict-unapplied') {
+          await f.meanwhile?.();
+          throw new WriteConflictError('another writer won');
+        }
         held.push(send);
         await f.meanwhile?.();
         throw new TransientError('503 SlowDown; the request may still land');
@@ -444,6 +448,53 @@ describe('a publish whose registry write ends without a definite answer reads th
     expect((await w.base.get(SEG))!.currentGen).toBe(4);
     // The write can never land now, and the row changed, so the object stays for collection, as after a lost race.
     expect(await generations(w.storage)).toContain(3);
+  });
+
+  it('a refusal after a write that went unanswered says so in the audit event; after answered writes it does not', async () => {
+    const answered = world();
+    await threeLoads(answered);
+    answered.arm({
+      kind: 'conflict-unapplied',
+      // Another writer changes the row (a retention policy), and this load's write then loses to it: an answer.
+      meanwhile: async () => {
+        const row = (await answered.base.get(SEG))!;
+        await answered.base.compareAndSwap(SEG, row.token, { retention: { note: 'x' } });
+      },
+    });
+    const seenA: AuditEvent[] = [];
+    const a = await loadSegment(SEG, [1, 2, 3, 4], answered.deps, {
+      keep: 9,
+      audit: { onEvent: (e) => seenA.push(e) },
+    });
+    expect(a).toMatchObject({ published: false, reason: 'superseded' });
+    expect(seenA).toHaveLength(1);
+    expect(seenA[0]).toMatchObject({ kind: 'segment.load-refused', reason: 'superseded' });
+    expect(seenA[0]).not.toHaveProperty('unanswered');
+
+    const w = world();
+    await threeLoads(w);
+    w.arm({
+      kind: 'transient-unapplied',
+      // The write gets no answer, and by the time the row is read back another writer has moved the pointer on.
+      meanwhile: async () => {
+        await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 4 }, [9], {
+          registry: w.base,
+        });
+      },
+    });
+    const seen: AuditEvent[] = [];
+    const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, {
+      keep: 9,
+      audit: { onEvent: (e) => seen.push(e) },
+    });
+    expect(r).toMatchObject({ published: false, reason: 'superseded' });
+    expect(seen).toEqual([
+      expect.objectContaining({
+        kind: 'segment.load-refused',
+        reason: 'superseded',
+        unanswered: true,
+      }),
+    ]);
   });
 
   it('an unguarded first load whose create did not land advances over a row another writer created, with a new write', async () => {

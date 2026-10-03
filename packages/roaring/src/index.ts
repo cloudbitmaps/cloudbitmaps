@@ -971,11 +971,11 @@ export class CloudRoaring {
       // investigation. `size > 0` is the one thing this path can state as fact.
       const wrote =
         result.size > 0
-          ? `generation ${result.generation} was written and did not become current`
+          ? `generation ${result.generation} was written and is not current`
           : `nothing was written — another writer took generation ${result.generation} first`;
       throw new WriteConflictError(
-        `${op}: the destination "${dest.segment}" changed while this materialisation was in flight, so it ` +
-          `never became current: ${wrote}. The pointer may have moved, the row may have been rewritten ` +
+        `${op}: the destination "${dest.segment}" changed while this materialisation was in flight, so its ` +
+          `result is not the destination's current generation: ${wrote}. The pointer may have moved, the row may have been rewritten ` +
           `(a retention policy does this), dropped or purged. Re-read the destination and re-run.`,
       );
     }

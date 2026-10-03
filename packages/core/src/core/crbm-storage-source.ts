@@ -1274,6 +1274,12 @@ export async function publishGeneration(
     clock?: Yielder;
     /** Spreads that wait (full jitter) so concurrent publishers do not retry together. Without it the wait is the bound. */
     rng?: Rng;
+    /**
+     * Called once for each registry write that ended without an answer, before the row is read back. A caller whose
+     * publish then answers `false` can say that it cannot tell whether its own write landed first: the row may have
+     * held its generation for a while before another writer moved on.
+     */
+    onUnanswered?: () => void;
   } = {},
 ): Promise<boolean> {
   // A row read after a write that failed, which the next attempt acts on instead of reading it again.
@@ -1400,6 +1406,7 @@ export async function publishGeneration(
       }
       // Only the write itself raises a transient fault in here, and it is the one outcome that is not an answer.
       if (!isTransientError(err)) throw err;
+      options.onUnanswered?.();
       let now: RegistryRecord | null;
       try {
         now = await registry.get(key);
