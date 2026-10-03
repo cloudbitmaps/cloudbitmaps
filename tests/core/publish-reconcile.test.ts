@@ -262,6 +262,26 @@ describe('a publish whose registry write ends without a definite answer reads th
     expect(await idsOf(w.storage, 3)).toEqual([42, 43]);
   });
 
+  it('an unguarded first load finding a pointer at its number over another object is superseded, and that object kept', async () => {
+    const w = world();
+    w.arm({
+      kind: 'transient-unapplied',
+      meanwhile: async () => {
+        // No fence names this load's number: it read no row, and it asked for no guard. Its object is replaced under
+        // that number, and another writer creates the row, pointing at its own.
+        await w.storage.delete({ ...SEG, generation: 0 });
+        await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [42, 43], {
+          registry: w.base,
+        });
+      },
+    });
+    const r = await loadSegment(SEG, [5], w.deps, { allowEmpty: true });
+    expect(r).toMatchObject({ generation: 0, published: false, reason: 'superseded' });
+    expect(w.writes.create).toBe(1);
+    expect((await w.base.get(SEG))!.currentGen).toBe(0);
+    expect(await idsOf(w.storage, 0)).toEqual([42, 43]);
+  });
+
   it('a pointer at this number on another incarnation is not this publish', async () => {
     let clock = 1_000;
     const w = world(() => clock);

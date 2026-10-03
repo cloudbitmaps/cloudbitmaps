@@ -1185,7 +1185,9 @@ function refuseCleartextOntoKey(
  * - the row is still the one the write was made against (the same token, or still no row): the write may land yet,
  *   so this throws `TransientError` and writes nothing more. A caller must not delete its object on it;
  * - anything else: the row has moved past the state the write was conditioned on, so that write can never land, and
- *   the publish goes on as after a lost race, from the row it just read.
+ *   the publish goes on as after a lost race, from the row it just read. A pointer at `key.generation` that is not over
+ *   the caller's own object, or is on another incarnation, is a lost race too and answers `false`, never an already
+ *   current re-publish.
  *
  * A failed read throws `TransientError` too. The same check of the pointer runs after a {@link WriteConflictError},
  * so a write that landed and then met itself (a registry whose client re-sent it) is not taken for a lost race.
@@ -1254,6 +1256,12 @@ export async function publishGeneration(
         throw outcomeUnknown(key, proofErr);
       }
       if (landed) return true;
+      // The pointer names this number, but not over this publish's write: another writer's object under it, or
+      // another incarnation of the name. That is not an already-current re-publish, which the branch below would
+      // answer `true`: nothing this call wrote is published.
+      if (record !== null && record.status === 'active' && record.currentGen === key.generation) {
+        return false;
+      }
       failedOn = undefined;
     }
     try {
