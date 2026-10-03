@@ -11,6 +11,8 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-10-03
+
 ### Breaking
 
 - **`CostReport.monthlyUSD.byOp` gains the required `retention`**, so a `CostReport` you build yourself must carry it. It
