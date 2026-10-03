@@ -65,6 +65,7 @@ import type {
   Budget,
   BudgetOption,
   GenerationEntry,
+  GenerationMetadata,
   LoadGuard,
   LoadInput,
   LoadOptions,
@@ -942,6 +943,7 @@ export class CloudRoaring {
       result = await loadSegment(dest, ids, deps, {
         ...(options?.allowEmpty === undefined ? {} : { allowEmpty: options.allowEmpty }),
         ...(options?.guard === undefined ? {} : { guard: options.guard }),
+        ...(options?.metadata === undefined ? {} : { metadata: options.metadata }),
         // COLLECT NOTHING by default, which `loadSegment` does not — it keeps a grace window of 1 and deletes
         // the rest. By default a materialisation collects nothing: the guide states "**It deletes nothing**,
         // unlike `load()`. The destination's previous generations stay in the bucket until you collect them", and
@@ -1905,6 +1907,12 @@ export interface MaterializeOptions extends CombineOptions {
   readonly allowEmpty?: boolean;
   /** Refuse an implausible result rather than publish it. Same bounds, and same meaning, as on `load()`. */
   readonly guard?: LoadGuard;
+  /**
+   * Metadata for the generation this call publishes, under the rules and with the meaning of
+   * {@link LoadOptions.metadata}: small, immutable, published with the pointer, never a subject's id. A value that
+   * breaks a rule throws {@link ValidationError} before any request is made.
+   */
+  readonly metadata?: GenerationMetadata;
   /**
    * Generations to keep below the new pointer — see {@link LoadOptions.keep}. A value that is not a non-negative
    * integer throws `ValidationError`.

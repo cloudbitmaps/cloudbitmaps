@@ -91,6 +91,19 @@ export function metadataBytes(
 }
 
 /**
+ * A caller's metadata, checked against the rules and copied, so what is stored is what the caller passed at the call,
+ * whatever it does with its object afterwards: the frozen record in canonical key order, or `undefined` when there is
+ * none (`undefined`, or the empty object, which store nothing). Synchronous. `fail` raises the boundary's error.
+ */
+export function copiedMetadata(
+  value: unknown,
+  fail: (message: string) => never,
+): GenerationMetadata | undefined {
+  const bytes = metadataBytes(value, fail);
+  return bytes === undefined ? undefined : metadataFromBytes(bytes, fail);
+}
+
+/**
  * Read metadata back from bytes a tier holds, which are untrusted. They must be at most {@link MAX_METADATA_BYTES},
  * valid UTF-8, and exactly the canonical JSON of a non-empty record, so a stored copy has one spelling: whitespace, a
  * key out of order or listed twice, and a number or an escape `JSON.stringify` would write another way are all

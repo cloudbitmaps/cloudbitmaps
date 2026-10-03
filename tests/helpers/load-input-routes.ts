@@ -31,6 +31,7 @@ export const ROUTED: readonly string[] = [
   'tests/core/erase-swept-generation.test.ts',
   'tests/core/expired-exclusion.test.ts',
   'tests/core/generation-gc.test.ts',
+  'tests/core/generation-metadata-write.test.ts',
   'tests/core/intersect.test.ts',
   'tests/core/live-read-reused-number.test.ts',
   'tests/core/load-routing.test.ts',
@@ -90,6 +91,11 @@ export const IDS_ONLY: Readonly<Record<string, string>> = {
   'tests/core/load-numbering.test.ts':
     'injects its race from inside the id stream (an object written while the ids are read), which routing ' +
     'drains before the load numbers its generation, so the race would land before the load starts',
+  'tests/core/metadata-validation.test.ts':
+    'asserts that a refused load makes no request at all, the combine of an *Into verb reading its operands included, ' +
+    "and that metadata is copied as of the call while the load reads its ids; routing drains the ids, and so the operands' " +
+    'reads, before the load validates anything, and before the object is written, so neither could hold. The bytes ' +
+    'inputs are in the file already',
   'tests/core/load-input.test.ts':
     'tests the inputs themselves (the byte-array refusal, malformed bytes, the wrappers), so converting its ids ' +
     'would test the conversion instead',

@@ -42,10 +42,12 @@ import { validateChunkRef, validateUserRef } from './validate';
 import type {
   ChunkRef,
   StorageChunkSource,
+  GenerationMetadata,
   GenKey,
   IStorageDriver,
   IRegistryDriver,
   RegistryRecord,
+  RegistrySummary,
   SegmentRef,
   SegmentSize,
   Token,
@@ -56,6 +58,7 @@ import { CrbmWriter } from './crbm/writer';
 import type { CodecBitmap, CodecInterface, EncodedChunk } from './codec';
 import { requireCodec } from './codec';
 import { DecodedLoadInput } from './load-input';
+import { clearSummary, sealSummary } from './summary';
 
 export interface CrbmStorageChunkSourceOptions extends CrbmReaderOptions {
   /**
@@ -1029,7 +1032,7 @@ export async function writeCrbmGeneration(
   driver: IStorageDriver,
   key: GenKey,
   chunks: Iterable<{ chunkKey: number; bitmap: CodecBitmap }>,
-  options: { crypto?: CrbmCrypto; clock?: Yielder } = {},
+  options: { crypto?: CrbmCrypto; clock?: Yielder; metadata?: GenerationMetadata } = {},
 ): Promise<{ size: number; sha256: string; fingerprint: string }> {
   const sorted = [...chunks].sort((a, b) => a.chunkKey - b.chunkKey);
   const { size, sha256, fingerprint } = await writeEncodedChunks(
@@ -1062,7 +1065,7 @@ async function writeEncodedChunks(
   driver: IStorageDriver,
   key: GenKey,
   chunks: Iterable<EncodedChunk>,
-  options: { crypto?: CrbmCrypto; clock?: Yielder },
+  options: { crypto?: CrbmCrypto; clock?: Yielder; metadata?: GenerationMetadata },
 ): Promise<{
   size: number;
   sha256: string;
@@ -1078,7 +1081,11 @@ async function writeEncodedChunks(
   let cardinality = 0;
   let identity: { readonly size: number; readonly footerCrc: number } | undefined;
   const { size, sha256 } = await driver.putImmutable(key, async (sink) => {
-    const writer = new CrbmWriter(sink, { generation: key.generation, crypto: options.crypto });
+    const writer = new CrbmWriter(sink, {
+      generation: key.generation,
+      crypto: options.crypto,
+      metadata: options.metadata,
+    });
     for (const chunk of chunks) {
       await writer.addChunk(chunk.chunkKey, chunk.payload, chunk.cardinality);
       chunkCount++;
@@ -1150,7 +1157,7 @@ export async function writeCrbmGenerationStream(
   driver: IStorageDriver,
   key: GenKey,
   chunks: AsyncIterable<{ chunkKey: number; bitmap: CodecBitmap }>,
-  options: { crypto?: CrbmCrypto; clock?: Yielder } = {},
+  options: { crypto?: CrbmCrypto; clock?: Yielder; metadata?: GenerationMetadata } = {},
 ): Promise<StreamWriteResult> {
   const chunkKeys: number[] = [];
   let cardinality = 0;
@@ -1160,7 +1167,11 @@ export async function writeCrbmGenerationStream(
   const tick = yieldEvery(options.clock);
   let identity: { readonly size: number; readonly footerCrc: number } | undefined;
   const { size, sha256 } = await driver.putImmutable(key, async (sink) => {
-    const writer = new CrbmWriter(sink, { generation: key.generation, crypto: options.crypto });
+    const writer = new CrbmWriter(sink, {
+      generation: key.generation,
+      crypto: options.crypto,
+      metadata: options.metadata,
+    });
     for await (const { chunkKey, bitmap } of chunks) {
       if (bitmap.isEmpty) continue;
       bitmap.optimize?.(); // same storage-write rationale as the non-streaming writer above
@@ -1272,6 +1283,10 @@ const UNANSWERED_RESEND_BASE_MS = 500;
  *
  * A failed read throws `TransientError` too. The same check of the pointer runs after a {@link WriteConflictError},
  * so a write that landed and then met itself (a registry whose client re-sent it) is not taken for a lost race.
+ *
+ * **A `summary` goes in the same write that moves the pointer**, so a reader that sees this generation as current
+ * sees the count and metadata that describe it, and every attempt sends the same one. It must be the shape the row's
+ * keys call for: sealed for an object written with a key, clear for one written without.
  */
 export async function publishGeneration(
   registry: IRegistryDriver,
@@ -1296,6 +1311,11 @@ export async function publishGeneration(
      * destination that does not exist yet is the ordinary first run of a pipeline.
      */
     expectAbsent?: boolean;
+    /**
+     * The generation's summary (see {@link RegistrySummary}), written by the write that moves the pointer to it. It
+     * names `key.generation`. Absent, the row is left with none for this generation.
+     */
+    summary?: RegistrySummary;
     /**
      * The segment's row as the caller already read it (`null`: it found none). The first attempt acts on it
      * instead of reading the row again, which is sound because that attempt writes only under the row's own
@@ -1389,11 +1409,25 @@ export async function publishGeneration(
         // it is a different segment that restarted its generation counter at the same number.
         return false;
       }
+      if (
+        record === null &&
+        options.summary !== undefined &&
+        'sealed' in options.summary &&
+        options.wrappedDeks === undefined
+      ) {
+        // An object sealed under a key that a row held when the object was written (it carries no new key of its own),
+        // with no row now: a row made from nothing would hold no key to open it with. A row passed in is the one the
+        // caller read before it wrote, which another writer may have created since, so this reads again. A row still
+        // absent then is a purged one, and the object cannot be published.
+        if (reused) continue;
+        return false;
+      }
       if (record === null) {
         // First publish for the segment — carry the wrapped DEK(s) so encrypted reads can resolve the key.
         await registry.create(key, {
           currentGen: key.generation,
           wrappedDeks: options.wrappedDeks,
+          ...(options.summary === undefined ? {} : { summary: options.summary }),
         });
       } else if (record.status === 'destroyed') {
         // Closes the window between a writer's own destroyed-check and its publish.
@@ -1426,6 +1460,7 @@ export async function publishGeneration(
         await registry.compareAndSwap(key, record.token, {
           currentGen: key.generation,
           ...(options.wrappedDeks === undefined ? {} : { wrappedDeks: options.wrappedDeks }),
+          ...(options.summary === undefined ? {} : { summary: options.summary }),
         });
       } else if (record.currentGen > key.generation) {
         return false; // a newer generation is already current — forward-only, never regress
@@ -1456,7 +1491,10 @@ export async function publishGeneration(
           );
         }
         refuseCleartextOntoKey(key, record, options.cleartext);
-        await registry.compareAndSwap(key, record.token, { currentGen: key.generation });
+        await registry.compareAndSwap(key, record.token, {
+          currentGen: key.generation,
+          ...(options.summary === undefined ? {} : { summary: options.summary }),
+        });
       }
       return true; // created or advanced the pointer to key.generation → it is now current
     } catch (err) {
@@ -1609,6 +1647,12 @@ export interface BulkLoadResult {
   /** Total distinct ids in the generation (post-dedup). */
   readonly cardinality: number;
   /**
+   * The summary of what was written, for the write that makes it current: its id count and metadata, sealed under the
+   * segment's key when the object was written with one. A caller that defers the publish (`publish: false`) passes it
+   * to {@link publishGeneration}.
+   */
+  readonly summary: RegistrySummary;
+  /**
    * Whether this generation is now the segment's **current** one — `undefined` when no `registry` was wired, so
    * there is no pointer and no publish step to report on.
    *
@@ -1678,6 +1722,12 @@ export async function bulkLoadCrbmGeneration(
      * current.
      */
     publish?: boolean;
+    /**
+     * The generation's metadata (see {@link GenerationMetadata}), written into the object and carried in the summary.
+     * The caller has checked it against the metadata rules; the writer checks it again, and refuses a record that breaks
+     * one before a byte is written.
+     */
+    metadata?: GenerationMetadata;
     /**
      * The segment's row as the caller already read it (`null`: it found none), for a caller that defers the
      * publish (`publish: false`) and fences it on that same row. A present cleartext row is then used as read,
@@ -1787,13 +1837,18 @@ export async function bulkLoadCrbmGeneration(
     driver,
     key,
     chunks,
-    { crypto, clock: options.clock },
+    { crypto, clock: options.clock, metadata: options.metadata },
   );
+  const summary =
+    crypto === undefined
+      ? clearSummary(key.generation, cardinality, options.metadata)
+      : sealSummary(crypto.aead, key, key.generation, cardinality, options.metadata);
   // Publish only after the immutable object is durable (write-then-publish): a registry-aware reader should
   // never point at a generation that isn't fully written. A freshly minted DEK is stored on this publish.
   if (options.registry !== undefined && options.publish !== false) {
     const becameCurrent = await publishGeneration(options.registry, key, {
       wrappedDeks: newWrapped,
+      summary,
       cleartext: crypto === undefined,
       holdsOwnObject: () => provesOwnObject(driver, key, fingerprint),
       clock: options.clock,
@@ -1814,6 +1869,7 @@ export async function bulkLoadCrbmGeneration(
       sha256,
       chunkCount,
       cardinality,
+      summary,
       becameCurrent,
       wrappedDeks: newWrapped,
       encrypted: crypto !== undefined,
@@ -1825,6 +1881,7 @@ export async function bulkLoadCrbmGeneration(
     sha256,
     chunkCount,
     cardinality,
+    summary,
     wrappedDeks: newWrapped,
     encrypted: crypto !== undefined,
     fingerprint,

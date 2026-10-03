@@ -40,9 +40,17 @@ import {
 } from './errors';
 import { collectAfterLoad, nextLoadGeneration } from './generation-gc';
 import { type LoadInput, prepareLoadInput } from './load-input';
+import { copiedMetadata } from './metadata';
 import { type ReadRetry, retryRead } from './retry';
 import { assertRegistryCanWrite } from './ports';
-import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef, Token } from './ports';
+import type {
+  GenerationMetadata,
+  IStorageDriver,
+  IRegistryDriver,
+  RegistryRecord,
+  SegmentRef,
+  Token,
+} from './ports';
 import { validateUserRef } from './validate';
 
 /** What {@link loadSegment} needs: the objects, the pointer, the codec, and key material if encrypted. */
@@ -123,6 +131,18 @@ export interface LoadOptions {
    * the generation published collects nothing and asks for nothing.
    */
   readonly keep?: number;
+  /**
+   * Small, immutable metadata of your own for this generation: what it was computed from, such as a definition's
+   * version, the time its data landed, or a run id. A flat object of string keys and string or finite-number values,
+   * at most 1,024 bytes as canonical JSON (keys sorted by UTF-16 code unit, no whitespace), and no key longer than 128
+   * bytes. It is stored in the generation's object, and written to the segment's row by the write that makes the
+   * generation current, so whoever sees this generation as current sees its metadata. It never changes once written:
+   * a new generation is how it changes. `undefined` and the empty object store nothing. Anything else that breaks a
+   * rule (a boolean, `null`, an array, nesting, `NaN`, a key that is not well-formed text) throws `ValidationError`
+   * before a request is made. **Never put a subject's id in it**: an erasure rewrites the ids and carries the metadata
+   * over as it is. Sealed under the segment's key when the segment is encrypted.
+   */
+  readonly metadata?: GenerationMetadata;
   readonly audit?: IAuditSink;
 }
 
@@ -265,6 +285,11 @@ export async function loadSegment(
       throw new ValidationError(`guard.minRetained must be a fraction in 0..1; got ${String(s)}`);
     }
   }
+  // The metadata as of this call, checked and copied before any round trip: what is stored is what the caller passed
+  // now, however long the load runs and whatever its object does meanwhile.
+  const metadata = copiedMetadata(options.metadata, (message) => {
+    throw new ValidationError(message);
+  });
   const audit = safeAudit(options.audit ?? NOOP_AUDIT);
   // Still before any round trip: a malformed input costs none, and a `{ bitmap }` is the bitmap as of this call.
   const ids = prepareLoadInput(input, codec);
@@ -304,6 +329,7 @@ export async function loadSegment(
       requireEncryption: deps.requireEncryption,
       codec: deps.codec,
       clock: deps.clock,
+      metadata,
       row,
     });
   } catch (err) {
@@ -427,6 +453,7 @@ export async function loadSegment(
     published = await publishGeneration(deps.registry, key, {
       row,
       wrappedDeks: written.wrappedDeks,
+      summary: written.summary,
       cleartext: !written.encrypted,
       ...(fromToken === undefined ? {} : { expectToken: fromToken }),
       ...(needsBefore && fromGeneration !== undefined ? { expectFrom: fromGeneration } : {}),
