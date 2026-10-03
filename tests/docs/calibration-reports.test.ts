@@ -320,6 +320,41 @@ describe('calibration reports are held to their evidence', () => {
     });
   });
 
+  // The figures of a run's own stages are derived from its evidence, not listed: each real one is accepted, and a
+  // number that no stage holds is refused beside them.
+  describe('the stage figures of the in-region run', () => {
+    const evidence = EVIDENCE.find((e) => e.includes('2026-10-03-e13c7'));
+    const run = evidence === undefined ? undefined : JSON.parse(read(evidence));
+    const f = run === undefined ? undefined : figures.derive(run, SOURCES);
+    const check = (sentence: string): string[] =>
+      f === undefined ? ['no evidence'] : figures.unaccounted(sentence, f.values);
+
+    it('accepts what each stage measured, and what follows from it', () => {
+      expect(
+        check(
+          'The sweep at 1,000 shared chunks took 4,238.82 ms and 2,004 GETs; at 2,000, 8,658.44 ms and 4,004 GETs, 2.04 times the first. ' +
+            'A warm intersect took 3.96 ms. A cold count took 27.48 ms. andNot took 8,687.10 ms and 3,021 GETs. ' +
+            'A GET round is about 26.9 ms. Loads ran at 2.86 million ids a second and 11.3 million. The run was bounded at $0.044470.',
+        ),
+      ).toEqual([]);
+    });
+
+    it('refuses a figure that no stage holds', () => {
+      for (const wrong of [
+        'The sweep at 1,000 shared chunks took 4,238.83 ms.',
+        'A warm intersect took 3.97 ms.',
+        'A cold count took 31.37 ms.',
+        'andNot made 3,333 GETs.',
+        'A GET round is about 31.2 ms.',
+        'Loads ran at 3.86 million ids a second.',
+        'The run was bounded at $0.054470.',
+        'Doubling the overlap took 3.04 times as long.',
+      ]) {
+        expect(check(wrong), wrong).not.toEqual([]);
+      }
+    });
+  });
+
   describe('the reverse check', () => {
     const values: Values = {
       usd: [0.0000816, 81.6, 346],
