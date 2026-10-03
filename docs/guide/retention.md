@@ -256,7 +256,7 @@ for await (const s of store.segments({ namespace: 'active-daily' })) {
 for (const segment of old) {
   const ref = { namespace: 'active-daily', segment };
   const res = await store.dropSegment(ref, { confirmSegment: ref.segment });
-  // Non-empty means bytes survived: a load that was already writing when the tombstone landed finished its
+  // Non-empty means bytes survived: a load that had read the segment before the tombstone landed finished its
   // object. The segment reads as empty either way, so this is a billing leak, not a correctness one; re-run the
   // drop to collect it. The retention sweep will not: it purges only the tombstones it wrote itself.
   if (res.generationsRemaining.length > 0) {

@@ -122,11 +122,12 @@ const k = layout.sharedChunks;
 
 /**
  * Which GetObject request, counted from 1 on the workload's client as the fault hook counts them, falls where. Every
- * GET-class request the workload makes is a GetObject: a first load reads its pointer seven times; a cold intersect
- * makes 4 + 2k; the priming pass reads each segment once, a pointer, a tail and its shared chunks; a first `count()` is
- * a pointer and a tail, a `has()` on an open segment a chunk, and a first `has()` a pointer, a tail and a chunk.
+ * GET-class request the workload makes is a GetObject except a load's check of its generation number, a HeadObject,
+ * which the hook does not count: a first load reads its pointer five times; a cold intersect makes 4 + 2k; the priming
+ * pass reads each segment once, a pointer, a tail and its shared chunks; a first `count()` is a pointer and a tail, a
+ * `has()` on an open segment a chunk, and a first `has()` a pointer, a tail and a chunk.
  */
-const LOADS = (W.segments + W.large) * stages.FIRST_LOAD.get;
+const LOADS = (W.segments + W.large) * (stages.FIRST_LOAD.get - 1);
 const COLD = stages.coldIntersectGets(k);
 const PRIMING = W.segments * (2 + k);
 /** One `andNot` call: a pointer and a tail per operand, every chunk of the include, the exclude's shared chunks. */

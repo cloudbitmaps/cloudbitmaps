@@ -200,8 +200,8 @@
                   <td class="num">$11.20</td>
                   <td class="from">
                     A generation written once, then the pointer moved to it: 2 PUT + 3 GET, measured on real S3
-                    with the pointer in the same bucket. <span class="m">store.load()</span> also lists and
-                    collects, which about doubles it. The meter counts objects, not ids — so batch a refresh.
+                    with the pointer in the same bucket. <span class="m">store.load()</span> also checks its
+                    generation number and collects, which adds about half as much again. The meter counts objects, not ids — so batch a refresh.
                   </td>
                   <td><span class="status is-coming">Batch it</span></td>
                 </tr>
@@ -539,8 +539,8 @@
             <span class="rl-fig">owed</span>
             <span class="rl-note">
               The September run measured a load's write and publish. <span class="m">store.load()</span> also
-              lists the segment to choose a generation number and runs a collection pass after the publish. A
-              test counts what that adds, about twice the bill; it has not been measured on S3.
+              checks that its generation number is free and runs a collection pass after the publish. A test
+              counts what that adds, about half the bill again; it has not been measured on S3.
             </span>
           </li>
           <li>
@@ -742,8 +742,8 @@
                 </tr>
                 <tr>
                   <td>A segment's first <span class="m">store.load()</span> — expected</td>
-                  <td class="num">$22.80</td>
-                  <td class="num">4 PUT-class + 7 GET</td>
+                  <td class="num">$17.40</td>
+                  <td class="num">3 PUT-class + 6 GET</td>
                 </tr>
               </tbody>
             </table>
