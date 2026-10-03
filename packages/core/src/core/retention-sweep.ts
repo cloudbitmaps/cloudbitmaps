@@ -217,6 +217,21 @@ export interface RetireExpiredResult {
   readonly tombstonesPurged: number;
   /** True when `limit` cut the cycle short — **more segments are still eligible**. Re-run. */
   readonly limited: boolean;
+  /**
+   * Deletes this sweep attempted that the registry **refused for a reason other than a lost race**: a tombstone's
+   * purge, or the removal of a due-index pointer. A policy that denies delete, an Azure blob with a snapshot, or any
+   * raw provider error is one; a write that landed between the sweep's read and its fenced delete is not (that is
+   * `failed: contended` in the ledger). Each leaves its row or pointer in place, so a purge that keeps failing never
+   * frees the name.
+   *
+   * A refused purge is not charged to `limit`, and **the first one ends purging for the rest of the call**, so
+   * retirements go on: a tombstone that cannot be purged does not hold the segments behind it past their expiry. The
+   * next call tries again. Check this field; a ledger entry for each is `skipped`, but a caller that reads only
+   * `retired` sees none of it.
+   */
+  readonly purgeFaults: number;
+  /** The first of those faults, as a ledger reason (`failed: …` with the provider's message). Absent when there were none. */
+  readonly firstPurgeFault?: `failed: ${string}`;
   readonly dryRun: boolean;
   /** Per-segment ledger. Inspect it: a `skipped` or failed entry is a segment that still holds data. */
   readonly entries: readonly RetireEntry[];
@@ -324,12 +339,14 @@ async function forgetDuePointer(
   registry: IRegistryDriver,
   ref: SegmentRef,
   expiresAt: number,
+  onFault: (err: unknown) => void,
 ): Promise<void> {
   if (!canIndex(ref)) return;
   try {
     await registry.delete(dueIndexRef(dueBucket(expiresAt), ref));
-  } catch {
-    // See above: litter, not a fault.
+  } catch (err) {
+    // See above: litter, not a wrong retirement. The caller is told, though: a delete the registry refuses is counted.
+    onFault(err);
   }
 }
 
@@ -366,6 +383,7 @@ async function forgetPurgePointers(
   ref: SegmentRef,
   purgeAt: number,
   found: readonly FoundPointer[],
+  onFault: (err: unknown) => void,
 ): Promise<void> {
   if (!canIndex(ref)) return;
   const filed = dueIndexRef(dueBucket(purgeAt), ref);
@@ -375,8 +393,9 @@ async function forgetPurgePointers(
   for (const pointer of all) {
     try {
       await registry.delete(pointer.ref, pointer.token);
-    } catch {
-      // See above: litter, not a fault.
+    } catch (err) {
+      // See above: litter, not a wrong purge. A lost race is the pointer changing under the delete, and is no fault.
+      onFault(err);
     }
   }
 }
@@ -464,6 +483,18 @@ export async function retireExpired(
   let wouldRetire = 0;
   let tombstonesPurged = 0;
   let limited = false;
+  // Deletes the registry refused for a reason other than a lost race, and the first one's reason. A lost race is the
+  // row or pointer changing under a fenced delete, which is the fence working; anything else (a denied delete, a blob
+  // with a snapshot, a raw provider error) will happen again for the next one.
+  let purgeFaults = 0;
+  let firstPurgeFault: `failed: ${string}` | undefined;
+  const noteFault = (err: unknown): void => {
+    if (isWriteConflictError(err)) return;
+    purgeFaults += 1;
+    firstPurgeFault ??= failureReason(err);
+  };
+  // Cleared by the first purge that is refused: the next would be too, and each costs reads before it fails.
+  let purging = true;
   // The budget is charged on ATTEMPT, not on success, and that distinction is the whole guard. `dropSegment`
   // writes the tombstone BEFORE sweeping Storage, so a fault in the Storage phase is a segment that is
   // already retired. Counting only successes would let a partial storage outage march through the entire fleet
@@ -477,7 +508,7 @@ export async function retireExpired(
     const policy = readRetentionPolicy(rec.retention);
 
     if (rec.status === 'destroyed') {
-      if (!purgeTombstones) continue;
+      if (!purgeTombstones || !purging) continue;
       // Attribution is a POSITIVE MARKER the sweep writes on its own retirements, never an inference from
       // "destroyed + an expired policy". That inference would be wrong, and the consequence serious: `shredSegment`
       // never touches `retention`, so the ordinary ordering — set a 30-day policy, then a GDPR request arrives
@@ -518,6 +549,7 @@ export async function retireExpired(
             ref,
             retiredAt + grace,
             indexed?.pointers.get(segmentKey(ref)) ?? [],
+            noteFault,
           );
         }
         entries.push({
@@ -525,6 +557,13 @@ export async function retireExpired(
           action: dryRun ? 'would-purge-tombstone' : 'purged-tombstone',
         });
       } catch (err) {
+        if (!isWriteConflictError(err)) {
+          // Refused for a reason that will repeat for the next tombstone. Not charged to the limit, so the retirements
+          // behind it still get their turn, and no more purges are tried this call.
+          attempted -= 1;
+          purging = false;
+          noteFault(err);
+        }
         entries.push({ ...base, action: 'skipped', reason: failureReason(err) });
       }
       continue;
@@ -602,7 +641,7 @@ export async function retireExpired(
       // lookback re-reads forever — the index would otherwise grow monotonically and slowly undo its own
       // purpose. Best-effort and unconditional on `scan`: a fleet sweep retires index-pointed segments too, and
       // leaving their pointers behind would make a later index scan re-read segments that no longer exist.
-      await forgetDuePointer(deps.registry, ref, livePolicy.expiresAt);
+      await forgetDuePointer(deps.registry, ref, livePolicy.expiresAt, noteFault);
       if (
         purgeTombstones &&
         result.generationsDeleted.length === 0 &&
@@ -643,7 +682,10 @@ export async function retireExpired(
         if (tombstone?.status === 'destroyed') {
           const deleted = await deps.registry.delete(ref, tombstone.token).then(
             () => true,
-            () => false,
+            (err: unknown) => {
+              noteFault(err);
+              return false;
+            },
           );
           if (deleted) continue;
         }
@@ -698,8 +740,9 @@ export async function retireExpired(
       try {
         if ((await deps.registry.get(pointer.target)) !== null) continue;
         await deps.registry.delete(pointer.ref, pointer.token);
-      } catch {
-        // Left for a later scan: litter, not a fault.
+      } catch (err) {
+        // Left for a later scan: litter, not a wrong sweep. A delete the registry refuses is counted.
+        noteFault(err);
       }
     }
   }
@@ -711,6 +754,8 @@ export async function retireExpired(
     wouldRetire,
     tombstonesPurged,
     limited,
+    purgeFaults,
+    ...(firstPurgeFault === undefined ? {} : { firstPurgeFault }),
     dryRun,
     entries,
   };

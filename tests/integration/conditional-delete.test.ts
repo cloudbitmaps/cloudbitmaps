@@ -396,6 +396,45 @@ describe('Azure Blob (Azurite): the precondition is applied', () => {
     const backend = new AzureBlobStorage({ containerClient: container, prefix: p });
     await expectPurgeLeaves(backend, false, (ref) => azureExists(registryObjectKey(p, ref)));
   });
+
+  it('a row blob that has a snapshot refuses the purge: a purge fault in the result, retirements unharmed, and the next sweep purges once it is gone', async () => {
+    // Delete Blob without `deleteSnapshots` answers 409 SnapshotsPresent for a blob that has one. It is no lost race, so
+    // it is not read as one: the ledger says why, the result counts it, and the sweep goes on to retire what is behind it.
+    const p = prefix('snapshot');
+    const backend = new AzureBlobStorage({ containerClient: container, prefix: p });
+    let t = 1_800_000_000_000;
+    const clock = { now: () => t, sleep: () => Promise.resolve() };
+    const store = new CloudRoaring({ storage: backend, seams: { clock } });
+    const stuck = { namespace: 'sends', segment: 'a-stuck' };
+    const behind = { namespace: 'sends', segment: 'z-behind' };
+    await store.load(stuck, [1]);
+    await store.setRetention(stuck, { expiresAt: t + 1 });
+    t += 2;
+    expect((await store.retireExpired({ tombstoneGraceMs: 1_000 })).retired).toBe(1);
+    const row = container.getBlockBlobClient(registryObjectKey(p, stuck));
+    const { snapshot } = await row.createSnapshot();
+    await store.load(behind, [2]);
+    await store.setRetention(behind, { expiresAt: t + 1 });
+    t += 1_002; // the stuck tombstone is due, and `behind` has expired
+
+    const res = await store.retireExpired({ tombstoneGraceMs: 1_000, limit: 1 });
+    expect(res.retired).toBe(1); // not held back by the refused purge, though the limit is 1
+    expect(res.tombstonesPurged).toBe(0);
+    expect(res.entries[0]).toMatchObject({
+      segment: 'a-stuck',
+      action: 'skipped',
+      reason: expect.stringMatching(/^failed: .*snapshot/i),
+    });
+    expect(res.purgeFaults).toBeGreaterThanOrEqual(1);
+    expect(res.firstPurgeFault).toMatch(/snapshot/i);
+    expect(await backend.registry.get(stuck)).toMatchObject({ status: 'destroyed' });
+
+    await row.withSnapshot(snapshot!).delete();
+    const next = await store.retireExpired({ tombstoneGraceMs: 1_000 });
+    expect(next.purgeFaults).toBe(0);
+    expect(await backend.registry.get(stuck)).toBeNull();
+    expect(await azureExists(registryObjectKey(p, stuck))).toBe(false);
+  });
 });
 
 /**

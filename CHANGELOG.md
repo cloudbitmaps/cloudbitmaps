@@ -20,7 +20,7 @@ so, and so do the module headers in the code.
   prefix makes each such delete fail with the provider's access error: a purge then leaves the row and reports the
   error in its ledger entry, and the due index keeps a pointer it meant to remove. Grant `s3:DeleteObject`,
   `storage.objects.delete` or a role that may delete blobs on `<prefix>registry/`, or set `conditionalDelete: false`
-  on the backend to keep writing tombstones.
+  on the backend to keep writing tombstones. A refused purge does not hold the sweep up: see `purgeFaults`, below.
 
 - **Registry rows are schema 2, and there is no going back: stop every 0.11 process before the first 0.12 write.**
   Every row a 0.12 registry writes, whether a create, a compare-and-swap or a tombstone, is stamped
@@ -156,6 +156,17 @@ so, and so do the module headers in the code.
   with `ValidationError`, as `requestsPerSizedRead` is.
 
 ### Changed
+
+- **`retireExpired` counts the deletes the registry refuses, and a refused purge no longer holds the retirements behind
+  it.** `RetireExpiredResult` gains `purgeFaults`, the number of purges and due-index pointer removals refused for a
+  reason other than a lost race (a policy that denies delete, an Azure blob with a snapshot, which answers `409
+  SnapshotsPresent`, any raw provider error), and `firstPurgeFault`, the first one's ledger reason. A refused purge was
+  charged to `limit`, so with `limit` or more stuck tombstones ahead of them in scan order every call spent its whole
+  budget on purges that could not succeed and no expired segment was retired; one refused purge now costs nothing
+  against `limit`, and it ends purging for the rest of the call while retirements go on. Its ledger entry stays
+  `skipped`, with the provider's message, and the next call tries again. Pointer removals the sweep makes and the
+  registry refuses used to leave no trace at all. A lost race (`failed: contended`) is not a fault, and is charged to
+  `limit` as before.
 
 - **The local-filesystem registry unlinks a deleted row born with an incarnation id**, under the row's lock, and
   tombstones one a release before 0.12 wrote. **An index scan removes a due-index pointer whose segment has no row**,

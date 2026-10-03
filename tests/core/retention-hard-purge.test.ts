@@ -785,3 +785,211 @@ describe('the purge pointer in the due index', () => {
     expect(await missed(DEFAULT_LOOKBACK_BUCKETS + 1)).toBe(0); // the fleet repair pass's, from here
   });
 });
+
+describe('a delete the backend refuses starves nothing', () => {
+  /** What each provider throws, raw, for a delete it will not apply for a reason that is not a lost race. */
+  const refusals: Array<[string, () => Error, string]> = [
+    [
+      'a policy that denies delete',
+      () =>
+        Object.assign(new Error('Access Denied'), {
+          name: 'AccessDenied',
+          $metadata: { httpStatusCode: 403 },
+        }),
+      'failed: Access Denied',
+    ],
+    [
+      'Azure Blob: the blob has a snapshot',
+      () =>
+        Object.assign(
+          new Error('There are snapshots present, and the request did not delete them.'),
+          { name: 'RestError', statusCode: 409, code: 'SnapshotsPresent' },
+        ),
+      'failed: There are snapshots present, and the request did not delete them.',
+    ],
+  ];
+
+  /** Six retired tombstones past their grace, then three segments that have since expired, in scan order. */
+  async function stuckThenExpired(w: World): Promise<void> {
+    for (let i = 0; i < 6; i++)
+      await seed(w, { namespace: 'n', segment: `stuck-${i}` }, T0 + RETENTION);
+    w.advance(RETENTION + 1);
+    const retired = await retireExpired(w.deps, {
+      now: w.now(),
+      limit: 6,
+      tombstoneGraceMs: GRACE,
+    });
+    expect(retired.retired).toBe(6);
+    for (let i = 0; i < 3; i++)
+      await seed(w, { namespace: 'n', segment: `late-${i}` }, w.now() + DAY);
+    w.advance(GRACE); // the tombstones are due, and the three have expired
+  }
+
+  it.each(refusals)(
+    '%s: a purge that fails is not charged to the limit, and the expired segments behind it are retired',
+    async (_name, refusal, reason) => {
+      const w = world();
+      await stuckThenExpired(w);
+      w.store.refuseDelete = () => refusal();
+      const deletesBefore = w.store.deletes;
+
+      const res = await retireExpired(w.deps, { now: w.now(), limit: 4, tombstoneGraceMs: GRACE });
+
+      expect(res.retired).toBe(3);
+      expect(res.limited).toBe(false);
+      expect(res.tombstonesPurged).toBe(0);
+      // One purge was tried, and failed; the sweep stopped purging, and went on to retire.
+      expect(res.entries.filter((e) => e.action === 'skipped')).toEqual([
+        { namespace: 'n', segment: 'stuck-0', action: 'skipped', reason },
+      ]);
+      expect(res.entries.filter((e) => e.action === 'retired')).toHaveLength(3);
+      // The fault is in the result, not only in the ledger: that purge, and the three expiry pointers it could not remove.
+      expect(res.purgeFaults).toBe(4);
+      expect(res.firstPurgeFault).toBe(reason);
+      expect(w.store.deletes - deletesBefore).toBe(4); // 1 purge, then 3 pointers; the other five tombstones untried
+    },
+  );
+
+  it('a refused purge costs nothing against the limit: a limit equal to the segments behind it still retires them all', async () => {
+    const w = world();
+    await stuckThenExpired(w);
+    w.store.refuseDelete = () => refusals[0]![1]();
+    const res = await retireExpired(w.deps, { now: w.now(), limit: 3, tombstoneGraceMs: GRACE });
+    expect(res.retired).toBe(3);
+    expect(res.limited).toBe(false);
+  });
+
+  it('the first fault is the one reported, whichever delete refuses later', async () => {
+    const w = world();
+    await stuckThenExpired(w);
+    w.store.refuseDelete = (key) =>
+      Object.assign(new Error(key.includes('cbm.due.') ? 'pointer denied' : 'row denied'), {
+        name: 'AccessDenied',
+      });
+    const res = await retireExpired(w.deps, { now: w.now(), limit: 4, tombstoneGraceMs: GRACE });
+    expect(res.purgeFaults).toBe(4);
+    expect(res.firstPurgeFault).toBe('failed: row denied');
+  });
+
+  it('a segment that held nothing, whose row the registry will not delete, is counted and still stamped', async () => {
+    const w = world();
+    const ref = { namespace: 'n', segment: 'typo' };
+    await setSegmentRetention(ref, { registry: w.registry }, { expiresAt: T0 + RETENTION }); // a row, and no storage
+    w.advance(RETENTION + 1);
+    w.store.refuseDelete = () =>
+      Object.assign(new Error('Access Denied'), { name: 'AccessDenied' });
+    const res = await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: GRACE });
+    expect(res.retired).toBe(1);
+    // The expiry pointer's removal, and the empty row's: both refused.
+    expect(res.purgeFaults).toBe(2);
+    expect(res.firstPurgeFault).toBe('failed: Access Denied');
+    const row = await w.registry.get(ref);
+    expect(row?.status).toBe('destroyed');
+    expect(row?.retention?.retiredBySweepAt).toBe(w.now()); // stamped, so a later sweep purges it
+  });
+
+  it('the stop lasts one call: with the refusal lifted, the next sweep purges every tombstone', async () => {
+    const w = world();
+    await stuckThenExpired(w);
+    w.store.refuseDelete = () => refusals[0]![1]();
+    await retireExpired(w.deps, { now: w.now(), limit: 4, tombstoneGraceMs: GRACE });
+    w.store.refuseDelete = undefined;
+    const next = await retireExpired(w.deps, { now: w.now(), limit: 100, tombstoneGraceMs: GRACE });
+    expect(next.purgeFaults).toBe(0);
+    expect(next.firstPurgeFault).toBeUndefined();
+    expect(next.tombstonesPurged).toBe(6);
+  });
+
+  describe('a lost race is not a fault', () => {
+    /** Two tombstones past their grace, the first of which another writer changes between the purge's read and delete. */
+    async function raced(): Promise<{ w: World; refs: SegmentRef[] }> {
+      const w = world();
+      const refs = [0, 1].map((i) => ({ namespace: 'n', segment: `raced-${i}` }));
+      for (const ref of refs) await seed(w, ref, T0 + RETENTION);
+      w.advance(RETENTION + 1);
+      await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: GRACE });
+      w.advance(GRACE);
+      const other = new ObjectStoreRegistry(w.store, undefined, w.now);
+      w.store.beforeDelete = async () => {
+        const row = (await w.registry.get(refs[0]!))!;
+        await other.compareAndSwap(refs[0]!, row.token, { residency: { note: 'late' } });
+      };
+      return { w, refs };
+    }
+
+    it('the purges go on, and nothing is reported as a fault', async () => {
+      const { w, refs } = await raced();
+      const res = await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: GRACE });
+      expect(res.entries).toEqual([
+        { ...refs[0]!, action: 'skipped', reason: 'failed: contended' },
+        { ...refs[1]!, action: 'purged-tombstone' },
+      ]);
+      expect(res.purgeFaults).toBe(0);
+      expect(res.firstPurgeFault).toBeUndefined();
+    });
+
+    it('a pointer that changed under its removal is a lost race too: it is kept, and nothing is reported', async () => {
+      const w = world();
+      const gone = dueIndexRef(dueBucket(w.now()), { namespace: 'n', segment: 'gone' });
+      await w.registry.create(gone, { currentGen: null }); // litter: no row behind it
+      const other = new ObjectStoreRegistry(w.store, undefined, w.now);
+      let reborn = '';
+      w.store.beforeDelete = async () => {
+        // Between the sweep's read of the pointer and its fenced delete, the pointer is removed and filed anew.
+        await other.delete(gone);
+        reborn = (await other.create(gone, { currentGen: null })).token;
+      };
+      const res = await retireExpired(w.deps, { scan: 'index', now: w.now() });
+      expect(res.purgeFaults).toBe(0);
+      expect(res.firstPurgeFault).toBeUndefined();
+      expect(await w.registry.get(gone)).toMatchObject({ token: reborn });
+    });
+
+    it('it is still charged to the limit, as every attempt was before', async () => {
+      const { w } = await raced();
+      const res = await retireExpired(w.deps, { now: w.now(), limit: 1, tombstoneGraceMs: GRACE });
+      expect(res.tombstonesPurged).toBe(0);
+      expect(res.limited).toBe(true);
+    });
+  });
+
+  it('a pointer the backend will not delete is counted too, and the row it pointed at is still purged', async () => {
+    const w = world();
+    const ref = { namespace: 'n', segment: 'day' };
+    await seed(w, ref, T0 + RETENTION);
+    w.advance(RETENTION + 1);
+    await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: GRACE });
+    w.advance(GRACE);
+    const refusal = Object.assign(new Error('Access Denied'), { name: 'AccessDenied' });
+    w.store.refuseDelete = (key) => (key.includes('cbm.due.') ? refusal : undefined);
+
+    const res = await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: GRACE });
+    expect(res.tombstonesPurged).toBe(1);
+    expect(res.entries).toEqual([{ ...ref, action: 'purged-tombstone' }]);
+    expect(res.purgeFaults).toBe(1);
+    expect(res.firstPurgeFault).toBe('failed: Access Denied');
+    expect(registryObjects(w)).toBe(1); // the purge pointer, left behind
+  });
+
+  it('a pointer to nothing that the backend will not delete is counted', async () => {
+    const w = world();
+    const bucket = dueBucket(w.now());
+    await w.registry.create(dueIndexRef(bucket, { namespace: 'n', segment: 'gone' }), {
+      currentGen: null,
+    });
+    w.store.refuseDelete = () =>
+      Object.assign(new Error('Access Denied'), { name: 'AccessDenied' });
+    const res = await retireExpired(w.deps, { scan: 'index', now: w.now() });
+    expect(res.purgeFaults).toBe(1);
+    expect(res.firstPurgeFault).toBe('failed: Access Denied');
+  });
+
+  it('a clean sweep reports no faults', async () => {
+    const w = world();
+    await seed(w, { namespace: 'n', segment: 'day' }, T0 + RETENTION);
+    w.advance(RETENTION + 1);
+    const res = await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: GRACE });
+    expect(res.purgeFaults).toBe(0);
+    expect('firstPurgeFault' in res).toBe(false);
+  });
+});

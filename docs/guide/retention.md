@@ -105,7 +105,7 @@ for an object a load was still writing, and the `generationsRemaining` report al
 
 ```ts
 const swept = await store.retireExpired({ namespace: 'active-daily' });
-// → { scanned, eligible, retired, wouldRetire, tombstonesPurged, limited, dryRun, entries }
+// → { scanned, eligible, retired, wouldRetire, tombstonesPurged, limited, purgeFaults, firstPurgeFault?, dryRun, entries }
 ```
 
 A bad argument throws `ValidationError`. A per-segment fault is an `entries` row, never a throw.
@@ -165,7 +165,17 @@ for (const e of swept.entries) {
   }
 }
 if (swept.limited) scheduleAnotherPassSoon(); // more are still eligible
+if (swept.purgeFaults > 0) console.error(`the registry refused ${swept.purgeFaults} delete(s): ${swept.firstPurgeFault}`);
 ```
+
+**Check `purgeFaults`: a delete the registry refuses holds nothing else up, and says so only there.** A purge or a pointer
+removal that fails for a reason other than a lost race (a policy that denies `s3:DeleteObject`, an Azure blob with a
+snapshot, any raw provider error) leaves its row or pointer in place and is counted in `purgeFaults`, with the first
+one's reason in `firstPurgeFault`. A refused purge is `skipped` in the ledger, with the provider's message, and is not
+charged to `limit`; **the first one ends purging for the rest of the call**, since the next would fail the same way, and
+the sweep goes on to retire what is eligible. So a tombstone that cannot be purged never holds the segments behind it
+past their expiry. The next call tries again. A lost race (`failed: contended`) is not a fault: it is the fence working,
+it is charged to `limit` as before, and the purges go on.
 
 **Two bounds to set deliberately.**
 
@@ -188,7 +198,8 @@ if (swept.limited) scheduleAnotherPassSoon(); // more are still eligible
   drop landed between the listing and this segment's turn. This is not an error. The sweep re-reads the authoritative
   row immediately before every deletion, precisely so cancelling an expiry works on a sweep that is already running.
 - **`tombstone-not-empty`**: see [Tombstones are purged, narrowly](#how-it-stays-correct).
-- **`failed: ...`**: that one segment's retirement threw. `dropSegment` writes the tombstone before the storage sweep,
+- **`failed: ...`**: that one segment's retirement threw, or, on a tombstone, its purge did, and a purge the registry
+  refuses is also counted in `purgeFaults` (above). `dropSegment` writes the tombstone before the storage sweep,
   deliberately, so a fault there leaks bytes, not correctness. A fault after the tombstone landed is reported as
   `retired` with a `fault`, because that segment really is retired. Re-running collects the bytes.
 

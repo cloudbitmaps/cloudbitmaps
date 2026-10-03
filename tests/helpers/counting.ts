@@ -24,6 +24,11 @@ export class CountingObjectStore implements ObjectRegistryStore {
   beforeDelete: (() => Promise<void>) | undefined;
   /** Apply the next conditional delete, then fail it with this: a delete that lands and loses its response. */
   landThenFailDelete: Error | undefined;
+  /**
+   * Refuse every conditional delete of a key this answers for, with the error it returns, before applying it: a policy
+   * that denies delete, or a blob with a snapshot. It stays set until it is cleared.
+   */
+  refuseDelete: ((key: string) => Error | undefined) | undefined;
   private readonly objects = new Map<string, { bytes: Uint8Array; version: number }>();
   private nextVersion = 1;
 
@@ -88,6 +93,8 @@ export class CountingObjectStore implements ObjectRegistryStore {
 
   async delete(key: string, expect: { version: string }): Promise<void> {
     this.deletes += 1;
+    const refusal = this.refuseDelete?.(key);
+    if (refusal !== undefined) throw refusal;
     const hook = this.beforeDelete;
     this.beforeDelete = undefined;
     if (hook !== undefined) await hook();
