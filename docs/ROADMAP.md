@@ -36,29 +36,29 @@ registry row per segment, no background process. Every roaring-based engine that
 into immutable segments rather than mutating a stored bitmap per call; that is the shape this library builds.
 Per-call freshness, if there is demand, would be immutable delta generations on the same bucket.
 
-Where each piece sits today. **In `0.12.0` (unreleased)** is on `main` and under `[Unreleased]` in the
-[changelog](../CHANGELOG.md#unreleased); a bare **shipped** is in `0.11.2` or earlier:
+Where each piece sits today. A bare **shipped** is in `0.12.0` or earlier; anything on `main` after it is marked
+with the release it is to ship in, and sits under `[Unreleased]` in the [changelog](../CHANGELOG.md#unreleased):
 
 | | Status |
 | --- | --- |
 | Loads, reads, chunk-skipping combines, `*Into` materialization, subject erasure as a rewrite, crypto-shred, disposal, retention, the DR check, export | **shipped** — [below](#shipped-today) |
 | Loaded-store benchmarks — load throughput, intersect latency | **owed**. Their **bill** is measured: the September 2026 calibration run (`2026-09-23-94416`) put the single-bucket topology on real S3 — the median cold intersect of two 500,000-id segments sharing 100 of 1,999 chunks made 206 GETs as measured, $82.40 per million derived from them at list prices, and inside the region it is expected at 204 GETs, $81.60; writing and publishing a segment is $11.20 per million, derived the same way, pointer included, and `store.load()` is expected at about a tenth more on average — and the [benchmarks page](benchmarks.md#the-single-bucket-bill--run-2026-09-23-94416) publishes it. Their **latency and throughput** are not: that run was driven from a laptop outside the region, so its timings measured the connection. The **RSS ceiling** is measured and published — it needs no cloud account, because a cgroup limit is enforceable locally. The harness is built and has one published run against a real account; its in-region run is **next**, and still owed |
-| `load()` with the empty guard and `guard: { minCardinality, minRetained }` | **shipped** — `store.load(ref, ids)` is the write path in one call: next generation → write → guard → publish → collect. A refusal is reported (`published: false` + `reason`), not thrown, and deletes the object it wrote while the segment's row is unchanged or gone; once another write has changed the row, it leaves the object for collection. In `0.12.0` (unreleased) it reads the segment's row once, checks that its next number is free instead of listing for it, and with the default `keep` collects by name, deleting the one generation its publish pushed out of the window and listing the segment only every 16th generation: a steady load on S3 is 8 requests |
-| A load from a bitmap — `{ bitmap }`, `{ serialized }` | **in `0.12.0` (unreleased)** — a caller holding the result as an in-memory Roaring bitmap loads it as one: the bytes are checked before anything is written, the chunks are cut from the bitmap's own containers with no per-id work, and the generation is byte for byte the one its ids write. Its time against the id path is measured by `pnpm bench:load-input`, whose figures are not recorded yet |
-| Registry rows at schema 2, and tokens no two writes share | **in `0.12.0` (unreleased)** — a row carries an optional summary of its current generation, and a token with a random incarnation id and a random part for every write; a 0.11 process refuses a schema-2 row, so every 0.11 process stops before the first 0.12 write and there is no downgrade ([upgrade order](../CHANGELOG.md#unreleased)) |
-| A generation's metadata, and a row that describes its current generation — `metadata` on `load` and the `*Into` verbs | **in `0.12.0` (unreleased)** — [below](#the-loaded-store) |
-| A cold `count()` in one request, and `seg.stat()` | **in `0.12.0` (unreleased)** — [below](#the-loaded-store) |
-| A throttled write sent again, and a registry write that gets no answer settled by reading the row | **in `0.12.0` (unreleased)** — [below](#the-loaded-store) |
-| A purged registry row removed for good, and `scan: 'index'` that purges as well as retires | **in `0.12.0` (unreleased)**, where the registry reports `conditionalDelete` — [below](#security--data-protection) |
-| Read timeouts on S3, GCS and Azure Blob (`readTimeoutMs`) | **in `0.12.0` (unreleased)**, off unless set |
+| `load()` with the empty guard and `guard: { minCardinality, minRetained }` | **shipped** — `store.load(ref, ids)` is the write path in one call: next generation → write → guard → publish → collect. A refusal is reported (`published: false` + `reason`), not thrown, and deletes the object it wrote while the segment's row is unchanged or gone; once another write has changed the row, it leaves the object for collection. It reads the segment's row once, checks that its next number is free instead of listing for it, and with the default `keep` collects by name, deleting the one generation its publish pushed out of the window and listing the segment only every 16th generation: a steady load on S3 is 8 requests |
+| A load from a bitmap — `{ bitmap }`, `{ serialized }` | **shipped** — a caller holding the result as an in-memory Roaring bitmap loads it as one: the bytes are checked before anything is written, the chunks are cut from the bitmap's own containers with no per-id work, and the generation is byte for byte the one its ids write. Its time against the id path is measured by `pnpm bench:load-input`, whose figures are not recorded yet |
+| Registry rows at schema 2, and tokens no two writes share | **shipped** — a row carries an optional summary of its current generation, and a token with a random incarnation id and a random part for every write; a 0.11 process refuses a schema-2 row, so every 0.11 process stops before the first 0.12 write and there is no downgrade ([upgrade order](../CHANGELOG.md#0120--2026-10-03)) |
+| A generation's metadata, and a row that describes its current generation — `metadata` on `load` and the `*Into` verbs | **shipped** — [below](#the-loaded-store) |
+| A cold `count()` in one request, and `seg.stat()` | **shipped** — [below](#the-loaded-store) |
+| A throttled write sent again, and a registry write that gets no answer settled by reading the row | **shipped** — [below](#the-loaded-store) |
+| A purged registry row removed for good, and `scan: 'index'` that purges as well as retires | **shipped**, where the registry reports `conditionalDelete` — [below](#security--data-protection) |
+| Read timeouts on S3, GCS and Azure Blob (`readTimeoutMs`) | **shipped**, off unless set |
 | `generations()` + `rollback()` | **shipped** — see what a segment has been and put the pointer back, the one write that is not forward-only. Refuses a collected target, a crypto-shredded segment, and an above-pointer target without an explicit opt-in |
 | No character rules on names | **shipped** — a name is any non-empty string; each storage layer escapes what it cannot take literally rather than the library rejecting it, Windows device names like `con` and names ending in a dot included on the local filesystem. Three limits remain: 256 characters once encoded for storage, where escaping makes a name longer than it looks (anything outside `[A-Za-z0-9._-]`, and on the local filesystem the device names and trailing dots above); well-formed UTF-16, since an unpaired surrogate has no UTF-8 encoding; and a namespace starting with `cbm.due.`, which the retention index keeps its own rows in and every fleet-wide scan skips |
 | `exists()` + `segments()` | **shipped** — `exists()` is one point read of the registry, and `segments()` streams the registry's own enumeration, namespace-scoped, admin-path. Neither is inferred from `count()`, which cannot tell *never loaded* from *loaded and empty*, and neither needs a list of names kept beside the store |
 | Extending the load guard to the `*Into` verbs | **shipped** — a materialization routes through the same guarded write path as `load()`, so an empty or implausible combine is refused (`published: false` + `reason`) instead of replacing `dest`. `allowEmpty: true` publishes an empty result where emptying the destination is the intent; `guard: { minCardinality, minRetained }` adds the plausibility bounds, judged against what `dest` held |
 | A snapshot handle, so a long job reads one instant | **shipped** — `segment.pin()` resolves the generation once and holds it, so an export or a reconciliation describes a single instant. Only that segment is pinned; an ordinary handle still re-resolves on `cache.genTtlMs` |
-| Id-range reads for keyset paging — `iterate({ after, through })` and the same bounds on every combine | **shipped**, in the current release (`0.11.2`). Yields only the ids in `(after, through]` and fetches only the chunks the range overlaps |
+| Id-range reads for keyset paging — `iterate({ after, through })` and the same bounds on every combine | **shipped**. Yields only the ids in `(after, through]` and fetches only the chunks the range overlaps |
 | A public docs + site pass leading with the loaded store's strengths | **shipped** |
-| Deferred past `0.12.0` (unreleased) | **not built** — `generations({ describe: true })`, the chunk-level `*Into`, the tombstone reaper, an `op` metric for `store.load`, the compare-and-swap memo, an unscoped listing that skips the due index's pointers, one generation from parts built in several processes, and the reconcile for `rollback`, `setRetention`, shred and `eraseSubject` writes: [On the way to 1.0](#on-the-way-to-10), item 9, says what each is |
+| Deferred past `0.12.0` | **not built** — `generations({ describe: true })`, the chunk-level `*Into`, the tombstone reaper, an `op` metric for `store.load`, the compare-and-swap memo, an unscoped listing that skips the due index's pointers, one generation from parts built in several processes, and the reconcile for `rollback`, `setRetention`, shred and `eraseSubject` writes: [On the way to 1.0](#on-the-way-to-10), item 9, says what each is |
 | WASM CRoaring research | **after** the loaded store |
 
 **What is next:** the in-region calibration run, which measures load throughput, intersect latency and what
@@ -93,7 +93,7 @@ is a dependency of both and is never installed directly. The storage drivers are
   structurally and safely deserialized before anything is written, then written from the bitmap's own containers,
   never id by id, into the bytes the same ids write. A byte array passed as ids is refused rather than loaded byte
   by byte.
-- **A throttled write is sent again, and never lands twice** (`0.12.0`, unreleased). On S3 and GCS a write-once object the service answers
+- **A throttled write is sent again, and never lands twice** (`0.12.0`). On S3 and GCS a write-once object the service answers
   as throttled (`503 SlowDown`; `429` or `503`) is sent again, up to three more times with backoff, and a random write
   id in its metadata tells a first send that landed from another writer's object; on Azure Blob the client's retry does
   the same, with the same id. A registry row is sent once by the driver. When its write gets no answer, the load reads
@@ -108,7 +108,7 @@ is a dependency of both and is never installed directly. The storage drivers are
   not documented, so correctness rests on the write id, the footer and the registry's fence, never on that, and the
   in-region calibration is where real throttle answers are measured. **Known limit:** a bare `429` from an S3-compatible
   service is not retried and not classified transient on S3.
-- **Metadata on a generation, and a row that describes its current generation** (`0.12.0`, unreleased). `load` and the `*Into` verbs take a
+- **Metadata on a generation, and a row that describes its current generation** (`0.12.0`). `load` and the `*Into` verbs take a
   small record of your own (`metadata`: string keys, string or finite-number values, at most 1,024 bytes as canonical
   JSON), checked before the first request and stored in the generation's object. The write that moves the pointer also
   writes the row's summary of the generation, its id count and the metadata, sealed on an encrypted segment, so a reader
@@ -119,7 +119,7 @@ is a dependency of both and is never installed directly. The storage drivers are
   stands in for the tail read, so a steady load on S3 makes 8 requests (derived, and held by a test). **Proven
   against** the in-memory and local-file drivers and the real registry protocol over counting stores, with every
   decision mutation-checked.
-- **A one-request cold `count()`, and `stat()`** (`0.12.0`, unreleased). A cold `count()` is the pointer read and nothing else: the row records
+- **A one-request cold `count()`, and `stat()`** (`0.12.0`). A cold `count()` is the pointer read and nothing else: the row records
   the current generation's id count, so no object is read, cleartext or encrypted, whatever the index's width (derived
   from the driver ports and held by a test; one wire request on each emulator in the integration lane). `seg.stat()`
   returns the generation's number, count and metadata from the same resolution, one request when cold and none when warm
@@ -193,7 +193,7 @@ is a dependency of both and is never installed directly. The storage drivers are
   current generation) moves on every load — a daily bucket reloaded each morning would have its expiry pushed
   forward by the very refresh meant to keep it current. The sweep is bounded (`limit`, `maxScanSegments`),
   previewable (`dryRun`), shardable across replicas, reports a per-segment ledger instead of throwing, and
-  purges the tombstone rows its own retirements leave. From `0.12.0` (unreleased), on a registry that can delete a row only while it is
+  purges the tombstone rows its own retirements leave. From `0.12.0`, on a registry that can delete a row only while it is
   unchanged (S3 when its client sends to an AWS S3 host, GCS and Azure Blob by default, by `If-Match` /
   `ifGenerationMatch`), the purge removes the row for good, so a full sweep reads what is live and inside its grace
   rather than every name a namespace ever held, and `scan: 'index'` purges as well as retires, by a pointer each
@@ -334,7 +334,7 @@ between here and there:
    sections, flagged in its footer (a reader skips a section type it does not know, and a reader before 0.12
    refuses the flag); a generation without metadata is the same bytes as before.
 8. **Adoption feedback** — real deployments finding the sharp edges that our own tests don't.
-9. **Closing the named deferrals.** None of these is in `0.12.0` (unreleased):
+9. **Closing the named deferrals.** None of these is in `0.12.0`:
    - self-healing disaster recovery;
    - an exclusion predicate on the retention sweep (legal hold);
    - an automated reconcile of unstamped tombstones, and a cleanup of the tombstones a registry already holds (the
