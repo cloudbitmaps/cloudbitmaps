@@ -993,3 +993,132 @@ describe('a delete the backend refuses starves nothing', () => {
     expect('firstPurgeFault' in res).toBe(false);
   });
 });
+
+describe('what a retirement and a purge cost, per segment, with the gate on and off', () => {
+  /**
+   * Fifty segments retired, then purged after their grace, then a full unscoped sweep, on a store that counts. A
+   * registry that cannot remove a row has no use for a purge pointer, so its costs stay what a retirement and a purge
+   * cost before the pointer existed.
+   */
+  async function costs(conditionalDelete: boolean) {
+    const N = 50;
+    const w = world({ conditionalDelete });
+    for (let i = 0; i < N; i++)
+      await seed(w, { namespace: 'sends', segment: `copy-${i}` }, T0 + RETENTION);
+    const per = (n: number): number => n / N;
+    const snap = () => ({ reads: w.store.reads, writes: w.store.writes, deletes: w.store.deletes });
+    const delta = (a: ReturnType<typeof snap>) => ({
+      reads: per(w.store.reads - a.reads),
+      writes: per(w.store.writes - a.writes),
+      deletes: per(w.store.deletes - a.deletes),
+    });
+
+    w.advance(RETENTION + 1);
+    let before = snap();
+    const retired = await retireExpired(w.deps, {
+      now: w.now(),
+      limit: N,
+      tombstoneGraceMs: GRACE,
+    });
+    expect(retired.retired).toBe(N);
+    const retirement = delta(before);
+
+    w.advance(GRACE);
+    before = snap();
+    const purged = await retireExpired(w.deps, { now: w.now(), limit: N, tombstoneGraceMs: GRACE });
+    expect(purged.tombstonesPurged).toBe(N);
+    const purge = delta(before);
+
+    const objectsLeft = per(registryObjects(w));
+    before = snap();
+    await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: GRACE });
+    return {
+      retirement,
+      purge,
+      objectsLeft,
+      nextUnscopedSweepReads: w.store.reads - before.reads,
+    };
+  }
+
+  it('gate off: a retirement is 8 reads and 3 writes, a purge 3 and 1, two objects stay, and a sweep reads 100', async () => {
+    expect(await costs(false)).toEqual({
+      retirement: { reads: 8, writes: 3, deletes: 0 },
+      purge: { reads: 3, writes: 1, deletes: 0 },
+      objectsLeft: 2,
+      nextUnscopedSweepReads: 100,
+    });
+  });
+
+  it('gate on: a retirement is 9 reads, 3 writes and a delete, a purge 4 reads and 2 deletes, and nothing stays', async () => {
+    expect(await costs(true)).toEqual({
+      retirement: { reads: 9, writes: 3, deletes: 1 },
+      purge: { reads: 4, writes: 0, deletes: 2 },
+      objectsLeft: 0,
+      nextUnscopedSweepReads: 0,
+    });
+  });
+
+  it.each([true, false])(
+    'a retirement that faulted after its tombstone landed files a purge pointer only where rows are removed (gate on: %s)',
+    async (conditionalDelete) => {
+      const w = world({ conditionalDelete });
+      const ref = { namespace: 'n', segment: 'day' };
+      await seed(w, ref, T0 + RETENTION);
+      w.advance(RETENTION + 1);
+      // Storage cannot be listed once the tombstone is written: the segment is retired, with a fault.
+      const storage: IStorageDriver = {
+        capabilities: () => w.storage.capabilities(),
+        putImmutable: (k, f) => w.storage.putImmutable(k, f),
+        getRange: (k, o, l) => w.storage.getRange(k, o, l),
+        getTail: (k, m) => w.storage.getTail(k, m),
+        delete: (k) => w.storage.delete(k),
+        list: () => ({
+          [Symbol.asyncIterator]: () => ({
+            next: () => Promise.reject(new Error('storage list unavailable')),
+          }),
+        }),
+      };
+      const res = await retireExpired(
+        { registry: w.registry, storage },
+        { now: w.now(), tombstoneGraceMs: GRACE },
+      );
+      expect(res.entries[0]).toMatchObject({
+        action: 'retired',
+        fault: 'failed: storage list unavailable',
+      });
+      expect(await bucketRows(w, dueBucket(w.now() + GRACE))).toHaveLength(
+        conditionalDelete ? 1 : 0,
+      );
+    },
+  );
+
+  it('gate off: a pointer to nothing is left alone, since removing it would only rewrite it as a tombstone', async () => {
+    const w = world({ conditionalDelete: false });
+    const bucket = dueBucket(w.now());
+    const gone = dueIndexRef(bucket, { namespace: 'n', segment: 'gone' });
+    await w.registry.create(gone, { currentGen: null });
+    const writes = w.store.writes;
+    const res = await retireExpired(w.deps, { scan: 'index', now: w.now() });
+    expect(res.purgeFaults).toBe(0);
+    expect(w.store.writes).toBe(writes);
+    expect(await bucketRows(w, bucket)).toHaveLength(1);
+  });
+
+  it('gate off: no purge pointer is filed, so an index scan has nothing to purge and the fleet scan purges, as before', async () => {
+    const w = world({ conditionalDelete: false });
+    const ref = { namespace: 'n', segment: 'day' };
+    await seed(w, ref, T0 + RETENTION);
+    w.advance(RETENTION + 1);
+    await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: GRACE });
+    expect(await bucketRows(w, dueBucket(w.now() + GRACE))).toEqual([]);
+    w.advance(GRACE);
+    const byIndex = await retireExpired(w.deps, {
+      scan: 'index',
+      now: w.now(),
+      tombstoneGraceMs: GRACE,
+    });
+    expect(byIndex.tombstonesPurged).toBe(0);
+    const byFleet = await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: GRACE });
+    expect(byFleet.tombstonesPurged).toBe(1);
+  });
+});

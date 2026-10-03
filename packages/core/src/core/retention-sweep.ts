@@ -469,6 +469,12 @@ export async function retireExpired(
       op: 'retireExpired',
     }));
 
+  // Whether a delete removes a row for good. Read after the enumeration: a registry that settles this lazily (S3, from
+  // the host its client resolves) has done so by its first listing. Where it does not, a purge only rewrites the row as
+  // a tombstone, which a full scan reads for ever, so a pointer to find it by, or to remove, buys nothing and costs a
+  // read and a write at retirement and again at purge.
+  const removesRows = deps.registry.capabilities().conditionalDelete === true;
+
   const shards = options.shards;
   const totalShards = options.totalShards ?? 0;
   const owned = (ref: SegmentRef): boolean =>
@@ -544,13 +550,15 @@ export async function retireExpired(
         if (!dryRun) {
           await deps.registry.delete(ref, rec.token);
           tombstonesPurged += 1;
-          await forgetPurgePointers(
-            deps.registry,
-            ref,
-            retiredAt + grace,
-            indexed?.pointers.get(segmentKey(ref)) ?? [],
-            noteFault,
-          );
+          if (removesRows) {
+            await forgetPurgePointers(
+              deps.registry,
+              ref,
+              retiredAt + grace,
+              indexed?.pointers.get(segmentKey(ref)) ?? [],
+              noteFault,
+            );
+          }
         }
         entries.push({
           ...base,
@@ -693,9 +701,8 @@ export async function retireExpired(
       // Stamp the tombstone as OURS, so a later sweep may purge the row (see the attribution note above), and file
       // the pointer an index scan finds it by on the day its grace ends. A failure here only means the row is never
       // auto-purged, or only by the fleet scan — never data loss — so it is best-effort.
-      if (await stampRetirement(deps.registry, ref, now).catch(() => false)) {
-        await filePurgePointer(deps.registry, ref, now + grace);
-      }
+      const stamped = await stampRetirement(deps.registry, ref, now).catch(() => false);
+      if (stamped && removesRows) await filePurgePointer(deps.registry, ref, now + grace);
     } catch (err) {
       // A fault AFTER the tombstone landed is a segment that IS retired, and reporting it as skipped told the
       // caller the opposite of the truth ("a skipped entry is a segment that still holds data"). One cheap read
@@ -705,9 +712,8 @@ export async function retireExpired(
         // Stamp it here too. Without this a retirement that faulted after the tombstone landed is a row no later
         // sweep can attribute to itself, so it is never auto-purged — exactly the litter the purge exists to
         // prevent, and reachable from any transient Storage fault.
-        if (await stampRetirement(deps.registry, ref, now).catch(() => false)) {
-          await filePurgePointer(deps.registry, ref, now + grace);
-        }
+        const stamped = await stampRetirement(deps.registry, ref, now).catch(() => false);
+        if (stamped && removesRows) await filePurgePointer(deps.registry, ref, now + grace);
         retired += 1;
         entries.push({
           ...base,
@@ -734,7 +740,7 @@ export async function retireExpired(
   // may be minutes old: a `setRetention` that created the name since files its pointer after its row, and finding
   // one already at that key, takes it as its own. Fenced on the token the scan read, so a pointer filed anew is left.
   // What remains is a round trip in which such a pointer can still go, and then the fleet scan retires that segment.
-  if (!dryRun && indexed !== undefined) {
+  if (!dryRun && removesRows && indexed !== undefined) {
     for (const pointer of indexed.litter) {
       if (!owned(pointer.target)) continue;
       try {
