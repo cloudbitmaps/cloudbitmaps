@@ -18,7 +18,13 @@ import { chunkGenKey, chunkRefKey, segmentPrefix } from './keys';
 import type { BoundedLru } from './lru';
 import { NOOP_METRICS, safeMetrics } from './metrics';
 import type { IMetricsSink } from './metrics';
-import type { ChunkRef, StorageChunkSource, SegmentRef, SegmentSize } from './ports';
+import type {
+  ChunkRef,
+  GenerationSummary,
+  StorageChunkSource,
+  SegmentRef,
+  SegmentSize,
+} from './ports';
 
 const DEFAULT_MAX_BITMAP_BYTES = 1 << 20; // 1 MiB per bitmap — generous; real chunks are far smaller
 /** Max overlapping-chunk intersections in flight — bounds memory + concurrent reads (invariant 6). */
@@ -255,6 +261,7 @@ export class SegmentEngine {
    * combines decode the payloads.
    */
   async count(seg: SegmentRef): Promise<number> {
+    if (this.storage.summary) return (await this.storage.summary(seg))?.cardinality ?? 0;
     const cardinalities = this.storage.cardinalities ? await this.storage.cardinalities(seg) : null;
     if (cardinalities) {
       let total = 0;
@@ -272,6 +279,19 @@ export class SegmentEngine {
     let total = 0;
     for (let i = 0; i < chunkKeys.length; i++) total += (await window.take())?.size ?? 0;
     return total;
+  }
+
+  /**
+   * What the segment's current generation is: its number, its id count and its metadata, from one resolution, so the
+   * three cannot straddle a publish. A source with no summary answers from `count()` and the generation it resolves.
+   */
+  async stat(seg: SegmentRef): Promise<GenerationSummary | null> {
+    if (this.storage.summary) return this.storage.summary(seg);
+    const generation = this.storage.currentGeneration
+      ? await this.storage.currentGeneration(seg)
+      : null;
+    if (generation === null) return null;
+    return { generation, cardinality: await this.count(seg) };
   }
 
   /** Whether the Storage source can measure segment size (for grounded cost); false ⇒ storage isn't grounded. */

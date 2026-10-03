@@ -2006,17 +2006,17 @@ describe('what a pin found out about its object, and how it forgets', () => {
     };
     const inner = source as unknown as {
       snapshots: Memo;
-      install(key: string, reader: Promise<unknown>): unknown;
+      install(key: string, snapshot: unknown): unknown;
     };
     const key = `${segmentKey(REF)}@${held.version}`;
     const get = inner.snapshots.get.bind(inner.snapshots);
     inner.snapshots.get = (k: string) => {
-      const entry = get(k) as { reader: Promise<unknown> } | undefined;
+      const entry = get(k);
       if (k === key && entry !== undefined) {
         inner.snapshots.get = get;
         queueMicrotask(() => {
           inner.snapshots.delete(key);
-          inner.install(key, entry.reader);
+          inner.install(key, entry);
         });
       }
       return entry;

@@ -2058,6 +2058,15 @@ interface SegmentParts {
   pinnedAt?: PinnedAt;
 }
 
+/** What {@link Segment.stat} answers: the generation a handle reads, its id count and its metadata. */
+export interface SegmentStat {
+  /** The generation read, or `null` when the segment has none. */
+  readonly generation: number | null;
+  readonly cardinality: number;
+  /** The metadata the generation was loaded with; absent when it has none. */
+  readonly metadata?: GenerationMetadata;
+}
+
 /** The store's one way to mint a {@link Segment}, bound by the class's static block. */
 let makeSegment: (parts: SegmentParts) => Segment;
 /** True only while {@link makeSegment} is constructing, so a `new Segment(...)` from plain JS is refused. */
@@ -2287,6 +2296,25 @@ export class Segment {
   count(): Promise<number> {
     if (this.expired()) return Promise.resolve(0);
     return this.timed('count', () => this.engine.count(this.ref));
+  }
+  /**
+   * What the generation this handle reads is, from one resolution: its number, its id count and the metadata it
+   * was loaded with (absent when it has none). It is what answers {@link Segment.count}, so the three describe one
+   * generation and cannot straddle a publish. One registry read when cold, none while warm, and none on a pinned
+   * handle, which answers for the generation it pinned. A segment with no generation, and an expired handle,
+   * answer `{ generation: null, cardinality: 0 }`.
+   *
+   * Trust is as for `count()`: the registry row's word, not confirmed against the object until the object is
+   * opened, when a disagreement makes this process stop using that row's summary.
+   *
+   * ```ts
+   * const { generation, cardinality, metadata } = await store.segment('active-30d').stat();
+   * ```
+   */
+  async stat(): Promise<SegmentStat> {
+    if (this.expired()) return { generation: null, cardinality: 0 };
+    const found = await this.engine.stat(this.ref);
+    return found === null ? { generation: null, cardinality: 0 } : found;
   }
   /**
    * Every id, ascending, streamed one chunk at a time. Pass a range to read part of the segment: the ids in

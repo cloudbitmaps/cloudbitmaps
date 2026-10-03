@@ -23,7 +23,13 @@ import type { Clock, Rng } from '../../core/determinism';
 import { withRetry, DEFAULT_RETRY_POLICY } from '../../core/retry';
 import { isTransientError } from '../../core/errors';
 import type { RetryPolicy } from '../../core/retry';
-import type { ChunkRef, StorageChunkSource, SegmentRef, SegmentSize } from '../../core/ports';
+import type {
+  ChunkRef,
+  GenerationSummary,
+  StorageChunkSource,
+  SegmentRef,
+  SegmentSize,
+} from '../../core/ports';
 
 export interface RetryingOptions {
   readonly clock: Clock;
@@ -65,6 +71,7 @@ export class RetryingStorageChunkSource implements StorageChunkSource {
   /** Present only when the inner source supports it — so capability detection stays honest. */
   readonly sizeOf?: (ref: SegmentRef) => Promise<SegmentSize | null>;
   readonly cardinalities?: (ref: SegmentRef) => Promise<ReadonlyMap<number, number> | null>;
+  readonly summary?: (ref: SegmentRef) => Promise<GenerationSummary | null>;
   readonly currentGeneration?: (ref: SegmentRef) => Promise<number | null>;
   readonly invalidate?: (ref: SegmentRef) => void;
   readonly exists?: (ref: SegmentRef) => Promise<boolean>;
@@ -91,6 +98,11 @@ export class RetryingStorageChunkSource implements StorageChunkSource {
     if (innerCardinalities) {
       this.cardinalities = (ref) =>
         withRetry(() => innerCardinalities.call(inner, ref), this.policy, this.deps);
+    }
+    const innerSummary = inner.summary;
+    if (innerSummary) {
+      this.summary = (ref) =>
+        withRetry(() => innerSummary.call(inner, ref), this.policy, this.deps);
     }
     const innerCurrentGeneration = inner.currentGeneration;
     if (innerCurrentGeneration) {

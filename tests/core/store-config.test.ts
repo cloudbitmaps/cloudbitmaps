@@ -233,7 +233,7 @@ describe('CloudRoaring constructor — one config shape (storage: a backend, a r
       const store = new CloudRoaring({
         storage: brandAsBackend({ storage: counted, registry: backend.registry }),
       });
-      expect(await store.segment('s').count()).toBe(3);
+      expect(await store.segment('s').has(1)).toBe(true);
       expect(tails).toBeGreaterThan(0);
     });
 

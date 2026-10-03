@@ -72,6 +72,13 @@ export interface StorageChunkSource {
    */
   cardinalities?(ref: SegmentRef): Promise<ReadonlyMap<number, number> | null>;
   /**
+   * Optional: the current generation's number, id count and metadata, or `null` if the segment has no Storage
+   * generation. The `.crbm` source answers from the registry row's summary when it can use it, which is one
+   * registry read and no read of the object, and from the opened generation when it cannot. A source with no
+   * summary omits this, and `count()` keeps its other paths.
+   */
+  summary?(ref: SegmentRef): Promise<GenerationSummary | null>;
+  /**
    * Optional: the segment's **current generation number** as this source resolves it right now (registry
    * `currentGen`, or the highest storage generation), or `null` if the segment has no Storage generation. The engine
    * keys its chunk cache by this so a generation bump (a load's publish) is observed — a new generation
@@ -242,6 +249,14 @@ export type RegistrySummary = ClearRegistrySummary | SealedRegistrySummary;
  * The rules are in `core/metadata.ts`.
  */
 export type GenerationMetadata = Readonly<Record<string, string | number>>;
+
+/** What a generation is, as one read answers it: its number, its id count and the metadata it was written with. */
+export interface GenerationSummary {
+  readonly generation: number;
+  readonly cardinality: number;
+  /** Absent when the generation has none. */
+  readonly metadata?: GenerationMetadata;
+}
 
 /** {@link RegistrySummary} on a cleartext segment. */
 export interface ClearRegistrySummary {

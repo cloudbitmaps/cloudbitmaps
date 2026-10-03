@@ -23,12 +23,13 @@ import type { Aead, CrbmCrypto, IKeystore } from './crypto';
 import { IntegrityError, NotFoundError, ValidationError, isIntegrityError } from './errors';
 import type {
   IStorageDriver,
+  GenerationMetadata,
   IRegistryDriver,
   RegistryRecord,
   RegistrySummary,
   SegmentRef,
 } from './ports';
-import { summaryOf } from './summary';
+import { summaryOf, usableSummary } from './summary';
 import { validateUserRef } from './validate';
 
 /** What the generation helpers need: the objects, and the pointer that says which one is current. */
@@ -48,6 +49,14 @@ export interface GenerationEntry {
   readonly generation: number;
   /** Whether the registry pointer currently names this generation. */
   readonly current: boolean;
+  /**
+   * The current generation's id count, from its registry row, with no read of the object. Present only on the current
+   * entry, and only when the row's summary can be used: for an encrypted segment that takes a keystore that opens the
+   * segment's key. It is the row's word, not confirmed against the object.
+   */
+  readonly cardinality?: number;
+  /** The metadata the current generation was loaded with, from the same row; absent when it has none. */
+  readonly metadata?: GenerationMetadata;
 }
 
 /**
@@ -59,7 +68,8 @@ export interface GenerationEntry {
  *
  * One registry read and one `list` call, whether or not the segment has a registry row, so it also finds the
  * objects a purged row left behind. It does not open the objects, so it costs nothing per generation and tells you
- * nothing about their contents — read the sizes through the store's own report if you need them.
+ * nothing about their contents — read the sizes through the store's own report if you need them. The current entry
+ * carries the id count and metadata its row records, from the same read.
  */
 export async function listGenerations(
   ref: SegmentRef,
@@ -70,9 +80,44 @@ export async function listGenerations(
   const current = record?.currentGen ?? null;
   const seen = new Set<number>();
   for await (const key of deps.storage.list(ref)) seen.add(key.generation);
+  const described = record === null ? undefined : await currentDescription(ref, record, deps);
   return [...seen]
     .sort((a, b) => a - b)
-    .map((generation) => ({ generation, current: generation === current }));
+    .map((generation) =>
+      generation === current
+        ? { generation, current: true, ...described }
+        : { generation, current: false },
+    );
+}
+
+/**
+ * What the row's summary says of its current generation, or `undefined` when it says nothing usable. A key that
+ * cannot be opened leaves it out, as a rollback does: the entry is then listed without a description.
+ */
+async function currentDescription(
+  ref: SegmentRef,
+  record: RegistryRecord,
+  deps: GenerationListDeps,
+): Promise<{ cardinality: number; metadata?: GenerationMetadata } | undefined> {
+  if (record.summary === undefined) return undefined;
+  let aead: Aead | undefined;
+  if (
+    'sealed' in record.summary &&
+    record.wrappedDeks !== undefined &&
+    deps.keystore !== undefined
+  ) {
+    try {
+      aead = await deps.keystore.openDek(record.wrappedDeks);
+    } catch {
+      return undefined;
+    }
+  }
+  const usable = usableSummary(ref, record, aead);
+  if (usable === undefined) return undefined;
+  const metadata = usable.metadata;
+  return metadata === undefined || Object.keys(metadata).length === 0
+    ? { cardinality: usable.cardinality }
+    : { cardinality: usable.cardinality, metadata };
 }
 
 export interface RollbackResult {
