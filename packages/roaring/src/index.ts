@@ -1388,6 +1388,14 @@ export class CloudRoaring {
    * **after** the publish already landed, so a throw does not by itself mean the load did not take effect —
    * re-read the pointer rather than assuming.
    *
+   * **A `TransientError` can leave the publish unsettled, and deletes nothing.** The generation's object is sent
+   * again after a throttle where the backend allows it (a write id tells a first send that landed from another
+   * writer's object), and the registry write is sent once. When that write ends without an answer, the load reads the
+   * row: its own landed write is `published: true`, a row that has moved on is `superseded`, and a row still as the
+   * write found it leaves the outcome unknown, so the load throws `TransientError` and keeps its object, which the
+   * write may still point the row at. Re-run the load: it numbers past that object, and collection removes it once a
+   * generation above it is current.
+   *
    * Needs a backend (throws {@link UnsupportedError} otherwise).
    */
   async load(

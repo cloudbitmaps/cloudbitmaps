@@ -59,7 +59,9 @@ Any other key is refused by name.
 - **Never add a lifecycle rule that expires current blobs or the `registry/` prefix.**
 - **A transient failure of a write throws `TransientError`, and the write may or may not have landed.** Re-run the
   call, or check `store.generations(ref)`. Every write is tagged with a random id and a conflict is settled by reading
-  it back, because the client's own retry has no per-request switch.
+  it back, because the client's own retry has no per-request switch. That retry sends a write again after a
+  `503 ServerBusy` or a `500 OperationTimedOut`. A load that cannot tell whether its row write landed throws
+  `TransientError` and keeps its object.
 - **Set `readTimeoutMs` to bound a read that stalls.** No client setting does: the SDK's per-try timer stops once the
   response headers arrive, so a body that stalls after them holds the read as long as the connection stays open. With
   `readTimeoutMs` set, each read request (a range read, a tail read's properties and its download, a registry row's

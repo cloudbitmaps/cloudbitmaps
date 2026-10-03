@@ -55,6 +55,33 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **A write-once object that S3 or GCS throttles is sent again, and a registry write that gets no answer is settled by
+  reading the row.** A load that met a throttle on its object, or a response lost on its row, failed with
+  `TransientError`, and a failure on the row left the caller guessing whether it had landed. Now:
+  - *The object.* The S3 driver sends the write-once `PutObject`, or a multipart upload's `CompleteMultipartUpload`, again
+    after a `503 SlowDown` (or any `503`), and the GCS driver sends a single-request upload again after a `429` or
+    `503`: up to three more times, after a random wait under 500 ms, then 1 s, then 2 s. A lost response, a timeout and a
+    `500` are not sent again, and nor is any registry row, on either backend. Every S3 object now carries a random id
+    in its user metadata (`x-amz-meta-cbwid`, set when a multipart upload starts), and every GCS single-request upload
+    carries one in its custom metadata, as a resumable upload always has: a service does not promise that a request it
+    throttled was not applied, so a precondition failure on a re-send (or, for a completion, an upload S3 no longer
+    knows) reads the object back with one request, and an object with this write's own id is a success, while any other
+    is a `WriteConflictError`, as a collision always was. Throttled on every send, the write throws `TransientError`,
+    and nothing is deleted. Azure Blob is unchanged: its client already sends a write again after a `503 ServerBusy`
+    or a `500 OperationTimedOut`, and every write's id tells its replay apart. The in-memory and local-filesystem
+    drivers have nothing to throttle.
+  - *The row.* When a `create` or compare-and-swap ends without an answer (a throttle, a lost response, a timeout), the
+    publish reads the row once and decides. A pointer at the load's number, on the incarnation the write was made
+    against, over the object the load wrote (one footer read) is the load's own landed write: `published: true`. A row
+    still as the write found it leaves the outcome unknown: `TransientError`, with the object kept, because the write
+    may still land over it. Any other row has moved past what the write was conditioned on, so the write can never land,
+    and the load goes on as after a lost race. `load`, the `*Into` verbs and the erasure rewrite publish this way. No
+    load deletes its object after an ambiguous outcome, so a write that reaches the registry after the load returned
+    always finds its object there; a re-run numbers past the orphan, and collection removes it once a generation above it
+    is current.
+  - *Requests.* A throttle only adds requests. A publish that is not throttled sends exactly the requests it did before
+    (the write id travels in the object's own request), so `costReport()` and `estimateCost()` are unchanged.
+
 - **A steady `store.load()` sends 11 requests to S3 where it sent 14: it reads the segment's row once, and checks its
   next generation number instead of listing for it.** A load read its registry row four times before its publish. On
   a cleartext segment it now reads it once, and the guard, the generation number, the write's refusal of a
@@ -135,6 +162,15 @@ so, and so do the module headers in the code.
   and `requestsPerPointerRead` at its default of 1.
 
 ### Fixed
+
+- **A load whose Azure Blob registry write landed, and then had another write land on top of it, is published, not
+  `superseded`.** A write the client sent again reads the blob back to tell its replay from a conflict, and a row is
+  overwritten by compare-and-swap, so another writer's write on top (a retention change, say) made the load's own write
+  report `WriteConflictError`. The load then found the row changed and returned `published: false`, `reason:
+  'superseded'`, over a pointer that named its generation. The publish now reads the row after a conflict and
+  recognises its own write by its effect, as it does after any unanswered write, so the load returns `published: true`.
+  Tests run a real `@azure/storage-blob` client against a stub that applies the write, lands another on top, and then
+  answers `503`.
 
 - **An Azure Blob range or tail read whose connection drops part-way through the body is a `TransientError`.** The
   SDK fails such a body with an `AbortError`, which reached the caller as it was, so the store's read retry did not run

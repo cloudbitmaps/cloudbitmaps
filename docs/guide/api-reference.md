@@ -548,13 +548,17 @@ driver to them (`IStorageDriver`'s doc comment states the same list):
 - Never replay a conditional write without telling the replay apart. A write that lands and loses its response, sent
   again, meets its own object and would report a collision. Send each write once, with the client's retry off for
   that request, or, when the precondition fails, read back an id you stored with the write and treat a match as
-  success.
+  success. The one write you may send again on purpose is a generation's object, after a response that says the
+  service is refusing requests too fast (a throttle), and only if it carries such an id: a throttle is not a promise
+  that the request was not applied. A lost response or a timeout is never grounds to send it again.
 - Raise a transient fault as `TransientError`.
 
 **What a registry driver must do.** `create` and `compareAndSwap` are atomic conditional writes that throw
 `WriteConflictError` and change nothing when they lose; tokens are never reused, `delete` then `create` included;
 reads are strongly consistent; `list` yields every existing row, `destroyed` tombstones included, with every field;
-the replay rule above applies to `create` and `compareAndSwap`; a transient fault is a `TransientError`; and
+the replay rule above applies to `create` and `compareAndSwap`, which are never sent again on a throttle: the
+store's publish reads the row and recognises its own landed write by its effect; a transient fault is a
+`TransientError`; and
 `delete` is idempotent, with one addition.
 
 **`delete(ref, expected?)` takes an optional expected token.** Without it, deleting an absent row is a no-op, as
@@ -602,6 +606,8 @@ find its own write already there and report it as a conflict, so the store's wri
 bucket reads (`exists`, `segments`, `generations`, `getRetention`, and the registry scan `subjectReport`,
 `exportSegments` and `checkConsistency` start from), report a `TransientError` to their caller instead. A fault on
 one segment inside `checkConsistency` is recorded in `report.errored`, not thrown. To retry a write, re-run the call.
+A load settles one outcome itself: when its registry write ends without an answer, it reads the row, reports a write
+that landed as `published: true`, and otherwise throws `TransientError` and deletes nothing.
 [Reliability](production.md#reliability-retries-backoff--timeouts) says how, and how to tell whether an attempt landed.
 
 ### Crypto seams
@@ -634,7 +640,7 @@ reports a missing or invalid environment variable with a plain `Error` and exits
 | `CapabilityError` | the storage you passed cannot meet a capability the store requires — a storage without range reads (one of your own; the five backends all serve them), or a keystore or `encryption.required: true` on a store built on a bare `IStorageDriver` instead of a backend, which has no registry. Raised **fail-fast at construction**, never mid-operation | pass a backend, or a storage that supports range reads | no |
 | `BudgetExceededError` | the operation would exceed its per-op denial-of-wallet budget — too many backend requests for one call. Refused **before** fanning out. Carries the projected count and the limit, never data | narrow the operation, raise `budget`, or set `budget: false`. If it fires on a normal call, something is wider than you think | no — refused by policy, not by luck |
 | `KeyUnavailableError` | an encrypted segment's DEK cannot be unwrapped: the keystore holds none of the KEKs its wrappings reference — never configured, rotated away without keeping the old key, or lost | restore the KEK. **Without it the data is unreadable**, which is what crypto-shred relies on | no |
-| `TransientError` | a transient fault your backend classified (from its storage or registry) — throttling, a 5xx, a connection reset. The raw SDK error is preserved in `cause`, except on a read `readTimeoutMs` cut off, which has none and says `timed out after N ms` | from a read of segment data, the retry layer already retried it, and reaching you means it kept failing. From a write, or a direct registry or bucket read, it was not retried: re-run the call. For a `load`, once the first attempt has settled, the re-run publishes whether or not that attempt landed; to know whether it did, check `store.generations(ref)` rather than replay the request ([Resilience](#resilience-the-store-wires-this-by-default)) | **yes** — the only class the retry layer retries |
+| `TransientError` | a transient fault your backend classified (from its storage or registry) — throttling, a 5xx, a connection reset. The raw SDK error is preserved in `cause`, except on a read `readTimeoutMs` cut off, which has none and says `timed out after N ms` | from a read of segment data, the retry layer already retried it, and reaching you means it kept failing. From a write, or a direct registry or bucket read, it was not retried: re-run the call. For a `load`, once the first attempt has settled, the re-run publishes whether or not that attempt landed; to know whether it did, check `store.generations(ref)` rather than replay the request. A load that throws it has deleted nothing, and its object may still be published ([Resilience](#resilience-the-store-wires-this-by-default), [what a throttled load leaves behind](loading.md#when-a-write-is-throttled-or-gets-no-answer)) | **yes** — the only class the retry layer retries |
 
 Two things worth knowing:
 
@@ -758,9 +764,13 @@ Boundary helpers and errors: `validateSegmentRef` · `BlobSink` · `ValidationEr
 `S3Storage` · `S3StorageOptions` — the backend, both halves in one bucket.
 
 Each conditional write the backend makes — the write-once `PutObject`, a multipart upload's `CompleteMultipartUpload`, and
-the registry's create, compare-and-swap and delete, which writes a tombstone — is sent once, with the SDK's retry off for that request alone, whether
-the client is one you passed or one `S3Storage` built. Every other request keeps the client's retry. A transient
-failure of a conditional write throws `TransientError`, and the write may or may not have landed
+the registry's create, compare-and-swap and delete, which writes a tombstone — is sent with the SDK's retry off for that request alone, whether
+the client is one you passed or one `S3Storage` built. Every other request keeps the client's retry. The registry's
+writes are sent once. A generation's object is sent again, at most three more times, after `503 SlowDown` (or any `503`)
+and nothing else, waiting a random time under 500 ms, then 1 s, then 2 s: it carries a random id in its user metadata
+(`x-amz-meta-cbwid`), and a precondition failure on a re-send, or an upload S3 no longer knows, reads it back, so an
+object with its own id is a success and any other a `WriteConflictError`. A transient failure of a conditional write
+throws `TransientError`, and the write may or may not have landed
 ([why](production.md#reliability-retries-backoff--timeouts)).
 
 With `readTimeoutMs` set (it is off by default), each read the backend makes, every `GetObject` and `HeadObject` of a
@@ -785,11 +795,13 @@ turns off the SDK's retries of listings, metadata reads and resumable uploads on
 The registry lets a GCS deployment run on **one bucket
 alone**: compare-and-swap rides GCS object preconditions (`ifGenerationMatch: 0` to create, `ifGenerationMatch:
 <generation>` to swap), so no second service is needed to hold the `currentGen` pointer. The registry's writes, and
-an object up to `simpleUploadThresholdBytes` (8 MiB by default), are each one request sent once, with no SDK retry
-around it, so a transient failure throws `TransientError` and the write may or may not have landed. A larger object
-is a resumable upload, a session of requests that the SDK retries within, under the client's retry options: it
-carries a random id in the object's metadata, and a `412` on its commit reads the stored object back, so an object
-that carries its own id is a success and any other a `WriteConflictError`
+an object up to `simpleUploadThresholdBytes` (8 MiB by default), are each one request with no SDK retry around it, so a
+transient failure throws `TransientError` and the write may or may not have landed. The registry's writes are sent
+once. The object is sent again, at most three more times with the same waits as S3, after a `429` or `503` and nothing
+else. A larger object is a resumable upload, a session of requests that the SDK retries within, under the client's
+retry options. Every object carries a random id in its metadata, and a `412` on its commit that may be the write
+meeting itself (a resumable upload's, or a single request's after a re-send) reads the stored object back, so an
+object that carries its own id is a success and any other a `WriteConflictError`
 ([why](production.md#reliability-retries-backoff--timeouts)).
 
 ### `@cloudbitmaps/azure-blob`
@@ -802,7 +814,9 @@ run on **one container alone**: compare-and-swap rides blob conditions (`ifNoneM
 `ifMatch: <etag>` to swap), so no second service is needed to hold the `currentGen` pointer. Every request goes
 through the client's retry policy, the conditional writes included. Each conditional write carries a random id in
 the blob's metadata, and a conflict reads the stored blob back, so a blob that carries its own id is a success and
-any other a `WriteConflictError` ([why](production.md#reliability-retries-backoff--timeouts)).
+any other a `WriteConflictError` ([why](production.md#reliability-retries-backoff--timeouts)). The client's policy sends
+a write again after a `503 ServerBusy` or a `500 OperationTimedOut`, and a write that every try refused throws
+`TransientError`.
 
 ## Keeping this in sync
 

@@ -432,10 +432,12 @@ loop re-reads the row first, so no publish can move it back. All bytes are check
 the store's retry. For a conditional write that retry gives the wrong answer. A write that lands and then loses its
 response is sent again, meets itself, and fails its own precondition, which reads as a lost race for a write that
 won. This covers a generation's write-once put and the registry's create, compare-and-swap and delete (a delete
-writes a tombstone). So the S3 and GCS packages send a conditional write once where the SDK lets them, with its retry
-off for that request alone. The Azure Blob package, whose retry has no per-request switch, tags each write and
-settles a conflict by reading it back. The GCS package does the same for an object above
-`simpleUploadThresholdBytes`, which uploads as a resumable session. The client is otherwise left as it is, a client
+writes a tombstone). So the S3 and GCS packages send a conditional write with the SDK's retry off for that request alone:
+a registry row once, whatever the answer, and a generation's object once, or again after a throttle, when a random id
+in its metadata tells a first send that landed from another writer's object
+([a load's writes](loading.md#when-a-write-is-throttled-or-gets-no-answer)). The Azure Blob package, whose retry has
+no per-request switch, tags each write and settles a conflict by reading it back. The GCS package does the same for an
+object above `simpleUploadThresholdBytes`, which uploads as a resumable session. The client is otherwise left as it is, a client
 you pass in included, and every other request it makes keeps the SDK's retry rules. The one exception is a GCS
 download on the client `GcsStorage` builds, which the SDK does not retry and the driver does
 ([why](#reliability-retries-backoff--timeouts)). A transient failure of a
@@ -444,17 +446,21 @@ package stands:
 
 | package | conditional writes |
 |---|---|
-| `@cloudbitmaps/s3` | every one is sent once: the write-once `PutObject`, a multipart upload's `CompleteMultipartUpload`, and the registry's create, compare-and-swap and delete |
-| `@cloudbitmaps/gcs` | the registry's writes, and an object up to `simpleUploadThresholdBytes` (8 MiB by default), are each one request, sent once. A larger object is a resumable upload, a session of requests that the SDK retries within, under the client's retry options; it and every Azure Blob write are tagged with a random id in metadata, as described below |
-| `@cloudbitmaps/azure-blob` | sent through the client's retry policy, which sends a request again after a network error or a 500 or 503. Each write is tagged with a random id in blob metadata, and a conflict is settled by reading the stored blob back, as described below |
+| `@cloudbitmaps/s3` | the registry's create, compare-and-swap and delete are each sent once. A generation's write-once `PutObject` or `CompleteMultipartUpload` is sent with the SDK's retry off, and again, at most three more times, after a `503 SlowDown` (or any `503`) and nothing else, waiting a random time under 500 ms, then 1 s, then 2 s. It carries a random id in its user metadata (`x-amz-meta-cbwid`), and a precondition failure on a re-send, or an upload S3 no longer knows, reads it back |
+| `@cloudbitmaps/gcs` | the registry's writes are each one request, sent once. An object up to `simpleUploadThresholdBytes` (8 MiB by default) is one request, sent again, at most three more times with the same waits, after a `429` or `503` and nothing else, and carries a random id in its metadata. A larger object is a resumable upload, a session of requests that the SDK retries within, under the client's retry options; it carries the same id, as every Azure Blob write does, as described below |
+| `@cloudbitmaps/azure-blob` | sent through the client's retry policy, which sends a request again after a network error or a 500 or 503, `503 ServerBusy` and `500 OperationTimedOut` among them. Each write is tagged with a random id in blob metadata, and a conflict is settled by reading the stored blob back, as described below |
+| in-memory and local filesystem | nothing is throttled, so nothing is sent again |
 
-**Writes that are tagged instead.** Azure Blob's retry is a policy on the client's pipeline, and a GCS resumable
-upload is a session the SDK retries within, so neither has a per-request switch. Each of their conditional writes
-carries a random id in the object's metadata (`cbwid`), outside the `.crbm` bytes and outside the registry row's body.
-When such a write reports a conflict, the backend reads the stored blob or object back with one metadata request. It
-reports success when the object carries the write's own id, and `WriteConflictError` otherwise. The read happens only
-on a conflict, works with a client you pass, and adds no option. A read-back that fails transiently throws
+**Writes that are tagged.** Azure Blob's retry is a policy on the client's pipeline, a GCS resumable upload is a
+session the SDK retries within, and the S3 and GCS drivers send a generation's object again after a throttle, so each of
+those writes can meet itself. Each carries a random id in the object's metadata (`cbwid`), outside the `.crbm` bytes
+and outside the registry row's body. When such a write reports a conflict (for an S3 object or a GCS single-request
+upload, only one that follows a re-send), the backend reads the stored blob or object back with one metadata request.
+It reports success when the object carries the write's own id, and `WriteConflictError` otherwise. The read happens
+only on a conflict, works with a client you pass, and adds no option. A read-back that fails transiently throws
 `TransientError`. A generation's `.crbm` object is never overwritten, so its read-back is definitive. A registry row
 is overwritten by compare-and-swap, so a writer that swaps in over a write that landed, before the read-back, makes
-that write report `WriteConflictError`. The store's callers re-read the row on it, and none deletes a generation
-because of it.
+that write report `WriteConflictError`. The publish reads the row again on it, and after any registry write that ended
+without an answer, and recognises its own write there by its effect: the pointer at its generation, over its own
+object. No caller deletes a generation because of either, and a load that cannot tell whether its row write landed
+throws `TransientError` and keeps its object.

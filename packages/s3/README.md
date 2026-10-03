@@ -60,7 +60,10 @@ It builds its own client from your usual AWS credentials. Any other key is refus
   `registry/` prefix.
 - **A transient failure of a write throws `TransientError`, and the write may or may not have landed.** Re-run the
   call, or check `store.generations(ref)`. The SDK's own retry is off for conditional writes, so a write that landed
-  is not reported as a conflict.
+  is not reported as a conflict. The registry's writes are sent once. A generation's object is sent again, up to three
+  more times, only after `503 SlowDown`; it carries a random id in its user metadata (`x-amz-meta-cbwid`), so a first
+  send that landed is told from another writer's object. A load that cannot tell whether its row write landed throws
+  `TransientError` and keeps its object.
 - **Reads can be timed, and writes are not.** Nothing is timed unless you set `readTimeoutMs`. Set, a read that has
   not finished in that many ms throws `TransientError`, and the store runs it again; AWS's guidance is to retry a GET
   of under 512 KB after about 2 seconds. The timer covers the body as well, so a connection that sends its headers and
