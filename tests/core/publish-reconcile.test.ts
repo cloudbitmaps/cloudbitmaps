@@ -591,6 +591,25 @@ describe('a publish whose registry write ends without a definite answer reads th
     expect(await generations(w.storage)).toEqual([0, 1, 2, 3]);
   });
 
+  it('an erasure whose write did not land, on another incarnation that points at the rewrite object, is not an erasure', async () => {
+    let clock = 1_000;
+    const w = world(() => clock);
+    await threeLoads(w);
+    w.arm({
+      kind: 'transient-unapplied',
+      meanwhile: async () => {
+        // The name is deleted and created again, later, pointing at the number the rewrite took: its object is the
+        // rewrite's own, so the footer cannot tell, and the incarnation has to.
+        clock += 5_000;
+        await w.base.delete(SEG);
+        await w.base.create(SEG, { currentGen: 3 });
+      },
+    });
+    const r = await eraseIdFromSegment(SEG, 2, w.deps);
+    expect(r).toMatchObject({ erased: false, reason: 'superseded' });
+    expect(r.collected).toEqual([]);
+  });
+
   it('a bulk load whose create did not land, over an object replaced under its number, did not become current', async () => {
     const w = world();
     w.arm({
