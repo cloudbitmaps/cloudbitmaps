@@ -410,10 +410,19 @@ describe('a rollback on a store that holds a keystore', () => {
     const w = world();
     await twoGenerations(w);
     const keystore = key();
-    await rollbackSegment(SEG, 0, { ...w.deps, keystore });
+    let opened = 0;
+    const spy: IKeystore = {
+      createDek: () => keystore.createDek(),
+      openDek: (wrapped) => {
+        opened += 1;
+        return keystore.openDek(wrapped);
+      },
+    };
+    await rollbackSegment(SEG, 0, { ...w.deps, keystore: spy });
     const row = (await w.registry.get(SEG))!;
     expect(row.currentGen).toBe(0);
     expect(row.summary).toEqual({ generation: 0, cardinality: 3, metadata: A });
+    expect(opened).toBe(0); // a segment with no keys has none to open
   });
 
   it('treats any failure to open the key of an encrypted segment as no key at hand: it still rolls back, and writes no summary', async () => {
@@ -532,13 +541,14 @@ describe('an allowForward rollback onto an object above the pointer that was rep
     ).rejects.toBeInstanceOf(NotFoundError);
   });
 
-  it('treats a replacement whose footer does not check as another object too', async () => {
+  it('treats a replacement of the same size whose footer does not check as another object too', async () => {
     const w = world();
     await rolledBackBelowTwo(w);
+    const original = (await w.storage.getTail({ ...SEG, generation: 2 }, 1 << 20)).bytes;
+    const corrupt = original.slice();
+    corrupt[corrupt.length - 1] ^= 0xff;
     const garbage = async (): Promise<void> => {
-      await w.storage.putImmutable({ ...SEG, generation: 2 }, (sink) =>
-        sink.write(new Uint8Array(512).fill(7)),
-      );
+      await w.storage.putImmutable({ ...SEG, generation: 2 }, (sink) => sink.write(corrupt));
     };
     await expect(
       rollbackSegment(
@@ -567,6 +577,22 @@ describe('an allowForward rollback onto an object above the pointer that was rep
       cardinality: 9,
       metadata: B,
     });
+  });
+
+  it('reads nothing more for an encrypted target it has no key to open, and leaves the row with no summary', async () => {
+    const w = world(key());
+    await rolledBackBelowTwo(w);
+    const calls: Record<string, number> = {};
+    await rollbackSegment(
+      SEG,
+      2,
+      { storage: counting<IStorageDriver>(w.storage, calls), registry: w.registry },
+      { allowForward: true },
+    );
+    expect(calls.getTail).toBe(1);
+    const row = (await w.registry.get(SEG))!;
+    expect(row.currentGen).toBe(2);
+    expect(row.summary).toBeUndefined();
   });
 
   it('reads nothing more for a target below the pointer, where a number cannot be taken again', async () => {
