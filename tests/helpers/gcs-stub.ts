@@ -11,7 +11,7 @@ import { CRC32C, Storage } from '@google-cloud/storage';
  * It holds objects in memory with their custom metadata, honours `ifGenerationMatch`, and serves single-request
  * uploads, object metadata, downloads (whole, ranged and suffix), deletes and listings. A test arms faults on the
  * uploads it chooses, by object name: a throttle answer (`429 rateLimitExceeded`, `503 backendError`) given before the
- * upload is applied or after it.
+ * upload is applied, after it, or before it with the upload applied later.
  */
 
 export const STUB_GCS_BUCKET = 'b';
@@ -28,6 +28,8 @@ export interface UploadFault {
   readonly status: number;
   /** Apply the upload first, so the answer reaches a client whose write landed. */
   readonly afterApplying?: boolean;
+  /** Answer without applying the upload, and keep it for the test to apply later (`landHeld`): a request in flight. */
+  readonly hold?: boolean;
   /** Only uploads of a name this accepts. */
   readonly name?: (name: string) => boolean;
 }
@@ -86,6 +88,7 @@ export class StubGcsService {
   /** Every request, in order: its operation and the object it named (`''` for a listing). */
   readonly sent: Array<{ op: Operation; name: string }> = [];
   private faults: UploadFault[] = [];
+  private held: Array<() => void> = [];
   private seq = 1_000;
   private readonly server: Server = createServer((req, res) => {
     void this.serve(req, res);
@@ -105,6 +108,13 @@ export class StubGcsService {
   /** Answer the next upload a fault matches with it. Faults fire in arming order. */
   arm(fault: UploadFault): void {
     this.faults.push(fault);
+  }
+
+  /** Apply every upload a `hold` fault kept, in order: a throttled request that reaches the service after all. */
+  landHeld(): void {
+    const held = this.held;
+    this.held = [];
+    for (const apply of held) apply();
   }
 
   count(op: Operation, name?: (name: string) => boolean): number {
@@ -146,6 +156,11 @@ export class StubGcsService {
     if (op === 'upload') {
       const at = this.faults.findIndex((f) => f.name === undefined || f.name(name));
       if (at !== -1) fault = this.faults.splice(at, 1)[0];
+    }
+    if (fault?.hold === true) {
+      this.held.push(() => {
+        this.apply(op, name, url.searchParams, req, body);
+      });
     }
     if (fault !== undefined && fault.afterApplying !== true) {
       return this.send(res, this.error(fault.status, REASONS[fault.status] ?? 'error'));

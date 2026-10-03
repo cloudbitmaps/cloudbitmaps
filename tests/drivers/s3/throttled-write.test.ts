@@ -300,6 +300,18 @@ describe('S3: a load whose writes are throttled, through the real SDK', () => {
     expect(bucket.count('PutObject', isObject)).toBe(3); // the first load's, then this one's twice
   });
 
+  it('an object throttled on every send throws TransientError, deletes nothing, and leaves the row where it was', async () => {
+    const { bucket, deps } = store();
+    await loadSegment(SEG, [1], deps);
+    const rowsBefore = rowWrites(bucket);
+    for (let i = 0; i < 4; i++) bucket.arm('PutObject', 'throttle', isObject);
+    await expect(loadSegment(SEG, [1, 2], deps)).rejects.toBeInstanceOf(TransientError);
+    expect(bucket.count('PutObject', isObject)).toBe(1 + 4);
+    expect(rowWrites(bucket)).toBe(rowsBefore); // no row write was attempted
+    expect(bucket.count('DeleteObject')).toBe(0);
+    expect((await deps.registry.get(SEG))!.currentGen).toBe(0);
+  });
+
   it('a row throttled and not applied throws TransientError: the row sent once, the object kept', async () => {
     const { bucket, deps } = store();
     await loadSegment(SEG, [1], deps);

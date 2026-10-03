@@ -121,6 +121,17 @@ describe('Azure Blob: a load whose row write is throttled', () => {
     codec: roaringCodec,
   });
 
+  it('a row answered 503 on every try throws TransientError, deletes nothing, and the pointer stays', async () => {
+    const d = deps();
+    await loadSegment(SEG, [1], d);
+    stub.plan = (req) =>
+      req.method === 'PUT' && req.name === ROW ? { respond: SERVER_BUSY } : undefined;
+    await expect(loadSegment(SEG, [1, 2], d)).rejects.toBeInstanceOf(TransientError);
+    expect(stub.count('DELETE')).toBe(0);
+    expect(stub.blobs.has('_default/segments/s.1.crbm')).toBe(true); // the object stays, above the pointer
+    expect((await d.registry.get(SEG))!.currentGen).toBe(0);
+  });
+
   it('a row applied and answered 503 is recognised on the replay by its write id: published', async () => {
     const d = deps();
     await loadSegment(SEG, [1], d);

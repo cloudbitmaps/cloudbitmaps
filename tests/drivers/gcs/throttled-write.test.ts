@@ -122,6 +122,17 @@ describe('GCS: a throttled single-request upload is sent again, and its write id
     expect([...stub.objects.get(OBJECT)!.body]).toEqual([9]);
   });
 
+  it('an object with no write id met on a re-send is a WriteConflictError', async () => {
+    const { driver } = driverOver(async () => {
+      // During the backoff another writer takes the number, with no custom metadata at all.
+      stub.objects.set(OBJECT, { body: Buffer.from([7]), generation: 5 });
+    });
+    stub.arm({ status: 503 });
+    await expect(put(driver, new Uint8Array([1]))).rejects.toBeInstanceOf(WriteConflictError);
+    expect(stub.count('metadata')).toBe(1);
+    expect([...stub.objects.get(OBJECT)!.body]).toEqual([7]);
+  });
+
   it('a precondition that fails on the first send is a WriteConflictError, with no read-back', async () => {
     const { driver } = driverOver();
     await put(driver, new Uint8Array([1]));
@@ -206,5 +217,28 @@ describe('GCS: a load whose writes are throttled, through the real SDK', () => {
     expect(stub.count('upload', isRow) - before).toBe(1);
     expect(stub.count('delete')).toBe(0);
     expect(stub.objects.has('_default/segments/s.1.crbm')).toBe(true);
+  });
+
+  it('a row throttled that lands after the load threw points at an object that is there', async () => {
+    const d = deps();
+    await loadSegment(SEG, [1], d);
+    stub.arm({ status: 429, hold: true, name: isRow });
+    await expect(loadSegment(SEG, [1, 2], d)).rejects.toBeInstanceOf(TransientError);
+    stub.landHeld(); // the compare-and-swap the service answered 429 is applied after all
+    expect((await d.registry.get(SEG))!.currentGen).toBe(1);
+    expect(stub.objects.has('_default/segments/s.1.crbm')).toBe(true);
+    expect(stub.count('delete')).toBe(0);
+  });
+
+  it('an object throttled on every send throws TransientError, deletes nothing, and leaves the row where it was', async () => {
+    const d = deps();
+    await loadSegment(SEG, [1], d);
+    const rowsBefore = stub.count('upload', isRow);
+    for (let i = 0; i < 4; i++) stub.arm({ status: 503, name: isObject });
+    await expect(loadSegment(SEG, [1, 2], d)).rejects.toBeInstanceOf(TransientError);
+    expect(stub.count('upload', isObject)).toBe(1 + 4);
+    expect(stub.count('upload', isRow)).toBe(rowsBefore); // no row write was attempted
+    expect(stub.count('delete')).toBe(0);
+    expect((await d.registry.get(SEG))!.currentGen).toBe(0);
   });
 });
