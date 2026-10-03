@@ -507,6 +507,9 @@ async function shredSegment(
         status: 'destroyed',
         wrappedDeks: undefined, // ← the crypto-shred: the only copy of the DEK wrappings is gone
         keyId: undefined,
+        // The current generation's cached count and metadata go with it: sealed, they cannot be opened without
+        // the wrappings; clear, they would outlive the segment on its tombstone.
+        summary: undefined,
       });
       // A genuine crypto-shred only when there were wrappings to drop; a cleartext opt-in tombstone leaves the
       // Storage bytes readable, so it is not an irreversible destruction (and does not emit `segment.erase`).

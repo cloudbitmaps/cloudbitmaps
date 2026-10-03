@@ -69,7 +69,7 @@ export { eraseIdFromSegment } from './core/erase-id';
 export type { EraseIdDeps, EraseIdResult } from './core/erase-id';
 // The bitmap-codec seam — the engine is codec-agnostic behind these; roaring is the flagship.
 export type { CodecInterface, CodecBitmap } from './core/codec';
-export type { Clock, Rng } from './core/determinism';
+export type { Clock, Entropy, Rng } from './core/determinism';
 export type {
   StorageChunkSource,
   IStorageDriver,
@@ -83,6 +83,10 @@ export type {
   NewRegistryRecord,
   RegistryPatch,
   RegistryStatus,
+  RegistrySummary,
+  ClearRegistrySummary,
+  SealedRegistrySummary,
+  GenerationMetadata,
   RegCaps,
   GovernanceMeta,
   SegmentSize,

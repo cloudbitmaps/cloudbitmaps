@@ -8,7 +8,7 @@
  * tokens; they never understand roaring or the `.crbm` layout.
  */
 
-import { ValidationError } from './errors';
+import { UnsupportedError, ValidationError } from './errors';
 import type { BlobSink } from './blob';
 import type { WrappedDek } from './crypto';
 
@@ -223,6 +223,47 @@ export type RegistryStatus = 'active' | 'destroyed';
 export type GovernanceMeta = Record<string, unknown>;
 
 /**
+ * A cached description of one generation, carried on the registry row: how many ids it holds, and the metadata it
+ * was loaded with. The generation's `.crbm` object stays the truth; this is a copy, written by the same write that
+ * moves the pointer, and it names the generation it describes so a copy left behind by a writer that did not
+ * carry it can never be taken for another generation's.
+ *
+ * Two shapes. On a cleartext segment the values are in the clear. On an encrypted segment (a row with
+ * `wrappedDeks`) they are sealed under the segment's data key, as the generation's index is, so the row reveals
+ * neither the count nor the metadata. A shipped registry refuses a write whose summary disagrees with the row's
+ * keys. It still reads a stored row that disagrees, so that one such row cannot stop every listing: a reader must not
+ * use that row's summary.
+ */
+export type RegistrySummary = ClearRegistrySummary | SealedRegistrySummary;
+
+/**
+ * A generation's metadata: string keys, string or finite-number values, no nesting, at most 1 KiB as canonical JSON.
+ * The rules are in `core/metadata.ts`.
+ */
+export type GenerationMetadata = Readonly<Record<string, string | number>>;
+
+/** {@link RegistrySummary} on a cleartext segment. */
+export interface ClearRegistrySummary {
+  /** The generation this describes. A non-negative safe integer. */
+  readonly generation: number;
+  /** How many ids the generation holds: an integer from 0 to 2^32. */
+  readonly cardinality: number;
+  /** The generation's metadata, when it has any. Never the empty object. */
+  readonly metadata?: GenerationMetadata;
+}
+
+/** {@link RegistrySummary} on an encrypted segment. */
+export interface SealedRegistrySummary {
+  /** The generation this describes. A non-negative safe integer. */
+  readonly generation: number;
+  /**
+   * Base64 of `nonce(12) ‖ ciphertext ‖ tag(16)`, sealing the cardinality as a little-endian u64 followed by the
+   * metadata's canonical JSON, if any. The count is fixed-width, so the length reveals only the metadata's size.
+   */
+  readonly sealed: string;
+}
+
+/**
  * One registry row — the authoritative per-segment record. Exactly one per segment.
  */
 export interface RegistryRecord extends SegmentRef {
@@ -259,10 +300,21 @@ export interface RegistryRecord extends SegmentRef {
    */
   readonly retention?: GovernanceMeta;
   readonly residency?: GovernanceMeta;
+  /**
+   * A cached description of the current generation (see {@link RegistrySummary}). Optional: a row without one is
+   * correct, and a reader then opens the generation instead. Trusted only for the generation it names.
+   */
+  readonly summary?: RegistrySummary;
   /** Epoch-ms of creation / last mutation (from the driver's injected clock). */
   readonly createdAt: number;
   readonly updatedAt: number;
-  /** Opaque OCC token — compare-by-equality, never reused (ABA-safe). */
+  /**
+   * Opaque OCC token — compare-by-equality, never reused (ABA-safe). A shipped registry gives no two writes under one
+   * name the same token: not two writes of this row, not a write of an earlier row under the name, and not a write
+   * after this row is restored from a backup. It holds with overwhelming probability rather than by construction,
+   * since the token carries random parts: an incarnation id drawn when the row is created, and a part drawn for each
+   * write. A bare decimal token, on a row no 0.12 or later registry has written, carries neither.
+   */
   readonly token: Token;
 }
 
@@ -276,13 +328,22 @@ export interface NewRegistryRecord {
   readonly status?: RegistryStatus;
   readonly retention?: GovernanceMeta;
   readonly residency?: GovernanceMeta;
+  /** Must name `currentGen` when given. */
+  readonly summary?: RegistrySummary;
 }
 
-/** Fields a {@link IRegistryDriver.compareAndSwap} may mutate (identity + audit + token are off-limits). */
+/**
+ * Fields a {@link IRegistryDriver.compareAndSwap} may mutate (identity + audit + token are off-limits).
+ *
+ * Presence-based: a field the patch does not mention is left as it was. `summary` is the one exception, because it
+ * describes the current generation: a patch that moves `currentGen` and does not mention `summary` drops the old
+ * one rather than keep a description of another generation. A `summary` the patch gives must name the
+ * `currentGen` the row will have.
+ */
 export type RegistryPatch = Partial<
   Pick<
     RegistryRecord,
-    'currentGen' | 'wrappedDeks' | 'keyId' | 'status' | 'retention' | 'residency'
+    'currentGen' | 'wrappedDeks' | 'keyId' | 'status' | 'retention' | 'residency' | 'summary'
   >
 >;
 
@@ -290,6 +351,26 @@ export type RegistryPatch = Partial<
 export interface RegCaps {
   /** REQUIRED — `currentGen` feeds read correctness + the publish CAS, so reads must be strongly consistent. */
   readonly strongRead: true;
+  /**
+   * `false` when this registry cannot write a row in this runtime, though it reads: a shipped registry draws random
+   * bytes for every token it issues, and on a runtime with no Web Crypto it has none to draw. A write path that
+   * writes an object before its row (a load, an erasure rewrite) checks it first and refuses with `UnsupportedError`
+   * before it writes anything, rather than leave an object no row names. Absent means the registry can write.
+   */
+  readonly canWrite?: false;
+}
+
+/**
+ * Refuse, with `UnsupportedError`, a write that would write an object before its row when the registry reports it
+ * cannot write a row (see {@link RegCaps.canWrite}). Called before the write's first request.
+ */
+export function assertRegistryCanWrite(registry: IRegistryDriver, what: string): void {
+  if (registry.capabilities().canWrite === false) {
+    throw new UnsupportedError(
+      `${what}: the registry reports it cannot write a row in this runtime (capabilities().canWrite is false), ` +
+        'so nothing is written',
+    );
+  }
 }
 
 /**
@@ -431,8 +512,12 @@ export function isStorageBackend(value: unknown): value is StorageBackend {
  * - **`create` and `compareAndSwap` are atomic conditional writes.** A `create` over a live row, and a
  *   `compareAndSwap` whose token is not the stored one, throw {@link WriteConflictError} and change nothing.
  *   Two racing writers have exactly one winner.
- * - **Tokens are never reused**, not even across `delete` then `create`: a delete leaves a tombstone (or a
- *   global counter) so a recreated row always carries a fresh token and a stale holder cannot swap into it.
+ * - **Tokens are never reused**, not even across `delete` then `create`: a recreated row always carries a token
+ *   no earlier incarnation held, so a stale holder cannot swap into it. The shipped drivers draw a random 128-bit
+ *   incarnation id into the token of every row they create and a random 64-bit part into the token of every write,
+ *   beside a counter a tombstone (or a global counter) keeps going; where nothing of the earlier row is left, or the
+ *   row is restored from a backup to an older counter, the random parts alone keep the tokens apart, with
+ *   overwhelming probability.
  * - **`delete` is idempotent** without an `expected` token: deleting an absent row is a no-op, not an error.
  *   **With `expected` it is fenced**: it lands only while the row still carries that token, and otherwise throws
  *   {@link WriteConflictError} and leaves the row.
@@ -470,7 +555,7 @@ export interface IRegistryDriver {
    */
   list(namespace?: string): AsyncIterable<RegistryRecord>;
   /**
-   * Remove the row (tombstoned for ABA-safety — a later `create` still gets a fresh, greater token).
+   * Remove the row (tombstoned for ABA-safety — a later `create` gets a token never issued before).
    *
    * Without `expected`, idempotent: deleting an absent row is a no-op.
    *

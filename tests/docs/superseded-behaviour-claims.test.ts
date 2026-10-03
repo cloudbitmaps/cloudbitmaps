@@ -573,6 +573,46 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
     claim: new RegExp(g(String.raw`no \`?AbortSignal\`? anywhere in (?:this|the) library`), 'i'),
     why: "the S3 and Azure Blob packages abort a read that runs past `readTimeoutMs` through its request's abort signal — say that no write is timed",
   },
+  {
+    claim: new RegExp(g('fresh, greater token'), 'i'),
+    why: 'tokens are not ordered: a later create gets a token never issued before under the name',
+  },
+  {
+    claim: new RegExp(g("makes the row's token unique for all time"), 'i'),
+    why: "a tombstone's counter is not all that keeps tokens apart: every token carries random parts",
+  },
+  {
+    claim: new RegExp(g('starts the counter again and re-issues a token'), 'i'),
+    why: 'a re-created row draws a new incarnation id, so its tokens are new even when its counter restarts',
+  },
+  {
+    claim: new RegExp(g('would issue tokens from 0 again'), 'i'),
+    why: "a re-created row's tokens carry a new incarnation id, whatever its counter",
+  },
+  {
+    claim: new RegExp(g('tokens issued after `?T`? will be issued again'), 'i'),
+    why: 'every write draws its own part of the token, so a restored row is never given a token it had before',
+  },
+  {
+    claim: new RegExp(
+      g(
+        String.raw`keeps (?:its bare token|the (?:token )?form it was born with) for (?:as long as it lives|life)`,
+      ),
+      'i',
+    ),
+    why: 'a row 0.11 wrote keeps its bare counter only until its first 0.12 write, which adds a write part',
+  },
+  {
+    claim: new RegExp(g('token that is not a plain decimal counter passes the read'), 'i'),
+    why: 'a token in no form the registry writes fails the read, naming the row',
+  },
+  {
+    claim: new RegExp(
+      g('(?:keeps? the token monotonic|monotonic token survives|token is a monotonic counter)'),
+      'i',
+    ),
+    why: 'the token is not ordered: its counter advances, beside random parts',
+  },
 ];
 
 /**
@@ -1037,6 +1077,9 @@ describe('no document claims behaviour this library does not have', () => {
     'This library sets no request timeout of its own.',
     '- **Set a request timeout.** There is no `AbortSignal` anywhere in this library —',
     'there is no AbortSignal anywhere in the\n  library',
+    // How a row's token changes.
+    'A row written before 0.12 keeps its bare token for as long as it lives.',
+    'a row keeps the form it was born with for life',
   ])('catches the refused form %j', (text) => {
     expect(hitsIn('x.md', text)).not.toEqual([]);
   });
@@ -1155,6 +1198,7 @@ describe('no document claims behaviour this library does not have', () => {
     'No S3 or Azure Blob write has a timeout of its own.',
     "An erasure's writes are not retried; its reads are.",
     "An erasure's reads are retried, and its writes are not retried.",
+    'A row written before 0.12 keeps its bare decimal token (`"7"`) until its first 0.12 write.',
   ])('leaves %j alone', (text) => {
     expect(hitsIn('x.md', text)).toEqual([]);
   });

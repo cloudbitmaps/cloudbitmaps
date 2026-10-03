@@ -266,7 +266,11 @@ between here and there:
    chunk-skipping reads from anywhere. A gate derives the site's driver counts from the driver classes in the
    code, and another refuses a count of third-party dependencies that does not name the package it counts.
 7. **`.crbm` format freeze** — the format already reserves space for 64-bit IDs and stamps a schema version on
-   the registry row; freezing it is what makes cross-language ports and long-lived data safe.
+   the registry row; freezing it is what makes cross-language ports and long-lived data safe. The row is at schema
+   2: an optional cached summary of the current generation (its id count and metadata, sealed on an encrypted
+   segment), and a token that carries a random 128-bit incarnation id and a random part for every write, so a
+   re-created name is told apart from its earlier incarnations even once their rows are gone, and a row restored from
+   a backup from the tokens it had before. Every row change before the freeze rides that one bump.
 8. **Adoption feedback** — real deployments finding the sharp edges that our own tests don't.
 9. **Closing the named deferrals:** self-healing disaster recovery, an exclusion predicate on the retention
    sweep (legal hold), an automated reconcile of unstamped tombstones, and a `rollback` that opens its target

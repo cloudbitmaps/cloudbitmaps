@@ -37,6 +37,7 @@ import {
 } from './errors';
 import { gcOrphanGenerations, nextGeneration } from './generation-gc';
 import { type ReadRetry, retryRead } from './retry';
+import { assertRegistryCanWrite } from './ports';
 import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef, Token } from './ports';
 import { validateUserRef } from './validate';
 
@@ -226,6 +227,9 @@ export async function loadSegment(
     }
   }
   const audit = safeAudit(options.audit ?? NOOP_AUDIT);
+  // Before the first request: the generation is written before the row, so a registry that cannot write a row
+  // would leave it behind.
+  assertRegistryCanWrite(deps.registry, 'load');
 
   // One row read, used for three things: the guard's "before", the incarnation this call is acting on, and the
   // pointer it derived its decision from.
