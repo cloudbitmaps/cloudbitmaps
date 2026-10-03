@@ -261,9 +261,10 @@ export async function gcOrphanGenerations(
  * neighbour's number is a gap, and by name would take one the window promised to keep); a number the listing chose,
  * so something sits above the pointer or the check could not answer, or a current object the guard found gone; and
  * every {@link LIST_COLLECTION_CADENCE}th generation, which collects what a name-only pass leaves. It makes no
- * request when `keep` is at least the generation published, since fewer generations than that exist below it. A load
- * onto a `destroyed` row is refused at its publish and never reaches here; a drop that lands after the publish
- * leaves this pass deleting one garbage generation, and the drop's own sweep takes the rest.
+ * request when `keep` is at least the generation published, since no more generations than that exist below it. A
+ * load onto a `destroyed` row is refused at its publish and never reaches here; a drop that lands after the publish
+ * leaves this pass collecting the tombstone's generations, one by name or all of them by listing, and the drop's own
+ * sweep takes the rest.
  */
 export async function collectAfterLoad(
   ref: SegmentRef,

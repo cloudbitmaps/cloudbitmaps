@@ -105,7 +105,9 @@ so, and so do the module headers in the code.
   first load. The average has a sixteenth of a listing and two pointer reads a load in it. The calibration harness
   expects a first load of 2 PUT-class and 4 GET-class requests and its rehearsal fixtures are re-captured, and the
   pages that quote a load's price or its requests, the sizing tables and the cost guide's model say what the
-  estimator now gives.
+  estimator now gives. Collection by name relies on a delete of an absent key succeeding without touching its
+  neighbours, so the storage conformance suite gains a case that holds every driver to it (`'delete of an absent
+  key beside its neighbours'`, a new member of the exported `StorageDriverCase`).
 
 - **`store.load()` reads the segment's row once, and checks its next generation number instead of listing for it,
   which with the collection change above takes a steady load from 14 requests to 8.** A load read its registry row

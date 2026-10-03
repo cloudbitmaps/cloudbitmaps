@@ -205,9 +205,9 @@ constants and the source text:
   stage's bound as well as to the total, so a stage that overspent is named. It counts both operands of an intersect, and
   its retry bound must match the publish loop in `packages/core/src/core/crbm-storage-source.ts`: a test reads the loop's number out of the source and
   fails if they differ, because a retyped number can be wrong. A load, `store.load()` of a new segment, checks that its
-  generation number is free and lists nothing when it is, since it has nothing to collect (twice when the check finds
-  the number taken, to number past the object and to collect; on S3 a listing bills at the PUT rate), and reads the
-  pointer three times with nothing racing it, six when the check finds the number taken, twice more for each publish
+  generation number is free and lists nothing when it is, since it has nothing to collect (up to twice when the check
+  finds the number taken, to number past the object and to collect; on S3 a listing bills at the PUT rate), and reads
+  the pointer three times with nothing racing it, up to six when the check finds the number taken, twice more for each publish
   attempt it loses, and fourteen times at most: fifteen GET-class requests with the check. A test drives each count through the real registry code, so a projection allowing one
   read per attempt fails it. The workload's client makes one attempt per request, and every attempt teardown's client
   may make is allowed for, so no SDK retry can fall outside it either. A sample discarded after a transient fault was

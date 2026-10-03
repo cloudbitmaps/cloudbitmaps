@@ -128,7 +128,8 @@ function projectOps({
   // before its delete, since the objects it met leave one outside its window, seven; each attempt a load loses adds
   // two pointer reads, so it makes fifteen at most, fourteen pointer reads and the check, and one that loses every
   // attempt throws after fourteen. The harness is the only writer to a bucket of its own, so its loads never race
-  // and never meet an object; the bound still has to hold if one did.
+  // and never meet an object; the bound still has to hold if one did, for up to two (each further stray below the
+  // window adds a re-read).
   const putPerLoad = 3 + retryBound;
   const getPerLoad = 5 + 2 * retryBound;
   // A multipart load: create + parts + complete for the object, then the same listings and pointer advance.

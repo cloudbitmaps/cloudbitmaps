@@ -201,8 +201,8 @@ its pointer beyond `keep`, in three cases:
   know which they are: a load that was refused leaves a gap, and deleting `keep` and one below the new generation by
   name would take a generation the window promised to keep.
 
-A `keep` that is at least the generation just published collects nothing and asks the bucket for nothing, since fewer
-generations than that exist below it: that includes a default `*Into`, which keeps every generation.
+A `keep` that is at least the generation just published collects nothing and asks the bucket for nothing, since no
+more generations than that exist below it: that includes a default `*Into`, which keeps every generation.
 
 `LoadResult.collected` then names the generation it deleted by name, and that generation may have been gone already: a
 delete of an absent object succeeds on every backend and does not say it found nothing. A list is not a receipt, and
