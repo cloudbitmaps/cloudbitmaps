@@ -107,11 +107,14 @@ function world(now: () => number = () => 1_000) {
       };
     },
   });
-  // A virtual clock: it waits for nothing and records each wait it is asked for.
+  // A virtual clock: it waits for nothing and records each wait it is asked for. A test can have something happen
+  // during a wait, as a request the service held reaching the registry.
+  let duringWait: (() => Promise<void>) | undefined;
   const clock = {
     now: () => 0,
     sleep: async (ms: number): Promise<void> => {
       waits.push(ms);
+      await duringWait?.();
     },
   };
   const bare = { storage: faultyStorage, registry, codec: roaringCodec };
@@ -135,6 +138,8 @@ function world(now: () => number = () => 1_000) {
     arm: (f: Fault, times = 1) => {
       for (let i = 0; i < times; i++) faults.push(f);
     },
+    /** Run `f` during each wait the publish makes on its clock. */
+    duringWait: (f: () => Promise<void>) => (duringWait = f),
     failNextRead: (e: Error) => (failNextRead = e),
     failNextTail: (e: Error) => (failNextTail = e),
     /** Let the first write a fault held reach the registry after all. */
@@ -317,6 +322,40 @@ describe('a publish whose registry write ends without a definite answer reads th
     expect(err).toBeInstanceOf(TransientError);
     expect(w.writes.compareAndSwap).toBe(5);
     expect(w.deletes()).toBe(0);
+  });
+
+  it('attempts that run out while the last unanswered write lands during its wait are published, by the proof of the object', async () => {
+    const w = world();
+    await threeLoads(w);
+    w.arm({ kind: 'conflict-unapplied' }, 2);
+    w.arm({ kind: 'transient-unapplied' }, 3);
+    w.duringWait(async () => {
+      // The first request the load gave up on reaches the registry while the load waits, and the attempts run out.
+      if (w.waits.length === 3) await w.land();
+    });
+    const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9 });
+    expect(r).toMatchObject({ generation: 3, published: true });
+    expect(w.writes.compareAndSwap).toBe(5);
+    expect(w.deletes()).toBe(0);
+    expect(await idsOf(w.storage, 3)).toEqual([1, 2, 3, 4]);
+  });
+
+  it("attempts that run out on an unanswered write, with the pointer at the load's number over another object, are not published", async () => {
+    const w = world();
+    await threeLoads(w);
+    w.arm({ kind: 'conflict-unapplied' }, 2);
+    w.arm({ kind: 'transient-unapplied' }, 3);
+    w.duringWait(async () => {
+      if (w.waits.length !== 3) return;
+      // During the last wait this load's object is replaced under its number, and another writer points the row at it.
+      await w.storage.delete({ ...SEG, generation: 3 });
+      await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 3 }, [42, 43], {
+        registry: w.base,
+      });
+    });
+    const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9 });
+    expect(r).toMatchObject({ generation: 3, published: false, reason: 'superseded' });
+    expect(await idsOf(w.storage, 3)).toEqual([42, 43]);
   });
 
   it('the write that lands after the load threw finds its object there, and the pointer is valid', async () => {

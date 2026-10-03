@@ -1290,6 +1290,9 @@ export async function publishGeneration(
   // such answers have bought so far.
   let unanswered: TransientError | undefined;
   let resends = 0;
+  // Whether any write of this call ended without an answer: what the pointer then says about this number is not
+  // taken for the caller's own write without the proof.
+  let sawUnanswered = false;
   for (let attempt = 0; attempt < 5; attempt++) {
     const reused = attempt === 0 && options.row !== undefined;
     const record =
@@ -1407,6 +1410,7 @@ export async function publishGeneration(
       // Only the write itself raises a transient fault in here, and it is the one outcome that is not an answer.
       if (!isTransientError(err)) throw err;
       options.onUnanswered?.();
+      sawUnanswered = true;
       let now: RegistryRecord | null;
       try {
         now = await registry.get(key);
@@ -1438,8 +1442,17 @@ export async function publishGeneration(
   const final = await registry.get(key);
   // `currentGen === null` after exhausting the retries is a genuine failure, not an already-current case: nothing
   // is published, so it falls through to the conflict below rather than being read as "a newer gen won".
-  if (final !== null && final.currentGen !== null && final.currentGen >= key.generation)
-    return final.currentGen === key.generation;
+  if (final !== null && final.currentGen !== null && final.currentGen >= key.generation) {
+    if (final.currentGen !== key.generation) return false;
+    if (!sawUnanswered) return true;
+    // A write that went unanswered may have landed during the last wait, or the number may be another writer's: the
+    // object under it decides, as after any unanswered write.
+    try {
+      return await landedHere(final, null, key, options.holdsOwnObject);
+    } catch (proofErr) {
+      throw outcomeUnknown(key, proofErr);
+    }
+  }
   // The attempts ran out on writes that went unanswered, not on contention: say so.
   if (unanswered !== undefined) throw unanswered;
   throw new WriteConflictError(
