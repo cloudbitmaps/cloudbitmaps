@@ -938,12 +938,14 @@ export class CloudRoaring {
     // A materialisation's `keep` collects every generation below the new one beyond it, which a destination that
     // earlier materialisations kept in full needs a listing for.
     const deps = { ...this.lifecycleDeps(op), collectByListing: true };
+    // Read once, here: a getter or a proxy answering twice would otherwise be checked as one value and stored as another.
+    const metadata = options?.metadata;
     let result: Awaited<ReturnType<typeof loadSegment>>;
     try {
       result = await loadSegment(dest, ids, deps, {
         ...(options?.allowEmpty === undefined ? {} : { allowEmpty: options.allowEmpty }),
         ...(options?.guard === undefined ? {} : { guard: options.guard }),
-        ...(options?.metadata === undefined ? {} : { metadata: options.metadata }),
+        ...(metadata === undefined ? {} : { metadata }),
         // COLLECT NOTHING by default, which `loadSegment` does not — it keeps a grace window of 1 and deletes
         // the rest. By default a materialisation collects nothing: the guide states "**It deletes nothing**,
         // unlike `load()`. The destination's previous generations stay in the bucket until you collect them", and
