@@ -364,3 +364,122 @@ describe('S3 (MinIO): the requests one store.load() sends', () => {
     metered.destroy();
   });
 });
+
+describe('S3 (MinIO): a write-once object the client is told was throttled', () => {
+  const bm = (...v: number[]): SafeBitmap => SafeBitmap.fromValues(v);
+  const gen = (generation: number): GenKey => ({ segment: 's', generation });
+  const throttle = (): Error =>
+    Object.assign(new Error('Please reduce your request rate.'), {
+      name: 'SlowDown',
+      $fault: 'server',
+      $metadata: { httpStatusCode: 503 },
+    });
+
+  /**
+   * A client whose first `command` on a generation object is answered `503 SlowDown`: after MinIO applied it
+   * (`landed`), or before it was sent. Every answer the re-send gets is recorded, MinIO's own.
+   */
+  function throttledOnce(command: string, landed: boolean) {
+    const answers: string[] = [];
+    const c = new S3Client({
+      endpoint: ENDPOINT,
+      region: 'us-east-1',
+      credentials: { accessKeyId: 'minioadmin', secretAccessKey: 'minioadmin' },
+      forcePathStyle: true,
+    });
+    let fired = false;
+    c.middlewareStack.add(
+      (next, context) => async (args) => {
+        const key = (args.input as { Key?: string }).Key ?? '';
+        const ours = context.commandName === command && key.includes('/segments/');
+        if (ours && !fired) {
+          fired = true;
+          if (!landed) throw throttle();
+          await next(args);
+          throw throttle();
+        }
+        try {
+          return await next(args);
+        } catch (err) {
+          if (ours) answers.push((err as { name?: string }).name ?? 'unknown');
+          throw err;
+        }
+      },
+      { step: 'initialize', name: 'throttledOnce' },
+    );
+    return { client: c, answers };
+  }
+
+  const quick = { sleep: async () => {} };
+
+  it('stores the write id in the object user metadata, outside its bytes', async () => {
+    const driver = freshDriver();
+    await writeCrbmGeneration(driver, gen(1), [{ chunkKey: 0, bitmap: bm(1, 2, 3) }]);
+    const prefix = `${RUN}/conf/${n - 1}`;
+    const head = await client.send(
+      new HeadObjectCommand({ Bucket: BUCKET, Key: storageObjectKey(prefix, gen(1)) }),
+    );
+    expect(head.Metadata?.cbwid).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  it.each([
+    ['PutObjectCommand', 1024],
+    ['CompleteMultipartUploadCommand', 6 * 1024 * 1024],
+  ] as const)(
+    'a %s MinIO applied is sent again, meets its own object, and is its own',
+    async (command, size) => {
+      const { client: c, answers } = throttledOnce(command, true);
+      const prefix = `${RUN}/throttle-own/${n++}`;
+      const driver = new S3StorageDriver({
+        client: c,
+        bucket: BUCKET,
+        prefix,
+        partBytes: 5 * 1024 * 1024,
+        clock: quick,
+      });
+      const res = await driver.putImmutable(gen(1), async (sink) => {
+        await sink.write(new Uint8Array(size).fill(7));
+      });
+      expect(res.size).toBe(size);
+      // What MinIO answered the re-sent commit: a precondition failure, or for a completion, possibly an unknown
+      // upload id. Either is read back by write id.
+      expect(answers).toHaveLength(1);
+      expect(['PreconditionFailed', 'NoSuchUpload']).toContain(answers[0]);
+      const head = await client.send(
+        new HeadObjectCommand({ Bucket: BUCKET, Key: storageObjectKey(prefix, gen(1)) }),
+      );
+      expect(head.ContentLength).toBe(size);
+    },
+  );
+
+  it('a commit throttled before MinIO saw it is sent again and lands', async () => {
+    const { client: c } = throttledOnce('PutObjectCommand', false);
+    const prefix = `${RUN}/throttle-unapplied/${n++}`;
+    const driver = new S3StorageDriver({ client: c, bucket: BUCKET, prefix, clock: quick });
+    await writeCrbmGeneration(driver, gen(1), [{ chunkKey: 0, bitmap: bm(4, 5) }]);
+    const source = new CrbmStorageChunkSource(
+      new S3StorageDriver({ client, bucket: BUCKET, prefix }),
+    );
+    const bytes = await source.getChunk({ segment: 's', chunkKey: 0 });
+    expect(SafeBitmap.safeDeserialize(bytes!, 1 << 20).toArray()).toEqual([4, 5]);
+  });
+
+  it('stays a conflict when another writer took the key before the re-send', async () => {
+    const { client: c } = throttledOnce('PutObjectCommand', false);
+    const prefix = `${RUN}/throttle-other/${n++}`;
+    const other = new S3StorageDriver({ client, bucket: BUCKET, prefix });
+    const driver = new S3StorageDriver({
+      client: c,
+      bucket: BUCKET,
+      prefix,
+      clock: {
+        sleep: async () => {
+          await writeCrbmGeneration(other, gen(1), [{ chunkKey: 0, bitmap: bm(9) }]);
+        },
+      },
+    });
+    await expect(
+      writeCrbmGeneration(driver, gen(1), [{ chunkKey: 0, bitmap: bm(1) }]),
+    ).rejects.toBeInstanceOf(WriteConflictError);
+  });
+});

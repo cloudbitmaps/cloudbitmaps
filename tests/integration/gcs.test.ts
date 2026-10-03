@@ -433,3 +433,92 @@ describe('GcsStorage (fake-gcs-server) — the backend builds its own client', (
     expect(await store.exists({ segment: 'sized' })).toBe(false);
   });
 });
+
+describe('GCS (fake-gcs-server): a single-request upload the client is told was throttled', () => {
+  const bm = (...v: number[]): SafeBitmap => SafeBitmap.fromValues(v);
+  const gen = (generation: number): GenKey => ({ segment: 's', generation });
+
+  /** A client whose first upload of a generation object is applied by the emulator and then answered `status`. */
+  function throttledAfterLanding(status: number): Storage {
+    let fired = false;
+    return new Proxy(storage, {
+      get(target, prop, receiver) {
+        if (prop !== 'bucket') return Reflect.get(target, prop, receiver) as unknown;
+        return (name: string) => {
+          const bucket = target.bucket(name);
+          return new Proxy(bucket, {
+            get(b, p) {
+              if (p !== 'file') {
+                const v = Reflect.get(b, p) as unknown;
+                return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(b) : v;
+              }
+              return (objectName: string) => {
+                const file = b.file(objectName);
+                return new Proxy(file, {
+                  get(f, q) {
+                    if (q !== 'createWriteStream' || fired || !objectName.includes('/segments/')) {
+                      const v = Reflect.get(f, q) as unknown;
+                      return typeof v === 'function'
+                        ? (v as (...a: unknown[]) => unknown).bind(f)
+                        : v;
+                    }
+                    fired = true;
+                    return (options: Parameters<typeof f.createWriteStream>[0]) => {
+                      const chunks: Buffer[] = [];
+                      return new Writable({
+                        write(chunk: Buffer, _enc, cb) {
+                          chunks.push(chunk);
+                          cb();
+                        },
+                        final(cb) {
+                          const throttled = Object.assign(new Error('rateLimitExceeded'), {
+                            code: status,
+                            errors: [{ reason: 'rateLimitExceeded' }],
+                          });
+                          const real = f.createWriteStream(options);
+                          real.once('error', cb);
+                          real.once('finish', () => cb(throttled));
+                          real.end(Buffer.concat(chunks));
+                        },
+                      });
+                    };
+                  },
+                });
+              };
+            },
+          });
+        };
+      },
+    });
+  }
+
+  it('stores the write id in the custom metadata of a single-request upload', async () => {
+    const prefix = `${RUN}/simple-wid/${n++}`;
+    const driver = new GcsStorageDriver({ storage, bucket: BUCKET, prefix });
+    await writeCrbmGeneration(driver, gen(1), [{ chunkKey: 0, bitmap: bm(1, 2, 3) }]);
+    const [meta] = await storage
+      .bucket(BUCKET)
+      .file(storageObjectName(prefix, gen(1)))
+      .getMetadata();
+    expect((meta.metadata as { cbwid?: string }).cbwid).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  it.each([429, 503])(
+    'an upload the emulator applied and the client was told was %i is sent again, and is its own',
+    async (status) => {
+      const prefix = `${RUN}/simple-throttle/${n++}`;
+      const driver = new GcsStorageDriver({
+        storage: throttledAfterLanding(status),
+        bucket: BUCKET,
+        prefix,
+        clock: { sleep: async () => {} },
+      });
+      await writeCrbmGeneration(driver, gen(1), [{ chunkKey: 0, bitmap: bm(4, 5) }]);
+      const source = new CrbmStorageChunkSource(
+        new GcsStorageDriver({ storage, bucket: BUCKET, prefix }),
+      );
+      const bytes = await source.getChunk({ segment: 's', chunkKey: 0 });
+      expect(SafeBitmap.safeDeserialize(bytes!, 1 << 20).toArray()).toEqual([4, 5]);
+    },
+  );
+});
