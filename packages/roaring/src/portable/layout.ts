@@ -44,6 +44,7 @@
  * @see https://github.com/RoaringBitmap/RoaringFormatSpec
  */
 import { IntegrityError } from '@cloudbitmaps/core';
+import type { EncodedChunk } from '@cloudbitmaps/core';
 
 /** Cookie for a bitmap with no run containers. Followed by a u32 container count. */
 const SERIAL_COOKIE_NO_RUNCONTAINER = 12_346;
@@ -108,22 +109,91 @@ export function parsePortableLayout(bytes: Uint8Array): PortableContainer[] {
  * {@link parsePortableLayout}'s check alone, for a caller that hands the bytes to another decoder afterwards and
  * so has no use for the layout: it allocates nothing per container.
  *
+ * @returns where the bitmap ends: the offset one past its last container's last byte (0 for an empty buffer). A
+ * caller that needs the buffer to be exactly one bitmap compares it with the buffer's length.
  * @throws {IntegrityError} exactly where {@link parsePortableLayout} does.
  */
-export function checkPortableLayout(bytes: Uint8Array): void {
-  walk(bytes, null);
+export function checkPortableLayout(bytes: Uint8Array): number {
+  return walk(bytes, null);
 }
 
-/** Check every container of `bytes`, appending each one's layout to `out` when there is one to append to. */
-function walk(bytes: Uint8Array, out: PortableContainer[] | null): void {
-  const length = bytes.byteLength;
-  if (length === 0) return;
-  const view = new DataView(bytes.buffer, bytes.byteOffset, length);
+/** A one-container payload's header without run containers: cookie, count, `(key, cardinality - 1)`, offset. */
+const SINGLE_HEADER_BYTES = 16;
+/** A one-container payload's header under the run cookie: cookie holding `count - 1`, one flag byte, the pair. */
+const SINGLE_RUN_HEADER_BYTES = 9;
 
+/**
+ * Each container of the portable bitmap in `bytes`, as the one-container portable bitmap a `.crbm` chunk stores:
+ * its key moved to 0, its cardinality and kind kept, its body copied unchanged. These are exactly the bytes the
+ * native serializer writes for a bitmap holding only that container's low 16 bits, so a chunk cut from a whole
+ * bitmap is the chunk built from its ids, provided the whole bitmap was encoded canonically first.
+ *
+ * Lazy, one container per step, and each container checked as it is copied, by the same rules as
+ * {@link checkPortableLayout} (keys in order, and each body holding what its header says), so a stored chunk is
+ * never one a reader refuses. The bytes are the native serializer's, of a bitmap decoded from bytes that passed the
+ * check, so on every honest input this finds nothing. It is what stands between a store and a bitmap decoded from a
+ * buffer another thread was still writing during the load's call: the check saw the bytes as they were, the decode
+ * as they became.
+ *
+ * @throws {IntegrityError} at the first container that runs past the buffer or does not hold what its header says.
+ */
+export function* containerPayloads(bytes: Uint8Array): Generator<EncodedChunk> {
+  if (bytes.byteLength === 0) return;
+  const { view, count, runFlagsAt, descriptiveAt, bodiesAt } = header(bytes);
+  let pos = bodiesAt;
+  let previousKey = -1;
+  for (let i = 0; i < count; i++) {
+    const key = view.getUint16(descriptiveAt + i * 4, true);
+    if (key <= previousKey) {
+      throw new IntegrityError(
+        `portable roaring: container keys are not strictly ascending (${previousKey} then ${key} at index ${i})`,
+      );
+    }
+    previousKey = key;
+    const cardinality = view.getUint16(descriptiveAt + i * 4 + 2, true) + 1;
+    const isRun =
+      runFlagsAt >= 0 && ((bytes[runFlagsAt + (i >>> 3)] as number) & (1 << (i & 7))) !== 0;
+    const kind: ContainerKind = isRun ? RUN : cardinality > ARRAY_MAX_CARDINALITY ? BITMAP : ARRAY;
+    const size = checkContainer(bytes, view, pos, kind, cardinality, i);
+    const headerBytes = isRun ? SINGLE_RUN_HEADER_BYTES : SINGLE_HEADER_BYTES;
+    const payload = new Uint8Array(headerBytes + size);
+    const out = new DataView(payload.buffer);
+    if (isRun) {
+      out.setUint32(0, SERIAL_COOKIE, true); // count - 1 = 0 in the high half
+      payload[4] = 1; // container 0 is a run container
+      out.setUint16(7, cardinality - 1, true); // after key 0 at byte 5
+    } else {
+      out.setUint32(0, SERIAL_COOKIE_NO_RUNCONTAINER, true);
+      out.setUint32(4, 1, true);
+      out.setUint16(10, cardinality - 1, true); // after key 0 at byte 8
+      out.setUint32(12, SINGLE_HEADER_BYTES, true);
+    }
+    payload.set(bytes.subarray(pos, pos + size), headerBytes);
+    pos += size;
+    yield { chunkKey: key, payload, cardinality };
+  }
+}
+
+/** Where each part of a non-empty portable bitmap's header is, checked against the buffer's length. */
+interface Header {
+  readonly view: DataView;
+  readonly count: number;
+  /** Where the run-container flag bits start, or -1 under the cookie that has none. */
+  readonly runFlagsAt: number;
+  /** The descriptive header: `(key, cardinality - 1)` per container. */
+  readonly descriptiveAt: number;
+  /** The offset header, or -1 where this layout has none. */
+  readonly offsetsAt: number;
+  /** Where the first container's body starts. */
+  readonly bodiesAt: number;
+}
+
+function header(bytes: Uint8Array): Header {
+  const length = bytes.byteLength;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, length);
   if (length < 4) throw overrun(bytes, 0, 4, 'the cookie');
   const cookie = view.getUint32(0, true);
   let count: number;
-  /** Where the run-container flag bits start, or -1 under the cookie that has none. */
   let runFlagsAt = -1;
   let pos: number;
   if (cookie === SERIAL_COOKIE_NO_RUNCONTAINER) {
@@ -144,8 +214,6 @@ function walk(bytes: Uint8Array, out: PortableContainer[] | null): void {
       `portable roaring: unrecognized cookie 0x${cookie.toString(16)}, not a portable-format bitmap`,
     );
   }
-
-  // Descriptive header: (key, cardinality - 1) per container. Then the offset header, when this layout has one.
   const descriptiveAt = pos;
   if (pos + count * 4 > length) throw overrun(bytes, pos, count * 4, 'the descriptive header');
   pos += count * 4;
@@ -155,6 +223,17 @@ function walk(bytes: Uint8Array, out: PortableContainer[] | null): void {
     offsetsAt = pos;
     pos += count * 4;
   }
+  return { view, count, runFlagsAt, descriptiveAt, offsetsAt, bodiesAt: pos };
+}
+
+/**
+ * Check every container of `bytes`, appending each one's layout to `out` when there is one to append to. Returns
+ * where the bitmap ends.
+ */
+function walk(bytes: Uint8Array, out: PortableContainer[] | null): number {
+  if (bytes.byteLength === 0) return 0;
+  const { view, count, runFlagsAt, descriptiveAt, offsetsAt, bodiesAt } = header(bytes);
+  let pos = bodiesAt;
 
   let previousKey = -1;
   // Containers lie back to back from here. That is how the native deserializer finds them (it never reads the
@@ -180,37 +259,57 @@ function walk(bytes: Uint8Array, out: PortableContainer[] | null): void {
       }
     }
 
-    let size: number;
-    if (kind === ARRAY) {
-      size = cardinality * 2;
-      if (pos + size > length) throw overrun(bytes, pos, size, `container ${i} (array)`);
-      checkArray(view, pos, cardinality, i);
-    } else if (kind === BITMAP) {
-      size = BITMAP_CONTAINER_BYTES;
-      if (pos + size > length) throw overrun(bytes, pos, size, `container ${i} (bitmap)`);
-      const bits = popcount(view, pos);
-      if (bits !== cardinality) {
-        throw new IntegrityError(
-          `portable roaring: container ${i} (bitmap) holds ${bits} values, but its header says ${cardinality}`,
-        );
-      }
-    } else {
-      if (pos + 2 > length) throw overrun(bytes, pos, 2, `container ${i} (run count)`);
-      const runs = view.getUint16(pos, true);
-      size = 2 + runs * 4;
-      if (pos + size > length) throw overrun(bytes, pos, size, `container ${i} (run)`);
-      const covered = checkRuns(view, pos + 2, runs, i);
-      // A header cannot state zero values, so this is also what refuses a run container with no runs, the shape
-      // that crashes the native addon when anything iterates it.
-      if (covered !== cardinality) {
-        throw new IntegrityError(
-          `portable roaring: container ${i} (run) covers ${covered} values, but its header says ${cardinality}`,
-        );
-      }
-    }
+    const size = checkContainer(bytes, view, pos, kind, cardinality, i);
     out?.push({ key, cardinality, kind, offset: pos });
     pos += size;
   }
+  return pos;
+}
+
+/**
+ * Check one container's body at `pos`: that it fits the buffer and holds what its header says (see the module
+ * header for the rules). Returns the body's size.
+ */
+function checkContainer(
+  bytes: Uint8Array,
+  view: DataView,
+  pos: number,
+  kind: ContainerKind,
+  cardinality: number,
+  i: number,
+): number {
+  const length = bytes.byteLength;
+  if (kind === ARRAY) {
+    const size = cardinality * 2;
+    if (pos + size > length) throw overrun(bytes, pos, size, `container ${i} (array)`);
+    checkArray(view, pos, cardinality, i);
+    return size;
+  }
+  if (kind === BITMAP) {
+    if (pos + BITMAP_CONTAINER_BYTES > length) {
+      throw overrun(bytes, pos, BITMAP_CONTAINER_BYTES, `container ${i} (bitmap)`);
+    }
+    const bits = popcount(view, pos);
+    if (bits !== cardinality) {
+      throw new IntegrityError(
+        `portable roaring: container ${i} (bitmap) holds ${bits} values, but its header says ${cardinality}`,
+      );
+    }
+    return BITMAP_CONTAINER_BYTES;
+  }
+  if (pos + 2 > length) throw overrun(bytes, pos, 2, `container ${i} (run count)`);
+  const runs = view.getUint16(pos, true);
+  const size = 2 + runs * 4;
+  if (pos + size > length) throw overrun(bytes, pos, size, `container ${i} (run)`);
+  const covered = checkRuns(view, pos + 2, runs, i);
+  // A header cannot state zero values, so this is also what refuses a run container with no runs, the shape
+  // that crashes the native addon when anything iterates it.
+  if (covered !== cardinality) {
+    throw new IntegrityError(
+      `portable roaring: container ${i} (run) covers ${covered} values, but its header says ${cardinality}`,
+    );
+  }
+  return size;
 }
 
 /**

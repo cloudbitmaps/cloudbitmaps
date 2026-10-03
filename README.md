@@ -199,7 +199,7 @@ How this compares with pure Roaring libraries and bitmap databases on lock-in is
   │                                                                       │
   │  on the STORE                      on a SEGMENT                       │
   │  ─────────────                     ──────────────                     │
-  │  load(ref, ids)      ← the write   has(id)      count()   iterate()   │
+  │  load(ref, input)    ← the write   has(id)      count()   iterate()   │
   │  segment(name, opts)               intersect()  union()   andNot()    │
   │  exists()  segments()              intersectInto() unionInto()        │
   │  generations() rollback()          andNotInto()                       │
@@ -218,10 +218,12 @@ import { S3Storage } from '@cloudbitmaps/s3';
 
 const store = new CloudRoaring({ storage: new S3Storage({ bucket: 'bitmaps', prefix: 'prod' }) });
 
-// idsFromWarehouse() and engagedFromWarehouse() are your functions: each yields the ids (an array, a generator, a cursor).
+// Yours: idsFromWarehouse() and engagedFromWarehouse() each yield ids (an array, a generator, a cursor), and
+// `retained` is a RoaringBitmap32 you computed.
 const r = await store.load({ segment: 'vips' }, idsFromWarehouse());
 if (!r.published) console.warn({ reason: r.reason, had: r.cardinalityBefore });
 await store.load({ segment: 'engaged' }, engagedFromWarehouse()); // an operand has to exist: load it first
+await store.load({ segment: 'retained' }, { bitmap: retained }); // a bitmap loads with no per-id work
 
 for await (const id of store.segment('vips').intersect([store.segment('engaged')])) {
   /* the audience */

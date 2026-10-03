@@ -43,6 +43,7 @@ Where each piece sits today:
 | Loads, reads, chunk-skipping combines, `*Into` materialization, subject erasure as a rewrite, crypto-shred, disposal, retention, the DR check, export | **shipped** — [below](#shipped-today) |
 | Loaded-store benchmarks — load throughput, intersect latency | **owed**. Their **bill** is measured: the September 2026 calibration run (`2026-09-23-94416`) put the single-bucket topology on real S3 — the median cold intersect of two 500,000-id segments sharing 100 of 1,999 chunks made 206 GETs as measured, $82.40 per million derived from them at list prices, and inside the region it is expected at 204 GETs, $81.60; writing and publishing a segment is $11.20 per million, derived the same way, pointer included, and `store.load()` is expected at about half as much again — and the [benchmarks page](benchmarks.md#the-single-bucket-bill--run-2026-09-23-94416) publishes it. Their **latency and throughput** are not: that run was driven from a laptop outside the region, so its timings measured the connection. The **RSS ceiling** is measured and published — it needs no cloud account, because a cgroup limit is enforceable locally. The harness is built and has one published run against a real account; its in-region run is **next**, and still owed |
 | `load()` with the empty guard and `guard: { minCardinality, minRetained }` | **shipped** — `store.load(ref, ids)` is the write path in one call: next generation → write → guard → publish → collect. A refusal is reported (`published: false` + `reason`), not thrown, and deletes the object it wrote while the segment's row is unchanged or gone; once another write has changed the row, it leaves the object for collection |
+| A load from a bitmap — `{ bitmap }`, `{ serialized }` | **shipped** — a caller holding the result as an in-memory Roaring bitmap loads it as one: the bytes are checked before anything is written, the chunks are cut from the bitmap's own containers with no per-id work, and the generation is byte for byte the one its ids write. Its time against the id path is measured by `pnpm bench:load-input`, whose figures are not recorded yet |
 | `generations()` + `rollback()` | **shipped** — see what a segment has been and put the pointer back, the one write that is not forward-only. Refuses a collected target, a crypto-shredded segment, and an above-pointer target without an explicit opt-in |
 | No character rules on names | **shipped** — a name is any non-empty string; each storage layer escapes what it cannot take literally rather than the library rejecting it, Windows device names like `con` and names ending in a dot included on the local filesystem. Three limits remain: 256 characters once encoded for storage, where escaping makes a name longer than it looks (anything outside `[A-Za-z0-9._-]`, and on the local filesystem the device names and trailing dots above); well-formed UTF-16, since an unpaired surrogate has no UTF-8 encoding; and a namespace starting with `cbm.due.`, which the retention index keeps its own rows in and every fleet-wide scan skips |
 | `exists()` + `segments()` | **shipped** — `exists()` is one point read of the registry, and `segments()` streams the registry's own enumeration, namespace-scoped, admin-path. Neither is inferred from `count()`, which cannot tell *never loaded* from *loaded and empty*, and neither needs a list of names kept beside the store |
@@ -79,7 +80,11 @@ is a dependency of both and is never installed directly. The storage drivers are
   fences on the pointer it judged, or on the row's absence; only an unguarded load (`allowEmpty: true` and no
   `guard.minRetained`) onto a segment with no row is bare forward-only; and a duplicate publish is an idempotent
   no-op. A segment larger than
-  RAM wants the external-merge bulk load listed under [Planned](#planned--exploring).
+  RAM wants the external-merge bulk load listed under [Planned](#planned--exploring). A load also takes a whole
+  bitmap, `{ bitmap }` (anything with `serialize('portable')`) or `{ serialized }` portable Roaring bytes: checked
+  structurally and safely deserialized before anything is written, then written from the bitmap's own containers,
+  never id by id, into the bytes the same ids write. A byte array passed as ids is refused rather than loaded byte
+  by byte.
 - **Chunk-skipping intersection** — `intersect` aligns on chunk keys and fetches only the chunks present in
   *every* operand, with bounded read concurrency and a bounded streaming window.
 - **Id-range reads for keyset paging** —
@@ -296,6 +301,15 @@ move it up.
   would also answer what the native Roaring addon is buying you on your particular ids &mdash; which is a real
   question, since the answer ranges from 543x to nothing.
 - **Multi-region active/active** — region-local by design for the `1.0` line; not ruled out beyond it.
+- **`*Into` written from the combine's own chunks.** A materialisation holds each result chunk as a bitmap, then
+  hands the load its ids, which the load groups back into the same chunks. Writing those chunks through the path a
+  bitmap load uses would remove the per-id work from every `*Into`, with no change to the API or the bytes.
+- **One generation from parts built in several processes.** Several workers, each owning a disjoint range of the id
+  space, publishing one generation together without re-encoding. The format already allows it (a chunk's checksum
+  and its encryption are bound to the chunk, not its position); what it needs is a server-side compose on every
+  storage driver, a protocol for reserving the generation and sharing its key, and collection of the parts. In one
+  process it needs nothing: `RoaringBitmap32.orMany` over the parts, then one load, as the
+  [loading guide](guide/loading.md#what-a-load-accepts) shows.
 - **The billions-of-IDs axis** — 64-bit IDs (space is already reserved in the format) plus an external-merge
   bulk load that never buffers the distinct set.
 - **Language ports** — Go, Python, Rust reading and writing the same `.crbm` objects. Strictly *after* the

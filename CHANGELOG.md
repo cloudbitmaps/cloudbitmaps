@@ -13,6 +13,14 @@ so, and so do the module headers in the code.
 
 ### Breaking
 
+- **A byte array passed as ids is refused: `store.load` and `loadSegment` throw `ValidationError` for a `Uint8Array`,
+  a `Uint8ClampedArray` or a `Buffer` where ids go**, before any request. A byte array is an iterable of numbers, so
+  until now each byte was loaded as an id: `store.load(ref, bitmap.serialize('portable'))` published the
+  serialization's byte values as the segment, with `published: true`. Pass portable Roaring bytes as
+  `{ serialized }` (below), and ids as a `Uint32Array` or an array of numbers; every other typed array is still ids.
+  An input that is neither ids nor one of the two bitmap forms now throws `ValidationError` too, where it threw a
+  `TypeError` from inside the load.
+
 - **Registry rows are schema 2, and there is no going back: stop every 0.11 process before the first 0.12 write.**
   Every row a 0.12 registry writes, whether a create, a compare-and-swap or a tombstone, is stamped
   `schemaVersion: 2`, whatever it holds, and 0.12 reads rows stamped 1 or 2. A 0.11 process refuses a schema-2 row
@@ -58,6 +66,49 @@ so, and so do the module headers in the code.
   the `Fixed` entry on cleartext objects under an encrypted segment for why.
 
 ### Added
+
+- **A load takes a bitmap as well as ids: `store.load(ref, { bitmap })` and `store.load(ref, { serialized })`.**
+  `{ bitmap }` is anything with `serialize('portable')`, such as `roaring`'s `RoaringBitmap32`, and is loaded as
+  `{ serialized: bitmap.serialize('portable') }`, serialized once at the call, so changing the bitmap afterwards does
+  not change what is loaded. `{ serialized }` is one 32-bit bitmap in the portable Roaring format, the one the
+  `'roaring'` export writes. A bare `RoaringBitmap32` from the `roaring` this package uses, passed where ids go, is
+  loaded the same way.
+
+  Every bitmap input takes one path, all of it before the load's first request: the bytes are capped at
+  537,403,396 (more than any canonical 32-bit bitmap serializes to), must hold exactly one bitmap, are checked
+  structurally the way every stored chunk is, and are decoded by the safe deserializer. Malformed or oversized
+  bytes, and bytes after the bitmap's end (two serializations concatenated, say), throw `ValidationError`, and
+  nothing is read or written. The bytes are read through the typed array's own accessors, and a
+  `SharedArrayBuffer`'s are copied first; a `{ bitmap }` that can report its size is refused over the cap before it
+  serializes.
+
+  The chunks are then cut from the bitmap's own containers, per container and per byte and never per id, and the
+  generation is byte for byte the one the same ids write. A golden object written by the id path before this change
+  is reproduced by every input; a property test and a fixed corpus (run containers of 2 to 2,048 runs, the run
+  cookie at 65,536 containers) hold it over every container shape; and every existing test file that calls a load
+  runs a second time with its loads handed `{ serialized }`, the segments it seeds through the fixture loader included,
+  except the few that depend on when a load reads its ids (they inject races from inside the id stream, or count
+  the id path's own yields). Every guarantee of an id load holds: write-once, the fenced publish, `guard`, `keep`,
+  the empty refusal, encryption and the same `LoadResult`.
+
+  A test counts the per-id routes during a 12M-member load from a bitmap (iteration, building from values, the id
+  split) and finds none. Two whole-bitmap steps do not yield, each for a time that grows with the bytes: the input
+  check and the native decode at the call, and the re-encode before the write; at the cap they take about 400 ms or
+  more and about 250 ms (derived: twice a 256 MiB load of bitsets on an Apple M3 Pro). Around and after them the
+  load yields the event loop, and every 1,024 containers while it writes. As it writes, it checks every container
+  of the bitmap again, so a buffer another thread was still writing during the call (an unfinished `fs.read` into
+  it, say), which can decode into bytes the first check never saw, throws `IntegrityError` and publishes nothing.
+  `pnpm bench:load-input` measures the time, and its figures are not recorded yet. `loadSegment` takes the same
+  inputs (the trailing-byte refusal with a codec that honours `whole`, below); `LoadInput` and `PortableBitmap` are
+  the new types.
+
+- **`CodecBitmap.encodeChunks?()` and `EncodedChunk`, for a codec author.** A codec that implements it hands a load
+  its chunks as stored bytes, ascending, each exactly what `fromValues` of that chunk's low 16 bits, `optimize()` and
+  `serialize()` give, which is how a bitmap load writes without touching an id. Optional: a codec without it loads a
+  bitmap input through its ids. The roaring codec implements it. `CodecInterface.safeDeserialize` takes an optional
+  third argument, `{ whole }`, which a load passes for a caller's bytes: a codec must then refuse bytes after the
+  bitmap's end, since core cannot read the format, and one that ignores the option loads two concatenated bitmaps
+  as the first of them. A codec with the two-argument signature still type-checks.
 
 - **A `.crbm` generation can carry its metadata, in an extension block its footer flags.** The format stays 1.0. A
   generation written with metadata gets one extension block between its last payload and its index, and its footer
@@ -147,6 +198,15 @@ so, and so do the module headers in the code.
   with `ValidationError`, as `requestsPerSizedRead` is.
 
 ### Changed
+
+- **The roaring codec's `optimize()` is canonical: `removeRunCompression()`, then `runOptimize()`.** Where a
+  container's run and array encodings are the same size (three values in one run, five in two, and so on), CRoaring's
+  `runOptimize()` alone keeps whichever kind the container already has, so the same chunk could be stored as two
+  different byte strings. Now a chunk's bytes depend on its members alone, which is what makes a load from a bitmap
+  byte-identical to one from ids. No load's bytes change, since a chunk built from ids has no run compression to
+  undo. The one place they can: an erasure that rewrites a stored run chunk down to a tie now stores it as the array a
+  load writes, the same members in a payload 7 bytes larger (a one-container bitmap's header is 16 bytes, against 9
+  under the run cookie).
 
 - **A registry row whose token is in no form the library writes is refused when it is read**, with an
   `IntegrityError` naming the row's key, where it used to pass the read and fail at its next write. A row stamped 1
