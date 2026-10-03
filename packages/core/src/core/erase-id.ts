@@ -89,6 +89,7 @@ import {
   isNotFoundError,
 } from './errors';
 import { gcOrphanGenerations, nextGeneration } from './generation-gc';
+import { assertRegistryCanWrite } from './ports';
 import type { GenKey, IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
 import { type ReadRetry, retryRead } from './retry';
 import { validateUserRef } from './validate';
@@ -487,6 +488,8 @@ export async function eraseIdFromSegment(
       if (!target.has(remainder)) return await notInCurrent();
       target.remove(remainder);
 
+      // The rewrite is written before its row is: refuse here, not after, on a registry that cannot write one.
+      assertRegistryCanWrite(deps.registry, 'eraseIdFromSegment');
       const generation = await nextGeneration(ref, deps);
       const key: GenKey = { ...base, generation };
       const tally = await writeCrbmGenerationStream(

@@ -11,7 +11,74 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Breaking
+
+- **Registry rows are schema 2, and there is no going back: stop every 0.11 process before the first 0.12 write.**
+  Every row a 0.12 registry writes, whether a create, a compare-and-swap or a tombstone, is stamped
+  `schemaVersion: 2`, whatever it holds, and 0.12 reads rows stamped 1 or 2. A 0.11 process refuses a schema-2 row
+  with `UnsupportedError`. One unreadable row stops every `list()` that reaches it, in its namespace and in every
+  unscoped listing, so a single 0.12 write stops each 0.11 call that lists the registry: `retireExpired`,
+  `eraseSubject`, `subjectReport`, `eraseNamespace`, `checkConsistency`, `store.segments()` and the
+  `export-segments` CLI. A 0.11 load, `*Into`, `rollback`, `setRetention` or drop of a schema-2 row throws too. It
+  fails closed and typed, and never misreads a row. Upgrade in this order:
+  1. Upgrade the processes that only read to 0.12 first: those that call `count`, `has`, `iterate`, the combines or
+     `pin`, and those that list, `store.segments()` and `subjectReport`. 0.12 reads every row 0.11 wrote.
+  2. Stop every 0.11 process that writes, sweeps, erases, checks consistency or exports, then start the 0.12 ones. A
+     0.11 `eraseSubject` cannot complete once a schema-2 row exists in a namespace it lists (every namespace, for an
+     unscoped run), so schedule erasure runs around the cut-over.
+  3. There is no downgrade. After the first 0.12 write, 0.11 cannot read the registry; the only way back is a
+     registry restore to a point before that write (the disaster-recovery guide), which loses every write since.
+
+  Schema 2 adds the record's optional `summary` and the new token form, both below. A row stamped 1 may hold only
+  what schema 1 could: a `summary` or a token with a write part on one is an `IntegrityError`.
+
+- **A registry token is now `<incarnation>.<counter>.<write>`, and no two writes under a name are given the same
+  one.** The incarnation is a 128-bit id as 32 lowercase hex digits, drawn from the platform's Web Crypto when a row
+  is created; the counter advances on every write and carries on across a tombstone; the write part is 64 bits as 16
+  lowercase hex digits, drawn for every write. Both random parts make the tokens unique with overwhelming
+  probability, where a counter alone was not:
+  - once a row's object was gone entirely (a tombstone removed by an object-store delete or a lifecycle rule), a
+    re-create restarted its counter at 0 and re-issued the earlier row's tokens. A warm store at the same generation
+    took the new row for the old one and kept serving the deleted ids; a publish fenced on a token read from the
+    earlier row (`expectToken`, as an erasure rewrite publishes) landed on the new one; and a collection pass over a
+    `destroyed` segment, which goes on only while the row's token is unchanged, took the new row for the old one and
+    deleted every generation, the new current included;
+  - after a registry restore from a backup, a row was back at an older counter, so its next writes were given the
+    tokens the writes after the backup had, and a store that skipped the restore's restart served the generation
+    the restore took away from its cache.
+
+  A row written before 0.12 keeps its bare decimal token (`"7"`) until its first 0.12 write, which gives it
+  `<counter>.<write>`; it gains no incarnation, since only a create starts one. No two of the three forms compare
+  equal. The library compares tokens only for equality; code of your own that read a shipped registry's token as a
+  number breaks. The in-memory backend's tokens take the same form, its counter still global to the backend.
+
 ### Added
+
+- **A registry record can carry a `summary` of its current generation** (`RegistryRecord.summary`, for driver
+  authors). In the clear on a cleartext segment, `{ generation, cardinality, metadata? }`, with `cardinality` an
+  integer from 0 to 2^32 and `metadata` string keys to string or finite-number values, at most 1 KiB as canonical
+  JSON (`GenerationMetadata`); sealed on an encrypted one, `{ generation, sealed }`, base64 of a nonce, the count
+  sealed as a fixed-width u64 with the metadata after it, and a tag, so its length reveals only the metadata's size.
+  Each shape is checked at both registry boundaries: `ValidationError` on a write, `IntegrityError` naming the row
+  on a read. It names the generation it describes and follows the pointer and the keys: a patch that moves
+  `currentGen`, or changes `wrappedDeks` so the shape no longer agrees, without mentioning it drops the old one, and
+  one a write gives must name the `currentGen` and agree with the keys (sealed with wrapped keys, clear without) the
+  row will have. A stored row that disagrees is still read, so one such row cannot stop every listing, and whatever
+  reads the summary must not use it then. The registry stores a frozen copy of the summary it was called with. A
+  crypto-shred clears it. Nothing in the library writes or reads one yet, and a row without one is correct. Every
+  shipped registry round-trips it, and the registry conformance suite now requires a driver of your own to as well.
+  Types: `RegistrySummary`, `ClearRegistrySummary`, `SealedRegistrySummary`, `GenerationMetadata`.
+
+- **`Entropy`, the seam a registry draws its tokens' random parts from** (`(length) => Uint8Array`, from
+  `@cloudbitmaps/core`). `ObjectStoreRegistry` takes one as an optional fourth constructor argument and defaults to
+  Web Crypto. It is not the `Rng` seam, which is seedable for simulation: a seeded source hands every process the
+  same ids. Inject one only to make a test replayable. On a runtime with no Web Crypto a shipped registry still
+  reads and refuses every write with `UnsupportedError`.
+
+- **`RegCaps.canWrite`, an optional registry capability: `false` says the registry cannot write.** Absent means
+  writable, so an existing driver is unchanged. A shipped registry reports `false` on a runtime with no Web Crypto,
+  and a registry of your own may report it the same way. A load and an erasure rewrite check it before their first
+  request, so they refuse with `UnsupportedError` before they write an object.
 
 - **`AzureBlobStorage` can time each read: `readTimeoutMs`, off unless set.** With it set, every read request the
   Azure Blob storage and registry drivers send, a range read, a tail read's properties and its ranged download, each
@@ -100,6 +167,10 @@ so, and so do the module headers in the code.
     since it made more requests than a steady load, rather than as a clean sample; a fault on any other request of a
     load still fails the run.
 
+- **A registry row whose token is in no form the library writes is refused when it is read**, with an
+  `IntegrityError` naming the row's key, where it used to pass the read and fail at its next write. A row stamped 1
+  must hold a decimal counter, and one stamped 2 a token with a write part.
+
 - **A steady `store.load()` sends 11 requests to S3 where it sent 14: it reads the segment's row once, and checks its
   next generation number instead of listing for it.** A load read its registry row four times before its publish. On
   a cleartext segment it now reads it once, and the guard, the generation number, the write's refusal of a
@@ -156,9 +227,10 @@ so, and so do the module headers in the code.
     restore point and leave them above the pointer until a load's check meets one; the guide says to load until
     the pointer is above them. The re-runs below the strays count toward `keep` too, so keeping the restored
     generation as a rollback target takes a `keep` of at least the highest stray minus the restored pointer, plus
-    one, where the guide said one more than the number of strays. Because a re-run load takes again the numbers
-    collection freed, step 9's restart or invalidation of every store is what clears a store that read the segment
-    before the disaster.
+    one, where the guide said one more than the number of strays. A re-run load takes again the numbers collection freed, but its writes
+    are given tokens the row never had, so no cache takes a re-run's generation for an earlier one under the same
+    number; step 9's restart or invalidation of every store moves a store that read the segment before the disaster
+    onto the restored generation without waiting for its refresh.
   - **The calibration harness** expects each load's new shape, and its projection of a load's GET-class requests is
     now `4 + 2 × retryBound`: the default workload's bound is 364 PUT-class and 106,583 GET-class requests,
     $0.044453, and its expected bill 142 PUT-class and 92,907 GET-class, $0.037873.
