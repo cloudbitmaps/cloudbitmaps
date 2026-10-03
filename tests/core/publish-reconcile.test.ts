@@ -736,7 +736,7 @@ describe('a row 0.11 wrote has no incarnation id, and its own write is still rec
     `"status":"active","createdAt":${createdAt},"updatedAt":${createdAt},"token":"7"}}`;
 
   /** A world over the object-store registry, with generations 0 to 2 loaded and the row then replaced by a legacy one. */
-  async function legacyWorld(): Promise<ReturnType<typeof world>> {
+  async function legacyWorld(): Promise<ReturnType<typeof world> & { store: CountingObjectStore }> {
     const store = new CountingObjectStore(0);
     const w = world(
       () => 30,
@@ -745,7 +745,7 @@ describe('a row 0.11 wrote has no incarnation id, and its own write is still rec
     await threeLoads(w);
     store.plant(registryObjectKey(undefined, SEG), legacyRow(2, 30));
     expect((await w.base.get(SEG))!.token).toBe('7');
-    return w;
+    return { ...w, store };
   }
 
   it('a write of its own that landed and lost its response is published: both tokens have no id, so the stamp decides', async () => {
@@ -763,6 +763,20 @@ describe('a row 0.11 wrote has no incarnation id, and its own write is still rec
     const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9 });
     expect(r).toMatchObject({ generation: 3, published: true });
     expect(w.writes.compareAndSwap).toBe(2);
+  });
+
+  it('another row with no id, created at another time and pointing at the rewrite object, is another incarnation: the stamp says so', async () => {
+    const w = await legacyWorld();
+    w.arm({
+      kind: 'transient-unapplied',
+      meanwhile: async () => {
+        // Another legacy-form row, stamped later, names the rewrite's number over the rewrite's own object.
+        w.store.plant(registryObjectKey(undefined, SEG), legacyRow(3, 99).replace('"7"', '"9"'));
+      },
+    });
+    const r = await eraseIdFromSegment(SEG, 2, w.deps);
+    expect(r).toMatchObject({ erased: false, reason: 'superseded' });
+    expect(r.collected).toEqual([]);
   });
 
   it('a name created again over it in the same millisecond is another incarnation: the token form says so', async () => {
