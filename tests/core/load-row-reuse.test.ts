@@ -341,10 +341,10 @@ describe('a load reuses the row it read, and every fence on that row still holds
     },
   );
 
-  it('a publish that fails without a definite answer keeps its object, which may still be published', async () => {
+  it('a publish that fails without a definite answer and landed is found by reading the row, and keeps its object', async () => {
     const w = world();
     await threeLoads(w);
-    // The compare-and-swap lands and its response is lost: the outcome is unknown to the load.
+    // The compare-and-swap lands and its response is lost: the load reads the row and finds its own write there.
     const lossy = new Proxy(w.registry, {
       get(t, p, rx) {
         const value = Reflect.get(t, p, rx) as unknown;
@@ -355,9 +355,8 @@ describe('a load reuses the row it read, and every fence on that row still holds
         };
       },
     });
-    await expect(
-      loadSegment(SEG, [1, 2, 3, 4], { ...w.deps, registry: lossy }, { keep: 9 }),
-    ).rejects.toBeInstanceOf(TransientError);
+    const r = await loadSegment(SEG, [1, 2, 3, 4], { ...w.deps, registry: lossy }, { keep: 9 });
+    expect(r).toMatchObject({ generation: 3, published: true });
     // The write landed, so the pointer names generation 3, and its object is still there.
     expect((await w.registry.get(SEG))!.currentGen).toBe(3);
     expect(await idsOf(w.storage, 3)).toEqual([1, 2, 3, 4]);

@@ -283,8 +283,8 @@ one row per item, each linking to the detail.
   [when a load is refused](loading.md#when-a-load-is-refused).
 - **The install or the first `import` fails**, or Node prints a deprecation warning: see
   [Troubleshooting](#troubleshooting) below.
-- **Timeouts and retries.** <a id="6-reliability-retries-backoff--timeouts"></a>Reads retry by themselves and writes
-  are yours to re-run: [Reliability](production.md#reliability-retries-backoff--timeouts).
+- **Timeouts and retries.** <a id="6-reliability-retries-backoff--timeouts"></a>Reads retry by themselves, and a write is
+  retried only where that is safe, so a fault it does not settle is yours to re-run: [Reliability](production.md#reliability-retries-backoff--timeouts).
 - **Expiring data.** <a id="135-retention-ttl-and-pruning--what-exists-and-what-doesnt"></a>There is no per-id
   expiry: [Retention](retention.md#retention-ttl-and-pruning--what-exists-and-what-doesnt).
 

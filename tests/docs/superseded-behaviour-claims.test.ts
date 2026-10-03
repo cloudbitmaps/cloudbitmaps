@@ -336,6 +336,10 @@ const COLLECTION_CONDITION = String.raw`\b(?:by name|sixteenth|16th|check(?:s|ed
 /** What a true sentence about a load's numbering names: the check and what it finds, or the writers that list. */
 const NUMBERING_CONDITION = String.raw`\b(?:check(?:s|ed)?|taken|meets?|holds?|held|cannot answer|erasure|rewrite|nextGeneration)\b`;
 
+/** Why a page may not say a write is never retried. */
+const WRITE_RETRY =
+  'a write is retried where that is safe: the registry row is sent once and, when it gets no answer, settled by reading the row and sent again as a bounded fresh compare-and-swap; a throttled write-once object is sent again on S3 and GCS. Say which write, and that a lost response, a timeout and every delete are not sent again';
+
 const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: string }> = [
   {
     claim: new RegExp(g(String.raw`publish(?:es|ing)? an empty generation over \`?dest`), 'i'),
@@ -583,6 +587,62 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
       'i',
     ),
     why: "an erasure's reads and a load's guard read are retried as the store's reads are; only the writes are not",
+  },
+  // A write is retried where that is safe, so no page may say it never is. The registry row is sent once by the driver
+  // and reconciled by its effect (a bounded fresh compare-and-swap); a write-once object is sent again after a
+  // throttle on S3 and GCS, under a write id. What is true is narrower: no delete is retried, and nothing is
+  // re-sent after a lost response or a timeout.
+  {
+    claim: new RegExp(g(String.raw`\bwrites?(?: and deletes)? (?:is|are) never retried`), 'i'),
+    why: WRITE_RETRY,
+  },
+  {
+    claim: new RegExp(
+      g(String.raw`\bwrites?(?: and deletes)? (?:is|are) not retried`) + `(?!${GAP}by\\b)`,
+      'i',
+    ),
+    why: WRITE_RETRY,
+  },
+  {
+    claim: new RegExp(g(String.raw`never retries (?:a |any |the )?writes?\b`), 'i'),
+    why: WRITE_RETRY,
+  },
+  {
+    claim: new RegExp(g(String.raw`nothing replays a write`), 'i'),
+    why: WRITE_RETRY,
+  },
+  {
+    claim: new RegExp(g(String.raw`nothing wraps a write`), 'i'),
+    why: WRITE_RETRY,
+  },
+  {
+    claim: new RegExp(g(String.raw`sent once whatever (?:it is configured to do|they say)`), 'i'),
+    why: "the driver sends a registry row once, and a generation's object again after a throttle on S3 and GCS: say which, and that it is the SDK's own retry that is off",
+  },
+  {
+    claim: new RegExp(g(String.raw`\bwrites are yours to re-run`), 'i'),
+    why: WRITE_RETRY,
+  },
+  {
+    claim: new RegExp(
+      g(String.raw`a write, its compare-and-swap included, reports (?:one|it)\b`),
+      'i',
+    ),
+    why: 'a registry write that gets no answer is settled by reading the row, and sent again as a bounded fresh compare-and-swap when it is unchanged; only a fault that read does not settle is reported',
+  },
+  {
+    claim: new RegExp(
+      g(String.raw`(?:is|are) what the S3 driver and the single-request GCS upload do(?=[;,.])`),
+      'i',
+    ),
+    why: "the S3 driver and the single-request GCS upload send a generation's object again after a throttle, under a write id; sending each write once is what their registry writes do",
+  },
+  {
+    claim: new RegExp(
+      g(String.raw`a transient fault on a write reaches you, and the retry is yours`),
+      'i',
+    ),
+    why: WRITE_RETRY,
   },
   {
     claim: new RegExp(g(String.raw`no \`?AbortSignal\`? anywhere in (?:this|the) library`), 'i'),
@@ -1157,6 +1217,20 @@ describe('no document claims behaviour this library does not have', () => {
     "Writes are not retried, and nor are an erasure's reads, a load's guard read, or the calls",
     "(an erasure's reads and a load's guard read are not retried)",
     "a load's guard read is not retried",
+    // What a write's retry is.
+    'Writes are never retried for you',
+    'The write is never retried.',
+    '   * The writes and deletes are never retried.',
+    "the store retries a read's transient faults and never retries a write.",
+    "On S3, and on GCS up to its simple-upload threshold, nothing replays a write's object either;",
+    'Nothing wraps a write. A conditional put or compare-and-swap that lands and then loses its response',
+    'which are sent once whatever it is configured to do.',
+    'single-request conditional writes, which are sent once whatever they\n   * say.',
+    '**Writes are yours to re-run.** What is retried for you:',
+    'while a <em>write</em>, its compare-and-swap included, reports one, because a',
+    'The first is what the S3 driver and the single-request GCS upload do; the second is what the Azure Blob driver',
+    'So a transient fault on a write reaches you, and the retry is yours.',
+    "An erasure's writes are not retried; its reads are.",
     // What the library times.
     'The library has no timeout of its own, because one would abandon requests',
     '| The library has none of its own; a hung request hangs the read |',
@@ -1313,8 +1387,21 @@ describe('no document claims behaviour this library does not have', () => {
     'The library times no write, deliberately, since a timeout of its own would abandon a write in flight.',
     'An S3 write has no timeout of its own.',
     'No S3, GCS or Azure Blob write has a timeout of its own.',
-    "An erasure's writes are not retried; its reads are.",
-    "An erasure's reads are retried, and its writes are not retried.",
+    "An erasure's reads are retried; its deletes are not.",
+    "An erasure's reads are retried, and its registry write is settled as a load's is.",
+    // What a write's retry is, true: the registry row is sent once and reconciled, an object is sent again after a
+    // throttle, and nothing is sent again after a lost response.
+    'A write is retried only where that is safe.',
+    'A registry row is sent once and reconciled by its effect.',
+    'A write is not retried by `retry`: a throttled write-once object is sent again by the S3 and GCS drivers.',
+    'A write is not retried by the store, but by the driver, and only after a throttle.',
+    'This option does not govern writes, nor the calls that read the registry directly.',
+    "The deletes are not retried, and the rewrite's registry write is settled as a load's is.",
+    'No write goes through the read retry; a fault the publish does not settle reaches the caller.',
+    'A lost response, a timeout or a `500` is not sent again.',
+    "which the driver sends with that retry off whatever it is configured to do: a registry row once,\n   * and a generation's object again only after a throttle",
+    'The first is what the registry writes of every shipped driver do; the second is what the Azure Blob driver and\n * the resumable GCS upload do, and what the S3 driver and the single-request GCS upload do when they send an\n * object again after a throttle.',
+    'A fault the drivers and the publish do not settle reaches you as `TransientError`, and the retry is yours.',
     'A row written before 0.12 keeps its bare decimal token (`"7"`) until its first 0.12 write.',
     // A load's numbering, true: each names the check, what it finds, or the writer that lists.
     'When its check meets one of them, a load numbers above them all.',
@@ -1441,6 +1528,15 @@ describe('no document claims behaviour this library does not have', () => {
       'Two store.load() calls cost about twice what one does.',
       'Two calls of store.load() cost twice what one does.',
     ],
+    [
+      "The S3 driver's registry writes are not retried.",
+      "The S3 driver sends each registry write once, with the SDK's retry off.",
+    ],
+    [
+      'A delete is never retried, and a write is never retried after a lost response.',
+      'No delete is sent again, and no write is sent again after a lost response.',
+    ],
+    ['Nothing replays a write after a timeout.', 'A write that times out is not sent again.'],
   ])('refuses %j, though true, and passes it reworded', (refused, reworded) => {
     expect(hitsIn('x.md', refused)).not.toEqual([]);
     expect(hitsIn('x.md', reworded)).toEqual([]);

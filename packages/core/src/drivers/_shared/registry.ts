@@ -9,6 +9,7 @@
 import { IntegrityError, UnsupportedError, ValidationError } from '@/core/errors';
 import type { Entropy } from '@/core/determinism';
 import { canonicalMetadataJson, MAX_METADATA_BYTES } from '@/core/metadata';
+import { INCARNATION_TOKEN, incarnationOf } from '@/core/token';
 import type {
   NewRegistryRecord,
   RegistryPatch,
@@ -390,8 +391,6 @@ export function serializeRegistryEnvelope(env: RegistryEnvelope): string {
 const COUNTER_TOKEN = /^(0|[1-9]\d*)$/;
 /** A schema-1-born row's token once this build has written it: the counter, a `.`, and a write part. */
 const WRITTEN_COUNTER_TOKEN = /^(0|[1-9]\d*)\.([0-9a-f]{16})$/;
-/** An incarnation-form token: the incarnation id, the counter and a write part, `.`-separated. */
-const INCARNATION_TOKEN = /^([0-9a-f]{32})\.(0|[1-9]\d*)\.([0-9a-f]{16})$/;
 /** The incarnation id's width, in bytes. */
 const INCARNATION_BYTES = 16;
 /** The write part's width, in bytes. */
@@ -430,13 +429,8 @@ function tokenParts(token: string, schemaVersion: number | undefined, ctx: strin
   return { incarnation: born ? match[1] : undefined, counter };
 }
 
-/**
- * The incarnation id in a token, or `undefined` for one that has none: a schema-1-born row's, or any token another
- * driver issues. Two tokens with the same incarnation are writes of one incarnation of a row.
- */
-export function incarnationOf(token: Token): string | undefined {
-  return INCARNATION_TOKEN.exec(token)?.[1];
-}
+// `incarnationOf` is defined in `core/token`, where the publish reads it too, and is the same function here.
+export { incarnationOf };
 
 /** `bytes` fresh bytes from `entropy`, as lowercase hex, refusing a source that does not give them. */
 function drawHex(entropy: Entropy, bytes: number): string {

@@ -139,12 +139,33 @@ describe('GcsStorageDriver write id, resumable path', () => {
     expect(b.metadataReads).toBe(0);
   });
 
-  it('leaves the simple upload as it was: no id, and no read-back on a 412', async () => {
+  describe('the default simple-upload threshold is 8 MiB, and only an object over it is resumable', () => {
+    const EIGHT_MIB = 8 * 1024 * 1024;
+    const withDefault = (b: FakeBucket): GcsStorageDriver =>
+      new GcsStorageDriver({ storage: b.storage(), bucket: 'b' });
+
+    it('an object of exactly 8 MiB is one request', async () => {
+      const b = new FakeBucket();
+      await put(withDefault(b), new Uint8Array(EIGHT_MIB));
+      expect(b.streamsOpened).toHaveLength(1);
+      expect(b.streamsOpened[0]).toMatchObject({ resumable: false });
+    });
+
+    it('an object one byte over 8 MiB is a resumable upload', async () => {
+      const b = new FakeBucket();
+      await put(withDefault(b), new Uint8Array(EIGHT_MIB + 1));
+      expect(b.streamsOpened).toHaveLength(1);
+      expect(b.streamsOpened[0]).toMatchObject({ resumable: true });
+    });
+  });
+
+  it('tags the simple upload too, and reads nothing back on a 412 to its first send', async () => {
     const b = new FakeBucket();
     b.failWith = httpErr(412);
     await expect(put(driverOver(b, 1024))).rejects.toBeInstanceOf(WriteConflictError);
     expect(b.streamsOpened[0]).toMatchObject({ resumable: false });
-    expect(b.streamsOpened[0]?.metadata?.metadata).toBeUndefined();
+    expect(b.streamsOpened[0]?.metadata?.metadata?.cbwid).toMatch(/^[0-9a-f]{32}$/);
+    // Sent once so far, so the 412 cannot be this write meeting itself.
     expect(b.metadataReads).toBe(0);
   });
 });

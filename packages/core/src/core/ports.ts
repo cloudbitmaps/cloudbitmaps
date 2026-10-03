@@ -170,8 +170,9 @@ export interface StorageCaps {
  *   loses its response, sent again, finds its own object and would report a collision. Either send each write
  *   once, with the backend client's retry off for that request, or recognise your own write when the
  *   precondition fails by reading an id you stored with it back, and treat a match as success. The first is
- *   what the S3 driver and the single-request GCS upload do; the second is what the Azure Blob driver and the
- *   resumable GCS upload do.
+ *   what the registry writes of every shipped driver do; the second is what the Azure Blob driver and the
+ *   resumable GCS upload do, and what the S3 driver and the single-request GCS upload do when they send an object
+ *   again after a throttle, which is the one replay a driver may make on purpose.
  * - **Raise a transient fault as {@link TransientError}** (throttling, a 5xx, a dropped connection), so the read
  *   retry can ride it out and a write's caller can tell it from a deterministic failure.
  */

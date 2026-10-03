@@ -494,8 +494,10 @@
                     store retries it, with jittered backoff, on a segment's <strong>reads</strong>: has, count,
                     iterate, a combine or a pin, and the reads inside <span class="m">subjectReport</span>,
                     <span class="m">exportSegments</span> and an <span class="m">*Into</span>. A write — a
-                    load, an <span class="m">*Into</span>'s publish, an erasure, a drop — and a call that goes
-                    to the drivers directly, such as <span class="m">exists</span>,
+                    load, an <span class="m">*Into</span>'s publish, an erasure, a drop — is retried only where that
+                    is safe: a throttled write-once object on S3 and GCS is sent again, and a registry write that
+                    got no answer is settled by reading the row. Any other transient fault on a write, and a call
+                    that goes to the drivers directly, such as <span class="m">exists</span>,
                     <span class="m">generations</span> or <span class="m">rollback</span>, hands it to you.
                   </td>
                   <td><span class="status is-auto">On segment reads</span></td>
@@ -550,10 +552,16 @@
             PUT would fail identically, and the fix is a fresh generation number rather than another attempt at
             the same one.
             Transient faults split too, along a different line: a read of segment data retries them
-            automatically, while a <em>write</em>, its compare-and-swap included, reports one, because a
-            conditional write that lands and then loses its response would, replayed, report its own write as a
-            conflict. Re-running the call is the retry: a re-run load with the same ids takes a fresh generation
-            number, so once the first attempt has settled it publishes whether or not that attempt landed,
+            automatically, while a <em>write</em> is retried only where the retry can be told from a second
+            write. A conditional write that lands and then loses its response would, replayed blindly, report its
+            own write as a conflict, so the registry row is sent once and then reconciled by its effect: the
+            load reads the row back, takes a landed write as published, and sends a row that is unchanged again
+            as a fresh compare-and-swap, a few times and after a wait, which the fence refuses if anything moved
+            in between. A write-once object is sent again after a throttle on S3 and GCS under a write id that
+            tells its own replay from another writer's. Nothing is deleted after an outcome that stayed unknown.
+            Any other fault reaches the caller, and re-running the call is the retry: a re-run load with the same
+            ids takes a fresh generation number, so once the first attempt has settled it publishes whether or
+            not that attempt landed,
             though under the default <span class="m">keep: 1</span> it can cost the generation before the load.
           </p>
         </div>
@@ -605,11 +613,13 @@
             <span class="rl-note">
               A read's retry reports its reason with the attempt number and the delay, so backoff storms are
               visible rather than inferred — and there is exactly one reason,
-              <span class="m">transient</span>: the store retries a read's transient faults and never retries a write.
-              On S3, and on GCS up to its simple-upload threshold, nothing replays a write's object either; on Azure Blob,
-              and on GCS above that threshold, the client's own retry can, and the driver settles the replay by reading
-              back the write id the object carries. A publish that loses its compare-and-swap re-reads the row
-              and advances only if its fences still hold, and otherwise says so to its caller. Seven kinds of
+              <span class="m">transient</span>: the store retries a read's transient faults, and retries a write only where
+              a replay can be told from a second write. A write-once object is sent again after a throttle on S3 and
+              on GCS, under a write id the object carries, and on Azure Blob, and on GCS above its simple-upload
+              threshold, the client's own retry can replay it and the driver settles that by reading the write id back.
+              A registry row is sent once and reconciled by its effect: a publish that gets no answer, or loses its
+              compare-and-swap, re-reads the row and advances only if its fences still hold, and otherwise says so to
+              its caller. Seven kinds of
               change are audit events beside it, on the sink the call was given: <span class="m">segment.publish</span>,
               <span class="m">segment.rollback</span>, <span class="m">segment.load-refused</span>,
               <span class="m">segment.rewrite</span>, <span class="m">segment.erase</span>,

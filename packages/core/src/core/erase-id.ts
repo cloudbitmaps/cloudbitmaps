@@ -71,9 +71,11 @@ import { MAX_REMAINDER, splitId } from './bit-route';
 import type { CodecBitmap, CodecInterface } from './codec';
 import { requireCodec } from './codec';
 import type { Yielder } from './cooperative';
+import type { Rng } from './determinism';
 import {
   objectIsEncrypted,
   openGenerationReader,
+  provesOwnObject,
   publishGeneration,
   verifyGeneration,
   writeCrbmGenerationStream,
@@ -116,13 +118,18 @@ export interface EraseIdDeps {
   readonly requireEncryption?: boolean;
   /** Supplying a clock that can yield makes the rewrite cooperative, as it makes a load. */
   readonly clock?: Yielder;
+  /**
+   * The random source that spreads the waits between the rewrite's fresh compare-and-swaps. Absent, the read retry's
+   * source is used if it has one, and otherwise each wait is its bound.
+   */
+  readonly rng?: Rng;
   /** Per-chunk decode ceiling (invariant 5); defaults to 1 MiB. */
   readonly maxBitmapBytes?: number;
   /**
    * The store's read retry, for the reads the rewrite makes along the way: the generation it rewrites and each of its
    * chunks, the read-back that verifies the generation it wrote, and any other generation it checks for the id. A
    * transient fault on one is run again under it rather than failing the erasure. Absent, each read is made once.
-   * The writes and deletes are never retried.
+   * The deletes are not retried, and the rewrite's registry write is settled as a load's is.
    */
   readonly readRetry?: ReadRetry;
 }
@@ -484,7 +491,9 @@ export async function eraseIdFromSegment(
    * `0`, so the ledger read `fromGeneration: 0 → generation: 0` — the generation that *held* the bit named as
    * the one written *without* it, for an object that was never written.
    */
-  const stage = async (): Promise<EraseIdResult | { generation: number; key: GenKey }> => {
+  const stage = async (): Promise<
+    EraseIdResult | { generation: number; key: GenKey; fingerprint: string }
+  > => {
     /** Set only once the object exists in the bucket — see the note above. */
     let written: number | undefined;
     try {
@@ -515,7 +524,7 @@ export async function eraseIdFromSegment(
       const early = rowVerdict(beforeVerify);
       if (early !== null) return refused(early, written);
       await read(() => verifyGeneration(deps.storage, key, tally, cryptoAt(generation)));
-      return { generation, key };
+      return { generation, key, fingerprint: tally.fingerprint };
     } catch (err) {
       if (!isNotFoundError(err)) throw err;
       // The row decides which answer this is — but only if it can be read. A re-read that faults must not
@@ -565,7 +574,7 @@ export async function eraseIdFromSegment(
     if (!staged.erased && staged.generation !== undefined) await discardRefused(staged.generation);
     return staged;
   }
-  const { generation, key } = staged;
+  const { generation, key, fingerprint } = staged;
 
   // Read-modify-write, not merely forward-only, and the distinction is the whole correctness of this function.
   //
@@ -583,6 +592,11 @@ export async function eraseIdFromSegment(
   const published = await publishGeneration(deps.registry, key, {
     expectFrom: from,
     expectToken: fromToken,
+    // A write that ends without an answer is settled by reading the row, and a pointer at this number is this
+    // rewrite's only over the object it wrote: the footer proves it, so another incarnation's cannot pass for it.
+    holdsOwnObject: () => provesOwnObject(deps.storage, key, fingerprint),
+    clock: deps.clock,
+    rng: deps.rng ?? deps.readRetry?.rng,
   });
   if (!published) {
     await discardRefused(generation);

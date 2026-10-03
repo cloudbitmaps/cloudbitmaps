@@ -209,8 +209,9 @@ export type {
 // Resilience: the retry primitive, the policy and its defaults, and the read-source wrapper `CloudRoaring` builds
 // around the source it reads segment data through, a caller's pre-built one included. Exported for a source read
 // outside a store (wrapping one that is then handed to the store multiplies each read's attempts), and so a caller
-// can retry a call of its own with `withRetry`. Nothing wraps a write: a conditional write replayed after it landed
-// reports that write as a conflict, so a write's caller re-runs the call or checks what landed.
+// can retry a call of its own with `withRetry`. No write goes through it: a conditional write replayed blindly after
+// it landed reports that write as a conflict, so a write is retried only where its replay can be told apart, and
+// otherwise its caller re-runs the call or checks what landed.
 export { withRetry, DEFAULT_RETRY_POLICY } from './core/retry';
 export type { RetryPolicy, RetryDeps } from './core/retry';
 export { RetryingStorageChunkSource } from './drivers/retry/retrying-chunk-source';

@@ -302,6 +302,52 @@ so, and so do the module headers in the code.
   that release re-creating the name over nothing would issue those counters again. Tombstones already in a bucket
   stay. Every registry `delete` follows the same rule, so a due-index pointer a retirement or a `setRetention` removes
   is removed for good too.
+- **A write-once object that S3 or GCS throttles is sent again, and a registry write that gets no answer is settled by
+  reading the row, and sent again from it if nothing changed.** A load that met a throttle on its object, or a response
+  lost on its row, failed with `TransientError`, and a failure on the row left the caller guessing whether it had landed.
+  Now:
+  - *The object.* The S3 driver sends the write-once `PutObject`, or a multipart upload's `CompleteMultipartUpload`, again
+    after a `503 SlowDown` (or any `503`), and the GCS driver sends a single-request upload again after a `429` or
+    `503`: up to three more times, after a random wait under 500 ms, then 1 s, then 2 s. A lost response, a timeout and a
+    `500` are not sent again. Every S3 object now carries a random id in its user metadata (`x-amz-meta-cbwid`, set when a
+    multipart upload starts), and every GCS single-request upload carries one in its custom metadata, as a resumable
+    upload always has: a service does not promise that a request it throttled was not applied, so a precondition
+    failure on a re-send (or, for a completion, a `409` or an upload S3 no longer knows) reads the object back with one
+    request, and an object with this write's own id is a success, while any other, or one with no id, is a
+    `WriteConflictError`, as a collision always was. With nothing stored, a `409` or an unknown upload is an unknown
+    outcome, a `TransientError`: the first send may still be applying. Throttled on every send, the write throws
+    `TransientError`, and nothing is deleted; a multipart upload is aborted, which never tears an object, since S3
+    completes an upload atomically. Azure Blob is unchanged: its client already sends a write again after a
+    `503 ServerBusy` or a `500 OperationTimedOut`, and every write's id tells its replay apart. The in-memory and
+    local-filesystem drivers have nothing to throttle. A bare `429`, which AWS S3 does not send but some S3-compatible
+    services do, is not retried and is not classified transient on S3: it surfaces as the SDK's own error.
+  - *The row.* The drivers still send each row write once. When a `create` or compare-and-swap ends without an answer (a
+    throttle, a lost response, a timeout), the publish reads the row once and decides. A pointer at the load's number,
+    on the incarnation the write was made against, over the object the load wrote, proved by one footer read, is the
+    load's own landed write: `published: true`. The incarnation is the id in the row's token, so two incarnations
+    created in the same millisecond are told apart exactly; a row without an id (one 0.11 wrote, or a registry of your
+    own) is told by its creation stamp, and the footer proof decides the rest. A row still as the write found it means the write did not land or is on
+    its way, so the publish sends a **new** compare-and-swap from the version it just read, after a wait on the store's
+    clock: at most three, after under 500 ms, then 1 s, then 2 s (spread by the store's random source, whether or not its reads retry). It is a request
+    of its own, not a replay, carrying the version the first one did, so under the registry's fence at most one of the two
+    lands, and a request delayed past the fresh one is refused. Each is settled the same way, and still unanswered the
+    load throws the registry's own `TransientError`, with its object kept: no load deletes its object after an ambiguous
+    outcome, so a write that reaches the registry after the load returned always finds its object there. Any other row has
+    moved past what the write was conditioned on, so the write can never land, and the load goes on as after a lost race.
+    `load`, the `*Into` verbs, the erasure rewrite and a bulk load publish this way, and each proves its own object by its
+    footer, so an erasure whose write went unanswered cannot report `erased: true` over another incarnation's generation.
+    A caller that gives the publish no clock gets no fresh write: an unanswered write throws at once. On Azure Blob the
+    client's own retry policy runs under each fresh write, so a registry that never answers costs up to four times the
+    policy's tries (sixteen requests at its default) before the load throws: about 16 s per write at the SDK's default schedule (it waits 0, 4 s, then 12 s between tries), so about 64 s for the four writes, plus up to 3.5 s of the publish's own waits (derived from that schedule, not measured).
+  - *Audit and errors.* A `segment.load-refused` event that follows a registry write which went unanswered carries
+    `unanswered: true` (an optional field, absent otherwise): that write may have landed and the generation been current
+    for a while before another writer replaced it. The materialisation error no longer says the result never became
+    current: it says the generation was written and is not current.
+  - *Requests.* A throttle only adds requests. A publish that is not throttled sends exactly the requests it did before
+    (the write id travels in the object's own request), so `costReport()` and `estimateCost()` are unchanged. The
+    calibration harness treats a load that absorbed a transient fault on its pointer write as a missed expected count,
+    since it made more requests than a steady load, rather than as a clean sample; a fault on any other request of a
+    load still fails the run.
 
 - **`store.load()` deletes the generation its publish pushed out of the window by name, and lists the segment only on
   every 16th generation.** A load that numbered its generation with one existence check, which found it free, and
@@ -461,6 +507,14 @@ so, and so do the module headers in the code.
   (`ValidationError` naming the header; upgrade `@aws-sdk/client-s3`), and leaves a row tombstoned when a `DeleteObject`
   would go out without `If-Match`, whatever `conditionalDelete` says. A client it cannot read (a test double) is not
   refused.
+- **A load whose Azure Blob registry write landed, and then had another write land on top of it, is published, not
+  `superseded`.** A write the client sent again reads the blob back to tell its replay from a conflict, and a row is
+  overwritten by compare-and-swap, so another writer's write on top (a retention change, say) made the load's own write
+  report `WriteConflictError`. The load then found the row changed and returned `published: false`, `reason:
+  'superseded'`, over a pointer that named its generation. The publish now reads the row after a conflict and
+  recognises its own write by its effect, as it does after any unanswered write, so the load returns `published: true`.
+  Tests run a real `@azure/storage-blob` client against a stub that applies the write, lands another on top, and then
+  answers `503`.
 
 - **`@cloudbitmaps/s3` requires `@aws-sdk/client-s3` 3.700.0 or later, where it took 3.645.0.** An SDK sends only
   the conditional headers it models and drops one it does not, without an error. The published serializers of

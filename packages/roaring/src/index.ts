@@ -197,10 +197,12 @@ export interface CloudRoaringOptions {
    * `iterate` and the combines, the `*Into` verbs' reads of their operands included, a pinned handle's reads and
    * `pin()` itself, and the reads a write makes along the way: a load's guard read of the current generation, and an
    * erasure's reads of the generation it rewrites, of the one it wrote and of any other that may still hold the id.
-   * Writes are not retried, and nor are the calls that read the registry or list the bucket directly (`exists`,
+   * This option does not govern writes, nor the calls that read the registry or list the bucket directly (`exists`,
    * `segments`, `generations`, `getRetention`, and the registry scan `subjectReport`, `exportSegments` and
    * `checkConsistency` start from): they report a transient fault to their caller, because a conditional write that
-   * lands and then loses its response would, replayed, report its own write as a conflict. Pass a partial policy to tune it — anything you leave out keeps its
+   * lands and then loses its response would, replayed blindly, report its own write as a conflict. A write is
+   * retried only where that is safe: a load's registry write that gets no answer is settled by reading the row,
+   * and a throttled write-once object is sent again by the S3 and GCS drivers. Pass a partial policy to tune it — anything you leave out keeps its
    * default — or `false` to turn the read retry off (e.g. if your injected client already retries). A GCS download is retried by
    * the GCS driver whatever this says.
    * Deterministic errors (`ValidationError`/`IntegrityError`/`WriteConflictError`/…) are never retried by this
@@ -642,6 +644,8 @@ interface LifecycleDeps {
   readonly registry: IRegistryDriver;
   readonly codec: CodecInterface;
   readonly clock: Clock;
+  /** The store's random source, which spreads a publish's waits between fresh writes whether or not reads retry. */
+  readonly rng: Rng;
   readonly keystore?: IKeystore;
   readonly requireEncryption?: boolean;
   readonly readRetry?: RetryingOptions;
@@ -665,6 +669,7 @@ export class CloudRoaring {
   private readonly retryOptions: RetryingOptions | undefined;
   private readonly crbmSource: CrbmStorageChunkSource | undefined;
   private readonly clock: Clock;
+  private readonly rng: Rng;
   private readonly metrics: IMetricsSink;
   // The store's own drivers, kept so the lifecycle helpers and the `*Into` verbs reuse them instead of making
   // you re-pass deps. `storageDriver` is set only when `storage` was a raw IStorageDriver (a pre-built StorageChunkSource has
@@ -804,6 +809,7 @@ export class CloudRoaring {
     this.crbmSource =
       resolved.source instanceof CrbmStorageChunkSource ? resolved.source : undefined;
     this.clock = clock;
+    this.rng = rng;
     this.metrics = metrics;
     // Keep the raw drivers for the lifecycle helpers (see the fields above). They use the raw drivers directly —
     // a one-shot admin op surfaces a transient fault to the caller rather than retrying under the hood — except for
@@ -841,6 +847,7 @@ export class CloudRoaring {
       storage: this.storageDriver,
       registry: this.registry,
       clock: this.clock,
+      rng: this.rng,
       codec: roaringCodec, // facade injects the flagship codec
       keystore: this.keystore,
       requireEncryption: this.requireEncryption,
@@ -975,11 +982,11 @@ export class CloudRoaring {
       // investigation. `size > 0` is the one thing this path can state as fact.
       const wrote =
         result.size > 0
-          ? `generation ${result.generation} was written and did not become current`
+          ? `generation ${result.generation} was written and is not current`
           : `nothing was written — another writer took generation ${result.generation} first`;
       throw new WriteConflictError(
-        `${op}: the destination "${dest.segment}" changed while this materialisation was in flight, so it ` +
-          `never became current: ${wrote}. The pointer may have moved, the row may have been rewritten ` +
+        `${op}: the destination "${dest.segment}" changed while this materialisation was in flight, so its ` +
+          `result is not the destination's current generation: ${wrote}. The pointer may have moved, the row may have been rewritten ` +
           `(a retention policy does this), dropped or purged. Re-read the destination and re-run.`,
       );
     }
@@ -1407,6 +1414,16 @@ export class CloudRoaring {
    * failure in the collection's own reads or deletes, can be raised **after** the publish already landed, so a throw
    * does not by itself mean the load did not take effect — re-read the pointer rather than assuming. A collection by
    * name that finds the segment changed returns an empty `collected` instead.
+   *
+   * **A `TransientError` from the registry write can leave the publish unsettled, and deletes nothing.** The
+   * generation's object is sent again after a throttle where the backend allows it (a write id tells a first send
+   * that landed from another writer's object), and a driver sends each registry write once. When that write ends
+   * without an answer, the load reads the row: its own landed write is `published: true`, a row that has moved on is
+   * `superseded`, and a row still as the write found it gets a fresh compare-and-swap from the version just read, at
+   * most three times, after a wait on the store's clock. Still unanswered, the load throws the registry's `TransientError` and keeps its object, which
+   * a write may still point the row at. Re-run the load: it numbers past that object, and collection removes it once a
+   * generation above it is current. A `'superseded'` refusal that follows an unanswered write sets `unanswered: true`
+   * on its audit event: that write may have landed, and the generation been current for a while, first.
    *
    * Needs a backend (throws {@link UnsupportedError} otherwise).
    */

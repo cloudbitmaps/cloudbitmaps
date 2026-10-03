@@ -25,9 +25,10 @@ import {
   bulkLoadCrbmGeneration,
   holdsObject,
   openGenerationReader,
+  provesOwnObject,
   publishGeneration,
 } from './crbm-storage-source';
-import type { Clock } from './determinism';
+import type { Clock, Rng } from './determinism';
 import { aadFor } from './crypto';
 import type { CrbmCrypto, IKeystore } from './crypto';
 import {
@@ -53,8 +54,15 @@ export interface LoadDeps {
   readonly requireEncryption?: boolean;
   readonly clock?: Clock;
   /**
+   * The random source that spreads the waits between a publish's fresh compare-and-swaps (a random time under each
+   * bound). Absent, the read retry's source is used if it has one, and otherwise each wait is its bound.
+   */
+  readonly rng?: Rng;
+  /**
    * The store's read retry, for the read the guard makes of the current generation: a transient fault there is run
-   * again under it rather than failing the load. Absent, the read is made once. The write is never retried.
+   * again under it rather than failing the load. Absent, the read is made once. It does not govern the write: a
+   * registry write that gets no answer is settled by reading the row, and sent again only as a bounded fresh
+   * compare-and-swap.
    */
   readonly readRetry?: ReadRetry;
   /**
@@ -361,6 +369,10 @@ export async function loadSegment(
     }
   };
 
+  // Set when a registry write of this load's publish ended without an answer: a refusal after that cannot say whether
+  // the write landed first.
+  let unanswered = false;
+
   const refuse = async (reason: LoadRefusal): Promise<LoadResult> => {
     await reclaim();
     audit.onEvent({
@@ -370,6 +382,7 @@ export async function loadSegment(
       generation,
       reason,
       cardinality: written.cardinality,
+      ...(unanswered ? { unanswered: true as const } : {}),
     });
     // Constructed field by field, never spread from the write result. That result now carries `wrappedDeks` —
     // wrapped key material — and a spread would put it on a public, JSON-serialisable object that a load job
@@ -425,6 +438,15 @@ export async function loadSegment(
       // concurrent writer had created meanwhile, reporting success. A guarded write therefore has to fence on
       // the ABSENCE it relied on, exactly as it fences on the pointer it relied on.
       ...(needsBefore && row === null ? { expectAbsent: true } : {}),
+      // A registry write that fails without an answer is reconciled by reading the row: the pointer at this number
+      // is this load's publish only over the object this load wrote, which one footer read proves.
+      holdsOwnObject: () => provesOwnObject(deps.storage, key, written.fingerprint),
+      // And the wait before a fresh write, when the first left the row as it was.
+      clock: deps.clock,
+      rng: deps.rng ?? deps.readRetry?.rng,
+      onUnanswered: () => {
+        unanswered = true;
+      },
     });
   } catch (err) {
     // A refusal the publish states by throwing is as definite as a `false`: each of these is raised before that
@@ -432,8 +454,8 @@ export async function loadSegment(
     // `destroyed` row (no fence answered first, as for an unguarded load that found no row), new key material for a
     // segment that already has a generation, and a cleartext object for a row with key material. The registries raise
     // a `ValidationError` only from checks made before a write is sent (the ref, the record or patch, the row's size
-    // cap), and never a `KeyUnavailableError`. Anything else, a transient fault above all, may still land, and keeps
-    // the object.
+    // cap), and never a `KeyUnavailableError`. Anything else may still land, and keeps the object: above all the
+    // `TransientError` of a registry write the publish could not settle by reading the row back.
     if (isValidationError(err) || err instanceof KeyUnavailableError) await reclaim();
     throw err;
   }
