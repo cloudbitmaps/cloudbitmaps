@@ -113,6 +113,28 @@ const { int, usd } = figures.format;
 const git = (...args: string[]): string =>
   execFileSync('git', args, { cwd: ROOT, encoding: 'utf8' }).trim();
 
+/**
+ * The commits that touched an evidence file, following it through a move between evidence paths. Git's `--follow`
+ * also finds a copy source for a file that merely resembles another, such as a test fixture of the same shape, and
+ * would then count that fixture's history as the evidence's. The history is cut at the first commit that adds the
+ * file from a path outside `bench/calibration/`.
+ */
+function evidenceCommits(file: string, cwd: string = ROOT): string[] {
+  const out = execFileSync(
+    'git',
+    ['log', '--follow', '--name-status', '--format=%x00%H', '--', file],
+    { cwd, encoding: 'utf8' },
+  );
+  const commits: string[] = [];
+  for (const block of out.split('\0').filter((b) => b.trim() !== '')) {
+    const [hash, ...rest] = block.trim().split('\n');
+    commits.push(hash ?? '');
+    const moved = rest.map((l) => l.split('\t')).find((c) => /^[RC]\d+$/.test(c[0] ?? ''));
+    if (moved !== undefined && !(moved[1] ?? '').startsWith('bench/calibration/')) break;
+  }
+  return commits;
+}
+
 /** The rows of the markdown table whose header line matches `header`, as trimmed cells. */
 function tableAfter(text: string, header: RegExp): string[][] {
   const lines = text.split('\n');
@@ -232,6 +254,72 @@ describe('calibration reports are held to their evidence', () => {
 
   // The reverse check is only as good as its ability to fail. These are the look-alikes it must tell apart, and
   // the spellings a wrong figure could otherwise hide behind.
+  // The evidence is committed once. A new file that resembles a fixture is not followed into the fixture's history,
+  // a second commit touching it still counts, and a move between evidence paths is followed.
+  describe('the evidence commit count', () => {
+    const body = JSON.stringify({ a: Array.from({ length: 50 }, (_, i) => `line ${i}`) }, null, 2);
+    const repo = (): string => {
+      const dir = mkdtempSync(join(tmpdir(), 'evidence-commits-'));
+      execFileSync('git', ['init', '-q'], { cwd: dir });
+      mkdirSync(join(dir, 'bench', 'calibration'), { recursive: true });
+      mkdirSync(join(dir, 'fixtures'), { recursive: true });
+      return dir;
+    };
+    const commit = (dir: string, msg: string): void => {
+      execFileSync('git', ['add', '-A'], { cwd: dir });
+      execFileSync(
+        'git',
+        [
+          '-c',
+          'user.name=t',
+          '-c',
+          'user.email=t@example.com',
+          '-c',
+          'commit.gpgsign=false',
+          'commit',
+          '-q',
+          '-m',
+          msg,
+        ],
+        { cwd: dir },
+      );
+    };
+
+    it('counts a new file that resembles a fixture once, and a second commit twice', () => {
+      const dir = repo();
+      try {
+        writeFileSync(join(dir, 'fixtures', 'f.json'), `${body}\n`);
+        commit(dir, 'fixture');
+        writeFileSync(join(dir, 'fixtures', 'f.json'), `${body.replace('line 1"', 'line 1b"')}\n`);
+        commit(dir, 'fixture edit');
+        const file = 'bench/calibration/run.json';
+        writeFileSync(join(dir, file), `${body.replace('line 2"', 'line 2b"')}\n`);
+        commit(dir, 'evidence');
+        expect(evidenceCommits(file, dir)).toHaveLength(1);
+        writeFileSync(join(dir, file), `${body}\n`);
+        commit(dir, 'edit');
+        expect(evidenceCommits(file, dir)).toHaveLength(2);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('follows a move between evidence paths', () => {
+      const dir = repo();
+      try {
+        writeFileSync(join(dir, 'bench', 'calibration', 'old.json'), `${body}\n`);
+        commit(dir, 'evidence');
+        execFileSync('git', ['mv', 'bench/calibration/old.json', 'bench/calibration/new.json'], {
+          cwd: dir,
+        });
+        commit(dir, 'move');
+        expect(evidenceCommits('bench/calibration/new.json', dir)).toHaveLength(2);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe('the reverse check', () => {
     const values: Values = {
       usd: [0.0000816, 81.6, 346],
@@ -600,9 +688,7 @@ describe('calibration reports are held to their evidence', () => {
           git('rev-parse', '--is-shallow-repository'),
           'a shallow checkout has no history to check; CI checks out with fetch-depth: 0',
         ).toBe('false');
-        const commits = git('log', '--follow', '--format=%H', '--', file)
-          .split('\n')
-          .filter(Boolean);
+        const commits = evidenceCommits(file);
         expect(
           commits.length,
           `${file} is touched by ${commits.length} commits`,
