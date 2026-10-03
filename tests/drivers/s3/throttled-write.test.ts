@@ -175,6 +175,53 @@ describe('S3: a throttled write-once object is sent again, and its write id tell
     await expect(put(driver, new Uint8Array([1]))).rejects.toBeInstanceOf(WriteConflictError);
   });
 
+  it('a 409 on a re-send, with the object not stored yet, is an unknown outcome: TransientError, never "nothing was written"', async () => {
+    const bucket = new StubS3Bucket();
+    const { driver } = driverOver(bucket);
+    // The first send is throttled; the re-send meets S3's refusal of concurrent conditional writes to the key.
+    bucket.arm('PutObject', 'throttle');
+    bucket.arm('PutObject', { status: 409, code: 'ConditionalRequestConflict' });
+    const err = await put(driver, new Uint8Array([1])).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(TransientError);
+    expect(err).not.toBeInstanceOf(WriteConflictError);
+    expect(bucket.count('HeadObject')).toBe(1);
+    expect(bucket.count('DeleteObject')).toBe(0);
+  });
+
+  it("a 409 on a re-send, with this write's own object stored, is a success", async () => {
+    const bucket = new StubS3Bucket();
+    const { driver } = driverOver(bucket);
+    bucket.arm('PutObject', 'throttle-after-applying');
+    bucket.arm('PutObject', { status: 409, code: 'ConditionalRequestConflict' });
+    const res = await put(driver, new Uint8Array([4, 5]));
+    expect(res.size).toBe(2);
+    expect(bucket.objects.size).toBe(1);
+    expect([...bucket.objects.get(OBJECT_KEY)!.body]).toEqual([4, 5]);
+  });
+
+  it("a 409 on a re-send, with another writer's object stored, is a WriteConflictError", async () => {
+    const bucket = new StubS3Bucket();
+    const other = new S3StorageDriver({ client: bucket.client(), bucket: STUB_BUCKET });
+    const { driver } = driverOver(bucket, {
+      onSleep: async () => {
+        await put(other, new Uint8Array([9]));
+        // The re-send, not the other writer's put, meets S3's refusal.
+        bucket.arm('PutObject', { status: 409, code: 'ConditionalRequestConflict' });
+      },
+    });
+    bucket.arm('PutObject', 'throttle');
+    await expect(put(driver, new Uint8Array([1]))).rejects.toBeInstanceOf(WriteConflictError);
+    expect([...bucket.objects.get(OBJECT_KEY)!.body]).toEqual([9]);
+  });
+
+  it('a 409 on the first send is a WriteConflictError with no read-back', async () => {
+    const bucket = new StubS3Bucket();
+    const { driver } = driverOver(bucket);
+    bucket.arm('PutObject', { status: 409, code: 'ConditionalRequestConflict' });
+    await expect(put(driver, new Uint8Array([1]))).rejects.toBeInstanceOf(WriteConflictError);
+    expect(bucket.count('HeadObject')).toBe(0);
+  });
+
   it('a precondition that fails on the first send is a WriteConflictError, with no read-back', async () => {
     const bucket = new StubS3Bucket();
     const { driver } = driverOver(bucket);
@@ -250,6 +297,40 @@ describe('S3: a throttled write-once object is sent again, and its write id tell
         expect(bucket.objects.size).toBe(1);
       },
     );
+
+    it('NoSuchUpload on a re-sent completion with a legacy object (no write id) stored is a WriteConflictError', async () => {
+      const bucket = new StubS3Bucket();
+      const client = bucket.client();
+      const { driver } = driverOver(bucket, {
+        partBytes: FIVE_MIB,
+        onSleep: async () => {
+          // During the backoff an object with no user metadata at all takes the key, as an older release's did.
+          await client.send(
+            new PutObjectCommand({
+              Bucket: STUB_BUCKET,
+              Key: OBJECT_KEY,
+              Body: new Uint8Array([7]),
+            }),
+          );
+        },
+      });
+      bucket.arm('CompleteMultipartUpload', 'throttle');
+      bucket.arm('CompleteMultipartUpload', { status: 404, code: 'NoSuchUpload' });
+      await expect(put(driver, big())).rejects.toBeInstanceOf(WriteConflictError);
+      expect(bucket.count('HeadObject')).toBe(1);
+      expect(bucket.count('DeleteObject')).toBe(0);
+    });
+
+    it('NoSuchUpload on a re-sent completion with nothing stored is an unknown outcome: TransientError', async () => {
+      const bucket = new StubS3Bucket();
+      const { driver } = driverOver(bucket, { partBytes: FIVE_MIB });
+      bucket.arm('CompleteMultipartUpload', 'throttle');
+      bucket.arm('CompleteMultipartUpload', { status: 404, code: 'NoSuchUpload' });
+      const err = await put(driver, big()).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(TransientError);
+      expect(err).not.toBeInstanceOf(WriteConflictError);
+      expect(bucket.count('DeleteObject')).toBe(0);
+    });
 
     it('a throttle on every completion ends in TransientError and aborts the upload, deleting nothing', async () => {
       const bucket = new StubS3Bucket();

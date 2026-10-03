@@ -67,6 +67,7 @@ import {
   isInvalidRange,
   isNoSuchUpload,
   isNotFound,
+  isPreconditionFailed,
   isThrottle,
   isTransient,
   totalFromContentRange,
@@ -181,7 +182,11 @@ export class S3StorageDriver implements IStorageDriver {
       await write(sink);
       return await sink.finish();
     } catch (err) {
-      await sink.abort(); // best-effort cleanup of any in-flight multipart upload
+      // Best-effort cleanup of any in-flight multipart upload, sent after an ambiguous or exhausted completion too.
+      // S3 completes an upload atomically, so the abort never tears an object: a completion that had landed survives
+      // it (the abort then answers NoSuchUpload, which is swallowed), and one that had not is cancelled and its parts
+      // are reclaimed. No object is deleted here, and one that survives is the load's orphan above the pointer.
+      await sink.abort();
       // A lost conditional-write race — the precondition failed (412) or S3 rejected concurrent conditional
       // writes to the key (409) — is the write-once conflict, never a silent overwrite.
       if (isConditionalConflict(err)) {
@@ -473,12 +478,19 @@ class S3MultipartSink implements BlobSink {
   }
 
   /**
-   * Send the commit (`send` sends it once, with the SDK's retry off), and again after a throttle, up to {@link THROTTLE_RESENDS} times, waiting
-   * a full-jitter backoff before each. Any other failure is thrown at once. Once the commit has been sent again, a
-   * precondition failure, or an upload S3 no longer knows, can be an earlier send that landed after all, so the
-   * object's write id decides: this write's own is a success, and any other object, or one with no id, is the
-   * conflict it reads as. The object is never overwritten, so the id it holds says who wrote it. A failed read-back
-   * throws, and is neither. Exhausted, it throws {@link TransientError}; nothing is deleted.
+   * Send the commit (`send` sends it once, with the SDK's retry off), and again after a throttle, up to
+   * {@link THROTTLE_RESENDS} times, waiting a full-jitter backoff before each. Any other failure is thrown at once.
+   * Once the commit has been sent again, an answer that can be an earlier send that landed or is still landing (a
+   * precondition failure, a concurrent-write conflict, or an upload S3 no longer knows) is settled by reading the
+   * object back. The object is never overwritten, so the id it holds says who wrote it:
+   *
+   * - this write's own id: a success;
+   * - another's id, or none (an object an earlier release wrote): the conflict it reads as;
+   * - nothing stored: a `412` still reads as the conflict it answered (an object was there, and is gone). A `409`
+   *   and an unknown upload are an unknown outcome, since the first send may still be applying: {@link TransientError},
+   *   and never a report that nothing was written.
+   *
+   * A failed read-back throws, and is neither. Exhausted, it throws {@link TransientError}; nothing is deleted.
    */
   private async commit(
     operation: 'PutObject' | 'CompleteMultipartUpload',
@@ -490,15 +502,15 @@ class S3MultipartSink implements BlobSink {
         return;
       } catch (err) {
         if (resent > 0 && (isConditionalConflict(err) || isNoSuchUpload(err))) {
-          const stored = await this.storedWriteId();
-          if (stored === this.writeId) return;
-          if (isConditionalConflict(err)) throw err;
-          if (stored === undefined) {
+          const stored = await this.storedObject();
+          if (stored?.id === this.writeId) return;
+          if (stored === undefined && !isPreconditionFailed(err)) {
             throw new TransientError(
-              `S3 ${operation}: the upload ended without storing ${this.objectKey}`,
+              `S3 ${operation}: ${this.objectKey} is not stored, and the first send may still be applying`,
               { cause: err },
             );
           }
+          if (isConditionalConflict(err)) throw err;
           throw new WriteConflictError(`generation already exists (write-once): ${this.objectKey}`);
         }
         if (!isThrottle(err)) throw err;
@@ -513,15 +525,18 @@ class S3MultipartSink implements BlobSink {
     }
   }
 
-  /** The write id the stored object carries, or `undefined` when it carries none or is gone. A failed read throws. */
-  private storedWriteId(): Promise<string | undefined> {
+  /**
+   * The object stored under the key: `undefined` when none is there, otherwise the write id it carries (`id` is
+   * `undefined` for an object that carries none). A failed read throws.
+   */
+  private storedObject(): Promise<{ readonly id: string | undefined } | undefined> {
     return timedRead('HeadObject', this.readTimeoutMs, async (options) => {
       try {
         const head = await this.client.send(
           new HeadObjectCommand({ Bucket: this.bucket, Key: this.objectKey }),
           options,
         );
-        return head.Metadata?.[WRITE_ID_KEY];
+        return { id: head.Metadata?.[WRITE_ID_KEY] };
       } catch (err) {
         if (isNotFound(err)) return undefined;
         throw err;
@@ -530,7 +545,8 @@ class S3MultipartSink implements BlobSink {
   }
 
   /** Best-effort cleanup of an in-flight multipart upload after an error (a leaked MPU is reaped by a bucket
-   * lifecycle rule; never a correctness issue). No-op if nothing was started or it already completed. */
+   * lifecycle rule; never a correctness issue). No-op if nothing was started or it already completed. It aborts an
+   * upload, never an object: a completion that landed survives it. */
   async abort(): Promise<void> {
     if (this.uploadId === undefined) return;
     const id = this.uploadId;
