@@ -67,7 +67,8 @@ export interface StorageChunkSource {
   /**
    * Optional: the current generation's **per-chunk cardinality** (`chunkKey → count`), read from the
    * already-parsed `.crbm` index with **no payload reads**, or `null` if the segment has no Storage generation.
-   * Powers the free `count()` — the engine sums the index instead of fetching a single chunk. A source with no
+   * Powers the free `count()` of a source with no {@link StorageChunkSource.summary} — the engine sums the index
+   * instead of fetching a single chunk. A source with no
    * index (e.g. the in-memory source) omits this, and `count()` falls back to fetching every chunk.
    */
   cardinalities?(ref: SegmentRef): Promise<ReadonlyMap<number, number> | null>;

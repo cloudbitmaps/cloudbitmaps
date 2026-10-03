@@ -252,11 +252,14 @@ export class SegmentEngine {
   }
 
   /**
-   * Cardinality. When the Storage source can serve per-chunk cardinality from its `.crbm` index (the `.crbm`
-   * source can), the count is summed from the index with **zero payload reads**. A source without that
-   * capability (the in-memory source) falls back to fetching every chunk.
+   * Cardinality. When the Storage source can describe the current generation (the `.crbm` source can), the count is
+   * that description's: the registry row's summary when the row has one it can use, which is one request when cold
+   * and no read of the object, and otherwise the sum of the object's index. Either way, **zero payload reads**. A
+   * source that can only serve per-chunk cardinality sums those, and one with neither (the in-memory source) falls back
+   * to fetching every chunk.
    *
-   * The index sum is trusted, not confirmed: the reader checked the index for internal consistency when it opened
+   * The row's summary and the index sum are trusted, not confirmed: the source holds the summary against the object
+   * whenever it opens it, and the reader checked the index for internal consistency when it opened
    * the object, and a corrupt index that is still internally consistent yields a wrong count. `iterate()` and the
    * combines decode the payloads.
    */

@@ -96,7 +96,7 @@ describe('a cold count is one request', () => {
 
   it('an index wider than the 256 KiB tail read: still one row read', async () => {
     const w = world();
-    // 60,000 one-id chunks make an index longer than the tail read, which is where a cold count used to need a
+    // 60,000 one-id chunks make an index longer than the tail read, where a count that opened the object needed a
     // third request.
     await w.writer.load(SEG, spread(60_000));
     const store = w.reader();
