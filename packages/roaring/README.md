@@ -48,7 +48,9 @@ To persist, pass a different **backend** as `storage`. Nothing else changes:
 | `AzureBlobStorage({ connectionString, container })` | `@cloudbitmaps/azure-blob` | Azure Blob Storage; outside the [validated envelope](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/ROADMAP.md#the-validated-envelope--whats-proven-and-what-isnt) |
 
 There is no `add` or `remove`: a segment changes only by loading a new generation. A load is a batch job, not a
-request handler. `store.exists(ref)` says whether a segment has been loaded.
+request handler. `store.exists(ref)` says whether a segment has been loaded. A load takes ids, or a bitmap you already
+hold: `store.load(ref, { bitmap })` for a `RoaringBitmap32`, or `{ serialized }` for portable Roaring bytes, checked
+before anything is written and loaded with no per-id work, into the same bytes its ids would write.
 
 ## Options
 
@@ -81,7 +83,7 @@ give the method and what the numbers do not establish.
 
 - Grant the permissions the library issues and add a lifecycle rule to abort incomplete uploads.
 - Use a bucket that honors conditional writes, and `@aws-sdk/client-s3` 3.700.0 or later if you pass your own S3 client.
-- Set a request timeout on your storage client. Reads retry by themselves, and S3 and Azure Blob reads can be timed (`readTimeoutMs`); a write that fails transiently is yours to re-run.
+- Set a request timeout on your storage client. Reads retry by themselves, and a read can be timed on every backend (`readTimeoutMs`); a write that fails transiently is yours to re-run.
 - Back up the registry with the data, and the keystore too if you encrypt. If you lose the key, the data is gone.
 - Schedule your loads, and `retireExpired` if you use retention. Run loads off the request path.
 

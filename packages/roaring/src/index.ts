@@ -66,6 +66,7 @@ import type {
   BudgetOption,
   GenerationEntry,
   LoadGuard,
+  LoadInput,
   LoadOptions,
   LoadRefusal,
   LoadResult,
@@ -108,7 +109,7 @@ import { listGenerations, rollbackSegment } from '@cloudbitmaps/core';
 import { listSegments, segmentExists } from '@cloudbitmaps/core';
 import type { SegmentInfo } from '@cloudbitmaps/core';
 import { refuseReservedNamespace } from './reserved-namespace';
-import { roaringCodec } from './roaring-codec';
+import { bitmapAsLoadInput, roaringCodec } from './roaring-codec';
 import { SystemClock } from './system-clock';
 import { OPTION_KEYS, type OptionGroup } from './option-keys';
 
@@ -926,7 +927,9 @@ export class CloudRoaring {
     op: string,
     options?: MaterializeOptions,
   ): Promise<MaterializeResult> {
-    const deps = this.lifecycleDeps(op);
+    // A materialisation's `keep` collects every generation below the new one beyond it, which a destination that
+    // earlier materialisations kept in full needs a listing for.
+    const deps = { ...this.lifecycleDeps(op), collectByListing: true };
     let result: Awaited<ReturnType<typeof loadSegment>>;
     try {
       result = await loadSegment(dest, ids, deps, {
@@ -1346,7 +1349,14 @@ export class CloudRoaring {
   }
 
   /**
-   * **Replace this segment's contents** with `ids`, as one new immutable generation, and make it current.
+   * **Replace this segment's contents** with `input`, as one new immutable generation, and make it current.
+   *
+   * `input` is ids (any sync or async iterable of integers in `[0, 2^32)`), or a whole bitmap: `{ bitmap }`, anything
+   * with `serialize('portable')` such as `roaring`'s `RoaringBitmap32`, or `{ serialized }`, portable Roaring bytes.
+   * A bitmap is checked (size cap, structure, safe deserializer) before the first request, written from its own
+   * containers with no per-id work, and gives the generation byte for byte the one its ids would. A bare
+   * `RoaringBitmap32` passed as ids loads as `{ bitmap }`. A `Uint8Array` or `Buffer` passed as ids is refused with
+   * `ValidationError`, since each byte would load as an id: pass bytes as `{ serialized }`.
    *
    * The whole write path in one call: take the next generation number, write the object, check the result is
    * plausible, move the pointer, collect what the move superseded. Composed by hand those are four functions and
@@ -1383,24 +1393,28 @@ export class CloudRoaring {
    * so it leaves the orphan rather than risk deleting live data. The orphan is an ordinary generation once a later
    * one is current above it, and collection counts it within `keep`.
    *
+   * **Collection is by name for the default `keep`.** With `keep` of 0 or 1, a load that found nothing above the
+   * pointer deletes the one generation its publish pushed out of the window and lists nothing; it lists the segment's
+   * objects on every sixteenth generation, and on any load that met an object above the pointer or whose guard
+   * found the current generation's object gone, to take what the name-only passes leave, such as the generations an
+   * earlier, wider `keep` held. `keep` of 2 or more lists on every load. {@link LoadResult.collected} then names what
+   * the pass deleted by name, and that generation may have been gone already.
+   *
    * What it **throws** for is a fault rather than an outcome: invalid options or ids, and a crypto-shredded
    * segment (`ValidationError`); a key the keystore cannot provide (`KeyUnavailableError`); a current generation
    * that will not open when a guard reads its size (`IntegrityError`); a driver failure; and a collection pass
-   * that could not prove the segment was still the same one (`WriteConflictError`). The last can be raised
-   * **after** the publish already landed, so a throw does not by itself mean the load did not take effect —
-   * re-read the pointer rather than assuming.
+   * by listing that could not prove the segment was still the same one (`WriteConflictError`). That one, and a
+   * failure in the collection's own reads or deletes, can be raised **after** the publish already landed, so a throw
+   * does not by itself mean the load did not take effect — re-read the pointer rather than assuming. A collection by
+   * name that finds the segment changed returns an empty `collected` instead.
    *
    * Needs a backend (throws {@link UnsupportedError} otherwise).
    */
-  async load(
-    ref: SegmentRef,
-    ids: Iterable<number> | AsyncIterable<number>,
-    options: LoadOptions = {},
-  ): Promise<LoadResult> {
+  async load(ref: SegmentRef, input: LoadInput, options: LoadOptions = {}): Promise<LoadResult> {
     validateSegmentRef(ref);
     const deps = this.lifecycleDeps('load');
     try {
-      return await loadSegment(ref, ids, deps, options);
+      return await loadSegment(ref, bitmapAsLoadInput(input), deps, options);
     } finally {
       // This store's view of the segment is now behind whatever just happened — a published load superseded the
       // generation the caches were built on, and a throw can still have published before failing its collect.
@@ -1878,10 +1892,12 @@ export interface MaterializeOptions extends CombineOptions {
    * Generations to keep below the new pointer — see {@link LoadOptions.keep}. A value that is not a non-negative
    * integer throws `ValidationError`.
    *
-   * **Defaults to keeping everything**, unlike `load()`, which keeps 1 and collects the rest. An operator's
+   * **Defaults to keeping everything**, unlike `load()`, which keeps 1 and collects what it supersedes. An operator's
    * recovery story can depend on a materialisation collecting nothing: `rollbackSegment` refuses a target that
    * has been collected. Pass a number to collect on the way through; `0` keeps only the
-   * generation this call publishes.
+   * generation this call publishes. It collects by listing the destination, so it clears every generation below the
+   * new one beyond `keep`, however many earlier calls kept, where a `load()` deletes by name the one generation its
+   * publish pushes out of the window.
    */
   readonly keep?: number;
 }
@@ -2545,6 +2561,7 @@ export type {
   DestroyResult,
   ClearRegistrySummary,
   DropResult,
+  EncodedChunk,
   EraseDeps,
   EstimateInput,
   ExportFailure,
@@ -2566,6 +2583,7 @@ export type {
   IdRange,
   InProcessKeystoreOptions,
   LoadGuard,
+  LoadInput,
   LoadOptions,
   LoadRefusal,
   LoadResult,
@@ -2577,6 +2595,7 @@ export type {
   NewRegistryRecord,
   PinnedAt,
   PinnedObject,
+  PortableBitmap,
   PricingProfile,
   RedisNodeType,
   RedisSizing,

@@ -69,8 +69,9 @@ describe('a load reuses the row it read, and every fence on that row still holds
     const registry = counting<IRegistryDriver>(w.registry, calls);
     const r = await loadSegment(SEG, [1, 2, 3, 4], { ...w.deps, registry }, { keep: 9 });
     expect(r).toMatchObject({ generation: 3, published: true });
-    // One read before the publish, none in it; the collection pass reads twice more (before and after its listing).
-    expect(calls.get).toBe(3);
+    // One read before the publish, none in it. A keep of 9 has nothing to collect at generation 3, so the load
+    // reads the row no more than that.
+    expect(calls.get).toBe(1);
     expect(calls.compareAndSwap).toBe(1);
   });
 

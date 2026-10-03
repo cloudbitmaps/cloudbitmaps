@@ -83,6 +83,10 @@ jobs:
       # two source comments. This fails if any of them is not what bench/event-loop-results.json says. It measures
       # nothing, since CI hardware is not the hardware that measured; re-measure by hand with `pnpm bench:event-loop`.
       - run: pnpm bench:event-loop:check
+      # bench/load-input.cjs measures a load from ids against one from a bitmap. This fails if the loading guide's
+      # "How fast a bitmap loads" figures are not what bench/load-input-results.json says, or, while nothing is
+      # recorded, if the guide quotes any. It measures nothing; re-measure by hand with `pnpm bench:load-input`.
+      - run: pnpm bench:load-input:check
       # The built package must import cleanly under BOTH module systems (guards the roaring CJS→ESM interop).
       - run: node scripts/smoke.cjs
       # Both secret scanners, HERE and not only in the release workflow.

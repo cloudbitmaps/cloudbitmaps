@@ -36,7 +36,7 @@ const ids = Array.from({ length: CHUNKS }, (_, i) => joinId(i % 61_035, i % 65_5
  * A clock that counts every yield, so a test can require at least the yields the loop it names must add.
  *
  * Counting loop turns against a loose bound is not enough. A load has several independent yield sites — the id
- * ingest, the per-chunk flush, the cardinality tally, and the serialize/CRC writer — and against a bound such as
+ * ingest, the per-chunk flush, and the serialize/CRC writer, which also tallies the cardinality — and against a bound such as
  * `> 20`, **any one surviving site would satisfy a turn-count test.** Disabling the yields in the per-chunk
  * insert loop would leave it green, and the case titled "yields on an async source too" would pass with the
  * async ingest path's yields removed, because its turns come from the writer. A lower bound built from what each
@@ -77,10 +77,10 @@ describe('bulk-load is cooperative', () => {
     // The flavor package gives `store.load()` a real clock, so this is what an ordinary caller gets with no wiring.
     //
     // The bound is derived from the fixture rather than picked to be safely low: CHUNKS/YIELD_EVERY chunk-level
-    // yields must happen in each of the flush, tally and write loops, so losing any ONE of them drops the count
-    // below this. A generous `> 20` could not tell those apart.
+    // yields must happen in each of the flush and write loops, so losing either drops the count below this. A
+    // generous `> 20` could not tell those apart.
     const perSite = Math.floor(CHUNKS / YIELD_EVERY);
-    expect(turns).toBeGreaterThanOrEqual(perSite * 3);
+    expect(turns).toBeGreaterThanOrEqual(perSite * 2);
     expect((result as { cardinality: number }).cardinality).toBe(new Set(ids).size);
   });
 
@@ -130,7 +130,7 @@ describe('bulk-load is cooperative', () => {
       { clock } as never,
     );
     const ingestYields = Math.floor(ids.length / (1 << 14)); // YIELD_EVERY_IDS
-    const chunkYields = Math.floor(CHUNKS / YIELD_EVERY) * 3;
+    const chunkYields = Math.floor(CHUNKS / YIELD_EVERY) * 2;
     expect(clock.yields).toBeGreaterThanOrEqual(ingestYields + chunkYields);
     expect((result as { cardinality: number }).cardinality).toBe(new Set(ids).size);
   });

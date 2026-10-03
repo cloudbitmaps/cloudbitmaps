@@ -71,10 +71,10 @@ difference can tear. The obvious case is a **registry that is ahead of the objec
 
 This is the exact failure `checkConsistency()` detects (issue `missing-storage-generation`). The reverse — storage
 restored to a *later* point than the registry — tears the same way. Storage generations are immutable, but they
-are not kept: a `load` collects, by default, the generations below its new pointer except
-the newest one (`keep: 1`), a subject erasure collects every one below its rewrite (`keep: 0`), and `dropSegment`
-deletes them all. Two loads after the registry's point are enough to delete the generation the restored registry
-names.
+are not kept: a `load` collects, by default, the generations below its new pointer except the newest one (`keep: 1`),
+taking the one its publish pushes out by name and the rest on every 16th generation; a subject erasure collects every
+one below its rewrite (`keep: 0`); and `dropSegment` deletes them all. Two loads after the registry's point are enough
+to delete the generation the restored registry names.
 
 ## The hard requirement: one restore point for both stores
 
@@ -439,9 +439,9 @@ The window only opens on a kill that skips the graceful path, so close that path
   exec-form `CMD`, or an init that forwards.
 - **Set a request timeout on the SDK client you inject.** The library times no write, deliberately, since a timeout
   of its own would abandon a write in flight; the only requests it can time are reads, through `readTimeoutMs` on
-  `S3Storage` and `AzureBlobStorage`. The consequence is that a black-holed connection hangs a write, a listing or an
-  untimed read indefinitely; without a client timeout, a stuck sweep eats its whole grace period and is then killed
-  between the two writes above. This is the single highest-value thing you own.
+  `S3Storage`, `GcsStorage` and `AzureBlobStorage`. The consequence is that a black-holed connection hangs a write, a
+  listing or an untimed read indefinitely; without a client timeout, a stuck sweep eats its whole grace period and is
+  then killed between the two writes above. This is the single highest-value thing you own.
 
 The library does not pair the audit trail against unstamped tombstones itself; an automated reconcile is listed on
 the [roadmap](../ROADMAP.md) and not shipped, so this section is the procedure.

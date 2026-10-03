@@ -446,11 +446,14 @@ describe('calibrate guards — what a real run is held to', () => {
   // Run 2026-09-23-94416's GETs add up only with the loads counted: 36 pointer reads that each answered 404, three
   // per load of a new segment. A projection allowing one read per attempt would hold only because nothing races the
   // harness's loads, and a bound that holds only by luck is not a bound. The harness times `store.load()`, which
-  // also checks its generation number and lists the segment, so every request a load can make is counted here, at
-  // every number of lost races up to the retry bound, against local drivers and the real registry protocol.
+  // also checks its generation number and, when that finds the number taken, lists, so every request a load can make
+  // is counted here, at every number of lost races up to the retry bound, against local drivers and the real
+  // registry protocol: a load whose check finds the number free, which the harness's own loads all are, and one
+  // that finds a crashed load's object under it, which lists to number past it and again to collect.
   it('projects every request a load can make, even when each publish attempt loses its race', async () => {
     const load = async (
       lostRaces: number,
+      meetsAnObject: boolean,
     ): Promise<{
       reads: number;
       checks: number;
@@ -460,12 +463,20 @@ describe('calibrate guards — what a real run is held to', () => {
     }> => {
       const calls: Record<string, number> = {};
       const pointer = new CountingObjectStore(lostRaces);
+      const memory = new MemoryStorageDriver();
       const store = new CloudRoaring({
         storage: brandAsBackend({
-          storage: counting(new MemoryStorageDriver(), calls),
+          storage: counting(memory, calls),
           registry: new ObjectStoreRegistry(pointer, undefined, () => 0),
         }),
       });
+      // A crashed load's object under the number the load will check, written before the counting starts.
+      if (meetsAnObject) {
+        // Two stray objects, so the generation the listing numbers, 2, leaves one below its window to take.
+        for (const generation of [0, 1]) {
+          await bulkLoadCrbmGeneration(memory, { segment: 's', generation }, [7]);
+        }
+      }
       try {
         await store.load({ segment: 's' }, [1, 2, 3]);
       } catch (err) {
@@ -479,8 +490,12 @@ describe('calibrate guards — what a real run is held to', () => {
         lists: calls.list ?? 0,
       };
     };
-    // Nothing racing: five reads, the check, one listing, the object and the one conditional write.
-    expect(await load(0)).toEqual({ reads: 5, checks: 1, writes: 1, objects: 1, lists: 1 });
+    // Nothing racing and the number free: three reads, the check, the object and the one conditional write, and no
+    // listing, since a new segment has nothing outside its window to collect.
+    expect(await load(0, false)).toEqual({ reads: 3, checks: 1, writes: 1, objects: 1, lists: 0 });
+    // The number taken: three more reads and two listings, one to number past the objects and one to collect, which
+    // re-reads the pointer before its listing, after it and before its delete.
+    expect(await load(0, true)).toEqual({ reads: 6, checks: 1, writes: 1, objects: 1, lists: 2 });
     const p = guards.projectOps({
       loads: 1,
       reads: 0,
@@ -496,23 +511,24 @@ describe('calibrate guards — what a real run is held to', () => {
       chunksPerRead: 0,
       retryBound: guards.RETRY_BOUND,
     });
-    for (let lost = 0; lost <= guards.RETRY_BOUND; lost++) {
-      const worst = await load(lost);
-      expect(p.get, `${lost} lost races`).toBeGreaterThanOrEqual(worst.reads + worst.checks);
-      // The object, the listing, a second listing for a check that finds the number taken, then every attempt at
-      // the pointer; on S3 a listing bills at the PUT rate.
-      expect(p.put, `${lost} lost races`).toBeGreaterThanOrEqual(
-        worst.objects + worst.lists + 1 + worst.writes,
-      );
-      // A multipart load lists and publishes the same way; only its object differs, as a create, the parts and a
-      // complete.
-      expect(large.get, `multipart, ${lost} lost races`).toBeGreaterThanOrEqual(
-        worst.reads + worst.checks,
-      );
-      expect(large.put, `multipart, ${lost} lost races`).toBeGreaterThanOrEqual(
-        2 + PARTS + worst.lists + 1 + worst.writes,
-      );
+    for (const meetsAnObject of [false, true]) {
+      for (let lost = 0; lost <= guards.RETRY_BOUND; lost++) {
+        const worst = await load(lost, meetsAnObject);
+        const at = `${lost} lost races${meetsAnObject ? ', the number taken' : ''}`;
+        expect(p.get, at).toBeGreaterThanOrEqual(worst.reads + worst.checks);
+        // The object, the listings, then every attempt at the pointer; on S3 a listing bills at the PUT rate.
+        expect(p.put, at).toBeGreaterThanOrEqual(worst.objects + worst.lists + worst.writes);
+        // A multipart load publishes the same way; only its object differs, as a create, the parts and a complete.
+        expect(large.get, `multipart, ${at}`).toBeGreaterThanOrEqual(worst.reads + worst.checks);
+        expect(large.put, `multipart, ${at}`).toBeGreaterThanOrEqual(
+          2 + PARTS + worst.lists + worst.writes,
+        );
+      }
     }
+    // The bound is tight where it is reached: a load that finds its number taken and loses every attempt but the
+    // last makes as many GET-class requests as the bound allows.
+    expect(p.get).toBe(15);
+    expect(p.get).toBe((await load(guards.RETRY_BOUND - 1, true)).reads + 1);
   });
 
   it('flags a run that exceeded its projection, and only then', () => {
@@ -2052,11 +2068,11 @@ describe("a cold intersect's request count does not depend on the network", () =
 
 // Run 2026-09-23-94416 timed a load's write and its publish alone. `store.load()`, the one-call load the guide leads
 // with and what the harness now times, also checks that the next generation number is free, reads the current one's
-// cardinality to guard against a shrink, and collects superseded generations after the publish. The benchmarks page
-// prices it from the requests counted here, against local drivers and the real registry protocol, until a run
-// measures it. On S3 a listing bills at the PUT rate.
+// cardinality to guard against a shrink, and collects superseded generations after the publish, by name, with a
+// listing every sixteenth generation. The benchmarks page prices it from the requests counted here, against local
+// drivers and the real registry protocol, until a run measures it. On S3 a listing bills at the PUT rate.
 describe('what a load requests: store.load()', () => {
-  it('writes one object and the pointer once, lists once, checks its number once, and reads the pointer four or five times', async () => {
+  it('writes one object and the pointer once, checks its number once, lists only every sixteenth load, and reads the pointer two to five times', async () => {
     const storageCalls: Record<string, number> = {};
     const pointer = new CountingObjectStore(0);
     const store = new CloudRoaring({
@@ -2065,12 +2081,13 @@ describe('what a load requests: store.load()', () => {
         registry: new ObjectStoreRegistry(pointer, undefined, () => 0),
       }),
     });
-    const load = async (ids: number[]): Promise<Record<string, number>> => {
+    const load = async (generation: number): Promise<Record<string, number>> => {
       for (const k of Object.keys(storageCalls)) delete storageCalls[k];
       pointer.reads = 0;
       pointer.writes = 0;
+      const ids = Array.from({ length: generation + 1 }, (_, i) => i + 1);
       const result = await store.load({ namespace: 'ns', segment: 's' }, ids);
-      expect(result.published).toBe(true);
+      expect(result).toMatchObject({ generation, published: true });
       return {
         putImmutable: storageCalls.putImmutable ?? 0,
         list: storageCalls.list ?? 0,
@@ -2082,32 +2099,46 @@ describe('what a load requests: store.load()', () => {
       };
     };
     // A segment's first load: the object and the pointer written once each, one check that its generation number is
-    // free (the one tail read, of zero bytes; a HeadObject on S3), one listing to collect, and five pointer reads, one
-    // of them after its ids, since it found no row.
-    const first = await load([1, 2, 3]);
+    // free (the one tail read, of zero bytes; a HeadObject on S3), and three pointer reads, one of them after its
+    // ids, since it found no row. There is nothing to collect, so nothing is listed.
+    const first = await load(0);
     expect(first).toEqual({
       putImmutable: 1,
-      list: 1,
+      list: 0,
       getTail: 1,
       getRange: 0,
       delete: 0,
-      pointerReads: 5,
+      pointerReads: 3,
       pointerWrites: 1,
     });
-    // A reload also opens the current generation's index, to count what the load would replace.
-    const reload = await load([1, 2, 3, 4]);
+    // A reload also opens the current generation's index, to count what the load would replace, and reads the pointer
+    // twice: its row, and the compare-and-swap's read of the row's version. Both generations are inside the window.
+    const reload = await load(1);
     expect(reload).toEqual({
       putImmutable: 1,
-      list: 1,
+      list: 0,
       getTail: 2,
       getRange: 0,
       delete: 0,
-      pointerReads: 4,
+      pointerReads: 2,
       pointerWrites: 1,
     });
-    // From the third load on, the collection pass has a generation to delete, and re-reads the pointer before it.
-    const collecting = await load([1, 2, 3, 4, 5]);
+    // From the third load on, collection deletes by name the generation the window pushed out, and re-reads the
+    // pointer before it. It lists nothing.
+    const collecting = await load(2);
     expect(collecting).toEqual({
+      putImmutable: 1,
+      list: 0,
+      getTail: 2,
+      getRange: 0,
+      delete: 1,
+      pointerReads: 3,
+      pointerWrites: 1,
+    });
+    // Every sixteenth generation lists instead, and reads the pointer before and after its listing.
+    for (let g = 3; g < 16; g++) expect((await load(g)).list, `generation ${g}`).toBe(0);
+    const listing = await load(16);
+    expect(listing).toEqual({
       putImmutable: 1,
       list: 1,
       getTail: 2,
@@ -2116,8 +2147,8 @@ describe('what a load requests: store.load()', () => {
       pointerReads: 5,
       pointerWrites: 1,
     });
-    // The published figures price these three, so they must be these three. In a single-bucket store on S3 the
-    // object, the listing and the pointer bill as PUT-class requests, every read as a GET, and a delete is free.
+    // The published figures price these four, so they must be these four. In a single-bucket store on S3 the object,
+    // any listing and the pointer bill as PUT-class requests, every read as a GET, and a delete is free.
     const billed = (c: Record<string, number>): { put: number; get: number } => ({
       put: (c.putImmutable ?? 0) + (c.list ?? 0) + (c.pointerWrites ?? 0),
       get: (c.pointerReads ?? 0) + (c.getTail ?? 0) + (c.getRange ?? 0),
@@ -2126,6 +2157,7 @@ describe('what a load requests: store.load()', () => {
       first: billed(first),
       reload: billed(reload),
       collecting: billed(collecting),
+      listing: billed(listing),
     }).toEqual(calibrationFigures.STORE_LOAD_REQUESTS);
   });
 });

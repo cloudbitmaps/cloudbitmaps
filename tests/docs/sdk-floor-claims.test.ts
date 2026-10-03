@@ -69,7 +69,7 @@ describe('a driver package states its SDK range identically in the manifest and 
   });
 
   it.each(RANGES)("$name: site/usage.html quotes $sdk's range verbatim", ({ sdk, range }) => {
-    // The site's driver table states these ranges too. An S3 cell saying `>=3.645` where the manifest declares
+    // The site's driver table states these ranges too. An S3 cell saying `>=3.700` where the manifest declares
     // `>=3.700.0 <4` has the same floor but drops the upper bound this very file insists on for the READMEs,
     // so a reader could conclude SDK v4 is supported. Same rule, same corpus.
     const page = readFileSync(join(ROOT, 'site', 'usage.html'), 'utf8')

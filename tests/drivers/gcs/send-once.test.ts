@@ -557,4 +557,24 @@ describe('GCS: one-request reads through the real SDK', () => {
       await refusedAndReleased(() => driver.getTail(GEN, 10), ValidationError);
     }
   });
+
+  it('a range read is one HTTP request, and a response past the requested length is refused the same way, unretried', async () => {
+    const backend = await seed(Uint8Array.from({ length: 100 }, (_, i) => i));
+    const driver = backend.storage as GcsStorageDriver;
+    expect(await driver.getRange(GEN, 10, 8)).toEqual(
+      Uint8Array.from({ length: 8 }, (_, i) => 10 + i),
+    );
+    expect(stub.count('media')).toBe(1);
+    for (const extra of [{ 'content-length': String(1024 ** 3) }, {}] as Array<
+      Record<string, string>
+    >) {
+      stub.aborted = false;
+      stub.mediaEndless = {
+        status: 206,
+        headers: () => ({ 'content-range': 'bytes 10-17/100', ...extra }),
+      };
+      await refusedAndReleased(() => driver.getRange(GEN, 10, 8), ValidationError);
+    }
+    expect(stub.count('media')).toBe(3);
+  });
 });

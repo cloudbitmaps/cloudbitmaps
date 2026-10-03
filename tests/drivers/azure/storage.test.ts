@@ -279,3 +279,28 @@ describe('AzureBlobStorageDriver — what a tail read costs', () => {
     expect(calls).toEqual(['getProperties']);
   });
 });
+
+// Collecting by name deletes one generation without knowing whether a blob is there, so a delete is one request, and
+// a blob that is absent is no error: `deleteIfExists` answers it without throwing.
+describe('AzureBlobStorageDriver — what a delete costs', () => {
+  it('makes one deleteIfExists call, so an absent blob is no error', async () => {
+    const calls: string[] = [];
+    const blob = {
+      deleteIfExists: async () => {
+        calls.push('deleteIfExists');
+        return { succeeded: false };
+      },
+      delete: async () => {
+        calls.push('delete');
+      },
+      getProperties: async () => {
+        calls.push('getProperties');
+        return { contentLength: 0 };
+      },
+    };
+    const containerClient = { getBlockBlobClient: () => blob } as unknown as ContainerClient;
+    const driver = new AzureBlobStorageDriver({ containerClient });
+    await expect(driver.delete({ segment: 's', generation: 3 })).resolves.toBeUndefined();
+    expect(calls).toEqual(['deleteIfExists']);
+  });
+});

@@ -121,7 +121,7 @@
             <p class="panel-row is-pair"><span>Share of the $346 cluster</span><span>0.008%</span></p>
             <p class="panel-row is-pair"><span>1M cold A&nbsp;∩&nbsp;B, 100 chunks shared</span><span>$82.40</span></p>
             <p class="panel-row is-pair">
-              <span>1M writes + publishes · <span class="m">store.load()</span> ≈ 2×</span><span>$11.20</span>
+              <span>1M writes + publishes · <span class="m">store.load()</span> about a tenth more on average</span><span>$11.20</span>
             </p>
             <p class="panel-row is-pair"><span>Crossover, in GETs</span><span>329.15 /s</span></p>
             <p class="panel-row is-pair"><span>…as cold A&nbsp;∩&nbsp;B, 206 GETs each</span><span>1.6 /s</span></p>
@@ -139,7 +139,7 @@
            loaded store has no per-id write, so there is no write RATE to plot. Data enters as a whole
            generation — one object PUT, a few when multipart, then the pointer — and that is the "1M loads" row
            instead. Its figure is the single-bucket run's, not the estimator's: the run measured a write and publish,
-           and the estimator prices `store.load()`, which also lists the segment and reads the pointer more. The two
+           and the estimator prices `store.load()`, which also checks its generation number and reads the pointer more. The two
            real-S3 rows quote the run as it measured it; what they would be inside the region, or through
            `store.load()`, is in the run's own panel below, labelled expected. -->
       <section id="anchors">
@@ -201,7 +201,7 @@
                   <td class="from">
                     A generation written once, then the pointer moved to it: 2 PUT + 3 GET, measured on real S3
                     with the pointer in the same bucket. <span class="m">store.load()</span> also checks its
-                    generation number and collects, which adds about half as much again. The meter counts objects, not ids — so batch a refresh.
+                    generation number and collects, which adds about a tenth on average. The meter counts objects, not ids — so batch a refresh.
                   </td>
                   <td><span class="status is-coming">Batch it</span></td>
                 </tr>
@@ -399,7 +399,7 @@
               a <em>whole new generation</em> and advancing the registry pointer, so ingest bills per object PUT
               — one, or a handful when the object goes multipart — plus the pointer's own PUT and reads, however
               many ids that generation carries. That figure is the write and the publish;
-              <span class="m">store.load()</span>'s listings and collection pass come on top.
+              <span class="m">store.load()</span>'s check and collection come on top.
               Batching is the entire optimisation, and you make it at load time rather than at the meter.
               <a href="usage.html">How a generation is loaded</a>.
             </span>
@@ -540,7 +540,7 @@
             <span class="rl-note">
               The September run measured a load's write and publish. <span class="m">store.load()</span> also
               checks that its generation number is free and runs a collection pass after the publish. A test
-              counts what that adds, about half the bill again; it has not been measured on S3.
+              counts what that adds, about a tenth of the bill on average; it has not been measured on S3.
             </span>
           </li>
           <li>
@@ -742,8 +742,8 @@
                 </tr>
                 <tr>
                   <td>A segment's first <span class="m">store.load()</span> — expected</td>
-                  <td class="num">$17.40</td>
-                  <td class="num">3 PUT-class + 6 GET</td>
+                  <td class="num">$11.60</td>
+                  <td class="num">2 PUT + 4 GET</td>
                 </tr>
               </tbody>
             </table>
@@ -751,7 +751,7 @@
           <p class="tpanel-foot">
             <strong>Measured request counts at list prices</strong>, and <strong>expected</strong> where the run
             did not measure: the same intersect with each pointer read once, as it would be inside the region,
-            and <span class="m">store.load()</span>'s listings and collection pass, which a test counts. All 40
+            and <span class="m">store.load()</span>'s check and collection, which a test counts. All 40
             cold intersects — each on a fresh store, with nothing cached — returned the planned ids, checked by
             count and by sum, and each requested 100 of 1,999 chunks per segment, the chunks the two share, and
             no other. Each also made one tail read per segment: its last 256 KiB, which holds the footer and the

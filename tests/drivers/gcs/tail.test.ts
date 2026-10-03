@@ -25,6 +25,7 @@ class FakeTail {
 
   storage(): Storage {
     const file = {
+      interceptors: [] as unknown[],
       createReadStream: (options: { end?: number }) => {
         this.requests.push({ kind: 'read', options });
         const out = new PassThrough();
