@@ -37,7 +37,7 @@ import { BoundedLru } from './lru';
 import { splitId } from './bit-route';
 import { segmentKey } from './keys';
 import { aadFor } from './crypto';
-import type { CrbmCrypto, IKeystore, WrappedDek } from './crypto';
+import type { Aead, CrbmCrypto, IKeystore, WrappedDek } from './crypto';
 import { validateChunkRef, validateUserRef } from './validate';
 import type {
   ChunkRef,
@@ -179,6 +179,8 @@ interface Live {
   readonly target: Target;
   /** The generation's decryption context (`undefined` for a cleartext segment); applies `requireEncryption`. */
   readonly crypto: () => Promise<CrbmCrypto | undefined>;
+  /** The segment's unwrapped key, shared with the next resolution while the row's wrapped keys are the same. */
+  readonly unwrap: (() => Promise<Aead>) | undefined;
   /** What the row's summary says of the generation, when the row's summary is usable for it. */
   readonly summary: () => Promise<GenerationDescription | undefined>;
   /** What the resolution weighs while no reader is open: the row's summary. */
@@ -191,10 +193,15 @@ function summaryOfGeneration(
   description: GenerationDescription,
 ): GenerationSummary {
   const { cardinality, metadata } = description;
+  // A copy, frozen: the row's own object stays what the cross-check compares against whatever a caller does.
   return metadata === undefined || Object.keys(metadata).length === 0
     ? { generation, cardinality }
-    : { generation, cardinality, metadata };
+    : { generation, cardinality, metadata: Object.freeze({ ...metadata }) };
 }
+
+/** Whether two rows carry the same wrapped keys. */
+const sameKeys = (a: readonly WrappedDek[] | undefined, b: readonly WrappedDek[]): boolean =>
+  a !== undefined && JSON.stringify(a) === JSON.stringify(b);
 
 /** A thunk that runs `fn` once, and runs it again after a failure. */
 function once<T>(fn: () => Promise<T>): () => Promise<T> {
@@ -467,9 +474,8 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     onTransientFault: () => void,
   ): Promise<Live | null> {
     const prior = await (existing.target as Promise<Live | null>).catch(() => null);
-    const priorReader = existing.openedReader;
     try {
-      return await this.resolveLive(ref);
+      return await this.resolveLive(ref, prior);
     } catch (err) {
       // Only a transient fault is ridden out. Anything else — an access denial, a corrupt row, a registry that
       // answers NotFound — fails this read exactly as a cold resolve of the segment would, and the snapshot is
@@ -479,9 +485,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       // whole TTL later, so an outage ends the stale serving shortly after the registry answers. If it's dead (no
       // target, or a failed open), resolve again rather than re-arm a dead snapshot (else the segment reads empty for a
       // whole TTL window).
-      const alive =
-        prior !== null &&
-        (priorReader === undefined || (await priorReader.catch(() => null)) !== null);
+      const alive = prior !== null;
       if (!alive) return this.resolveLive(ref);
       onTransientFault();
       return prior;
@@ -597,6 +601,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     // only the live entry left a pinned handle reading a crypto-shredded segment: the pin is exactly the
     // reader that does not re-resolve on its own, so it is the one that most needs to be told.
     const pinnedPrefix = `${key}@`;
+    this.distrusted.deleteWhere((k) => k.startsWith(pinnedPrefix));
     this.snapshots.deleteWhere((k) => k.startsWith(pinnedPrefix));
     // …and what its pins' objects were found to be, and any check still finding out: an object restored under its
     // key is its pin's again, and a restore is what an operator invalidates for.
@@ -1025,19 +1030,15 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    */
   private async openLive(ref: SegmentRef, live: Live): Promise<CrbmReader> {
     const reader = await this.openGeneration(ref, live.target, await live.crypto());
-    try {
-      const summary = await live.summary();
-      if (summary !== undefined && !summaryAgrees(summary, describe(reader))) {
-        this.distrusted.set(this.distrustKey(ref, live.target.generation), true);
-      }
-    } catch {
-      // A summary that cannot be read is one that is not used, which is where a read is without one.
+    const summary = await live.summary();
+    if (summary !== undefined && !summaryAgrees(summary, describe(reader))) {
+      this.distrusted.set(this.distrustKey(ref, live.target.generation, live.target.lineage), true);
     }
     return reader;
   }
 
-  private distrustKey(ref: SegmentRef, generation: number): string {
-    return `${segmentKey(ref)}@${generation}`;
+  private distrustKey(ref: SegmentRef, generation: number, lineage: unknown): string {
+    return `${segmentKey(ref)}@${generation}:${String(lineage)}`;
   }
 
   /** What the row says of the generation, unless it is a summary this process has found to disagree with its object. */
@@ -1045,7 +1046,10 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     ref: SegmentRef,
     live: Live,
   ): Promise<GenerationDescription | undefined> {
-    if (this.distrusted.peek(this.distrustKey(ref, live.target.generation)) !== undefined) {
+    if (
+      this.distrusted.peek(this.distrustKey(ref, live.target.generation, live.target.lineage)) !==
+      undefined
+    ) {
       return undefined;
     }
     return live.summary();
@@ -1057,7 +1061,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * — there's nowhere a wrapped DEK could live). The row's summary rides along, to be used or not by whoever
    * asks.
    */
-  private async resolveLive(ref: SegmentRef): Promise<Live | null> {
+  private async resolveLive(ref: SegmentRef, prior?: Live | null): Promise<Live | null> {
     if (this.registry !== undefined) {
       const record = await this.registry.get(ref);
       if (record === null) return null;
@@ -1069,10 +1073,20 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       // pointing at a generation that does not exist, is the `missing-storage-generation` state.
       if (record.currentGen === null) return null;
       const generation = record.currentGen;
-      const crypto = once(() => this.cryptoForRead(ref, generation, record.wrappedDeks));
+      // A refresh that finds the same wrapped keys keeps the key it already unwrapped, so a count polling an encrypted
+      // segment asks the keystore once, not once each `genTtlMs`. Different keys (a shred, a re-created name) unwrap afresh.
+      const keys = record.wrappedDeks;
+      const unwrap =
+        keys === undefined || keys.length === 0 || this.keystore === undefined
+          ? undefined
+          : prior?.unwrap !== undefined && sameKeys(prior.target.wrappedDeks, keys)
+            ? prior.unwrap
+            : once(() => (this.keystore as IKeystore).openDek(keys));
+      const crypto = once(() => this.cryptoForRead(ref, generation, keys, unwrap));
       return {
         target: { generation, lineage: record.token, wrappedDeks: record.wrappedDeks },
         crypto,
+        unwrap,
         // The same checks as a read of the object makes (`requireEncryption`, a keystore for an encrypted row)
         // come first, then the row's summary, used only if it names this generation in the shape the keys call for.
         summary: once(async () => usableSummary(ref, record, (await crypto())?.aead)),
@@ -1089,6 +1103,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     return {
       target: { generation: maxGen },
       crypto: () => Promise.resolve(undefined),
+      unwrap: undefined,
       summary: () => Promise.resolve(undefined),
       bytes: SNAPSHOT_BASE_BYTES,
     };
@@ -1099,6 +1114,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     ref: SegmentRef,
     generation: number,
     wrappedDeks: readonly WrappedDek[] | undefined,
+    unwrap?: () => Promise<Aead>,
   ): Promise<CrbmCrypto | undefined> {
     if (wrappedDeks === undefined || wrappedDeks.length === 0) {
       if (this.requireEncryption) {
@@ -1108,12 +1124,13 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       }
       return undefined; // cleartext segment
     }
-    if (this.keystore === undefined) {
+    const keystore = this.keystore;
+    if (keystore === undefined) {
       throw new KeyUnavailableError(
         `segment "${ref.segment}" is encrypted but this CrbmStorageChunkSource has no keystore`,
       );
     }
-    const aead = await this.keystore.openDek(wrappedDeks);
+    const aead = await (unwrap ?? (() => keystore.openDek(wrappedDeks)))();
     return { aead, aadFor: (scope) => aadFor(ref, generation, scope) };
   }
 
@@ -1171,7 +1188,15 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       } catch (err) {
         // The same healing a read of the object has: a generation swept from under the snapshot is resolved again.
         if (attempt === 1) throw err;
-        if (!isNotFoundError(err) && !(await this.replacedUnder(ref, snap.reader, err))) throw err;
+        // A fault that is neither a miss nor corruption (a keystore's, say) is not asked about again: reading the
+        // snapshot's reader here would call the keystore a second time.
+        const checks = isNotFoundError(err) || isIntegrityError(err) || isValidationError(err);
+        if (
+          !checks ||
+          (!isNotFoundError(err) && !(await this.replacedUnder(ref, snap.reader, err)))
+        ) {
+          throw err;
+        }
         this.dropStale(segmentKey(ref), snap);
       }
     }

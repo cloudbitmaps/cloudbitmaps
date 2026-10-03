@@ -20,7 +20,7 @@ import { NOOP_METRICS, safeMetrics } from './metrics';
 import type { IMetricsSink } from './metrics';
 import type {
   ChunkRef,
-  GenerationSummary,
+  GenerationMetadata,
   StorageChunkSource,
   SegmentRef,
   SegmentSize,
@@ -288,12 +288,15 @@ export class SegmentEngine {
    * What the segment's current generation is: its number, its id count and its metadata, from one resolution, so the
    * three cannot straddle a publish. A source with no summary answers from `count()` and the generation it resolves.
    */
-  async stat(seg: SegmentRef): Promise<GenerationSummary | null> {
-    if (this.storage.summary) return this.storage.summary(seg);
+  async stat(
+    seg: SegmentRef,
+  ): Promise<{ generation: number | null; cardinality: number; metadata?: GenerationMetadata }> {
+    if (this.storage.summary) {
+      return (await this.storage.summary(seg)) ?? { generation: null, cardinality: 0 };
+    }
     const generation = this.storage.currentGeneration
       ? await this.storage.currentGeneration(seg)
       : null;
-    if (generation === null) return null;
     return { generation, cardinality: await this.count(seg) };
   }
 

@@ -2332,8 +2332,7 @@ export class Segment {
    */
   async stat(): Promise<SegmentStat> {
     if (this.expired()) return { generation: null, cardinality: 0 };
-    const found = await this.engine.stat(this.ref);
-    return found === null ? { generation: null, cardinality: 0 } : found;
+    return this.engine.stat(this.ref);
   }
   /**
    * Every id, ascending, streamed one chunk at a time. Pass a range to read part of the segment: the ids in

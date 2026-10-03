@@ -164,6 +164,9 @@ export async function runConsistencyCheck(
   } = {},
 ): Promise<ConsistencyReport> {
   if (options.namespace !== undefined) validateUserNamespace(options.namespace);
+  if (options.summaries !== undefined && typeof options.summaries !== 'boolean') {
+    throw new ValidationError(`summaries must be a boolean; got ${String(options.summaries)}`);
+  }
   const concurrency = options.concurrency ?? DEFAULT_CHECK_CONCURRENCY;
   if (!Number.isInteger(concurrency) || concurrency < 1) {
     // Fail fast before the (possibly huge) registry scan, not after.

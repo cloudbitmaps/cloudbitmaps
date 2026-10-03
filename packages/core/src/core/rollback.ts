@@ -117,7 +117,7 @@ async function currentDescription(
   const metadata = usable.metadata;
   return metadata === undefined || Object.keys(metadata).length === 0
     ? { cardinality: usable.cardinality }
-    : { cardinality: usable.cardinality, metadata };
+    : { cardinality: usable.cardinality, metadata: Object.freeze({ ...metadata }) };
 }
 
 export interface RollbackResult {
