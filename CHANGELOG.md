@@ -368,6 +368,14 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **`@cloudbitmaps/s3` requires `@aws-sdk/client-s3` 3.700.0 or later, where it took 3.645.0.** An SDK sends only
+  the conditional headers it models and drops one it does not, without an error. The published serializers of
+  3.645.0 to 3.699.0 omit `If-Match` on `PutObject`, so on those versions the registry's compare-and-swap went out
+  unconditionally, and a fenced row write could land over a concurrent writer's: a lost update, with no error on
+  either side. 3.700.0 is the first version that sends it (and `DeleteObject`'s, from 3.698.0). `If-None-Match`,
+  which write-once relies on, is modelled from 3.641.0, as before. A fresh install already resolves far above the
+  floor; this matters to a project that pins an older SDK or passes its own `client` built on one.
+
 - **A GCS download that fails part-way no longer resets the other requests in flight, uploads included.** When a
   download's body was cut off, or the driver refused or cut off the response, the SDK destroyed the HTTP agent it went
   out on, and its default agent is one keep-alive pool shared by every request in the process, so every other request

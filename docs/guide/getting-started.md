@@ -260,8 +260,9 @@ keys of encrypted segments all live there. There is no second service to run.
 - **S3 needs a service that honors conditional writes** (`If-None-Match: *` and `If-Match`): AWS S3, and MinIO,
   which the test suite runs against. Another S3-compatible service must honor both headers, or a write-once
   generation can be overwritten without an error. Check yours.
-- **If you pass your own `client`, use `@aws-sdk/client-s3` 3.645.0 or later.** Older versions silently overwrite an
-  existing object, which loses a published generation. If your own code imports the SDK, to build that `client`, add it to your own `package.json` too: pnpm does not let your code import a dependency of a dependency. `S3Storage` builds its own client from the usual credential chain when you do not pass one.
+- **If you pass your own `client`, use `@aws-sdk/client-s3` 3.700.0 or later.** Older versions drop a conditional
+  header they do not model, without an error: they overwrite an existing object, which loses a published generation,
+  or send the registry's compare-and-swap unconditionally. If your own code imports the SDK, to build that `client`, add it to your own `package.json` too: pnpm does not let your code import a dependency of a dependency. `S3Storage` builds its own client from the usual credential chain when you do not pass one.
 - **GCS and Azure Blob** pass the same conformance suites as S3 and sit outside the validated envelope, which covers
   S3 storage only. They are the right choice if you are on that cloud, but you are an early user. The
   [roadmap](../ROADMAP.md#the-validated-envelope--whats-proven-and-what-isnt) states the exact claim.
