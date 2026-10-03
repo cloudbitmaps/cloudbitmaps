@@ -2,9 +2,9 @@
  * `LocalFsRegistryDriver` — a zero-cloud, persistent {@link IRegistryDriver}.
  *
  * One JSON file per segment at `<root>/<namespace>/registry/<segment>.reg`, holding `{ deleted, record }`.
- * OCC: the token is a monotonic counter (stringified), advanced on every mutation and
- * even across a `delete` (which **tombstones** rather than unlinks) so a deleted-then-recreated row never
- * re-issues an old token (ABA-safe). Every write is temp → fsync(file) → atomic rename → fsync(dir), and
+ * OCC: the token is a random incarnation id drawn when the row is created, a counter advanced on every mutation and
+ * even across a `delete` (which **tombstones** rather than unlinks), and a random part drawn for every write, so a
+ * deleted-then-recreated row, or one restored from a backup, never re-issues an old token (ABA-safe). Every write is temp → fsync(file) → atomic rename → fsync(dir), and
  * read-modify-write is serialized per row across the whole process (the lock is keyed by the row's resolved
  * path, so every instance on one root shares it). A root is for one process: two processes on one root are not
  * fenced. Drivers do I/O; only `core/` is bound by determinism.
@@ -14,6 +14,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, open, readdir, realpath, rename, unlink } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { IntegrityError, ValidationError, WriteConflictError } from '@/core/errors';
+import type { Entropy } from '@/core/determinism';
 import type {
   IRegistryDriver,
   NewRegistryRecord,
@@ -25,14 +26,16 @@ import type {
 } from '@/core/ports';
 import {
   applyRegistryPatch,
+  newIncarnationToken,
+  nextRegistryToken,
   parseRegistryEnvelope,
   recordFromNew,
-  registryCounterOf,
   serializeRegistryEnvelope,
   validateNewRegistryRecord,
   validateRegistryPatch,
   type RegistryEnvelope,
 } from '../_shared/registry';
+import { entropyIsAvailable, webCryptoEntropy } from '../_shared/entropy';
 import { registryDir, registryRowPath, parseNamespaceDir, parseRegistryRow } from './paths';
 import { O_NOFOLLOW, fsyncDir, isCode, mapFsError } from './fs-util';
 
@@ -74,20 +77,26 @@ async function rowLockKey(path: string): Promise<string> {
 export interface LocalFsRegistryDriverOptions {
   /** Injected clock for `createdAt`/`updatedAt`; defaults to `Date.now`. */
   readonly now?: () => number;
+  /** Draws every token's random parts; defaults to Web Crypto. Inject one only to make a test replayable. */
+  readonly entropy?: Entropy;
 }
 
 export class LocalFsRegistryDriver implements IRegistryDriver {
   private readonly now: () => number;
+  private readonly entropy: Entropy;
 
   constructor(
     private readonly root: string,
     options: LocalFsRegistryDriverOptions = {},
   ) {
     this.now = options.now ?? (() => Date.now());
+    this.entropy = options.entropy ?? webCryptoEntropy;
   }
 
   capabilities(): RegCaps {
-    return { strongRead: true };
+    return entropyIsAvailable(this.entropy)
+      ? { strongRead: true }
+      : { strongRead: true, canWrite: false };
   }
 
   async get(ref: SegmentRef): Promise<RegistryRecord | null> {
@@ -96,16 +105,16 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
   }
 
   async create(ref: SegmentRef, record: NewRegistryRecord): Promise<{ token: Token }> {
-    validateNewRegistryRecord(record);
+    const checked = validateNewRegistryRecord(record);
     const path = registryRowPath(this.root, ref);
     return this.withRowLock(path, async () => {
       const current = await this.readRow(path);
       if (current !== null && !current.deleted) {
         throw new WriteConflictError(`registry row already exists for segment ${ref.segment}`);
       }
-      const counter = current ? registryCounterOf(current.record) + 1 : 0; // advance across a tombstone (ABA-safe)
-      const token = String(counter);
-      await this.writeRow(path, false, recordFromNew(ref, record, this.now(), token));
+      // A new incarnation, whose counter continues across a tombstone (ABA-safe).
+      const token = newIncarnationToken(this.entropy, current?.record);
+      await this.writeRow(path, false, recordFromNew(ref, checked, this.now(), token));
       return { token };
     });
   }
@@ -115,18 +124,18 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
     expected: Token,
     patch: RegistryPatch,
   ): Promise<{ token: Token }> {
-    validateRegistryPatch(patch);
+    const checked = validateRegistryPatch(patch);
     const path = registryRowPath(this.root, ref);
     return this.withRowLock(path, async () => {
       const current = await this.readRow(path);
       if (current === null || current.deleted || current.record.token !== expected) {
         throw new WriteConflictError(`OCC token mismatch for registry row ${ref.segment}`);
       }
-      const token = String(registryCounterOf(current.record) + 1);
+      const token = nextRegistryToken(current.record, this.entropy);
       await this.writeRow(
         path,
         false,
-        applyRegistryPatch(current.record, patch, this.now(), token),
+        applyRegistryPatch(current.record, checked, this.now(), token),
       );
       return { token };
     });
@@ -162,8 +171,8 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
       } else if (current === null || current.deleted) {
         return; // idempotent
       }
-      // Tombstone (advance the counter) rather than unlink — keeps the token monotonic for ABA-safety.
-      const token = String(registryCounterOf(current.record) + 1);
+      // Tombstone (advance the counter) rather than unlink, so a re-create carries the counter on (ABA-safety).
+      const token = nextRegistryToken(current.record, this.entropy);
       await this.writeRow(path, true, { ...current.record, token, updatedAt: this.now() });
     });
   }

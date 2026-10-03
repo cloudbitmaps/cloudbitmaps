@@ -19,6 +19,22 @@ export class CountingObjectStore implements ObjectRegistryStore {
 
   constructor(private lostRaces: number) {}
 
+  /** Put `text` at `key` as a new version, uncounted: a row another writer left, as it left it. */
+  plant(key: string, text: string): void {
+    this.objects.set(key, { bytes: new TextEncoder().encode(text), version: this.nextVersion++ });
+  }
+
+  /** Remove `key` outright, uncounted: a row taken away out of band, as a hard purge or a lifecycle rule would. */
+  remove(key: string): void {
+    this.objects.delete(key);
+  }
+
+  /** The bytes at `key` as text, uncounted, or `undefined` when there is no object. */
+  text(key: string): string | undefined {
+    const found = this.objects.get(key);
+    return found === undefined ? undefined : new TextDecoder().decode(found.bytes);
+  }
+
   read(key: string): Promise<ObjectRow | null> {
     this.reads += 1;
     const found = this.objects.get(key);

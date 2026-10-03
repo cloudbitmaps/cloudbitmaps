@@ -72,6 +72,7 @@ import type { CodecBitmap, CodecInterface } from './codec';
 import { requireCodec } from './codec';
 import type { Yielder } from './cooperative';
 import {
+  objectIsEncrypted,
   openGenerationReader,
   publishGeneration,
   verifyGeneration,
@@ -85,9 +86,11 @@ import {
   KeyUnavailableError,
   ValidationError,
   WriteConflictError,
+  isIntegrityError,
   isNotFoundError,
 } from './errors';
 import { gcOrphanGenerations, nextGeneration } from './generation-gc';
+import { assertRegistryCanWrite } from './ports';
 import type { GenKey, IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
 import { type ReadRetry, retryRead } from './retry';
 import { validateUserRef } from './validate';
@@ -290,15 +293,26 @@ export async function eraseIdFromSegment(
    * but the outcome it wants. Any other fault propagates: it must never be swallowed into a clean receipt.
    */
   const holds = async (generation: number): Promise<boolean | null> => {
+    const key: GenKey = { ...base, generation };
+    const chunkIn = (crypto: CrbmCrypto | undefined): Promise<Uint8Array | null> =>
+      read(async () => (await openGenerationReader(deps.storage, key, crypto)).getChunk(chunkKey));
     try {
-      const bytes = await read(async () => {
-        const reader = await openGenerationReader(
-          deps.storage,
-          { ...base, generation },
-          cryptoAt(generation),
-        );
-        return reader.getChunk(chunkKey);
-      });
+      let bytes: Uint8Array | null;
+      try {
+        bytes = await chunkIn(cryptoAt(generation));
+      } catch (err) {
+        // A cleartext object under an encrypted segment was never one of its generations, so no read believes it.
+        // It may still hold the subject in the clear, so the erasure looks in it without the key, and deletes it
+        // when it holds the id, as it does any holder. Only its footer is asked first, on this path alone.
+        if (
+          !isIntegrityError(err) ||
+          cryptoAt(generation) === undefined ||
+          (await read(() => objectIsEncrypted(deps.storage, key)))
+        ) {
+          throw err;
+        }
+        bytes = await chunkIn(undefined);
+      }
       return bytes !== null && codec.safeDeserialize(bytes, maxBytes).has(remainder);
     } catch (err) {
       if (isNotFoundError(err)) return null;
@@ -484,6 +498,8 @@ export async function eraseIdFromSegment(
       if (!target.has(remainder)) return await notInCurrent();
       target.remove(remainder);
 
+      // The rewrite is written before its row is: refuse here, not after, on a registry that cannot write one.
+      assertRegistryCanWrite(deps.registry, 'eraseIdFromSegment');
       const generation = await nextGeneration(ref, deps);
       const key: GenKey = { ...base, generation };
       const tally = await writeCrbmGenerationStream(

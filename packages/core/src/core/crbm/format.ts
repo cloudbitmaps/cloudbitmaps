@@ -1,5 +1,5 @@
 /**
- * Frozen `.crbm` v1.0 layout constants.
+ * Frozen `.crbm` v1 layout constants (format 1.0, with its optional extension block).
  *
  * These byte widths/offsets are pinned by the golden corpus and must never change for v1 —
  * a new layout is a new format version. All multi-byte integers are little-endian (v1 fixes LE).
@@ -49,9 +49,15 @@ export const FOOTER_CRC_COVERAGE = FOOTER.footerCrc32c; // 96
 export const FLAG_ENCRYPTED = 1 << 0;
 export const FLAG_INDEX_COMPRESSED = 1 << 1; // reserved
 export const FLAG_LITTLE_ENDIAN = 1 << 2; // =1 in v1
+/**
+ * The object carries an extension block just before its index (a generation's metadata). Set only when there is
+ * something to put in it, so an object without metadata is the same bytes as before the block existed; a reader that
+ * does not know the bit refuses the object rather than reading past what it cannot see.
+ */
+export const FLAG_EXTENSION = 1 << 3;
 
 /** Flag bits a v1 reader understands; any bit outside this mask is an unsupported feature. */
-export const KNOWN_FLAGS = FLAG_ENCRYPTED | FLAG_LITTLE_ENDIAN;
+export const KNOWN_FLAGS = FLAG_ENCRYPTED | FLAG_LITTLE_ENDIAN | FLAG_EXTENSION;
 
 /**
  * Default element width: 32-bit ids (the u32 member space). `64` is the *reserved* escape above the
@@ -121,6 +127,31 @@ export const DEFAULT_MAX_PAYLOAD_BYTES = 16 * 1024 * 1024;
 
 /** A chunk's cardinality is in `[1, 65536]` (empty chunks are never written). */
 export const MAX_CHUNK_CARDINALITY = 0x1_0000;
+
+/**
+ * The extension block, present when the footer sets {@link FLAG_EXTENSION}: `section* ‖ u32 sectionsLength ‖ u32
+ * crc32c ‖ "CRBX"`, between the last payload and the index, so the index starts right after it. A reader finds it from
+ * `indexOffset`: the trailer is the {@link EXT_TRAILER_BYTES} bytes before the index, and the CRC32C covers the sections
+ * and the length field. Each section is `u8 type ‖ u32 length ‖ bytes`, in strictly ascending type order; a reader
+ * skips a type it does not know, so a section must be safe to ignore.
+ */
+export const EXT_MAGIC = Uint8Array.of(0x43, 0x52, 0x42, 0x58); // "CRBX"
+/** The trailer: the sections' length (u32), their CRC32C (u32) and {@link EXT_MAGIC}. */
+export const EXT_TRAILER_BYTES = 12;
+/** A section's header: its type (u8) and its length (u32). */
+export const EXT_SECTION_HEADER_BYTES = 5;
+/**
+ * Cap on the sections of one block, in bytes. A reader refuses a larger block from its trailer alone, before it reads
+ * any sections beyond what it already holds (the read that brings the index may already hold up to this much before
+ * it), and a writer of any 1.x minor keeps within it, so a later section type stays readable by this reader.
+ */
+export const MAX_EXT_BYTES = 4 * 1024;
+/**
+ * Section type 1: the generation's metadata, its canonical JSON in UTF-8. On an encrypted object the section is
+ * `nonce ‖ ciphertext ‖ tag`, sealed under the segment's key with the metadata scope of the associated data.
+ * Type 0 is not a section type: a reader refuses it.
+ */
+export const EXT_SECTION_METADATA = 1;
 
 /** Fixed width of a per-chunk CRC32C field in the index (high-entropy → not varint). */
 export const CRC32C_BYTES = 4;

@@ -203,10 +203,10 @@ makes the coordinated restore point easy to hit rather than something you have t
    objects, first run `store.dropSegment(ref, { confirmSegment: ref.segment, audit })`, which deletes them and
    removes the wrapped key from the row. Then remove the row with the backend's `registry.delete(ref)`, which
    leaves a tombstone that keeps the row's token counter, and the rest of the row with it, wrapped keys included —
-   the reason for dropping first. Do not remove it with an object-store delete, which takes the tombstone too, so
-   the name's next row would issue tokens from 0 again. A segment you delete the row of without dropping keeps its
-   objects in the bucket with no row; `store.generations(ref)` lists them. Step 6 is what tells you the result is
-   coherent.
+   the reason for dropping first. Prefer it to an object-store delete, which takes the tombstone too: the name's
+   next row is then told apart from the earlier ones only by the random parts of its tokens, with overwhelming
+   probability rather than by construction. A segment you delete the row of without dropping keeps its objects in
+   the bucket with no row; `store.generations(ref)` lists them. Step 6 is what tells you the result is coherent.
 5. **Restore the keystore** (if encryption is on), and check it can open the key of every restored segment:
    [Encryption & DR](#encryption--dr) has the check.
 6. **Run `checkConsistency()`** (below) **before** serving traffic.
@@ -243,13 +243,12 @@ makes the coordinated restore point easy to hit rather than something you have t
    the later load left and fences the name. A re-shred is complete only on the terms
    [Encryption & DR](#encryption--dr) sets out.
 9. **Restart every process that holds a store over the bucket, or invalidate in each the segments steps 3 to 8
-   touched** (`store.invalidate(ref)`), then route traffic. Waiting out `cache.genTtlMs` is not enough here: a restored row
-   carries the token counter it had at `T`, so the tokens issued after `T` will be issued again, and a store keys
-   a segment's cached chunks by generation and token. A re-run load (see [What a restore does and does not bring
-   back](#what-a-restore-does-and-does-not-bring-back)) also takes again the generation numbers that collection freed
-   above the restored pointer, so a store that read the segment before the disaster can be handed a generation it
-   already holds chunks of, with other content under it, and only a restart or an invalidation is sure to clear them. [Readers still on an old generation](#readers-still-on-an-old-generation)
-   covers the stores that need more than that. Optionally run a targeted `subjectReport`/read spot-check on a few
+   touched** (`store.invalidate(ref)`), then route traffic. Until then a store answers from what it resolved before
+   the restore: for up to `cache.genTtlMs` if it refreshes on a timer, and for as long as
+   [readers still on an old generation](#readers-still-on-an-old-generation) says if it does not. A restored row
+   carries the token it had at `T`, and every write after the restore gives it a token it never had, because each
+   write draws a random part of its token, so a store keying a segment's cached chunks by generation and token never
+   takes them for a generation written since. Optionally run a targeted `subjectReport`/read spot-check on a few
    known segments.
 
 ## Quiesce writers during a restore
@@ -276,9 +275,10 @@ A store that has resolved a segment keeps serving that generation for up to `cac
 it re-reads the pointer (and while the registry cannot be read because of a transient fault, until a retry 500 ms
 apart reaches it), and decoded chunks sit in the cache for as long as the cache keeps them. After a manual
 `currentGen` roll, a long-lived process may therefore keep answering from the generation it resolved *before* the
-roll for that window. After a registry restore, waiting is not enough for any store: restart it, or invalidate the
-restored segments in it, because the restored rows re-issue tokens its caches may already hold (step 9 of the
-procedure). Some stores need more than waiting after a roll too. One with no registry (built on a bare
+roll for that window. After a registry restore, restart each store or invalidate the restored segments in it (step 9
+of the procedure) rather than wait: a restored row's later writes are given tokens it never had, so no cache is
+misled, but each store answers from the generation it resolved before the restore until it re-reads the row. Some
+stores need more than waiting after a roll too. One with no registry (built on a bare
 `IStorageDriver`), with **`cache: { genTtlMs: 0 }`**, or on a pre-built `StorageChunkSource` built with no clock, has no timed refresh, so nothing bounds how
 long it keeps the generation it resolved — restart those readers, or `store.invalidate(ref)` the restored segments
 in each, as part of the procedure. One on a bare `IStorageDriver`, with **no registry**, reads no pointer: it lists
@@ -559,13 +559,15 @@ only once the pointer is on the target — so keep the error with your incident 
 
 The registry reads a row only in a shape the library writes, and refuses anything else rather than guess at it:
 a body that is not JSON, that has no `schemaVersion`, that carries a field the library does not write (at the top
-level or in the record), or that holds a value out of range, such as an unknown `status` or a malformed
-`wrappedDeks` list. Each is an `IntegrityError`, and its message names the row's key, except for a row over the
-1 MiB size cap and a malformed `wrappedDeks` list. A `token` that is not a plain decimal counter passes the read and
-fails every write to the row instead (`load`, `rollback`, `dropSegment`, `setRetention`, `registry.delete`), with
-an `IntegrityError` that quotes the token and not the key. A row with a
-higher `schemaVersion` than this build reads was written by a newer release; it is refused with
-`UnsupportedError`, and the fix is to upgrade the process reading it, not to touch the row.
+level or in the record) or one its `schemaVersion` did not have, or that holds a value out of range, such as an
+unknown `status`, a malformed `wrappedDeks` list, a malformed `summary`, or a `token` in none of the forms the
+library writes. A row stamped 1 holds a decimal counter; one stamped 2 holds a decimal counter and a write part
+(16 lowercase hex digits), `.`-separated, or 32 lowercase hex digits of incarnation id before those two. Each is an
+`IntegrityError`, and its message names the row's key, except for a row over the 1 MiB size cap and a malformed
+`wrappedDeks` list. This release writes rows stamped 2 and reads rows stamped 1 or 2. A row with a higher
+`schemaVersion` than this build reads was written by a newer release; it is refused with `UnsupportedError`, and the
+fix is to upgrade the process reading it, not to touch the row. A release before 0.12 refuses every row this one
+writes the same way.
 
 One refused row costs far more than its own segment:
 
@@ -589,13 +591,14 @@ copy. An object under the prefix whose key is not a row's key is skipped by the 
 
 1. If a version of it that the library wrote is available — a noncurrent object version, or a backup of the
    file — copy that version back to current, as restore step 4 does. Then restart or invalidate the stores over
-   the bucket, as after any registry restore: the row's token counter moves back with it.
+   the bucket, as after any registry restore: the row moves back to the token it had then.
 2. If there is no such version, delete the object with the object store's own delete; `registry.delete(ref)` cannot,
    since it has to read the row first. That also removes any token counter the key held, so a row created later
-   under the same name starts again at 0; restart or invalidate the stores over the bucket afterwards for the same
-   reason. The segment then has no row: it reads empty, nothing collects its objects (`store.generations(ref)` lists
-   them), and an encrypted one cannot be decrypted without a registry version that holds its key. Reload it from
-   your source, or drop it with `store.dropSegment`.
+   under the same name starts its counter again at 0, under a new random incarnation id that keeps its tokens apart
+   from the earlier row's; restart or invalidate the stores over the bucket afterwards. The segment then has no
+   row: it reads empty, nothing collects its objects (`store.generations(ref)` lists them), and an encrypted one
+   cannot be decrypted without a registry version that holds its key. Reload it from your source, or drop it with
+   `store.dropSegment`.
 
 Then run `checkConsistency()` — a version copied back can name a generation collected since it was current — and
 re-run whatever failed.
@@ -728,8 +731,10 @@ The library cannot rebuild a **lost** registry from the storage objects that sur
 authoritative and must be restored from its own version history (hence the versioning requirement above). Making
 storage objects self-describing enough to rebuild it (and to decrypt without the registry row, though still with
 the keystore's KEK) would take a
-`.crbm` **format change** that carries a KEK-wrapped DEK in each object. The fixed 104-byte footer cannot hold one:
-its reserved field is 2 bytes, and its 16-byte `key_id` field, written as zeros, is smaller than a wrapped DEK. It
+`.crbm` **format change** that carries a KEK-wrapped DEK in each object. The fixed 104-byte footer cannot hold one
+(its reserved field is 2 bytes, and its 16-byte `key_id` field, written as zeros, is smaller than a wrapped DEK), so
+it would be a new section in the extension block, with a footer flag bit of its own, since every reader must
+understand it. It
 would also change the crypto-shred model, since shredding would then have to delete the storage objects too, not
 just the key. The capability is listed on the [roadmap](../ROADMAP.md). **Back up the registry and keystore** —
 they are not reconstructable from storage alone.

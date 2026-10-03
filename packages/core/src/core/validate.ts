@@ -45,6 +45,11 @@ export const MAX_NAME_LENGTH = 256;
  */
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
+/** Whether `value` is well-formed UTF-16: no unpaired surrogate, so it survives a round trip through UTF-8. */
+export function isWellFormedString(value: string): boolean {
+  return !LONE_SURROGATE.test(value);
+}
+
 /**
  * How long a name is once storage has it — the longer of the two encodings.
  *

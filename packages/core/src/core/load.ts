@@ -40,6 +40,7 @@ import {
 import { gcOrphanGenerations, nextLoadGeneration } from './generation-gc';
 import { type LoadInput, prepareLoadInput } from './load-input';
 import { type ReadRetry, retryRead } from './retry';
+import { assertRegistryCanWrite } from './ports';
 import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef, Token } from './ports';
 import { validateUserRef } from './validate';
 
@@ -236,6 +237,9 @@ export async function loadSegment(
   const audit = safeAudit(options.audit ?? NOOP_AUDIT);
   // Still before any round trip: a malformed input costs none, and a `{ bitmap }` is the bitmap as of this call.
   const ids = prepareLoadInput(input, codec);
+  // Before the first request: the generation is written before the row, so a registry that cannot write a row
+  // would leave it behind.
+  assertRegistryCanWrite(deps.registry, 'load');
 
   // One row read, and on a cleartext segment the only one before the publish: the guard's "before", the incarnation
   // this call is acting on, the pointer it derived its decision from, the number it takes next, the write's

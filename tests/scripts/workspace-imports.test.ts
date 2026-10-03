@@ -33,8 +33,8 @@ import { fileURLToPath } from 'node:url';
  * rather than the package's `exports` map, so it would green-light a deep path Node refuses with
  * `ERR_PACKAGE_PATH_NOT_EXPORTED`. It cannot tell a type-only export destructured as a value from a real
  * one, because the barrel parser folds `export type {…}` in with values. And `fuzz/targets/*.mjs` import
- * from `fuzz/build/fuzz-core.js`, a bundled artifact rather than a workspace specifier, so those three files
- * are scanned and matched by nothing.
+ * from `fuzz/build/fuzz-core.js`, a bundled artifact rather than a workspace specifier, so those files are scanned
+ * and matched by nothing here; `fuzz-wiring.test.ts` checks what they import against the fuzz build's sources.
  *
  * That is a deliberate floor, not an aspiration: it catches the destructured form, which is the form most of
  * these files use, and under-coverage is the safe direction for a guard whose false positives would teach

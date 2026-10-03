@@ -22,6 +22,7 @@ export const ROUTED: readonly string[] = [
   'tests/core/cost.test.ts',
   'tests/core/drop-segment.test.ts',
   'tests/core/due-index-fast-sweep.test.ts',
+  'tests/core/encrypted-segment-cleartext-object.test.ts',
   'tests/core/encryption-lifecycle.test.ts',
   'tests/core/engine-metrics.test.ts',
   'tests/core/erase-id.test.ts',
@@ -61,6 +62,9 @@ export const ROUTED: readonly string[] = [
 
 /** Run under ids only, each with the reason routing would change what the file tests. */
 export const IDS_ONLY: Readonly<Record<string, string>> = {
+  'tests/drivers/_shared/registry-fleet.test.ts':
+    "tests the registry drivers' tokens and stamps; its three loads only seed rows for those checks, so a second " +
+    'run under the serialized input would repeat 72 registry tests and exercise no part of the load path',
   'tests/bench/calibration-figures-store-load.test.ts':
     'names store.load() only in the prose and strings it checks, and loads nothing, so there is nothing to route',
   'tests/docs/calibration-reports.test.ts':

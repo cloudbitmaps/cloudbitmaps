@@ -292,6 +292,10 @@ await store.rollback(ref, 4, { audit, allowForward: true });
 - A generation that is not in the bucket throws `NotFoundError` naming the ones that are.
 - A target above the pointer throws `ValidationError` without `allowForward`, because that is also where objects live
   that were never published, such as those of a load that died before its publish.
+- A target that is not what the row says the segment is throws `IntegrityError` before the pointer moves: a cleartext
+  object under an encrypted segment (a write that never published, from a store with no keystore, before the
+  segment's first keyed load), or an encrypted one under a cleartext segment. Every read would refuse it. The check
+  reads the target's footer, one request, with no key.
 - A load keeps one generation below the one it publishes by default (`keep: 1`), so there is one to roll back to. Pass
   a larger `keep` on the loads of a segment you may want to roll further back.
 - Each move emits `segment.rollback` to the `audit` sink you pass
