@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { S3Client } from '@aws-sdk/client-s3';
+import { DeleteObjectCommand, PutObjectCommand, type S3Client } from '@aws-sdk/client-s3';
 import { PROBE_KEY } from '@/s3/client-probe';
 import { S3RegistryDriver } from '@/s3/registry';
 import { S3Storage } from '@/s3/backend';
 import { ValidationError } from '@/core/errors';
 import { isolateAwsEnv, type IsolatedAwsEnv } from '../../helpers/aws-env';
-import { BUCKET, StubBucket, withoutMember } from '../../helpers/stub-s3-bucket';
+import { BUCKET, StubBucket, sdkWithout } from '../../helpers/stub-s3-bucket';
 
 /**
  * Whether the S3 registry removes a deleted row, or tombstones it, follows where the client sends its requests and
@@ -17,12 +17,18 @@ import { BUCKET, StubBucket, withoutMember } from '../../helpers/stub-s3-bucket'
 const REF = { segment: 's' };
 
 let env: IsolatedAwsEnv;
+const restores: Array<() => void> = [];
 beforeEach(() => {
   env = isolateAwsEnv();
 });
 afterEach(() => {
+  while (restores.length > 0) restores.pop()!();
   env.restore();
 });
+/** Make the SDK behave as one that predates `member` of `command`, for the rest of the test. */
+const without = (...args: Parameters<typeof sdkWithout>): void => {
+  restores.push(sdkWithout(...args));
+};
 
 /** A client that resolves its own endpoint, as a default AWS S3 client does, over `bucket`'s transport. */
 const awsClient = (bucket: StubBucket): S3Client => bucket.client({ endpoint: undefined });
@@ -119,17 +125,22 @@ describe('the default follows the client', () => {
 
   it('is decided once: concurrent first reads share one probe, and later reads add none', async () => {
     const bucket = new StubBucket();
-    const client = awsClient(bucket);
+    // Count the probe's commands where they are built: its second client is not the one the registry holds.
     const probes: string[] = [];
-    const send = client.send.bind(client) as (command: unknown, options?: unknown) => unknown;
-    (client as { send: unknown }).send = (
-      command: { constructor: { name: string }; input: { Key?: string } },
-      options?: unknown,
-    ) => {
-      if (command.input.Key === PROBE_KEY) probes.push(command.constructor.name);
-      return send(command, options);
-    };
-    const driver = new S3RegistryDriver({ client, bucket: BUCKET });
+    for (const Command of [DeleteObjectCommand, PutObjectCommand]) {
+      const original = Command.prototype.resolveMiddleware;
+      Command.prototype.resolveMiddleware = function (
+        this: { input: { Key?: string }; constructor: { name: string } },
+        ...args: unknown[]
+      ) {
+        if (this.input.Key === PROBE_KEY) probes.push(this.constructor.name);
+        return (original as (...a: unknown[]) => unknown).apply(this, args);
+      } as typeof original;
+      restores.push(() => {
+        Command.prototype.resolveMiddleware = original;
+      });
+    }
+    const driver = new S3RegistryDriver({ client: awsClient(bucket), bucket: BUCKET });
     await Promise.all([driver.get(REF), driver.get(REF), driver.get(REF)]);
     await driver.get(REF);
     await createAndDelete(driver, bucket);
@@ -215,9 +226,10 @@ describe('an SDK that does not send the header cannot fence a delete', () => {
   it.each([undefined, true])(
     'a DeleteObject with no If-Match is never sent: the row is tombstoned (conditionalDelete: %s)',
     async (conditionalDelete) => {
+      without('DeleteObjectCommand', 'IfMatch');
       const bucket = new StubBucket();
       const driver = new S3RegistryDriver({
-        client: withoutMember(awsClient(bucket), 'DeleteObjectCommand', 'IfMatch'),
+        client: awsClient(bucket),
         bucket: BUCKET,
         ...(conditionalDelete === undefined ? {} : { conditionalDelete }),
       });
@@ -233,12 +245,10 @@ describe('an SDK that does not send the header cannot fence a delete', () => {
 
 describe('an SDK that does not send a write precondition cannot host the registry', () => {
   it('a compare-and-swap without If-Match is refused before it is sent, and the row is untouched', async () => {
+    without('PutObjectCommand', 'IfMatch');
     const bucket = new StubBucket();
-    const driver = new S3RegistryDriver({
-      client: withoutMember(awsClient(bucket), 'PutObjectCommand', 'IfMatch'),
-      bucket: BUCKET,
-    });
-    const { token } = await driver.create(REF, { currentGen: 0 });
+    const driver = new S3RegistryDriver({ client: awsClient(bucket), bucket: BUCKET });
+    const { token } = await driver.create(REF, { currentGen: 0 }); // its If-None-Match is sent
     await expect(driver.compareAndSwap(REF, token, { currentGen: 1 })).rejects.toThrow(/If-Match/);
     await expect(driver.compareAndSwap(REF, token, { currentGen: 1 })).rejects.toBeInstanceOf(
       ValidationError,
@@ -248,11 +258,9 @@ describe('an SDK that does not send a write precondition cannot host the registr
   });
 
   it('a create without If-None-Match is refused before it is sent', async () => {
+    without('PutObjectCommand', 'IfNoneMatch');
     const bucket = new StubBucket();
-    const driver = new S3RegistryDriver({
-      client: withoutMember(awsClient(bucket), 'PutObjectCommand', 'IfNoneMatch'),
-      bucket: BUCKET,
-    });
+    const driver = new S3RegistryDriver({ client: awsClient(bucket), bucket: BUCKET });
     await expect(driver.create(REF, { currentGen: 0 })).rejects.toThrow(/If-None-Match/);
     expect(bucket.count('PutObject')).toBe(0);
     expect(bucket.objects.size).toBe(0);
@@ -262,10 +270,8 @@ describe('an SDK that does not send a write precondition cannot host the registr
     const bucket = new StubBucket();
     const good = new S3RegistryDriver({ client: awsClient(bucket), bucket: BUCKET });
     const { token } = await good.create(REF, { currentGen: 0 });
-    const old = new S3RegistryDriver({
-      client: withoutMember(awsClient(bucket), 'PutObjectCommand', 'IfMatch'),
-      bucket: BUCKET,
-    });
+    without('PutObjectCommand', 'IfMatch');
+    const old = new S3RegistryDriver({ client: awsClient(bucket), bucket: BUCKET });
     expect(await old.get(REF)).toMatchObject({ token });
   });
 });

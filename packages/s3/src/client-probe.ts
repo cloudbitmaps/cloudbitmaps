@@ -11,14 +11,19 @@
  *  - **Whether the SDK sends the header at all.** The SDK serialises the members its model knows, and an SDK that
  *    predates one drops it from the request without a word, so a conditional write or delete goes out unconditional.
  *
- * So the probe builds the requests the registry sends, hands each to the client's own stack, and reads the request back
- * as it stands once the SDK has serialised it, which is before it is signed or sent. A middleware added to the probe
- * command's own stack answers there instead of passing the request on, so nothing is sent. The SDK resolves the client's
- * credentials on its way to that step, as it does for any first request, so the probe makes the same lookup the first
- * real request would, which the client then caches; what the client resolves is what its first real request resolves.
+ * So the probe builds the requests the registry sends and runs them through a **second client of the same class**,
+ * made from the first one's resolved configuration, with a placeholder credential, a transport that is never handed a
+ * request and a silent logger. It reads each request back as it stands once the SDK has serialised it, which is before
+ * it is signed or sent: a middleware added to the probe command's own stack answers there instead of passing the
+ * request on. The second client is the SDK's own resolution of everything that decides where a request goes (region,
+ * endpoint, the environment, the shared config file, FIPS, dual-stack, path style), and the client the caller holds is
+ * never touched: nothing it has been given runs, so no middleware of the caller's counts a request that never exists,
+ * no logger prints one, and no credential is looked up.
  *
- * A probe that cannot run (a client with no middleware stack, an unresolvable region or credential chain, a stack that
- * does not hold the step the probe hooks) answers `undefined`, which callers read as "not known".
+ * A middleware the caller added to its own client that changes where a request goes is therefore not seen.
+ *
+ * A probe that cannot run (a client with no resolved config, an unresolvable region, a stack that does not hold the
+ * step the probe hooks) answers `undefined`, which callers read as "not known".
  */
 import { DeleteObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import type {
@@ -50,22 +55,52 @@ interface SerialisedRequest {
   readonly headers?: Record<string, unknown>;
 }
 
-/** Whether `client` has the parts of a real `S3Client` the probe needs: a test double has none of them. */
-function hasMiddlewareStack(client: S3Client): boolean {
-  const parts = client as unknown as {
-    send?: unknown;
-    middlewareStack?: unknown;
-    config?: unknown;
-  };
-  return typeof parts.send === 'function' && parts.middlewareStack != null && parts.config != null;
+/** A credential no one can use: the probe signs nothing, but the client it builds wants one. */
+const PLACEHOLDER_CREDENTIALS = { accessKeyId: 'cloudbitmaps-probe', secretAccessKey: 'unused' };
+
+/** A transport that is never handed a request: the probe answers before the step that would send one. */
+const NEVER_SENDS = {
+  handle: (): Promise<never> =>
+    Promise.reject(new Error('the client probe was asked to send a request')),
+  updateHttpClientConfig: (): void => {},
+  httpHandlerConfigs: (): Record<string, never> => ({}),
+  destroy: (): void => {},
+};
+
+const SILENT_LOGGER = {
+  debug: (): void => {},
+  info: (): void => {},
+  warn: (): void => {},
+  error: (): void => {},
+};
+
+/**
+ * A second client like `client`: its class (so the SDK that resolves where a request goes is the caller's), its resolved
+ * configuration, and none of what the caller added to it. `undefined` for anything that is not a client of that shape.
+ */
+function cloneForProbe(client: S3Client): S3Client | undefined {
+  const parts = client as unknown as { config?: unknown; constructor?: unknown; send?: unknown };
+  if (
+    typeof parts.send !== 'function' ||
+    typeof parts.config !== 'object' ||
+    parts.config === null
+  ) {
+    return undefined;
+  }
+  if (typeof parts.constructor !== 'function' || parts.constructor === Object) return undefined;
+  const Class = parts.constructor as new (config: object) => S3Client;
+  const clone = new Class({
+    ...parts.config,
+    credentials: PLACEHOLDER_CREDENTIALS,
+    requestHandler: NEVER_SENDS,
+    logger: SILENT_LOGGER,
+  });
+  return typeof clone.send === 'function' && clone.middlewareStack != null ? clone : undefined;
 }
 
 /**
  * Run `command` through `client`'s stack up to the step after the SDK serialises the request, and return the request.
  * The answer is made there, so the rest of the stack (retry, signing, the transport) never runs.
- *
- * `send` is given options, which makes a client built with `cacheMiddleware: true` resolve afresh instead of reusing
- * a handler cached from an earlier command of the class, which would not hold this command's middleware.
  */
 async function serialise<Input extends ServiceInputTypes, Output extends ServiceOutputTypes>(
   client: S3Client,
@@ -79,7 +114,7 @@ async function serialise<Input extends ServiceInputTypes, Output extends Service
     },
     { relation: 'after', toMiddleware: 'serializerMiddleware', name: 'cloudbitmapsProbe' },
   );
-  await client.send(command, {});
+  await client.send(command);
   if (seen === undefined) throw new Error('the probe saw no request');
   return seen;
 }
@@ -89,20 +124,22 @@ const hasHeader = (request: SerialisedRequest, name: string): boolean =>
 
 /**
  * What `client` does with a conditional `DeleteObject` and `PutObject` to `bucket`, or `undefined` when it cannot be
- * found out. Never throws, and never sends a request.
+ * found out. Never throws, never sends a request, and never runs anything the caller added to `client`.
  */
 export async function probeClient(
   client: S3Client,
   bucket: string,
 ): Promise<ClientFacts | undefined> {
-  if (!hasMiddlewareStack(client)) return undefined;
+  let probe: S3Client | undefined;
   try {
+    probe = cloneForProbe(client);
+    if (probe === undefined) return undefined;
     const del = await serialise(
-      client,
+      probe,
       new DeleteObjectCommand({ Bucket: bucket, Key: PROBE_KEY, IfMatch: '"probe"' }),
     );
     const put = await serialise(
-      client,
+      probe,
       new PutObjectCommand({
         Bucket: bucket,
         Key: PROBE_KEY,
@@ -120,6 +157,8 @@ export async function probeClient(
     };
   } catch {
     return undefined;
+  } finally {
+    probe?.destroy();
   }
 }
 

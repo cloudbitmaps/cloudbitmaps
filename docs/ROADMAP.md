@@ -144,10 +144,11 @@ is a dependency of both and is never installed directly. The storage drivers are
   forward by the very refresh meant to keep it current. The sweep is bounded (`limit`, `maxScanSegments`),
   previewable (`dryRun`), shardable across replicas, reports a per-segment ledger instead of throwing, and
   purges the tombstone rows its own retirements leave. On a registry that can delete a row only while it is
-  unchanged (AWS S3, GCS and Azure Blob by default, by `If-Match` / `ifGenerationMatch`), the purge removes the row
-  for good, so a full sweep reads what is live and inside its grace rather than every name a namespace ever held, and
-  `scan: 'index'` purges as well as retires, by a pointer each retirement files under the day its tombstone's grace
-  ends. Setting a policy before the first load mints the registry row, so the policy is recorded ahead of the data.
+  unchanged (S3 when its client sends to an AWS S3 host, GCS and Azure Blob by default, by `If-Match` /
+  `ifGenerationMatch`), the purge removes the row for good, so a full sweep reads what is live and inside its grace
+  rather than every name a namespace ever held, and `scan: 'index'` purges as well as retires, by a pointer each
+  retirement files under the day its tombstone's grace ends. A refused delete is counted (`purgeFaults`) and holds no
+  retirement back. Setting a policy before the first load mints the registry row, so the policy is recorded ahead of the data.
 - **Supply chain** — every third-party GitHub Action SHA-pinned, a blocking dependency audit, npm **build provenance**
   on publish, and continuous coverage-guided fuzzing over the untrusted-`.crbm` boundary (nightly, plus a
   weekly deep run).

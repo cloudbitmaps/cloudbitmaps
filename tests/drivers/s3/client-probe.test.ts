@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { DeleteObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { isAwsS3Host, probeClient } from '@/s3/client-probe';
 import { isolateAwsEnv, type IsolatedAwsEnv } from '../../helpers/aws-env';
-import { withoutMember } from '../../helpers/stub-s3-bucket';
+import { sdkWithout } from '../../helpers/stub-s3-bucket';
 
 /**
  * What a real `S3Client` would do with a request, found out without sending one.
@@ -11,9 +11,10 @@ import { withoutMember } from '../../helpers/stub-s3-bucket';
  * first is a fact about the host a request goes to, which the SDK decides: a constructor `endpoint`, but also
  * `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL` and an `endpoint_url` in the shared config file, which it reads only when
  * a request is built. The second is a fact about the SDK version: an SDK whose model lacks a member drops it from the
- * request without a word. So the probe builds the requests the registry will send, through the client's own stack, and
- * reads them back before the signing step. The transport here is a tripwire that fails the test if a request is ever
- * handed to it.
+ * request without a word. So the probe builds the requests the registry will send, runs them through a second client
+ * made from the first one's configuration, and reads them back before the signing step. The transport here is a
+ * tripwire that fails the test if a request is ever handed to it, and the caller's own middleware, logger and
+ * credential provider are counted, to show the probe does not run them.
  */
 
 const BUCKET = 'a-bucket';
@@ -192,12 +193,20 @@ describe('where a client sends a request to the bucket, by every way an endpoint
 });
 
 describe('the SDK is checked for the headers the registry relies on', () => {
+  const restores: Array<() => void> = [];
+  afterEach(() => {
+    while (restores.length > 0) restores.pop()!();
+  });
+  const without = (
+    command: Parameters<typeof sdkWithout>[0],
+    member: Parameters<typeof sdkWithout>[1],
+  ): void => {
+    restores.push(sdkWithout(command, member));
+  };
+
   it('sees a DeleteObject that carries no If-Match', async () => {
-    const facts = await probeClient(
-      withoutMember(client(), 'DeleteObjectCommand', 'IfMatch'),
-      BUCKET,
-    );
-    expect(facts).toMatchObject({
+    without('DeleteObjectCommand', 'IfMatch');
+    expect(await probeClient(client(), BUCKET)).toMatchObject({
       sendsDeleteIfMatch: false,
       sendsPutIfMatch: true,
       sendsPutIfNoneMatch: true,
@@ -205,24 +214,67 @@ describe('the SDK is checked for the headers the registry relies on', () => {
   });
 
   it('sees a PutObject that carries no If-Match, and one that carries no If-None-Match', async () => {
-    expect(
-      await probeClient(withoutMember(client(), 'PutObjectCommand', 'IfMatch'), BUCKET),
-    ).toMatchObject({
+    without('PutObjectCommand', 'IfMatch');
+    expect(await probeClient(client(), BUCKET)).toMatchObject({
       sendsDeleteIfMatch: true,
       sendsPutIfMatch: false,
       sendsPutIfNoneMatch: true,
     });
-    expect(
-      await probeClient(withoutMember(client(), 'PutObjectCommand', 'IfNoneMatch'), BUCKET),
-    ).toMatchObject({
+    restores.pop()!();
+    without('PutObjectCommand', 'IfNoneMatch');
+    expect(await probeClient(client(), BUCKET)).toMatchObject({
       sendsPutIfMatch: true,
       sendsPutIfNoneMatch: false,
     });
   });
+
+  it('control: the patch is what an SDK without the member does, and it is undone', async () => {
+    expect(await probeClient(client(), BUCKET)).toMatchObject({ sendsDeleteIfMatch: true });
+    without('DeleteObjectCommand', 'IfMatch');
+    expect(await probeClient(client(), BUCKET)).toMatchObject({ sendsDeleteIfMatch: false });
+    restores.pop()!();
+    expect(await probeClient(client(), BUCKET)).toMatchObject({ sendsDeleteIfMatch: true });
+  });
 });
 
-describe('a client that caches its handlers', () => {
-  it('is probed every time, and the probe leaves no handler behind that would swallow a real request', async () => {
+describe('the probe leaves the caller’s client alone', () => {
+  it('runs none of its middleware, logs no command to its logger, looks up no credential, and sends nothing', async () => {
+    let middleware = 0;
+    let commandsLogged = 0;
+    let lookups = 0;
+    const mine = client({
+      // The SDK's logging middleware reports each command it runs at `info`. Its configuration providers report what
+      // they did not find at `debug` as they resolve, for the caller's client or the probe's alike.
+      logger: {
+        debug: (): void => {},
+        info: (): void => {
+          commandsLogged += 1;
+        },
+        warn: (): void => {},
+        error: (): void => {},
+      },
+      credentials: () => {
+        lookups += 1;
+        return Promise.resolve(credentials);
+      },
+    });
+    mine.middlewareStack.add(
+      (next) => (args) => {
+        middleware += 1; // a request counter, a tracer, an audit log: none may see a request that never exists
+        return next(args);
+      },
+      { step: 'initialize', name: 'callerInstrumentation' },
+    );
+    expect(await probeClient(mine, BUCKET)).toBeDefined();
+    expect({ middleware, commandsLogged, lookups, sent }).toEqual({
+      middleware: 0,
+      commandsLogged: 0,
+      lookups: 0,
+      sent: 0,
+    });
+  });
+
+  it('works for a client built with cacheMiddleware, and leaves its cached handlers alone', async () => {
     const cached = client({ cacheMiddleware: true });
     expect(await probeClient(cached, BUCKET)).toBeDefined();
     expect(await probeClient(cached, BUCKET)).toBeDefined();
@@ -247,28 +299,33 @@ describe('a client the probe cannot read', () => {
     expect(calls).toBe(0);
   });
 
+  it('a class-based double with no resolved config is not built a second time', async () => {
+    let built = 0;
+    class Double {
+      constructor() {
+        built += 1;
+      }
+      send(): Promise<never> {
+        return Promise.reject(new Error('unhandled'));
+      }
+    }
+    expect(await probeClient(new Double() as unknown as S3Client, BUCKET)).toBeUndefined();
+    expect(built).toBe(1); // the one the test made
+  });
+
   it('a client whose region cannot be resolved answers nothing, and throws nothing', async () => {
     const noRegion = new S3Client({ credentials, requestHandler: tripwire as never });
     expect(await probeClient(noRegion, BUCKET)).toBeUndefined();
     expect(sent).toBe(0);
   });
 
-  it('a client whose credentials cannot be resolved answers nothing, and sends nothing', async () => {
-    let lookups = 0;
-    const noCredentials = client({
-      credentials: () => {
-        lookups += 1;
-        return Promise.reject(new Error('no credentials'));
+  it('a client whose class cannot build a second client answers nothing, and throws nothing', async () => {
+    const c = client();
+    Object.defineProperty(c, 'constructor', {
+      value: function (): never {
+        throw new Error('cannot build');
       },
     });
-    expect(await probeClient(noCredentials, BUCKET)).toBeUndefined();
-    expect(lookups).toBeGreaterThan(0); // the SDK looks them up on its way to the step the probe reads
-    expect(sent).toBe(0);
-  });
-
-  it('a client whose send fails answers nothing', async () => {
-    const c = client();
-    c.send = (() => Promise.reject(new Error('boom'))) as never;
     expect(await probeClient(c, BUCKET)).toBeUndefined();
   });
 });

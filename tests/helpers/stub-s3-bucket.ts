@@ -1,5 +1,5 @@
 import { Readable } from 'node:stream';
-import { S3Client } from '@aws-sdk/client-s3';
+import { DeleteObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 
 /**
  * A bucket in memory behind the SDK's transport seam, for tests that want a real `S3Client` (its default retry,
@@ -245,20 +245,33 @@ export class StubBucket {
 }
 
 /**
- * `client`, made to behave as an SDK that predates `member` of `command`: the SDK reads an input for the members its
- * model knows, so an unmodelled one is dropped from the request without a word. Returns the same client.
+ * Make `command` behave as it does in an SDK that predates `member`: the SDK reads an input for the members its model
+ * knows, so an unmodelled one is dropped from the request without a word. Patches the command class for every instance,
+ * the ones the registry sends and the ones the client probe builds alike, as an older SDK would be. Returns the function
+ * that puts the class back; a test calls it in `afterEach`.
  */
-export function withoutMember(
-  client: S3Client,
+export function sdkWithout(
   command: 'DeleteObjectCommand' | 'PutObjectCommand',
   member: 'IfMatch' | 'IfNoneMatch',
-): S3Client {
-  client.middlewareStack.add(
-    (next, context) => (args) => {
-      if (context.commandName === command) delete (args.input as Record<string, unknown>)[member];
-      return next(args);
-    },
-    { step: 'initialize', name: `drop-${command}-${member}` },
-  );
-  return client;
+): () => void {
+  const Class = command === 'DeleteObjectCommand' ? DeleteObjectCommand : PutObjectCommand;
+  const original = Class.prototype.resolveMiddleware;
+  Class.prototype.resolveMiddleware = function (this: InstanceType<typeof Class>, ...args) {
+    type Call = { input: object };
+    (
+      this as unknown as {
+        middlewareStack: { add(middleware: unknown, options: unknown): void };
+      }
+    ).middlewareStack.add(
+      (next: (call: Call) => unknown) => (call: Call) => {
+        delete (call.input as Record<string, unknown>)[member];
+        return next(call);
+      },
+      { step: 'initialize', name: `drop-${command}-${member}` },
+    );
+    return original.apply(this, args);
+  } as typeof original;
+  return () => {
+    Class.prototype.resolveMiddleware = original;
+  };
 }

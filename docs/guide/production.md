@@ -132,7 +132,8 @@ object and `If-Match` for the pointer.
 - **The registry checks the SDK for the other headers it sends.** That floor is measured for `If-None-Match` alone. The
   registry's compare-and-swap sends `If-Match` on `PutObject`, and its conditional delete sends `If-Match` on
   `DeleteObject`, and an SDK drops a member its model lacks without a word. Before its first request the registry
-  serialises each of the three through your client, sending nothing, and refuses a write the SDK would send without its
+  serialises each of the three through a client built from yours, sending nothing and running none of your middleware,
+  and refuses a write the SDK would send without its
   precondition (`ValidationError`, naming the header) and tombstones instead of deleting when a `DeleteObject` would go
   out without `If-Match`. If you see that error, upgrade `@aws-sdk/client-s3`.
 

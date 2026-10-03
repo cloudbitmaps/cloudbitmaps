@@ -229,7 +229,8 @@ so, and so do the module headers in the code.
   delete removes whatever is there. The declared range (`>=3.645.0 <4`) was set from a measurement of `If-None-Match`
   alone, the first SDK that sends it; no measurement of the first SDK that sends `If-Match` on either call exists, so
   the range may include one that does not. Before its first request the registry now serialises each of the three
-  through the client's own stack, sending nothing, and refuses a write the SDK would send without its precondition
+  through a second client built from its configuration, sending nothing and running none of the caller's own
+  middleware, and refuses a write the SDK would send without its precondition
   (`ValidationError` naming the header; upgrade `@aws-sdk/client-s3`), and leaves a row tombstoned when a `DeleteObject`
   would go out without `If-Match`, whatever `conditionalDelete` says. A client it cannot read (a test double) is not
   refused.
