@@ -101,8 +101,14 @@ export interface RollbackResult {
  *   segment that resolves and then fails;
  * - a target that is **not what the row says the segment is** is refused with `IntegrityError`: a cleartext object
  *   under a row with keys, or an encrypted one under a row with none, either of which every read would then refuse.
- *   One read of the target's footer, with no key, decides it, as does a footer that fails its own checks;
+ *   One tail read of the target decides it, as does a footer that fails its own checks;
  * - rolling to the generation **already current** is a no-op that reports itself, not an error.
+ *
+ * The same tail read opens the target when the segment's key is at hand, and the rollback writes the target's own id
+ * count and metadata into the row, in the compare-and-swap that moves the pointer: a reader that sees the target as
+ * current sees what describes it. A store with no keystore, or one that cannot open the segment's key, still rolls an
+ * encrypted segment back and leaves the row with no summary of the target; the undo of a rollback whose target was
+ * collected meanwhile puts back the summary the row had.
  *
  * What it does **not** do is delete anything. The generations above the new pointer stay in the bucket, which is
  * what makes the rollback reversible — roll forward again by naming one of them. They are also then *above*

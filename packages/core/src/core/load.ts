@@ -128,8 +128,9 @@ export interface LoadOptions {
    * With `keep` of 0 or 1, a load that found nothing above the pointer collects without listing: it deletes the one
    * generation its publish pushed out of the window, and lists the segment's objects on every sixteenth generation to
    * take whatever that pass leaves, such as the generations an earlier, wider `keep` held. With `keep` of 2 or more
-   * it lists on every load, and so does one whose guard found the current generation's object gone. A `keep` at least
-   * the generation published collects nothing and asks for nothing.
+   * it lists on every load, and so does one whose check found the current generation's object gone: the guard's read of
+   * it, or, when the guard took the size from the row's summary, one zero-byte read made before a `keep` of 1 takes a
+   * name. A `keep` at least the generation published collects nothing and asks for nothing.
    */
   readonly keep?: number;
   /**

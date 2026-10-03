@@ -100,6 +100,19 @@ is a dependency of both and is never installed directly. The storage drivers are
   not documented, so correctness rests on the write id, the footer and the registry's fence, never on that, and the
   in-region calibration is where real throttle answers are measured. **Known limit:** a bare `429` from an S3-compatible
   service is not retried and not classified transient on S3.
+- **Metadata on a generation, and a row that describes its current generation.** `load` and the `*Into` verbs take a
+  small record of your own (`metadata`: string keys, string or finite-number values, at most 1,024 bytes as canonical
+  JSON), checked before the first request and stored in the generation's object. The write that moves the pointer also
+  writes the row's summary of the generation, its id count and the metadata, sealed on an encrypted segment, so a reader
+  that sees a generation as current sees its metadata. A rollback writes its target's own, an erasure's rewrite carries
+  it over, a shred and a drop clear the summary, and a guarded load sizes the current generation from it and opens no
+  object for that. A load that does so looks for the current object with one zero-byte read before it deletes by name,
+  so a segment whose current object was removed from outside keeps the one generation left to roll back to; that look
+  stands in for the tail read, so a steady load on S3 makes the same 8 requests (derived, and held by a test). **Proven
+  against** the in-memory and local-file drivers and the real registry protocol over counting stores, with every
+  decision mutation-checked. **Not yet built:** reading the metadata and the count back through the API (`stat()`, a
+  one-request `count()`, a pinned read), the check of the row's summary against the object it describes whenever a read
+  opens it, and `checkConsistency` reporting a disagreement.
 - **Chunk-skipping intersection** — `intersect` aligns on chunk keys and fetches only the chunks present in
   *every* operand, with bounded read concurrency and a bounded streaming window.
 - **Id-range reads for keyset paging** —

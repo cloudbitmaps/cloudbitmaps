@@ -67,6 +67,30 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **`load` and the `*Into` verbs take `metadata`: a small record of your own, written with the generation and with the
+  pointer.** A flat object of string keys and string or finite-number values, at most 1,024 bytes as canonical JSON
+  and no key over 128 bytes: the record a definition's version, a landing time or a run id fits in. A record that
+  breaks a rule is a `ValidationError` before the load makes a request (nothing is read, nothing written), on a load of
+  ids, a load of a bitmap and each `*Into`; `undefined` and `{}` store nothing and write the object a load without
+  metadata writes. The record is copied when you call, so what is stored is what you passed whatever the load's id
+  source takes to run. It goes into the generation's object, and the write that moves the pointer carries the row's
+  summary of the generation, its id count and the metadata, in the same compare-and-swap, so a reader that sees
+  generation N as current sees N's metadata. It never changes: a new generation is how it does, and a load does not
+  inherit the last one's. A rollback writes its target's own into the row, with the one tail read it already makes to
+  check the target, which now also opens it when the store has the segment's key (an encrypted target on a store with no
+  keystore, or whose key it cannot open, still rolls back and leaves the row with no summary; a target whose index or
+  metadata does not open is refused, where only a footer that failed its own checks was). The undo of a rollback whose
+  target was collected meanwhile puts back the summary the old row had. An erasure's rewrite carries the source's
+  metadata into the new object as it is, and the row's summary of it, built from what was written, counts one id fewer;
+  it does not scan the metadata, so never put a subject's id in it. A crypto-shred and a drop clear the summary, and a
+  retention policy or a sweep that finds a segment not yet due leaves it. On an encrypted segment the object's block
+  and the row's summary are sealed, the summary as a fixed-width 64-bit count then the metadata, bound to its
+  namespace, segment and generation under a scope of its own, so its length reveals only the metadata's size and a copy
+  moved to another generation's row does not open. Whether an encrypted object has the block is still not
+  authenticated, and the row's sealed summary is the copy that says there was one. `LoadOptions.metadata`,
+  `MaterializeOptions.metadata`; `GenerationListDeps.keystore` for `rollbackSegment`. This build writes the metadata and
+  the summary; reading them back through the API is the next piece.
+
 - **`readTimeoutMs` on `GcsStorage` cuts off a GCS read that stalls; it is off unless you set it.** A client's own
   `timeout` does not bound a download on `@google-cloud/storage` 8.x, so a read whose server stops answering waited
   for it forever. With `readTimeoutMs` set, one deadline bounds each read as a whole (a generation's tail with the
@@ -152,7 +176,7 @@ so, and so do the module headers in the code.
   so a later build can add one. The reader cache's byte bound (`cache.readerMaxBytes`) counts a reader's metadata with its index. For
   tooling: `CrbmReader`'s `metadata` is the generation's metadata, and `aadFor` takes the scope `'metadata'`; a
   `CrbmCrypto` of your own must map that scope as `aadFor` does to open an encrypted object with metadata. Nothing in the
-  library writes metadata yet: `load` takes none.
+  library writes metadata: `load` and the `*Into` verbs take a `metadata` option (see the entry for it below).
 
 - **A registry record can carry a `summary` of its current generation** (`RegistryRecord.summary`, for driver
   authors). In the clear on a cleartext segment, `{ generation, cardinality, metadata? }`, with `cardinality` an
@@ -165,7 +189,8 @@ so, and so do the module headers in the code.
   one a write gives must name the `currentGen` and agree with the keys (sealed with wrapped keys, clear without) the
   row will have. A stored row that disagrees is still read, so one such row cannot stop every listing, and whatever
   reads the summary must not use it then. The registry stores a frozen copy of the summary it was called with. A
-  crypto-shred clears it. Nothing in the library writes or reads one yet, and a row without one is correct. Every
+  crypto-shred clears it. Every write that moves a pointer writes one and a load's guard reads it (see below), and a row
+  without one is correct and is read from its object. Every
   shipped registry round-trips it, and the registry conformance suite now requires a driver of your own to as well.
   Types: `RegistrySummary`, `ClearRegistrySummary`, `SealedRegistrySummary`, `GenerationMetadata`.
 
@@ -213,7 +238,7 @@ so, and so do the module headers in the code.
 - **`PricingProfile.storage.requestsPerPointerRead` prices a pointer read apart from a tail read.** It is the requests
   one pointer read costs, 1 by default, and the cost model charges it for each operand of an intersection, for the
   pointer reads a load makes and for each pointer refresh. `requestsPerSizedRead` keeps its name and its default
-  of 1, and now prices tail reads only: each operand's index read and the one a load makes. A pointer read is one
+  of 1, and now prices tail reads only: each operand's index read, since a load reads no index of its own. A pointer read is one
   request on S3, GCS and Azure Blob alike, so every shipped backend leaves `requestsPerPointerRead` at 1; S3 and GCS
   leave `requestsPerSizedRead` at 1 too, and an Azure Blob profile sets `requestsPerSizedRead: 2`, for its two-request
   tail read. An Azure profile that already sets `requestsPerSizedRead: 2` is priced one request lower for each pointer
@@ -221,6 +246,30 @@ so, and so do the module headers in the code.
   with `ValidationError`, as `requestsPerSizedRead` is.
 
 ### Changed
+
+- **A guarded load sizes the current generation from its row's summary and reads no tail of it; a segment whose
+  rows carry no summary reads it as before.** The guard needs how many ids the segment holds, and a row that carries a
+  summary for the generation it names gives it that, so the load opens no object for it. A row with none (one written
+  before rows carried it, a summary that names another generation, or a sealed one that does not open) is read from the
+  object's index as before, and its next load writes a summary. A load that takes the size from the summary also
+  opens nothing to learn that the current object is gone from the bucket, which was how it found a segment whose
+  object a lifecycle rule or a partial restore removed, and listed instead of deleting by name the one generation
+  left to roll back to. So a load with a `keep` of 1 that is about to delete by name looks for the current object
+  first with one zero-byte read (the check it already makes that the next number is free, a metadata request on every
+  backend), and lists unless it finds it. A load with a `keep` of 0 deletes the generation it supersedes, which is the
+  one in question, a load that lists anyway makes no look, and neither does a load the guard refuses or one with no
+  guard. Counts, derived from the driver ports and held by tests: a steady single-part load on S3 is 2 PUT-class
+  requests, 5 GET-class (three pointer reads and two checks) and a delete, 8 requests. The two checks stand in for the
+  tail read and the one check that came with it, so this change leaves the count of requests on S3 and GCS where it
+  was and takes the bytes of the tail read off (up to 256 KiB a load); on Azure Blob, where a tail read is two requests,
+  it is one request fewer. A generation that lists is 3 PUT-class and 6 GET-class, and a segment's second load is 2 and
+  3. `costReport()` and `estimateCost()` price it so: about $12.34 per million steady single-part loads at the default
+  prices, $12.00 when a load does not list and $17.40 when it lists, and $11.60 for a segment's first load and $11.20
+  for its second. `requestsPerSizedRead` no longer prices a load. One behaviour changes with it: a row that names an
+  object that is gone still remembers the size, so a repair load is judged against it, and a repair smaller than
+  `guard.minRetained` allows is refused, where the guard met an object it could not read and judged against nothing.
+  Repair with `allowEmpty: true` or without `minRetained`.
+  The calibration harness expects a reload of 2 and 3, a listing load of 3 and 6, and its report says so.
 
 - **A write-once object that S3 or GCS throttles is sent again, and a registry write that gets no answer is settled by
   reading the row, and sent again from it if nothing changed.** A load that met a throttle on its object, or a response

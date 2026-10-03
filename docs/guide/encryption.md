@@ -3,8 +3,9 @@
 Encryption is opt-in: pass a keystore and segments are encrypted; omit it and everything stays cleartext. This page
 covers turning it on, erasing a segment or a namespace by destroying its key, and why the rules are what they are.
 
-What it protects: the `.crbm` objects are encrypted (payloads and the chunk index), so a leaked bucket reveals
-neither ids nor cardinality. The segment name and generation are still visible in each object's key, and an object's
+What it protects: the `.crbm` objects are encrypted (payloads, the chunk index and any metadata), and so is the
+registry row's summary of the current generation, so a leaked bucket reveals neither ids, cardinality nor your
+metadata. The segment name and generation are still visible in each object's key, and an object's
 byte size still implies a rough upper bound on the set's size, because there is no padding. It also supports
 **crypto-shred**: GDPR "right to erasure" that works even on immutable or backed-up storage.
 
@@ -109,6 +110,36 @@ crypto-shreds an encrypted segment and deletes its objects.
 - **`eraseNamespace` lists the whole namespace before it destroys anything**, and holds the listing in memory, so it
   stops at the ceiling every fleet scan keeps: `maxScanSegments`, default 250,000. A namespace over it throws
   `BudgetExceededError` with nothing erased. Pass a higher `maxScanSegments` when the namespace really is that large.
+
+## What is sealed where
+
+Each piece of a segment is stored in one place, in the clear or sealed under the segment's key (AES-256-GCM, with the
+segment's name, the generation and what the blob is for bound into the authenticated data, so a blob cannot be moved
+to another segment, another generation or another purpose):
+
+| What | Where | Encrypted segment |
+|---|---|---|
+| the ids: each chunk's payload | the generation's object | sealed |
+| the chunk index, and with it the id count and chunk count | the generation's object | sealed. The footer's count fields are zero |
+| your metadata for the generation | the object's extension block | sealed under its own scope |
+| the current generation's id count and metadata | the registry row's summary | sealed: the count as a fixed-width 64-bit integer, then the metadata, so the length reveals only the metadata's size, never how many digits the count has |
+| the data key | the registry row, wrapped under each KEK | wrapped; removed by a crypto-shred |
+| the pointer, status, retention policy, timestamps and token | the registry row | clear |
+| the object's footer (format version, flags, generation, index offset and length, checksum) | the generation's object | clear |
+
+On a **cleartext** segment the object's metadata and the row's summary are in the clear, like everything else in that
+object and row.
+
+Three things follow:
+
+- **Whether an encrypted object has a metadata block is not authenticated.** Removing the block takes no key, because
+  the block is an optional region before the index, and a reader that finds none reads none. The block's content is
+  authenticated, and so is the row's sealed summary, which says there was metadata. An object that disagrees with the
+  row about it is one someone with write access to the bucket changed.
+- **A sealed summary moved to another generation's row does not open.** The summary names its generation and is sealed
+  for it, so a copy placed on a row that names another generation fails its authentication.
+- **A crypto-shred removes the summary with the key.** It could not be opened again, and a clear copy would outlive the
+  segment on its tombstone, so the shred clears both.
 
 ## How it stays correct
 

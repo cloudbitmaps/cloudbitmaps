@@ -5,7 +5,7 @@
  * Storage generations are write-once, generation-keyed objects (`<segment>.<gen>.crbm`) behind one registry pointer
  * (`currentGen`). Every write path in the library — a load, an `*Into` materialisation, a subject-erasure rewrite —
  * writes a **new** object and then advances the pointer. Every load that finds a row fences its publish on the
- * row's token; a guarded load (the default, since the empty refusal reads the current generation) also fences on
+ * row's token; a guarded load (the default, since the empty refusal needs the size of the current generation) also fences on
  * the pointer it judged (`expectFrom`), and one that found no row fences on that absence instead. Only an unguarded
  * load (`allowEmpty: true` and no `guard.minRetained`) onto a segment with no row publishes bare forward-only. An
  * `*Into` materialisation is a load, and publishes the same way. The rewrite is fenced on its source generation and
@@ -259,7 +259,7 @@ export async function gcOrphanGenerations(
  * at most one, and by listing otherwise ({@link gcOrphanGenerations}). A load lists in three cases: `keep` of 2 or
  * more, which a name cannot serve because the window then counts generations that may be absent (a refused
  * neighbour's number is a gap, and by name would take one the window promised to keep); a number the listing chose,
- * so something sits above the pointer or the check could not answer, or a current object the guard found gone; and
+ * so something sits above the pointer or the check could not answer, or a current object the load's check found gone; and
  * every {@link LIST_COLLECTION_CADENCE}th generation, which collects what a name-only pass leaves. It makes no
  * request when `keep` is at least the generation published, since no more generations than that exist below it. A
  * load onto a `destroyed` row is refused at its publish and never reaches here; a drop that lands after the publish
@@ -326,8 +326,9 @@ async function objectIsThere(storage: IStorageDriver, key: GenKey): Promise<bool
  * That rests on the object the row named being in the bucket, and a fault can break it (a lifecycle rule or a
  * partial restore removing it, or an erasure deleting the object of a load whose publish then landed;
  * `checkConsistency` reports the state). The caller, which learns that from its guard's read of the current
- * generation, lists instead; a load that made no such read (`allowEmpty` without `minRetained`) cannot tell, and
- * deletes by name the older generation a listing would have kept as the window. `keep` of 2 or more is refused,
+ * generation or, when the guard took the size from the row's summary and opened nothing, from one zero-byte read of
+ * it (see {@link collectAfterLoad}), lists instead; a load that made neither (`allowEmpty` without `minRetained`)
+ * cannot tell, and deletes by name the older generation a listing would have kept as the window. `keep` of 2 or more is refused,
  * because there the window counts the generations that exist, which a name cannot know.
  *
  * Collection never touches the current generation, and the row is re-proved before the delete as every pass does.
