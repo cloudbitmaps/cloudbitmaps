@@ -42,6 +42,7 @@ It builds its own client from Application Default Credentials. Any other key is 
 | `client` | your own `Storage` client. Pass it as `client`; `storage` is refused, since in `CloudRoaring` that word means the backend. Build it with `retryOptions: { autoRetry: false }` (see below) |
 | `projectId`, `apiEndpoint` | build a client for you, such as one for fake-gcs-server; refused beside `client` |
 | `simpleUploadThresholdBytes`, `maxObjectBytes` | the size up to which an object is one simple request (default 8 MiB) and the largest object (default 5 TiB, GCS's maximum) |
+| `readTimeoutMs` | cut off a read that has run this long, in milliseconds (see below); `0`, the default, sets no timeout |
 
 ## Before production
 
@@ -62,6 +63,29 @@ It builds its own client from Application Default Credentials. Any other key is 
   resumable uploads on that client, which the library does not retry; the client `GcsStorage` builds keeps them.
 - **A client `timeout` does not bound a download on `@google-cloud/storage` 8.x**, so a read whose server stalls waits
   for it. Measured against a local server that never answers: still pending after 12 s with `timeout: 2000`.
+  **`readTimeoutMs` does, and it is off unless you set it.** It bounds each read as a whole: a generation's tail (with
+  the metadata read it falls back on for an empty object), a range of it, or a registry row. One deadline covers every
+  attempt the driver makes and the backoff between them, from the call into the driver (a credential fetch and any
+  wait for a socket count) to the end of the body. It counts time the process spends busy too: Node runs a due timer
+  before it reads a socket, so a synchronous stretch longer than the timeout fails the reads in flight even when their
+  responses have arrived. When it passes, the read throws `TransientError` naming the read and the timeout, and no
+  further attempt starts; the store's read retry runs it again, so with `readTimeoutMs: 2_000` a read that stalls on
+  every attempt fails after about 8.35 s (4 × 2 s plus up to 0.35 s of backoff; measured: 8.1 to 8.2 s). Uploads,
+  deletes and listings are not timed.
+- **A read that times out before its server answers leaves its connection open.** The SDK cannot cancel a request
+  whose response has not begun, so that request holds its connection until the server answers or closes it, and until
+  then keeps a Node process from exiting: one per driver read, up to four per call through the store's retry, so an
+  outage at N reads a second adds about 4N held connections each second. On 8.x a read cut off after its response
+  began closes its own; on 7.x (checked on 7.22.0) it stays open too. A 404 whose error body arrives after the
+  deadline is reported as a `TransientError`, not `NotFoundError`.
+- **Downloads go out on Node's global agent, so one the driver cuts off or refuses resets nothing else.** When a
+  download fails part-way, the SDK destroys the HTTP agent it went out on, and its own agent is one keep-alive pool the
+  whole process shares, so every other request in flight would be reset with it, uploads included. The SDK never
+  destroys the global agent. Measured on 8.1.0 with no timeout: a body cut off part-way reset a 64-byte upload and a
+  registry write on a second backend on the SDK's agent, and on the global agent all of them completed. The cost: the
+  global agent closes a connection idle for 5 seconds (the SDK's own pool does not), so a read after a longer pause
+  opens a new connection, with its TCP and TLS handshake, and downloads share that agent with any other `http` or
+  `https` request in the process. Raising `https.globalAgent.options.timeout` keeps idle connections longer.
 - **A transient failure of a write throws `TransientError`, and the write may or may not have landed.** Re-run the
   call, or check `store.generations(ref)`. The driver sends each registry write once; a load that gets no answer reads
   the row and sends a fresh compare-and-swap from it, at most three times. A generation's object of up to

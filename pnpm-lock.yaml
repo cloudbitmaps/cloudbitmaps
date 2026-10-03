@@ -148,7 +148,7 @@ importers:
   packages/s3:
     dependencies:
       '@aws-sdk/client-s3':
-        specifier: '>=3.645.0 <4'
+        specifier: '>=3.700.0 <4'
         version: 3.1132.0
       '@cloudbitmaps/core':
         specifier: workspace:^

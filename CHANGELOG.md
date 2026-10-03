@@ -67,6 +67,22 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **`readTimeoutMs` on `GcsStorage` cuts off a GCS read that stalls; it is off unless you set it.** A client's own
+  `timeout` does not bound a download on `@google-cloud/storage` 8.x, so a read whose server stops answering waited
+  for it forever. With `readTimeoutMs` set, one deadline bounds each read as a whole (a generation's tail with the
+  metadata read it falls back on for an empty object, a range of it, a registry row): every attempt the driver makes
+  and the backoff between them, timed from the call into the driver, so a credential fetch counts, to the end of the
+  body, so a stall after the headers is cut off too. When it passes, the read throws `TransientError` naming the read
+  and the timeout and no further attempt starts; the store's read retry runs it again, so at `2_000` a read that stalls
+  on every attempt fails after about 8.35 s (measured: 8.1 to 8.2 s). It counts time the process spends busy, so a
+  synchronous stretch longer than the timeout fails the reads in flight. Uploads, deletes, listings and the
+  conditional writes are not timed. `0`, the default, sets no timeout; a value that is not a non-negative safe integer
+  no larger than 2,147,483,647 is refused with `ValidationError`. The SDK cannot cancel a request whose response has
+  not begun, so a read that times out before its server answers leaves that connection open until the server answers
+  or closes it: one per read, up to four per call through the store's retry (on 7.x, checked on 7.22.0, a read cut off
+  after its response began keeps its connection open too). A 404 whose error body arrives after the deadline is a
+  `TransientError`, not `NotFoundError`. The GCS storage and registry drivers take the option too.
+
 - **`LoadDeps.collectByListing` makes `loadSegment` collect by listing whatever `keep` is.** Absent, a load that numbered
   its generation with one existence check and keeps at most one generation deletes by name the one generation its
   publish pushed out of the window (see Changed). Set, it lists the segment's objects after its publish instead and
@@ -407,6 +423,29 @@ so, and so do the module headers in the code.
   recognises its own write by its effect, as it does after any unanswered write, so the load returns `published: true`.
   Tests run a real `@azure/storage-blob` client against a stub that applies the write, lands another on top, and then
   answers `503`.
+
+- **`@cloudbitmaps/s3` requires `@aws-sdk/client-s3` 3.700.0 or later, where it took 3.645.0.** An SDK sends only
+  the conditional headers it models and drops one it does not, without an error. The published serializers of
+  3.645.0 to 3.699.0 omit `If-Match` on `PutObject`, so on those versions the registry's compare-and-swap went out
+  unconditionally, and a fenced row write could land over a concurrent writer's: a lost update, with no error on
+  either side. 3.700.0 is the first version that sends it (and `DeleteObject`'s, from 3.698.0). `If-None-Match`,
+  which write-once relies on, is modelled from 3.641.0, as before. A fresh install already resolves far above the
+  floor; this matters to a project that pins an older SDK or passes its own `client` built on one.
+
+- **A GCS download that fails part-way no longer resets the other requests in flight, uploads included.** When a
+  download's body was cut off, or the driver refused or cut off the response, the SDK destroyed the HTTP agent it went
+  out on, and its default agent is one keep-alive pool shared by every request in the process, so every other request
+  on it was reset: with no timeout set, a body the server cut off part-way failed a concurrent 64-byte upload and a
+  registry write on another backend with `ECONNRESET`, and a sent-once write so failed may or may not have landed.
+  Every download now goes out on Node's global agent, which the SDK never destroys, so a destroyed download closes its
+  own connection and nothing else. The cost: Node's global agent closes a connection idle for 5 seconds, where the
+  SDK's pool kept it, so a read after a longer pause opens a new connection, with its TCP and TLS handshake, and the
+  downloads share that agent with any other `http` or `https` request in the process. Raising
+  `https.globalAgent.options.timeout` keeps idle connections longer.
+- **A GCS range read buffers at most the bytes it asked for, and checks the response is those bytes.** It is one GET
+  through the same path as the tail read: a response longer than the range is refused as soon as its length shows,
+  where the whole response was downloaded before its length was checked, and a 206 must name the requested bytes in
+  `Content-Range`, while a 200 (a server that ignored the range) is accepted only for a range that starts at 0.
 
 - **A cleartext `.crbm` object under an encrypted segment is refused, not believed.** A read of a segment whose row
   carries wrapped keys opened such an object as if it were the segment's: the footer's encrypted flag alone decided,

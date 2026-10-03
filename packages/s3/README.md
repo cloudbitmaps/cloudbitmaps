@@ -16,7 +16,7 @@ pnpm add @cloudbitmaps/roaring @cloudbitmaps/s3
 
 On npm 12 and pnpm 10 and later, allow `roaring`'s one install script first, or the install exits 0 and the package throws at `import`. Put this in your `package.json`: `{ "allowScripts": { "roaring": true }, "pnpm": { "onlyBuiltDependencies": ["roaring"] } }`. npm 11 runs the script but warns until you allow it the same way; pnpm 9 needs nothing extra. [Details](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#cannot-find-module-buildreleaseroaringnode-after-a-successful-install).
 
-`@aws-sdk/client-s3` (`>=3.645.0 <4`) is a real dependency of this package, so installing it is the whole step.
+`@aws-sdk/client-s3` (`>=3.700.0 <4`) is a real dependency of this package, so installing it is the whole step.
 `@cloudbitmaps/core`, the engine underneath, arrives with it and you never name it.
 
 ## Use
@@ -49,11 +49,13 @@ It builds its own client from your usual AWS credentials. Any other key is refus
 - **The bucket must honor conditional writes**: `If-None-Match: *` for a write-once generation and `If-Match` for the
   pointer. AWS S3 does, and the test suite runs against MinIO. Another S3-compatible service that ignores the headers
   turns write-once into overwrite, so check yours before you depend on it.
-- **Use `@aws-sdk/client-s3` 3.645.0 or later** if you pin the SDK or pass your own `client`. This floor is a
-  correctness floor, not a preference. The SDK models the conditional write this library's write-once guarantee is
-  built on from 3.641.0: measured against MinIO, 3.640.0 silently overwrites an existing object, which loses a
-  published generation without an error, and 3.641.0 rejects correctly. The floor sits a small margin above that.
-  This package's own range never resolves below it.
+- **Use `@aws-sdk/client-s3` 3.700.0 or later** if you pin the SDK or pass your own `client`. This floor is a
+  correctness floor, not a preference. An SDK sends only the conditional headers it models, and drops one it does
+  not, without an error. `If-None-Match`, which write-once is built on, is modelled from 3.641.0: measured against
+  MinIO, 3.640.0 silently overwrites an existing object, which loses a published generation. `If-Match` on
+  `PutObject`, which the registry's compare-and-swap is built on, is modelled from 3.700.0: 3.699.0's serializer
+  omits it, so a fenced row write goes out unconditionally and can land over a concurrent writer's. This package's
+  own range never resolves below 3.700.0.
 - **Grant `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject`, `s3:AbortMultipartUpload` and `s3:ListBucket`.** Without
   `s3:ListBucket`, S3 answers a missing key with `403` instead of `404`.
 - **Add a lifecycle rule that aborts incomplete multipart uploads**, and never one that expires current objects or the

@@ -417,6 +417,25 @@ describe('GcsStorage (fake-gcs-server) — the backend builds its own client', (
     expect((meta.metadata as { cbwid?: string } | undefined)?.cbwid).toMatch(/^[0-9a-f]{32}$/);
   });
 
+  // A timeout well above the emulator's answers leaves a healthy store alone: the load, then its reads of the
+  // pointer, the generation's tail and its chunk ranges, all complete under it.
+  it('takes readTimeoutMs, and a load and its reads complete under it', async () => {
+    const backend = new GcsStorage({
+      bucket: BUCKET,
+      prefix: `${RUN}/backend-timeout/${n++}`,
+      projectId: 'test',
+      apiEndpoint: ENDPOINT,
+      readTimeoutMs: 10_000,
+    });
+    const store = new CloudRoaring({ storage: backend });
+    const ids = Array.from({ length: 2000 }, (_, i) => i * 3);
+    expect((await store.load({ segment: 'timed' }, ids)).published).toBe(true);
+    expect(await store.exists({ segment: 'timed' })).toBe(true);
+    expect(await store.segment('timed').count()).toBe(2000);
+    expect(await store.segment('timed').has(5997)).toBe(true);
+    expect(await store.segment('timed').has(5998)).toBe(false);
+  });
+
   it('takes maxObjectBytes, advertises it, and refuses a generation past it', async () => {
     const backend = new GcsStorage({
       bucket: BUCKET,
