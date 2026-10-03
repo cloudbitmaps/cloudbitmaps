@@ -230,6 +230,24 @@ describe('S3: a throttled write-once object is sent again, and its write id tell
     expect(bucket.count('HeadObject')).toBe(0);
   });
 
+  it.each<[string, number, number[]]>([
+    ['halfway', 0.5, [250, 500, 1000]],
+    ['at its lowest', 0, [0, 0, 0]],
+    ['just under each bound', 0.999, [499, 999, 1998]],
+  ])('waits a random time under 500 ms, then 1 s, then 2 s: %s', async (_, draw, expected) => {
+    const random = vi.spyOn(Math, 'random').mockReturnValue(draw);
+    try {
+      const bucket = new StubS3Bucket();
+      const { driver, waits } = driverOver(bucket);
+      for (let i = 0; i < 3; i++) bucket.arm('PutObject', 'throttle');
+      await put(driver, new Uint8Array([1]));
+      expect(bucket.count('PutObject')).toBe(4);
+      expect(waits).toEqual(expected);
+    } finally {
+      random.mockRestore();
+    }
+  });
+
   it('a throttle on every send ends in TransientError after three re-sends, deleting nothing', async () => {
     const bucket = new StubS3Bucket();
     const { driver, waits } = driverOver(bucket);

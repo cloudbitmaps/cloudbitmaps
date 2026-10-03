@@ -521,6 +521,25 @@ describe('a publish whose registry write ends without a definite answer reads th
     expect(await generations(w.storage)).toContain(3);
   });
 
+  it('a token-only change during an unanswered write costs no wait and no fresh write: the row moved', async () => {
+    const w = world();
+    await threeLoads(w);
+    w.arm({
+      kind: 'transient-unapplied',
+      // The write gets no answer, and by the time the row is read back another writer has changed it without moving
+      // the pointer: a retention policy. The pointer is where it was, but the row is not the one the write was made
+      // against, so the write can never land, and waiting to send it again would be a wait for nothing.
+      meanwhile: async () => {
+        const row = (await w.base.get(SEG))!;
+        await w.base.compareAndSwap(SEG, row.token, { retention: { note: 'x' } });
+      },
+    });
+    const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9 });
+    expect(r).toMatchObject({ generation: 3, published: false, reason: 'superseded' });
+    expect(w.waits).toEqual([]);
+    expect(w.writes.compareAndSwap).toBe(1);
+  });
+
   it('a refusal after a write that went unanswered says so in the audit event; after answered writes it does not', async () => {
     const answered = world();
     await threeLoads(answered);

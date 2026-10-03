@@ -141,6 +141,23 @@ describe('GCS: a throttled single-request upload is sent again, and its write id
     expect(stub.count('metadata')).toBe(0);
   });
 
+  it.each<[string, number, number[]]>([
+    ['halfway', 0.5, [250, 500, 1000]],
+    ['at its lowest', 0, [0, 0, 0]],
+    ['just under each bound', 0.999, [499, 999, 1998]],
+  ])('waits a random time under 500 ms, then 1 s, then 2 s: %s', async (_, draw, expected) => {
+    const random = vi.spyOn(Math, 'random').mockReturnValue(draw);
+    try {
+      const { driver, waits } = driverOver();
+      for (let i = 0; i < 3; i++) stub.arm({ status: 503 });
+      await put(driver, new Uint8Array([1]));
+      expect(stub.count('upload')).toBe(4);
+      expect(waits).toEqual(expected);
+    } finally {
+      random.mockRestore();
+    }
+  });
+
   it('a throttle on every send ends in TransientError after three re-sends, deleting nothing', async () => {
     const { driver, waits } = driverOver();
     for (let i = 0; i < 4; i++) stub.arm({ status: 429 });
