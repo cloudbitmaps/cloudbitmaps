@@ -80,7 +80,10 @@ export class StubBucket {
   /** The host each request the transport received was addressed to, in order: where the SDK resolved the endpoint. */
   readonly hosts: Array<string | undefined> = [];
   private seq = 0;
-  private fault: { op: Operation; kind: 'lose-response' | 'drop' | 'clock-skew' } | undefined;
+  private fault:
+    | { op: Operation; kind: 'lose-response' | 'drop' | 'clock-skew' }
+    | { op: Operation; kind: 'answer'; statusCode: number; code: string }
+    | undefined;
 
   /** Apply the next `op`, then lose its response. */
   loseResponseOf(op: Operation): void {
@@ -90,6 +93,11 @@ export class StubBucket {
   /** Fail the next `op` before it is applied — a request that never arrived. */
   failBeforeApplying(op: Operation): void {
     this.fault = { op, kind: 'drop' };
+  }
+
+  /** Answer the next `op` with this error, unapplied: what S3 says for an object that is not there, for one. */
+  answerWith(op: Operation, statusCode: number, code: string): void {
+    this.fault = { op, kind: 'answer', statusCode, code };
   }
 
   /** Refuse the next `op` unapplied, as S3 refuses a signature made by a clock ten minutes behind its own. */
@@ -110,6 +118,7 @@ export class StubBucket {
       const fault = this.fault?.op === op ? this.fault : undefined;
       if (fault !== undefined) this.fault = undefined;
       if (fault?.kind === 'drop') throw connectionReset();
+      if (fault?.kind === 'answer') return { response: s3Error(fault.statusCode, fault.code) };
       if (fault?.kind === 'clock-skew') {
         const serverTime = new Date(Date.now() + 10 * 60_000);
         return {

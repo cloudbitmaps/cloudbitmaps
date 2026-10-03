@@ -131,6 +131,25 @@ describe('S3: a conditional write is sent once, whatever the SDK retry would do'
     expect(bucket.count('DeleteObject')).toBe(1);
   });
 
+  it('a DeleteObject answered 404 NoSuchKey (the object is gone, as for a delete that met its own landed twin) is a WriteConflictError', async () => {
+    const bucket = new StubBucket();
+    const backend = new S3Storage({
+      bucket: BUCKET,
+      client: bucket.client(),
+      conditionalDelete: true,
+    });
+    await backend.registry.create(REF, { currentGen: 0 });
+    const store = new S3RegistryStore(backend.client, BUCKET, 0, true);
+    const [key] = [...bucket.objects.keys()];
+    bucket.answerWith('DeleteObject', 404, 'NoSuchKey');
+    // A lost race, not a fault: the sweep reports `failed: contended` and keeps purging, where a raw error would count
+    // against the purges it is allowed to have refused.
+    await expect(store.delete(key!, { version: '"any"' })).rejects.toBeInstanceOf(
+      WriteConflictError,
+    );
+    expect(bucket.count('DeleteObject')).toBe(1);
+  });
+
   it('a DeleteObject whose If-Match no longer holds deletes nothing and is a WriteConflictError', async () => {
     const bucket = new StubBucket();
     const backend = new S3Storage({
