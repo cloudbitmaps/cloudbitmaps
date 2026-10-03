@@ -62,6 +62,8 @@ so, and so do the module headers in the code.
   Schema 2 adds the record's optional `summary` and the new token form, both below. A row stamped 1 may hold only
   what schema 1 could: a `summary` or a token with a write part on one is an `IntegrityError`.
 
+- **`@cloudbitmaps/s3` needs `@aws-sdk/client-s3` 3.700.0 or later, where it took 3.645.0.** Install it before upgrading if you pin the SDK; the reason is under `Fixed`.
+
 - **A registry token is now `<incarnation>.<counter>.<write>`, and no two writes under a name are given the same
   one.** The incarnation is a 128-bit id as 32 lowercase hex digits, drawn from the platform's Web Crypto when a row
   is created; the counter advances on every write and carries on across a tombstone; the write part is 64 bits as 16
@@ -99,7 +101,7 @@ so, and so do the module headers in the code.
 - **A cold `count()` is one request, and `seg.stat()` says what the generation is.** The registry row records the
   current generation's id count, so a count reads the pointer and nothing else: no read of the object, cleartext or
   encrypted, and none however wide the index is (an index longer than the 256 KiB tail read took a third request). A
-  cold count on S3 and GCS makes 1 request where it made 2, and on Azure Blob 1 where it made 3 (derived from the
+  cold count on S3 and GCS makes 1 request where it made 2, and on Azure Blob 1 where it made 4 (derived from the
   driver ports, held by a test that counts them; one wire request on each emulator in the integration lane). Within
   `cache.genTtlMs` it makes none, and a refresh that finds the same generation under a changed row (a `setRetention`)
   costs it no re-open. `seg.stat()` returns `{ generation, cardinality, metadata? }` from the same resolution:
@@ -400,7 +402,7 @@ so, and so do the module headers in the code.
     one beyond it, however many earlier calls kept. And a `keep` at least the generation published collects nothing
     and asks for nothing, so a default `*Into` makes no collection request.
 
-  Counts, measured against MinIO and counted at the driver ports (GCS and Azure Blob make the same requests, a check
+  Counts, measured against MinIO and counted at the driver ports (GCS and Azure Blob make the same requests; 0.11.2 made more on Azure Blob, where its pointer reads and tail read were two requests each; a check
   being one request on each, derived from their drivers, which delete an absent object without failing as S3 does): a
   steady single-part load on S3 is 2 PUT-class requests (the object, the row), 5 GET-class (three row reads, the check
   that the next number is free, and the check that the current object is there) and a delete, 8 requests, where 0.11.2

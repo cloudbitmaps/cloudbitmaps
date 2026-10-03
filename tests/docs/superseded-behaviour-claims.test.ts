@@ -2121,6 +2121,9 @@ describe("a page's figures for store.load() are the estimator's", () => {
 // `has()`, an erasure, a rollback, a retirement, a purge, a sweep, a pointer refresh), a multipart or an encrypted
 // load, and a warm `count()` or `stat()`.
 //
+// A cell of a table row is read with the row's first cell as its subject; a row of a table that is HTML is not.
+// A rate ("a second") and a count of segments in one call are not a cold count's requests.
+//
 // Known limits, stated rather than hidden: it does not read a count with no unit ("2 and 3"), a bare "reads" (it counts
 // payload and index reads too), a count that comes before its subject in the clause ("5 GETs make a load"), a pointer
 // read or a check counted inside a load, a total for a load that lists, a clause that names two operations without a
@@ -2179,7 +2182,7 @@ const COUNT_WORDS: Readonly<Record<string, number>> = {
   twelve: 12,
 };
 const REQUEST_CLAIM = new RegExp(
-  String.raw`\b(\d[\d,]*|${Object.keys(COUNT_WORDS).join('|')})\s+(?:(PUT(?:-class(?:\s+requests?)?|\s+requests?)|GET(?:-class)?s?(?:\s+requests?)?)|(pointer\s+reads?)|(requests?))(?![\w-])`,
+  String.raw`\b(\d[\d,]*|${Object.keys(COUNT_WORDS).join('|')})\s+(?:(PUT(?:-class(?:\s+requests?)?|\s+requests?|s)|GET(?:-class)?s?(?:\s+requests?)?)|(pointer\s+reads?)|(requests?))(?![\w-])`,
   'gi',
 );
 const LOAD_SUBJECT = /\bstore\.load\(\)|\bloadSegment\b|\bloads?\b(?!-)|\breloads?\b/gi;
@@ -2189,12 +2192,18 @@ const OTHER_SUBJECT =
 /** A count that is history, a bound or a range, or counts requests "more" or "fewer": none is a claim about the count. */
 const NOT_A_COUNT_BEFORE =
   /(?:\b(?:was|were|made|took|sent|from|until)|\bused to|\bwhere it|\b0\.11\.\d+(?:\s+\w+)?|\bat most|\bat least|\bup to|\bno more than|\bmore than|\bfewer than|\b(?:\d[\d,]*|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:to|or|and)|\d\s*[–-])\s*$/i;
-const NOT_A_COUNT_AFTER = /^\s*(?:more|fewer|less|extra|additional|too)\b/i;
+const NOT_A_COUNT_AFTER =
+  /^\s*(?:(?:more|fewer|less|extra|additional|too)\b|(?:a|per|every|each)\s+(?:second|minute|hour|day|month)\b)/i;
 const ANOTHER_LOAD = /\bmultipart\b|\b\d+-part\b|\buploads?\b|\bencrypt/i;
 const WARM = /\bwarm\b|\bwithin\b|\bpinned\b|\bcached\b|\bno request/i;
 const NO_SUMMARY_TO_USE =
   /\bno summary\b|\bwithout (?:a|the) summary\b|\bwritten before\b|\btail read\b|\bfrom the object\b|\bopens? the object\b|\bindex\b/i;
 
+/** A kind named after the count counts only when it is a first or a second load: a listing is not told by later words. */
+const afterKind = (words: string): LoadKind | undefined => {
+  const k = loadKindIn(words);
+  return k === 'first' || k === 'second' ? k : undefined;
+};
 /** The kind of load a stretch of words names, if it names one. */
 const loadKindIn = (words: string): LoadKind | undefined => {
   if (/\bfirst\b/i.test(words)) return 'first';
@@ -2217,7 +2226,8 @@ function requestCountHits(rel: string, text: string): string[] {
   const hits: string[] = [];
   let line = 1;
   let at = 0;
-  const lineOf = (offset: number): number => {
+  const lineOf = (target: number): number => {
+    const offset = Math.max(at, target); // a row's carried first cell sits before the cell it is read with
     line += lineCount(reading.slice(at, offset));
     at = offset;
     return line;
@@ -2225,11 +2235,26 @@ function requestCountHits(rel: string, text: string): string[] {
   const CLAUSE_END = /[;|│]|\.\s+(?=\S)|\s[—–]\s/g;
   let start = 0;
   const clauses: Array<{ text: string; offset: number }> = [];
+  // A cell of a Markdown table row is read with the row's first cell before it, which names what the row is about.
+  const cell = (from: number, to: number): { text: string; offset: number } => {
+    const ls = reading.lastIndexOf('\n', from - 1) + 1;
+    const row = reading.slice(
+      ls,
+      reading.indexOf('\n', ls) < 0 ? undefined : reading.indexOf('\n', ls),
+    );
+    const first = row.indexOf('|');
+    const second = first < 0 ? -1 : row.indexOf('|', first + 1);
+    const head =
+      /^\s*\|/.test(row) && second > 0 && from > ls + second
+        ? `${row.slice(first + 1, second)} `
+        : '';
+    return { text: head + reading.slice(from, to), offset: from - head.length };
+  };
   for (const m of reading.matchAll(CLAUSE_END)) {
-    clauses.push({ text: reading.slice(start, m.index), offset: start });
+    clauses.push(cell(start, m.index));
     start = m.index + m[0].length;
   }
-  clauses.push({ text: reading.slice(start), offset: start });
+  clauses.push(cell(start, reading.length));
   for (const { text: clause, offset } of clauses) {
     for (const m of clause.matchAll(REQUEST_CLAIM)) {
       const n = COUNT_WORDS[m[1]!.toLowerCase()] ?? Number(m[1]!.replace(/,/g, ''));
@@ -2266,7 +2291,7 @@ function requestCountHits(rel: string, text: string): string[] {
         const next = [...clause.slice(end).matchAll(LOAD_SUBJECT)][0];
         const which =
           loadKindIn(clause.slice(Math.max(0, subject - 40), m.index)) ??
-          loadKindIn(
+          afterKind(
             clause.slice(end, next === undefined ? end + 60 : end + next.index + next[0].length),
           ) ??
           'steady';
@@ -2278,6 +2303,9 @@ function requestCountHits(rel: string, text: string): string[] {
             `(PUT-class ${want.put}, GET-class ${want.get}${want.total === undefined ? '' : `, ${want.total} with its delete`})`,
         );
       } else {
+        // A count of segments in one call is that many reads, not one cold count's.
+        if (/\b\d[\d,]*\s+(?:segments?|ids?|names?|refs?)\b/i.test(clause.slice(subject, m.index)))
+          continue;
         if (WARM.test(near) || kind === 'PUT') continue;
         const { pointer, withTail } = REQUEST_COUNTS.coldCount;
         const allowed = NO_SUMMARY_TO_USE.test(near) ? [pointer, ...withTail] : [pointer];
@@ -2317,6 +2345,9 @@ describe("a page's request counts for a load, a cold count and a cold stat are t
     'count() is one request when cold, and a cold stat() is three requests',
     'A cold `stat()` is 2 pointer reads',
     'a cold count on S3 and GCS makes 3 requests, with the row summary',
+    'store.load() sends 3 PUTs.',
+    '| A steady store.load() | 9 requests |',
+    '| A first load | 2 PUT-class requests and 5 GETs |',
   ])('refuses %j', (text) => {
     expect(requestCountHits('x.md', text)).not.toEqual([]);
   });
@@ -2355,6 +2386,10 @@ describe("a page's request counts for a load, a cold count and a cold stat are t
     // A count of something else, in a clause that names a load or a count.
     'the load reads 1,024 containers per request',
     'a count of 3 segments makes a report',
+    'A load past 3,500 PUT requests a second to one prefix is throttled.',
+    'A load takes 2 PUT-class requests and, on the cadence, a listing.',
+    'A cold count() of 4 segments in one call makes 4 requests.',
+    '| A steady store.load() | 8 requests |',
     'objects that fit one PUT, loaded through store.load(), and objects large enough to upload multipart',
     'store.load() writes the object with one PUT, then moves the pointer',
     'a cold intersect makes 206 GETs, and a load makes 2 PUT-class requests and 5 GET-class requests',
