@@ -45,6 +45,11 @@ export interface AzureBlobStorageOptions {
   readonly readTimeoutMs?: number;
   /** Injected clock for the registry's `createdAt`/`updatedAt`; defaults to `Date.now`. */
   readonly now?: () => number;
+  /**
+   * Whether the registry removes a deleted row for good, by a Delete Blob sent with `ifMatch`, rather than leaving a
+   * tombstone a full listing reads forever. Defaults to `true`.
+   */
+  readonly conditionalDelete?: boolean;
 }
 
 /**
@@ -60,6 +65,7 @@ export const AZURE_BLOB_STORAGE_OPTION_KEYS = [
   'blockBytes',
   'readTimeoutMs',
   'now',
+  'conditionalDelete',
 ] as const;
 
 /** Refuse an options bag that is not an object, or that holds a key not in `keys`, naming each such key. */
@@ -133,6 +139,9 @@ export class AzureBlobStorage implements StorageBackend {
     this.registry = new AzureBlobRegistryDriver({
       ...shared,
       ...(options.now === undefined ? {} : { now: options.now }),
+      ...(options.conditionalDelete === undefined
+        ? {}
+        : { conditionalDelete: options.conditionalDelete }),
     });
     brandAsBackend(this);
   }

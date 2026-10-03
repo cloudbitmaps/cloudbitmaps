@@ -176,7 +176,11 @@ _Measured on Apple M3 Pro (arm64, node v24.18.1). **The bound is the retained he
   retention sweep enumerates too by default (`scan: 'fleet'`); `retireExpired({ scan: 'index' })` reads a due-day
   index instead of the fleet, and is the fast half of a pair, since a periodic `'fleet'` pass is what retires a
   policy the index missed. `checkConsistency`, `eraseSubject` and `subjectReport` always enumerate, and the
-  column above is that enumeration.
+  column above is that enumeration. The total is the rows the registry holds: live segments, and retired ones still
+  inside their grace. On a registry that reports `conditionalDelete` the sweep's purge removes a retired row for good,
+  so a namespace that churns short-lived segments does not grow it; elsewhere each purged row stays as a tombstone the
+  scan reads, and the total is every name the namespace ever held (the
+  [retention guide](guide/retention.md#how-it-stays-correct) says which backends are which).
 - **Chunk-skipping intersection holds at scale** — intersecting two large multi-chunk segments fetches only the
   shared chunks and skips the rest by key alignment (the crown jewel, on the ids-per-segment axis). The
   load-bearing figure there is the chunk **count** — 100 fetched of 2,000 — because key alignment does not depend

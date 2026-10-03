@@ -105,7 +105,7 @@ for an object a load was still writing, and the `generationsRemaining` report al
 
 ```ts
 const swept = await store.retireExpired({ namespace: 'active-daily' });
-// → { scanned, eligible, retired, wouldRetire, tombstonesPurged, limited, dryRun, entries }
+// → { scanned, eligible, retired, wouldRetire, tombstonesPurged, limited, purgeFaults, firstPurgeFault?, dryRun, entries }
 ```
 
 A bad argument throws `ValidationError`. A per-segment fault is an `entries` row, never a throw.
@@ -131,8 +131,9 @@ those is worse than none. **You own the heartbeat.** Any of these is a correct a
 the same registry 24 times. Match the cadence to the granularity of your policies, not to how fast you want the
 deletion to feel.
 
-- A fleet scan is a billed `LIST` over the registry prefix. The default `'fleet'` scan costs what the fleet holds.
-- `scan: 'index'` reads only the due days of the due index and costs what is expiring.
+- A fleet scan is a billed `LIST` over the registry prefix. The default `'fleet'` scan costs what the fleet holds: its
+  live segments, and the retired ones still inside their grace (see [what the purge removes](#how-it-stays-correct)).
+- `scan: 'index'` reads only the due days of the due index and costs what is expiring, and what is due to be purged.
 - The index is a fast path, not the source of truth. Each candidate's live row is re-read before anything is decided,
   and a policy whose pointer write failed has no index entry. So run the `'fleet'` scan periodically as the repair
   pass. `lookbackBuckets` (default 7) is how many past days a fast scan also reads, so a sweep that did not run leaves
@@ -164,7 +165,20 @@ for (const e of swept.entries) {
   }
 }
 if (swept.limited) scheduleAnotherPassSoon(); // more are still eligible
+if (swept.purgeFaults > 0) console.error(`the registry refused ${swept.purgeFaults} delete(s): ${swept.firstPurgeFault}`);
 ```
+
+**Check `purgeFaults`: a delete the registry refuses holds nothing else up, and says so only there.** A purge or a pointer
+removal that fails for a reason other than a lost race (a policy that denies `s3:DeleteObject`, an Azure blob with a
+snapshot, any raw provider error) leaves its row or pointer in place and is counted in `purgeFaults`, with the first
+one's reason in `firstPurgeFault`. A refused purge is `skipped` in the ledger, with the provider's message, and is not
+charged to `limit`, and the sweep goes on to retire what is eligible, so a tombstone that cannot be purged never holds
+the segments behind it past their expiry. **Purging stops for the rest of the call after three refused purges in a
+row**, and a purge that succeeds starts the count again. A blanket refusal (a policy that denies delete) costs three
+attempts a call and no more. A refusal particular to one row (one blob with a snapshot, one object under a legal hold)
+holds nothing behind it: the purges after it still go through, and the row is counted every call until it is cleared.
+The next call tries again. A lost race (`failed: contended`) is not a fault: it is the fence working,
+it is charged to `limit` as before, and the purges go on.
 
 **Two bounds to set deliberately.**
 
@@ -187,7 +201,8 @@ if (swept.limited) scheduleAnotherPassSoon(); // more are still eligible
   drop landed between the listing and this segment's turn. This is not an error. The sweep re-reads the authoritative
   row immediately before every deletion, precisely so cancelling an expiry works on a sweep that is already running.
 - **`tombstone-not-empty`**: see [Tombstones are purged, narrowly](#how-it-stays-correct).
-- **`failed: ...`**: that one segment's retirement threw. `dropSegment` writes the tombstone before the storage sweep,
+- **`failed: ...`**: that one segment's retirement threw, or, on a tombstone, its purge did, and a purge the registry
+  refuses is also counted in `purgeFaults` (above). `dropSegment` writes the tombstone before the storage sweep,
   deliberately, so a fault there leaks bytes, not correctness. A fault after the tombstone landed is reported as
   `retired` with a `fault`, because that segment really is retired. Re-running collects the bytes.
 
@@ -273,7 +288,8 @@ Two limits to know before you automate it:
 - **A drop is final for the name.** The tombstone fences every later load of that segment (refused with
   `ValidationError`), which is what makes the storage sweep converge. To reuse a name, use a fresh dated name, which
   is the pattern anyway, or retire the segment through `retireExpired`, which purges the tombstones it wrote itself
-  once their grace period has passed and their storage is empty. A tombstone a hand-run `dropSegment` wrote is never
+  once their grace period has passed and their storage is empty, and on a registry with a conditional delete removes
+  them for good. A tombstone a hand-run `dropSegment` wrote is never
   purged by the library; the
   [disaster-recovery runbook](disaster-recovery.md#repair-an-unstamped-tombstone-after-a-hard-kill) shows how to
   delete such a row by hand once its storage is empty.
@@ -404,6 +420,91 @@ because deleting the row is what makes the name writable again:
    gone does the row stay, with `tombstone-not-empty`. Without the row the collection can no longer see the segment at
    all, and the objects would be billed forever. That reason also covers the case where the collection declined because
    the row changed under it. That is not a storage fault, and the next cycle simply retries.
+
+**What the purge removes.** On a backend whose registry can delete a row only while it is unchanged, the purge removes
+the row from the bucket for good (a removed row stays recoverable wherever the storage keeps a copy of it: with object
+versioning on, until a noncurrent-version rule expires it, and with soft delete on, for its retention window: GCS, on by
+default for a new bucket, 7 days; Azure Blob, where enabled. [`PRIVACY.md`](../../PRIVACY.md) says what a row holds), with a delete the store applies only to the version the sweep judged: S3
+`DeleteObject` with `If-Match`, GCS with `ifGenerationMatch`, Azure Blob with `ifMatch`. The registry says which it is:
+`backend.registry.capabilities().conditionalDelete`. It is on by default for S3 when the host the client resolves is an
+AWS S3 host, for GCS on its public endpoint, for Azure Blob, and for the local-filesystem and in-memory backends. A full sweep then reads what is live and what is
+inside its grace, not every name the namespace ever held: after 10,000 short-lived segments are created, retired and
+purged, a sweep of that namespace makes one registry read, for the one segment still live.
+
+Where the registry cannot, the purge leaves a small tombstone in the row's place, and every later full sweep reads it,
+one request per row. That is the case:
+
+- on an S3 client that sends to a host other than AWS S3 (MinIO, Ceph, R2) and a GCS client with a custom `apiEndpoint`,
+  by default. Such a store may accept the precondition and ignore it, and MinIO and fake-gcs-server both do: there, a
+  delete conditioned on a version that has moved on deletes anyway, and two sweepers and a re-create of the name could
+  delete a live row. Set `conditionalDelete: true` on the backend only once you know your store applies it. For S3 the
+  host is the one the SDK resolves, however the endpoint was set: a constructor `endpoint`, `AWS_ENDPOINT_URL_S3`,
+  `AWS_ENDPOINT_URL` or an `endpoint_url` in the shared config file. An AWS regional, FIPS, dual-stack or VPC interface
+  endpoint is an AWS S3 host, and AWS S3 applies the precondition there;
+- with `conditionalDelete: false` on any backend;
+- for a row written by a release before 0.12, always. Its token is a bare counter, and a process still on that
+  release, re-creating the name over nothing, would start the counter at 0 again and issue the deleted row's tokens,
+  so its row could not be told apart from the deleted one. A row created by 0.12 carries a random incarnation id in
+  its token, so a re-create is told apart from it, whatever is left of it, but for a collision of probability 2^-128
+  per pair of incarnations. The legacy protection ends once a 0.12 process re-creates the name over the legacy
+  tombstone: the new row has an incarnation, and when it is purged nothing keeps the legacy counter. It matters only for
+  a 0.11 process that outlived the upgrade's stop-every-0.11-process step, which the upgrade does not support.
+
+A tombstone already in the bucket stays: the purge never sees a row that is already deleted, and nothing in the library
+removes one. A cleanup for them, safe once no process on a release before 0.12 is left, is on the
+[roadmap](../ROADMAP.md).
+
+**An index scan purges too, where the registry removes rows.** Each retirement files a pointer in the due index under
+the day its tombstone's grace ends, beside the expiry pointers, and `scan: 'index'` reads it with them, so a namespace
+can sweep by index alone and keep the fleet scan as its repair pass. No field of the row records that day: the purge
+works it out from the retirement's stamp and the grace. The purge removes every pointer it read to the row, and the one
+its own grace would have filed. Where the registry only tombstones, no pointer is filed: nothing is removed for good, so
+a pointer would only add a row for every scan to read, and the fleet scan purges, as it always did. A sweep run with a
+longer grace than the one that filed a pointer finds it early and leaves it; once its day is older than
+`lookbackBuckets`, the fleet scan purges the row.
+
+**A pointer can outlive its row, and what removes it.** The pointer's key spells out the namespace and the segment name,
+so until it goes the name is in the bucket, in a key. It lingers when the purge did not run to its end:
+
+- the purge ran with another `tombstoneGraceMs` than the sweep that filed the pointer, so the day it computes holds
+  none (a purge removes the pointers its scan read, whatever day they are under, but a scan limited to a `namespace`
+  reads none);
+- a delete landed and lost its response, so the sweep never learned the row was gone and kept the pointer, as it must;
+- the registry refused the pointer's removal (`purgeFaults` counts it);
+- the pointer's day has passed out of `lookbackBuckets`, where no index scan reads it.
+
+The next scan that reads it removes it, once the segment's row is read again and still absent: an index scan removes
+it from the days it reads, and an **unscoped** `'fleet'` scan (no `namespace`) removes it from every day, since the
+listing it makes already reads every pointer. A scan limited to a `namespace` lists no pointers, so a deployment that
+scopes every sweep, or runs only index scans, keeps such a pointer until an unscoped fleet scan runs: run one as the
+repair pass. The removal is fenced on the pointer's token, so a pointer filed anew is kept; it covers the sweep's own
+`shards` only, never runs under `dryRun`, and removes at most `limit` pointers per call, each a few reads and a delete
+(a pointer an index scan reads costs four reads and a delete in all, the listing's read of it included; one a fleet
+scan reads costs two reads and a delete more than the scan already paid).
+
+One race stays, and the fleet scan repairs it. A name created again with a policy due on the very day a pointer to
+nothing sits under (a same-day or back-dated expiry) can lose that pointer: `setRetention` takes the pointer already at
+the key as its own, and a sweep that read the segment before its row existed can remove it in the two round trips that
+follow. The purge's own pointer removal has the same window: it can remove a pointer a re-created name has just taken as
+its own, when that name's policy is due on the pointer's day. The row is untouched and still expires; only its expiry pointer is gone, so an index scan never finds it, and
+the default `'fleet'` scan, which reads every row, retires it. An index-only deployment is repaired only if it also
+schedules a fleet scan, which is why the index is the fast half of a pair.
+
+**What it costs.** Per segment, counted with a store that counts requests. Where the registry removes rows, a
+retirement is 9 reads, 3 writes and a delete, and a purge 4 reads and 2 deletes: the pointer is filed with a create,
+which is the one write the removal of the expiry pointer would otherwise have been, and the purge removes the row and
+the pointer where a tombstone would have been written. On S3 a `DeleteObject` is not billed, and a `PutObject` is.
+Where the registry only tombstones (`conditionalDelete: false`, or a backend that does not report it), no purge pointer
+is filed or removed: a retirement is 8 reads and 3 writes, a purge 3 reads and 1 write, and two small objects stay per
+segment, which every full scan reads (100 reads for 50 segments). The registry needs delete permission on its prefix
+(`s3:DeleteObject`, `storage.objects.delete`, or a role that may delete blobs); without it a purge fails, the row stays,
+the ledger entry and `purgeFaults` say why, and the retirements behind it still go on.
+
+An unscoped sweep also lists the due index's pointers, one read each before it skips them, so give each sweep a
+`namespace` where you can. So does every other unscoped enumeration: `checkConsistency`, `eraseSubject`,
+`subjectReport`, `store.segments()` and the `export-segments` CLI read each pointer before they skip it, and where
+pointers are filed each tombstone inside its grace holds a second row, so those calls read about twice the rows of the
+grace period. (The [roadmap](../ROADMAP.md) lists an unscoped listing that skips the pointers before reading them.)
 
 Pass `purgeTombstones: false` to keep every tombstone. That is the right choice if something outside this library
 treats the presence of a `destroyed` row as an attestation. It includes the row of a retirement whose drop found no

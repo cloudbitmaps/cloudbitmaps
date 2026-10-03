@@ -62,6 +62,12 @@ export interface GcsStorageOptions {
    * to four per call through the store's retry. A non-negative safe integer no larger than 2,147,483,647.
    */
   readonly readTimeoutMs?: number;
+  /**
+   * Whether the registry removes a deleted row for good, by an object delete sent with `ifGenerationMatch`, rather
+   * than leaving a tombstone a full listing reads forever. Defaults to `true` on the public endpoint and to `false`
+   * with a custom `apiEndpoint`: fake-gcs-server, for one, ignores the precondition on a delete.
+   */
+  readonly conditionalDelete?: boolean;
 }
 
 /**
@@ -79,6 +85,7 @@ export const GCS_STORAGE_OPTION_KEYS = [
   'simpleUploadThresholdBytes',
   'now',
   'readTimeoutMs',
+  'conditionalDelete',
 ] as const;
 
 /** The settings that build a client, which a supplied `client` already carries and so cannot be given beside. */
@@ -167,6 +174,9 @@ export class GcsStorage implements StorageBackend {
     this.registry = new GcsRegistryDriver({
       ...shared,
       ...(options.now === undefined ? {} : { now: options.now }),
+      ...(options.conditionalDelete === undefined
+        ? {}
+        : { conditionalDelete: options.conditionalDelete }),
     });
     brandAsBackend(this);
   }

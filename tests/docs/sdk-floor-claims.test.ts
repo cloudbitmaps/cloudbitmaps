@@ -86,6 +86,26 @@ describe('a driver package states its SDK range identically in the manifest and 
     ).toBe(true);
   });
 
+  it('the docs say the registry checks the client it is given for the headers it sends, whatever the floor', () => {
+    // The floor stops an install from resolving an SDK that drops `If-None-Match` (below 3.641.0), `If-Match` on a
+    // `DeleteObject` (below 3.698.0) or `If-Match` on a `PutObject`, the registry's compare-and-swap (below 3.700.0). A
+    // `client` the caller passes, or an SDK a package manager pins, can still be older, and an SDK drops a member its
+    // model lacks without a word. So `@cloudbitmaps/s3` asks the client at run time (`probeClient`), and says so
+    // wherever it states the floor.
+    const claims = [
+      join(ROOT, 'packages', 's3', 'README.md'),
+      join(ROOT, 'docs', 'guide', 'production.md'),
+      join(ROOT, 'docs', 'guide', 'api-reference.md'),
+    ];
+    for (const file of claims) {
+      const text = readFileSync(file, 'utf8').replace(/\s+/g, ' ');
+      expect(text, `${file} never says the registry checks the SDK's headers`).toMatch(
+        /(checks|serialises)[\s\S]{0,500}If-Match[\s\S]{0,200}PutObject/,
+      );
+      expect(text, `${file} never names the DeleteObject header`).toMatch(/DeleteObject/);
+    }
+  });
+
   it('the S3 write-once floor has not been lowered', () => {
     // Named explicitly, and separately from the derived check above, because this one number is the
     // difference between refusing a colliding write and silently overwriting a published generation. A

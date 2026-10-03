@@ -1585,6 +1585,12 @@ export class CloudRoaring {
    * wall-clock knob too, and `retired` counts deletions only — a dry run reports `wouldRetire` instead, so a
    * dashboard summing `retired` can never show a phantom deletion.
    *
+   * **Check `purgeFaults`.** A delete the registry refuses for a reason other than a lost race (a policy that denies
+   * delete, an Azure blob with a snapshot, a raw provider error), whether of a tombstone or of a due-index pointer, is
+   * counted there, with the first one's reason in `firstPurgeFault`. A refused purge is `skipped` in the ledger, is not
+   * charged to `limit`, so it never holds the retirements behind it, and purging stops for the rest of the call after
+   * three refused purges in a row (a purge that succeeds starts the count again).
+   *
    * It also **deletes the tombstone rows its own past retirements left**, after `tombstoneGraceMs` (default 24 h)
    * and only once that segment's Storage generations are provably gone — collecting a straggler generation itself
    * first, since nothing else ever would for a tombstoned segment. Attribution is a **positive marker the sweep
@@ -1592,7 +1598,12 @@ export class CloudRoaring {
    * `retention` untouched, so setting a policy and then honouring a right-to-erasure request mid-window produces
    * exactly that row, and deleting it would destroy the Art. 17 attestation and un-fence the name. By default a
    * segment that held nothing has its row deleted in the pass that retires it, since that row would only fence the name.
-   * Pass `purgeTombstones: false` to keep every tombstone, that row included.
+   * Pass `purgeTombstones: false` to keep every tombstone, that row included. On a backend whose registry reports
+   * `conditionalDelete` (AWS S3, GCS on its public endpoint, Azure Blob, the local filesystem and memory, by default)
+   * the purge removes the row from the bucket for good, by a delete the store applies only to the version it judged,
+   * so a full sweep reads what is live or inside its grace rather than every name a namespace ever held; elsewhere,
+   * and for a row a release before 0.12 wrote, it leaves a tombstone. Each retirement files a pointer in the due index
+   * under the day its tombstone's grace ends, so `scan: 'index'` purges as well as retires.
    *
    * Needs the store built with a **backend** (throws {@link UnsupportedError} otherwise),
    * because retiring a segment deletes its storage objects. `now` defaults to the store's clock.

@@ -4,6 +4,7 @@ import type { AddressInfo } from 'node:net';
 import { CRC32C, IdempotencyStrategy, Storage } from '@google-cloud/storage';
 import { GcsStorage } from '@/gcs/backend';
 import { GcsStorageDriver } from '@/gcs/storage';
+import { GcsRegistryStore } from '@/gcs/registry';
 import { IntegrityError, TransientError, ValidationError, WriteConflictError } from '@/core/errors';
 import { MAX_ROW_BYTES } from '@/drivers/_shared/object-registry';
 import type { GenKey } from '@/core/ports';
@@ -86,6 +87,8 @@ class StubGcs {
   private readonly sent: Operation[] = [];
   /** Every upload the stub received: its object name, its query string and its JSON metadata part. */
   readonly uploads: UploadRecord[] = [];
+  /** The `ifGenerationMatch` each delete of an object that was there carried, or `null` for none. */
+  readonly deleteFences: Array<string | null> = [];
   /** When set, an upload's answer names a checksum the stored bytes do not have. */
   corruptChecksums = false;
   private seq = 1_000;
@@ -286,6 +289,11 @@ class StubGcs {
       }
       case 'delete': {
         if (current === undefined) return error(404, 'notFound');
+        const match = query.get('ifGenerationMatch');
+        this.deleteFences.push(match);
+        if (match !== null && current.generation !== Number(match)) {
+          return error(412, 'conditionNotMet');
+        }
         this.objects.delete(name);
         return [204, {}, ''];
       }
@@ -308,6 +316,52 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   await stub.stop();
+});
+
+// A conditional delete is not sent once: the SDK retries a request with a precondition, and has no per-request switch
+// for a delete. The precondition is what keeps a second copy from removing anything the first could not.
+describe("GCS: the registry's conditional delete", () => {
+  it('sends ifGenerationMatch with the generation it read, and removes the row', async () => {
+    const backend = new GcsStorage({
+      bucket: BUCKET,
+      client: stub.client(),
+      conditionalDelete: true,
+    });
+    const { token } = await backend.registry.create(REF, { currentGen: 0 });
+    const [stored] = [...stub.objects.values()];
+    await backend.registry.delete(REF, token);
+    expect(stub.deleteFences).toEqual([String(stored!.generation)]);
+    expect(stub.objects.size).toBe(0);
+  });
+
+  it('a generation that moved on is a 412: WriteConflictError, and nothing is deleted', async () => {
+    const backend = new GcsStorage({
+      bucket: BUCKET,
+      client: stub.client(),
+      conditionalDelete: true,
+    });
+    const { token } = await backend.registry.create(REF, { currentGen: 0 });
+    const [name, stored] = [...stub.objects.entries()][0]!;
+    const store = new GcsRegistryStore(backend.client, backend.client, BUCKET, 0, true);
+    await expect(
+      store.delete(name, { version: String(stored.generation + 1) }),
+    ).rejects.toBeInstanceOf(WriteConflictError);
+    expect(await backend.registry.get(REF)).toMatchObject({ token });
+  });
+
+  it('a delete that lands and loses its response is sent again, meets nothing, and reports a conflict', async () => {
+    const backend = new GcsStorage({
+      bucket: BUCKET,
+      client: stub.client(),
+      conditionalDelete: true,
+    });
+    const { token } = await backend.registry.create(REF, { currentGen: 0 });
+    stub.loseResponseOf('delete');
+    await expect(backend.registry.delete(REF, token)).rejects.toBeInstanceOf(WriteConflictError);
+    expect(stub.count('delete')).toBe(2);
+    expect(stub.objects.size).toBe(0); // the first copy landed; the second removed nothing
+    expect(await backend.registry.get(REF)).toBeNull();
+  });
 });
 
 describe('GCS: a conditional write is sent once, whatever the SDK retry would do', () => {

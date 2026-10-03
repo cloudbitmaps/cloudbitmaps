@@ -85,9 +85,30 @@ days are also the oldest point you can restore to: set them at or above your res
 }
 ```
 
+**Add, if versioning is on: remove expired delete markers on the registry prefix.** Where the registry removes a row
+(`conditionalDelete`), a delete in a versioned bucket leaves a delete marker, not an absence. Once the noncurrent
+versions beneath it expire, the marker is all that is left of the name: one per name ever purged, which every listing
+of the prefix steps over. A rule that removes expired delete markers is the last piece of the recipe, scoped to the
+registry prefix (`<prefix>registry/` on a backend built with a `prefix`), as a third rule in the same configuration:
+
+```json
+{
+  "ID": "expire-registry-delete-markers",
+  "Status": "Enabled",
+  "Filter": { "Prefix": "registry/" },
+  "Expiration": { "ExpiredObjectDeleteMarker": true }
+}
+```
+
+It cannot touch a live row: S3 removes a delete marker only when no version remains under it. A create over a delete
+marker (`If-None-Match: *`) is one the registry makes whenever a purged name is loaded again, and the probe in
+`tests/integration/real-cloud-conditional-delete.test.ts`, run against a versioned bucket, checks that S3 and GCS accept
+it.
+
 **Never: expire current objects.** No rule may delete current generations, and no rule may delete current versions
-under the `registry/` prefix. A deleted pointer row is replaced by a tombstone that keeps the pointer safe against
-reuse, so expiring the row breaks that. A rule on noncurrent versions only is safe, and is the optional recipe in
+under the `registry/` prefix. A rule cannot tell a live row from a tombstone or from a due-index pointer, and an
+expired live row is a pointer lost: every generation it named looks unreferenced. Where the registry removes a row
+itself, it removes only the version it judged, by a conditional delete. A rule on noncurrent versions only is safe, and is the optional recipe in
 [the disaster-recovery guide](disaster-recovery.md#optional-make-a-shred-durable-with-a-registry-expiry-rule).
 
 ## Versioning and backups
@@ -110,6 +131,12 @@ object and `If-Match` for the pointer.
   existing object, which loses a published generation; up to 3.699.0 the serializer drops `If-Match` on `PutObject`,
   so the registry's compare-and-swap goes out unconditionally. `@cloudbitmaps/s3` never resolves its own SDK below
   the floor. If your own code imports the SDK, to build that `client`, add it to your own `package.json` too: pnpm does not let your code import a dependency of a dependency.
+- **The registry checks the SDK it is given for the headers it sends.** The floor above covers the compare-and-swap's
+  `If-Match` on `PutObject` (3.700.0) and the conditional delete's on `DeleteObject` (3.698.0), and a `client` you pass,
+  or an SDK your package manager pins, can still be older. Before its first request the registry serialises each of the
+  three through a client built from yours, sending nothing and running none of your middleware. It refuses a write the SDK
+  would send without its precondition (`ValidationError`, naming the header) and tombstones instead of deleting when a
+  `DeleteObject` would go out without `If-Match`. If you see that error, upgrade `@aws-sdk/client-s3`.
 
 ## Reliability: retries, backoff & timeouts
 
@@ -477,8 +504,8 @@ loop re-reads the row first, so no publish can move it back. All bytes are check
 **Your client's own retry, and the writes it does not reach.** Each cloud SDK retries a failed request itself, under
 the store's retry. For a conditional write that retry gives the wrong answer. A write that lands and then loses its
 response is sent again, meets itself, and fails its own precondition, which reads as a lost race for a write that
-won. This covers a generation's write-once put and the registry's create, compare-and-swap and delete (a delete
-writes a tombstone). So the S3 and GCS packages send a conditional write with the SDK's retry off for that request alone:
+won. This covers a generation's write-once put and the registry's create, compare-and-swap and delete (a tombstone
+write, or a delete under a precondition where the backend's `conditionalDelete` is on). So the S3 and GCS packages send a conditional write with the SDK's retry off for that request alone:
 a registry row once, whatever the answer, and a generation's object once, or again after a throttle, when a random id
 in its metadata tells a first send that landed from another writer's object. A row write that gets no answer is settled
 by the load itself, which reads the row and sends a fresh compare-and-swap from it if nothing changed, at most three
@@ -494,9 +521,9 @@ package stands:
 
 | package | conditional writes |
 |---|---|
-| `@cloudbitmaps/s3` | the registry's create, compare-and-swap and delete are each sent once. A generation's write-once `PutObject` or `CompleteMultipartUpload` is sent with the SDK's retry off, and again, at most three more times, after a `503 SlowDown` (or any `503`) and nothing else, waiting a random time under 500 ms, then 1 s, then 2 s. A bare `429`, which AWS S3 does not send but some S3-compatible services do, is not retried and is not classified transient: it surfaces as the SDK's own error, so a layer of yours that keys on `TransientError` will not retry it. The object carries a random id in its user metadata (`x-amz-meta-cbwid`), and a precondition failure, a `409` or an unknown upload on a re-send reads it back; with nothing stored, a `409` or an unknown upload is an unknown outcome (`TransientError`) |
-| `@cloudbitmaps/gcs` | the registry's writes are each one request, sent once. An object up to `simpleUploadThresholdBytes` (8 MiB by default) is one request, sent again, at most three more times with the same waits, after a `429` or `503` and nothing else, and carries a random id in its metadata. A larger object is a resumable upload, a session of requests that the SDK retries within, under the client's retry options; it carries the same id, as every Azure Blob write does, as described below |
-| `@cloudbitmaps/azure-blob` | sent through the client's retry policy, which sends a request again after a network error or a 500 or 503, `503 ServerBusy` and `500 OperationTimedOut` among them. Each write is tagged with a random id in blob metadata, and a conflict is settled by reading the stored blob back, as described below. The policy runs under each fresh compare-and-swap a load sends for a row write that went unanswered, so a registry that never answers costs a load up to four times the policy's tries (sixteen requests at its default of four) before it throws: about 16 s per write at the SDK's default schedule (it waits 0, 4 s, then 12 s between tries), so about 64 s for the four writes, plus up to 3.5 s of the publish's own waits (derived from that schedule, not measured) |
+| `@cloudbitmaps/s3` | the registry's create, compare-and-swap and delete, a `DeleteObject` under `If-Match` included, are each sent once. A generation's write-once `PutObject` or `CompleteMultipartUpload` is sent with the SDK's retry off, and again, at most three more times, after a `503 SlowDown` (or any `503`) and nothing else, waiting a random time under 500 ms, then 1 s, then 2 s. A bare `429`, which AWS S3 does not send but some S3-compatible services do, is not retried and is not classified transient: it surfaces as the SDK's own error, so a layer of yours that keys on `TransientError` will not retry it. The object carries a random id in its user metadata (`x-amz-meta-cbwid`), and a precondition failure, a `409` or an unknown upload on a re-send reads it back; with nothing stored, a `409` or an unknown upload is an unknown outcome (`TransientError`) |
+| `@cloudbitmaps/gcs` | the registry's writes are each one request, sent once. An object up to `simpleUploadThresholdBytes` (8 MiB by default) is one request, sent again, at most three more times with the same waits, after a `429` or `503` and nothing else, and carries a random id in its metadata. A larger object is a resumable upload, a session of requests that the SDK retries within, under the client's retry options; it carries the same id, as every Azure Blob write does, as described below. The registry's delete under `ifGenerationMatch` goes through the SDK's retry, which a precondition makes safe: a second copy removes nothing the first could not |
+| `@cloudbitmaps/azure-blob` | sent through the client's retry policy, which sends a request again after a network error or a 500 or 503, `503 ServerBusy` and `500 OperationTimedOut` among them. Each write is tagged with a random id in blob metadata, and a conflict is settled by reading the stored blob back, as described below. The policy runs under each fresh compare-and-swap a load sends for a row write that went unanswered, so a registry that never answers costs a load up to four times the policy's tries (sixteen requests at its default of four) before it throws: about 16 s per write at the SDK's default schedule (it waits 0, 4 s, then 12 s between tries), so about 64 s for the four writes, plus up to 3.5 s of the publish's own waits (derived from that schedule, not measured). The registry's delete under `ifMatch` is sent the same way, safe for the same reason as GCS's |
 | in-memory and local filesystem | nothing is throttled, so nothing is sent again |
 
 **Writes that are tagged.** Azure Blob's retry is a policy on the client's pipeline, a GCS resumable upload is a

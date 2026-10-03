@@ -238,7 +238,7 @@ export async function eraseIdFromSegment(
    * The row this rewrite derives its content from, not just the number it points at. `nextGeneration` restarts
    * at `0` once a row is purged and the bucket emptied, so a retired-and-re-created name presents a *different*
    * segment at the *same* `currentGen` — which `expectFrom` alone matched, republishing one incarnation's
-   * content over another's and reporting `erased: true`. The token is never reused across incarnations.
+   * content over another's and reporting `erased: true`. A token is not reused across incarnations, but for a collision of probability 2^-128 per pair.
    */
   const fromToken = record.token;
 

@@ -4,8 +4,10 @@
  * Lets a **GCS deployment run on one bucket alone** — storage `.crbm` generations and the registry in the same
  * place, with no second cloud involved.
  *
- * The protocol (an ABA-safe OCC counter, tombstoning delete, the bounded retry, the key layout) lives once
- * in {@link ObjectStoreRegistry}; this file is only the three I/O calls GCS makes.
+ * The protocol (an ABA-safe OCC token, the delete and its tombstone, the bounded retry, the key layout) lives once
+ * in {@link ObjectStoreRegistry}; this file is only the I/O calls GCS makes. A delete removes a row for good, under
+ * `ifGenerationMatch: <generation>`, when `conditionalDelete` is on: by default on the public endpoint, and off for a
+ * client with a custom `apiEndpoint`, since an emulator may accept the precondition and ignore it (fake-gcs-server does).
  *
  * **The atomic swap is offloaded to GCS's object preconditions.** `ifGenerationMatch: 0` is create-only
  * ("only if it does not exist") and `ifGenerationMatch: <generation>` is compare-and-swap — the same pair S3
@@ -20,12 +22,12 @@
  * `.crbm` *generation*.) Reads are strongly consistent, satisfying the registry's `strongRead` contract.
  *
  * **Deployment requirements** (a policy that violates these silently corrupts the registry):
- * - The principal needs `storage.objects.get`, `create`, `update` and `list` on the bucket. Without `list`
+ * - The principal needs `storage.objects.get`, `create`, `update`, `list` and, to remove rows, `delete` on the
+ *   bucket. Without `list`
  *   the registry cannot enumerate, and a missing-object read may surface as `403` rather than `404`.
  * - **Do not apply an Object Lifecycle rule to the `registry/` prefix that deletes a live object** (one on
  *   noncurrent versions only is safe), and do not enable a retention
- *   policy that blocks overwrite. `delete` tombstones rather than removing, for ABA-safety — see
- *   {@link ObjectStoreRegistry}.
+ *   policy that blocks overwrite or deletion; see {@link ObjectStoreRegistry}.
  * - Object versioning is neither required nor used; the driver always reads the live generation. A read is one
  *   GET whose `x-goog-generation` header and body describe the same object, so a concurrent overwrite is simply
  *   observed as the older or the newer row, never as a torn pair or a missing one.
@@ -35,6 +37,7 @@ import {
   MAX_ROW_BYTES,
   ObjectStoreRegistry,
   TransientError,
+  ValidationError,
   WriteConflictError,
   normalizeObjectPrefix,
 } from '@cloudbitmaps/core/driver-kit';
@@ -63,10 +66,17 @@ export interface GcsRegistryDriverOptions {
    * the writes and listings are not timed.
    */
   readonly readTimeoutMs?: number;
+  /**
+   * Whether a delete removes a row for good, by an object delete sent with `ifGenerationMatch: <the generation it
+   * read>`, rather than leaving a tombstone. Only a row born with an incarnation id is removed; a row a release before
+   * 0.12 wrote is always tombstoned. Defaults to `true` for a client on the public endpoint, and to `false` for one with
+   * a custom `apiEndpoint`: fake-gcs-server, for one, ignores the precondition on a delete.
+   */
+  readonly conditionalDelete?: boolean;
 }
 
-/** The three calls {@link ObjectStoreRegistry} needs, in GCS's dialect. */
-class GcsStore implements ObjectRegistryStore {
+/** The calls {@link ObjectStoreRegistry} needs, in GCS's dialect. Exported for the tests that drive one directly. */
+export class GcsRegistryStore implements ObjectRegistryStore {
   readonly label = 'GCS';
 
   constructor(
@@ -74,6 +84,7 @@ class GcsStore implements ObjectRegistryStore {
     private readonly readStorage: Storage,
     private readonly bucket: string,
     private readonly readTimeoutMs: number,
+    readonly conditionalDelete: boolean,
   ) {}
 
   /** A handle on one registry object. */
@@ -152,6 +163,21 @@ class GcsStore implements ObjectRegistryStore {
     }
   }
 
+  async delete(key: string, expect: { version: string }): Promise<void> {
+    try {
+      // The SDK may send this again after a lost response, as it does any request with a precondition. The
+      // precondition names one generation, so a second copy removes nothing the first could not; one that meets the
+      // first's landed delete is a 404, a conflict, and the registry re-reads and finds the row gone.
+      await this.file(key).delete({ ifGenerationMatch: generationFence(expect.version, key) });
+    } catch (err) {
+      // A 412 (the generation moved on) or a 404 (the object is gone): the version to delete is not there.
+      if (isPreconditionFailed(err) || isNotFound(err)) {
+        throw new WriteConflictError(`registry OCC conflict deleting ${key}`);
+      }
+      throw mapError(err);
+    }
+  }
+
   async *listKeys(prefix: string): AsyncIterable<string> {
     let pageToken: string | undefined;
     do {
@@ -174,7 +200,7 @@ class GcsStore implements ObjectRegistryStore {
 
 /**
  * Narrow a version fence back to the number `ifGenerationMatch` takes. The fence always originates as
- * the `x-goog-generation` header in {@link GcsStore.read}, so this cannot fire in practice — but `Number()` answers `NaN`
+ * the `x-goog-generation` header in {@link GcsRegistryStore.read}, so this cannot fire in practice — but `Number()` answers `NaN`
  * for anything non-numeric, and `ifGenerationMatch: NaN` serializes to a precondition GCS ignores. That
  * failure is invisible (writes simply stop being fenced), so it is checked rather than assumed.
  */
@@ -209,14 +235,26 @@ function mapError(err: unknown): unknown {
   return err;
 }
 
+/** {@link GcsRegistryDriverOptions.conditionalDelete}, checked, or its default: on unless the client has its own endpoint. */
+function resolveConditionalDelete(value: unknown, storage: Storage): boolean {
+  if (value === undefined) {
+    return (storage as { customEndpoint?: unknown }).customEndpoint !== true;
+  }
+  if (typeof value !== 'boolean') {
+    throw new ValidationError(`conditionalDelete must be a boolean; got ${String(value)}`);
+  }
+  return value;
+}
+
 export class GcsRegistryDriver extends ObjectStoreRegistry {
   constructor(options: GcsRegistryDriverOptions) {
     super(
-      new GcsStore(
+      new GcsRegistryStore(
         options.storage,
         options.readStorage ?? options.storage,
         options.bucket,
         resolveReadTimeoutMs(options.readTimeoutMs),
+        resolveConditionalDelete(options.conditionalDelete, options.storage),
       ),
       normalizeObjectPrefix(options.prefix),
       options.now ?? ((): number => Date.now()),

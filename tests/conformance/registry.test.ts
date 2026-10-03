@@ -1,9 +1,14 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { registryConformance, registryConcurrency } from '@/testing/conformance';
+import { dirname, join } from 'node:path';
+import {
+  registryConformance,
+  registryConcurrency,
+  registryDeleteConformance,
+} from '@/testing/conformance';
 import { MemoryRegistryDriver } from '@/drivers/memory';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
+import { registryRowPath } from '@/drivers/localfs/paths';
 
 // A monotonic fake clock so createdAt/updatedAt are deterministic and updatedAt advances on each mutation.
 const ticking = (): (() => number) => {
@@ -36,4 +41,28 @@ registryConcurrency('LocalFsRegistryDriver (two instances, one root)', () => {
     new LocalFsRegistryDriver(dir, { now: ticking() }),
     new LocalFsRegistryDriver(dir, { now: ticking() }),
   ];
+});
+
+// What a delete leaves behind. The in-memory registry keeps nothing once a row is gone; the local-filesystem one
+// unlinks a row born with an incarnation id, under its row lock, and tombstones one a release before 0.12 wrote.
+registryDeleteConformance('MemoryRegistryDriver', () => {
+  const driver = new MemoryRegistryDriver({ now: ticking() });
+  return { driver, stored: async (ref) => (await driver.get(ref)) !== null };
+});
+
+registryDeleteConformance('LocalFsRegistryDriver', () => {
+  const dir = join(root, `del${n++}`);
+  return {
+    driver: new LocalFsRegistryDriver(dir, { now: ticking() }),
+    stored: async (ref) =>
+      access(registryRowPath(dir, ref)).then(
+        () => true,
+        () => false,
+      ),
+    plantRow: async (ref, text) => {
+      const path = registryRowPath(dir, ref);
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(path, text, 'utf8');
+    },
+  };
 });

@@ -229,8 +229,10 @@ describe('Azure Blob: what the read timeout leaves alone', () => {
     await r.delete(other);
     expect(await r.get(other)).toBeNull();
     // Every write, delete and listing was held past the timeout, and went through.
-    expect(stub.count('PUT')).toBeGreaterThanOrEqual(4);
-    expect(stub.count('DELETE')).toBe(1);
+    // The writes: the generation, the create and the swap; the deletes: the generation's, and the row's, which removes
+    // the row rather than writing a tombstone over it.
+    expect(stub.count('PUT')).toBeGreaterThanOrEqual(3);
+    expect(stub.count('DELETE')).toBe(2);
   }, 15_000);
 });
 
