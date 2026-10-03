@@ -38,7 +38,12 @@
  * read for every name a namespace ever held: the scan costs what is live and what is inside its grace. The delete is
  * fenced on the token the purge judged and applied by the store only to that version of the row. Each retirement
  * files a pointer in the due index under the day its tombstone's grace ends, so `scan: 'index'` purges as well as
- * retires; nothing on the row records that day, which the purge derives from the stamp.
+ * retires; nothing on the row records that day, which the purge derives from the stamp. The purge removes every pointer
+ * it read to the row, and a pointer that outlives its row anyway (a purge that ran with another grace, a delete that
+ * landed and lost its response, a pointer older than an index scan's lookback) is removed by the next scan that reads
+ * it: an index scan in its buckets, and an unscoped fleet scan, which reads every pointer, in all of them. Where a
+ * delete only rewrites the row as a tombstone, none of this is done: nothing is removed for good, so a pointer would
+ * only add a row for every scan to read.
  */
 import { type IAuditSink } from './audit';
 import { BudgetExceededError, ValidationError, isWriteConflictError } from './errors';
@@ -81,7 +86,10 @@ export interface RetireExpiredOptions {
    * caller, never from the platform — `store.retireExpired()` fills it in from the store's clock.
    */
   readonly now: number;
-  /** Maximum segments to retire in this cycle (default 100). */
+  /**
+   * Maximum segments to retire in this cycle (default 100). It also bounds the purges attempted (a purge the registry
+   * refuses is not charged, and ends purging for the call) and the due-index pointers to nothing one call removes.
+   */
   readonly limit?: number;
   /** Report what would be retired and change nothing. */
   readonly dryRun?: boolean;
@@ -103,8 +111,10 @@ export interface RetireExpiredOptions {
    * deployment that *only* ever runs `'index'` will never retire those. Run `'fleet'` periodically as the
    * repair pass. The default is `'fleet'` because it is complete by construction.
    *
-   * An index scan purges too: each retirement files a pointer to its tombstone under the day the tombstone's grace
-   * ends, and the scan reads it back with the expiry pointers. A pointer whose segment is gone is removed once read.
+   * An index scan purges too, on a registry that reports `conditionalDelete`: each retirement files a pointer to its
+   * tombstone under the day the tombstone's grace ends, and the scan reads it back with the expiry pointers. A pointer
+   * whose segment is gone is removed once read, by an index scan in the buckets it reads, and by an unscoped `'fleet'`
+   * scan (no `namespace`) in every bucket.
    */
   readonly scan?: 'fleet' | 'index';
   /**
@@ -331,6 +341,52 @@ async function rowsFromDueIndex(
 }
 
 /**
+ * Candidates from the whole registry, as `registry.list()` yields them, and the due-index pointers it yielded on the
+ * way. An unscoped listing reads every pointer (the listing pays a read for each before the scan skips it), and a
+ * pointer whose segment is not among the rows is litter, as it is to an index scan: whatever left it (a purge that
+ * ran with another grace than the one that filed it, a delete that landed and lost its response, a pointer older than
+ * an index scan's lookback) the fleet scan, which reads every row, is the one that can see it. A scan limited to a
+ * `namespace` lists no pointers, and finds none.
+ *
+ * At most `maxScanSegments` pointers are held; the rest are left for a later scan. This decides nothing irreversible:
+ * a pointer is removed only after its segment is read again, and the row it names is still absent.
+ */
+async function rowsFromFleet(
+  registry: IRegistryDriver,
+  options: { namespace?: string; maxScanSegments: number },
+): Promise<IndexScan> {
+  const held: FoundPointer[] = [];
+  const rows = await drainRegistry(registry, {
+    namespace: options.namespace,
+    maxScanSegments: options.maxScanSegments,
+    op: 'retireExpired',
+    onReserved: (pointer) => {
+      if (held.length >= options.maxScanSegments) return;
+      const target = decodeDueName(pointer.segment);
+      // A foreign row in the reserved namespace, or a pointer to a segment in that namespace itself (written before it
+      // was refused): not the sweep's to read, and never acted on.
+      if (target === null || isReservedNamespace(target.namespace)) return;
+      held.push({
+        ref: { namespace: pointer.namespace, segment: pointer.segment },
+        target,
+        token: pointer.token,
+      });
+    },
+  });
+  const pointers = new Map<string, FoundPointer[]>();
+  const litter: FoundPointer[] = [];
+  if (held.length === 0) return { rows, pointers, litter };
+  const present = new Set(rows.map((rec) => segmentKey(rec)));
+  for (const found of held) {
+    const key = segmentKey(found.target);
+    if (!present.has(key)) litter.push(found);
+    else if (pointers.has(key)) pointers.get(key)!.push(found);
+    else pointers.set(key, [found]);
+  }
+  return { rows, pointers, litter };
+}
+
+/**
  * Best-effort removal of a retired segment's due-index pointer. A failure here leaves litter that costs one
  * read when its bucket next comes due and is then skipped (the segment is gone, so the live re-read yields
  * `null`) — never a wrong retirement, so it must not turn a successful retirement into a fault.
@@ -452,7 +508,7 @@ export async function retireExpired(
   // writes. Draining makes the candidate set a snapshot; the retire path then RE-READS each row before acting on
   // it, because deciding an irreversible deletion from a minutes-old copy is not the same as enumerating from one.
   const scan = options.scan ?? 'fleet';
-  const indexed =
+  const scanned =
     scan === 'index'
       ? await rowsFromDueIndex(deps.registry, {
           now,
@@ -460,14 +516,8 @@ export async function retireExpired(
           namespace: options.namespace,
           maxScanSegments,
         })
-      : undefined;
-  const rows =
-    indexed?.rows ??
-    (await drainRegistry(deps.registry, {
-      namespace: options.namespace,
-      maxScanSegments,
-      op: 'retireExpired',
-    }));
+      : await rowsFromFleet(deps.registry, { namespace: options.namespace, maxScanSegments });
+  const rows = scanned.rows;
 
   // Whether a delete removes a row for good. Read after the enumeration: a registry that settles this lazily (S3, from
   // the host its client resolves) has done so by its first listing. Where it does not, a purge only rewrites the row as
@@ -555,7 +605,7 @@ export async function retireExpired(
               deps.registry,
               ref,
               retiredAt + grace,
-              indexed?.pointers.get(segmentKey(ref)) ?? [],
+              scanned.pointers.get(segmentKey(ref)) ?? [],
               noteFault,
             );
           }
@@ -735,14 +785,19 @@ export async function retireExpired(
     }
   }
 
-  // Pointers to nothing, from an index scan: remove each, so its bucket is not read for it again. Only those for this
-  // sweep's own slice of the fleet, and never under `dryRun`. The segment is read again just before, since the scan
-  // may be minutes old: a `setRetention` that created the name since files its pointer after its row, and finding
-  // one already at that key, takes it as its own. Fenced on the token the scan read, so a pointer filed anew is left.
-  // What remains is a round trip in which such a pointer can still go, and then the fleet scan retires that segment.
-  if (!dryRun && removesRows && indexed !== undefined) {
-    for (const pointer of indexed.litter) {
+  // Pointers to nothing, from either scan: remove each, so it is not read for again. Only those for this sweep's own slice
+  // of the fleet, and never under `dryRun`. The segment is read again just before, since the scan may be minutes old: a
+  // `setRetention` that created the name since files its pointer after its row, and finding one already at that key,
+  // takes it as its own. Fenced on the token the scan read, so a pointer filed anew is left. What remains is a round trip
+  // in which such a pointer can still go, and then the fleet scan retires that segment. At most `limit` of them per call:
+  // each costs reads before its delete, and a long backlog must not make one call arbitrarily long. A pointer attempted
+  // counts whether or not it goes, as a retirement does.
+  if (!dryRun && removesRows) {
+    let attemptedLitter = 0;
+    for (const pointer of scanned.litter) {
       if (!owned(pointer.target)) continue;
+      if (attemptedLitter >= limit) break;
+      attemptedLitter += 1;
       try {
         if ((await deps.registry.get(pointer.target)) !== null) continue;
         await deps.registry.delete(pointer.ref, pointer.token);

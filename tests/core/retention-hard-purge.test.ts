@@ -1122,3 +1122,202 @@ describe('what a retirement and a purge cost, per segment, with the gate on and 
     expect(byFleet.tombstonesPurged).toBe(1);
   });
 });
+
+describe('a purge pointer that outlives its row is removed by the unscoped fleet scan', () => {
+  /** A segment retired with `grace`, so its purge pointer sits under the day that grace ends. */
+  async function retired(w: World, ref: SegmentRef, grace: number): Promise<number> {
+    await seed(w, ref, T0 + RETENTION);
+    w.advance(RETENTION + 1);
+    await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: grace });
+    return dueBucket(w.now() + grace);
+  }
+
+  it('a grace changed between retirement and purge: the pointer filed under the old day is removed with the row', async () => {
+    const w = world();
+    const ref = { namespace: 'n', segment: 'day' };
+    const filedUnder = await retired(w, ref, GRACE);
+    w.advance(DAY);
+    // The purge runs with a shorter grace, so it computes a day that holds no pointer; the scan read the real one.
+    const res = await retireExpired(w.deps, { scan: 'fleet', now: w.now(), tombstoneGraceMs: DAY });
+    expect(res.entries).toEqual([{ ...ref, action: 'purged-tombstone' }]);
+    expect(await bucketRows(w, filedUnder)).toEqual([]);
+    expect(registryObjects(w)).toBe(0);
+  });
+
+  it('a delete that landed and lost its response: the next unscoped scan finds the pointer to nothing and removes it', async () => {
+    const w = world();
+    const ref = { namespace: 'n', segment: 'day' };
+    const filedUnder = await retired(w, ref, GRACE);
+    w.advance(GRACE);
+    w.store.landThenFailDelete = new TransientError('connection reset after the delete');
+    const first = await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: GRACE });
+    expect(first.entries).toEqual([
+      { ...ref, action: 'skipped', reason: 'failed: connection reset after the delete' },
+    ]);
+    expect(await w.registry.get(ref)).toBeNull(); // it landed
+    expect(await bucketRows(w, filedUnder)).toHaveLength(1); // outcome unknown, so the pointer was kept
+
+    const next = await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: GRACE });
+    expect(next.entries).toEqual([]);
+    expect(await bucketRows(w, filedUnder)).toEqual([]);
+    expect(registryObjects(w)).toBe(0);
+    const after = await readsOf(w, () => retireExpired(w.deps, { now: w.now() }));
+    expect(after.reads).toBe(0); // read once, and gone
+  });
+
+  it('a pointer older than the lookback, which no index scan reaches, is removed by the unscoped fleet scan', async () => {
+    const w = world();
+    const ref = { namespace: 'n', segment: 'day' };
+    const filedUnder = await retired(w, ref, GRACE);
+    w.store.remove(registryObjectKey(undefined, ref)); // the row goes by another route; the pointer stays
+    w.advance(GRACE + (DEFAULT_LOOKBACK_BUCKETS + 3) * DAY);
+
+    await retireExpired(w.deps, { scan: 'index', now: w.now(), tombstoneGraceMs: GRACE });
+    expect(await bucketRows(w, filedUnder)).toHaveLength(1); // out of reach of the index scan
+
+    await retireExpired(w.deps, { scan: 'fleet', now: w.now(), tombstoneGraceMs: GRACE });
+    expect(await bucketRows(w, filedUnder)).toEqual([]);
+    expect(registryObjects(w)).toBe(0);
+  });
+
+  describe('its scope', () => {
+    /** Litter: pointers in a past bucket to segments with no row, in two namespaces. */
+    async function litter(w: World): Promise<SegmentRef[]> {
+      const refs = ['mine', 'theirs'].flatMap((namespace) =>
+        [0, 1, 2, 3].map((i) => ({ namespace, segment: `gone-${i}` })),
+      );
+      const bucket = dueBucket(w.now()) - 30; // far outside the index scan's lookback
+      for (const ref of refs)
+        await w.registry.create(dueIndexRef(bucket, ref), { currentGen: null });
+      return refs;
+    }
+    const left = async (w: World): Promise<number> =>
+      (await bucketRows(w, dueBucket(w.now()) - 30)).length;
+
+    it('an unscoped fleet scan removes it, and a pointer whose row exists stays', async () => {
+      const w = world();
+      await litter(w);
+      const live = { namespace: 'mine', segment: 'live' };
+      await seed(w, live, w.now() + 10 * DAY); // its expiry pointer is under a future day
+      const res = await retireExpired(w.deps, { now: w.now() });
+      expect(res.purgeFaults).toBe(0);
+      expect(await left(w)).toBe(0);
+      expect(await bucketRows(w, dueBucket(w.now() + 10 * DAY))).toHaveLength(1);
+    });
+
+    it('a namespace-scoped scan does not list pointers, and leaves them', async () => {
+      const w = world();
+      await litter(w);
+      await retireExpired(w.deps, { namespace: 'mine', now: w.now() });
+      expect(await left(w)).toBe(8);
+    });
+
+    it('a dry run removes none', async () => {
+      const w = world();
+      await litter(w);
+      await retireExpired(w.deps, { dryRun: true, now: w.now() });
+      expect(await left(w)).toBe(8);
+    });
+
+    it('a sharded scan removes only the pointers of its own shard', async () => {
+      const w = world();
+      const refs = await litter(w);
+      const shard = (r: SegmentRef): number => shardOf(segmentKey(r), 2);
+      expect(new Set(refs.map(shard)).size).toBe(2); // a control: both shards hold some
+      await retireExpired(w.deps, { shards: [0], totalShards: 2, now: w.now() });
+      expect(await left(w)).toBe(refs.filter((r) => shard(r) === 1).length);
+    });
+
+    it('removes at most `limit` of them in one call, and the next call goes on', async () => {
+      const w = world();
+      await litter(w);
+      await retireExpired(w.deps, { limit: 3, now: w.now() });
+      expect(await left(w)).toBe(5);
+      await retireExpired(w.deps, { limit: 3, now: w.now() });
+      expect(await left(w)).toBe(2);
+      await retireExpired(w.deps, { limit: 3, now: w.now() });
+      expect(await left(w)).toBe(0);
+    });
+
+    it('one the registry refuses to delete still counts against the limit, so a refusing registry costs at most `limit` tries', async () => {
+      const w = world();
+      await litter(w);
+      w.store.refuseDelete = () =>
+        Object.assign(new Error('Access Denied'), { name: 'AccessDenied' });
+      const res = await retireExpired(w.deps, { limit: 3, now: w.now() });
+      expect(res.purgeFaults).toBe(3);
+      expect(await left(w)).toBe(8);
+    });
+
+    it('an index scan is capped the same way', async () => {
+      const w = world();
+      const bucket = dueBucket(w.now());
+      for (let i = 0; i < 8; i++) {
+        await w.registry.create(dueIndexRef(bucket, { namespace: 'n', segment: `gone-${i}` }), {
+          currentGen: null,
+        });
+      }
+      await retireExpired(w.deps, { scan: 'index', limit: 3, now: w.now() });
+      expect(await bucketRows(w, bucket)).toHaveLength(5);
+    });
+
+    it('where the registry only tombstones, none is removed: it would rewrite each as a tombstone the next scan reads', async () => {
+      const w = world({ conditionalDelete: false });
+      await litter(w);
+      const writes = w.store.writes;
+      await retireExpired(w.deps, { now: w.now() });
+      expect(w.store.writes).toBe(writes);
+      expect(await left(w)).toBe(8);
+    });
+  });
+
+  describe('it is removed only if its row is still absent, and only the pointer that was read', () => {
+    it('a row created for the name after the scan read the pointer keeps it', async () => {
+      const w = world();
+      const reused = { namespace: 'n', segment: 'reused' };
+      const expiring = { namespace: 'n', segment: 'expiring' };
+      await seed(w, expiring, T0 + RETENTION);
+      w.advance(RETENTION + 1);
+      const today = dueBucket(w.now());
+      await w.registry.create(dueIndexRef(today, reused), { currentGen: null }); // litter from an earlier incarnation
+      // While the sweep retires `expiring`, the name is created with a policy due today: its pointer write finds the
+      // litter at that key and takes it as its own.
+      const storage: IStorageDriver = {
+        capabilities: () => w.storage.capabilities(),
+        putImmutable: (k, f) => w.storage.putImmutable(k, f),
+        getRange: (k, o, l) => w.storage.getRange(k, o, l),
+        getTail: (k, m) => w.storage.getTail(k, m),
+        delete: (k) => w.storage.delete(k),
+        list: (r) =>
+          (async function* () {
+            if ((await w.registry.get(reused)) === null) {
+              await setSegmentRetention(reused, { registry: w.registry }, { expiresAt: w.now() });
+            }
+            yield* w.storage.list(r);
+          })(),
+      };
+      await retireExpired(
+        { registry: w.registry, storage },
+        { scan: 'fleet', now: w.now(), tombstoneGraceMs: GRACE },
+      );
+      expect((await bucketRows(w, today)).map((r) => r.segment)).toContain(
+        dueIndexRef(today, reused).segment,
+      );
+    });
+
+    it('a pointer filed anew between the read and the delete is kept, and is no fault', async () => {
+      const w = world();
+      const gone = dueIndexRef(dueBucket(w.now()) - 30, { namespace: 'n', segment: 'gone' });
+      await w.registry.create(gone, { currentGen: null });
+      const other = new ObjectStoreRegistry(w.store, undefined, w.now);
+      let reborn = '';
+      w.store.beforeDelete = async () => {
+        await other.delete(gone);
+        reborn = (await other.create(gone, { currentGen: null })).token;
+      };
+      const res = await retireExpired(w.deps, { now: w.now() });
+      expect(res.purgeFaults).toBe(0);
+      expect(await w.registry.get(gone)).toMatchObject({ token: reborn });
+    });
+  });
+});
