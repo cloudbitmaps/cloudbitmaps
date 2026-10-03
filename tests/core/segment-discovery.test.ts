@@ -102,7 +102,8 @@ describe('exists()', () => {
 
   it('a torn restore still answers true — the pointer resolves, the object is gone', async () => {
     // The documented exception. `exists()` reports on the POINTER; a live pointer whose object was deleted is
-    // the forbidden `missing-storage-generation` state, where reads THROW rather than answer empty.
+    // the forbidden `missing-storage-generation` state, where reads of the object THROW rather than answer empty (a
+    // cold `count()` answers the row's number).
     // `checkConsistency` is the call that looks for it, and the JSDoc says so rather than over-claiming.
     const backend = new MemoryStorage();
     const { storage } = backend;
@@ -111,7 +112,9 @@ describe('exists()', () => {
     await storage.delete({ segment: 'torn', generation: 0 });
 
     expect(await s.exists({ segment: 'torn' })).toBe(true);
-    await expect(s.segment('torn').count()).rejects.toThrow(/no such generation/);
+    // A count answers from the row, which is true of the generation it names; a read of the object throws.
+    expect(await s.segment('torn').count()).toBe(2);
+    await expect(s.segment('torn').has(1)).rejects.toThrow(/no such generation/);
   });
 
   it('needs a registry', async () => {

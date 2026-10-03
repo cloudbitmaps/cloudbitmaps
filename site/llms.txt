@@ -67,8 +67,8 @@ target survives a materialization.
 Every chunk a read fetches is whole and checksum-verified, from one generation, resolved once before any
 fan-out; a long read can move to a newer generation part-way (a `cache.genTtlMs` refresh, an eviction, a sweep,
 an invalidation), and `seg.pin()` holds one generation for as long as a job needs it. The reads: has (cache,
-else one ranged GET once the segment's pointer and index are read), count (exact, summed from the .crbm index
-with zero payload reads), iterate, and the composites — intersect and andNot, which skip every chunk that cannot
+else one ranged GET once the segment's pointer and index are read), count (exact, from the registry row's summary,
+one request when cold, else summed from the .crbm index, with zero payload reads), iterate, and the composites — intersect and andNot, which skip every chunk that cannot
 contribute, and union, which reads every chunk of every operand — with `exclude` suppression folded into the
 same pass. A combine refuses an operand that names no segment (`ValidationError`) rather than reading it as
 empty, unless `allowAbsentOperands: true`. An id-range read, `iterate({ after, through })` and the same options

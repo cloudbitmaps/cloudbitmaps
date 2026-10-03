@@ -110,6 +110,10 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   it whole, and an intersect slow enough to outlive `cache.genTtlMs` reads its pointers again; add either to
   `chunksPerIntersect`. `cacheHitRate` does not apply to intersections, so a long-lived reader that answers
   repeats from its cache pays less than the report says, and pays the pointer refresh instead.
+- **A cold `count()` is one pointer read.** The row records the current generation's id count, so a count reads no
+  object, whatever the segment's size or index width, encrypted or not (one request on every backend, held by a test
+  that counts the requests). Counts and `stat()` calls within `cache.genTtlMs` are free beyond the pointer refresh. A
+  row with no summary it can use is read from the object, which adds the tail read.
 - **A load** is `requestsPerLoad` PUT-class requests for the object (1 by default; a multipart write of P parts is
   P + 2), plus what `store.load()` adds: the pointer's write, PUT-class on S3, and five GETs: three pointer reads and
   two checks, each a single request on every backend (a `HeadObject` on S3), that the next generation number is free

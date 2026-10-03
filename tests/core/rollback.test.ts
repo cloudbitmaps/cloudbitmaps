@@ -43,14 +43,16 @@ describe('listGenerations', () => {
     expect(await listGenerations(SEG, w.deps)).toEqual([
       { generation: 0, current: false },
       { generation: 1, current: false },
-      { generation: 2, current: true },
+      { generation: 2, current: true, cardinality: 1 },
     ]);
   });
 
   it('reflects collection — it is what remains, not what ever was', async () => {
     const w = world();
     for (const ids of [[1], [2], [3]]) await loadSegment(SEG, ids, w.load, { keep: 0 });
-    expect(await listGenerations(SEG, w.deps)).toEqual([{ generation: 2, current: true }]);
+    expect(await listGenerations(SEG, w.deps)).toEqual([
+      { generation: 2, current: true, cardinality: 1 },
+    ]);
   });
 
   it('is empty for a segment that does not exist', async () => {
@@ -634,7 +636,7 @@ describe('rollback — the facade, and the validation the core owes', () => {
     });
     expect(await store.generations(SEG)).toEqual([
       { generation: 0, current: false },
-      { generation: 1, current: true },
+      { generation: 1, current: true, cardinality: 1 },
     ]);
   });
 

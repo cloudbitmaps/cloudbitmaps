@@ -550,7 +550,7 @@ describe('what the stages request, counted against the engine', () => {
     for (let i = 0; i < 6; i += 1) expect(await countOf(() => pair(i))).toBe(0);
   });
 
-  it('point reads: a first count() is 2, a has() on an open segment is 1, and a first has() is 3', async () => {
+  it('point reads: a first count() is 1, a has() on a resolved segment is 1 (2 for its first), and a first has() is 3', async () => {
     await loaded;
     const names = ['seg-0', 'seg-1', 'seg-2', 'seg-3'];
     const counted = new CloudRoaring({ storage: backend, ...guards.warmStore(1_024) });
@@ -559,7 +559,7 @@ describe('what the stages request, counted against the engine', () => {
       const first = await countOf(async () => {
         expect(await counted.segment(name).count()).toBe(20_000);
       });
-      expect(first, 'a first count() is a pointer and a tail').toBe(2);
+      expect(first, 'a first count() is a pointer read').toBe(1);
       total += first;
     }
     for (let i = 0; i < 20; i += 1) {
@@ -569,13 +569,15 @@ describe('what the stages request, counted against the engine', () => {
     }
     const idIn = (c: number): number => Math.ceil((c * 65_536) / stride) * stride;
     const ids = Array.from({ length: layout.sharedChunks }, (_, c) => idIn(c));
-    // On the store count() opened, each has() is exactly one ranged read: the index was read, no chunk was.
+    // On the store count() resolved, each has() is one ranged read, and the first of a segment adds the tail that opens it.
     for (const name of names) {
-      for (const id of ids) {
+      for (const [i, id] of ids.entries()) {
         const gets = await countOf(async () => {
           expect(await counted.segment(name).has(id)).toBe(true);
         });
-        expect(gets, 'a has() on an open segment is one chunk read').toBe(1);
+        expect(gets, 'a has() is one chunk read, and the first of a segment adds its tail').toBe(
+          i === 0 ? 2 : 1,
+        );
         total += gets;
       }
     }

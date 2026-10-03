@@ -296,8 +296,8 @@ for await (const s of store.segments({ namespace: 'active-daily' })) {
   no data as they are, rather than quietly filtering them.
 - `exists` answers `false` for a row minted ahead of the first load (`setRetention` does that) and for a `destroyed`
   tombstone, because a read answers empty in both. Two states answer `true` where a read still gives you nothing, and neither is
-  this call's job. A torn restore (a live pointer whose object was deleted) makes reads throw, which `checkConsistency`
-  is the call for. And a handle with an expired `expiresAt` reads empty by a rule that lives on the handle.
+  this call's job. A torn restore (a live pointer whose object was deleted) makes reads of the object throw, while a cold `count()` still
+  answers the number the row records, so `checkConsistency` is the call for it. And a handle with an expired `expiresAt` reads empty by a rule that lives on the handle.
 - `segments()` yields `destroyed` tombstones and rows whose `currentGen` is `null`, because a filtered enumeration that
   looks complete is worse than an honest one. Filter yourself, or ask `exists` the narrower question. Internal
   bookkeeping rows are the one exclusion, and only on an unscoped scan: they live in the reserved `cbm.due.` namespace,

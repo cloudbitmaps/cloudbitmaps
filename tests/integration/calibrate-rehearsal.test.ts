@@ -152,10 +152,11 @@ const AT = (() => {
  */
 const AT_ON_ITS_STORE = (() => {
   const priming = LOADS + W.reads * COLD + PRIMING;
-  // The priming pass discarded whole at its last request, then run again: then the first `count()`.
-  const count = priming + PRIMING + 2;
-  // That discarded (a pointer and a tail) and run again, then the second segment's `count()`: the first open `has()`.
-  const openHas = count + 2 + 2 + 1;
+  // The priming pass discarded whole at its last request, then run again: then the first `count()`, one pointer read.
+  const count = priming + PRIMING + 1;
+  // That discarded (its pointer read) and run again, the other segments' `count()`, the tail read that opens each
+  // segment, then the first chunk read of the open phase: the first open `has()`.
+  const openHas = count + 1 + (W.point - 1) + W.point + 1;
   return { priming, count, openHas };
 })();
 
@@ -333,7 +334,7 @@ describe('a calibration rehearsal that meets transient faults in the samples tha
       ['priming pass', PRIMING],
     ]);
     expect(phases.pointReads?.discarded.map((d) => [d.of, d.requests.get])).toEqual([
-      ['count() first read', 2],
+      ['count() first read', 1],
       ['has() on an open segment', 1],
     ]);
     expect(run.results.expectedMissed).toBeUndefined();

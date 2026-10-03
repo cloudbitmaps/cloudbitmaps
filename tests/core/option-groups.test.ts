@@ -455,7 +455,7 @@ describe('`retry` retries reads of segment data, and no write', () => {
     const f = faultyStore('getTail');
     await f.store.load(SEG, [1, 2, 3]);
     f.arm();
-    expect(await f.store.segment('s').count()).toBe(3);
+    expect(await f.store.segment('s').has(1)).toBe(true);
     expect(f.retries).toEqual([1]);
   });
 });

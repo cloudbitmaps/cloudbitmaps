@@ -169,7 +169,7 @@ If the library breaks, you are not stuck:
 
 - **It is a library, not a service.** Your data lives in your bucket, your account or your filesystem. CloudBitmaps never sees it, and you are the data controller (see [`PRIVACY.md`](PRIVACY.md)).
 - **The files are an open format.** Each `.crbm` object is a documented container with a footer index and CRC32C checksums, wrapping standard Roaring serialization that every Roaring library (Java, Go, Python, C++, Rust, C#) reads.
-- **A bad load does not overwrite the last good one.** Generations are write-once and checksummed, and corruption is rejected before it is decoded. The one answer taken from the index alone, [`count()`](docs/guide/reading.md#what-count-trusts), is checked for internal consistency but not against the payloads. A bad load writes a new generation, and the previous one stays in the bucket for you to [roll the pointer back](docs/guide/loading.md#roll-back-a-segment) to. Under the default `keep: 1` it stays only until the next load, so roll back before you load again, or raise [`keep`](docs/guide/loading.md#generations-and-keep).
+- **A bad load does not overwrite the last good one.** Generations are write-once and checksummed, and corruption is rejected before it is decoded. The one answer taken without decoding a payload, [`count()`](docs/guide/reading.md#what-count-trusts), comes from the registry row's summary, or from the index when the row has none, and is checked for internal consistency but not against the payloads. A bad load writes a new generation, and the previous one stays in the bucket for you to [roll the pointer back](docs/guide/loading.md#roll-back-a-segment) to. Under the default `keep: 1` it stays only until the next load, so roll back before you load again, or raise [`keep`](docs/guide/loading.md#generations-and-keep).
 - **You can leave.** `store.exportSegments(sink)` writes every segment's current generation to portable `roaring` or `ndjson`. The `export-segments` command does the same for a local-filesystem store only; for S3, GCS or Azure, call `exportSegments` in code. See [Export your data](docs/guide/export.md).
 
 How this compares with pure Roaring libraries and bitmap databases on lock-in is in
@@ -248,11 +248,11 @@ bitmap of up to 65,536 ids, and it is the unit of storage and transfer: you neve
                                    (segment.<gen>.crbm, write-once)     (a registry compare-and-swap)
 
   has(id)   ─► CACHE? (RAM + bounded LRU) ─► STORAGE (single-chunk byte-range read)
-  count()   ─► the object's footer index (0 payload reads)
+  count()   ─► the registry row's summary (1 request, no object read; 0 payload reads)
   intersect(A,B) ─► align chunk indexes ─► fetch only the chunks present in BOTH ─► stream IDs
 ```
 
-- **Storage** holds immutable, generation-keyed `.crbm` objects, each with a footer index that makes `count()` and single-chunk reads cheap.
+- **Storage** holds immutable, generation-keyed `.crbm` objects, each with a footer index that makes single-chunk reads cheap; the registry row's summary of the current generation makes `count()` one request.
 - **The registry** is one small row per segment saying which generation is current. A load moves it by compare-and-swap, and it is the only thing a write changes.
 - **The cache** is a bounded in-memory LRU of decoded chunks, keyed by generation, so a new generation misses it instead of being answered with the old one's bytes. A reader moves to a new generation within [`cache.genTtlMs`](docs/guide/reading.md#how-soon-a-reader-sees-a-new-load), 2 s by default.
 

@@ -134,9 +134,10 @@ function projectStages(w) {
     get: w.warm.segments * (3 + w.warm.sharedChunks),
   };
 
-  // A `count()` opening each segment (a pointer, a tail, one more for an index longer than the tail), a `has()` of every
-  // shared chunk on those open segments (one chunk read each), and a `has()` of every shared chunk as the first read of
-  // a store of its own (a pointer, a tail, a chunk, and the one more). The warm repeats are held to none.
+  // A `count()` of each segment (a pointer), a `has()` of every shared chunk on that store (one chunk read each, after a
+  // `has()` of an absent id that opens the segment: a tail, one more for an index longer than the tail), and a `has()` of every
+  // shared chunk as the first read of a store of its own (a pointer, a tail, a chunk, and the one more). The warm repeats
+  // are held to none.
   const sc = w.pointReads.segments * w.pointReads.sharedChunks;
   stages.pointReads = { put: 0, get: 3 * w.pointReads.segments + 5 * sc };
 
@@ -175,7 +176,8 @@ function sampleBounds(w) {
     // The priming pass is one sample: a fault anywhere in it runs the whole pass again, on a fresh store.
     warm: w.warm.segments * (3 + w.warm.sharedChunks),
     // A first has() is the dearest: a pointer, a tail, one more for an index longer than the tail, and a chunk. A first
-    // count() is the first three, and a has() on an open segment is the chunk alone.
+    // count() is the pointer alone, and a has() on a store that has resolved the segment is the chunk, with the tail
+    // for its first.
     pointReads: p.segments === 0 ? 0 : p.sharedChunks > 0 ? 4 : 3,
     andNot: w.andNot.calls > 0 ? andNotCallBound(w.andNot) : 0,
   };
@@ -194,8 +196,8 @@ function expectedReads(w) {
     sweep: w.sweep.entries.reduce((n, e) => n + e.intersects * coldIntersectGets(e.k), 0),
     // Each segment once: a pointer, a tail and the shared chunks. The timed warm intersects make none.
     warm: w.warm.segments * (2 + w.warm.sharedChunks),
-    // `count()` opens a segment: a pointer and a tail. A `has()` on an open segment is one chunk read, and the first
-    // `has()` on a store of its own is a pointer, a tail and a chunk.
+    // `count()` is a pointer. Each segment is opened by a tail read, and a `has()` on it is one chunk read; the first `has()` on a store of its own is a
+    // pointer, a tail and a chunk.
     pointReads: 2 * w.pointReads.segments + 4 * w.pointReads.segments * w.pointReads.sharedChunks,
     andNot: a.calls * (2 * (1 + a.excludes) + a.includeChunks + a.excludes * a.sharedChunks),
   };

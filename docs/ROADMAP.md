@@ -110,9 +110,19 @@ is a dependency of both and is never installed directly. The storage drivers are
   so a segment whose current object was removed from outside keeps the one generation left to roll back to; that look
   stands in for the tail read, so a steady load on S3 makes the same 8 requests (derived, and held by a test). **Proven
   against** the in-memory and local-file drivers and the real registry protocol over counting stores, with every
-  decision mutation-checked. **Not yet built:** reading the metadata and the count back through the API (`stat()`, a
-  one-request `count()`, a pinned read), the check of the row's summary against the object it describes whenever a read
-  opens it, and `checkConsistency` reporting a disagreement.
+  decision mutation-checked.
+- **A one-request cold `count()`, and `stat()`.** A cold `count()` is the pointer read and nothing else: the row records
+  the current generation's id count, so no object is read, cleartext or encrypted, whatever the index's width (derived
+  from the driver ports and held by a test; one wire request on each emulator in the integration lane). `seg.stat()`
+  returns the generation's number, count and metadata from the same resolution, one request when cold and none when warm
+  or pinned, and the current entry of `store.generations()` carries them from the row it already reads. A snapshot is a
+  resolved target with a reader opened on first use, so a `count` and the `has` after it read one generation. The row's
+  summary is used only for the generation it names, in the shape the keys call for, and is held against the object
+  whenever a read opens it anyway: a disagreement stops that store using it and fails nothing, and
+  `checkConsistency({ summaries: true })` reports it as `summary-mismatch`. **Proven against** the in-memory and
+  local-file drivers over counting stores, random sequences of loads, materialisations, rollbacks, erasures and
+  retention writes, and each emulator, with every decision mutation-checked. **Not built:** `generations({ describe:
+  true })`, which would open every listed generation to describe it.
 - **Chunk-skipping intersection** — `intersect` aligns on chunk keys and fetches only the chunks present in
   *every* operand, with bounded read concurrency and a bounded streaming window.
 - **Id-range reads for keyset paging** —
@@ -128,8 +138,8 @@ is a dependency of both and is never installed directly. The storage drivers are
   collected }`. An empty or implausible result over a non-empty destination is **refused** rather than
   published, with `allowEmpty` / `guard` to override — the same guard `load()` takes. Unlike `load()` it
   collects nothing by default, so a `rollback` target survives the materialization.
-- **Cheap counts.** `count()` sums per-chunk cardinality straight from the `.crbm` index, so a segment counts
-  with **zero payload reads**.
+- **Cheap counts.** `count()` answers from the registry row's summary of the current generation (one request when cold),
+  else sums per-chunk cardinality from the `.crbm` index, so a segment counts with **zero payload reads**.
 - **Bounded memory, always.** A hard LRU ceiling on cached chunks, a byte-aware storage-reader cache, bounded fan-out
   on every admin path, and a default-on per-operation **request budget** that fails with `BudgetExceededError`
   rather than quietly running up a bill. Every registry scan has a ceiling by default: the DR consistency check,

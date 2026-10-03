@@ -142,7 +142,7 @@ const active = store.segment('active');
 const optedOut = store.segment('global-opt-out', { namespace: 'suppression' });
 
 await shoppers.has(5); // true or false: fetches one chunk
-await shoppers.count(); // the exact size, from the index; fetches no data
+await shoppers.count(); // the exact size, from the registry row; fetches no data
 
 for await (const id of shoppers.iterate()) {
   // every id, ascending
@@ -199,7 +199,7 @@ The *read* side carries over one-for-one:
 | Redis | Here | Difference |
 |---|---|---|
 | `GETBIT key id` | `has(id)` | none in meaning — an id is a bit offset, both `u32` |
-| `BITCOUNT key` | `count()` | exact, and served from the index without fetching payloads |
+| `BITCOUNT key` | `count()` | exact, and served from the registry row's summary (else the index) without fetching payloads |
 | `BITOP AND dst a b` | `a.intersect([b])` / `a.intersectInto(dst, [b])` | streams, and skips chunks that cannot contribute; `dst` becomes a new generation |
 | `BITOP OR dst a b` | `a.union([b])` / `unionInto` | none in meaning |
 | `BITOP DIFF dst a b` (Redis 8.2+) | `a.andNot([b])` / `andNotInto` | none in meaning; reads `b` only where it overlaps `a` |

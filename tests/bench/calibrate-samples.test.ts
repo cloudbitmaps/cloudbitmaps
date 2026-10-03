@@ -383,7 +383,7 @@ describe('a sample that meets a transient fault', () => {
       return m.tally.get - g0;
     };
 
-    // A first count() whose tail read fails: forgotten, then read again as a first read.
+    // A first has() whose tail read fails: forgotten, then read again as a first read.
     const failTail = new Proxy(m.reader.storage, {
       get(t, prop, receiver) {
         const value: unknown = Reflect.get(t, prop, receiver);
@@ -403,16 +403,16 @@ describe('a sample that meets a transient fault', () => {
       storage: brandAsBackend({ storage: failTail, registry: m.reader.registry }),
       ...guards.warmStore(1_024),
     });
-    const counts = await ledger.sample('count() first read', 0, (rerun) =>
+    const counts = await ledger.sample('has() first read', 0, (rerun) =>
       gets(async () => {
         if (rerun > 0) countStore.invalidate({ segment: 'seg-0' });
-        expect(await countStore.segment('seg-0').count()).toBe(20_000);
+        expect(await countStore.segment('seg-0').has(0)).toBe(true);
       }),
     );
-    expect(counts, 'a first count() is a pointer and a tail').toBe(2);
+    expect(counts, 'a first has() is a pointer, a tail and a chunk').toBe(3);
 
     // A has() on an open segment whose chunk read fails: the same store, with nothing cached for it, reads it again.
-    await counted.segment('seg-1').count();
+    await counted.segment('seg-1').has(0);
     const id = Math.ceil(65_536 / stride) * stride; // the first shared id of chunk 1
     m.failRange(1);
     const open = await ledger.sample('has() on an open segment', 0, () =>
@@ -448,7 +448,7 @@ describe('a sample that meets a transient fault', () => {
     ).toBe(0);
     ledger.end();
     expect(discarded.map((d) => d.of)).toEqual([
-      'count() first read',
+      'has() first read',
       'has() on an open segment',
       'priming pass',
     ]);

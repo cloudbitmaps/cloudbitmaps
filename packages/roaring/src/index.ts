@@ -1258,7 +1258,8 @@ export class CloudRoaring {
    * for a `destroyed` tombstone, because a read answers empty in both cases.
    *
    * Two states answer `true` where a read still gives you nothing: a torn restore (a live pointer whose object
-   * was deleted) makes reads *throw* rather than answer empty — `checkConsistency` is the call for that — and
+   * was deleted) makes reads of the object *throw* rather than answer empty, while a cold `count()` answers the number
+   * its row records — `checkConsistency` is the call for that — and
    * a handle carrying an expired `expiresAt` reads empty by a rule that lives on the handle, not the row.
    *
    * Not a lock: the answer can change the moment it returns. If it has to hold, use the fence built for that —
@@ -1816,16 +1817,26 @@ export class CloudRoaring {
    * (throws {@link UnsupportedError} otherwise). `destroyed` (crypto-shredded) segments are skipped. Pair it with
    * the DR runbook (docs/guide/disaster-recovery.md).
    *
+   * A segment whose pointer names a missing object is the torn restore this reports; a cold `count()` of it still
+   * answers the number its row records, while a read of the object throws, so the count alone never shows it. With
+   * `summaries: true` it also opens each segment's current object (one tail read each) and reports a segment whose
+   * row's summary says another id count or metadata than the object holds as `summary-mismatch`, which is what a
+   * restore of the registry from another point than the bucket leaves a count to answer. A sealed summary is held
+   * against its object when this store has the key, and counted in `summariesUnchecked` when it does not.
+   *
    * It holds the registry rows it enumerates resident, at most 250,000 of them, and throws
    * `BudgetExceededError` past that rather than report a partial scan as a whole one. This method takes no
    * ceiling of its own: narrow the scan with `namespace`, or call `runConsistencyCheck` over the backend's
    * `storage` and `registry` with a higher `maxScanSegments`.
    */
   async checkConsistency(
-    options: { namespace?: string; concurrency?: number } = {},
+    options: { namespace?: string; concurrency?: number; summaries?: boolean } = {},
   ): Promise<ConsistencyReport> {
     const deps = this.lifecycleDeps('checkConsistency');
-    return runConsistencyCheck({ storage: deps.storage, registry: deps.registry }, options);
+    return runConsistencyCheck(
+      { storage: deps.storage, registry: deps.registry, keystore: deps.keystore },
+      options,
+    );
   }
 
   /**
@@ -2058,6 +2069,15 @@ interface SegmentParts {
   pinnedAt?: PinnedAt;
 }
 
+/** What {@link Segment.stat} answers: the generation a handle reads, its id count and its metadata. */
+export interface SegmentStat {
+  /** The generation read, or `null` when the segment has none. */
+  readonly generation: number | null;
+  readonly cardinality: number;
+  /** The metadata the generation was loaded with; absent when it has none. */
+  readonly metadata?: GenerationMetadata;
+}
+
 /** The store's one way to mint a {@link Segment}, bound by the class's static block. */
 let makeSegment: (parts: SegmentParts) => Segment;
 /** True only while {@link makeSegment} is constructing, so a `new Segment(...)` from plain JS is refused. */
@@ -2275,10 +2295,18 @@ export class Segment {
     return this.timed('has', () => this.engine.has(this.ref, id));
   }
   /**
-   * Cardinality — summed from the `.crbm` index with **zero payload reads** on a loaded segment.
+   * Cardinality of the generation this handle reads: **one registry read when cold, none when warm, and no read of the
+   * object**, with **zero payload reads**. The registry row records the id count of the generation it names, written
+   * by the write that made it current, and a count answers from that. A row with no summary it can use (one written
+   * before rows carried it, one that names another generation, a sealed one that does not open) sends the count to the
+   * `.crbm` index, summed with a tail read of the object. A segment whose pointer names a missing object (a torn
+   * restore) still counts the row's number, while a read of the object throws; `checkConsistency` is what finds it.
    *
-   * What this trusts: the answer is the sum of the per-chunk cardinalities the index records, and no payload is
-   * decoded to confirm it. The index is checked for internal consistency when the object is opened (each key in
+   * What this trusts: the row's summary, or the index's sum, and no payload is decoded to confirm it. The summary is
+   * used only for the generation it names, on an active row, and a sealed one only if it opens under the segment's
+   * key; it is held against the object whenever the object is opened anyway (a `has`, an `iterate`, a combine, a
+   * `pin()`), at no extra request, and a disagreement stops this store using it, and fails nothing. It is not
+   * confirmed on the cold path, so a party who can write the registry row can make a count wrong. The index is checked for internal consistency when the object is opened (each key in
    * range and ascending, each cardinality in `1..65536`, each payload inside the payload region, and, on an
    * unencrypted object, the footer's chunk count and total agreeing with the index), and a corrupt index that is
    * still internally consistent yields a wrong count. `iterate()` and the combines decode the payloads, whose
@@ -2287,6 +2315,24 @@ export class Segment {
   count(): Promise<number> {
     if (this.expired()) return Promise.resolve(0);
     return this.timed('count', () => this.engine.count(this.ref));
+  }
+  /**
+   * What the generation this handle reads is, from one resolution: its number, its id count and the metadata it
+   * was loaded with (absent when it has none). It is what answers {@link Segment.count}, so the three describe one
+   * generation and cannot straddle a publish. One registry read when cold, none while warm, and none on a pinned
+   * handle, which answers for the generation it pinned. A segment with no generation, and an expired handle,
+   * answer `{ generation: null, cardinality: 0 }`.
+   *
+   * Trust is as for `count()`: the registry row's word, not confirmed against the object until the object is
+   * opened, when a disagreement makes this process stop using that row's summary.
+   *
+   * ```ts
+   * const { generation, cardinality, metadata } = await store.segment('active-30d').stat();
+   * ```
+   */
+  async stat(): Promise<SegmentStat> {
+    if (this.expired()) return { generation: null, cardinality: 0 };
+    return this.engine.stat(this.ref);
   }
   /**
    * Every id, ascending, streamed one chunk at a time. Pass a range to read part of the segment: the ids in

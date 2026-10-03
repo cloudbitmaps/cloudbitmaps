@@ -88,6 +88,7 @@ export type {
   ClearRegistrySummary,
   SealedRegistrySummary,
   GenerationMetadata,
+  GenerationSummary,
   RegCaps,
   GovernanceMeta,
   SegmentSize,
