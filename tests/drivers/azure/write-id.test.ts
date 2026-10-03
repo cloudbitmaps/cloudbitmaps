@@ -232,7 +232,12 @@ describe('AzureBlobRegistryDriver write id', () => {
 
   it('a delete whose tombstone meets its own row is a success, written once', async () => {
     const c = new FakeContainer();
-    const reg = registryOver(c);
+    // A tombstone is a write, so it carries an id; a delete that removes the row writes nothing, so it is turned off.
+    const reg = new AzureBlobRegistryDriver({
+      containerClient: asClient(c),
+      now: () => 1,
+      conditionalDelete: false,
+    });
     await reg.create(ref, { currentGen: 0 });
     c.replayConflictAfterWrite = restErr(412, 'ConditionNotMet');
     await reg.delete(ref);

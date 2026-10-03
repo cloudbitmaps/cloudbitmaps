@@ -1,7 +1,13 @@
 import { PassThrough, Writable } from 'node:stream';
-import type { Storage } from '@google-cloud/storage';
-import { registryConformance, registryConcurrency } from '@/testing/conformance';
+import { Storage } from '@google-cloud/storage';
+import {
+  registryConformance,
+  registryConcurrency,
+  registryDeleteConformance,
+} from '@/testing/conformance';
 import { GcsRegistryDriver } from '@/gcs/registry';
+import { GcsStorage } from '@/gcs/backend';
+import { registryObjectKey } from '@/drivers/_shared/object-registry-keys';
 import { MAX_ROW_BYTES } from '@/drivers/_shared/object-registry';
 import { IntegrityError, ValidationError, WriteConflictError } from '@/core/errors';
 
@@ -36,6 +42,18 @@ class FakeGcs {
   private seq = 0;
   /** Counts read requests, to pin the round-trip cost of a read. */
   reads = 0;
+  /** Every delete received, with the generation it was conditioned on. */
+  readonly deletes: Array<{ name: string; ifGenerationMatch?: number }> = [];
+  /** Run just before the next delete is applied: another writer landing between the delete's read and it. */
+  beforeDelete: (() => Promise<void>) | undefined;
+
+  /** Put `text` at `name` as a new generation, as another writer left it. */
+  plant(name: string, text: string): void {
+    this.objects.set(name, {
+      bytes: new TextEncoder().encode(text),
+      generation: ++this.seq + 1_000,
+    });
+  }
 
   constructor(private readonly pageSize = Infinity) {}
 
@@ -70,6 +88,19 @@ class FakeGcs {
 
   private file(name: string): unknown {
     return {
+      delete: async (opts?: { ifGenerationMatch?: number }): Promise<void> => {
+        this.deletes.push({ name, ifGenerationMatch: opts?.ifGenerationMatch });
+        const hook = this.beforeDelete;
+        this.beforeDelete = undefined;
+        if (hook !== undefined) await hook();
+        const cur = this.objects.get(name);
+        if (cur === undefined) throw gcsError(404);
+        // GCS applies `ifGenerationMatch` on a delete: a generation that moved on is a 412.
+        if (opts?.ifGenerationMatch !== undefined && cur.generation !== opts.ifGenerationMatch) {
+          throw gcsError(412);
+        }
+        this.objects.delete(name);
+      },
       interceptors: [],
       createReadStream: (): PassThrough => {
         const out = new PassThrough();
@@ -149,6 +180,83 @@ registryConcurrency('GcsRegistryDriver (fake GCS)', () => {
   return [driverOver(storage), driverOver(storage)];
 });
 
+// What a delete leaves behind: on by default for a client on the public endpoint, which the fake is.
+for (const conditionalDelete of [undefined, false] as const) {
+  registryDeleteConformance(
+    `GcsRegistryDriver (fake GCS, conditionalDelete: ${String(conditionalDelete)})`,
+    () => {
+      const storage = new FakeGcs();
+      const driver = new GcsRegistryDriver({
+        storage: storage as unknown as Storage,
+        bucket: 'b',
+        prefix: 'cloudbitmaps',
+        now: ticking(),
+        ...(conditionalDelete === undefined ? {} : { conditionalDelete }),
+      });
+      return {
+        driver,
+        stored: async (r) => storage.objects.has(registryObjectKey('cloudbitmaps', r)),
+        plantRow: async (r, text) => storage.plant(registryObjectKey('cloudbitmaps', r), text),
+      };
+    },
+  );
+}
+
+describe('GcsRegistryDriver — whether a delete removes the row', () => {
+  const ref = { segment: 's:v1' };
+  const caps = (storage: Storage, conditionalDelete?: boolean) =>
+    new GcsRegistryDriver({
+      storage,
+      bucket: 'b',
+      ...(conditionalDelete === undefined ? {} : { conditionalDelete }),
+    }).capabilities().conditionalDelete;
+  const publicGcs = (): Storage => new Storage({ projectId: 'p' });
+  const emulator = (): Storage =>
+    new Storage({ projectId: 'p', apiEndpoint: 'http://127.0.0.1:4443' });
+
+  it('is on for the public endpoint and off for a custom one, such as an emulator', () => {
+    expect(caps(publicGcs())).toBe(true);
+    expect(caps(emulator())).toBe(false);
+  });
+
+  it("is the caller's to set either way, and GcsStorage passes it through", () => {
+    expect(caps(emulator(), true)).toBe(true);
+    expect(caps(publicGcs(), false)).toBe(false);
+    const built = new GcsStorage({ bucket: 'b', projectId: 'p', apiEndpoint: 'http://e:4443' });
+    expect(built.registry.capabilities().conditionalDelete).toBe(false);
+    const optedIn = new GcsStorage({
+      bucket: 'b',
+      projectId: 'p',
+      apiEndpoint: 'http://e:4443',
+      conditionalDelete: true,
+    });
+    expect(optedIn.registry.capabilities().conditionalDelete).toBe(true);
+    expect(() => caps(publicGcs(), 'yes' as never)).toThrow(ValidationError);
+  });
+
+  it('deletes with ifGenerationMatch set to the generation it read', async () => {
+    const storage = new FakeGcs();
+    const d = driverOver(storage);
+    const { token } = await d.create(ref, { currentGen: 0 });
+    const { key, object } = soleObject(storage);
+    await d.delete(ref, token);
+    expect(storage.deletes).toEqual([{ name: key, ifGenerationMatch: object.generation }]);
+    expect(storage.objects.size).toBe(0);
+  });
+
+  it('a 412 on the delete is a lost race: WriteConflictError, and the written row stays', async () => {
+    const storage = new FakeGcs();
+    const [a, b] = [driverOver(storage), driverOver(storage)];
+    const { token } = await a.create(ref, { currentGen: 0 });
+    let swapped = '';
+    storage.beforeDelete = async () => {
+      swapped = (await b.compareAndSwap(ref, token, { currentGen: 1 })).token;
+    };
+    await expect(a.delete(ref, token)).rejects.toBeInstanceOf(WriteConflictError);
+    expect(await a.get(ref)).toMatchObject({ currentGen: 1, token: swapped });
+  });
+});
+
 describe('GcsRegistryDriver — construction + GCS specifics', () => {
   const ref = { segment: 's:v1' };
 
@@ -176,6 +284,7 @@ describe('GcsRegistryDriver — construction + GCS specifics', () => {
     const storage = new FakeGcs() as unknown as Storage;
     expect(new GcsRegistryDriver({ storage, bucket: 'b' }).capabilities()).toEqual({
       strongRead: true,
+      conditionalDelete: true,
     });
   });
 

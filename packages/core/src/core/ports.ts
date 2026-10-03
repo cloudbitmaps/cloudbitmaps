@@ -310,11 +310,13 @@ export interface RegistryRecord extends SegmentRef {
   readonly createdAt: number;
   readonly updatedAt: number;
   /**
-   * Opaque OCC token — compare-by-equality, never reused (ABA-safe). A shipped registry gives no two writes under one
-   * name the same token: not two writes of this row, not a write of an earlier row under the name, and not a write
-   * after this row is restored from a backup. It holds with overwhelming probability rather than by construction,
-   * since the token carries random parts: an incarnation id drawn when the row is created, and a part drawn for each
-   * write. A bare decimal token, on a row no 0.12 or later registry has written, carries neither.
+   * Opaque OCC token — compare-by-equality, ABA-safe. A shipped registry gives no two writes under one name the same
+   * token: not two writes of this row, not a write of an earlier row under the name, and not a write after this row is
+   * restored from a backup. It holds by chance rather than by construction, since the token carries random parts: a
+   * 128-bit incarnation id drawn when the row is created, and a 64-bit part drawn for each write. Two incarnations of one
+   * name meet with probability 2^-128 for any pair (about n^2 / 2^129 among n of them), and two writes at one counter,
+   * after a restore, with probability 2^-64. A bare decimal token, on a row no 0.12 or later registry has written,
+   * carries neither part.
    */
   readonly token: Token;
 }
@@ -359,6 +361,18 @@ export interface RegCaps {
    * before it writes anything, rather than leave an object no row names. Absent means the registry can write.
    */
   readonly canWrite?: false;
+  /**
+   * `true` when this registry's `delete` removes a row from its backend for good, so that no later `list` reads it, and
+   * removes it only while it is still the exact version the delete read: by a delete the backend applies under a
+   * precondition (an S3 or Azure Blob ETag, a GCS object generation), or under a lock no other writer of the backend
+   * can take. Only a row whose token carries an incarnation id is removed so. A row first written by a release before
+   * 0.12 has a bare decimal token, and a delete still tombstones it: a process on that release, re-creating the name
+   * over nothing, would issue those counters again from 0, so its row could not be told apart from the deleted one.
+   *
+   * `false` or absent: every `delete` leaves a tombstone, which every later full `list` still reads. A shipped registry
+   * says which it is.
+   */
+  readonly conditionalDelete?: boolean;
 }
 
 /**
@@ -513,12 +527,13 @@ export function isStorageBackend(value: unknown): value is StorageBackend {
  * - **`create` and `compareAndSwap` are atomic conditional writes.** A `create` over a live row, and a
  *   `compareAndSwap` whose token is not the stored one, throw {@link WriteConflictError} and change nothing.
  *   Two racing writers have exactly one winner.
- * - **Tokens are never reused**, not even across `delete` then `create`: a recreated row always carries a token
- *   no earlier incarnation held, so a stale holder cannot swap into it. The shipped drivers draw a random 128-bit
- *   incarnation id into the token of every row they create and a random 64-bit part into the token of every write,
- *   beside a counter a tombstone (or a global counter) keeps going; where nothing of the earlier row is left, or the
- *   row is restored from a backup to an older counter, the random parts alone keep the tokens apart, with
- *   overwhelming probability.
+ * - **A token is not reused, not even across `delete` then `create`**, short of a collision of probability 2^-128 for
+ *   any two incarnations of one name: a recreated row carries a token no earlier incarnation held, so a stale holder
+ *   cannot swap into it. The shipped drivers draw a random 128-bit incarnation id into the token of every row they
+ *   create and a random 64-bit part into the token of every write, beside a counter a tombstone (or a global counter)
+ *   keeps going; where nothing of the earlier row is left, or the row is restored from a backup to an older counter, the
+ *   random parts alone keep the tokens apart: with probability 1 - 2^-128 per pair of incarnations, and 1 - 2^-64 per
+ *   pair of writes at one counter.
  * - **`delete` is idempotent** without an `expected` token: deleting an absent row is a no-op, not an error.
  *   **With `expected` it is fenced**: it lands only while the row still carries that token, and otherwise throws
  *   {@link WriteConflictError} and leaves the row.
@@ -556,7 +571,9 @@ export interface IRegistryDriver {
    */
   list(namespace?: string): AsyncIterable<RegistryRecord>;
   /**
-   * Remove the row (tombstoned for ABA-safety — a later `create` gets a token never issued before).
+   * Remove the row. A registry whose {@link RegCaps.conditionalDelete} is `true` removes a row whose token carries an
+   * incarnation id from its backend; every other row is tombstoned. Either way a later `create` gets a token no
+   * earlier incarnation of the name held, but for a collision of probability 2^-128 per pair of incarnations.
    *
    * Without `expected`, idempotent: deleting an absent row is a no-op.
    *

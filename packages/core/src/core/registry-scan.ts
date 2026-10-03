@@ -51,6 +51,12 @@ export async function drainRegistry(
      * one namespace, so it passes false and the refusal does not tell it to narrow what it cannot.
      */
     narrowable?: boolean;
+    /**
+     * Told of each bookkeeping row an unscoped scan skips, which the listing has already paid to read. Only the
+     * retention sweep uses it, to find the due-index pointers whose segment has no row. It is not counted against
+     * `maxScanSegments`, and a caller that holds the rows it is given bounds them itself.
+     */
+    onReserved?: (record: RegistryRecord) => void;
   },
 ): Promise<RegistryRecord[]> {
   const { maxScanSegments, op } = options;
@@ -66,7 +72,10 @@ export async function drainRegistry(
     // scan would otherwise pay a strong `get` per pointer row in `checkConsistency`, hand it to a retention
     // sweep, and inflate every fleet-wide count. A scope that names the reserved namespace never gets here: the
     // callers refuse it before they scan.
-    if (options.namespace === undefined && isReservedRow(rec)) continue;
+    if (options.namespace === undefined && isReservedRow(rec)) {
+      options.onReserved?.(rec);
+      continue;
+    }
     if (rows.length >= maxScanSegments) {
       throw new BudgetExceededError(
         `${op} would enumerate more than ${maxScanSegments} segments — the scan was abandoned there rather than ` +

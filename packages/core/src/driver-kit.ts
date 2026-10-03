@@ -27,7 +27,7 @@
  *    `getRange`/`getTail` throw `NotFoundError`; an out-of-range read throws `ValidationError`; `getTail` returns
  *    the true total size; `delete` is idempotent; `list` is strongly consistent, read-after-delete.
  *  - Registry: `create` and `compareAndSwap` are atomic conditional writes that throw `WriteConflictError` when
- *    they lose; tokens are never reused; `delete` is idempotent, and `delete(ref, expected)` lands only while the
+ *    they lose; a token is not reused (2^-128 per pair of incarnations of a name); `delete` is idempotent, and `delete(ref, expected)` lands only while the
  *    row still carries `expected`, else it throws `WriteConflictError`; `list` yields tombstones and every field.
  *  - Either: never replay a conditional write without telling the replay apart (send it once, or recognise your
  *    own write on the read-back), and raise a transient fault as `TransientError`.

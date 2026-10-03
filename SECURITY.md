@@ -179,7 +179,7 @@ produced the package they installed**. The controls:
 - **The published tarball is scanned, not just the source.** Before publishing, the release workflow packs each
   package, unpacks the `.tgz` and scans **what actually ships**
   ([`scripts/leak-scan-tarballs.cjs`](scripts/leak-scan-tarballs.cjs)) for credentials, private keys, real email
-  addresses and absolute local machine paths. This is deliberately a different surface from scanning the repo:
+  addresses, absolute local machine paths, AWS account ids and ARNs. This is deliberately a different surface from scanning the repo:
   `dist/` is gitignored, so a source-tree or git-history scan cannot see the majority of the published bytes —
   and the sourcemaps carry every `src` comment verbatim in `sourcesContent`. It runs **before** the publish
   because an npm tarball is immutable outside the 72-hour unpublish window; there is no fixing a string that

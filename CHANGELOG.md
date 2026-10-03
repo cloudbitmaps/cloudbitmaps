@@ -13,6 +13,15 @@ so, and so do the module headers in the code.
 
 ### Breaking
 
+- **A registry needs permission to delete under its own prefix: its deletes now remove rows.** Where the backend's
+  `conditionalDelete` is on (below), every registry delete of a row created by 0.12, the retention sweep's purge of a
+  tombstone among them, is a delete under a precondition, where it was an overwrite with a tombstone: `DeleteObject` on
+  S3, an object delete on GCS, Delete Blob on Azure. A policy that lets the backend delete only under the segments'
+  prefix makes each such delete fail with the provider's access error: a purge then leaves the row and reports the
+  error in its ledger entry, and the due index keeps a pointer it meant to remove. Grant `s3:DeleteObject`,
+  `storage.objects.delete` or a role that may delete blobs on `<prefix>registry/`, or set `conditionalDelete: false`
+  on the backend to keep writing tombstones. A refused purge does not hold the sweep up: see `purgeFaults`, below.
+
 - **A byte array passed as ids is refused: `store.load` and `loadSegment` throw `ValidationError` for a `Uint8Array`,
   a `Uint8ClampedArray` or a `Buffer` where ids go**, before any request. A byte array is an iterable of numbers, so
   until now each byte was loaded as an id: `store.load(ref, bitmap.serialize('portable'))` published the
@@ -43,8 +52,9 @@ so, and so do the module headers in the code.
 - **A registry token is now `<incarnation>.<counter>.<write>`, and no two writes under a name are given the same
   one.** The incarnation is a 128-bit id as 32 lowercase hex digits, drawn from the platform's Web Crypto when a row
   is created; the counter advances on every write and carries on across a tombstone; the write part is 64 bits as 16
-  lowercase hex digits, drawn for every write. Both random parts make the tokens unique with overwhelming
-  probability, where a counter alone was not:
+  lowercase hex digits, drawn for every write. Both random parts make the tokens unique by chance, where a counter alone was not: two
+  incarnations of one name meet with probability 2^-128 for any pair (about n² / 2^129 among n of them), and two writes
+  at one counter after a restore with probability 2^-64:
   - once a row's object was gone entirely (a tombstone removed by an object-store delete or a lifecycle rule), a
     re-create restarted its counter at 0 and re-issued the earlier row's tokens. A warm store at the same generation
     took the new row for the old one and kept serving the deleted ids; a publish fenced on a token read from the
@@ -90,6 +100,36 @@ so, and so do the module headers in the code.
   authenticated, and the row's sealed summary is the copy that says there was one. `LoadOptions.metadata`,
   `MaterializeOptions.metadata`; `GenerationListDeps.keystore` for `rollbackSegment`. This build writes the metadata and
   the summary; reading them back through the API is the next piece.
+- **The due index carries a pointer to each retirement's tombstone, so `scan: 'index'` purges as well as retires, on a
+  registry that reports `conditionalDelete`.** A retirement files it under the day the tombstone's grace ends, its
+  stamp plus `tombstoneGraceMs`; no field of the row records that day. An index scan reads it back with the expiry
+  pointers and hands the row to the same purge the fleet scan runs, which removes every pointer it read to the row,
+  once the row is gone, and never after a delete whose outcome is unknown. A registry that only tombstones files none,
+  since nothing it purges is removed for good: there the fleet scan purges, and what a retirement and a purge cost is
+  what it was. Per segment, counted with a store that counts requests: a retirement is 9 reads, 3 writes and a delete
+  with the pointer where it was 8 reads and 3 writes (one read and one delete more), and a purge is 4 reads and 2
+  deletes where it was 3 reads and a write (one read and two deletes more, a write fewer). On S3 a delete is not
+  billed and a tombstone's write is.
+
+- **`RegCaps.conditionalDelete`, and a `conditionalDelete` option on `S3Storage`, `GcsStorage` and
+  `AzureBlobStorage` and their registry drivers.** `true` says a registry's `delete` removes a row from its backend for
+  good, only while the row is still the version the delete read, so a full `list` no longer reads it; `false` or
+  absent, every delete leaves a tombstone. The cloud registries remove a row with `DeleteObject` under `If-Match` (sent
+  once, like the S3 writes), a GCS delete under `ifGenerationMatch`, and Delete Blob under `ifMatch`, each set to the
+  version the registry read; a precondition that no longer holds, or an object already gone, is a
+  `WriteConflictError`, and the registry re-reads. The option defaults to `true` for Azure Blob, for GCS on its public endpoint, and for an
+  S3 client whose resolved host is an AWS S3 host, and to `false` for a GCS client with an endpoint of its own and an S3
+  client that sends anywhere else: MinIO and fake-gcs-server accept the precondition on a delete and ignore it, and on
+  such a store two sweepers and a re-create of the name could delete a live row. The S3 host is the one the SDK
+  resolves, so an endpoint set by `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL` or an `endpoint_url` in the shared config
+  file counts as a constructor `endpoint` does, and an AWS regional, FIPS, dual-stack or VPC interface host is AWS. It is
+  read from the client once, before the registry's first request, without sending one; until then
+  `capabilities().conditionalDelete` reads `false` unless the option is set. A value that is not a boolean is refused with
+  `ValidationError`. The in-memory and local-filesystem registries report `true`. For driver authors,
+  `ObjectRegistryStore` may implement `delete(key, { version })` and set `conditionalDelete: true` to say its backend
+  applies the precondition; with both, `ObjectStoreRegistry` removes rows rather than tombstoning them. Whether real S3
+  and real GCS refuse a stale precondition is checked by `tests/integration/real-cloud-conditional-delete.test.ts`
+  against named buckets, skipped otherwise, which is a gate for this release.
 
 - **`readTimeoutMs` on `GcsStorage` cuts off a GCS read that stalls; it is off unless you set it.** A client's own
   `timeout` does not bound a download on `@google-cloud/storage` 8.x, so a read whose server stops answering waited
@@ -271,6 +311,45 @@ so, and so do the module headers in the code.
   Repair with `allowEmpty: true` or without `minRetained`.
   The calibration harness expects a reload of 2 and 3, a listing load of 3 and 6, and its report says so.
 
+- **`retireExpired` counts the deletes the registry refuses, and a refused purge no longer holds the retirements behind
+  it.** `RetireExpiredResult` gains `purgeFaults`, the number of purges and due-index pointer removals refused for a
+  reason other than a lost race (a policy that denies delete, an Azure blob with a snapshot, which answers `409
+  SnapshotsPresent`, any raw provider error), and `firstPurgeFault`, the first one's ledger reason. A refused purge was
+  charged to `limit`, so with `limit` or more stuck tombstones ahead of them in scan order every call spent its whole
+  budget on purges that could not succeed and no expired segment was retired; one refused purge now costs nothing
+  against `limit`, and retirements go on. Purging stops for the rest of the call after three refused purges in a row, and
+  a purge that succeeds starts the count again, so a blanket refusal costs three attempts a call and a refusal particular
+  to one row holds nothing behind it. Its ledger entry stays `skipped`, with the provider's message, and the next call
+  tries again. Pointer removals the sweep makes and the
+  registry refuses used to leave no trace at all. A lost race (`failed: contended`) is not a fault, and is charged to
+  `limit` as before.
+
+- **The local-filesystem registry unlinks a deleted row born with an incarnation id**, under the row's lock, and
+  tombstones one a release before 0.12 wrote.
+
+- **The retention sweep removes a due-index pointer whose segment has no row**, where an index scan skipped it on every
+  scan that read its day and a fleet scan never could. An index scan removes it from the days it reads. An **unscoped**
+  fleet scan (no `namespace`) now keeps the pointers its listing already reads, and removes a pointer to nothing from
+  every day, and the purge removes every pointer it read to the row: a pointer survives a purge that ran with another
+  `tombstoneGraceMs` than the sweep that filed it, a delete that landed and lost its response, and a day older than
+  `lookbackBuckets`, and its key spells out the namespace and segment name. A removal re-reads the segment, is fenced
+  on the pointer's token, covers the sweep's own shards, never runs under `dryRun`, and is bounded: at most `limit`
+  pointers per call, each costing four reads and a delete from an index scan (the listing's read of the pointer
+  included) and two reads and a delete beyond the listing's from a fleet scan. A scan limited to a `namespace` lists no
+  pointers and removes none. A registry that only tombstones does none of this, since a removed pointer would stay as a
+  tombstone every scan reads.
+
+- **The retention sweep's purge removes a tombstone's row for good, where the registry reports
+  `conditionalDelete`.** It used to rewrite the row as a tombstone that every later full listing read, so a sweep of a
+  namespace that churns short-lived segments made one registry read for every name the namespace had ever held. It
+  now makes one for each segment that is live or inside its grace: after 10,000 segments are created, retired and
+  purged, a namespace-scoped or unscoped sweep makes one registry read, for the one live row, where it made 10,001 or
+  20,001. The delete is fenced on the token the purge judged and applied by the store only to the version it read, so
+  a write or a re-create of the name that lands first makes it fail (`failed: contended` in the ledger) and leaves the
+  newer row. A row written by a release before 0.12 is still tombstoned: its token is a bare counter, and a process on
+  that release re-creating the name over nothing would issue those counters again. Tombstones already in a bucket
+  stay. Every registry `delete` follows the same rule, so a due-index pointer a retirement or a `setRetention` removes
+  is removed for good too.
 - **A write-once object that S3 or GCS throttles is sent again, and a registry write that gets no answer is settled by
   reading the row, and sent again from it if nothing changed.** A load that met a throttle on its object, or a response
   lost on its row, failed with `TransientError`, and a failure on the row left the caller guessing whether it had landed.
@@ -464,6 +543,18 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **The S3 registry no longer assumes the SDK sends the headers it relies on.** Its create sends `If-None-Match` and its
+  compare-and-swap `If-Match` on `PutObject`, and its conditional delete sends `If-Match` on `DeleteObject`. An
+  `@aws-sdk/client-s3` whose model lacks a member drops it from the request without a word, so on such an SDK a
+  compare-and-swap lands as a plain overwrite and a concurrent writer's change is lost with no error, and a conditional
+  delete removes whatever is there. The raised SDK floor (the next entry) keeps an install off an SDK that lacks `If-Match`, but a
+  `client` the caller passes, or an SDK a package manager pins, can still be older than 3.700.0 (3.698.0 for
+  `DeleteObject`). Before its first request the registry now serialises each of the three
+  through a second client built from its configuration, sending nothing and running none of the caller's own
+  middleware, and refuses a write the SDK would send without its precondition
+  (`ValidationError` naming the header; upgrade `@aws-sdk/client-s3`), and leaves a row tombstoned when a `DeleteObject`
+  would go out without `If-Match`, whatever `conditionalDelete` says. A client it cannot read (a test double) is not
+  refused.
 - **A load whose Azure Blob registry write landed, and then had another write land on top of it, is published, not
   `superseded`.** A write the client sent again reads the blob back to tell its replay from a conflict, and a row is
   overwritten by compare-and-swap, so another writer's write on top (a retention change, say) made the load's own write

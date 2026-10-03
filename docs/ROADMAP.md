@@ -176,8 +176,12 @@ is a dependency of both and is never installed directly. The storage drivers are
   current generation) moves on every load — a daily bucket reloaded each morning would have its expiry pushed
   forward by the very refresh meant to keep it current. The sweep is bounded (`limit`, `maxScanSegments`),
   previewable (`dryRun`), shardable across replicas, reports a per-segment ledger instead of throwing, and
-  cleans up the tombstone rows its own retirements leave. Setting a policy before the first load mints the
-  registry row, so the policy is recorded ahead of the data.
+  purges the tombstone rows its own retirements leave. On a registry that can delete a row only while it is
+  unchanged (S3 when its client sends to an AWS S3 host, GCS and Azure Blob by default, by `If-Match` /
+  `ifGenerationMatch`), the purge removes the row for good, so a full sweep reads what is live and inside its grace
+  rather than every name a namespace ever held, and `scan: 'index'` purges as well as retires, by a pointer each
+  retirement files under the day its tombstone's grace ends. A refused delete is counted (`purgeFaults`) and holds no
+  retirement back. Setting a policy before the first load mints the registry row, so the policy is recorded ahead of the data.
 - **Supply chain** — every third-party GitHub Action SHA-pinned, a blocking dependency audit, npm **build provenance**
   on publish, and continuous coverage-guided fuzzing over the untrusted-`.crbm` boundary (nightly, plus a
   weekly deep run).
@@ -261,9 +265,13 @@ between here and there:
    run's committed results file. **No latency figure is published**: the run was driven from a laptop outside the
    region, so it calibrates cost only. What remains: an **in-region** run for
    latency and load throughput, which `bash bench/calibrate-cloudshell.sh` makes from AWS CloudShell; what
-   `store.load()` costs on S3, since the run measured the write and the publish; and a
+   `store.load()` costs on S3, since the run measured the write and the publish; a
    **Lambda** run for the serverless figure with cold-start and init included, which needs a run from inside a
-   function. [`bench/README.md`](../bench/README.md#real-cloud-calibration) describes the harness.
+   function; and, before the release that turns the registry's conditional delete on by default, a probe that real
+   S3 and real GCS refuse a delete whose precondition no longer holds
+   (`tests/integration/real-cloud-conditional-delete.test.ts`, skipped unless a bucket is named), since the emulators
+   the integration lane runs ignore it, and that a name the registry removed can be created again over the delete
+   marker a versioned bucket leaves (its versioned run). If either does not, its default goes off before the cut. [`bench/README.md`](../bench/README.md#real-cloud-calibration) describes the harness.
 2. **Loaded-store benchmarks — partly owed.** Load throughput (ids/s and bytes/s into the bucket, single-part
    and multipart) and `intersect` / `*Into` latency by operand count and chunk overlap are still owed, both
    against a real object store from inside the region. The calibration harness above covers load throughput and a
@@ -309,7 +317,9 @@ between here and there:
    refuses the flag); a generation without metadata is the same bytes as before.
 8. **Adoption feedback** — real deployments finding the sharp edges that our own tests don't.
 9. **Closing the named deferrals:** self-healing disaster recovery, an exclusion predicate on the retention
-   sweep (legal hold), an automated reconcile of unstamped tombstones, and a `rollback` that opens its target
+   sweep (legal hold), an automated reconcile of unstamped tombstones, a cleanup of the tombstones a registry
+   already holds (each still read by every full listing, and safe to remove once no process on a release before 0.12
+   is left), an unscoped listing that skips the due index's pointers before reading them, and a `rollback` that opens its target
    before it moves the pointer. It checks that the object is in the bucket, and from its footer that it is encrypted
    exactly when the row has keys, so on an encrypted segment it can still move onto a generation a first load wrote
    and never published, sealed under a key the registry never stored, which then fails every read and which

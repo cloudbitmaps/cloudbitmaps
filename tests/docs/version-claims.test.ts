@@ -106,6 +106,12 @@ const FOREIGN_VERSIONS = new Map<string, string>([
       'it and every version before. A third-party version, not a claim about our release',
   ],
   [
+    '3.698.0',
+    'the first @aws-sdk/client-s3 version whose DeleteObject serializer sends If-Match, named in the production guide as ' +
+      'the header the registry checks for before it removes a row with a conditional delete. A third-party version, not ' +
+      'a claim about our release',
+  ],
+  [
     '3.700.0',
     "the floor of @cloudbitmaps/s3's dependency on @aws-sdk/client-s3, in that package's README. It is a " +
       'correctness floor, not a preference: an SDK drops a conditional header it does not model, and up to ' +

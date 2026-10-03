@@ -82,6 +82,14 @@ export interface S3StorageOptions {
   readonly readTimeoutMs?: number;
   /** Injected clock for the registry's `createdAt`/`updatedAt`; defaults to `Date.now`. */
   readonly now?: () => number;
+  /**
+   * Whether the registry removes a deleted row for good, by a `DeleteObject` sent with `If-Match`, rather than leaving
+   * a tombstone a full listing reads forever. Defaults to `true` when the host the client resolves is an AWS S3 host,
+   * whichever way its endpoint was set (`endpoint`, `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL`, the shared config file),
+   * and to `false` for any other host: set it for an S3-compatible store only once you know the store applies `If-Match`
+   * on a delete. MinIO, for one, ignores it. It is never `true` for an SDK that does not send the header.
+   */
+  readonly conditionalDelete?: boolean;
 }
 
 /**
@@ -101,6 +109,7 @@ export const S3_STORAGE_OPTION_KEYS = [
   'partBytes',
   'readTimeoutMs',
   'now',
+  'conditionalDelete',
 ] as const;
 
 /** The settings that build a client, which a supplied `client` already carries and so cannot be given beside. */
@@ -173,6 +182,9 @@ export class S3Storage implements StorageBackend {
     this.registry = new S3RegistryDriver({
       ...shared,
       ...(options.now === undefined ? {} : { now: options.now }),
+      ...(options.conditionalDelete === undefined
+        ? {}
+        : { conditionalDelete: options.conditionalDelete }),
     });
     brandAsBackend(this);
   }

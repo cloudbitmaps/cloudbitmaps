@@ -2,9 +2,10 @@
  * `LocalFsRegistryDriver` — a zero-cloud, persistent {@link IRegistryDriver}.
  *
  * One JSON file per segment at `<root>/<namespace>/registry/<segment>.reg`, holding `{ deleted, record }`.
- * OCC: the token is a random incarnation id drawn when the row is created, a counter advanced on every mutation and
- * even across a `delete` (which **tombstones** rather than unlinks), and a random part drawn for every write, so a
- * deleted-then-recreated row, or one restored from a backup, never re-issues an old token (ABA-safe). Every write is temp → fsync(file) → atomic rename → fsync(dir), and
+ * OCC: the token is a random incarnation id drawn when the row is created, a counter advanced on every mutation, and a
+ * random part drawn for every write, so a deleted-then-recreated row, or one restored from a backup, never re-issues an
+ * old token (ABA-safe). A `delete` unlinks a row born with an incarnation id, and **tombstones** one a release before
+ * 0.12 wrote, whose bare counter a re-create carries on. Every write is temp → fsync(file) → atomic rename → fsync(dir), and
  * read-modify-write is serialized per row across the whole process (the lock is keyed by the row's resolved
  * path, so every instance on one root shares it). A root is for one process: two processes on one root are not
  * fenced. Drivers do I/O; only `core/` is bound by determinism.
@@ -26,6 +27,7 @@ import type {
 } from '@/core/ports';
 import {
   applyRegistryPatch,
+  incarnationOf,
   newIncarnationToken,
   nextRegistryToken,
   parseRegistryEnvelope,
@@ -93,10 +95,14 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
     this.entropy = options.entropy ?? webCryptoEntropy;
   }
 
+  /**
+   * `conditionalDelete`: a delete reads the row, checks it, and unlinks it under the row's lock, which every writer on
+   * the root in this process takes, so no write can land between the check and the unlink.
+   */
   capabilities(): RegCaps {
     return entropyIsAvailable(this.entropy)
-      ? { strongRead: true }
-      : { strongRead: true, canWrite: false };
+      ? { strongRead: true, conditionalDelete: true }
+      : { strongRead: true, canWrite: false, conditionalDelete: true };
   }
 
   async get(ref: SegmentRef): Promise<RegistryRecord | null> {
@@ -171,10 +177,26 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
       } else if (current === null || current.deleted) {
         return; // idempotent
       }
-      // Tombstone (advance the counter) rather than unlink, so a re-create carries the counter on (ABA-safety).
+      if (incarnationOf(current.record.token) !== undefined) {
+        // Born with an incarnation id: a re-create draws a new one, so the file can go.
+        await this.unlinkRow(path);
+        return;
+      }
+      // A row a release before 0.12 wrote: tombstone it (advance the counter) rather than unlink, so a re-create
+      // carries the counter on, and a process still on that release cannot re-issue its tokens from 0.
       const token = nextRegistryToken(current.record, this.entropy);
       await this.writeRow(path, true, { ...current.record, token, updatedAt: this.now() });
     });
+  }
+
+  /** Remove a row's file and make the removal durable (fsync the directory). */
+  private async unlinkRow(path: string): Promise<void> {
+    try {
+      await unlink(path);
+    } catch (err) {
+      if (!isCode(err, 'ENOENT')) throw mapFsError(err);
+    }
+    await fsyncDir(dirname(path));
   }
 
   /** Namespaces to scan: just the one requested, or every namespace dir under the root. */

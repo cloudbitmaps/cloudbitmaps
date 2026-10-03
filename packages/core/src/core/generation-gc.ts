@@ -174,7 +174,7 @@ export async function gcOrphanGenerations(
   if (after === null)
     throw new WriteConflictError(`registry row for segment ${ref.segment} was purged mid-pass`);
 
-  // On a tombstone, require the *same* row. A token is never reused (ABA-safe), so an unchanged one proves the
+  // On a tombstone, require the *same* row. A token is not reused (ABA-safe, 2^-128 per pair of incarnations), so an unchanged one proves the
   // segment was not purged and re-created underneath this pass — which matters here because this branch deletes
   // every object it enumerated, `currentGen` included, so a re-created segment would lose the generation its
   // new pointer names.

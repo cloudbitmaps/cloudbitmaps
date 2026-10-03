@@ -4,8 +4,9 @@
  * Lets an **Azure deployment run on one container alone** — storage `.crbm` generations and the registry in the
  * same place, with no second cloud involved.
  *
- * The protocol (an ABA-safe OCC counter, tombstoning delete, the bounded retry, the key layout) lives once
- * in {@link ObjectStoreRegistry}; this file is only the three I/O calls Azure makes.
+ * The protocol (an ABA-safe OCC token, the delete and its tombstone, the bounded retry, the key layout) lives once
+ * in {@link ObjectStoreRegistry}; this file is only the I/O calls Azure makes. A delete removes a row for good with a
+ * Delete Blob under `ifMatch: <etag>`, unless `conditionalDelete` is turned off.
  *
  * **The atomic swap is offloaded to Azure's blob conditions**: `ifNoneMatch: '*'` is create-only and
  * `ifMatch: <etag>` is compare-and-swap — the same pair S3 spells `If-None-Match: *` / `If-Match: <etag>`,
@@ -27,8 +28,8 @@
  * - The principal needs read, write and list on the container (`Storage Blob Data Contributor` covers it).
  * - **Do not apply a lifecycle-management rule to the `registry/` prefix that deletes a current blob** (one that
  *   deletes only previous versions is safe), and do not enable an immutability
- *   policy or legal hold on it: `delete` tombstones by overwriting rather than removing, for ABA-safety, so a
- *   WORM policy would fail every tombstone. See {@link ObjectStoreRegistry}.
+ *   policy or legal hold on it: a WORM policy would fail every row delete and every tombstone, which overwrites the
+ *   blob. See {@link ObjectStoreRegistry}.
  * - Blob versioning and soft delete are neither required nor used; the driver always reads the current blob.
  */
 import {
@@ -36,12 +37,18 @@ import {
   MAX_ROW_BYTES,
   ObjectStoreRegistry,
   TransientError,
+  ValidationError,
   WriteConflictError,
   normalizeObjectPrefix,
 } from '@cloudbitmaps/core/driver-kit';
 import type { ObjectRegistryStore, ObjectRow } from '@cloudbitmaps/core/driver-kit';
 import type { BlobDownloadResponseParsed, ContainerClient } from '@azure/storage-blob';
-import { isConditionalConflict, isNotFound, isTransient } from './azure-errors';
+import {
+  isConditionalConflict,
+  isNotFound,
+  isPreconditionFailed,
+  isTransient,
+} from './azure-errors';
 import { resolveReadTimeoutMs, timedRead } from './read-timeout';
 import { newWriteId, storedWriteId, writeIdMetadata } from './write-id';
 
@@ -58,15 +65,22 @@ export interface AzureBlobRegistryDriverOptions {
    * listings are not timed. `0`, the default, sets no timeout; an integer from 0 to 2,147,483,647.
    */
   readonly readTimeoutMs?: number;
+  /**
+   * Whether a delete removes a row for good, by a Delete Blob sent with `ifMatch: <the ETag it read>`, rather than
+   * leaving a tombstone. Only a row born with an incarnation id is removed; a row a release before 0.12 wrote is
+   * always tombstoned. Defaults to `true`: Azure Blob applies `If-Match` on a delete, and Azurite does too.
+   */
+  readonly conditionalDelete?: boolean;
 }
 
-/** The three calls {@link ObjectStoreRegistry} needs, in Azure's dialect. */
-class AzureBlobStore implements ObjectRegistryStore {
+/** The calls {@link ObjectStoreRegistry} needs, in Azure's dialect. Exported for the tests that drive one directly. */
+export class AzureBlobRegistryStore implements ObjectRegistryStore {
   readonly label = 'Azure Blob';
 
   constructor(
     private readonly container: ContainerClient,
     private readonly readTimeoutMs: number,
+    readonly conditionalDelete: boolean,
   ) {}
 
   async read(key: string): Promise<ObjectRow | null> {
@@ -124,6 +138,23 @@ class AzureBlobStore implements ObjectRegistryStore {
       }
       if (stored === writeId) return;
       throw new WriteConflictError(`registry OCC conflict for ${key}`);
+    }
+  }
+
+  async delete(key: string, expect: { version: string }): Promise<void> {
+    try {
+      // The client's retry policy may send this again after a lost response. The precondition names one ETag, so a
+      // second copy removes nothing the first could not; one that meets the first's landed delete is a 404, a
+      // conflict, and the registry re-reads and finds the row gone.
+      await this.container
+        .getBlockBlobClient(key)
+        .delete({ conditions: { ifMatch: expect.version } });
+    } catch (err) {
+      // A 412 (the blob moved on) or a 404 (it is gone): the version to delete is not there.
+      if (isPreconditionFailed(err) || isNotFound(err)) {
+        throw new WriteConflictError(`registry OCC conflict deleting ${key}`);
+      }
+      throw mapError(err);
     }
   }
 
@@ -250,10 +281,23 @@ function mapError(err: unknown): unknown {
   return err;
 }
 
+/** {@link AzureBlobRegistryDriverOptions.conditionalDelete}, checked, or its default (on). */
+function resolveConditionalDelete(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (typeof value !== 'boolean') {
+    throw new ValidationError(`conditionalDelete must be a boolean; got ${String(value)}`);
+  }
+  return value;
+}
+
 export class AzureBlobRegistryDriver extends ObjectStoreRegistry {
   constructor(options: AzureBlobRegistryDriverOptions) {
     super(
-      new AzureBlobStore(options.containerClient, resolveReadTimeoutMs(options.readTimeoutMs)),
+      new AzureBlobRegistryStore(
+        options.containerClient,
+        resolveReadTimeoutMs(options.readTimeoutMs),
+        resolveConditionalDelete(options.conditionalDelete),
+      ),
       normalizeObjectPrefix(options.prefix),
       options.now ?? ((): number => Date.now()),
     );
