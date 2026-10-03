@@ -427,20 +427,23 @@ versioning on, until a noncurrent-version rule expires it, and with soft delete 
 default for a new bucket, 7 days; Azure Blob, where enabled. [`PRIVACY.md`](../../PRIVACY.md) says what a row holds), with a delete the store applies only to the version the sweep judged: S3
 `DeleteObject` with `If-Match`, GCS with `ifGenerationMatch`, Azure Blob with `ifMatch`. The registry says which it is:
 `backend.registry.capabilities().conditionalDelete`. It is on by default for S3 when the host the client resolves is an
-AWS S3 host, for GCS on its public endpoint, for Azure Blob, and for the local-filesystem and in-memory backends. A full sweep then reads what is live and what is
+AWS S3 host, for Azure Blob, and for the local-filesystem and in-memory backends. A full sweep then reads what is live and what is
 inside its grace, not every name the namespace ever held: after 10,000 short-lived segments are created, retired and
 purged, a sweep of that namespace makes one registry read, for the one segment still live.
 
 Where the registry cannot, the purge leaves a small tombstone in the row's place, and every later full sweep reads it,
 one request per row. That is the case:
 
-- on an S3 client that sends to a host other than AWS S3 (MinIO, Ceph, R2) and a GCS client with a custom `apiEndpoint`,
-  by default. Such a store may accept the precondition and ignore it, and MinIO and fake-gcs-server both do: there, a
-  delete conditioned on a version that has moved on deletes anyway, and two sweepers and a re-create of the name could
-  delete a live row. Set `conditionalDelete: true` on the backend only once you know your store applies it. For S3 the
-  host is the one the SDK resolves, however the endpoint was set: a constructor `endpoint`, `AWS_ENDPOINT_URL_S3`,
-  `AWS_ENDPOINT_URL` or an `endpoint_url` in the shared config file. An AWS regional, FIPS, dual-stack or VPC interface
-  endpoint is an AWS S3 host, and AWS S3 applies the precondition there;
+- on an S3 client that sends to a host other than AWS S3 (MinIO, Ceph, R2), by default. Such a store may accept the
+  precondition and ignore it, and MinIO does: there, a delete conditioned on a version that has moved on deletes
+  anyway, and two sweepers and a re-create of the name could delete a live row. Set `conditionalDelete: true` on the
+  backend only once you know your store applies it. The host is the one the SDK resolves, however the endpoint was set:
+  a constructor `endpoint`, `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL` or an `endpoint_url` in the shared config file.
+  An AWS regional, FIPS, dual-stack or VPC interface endpoint is an AWS S3 host, and AWS S3 applies the precondition
+  there;
+- on a GCS client, by default, the public endpoint included: whether real GCS applies `ifGenerationMatch` to a delete
+  has not been verified by a run against the service, and fake-gcs-server accepts the precondition and ignores it, so
+  CI cannot show it. Set `conditionalDelete: true` to remove rows for good;
 - with `conditionalDelete: false` on any backend;
 - for a row written by a release before 0.12, always. Its token is a bare counter, and a process still on that
   release, re-creating the name over nothing, would start the counter at 0 again and issue the deleted row's tokens,

@@ -64,8 +64,9 @@ export interface GcsStorageOptions {
   readonly readTimeoutMs?: number;
   /**
    * Whether the registry removes a deleted row for good, by an object delete sent with `ifGenerationMatch`, rather
-   * than leaving a tombstone a full listing reads forever. Defaults to `true` on the public endpoint and to `false`
-   * with a custom `apiEndpoint`: fake-gcs-server, for one, ignores the precondition on a delete.
+   * than leaving a tombstone a full listing reads forever. Defaults to `false`, on the public endpoint too: whether real
+   * GCS applies `ifGenerationMatch` to a delete has not been verified by a run against the service, and fake-gcs-server
+   * accepts the precondition and ignores it, so CI cannot show it. Set `true` to remove rows for good.
    */
   readonly conditionalDelete?: boolean;
 }
