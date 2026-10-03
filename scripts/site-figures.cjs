@@ -126,6 +126,22 @@ if (calibrationRuns.length === 0) {
     fail(err.message);
   }
 }
+/**
+ * The anchors a run's loads have: the write and publish and a segment's first `store.load()` for a run that timed the
+ * write and publish, and the single-part and multipart `store.load()` for a run that timed that.
+ */
+const LOAD_ANCHORS =
+  singleBucket !== null && singleBucket.loadVia !== null
+    ? {
+        single: 'per million single-part store.load() calls',
+        multipart: 'per million multipart store.load() calls',
+        first: null,
+      }
+    : {
+        single: 'per million single-part write-and-publishes',
+        multipart: 'per million multipart write-and-publishes',
+        first: "per million of a segment's first store.load()",
+      };
 /** One of the run's anchors, by the name calibration-figures gives it. A name it no longer has is a failure. */
 const singleBucketFigure = (name) => {
   if (singleBucket === null) return null;
@@ -307,15 +323,11 @@ const anchors = [
     'single-bucket · 1M cold intersects, each pointer read once',
     singleBucketFigure('per million cold intersects with each pointer read once'),
   ],
-  [
-    'single-bucket · 1M writes and publishes',
-    singleBucketFigure('per million single-part write-and-publishes'),
-  ],
-  ['single-bucket · 1M multipart', singleBucketFigure('per million multipart write-and-publishes')],
-  [
-    'single-bucket · 1M first store.load()s',
-    singleBucketFigure("per million of a segment's first store.load()"),
-  ],
+  ['single-bucket · 1M single-part loads', singleBucketFigure(LOAD_ANCHORS.single)],
+  ['single-bucket · 1M multipart', singleBucketFigure(LOAD_ANCHORS.multipart)],
+  ...(LOAD_ANCHORS.first === null
+    ? []
+    : [['single-bucket · 1M first store.load()s', singleBucketFigure(LOAD_ANCHORS.first)]]),
   ['single-bucket · the whole run', singleBucketFigure('the run')],
 ];
 
@@ -341,7 +353,7 @@ const anchors = [
 // nothing else checks them.
 const MEASURED_1M = 'per million cold intersects, measured';
 const EXPECTED_1M = 'per million cold intersects with each pointer read once';
-const WRITE_1M = 'per million single-part write-and-publishes';
+const WRITE_1M = LOAD_ANCHORS.single;
 const PAGES = [
   // `mustState` names the latest run's figures a page quotes, so that replacing one — a load row that turns into
   // a per-PUT $5, say — fails even where the replacement is a value some source accounts for.
@@ -423,9 +435,9 @@ const RUN_TRIGGERS = [
   'per million cold intersects, measured',
   'GETs a cold intersect makes with each pointer read once',
   'per million cold intersects with each pointer read once',
-  'per million single-part write-and-publishes',
-  'per million multipart write-and-publishes',
-  "per million of a segment's first store.load()",
+  LOAD_ANCHORS.single,
+  LOAD_ANCHORS.multipart,
+  ...(LOAD_ANCHORS.first === null ? [] : [LOAD_ANCHORS.first]),
   'the run',
   'cold intersects the Redis line buys a month',
   'loads the Redis line buys a month',
