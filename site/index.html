@@ -180,7 +180,7 @@
             <div class="bills-grid">
               <div class="bill is-win">
                 <span class="label">CloudBitmaps</span>
-                <span class="bill-fig">$82.40</span>
+                <span class="bill-fig">$81.60</span>
                 <span class="bill-cap"
                   >per 1M cold A&nbsp;∩&nbsp;B sharing 100 chunks, from a run on S3<small
                     >cold: nothing cached · metered — no reads, no read charge</small
@@ -213,8 +213,8 @@
               cheaper
             </p>
             <p class="panel-row is-pair">
-              <span>Writing and publishing a segment, pointer included, with <span class="m">store.load()</span>
-                about a tenth more on average</span><span>$11.20&nbsp;per&nbsp;1M</span>
+              <span>Loading a segment with <span class="m">store.load()</span>,
+                pointer included</span><span>$11.60&nbsp;per&nbsp;1M</span>
             </p>
             <p class="link-row"><a href="benchmarks.html">Method, the crossover and caveats →</a></p>
           </aside>
@@ -375,16 +375,16 @@
 
                  The p99 item says the limit is the tail, not the working set: our cache IS in-process
                  RAM, so on a hit there is nothing between us. It carries no speed-up factor and no
-                 p50/p99 milliseconds, because no in-region latency figure is published until an
-                 in-region run measures one. The second item is the WRITE MODEL rather than a write rate,
+                 p50/p99 milliseconds, because the one in-region run measured a single shape on one
+                 client. The second item is the WRITE MODEL rather than a write rate,
                  because there is no per-id write to run at a rate. -->
             <div class="label is-peer">Use something else when</div>
             <p class="trade-title">You need a sub-millisecond p99.</p>
             <p class="trade-body">
               Not just on hits. Our cache tier is in-process RAM, but a miss is a ranged
               <span class="m">GET</span> against object storage, where a resident set is a memory read.
-              A sub-millisecond tail needs the whole set resident, which is a different machine — and we
-              publish no in-region latency figure until an in-region run measures one.
+              A sub-millisecond tail needs the whole set resident, which is a different machine — and an
+              S3 read from inside the region took about 26 to 27 ms in the one run that timed it.
             </p>
             <p class="trade-title">The set changes one id at a time.</p>
             <p class="trade-body">

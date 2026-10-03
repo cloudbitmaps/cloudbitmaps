@@ -150,17 +150,18 @@ explains these, S3's request rate and overlap, with the charts; [what it costs a
 
 ## What it costs on real AWS
 
-Run [`2026-09-23-94416`](bench/calibration/2026-09-23-94416.md), made on 2026-09-23 on the release then current, drove the
-packages against a real AWS account in `us-east-1`, with the pointer in
+Run [`2026-10-03-e13c7`](bench/calibration/2026-10-03-e13c7.md), made on 2026-10-03 from AWS CloudShell in `us-east-1`,
+drove the published `0.12.0` packages against a real AWS account, with the pointer in
 the same bucket as the data. What each operation costs:
 
 | Operation | Cost | Kind |
 |---|---|---|
-| Cold `intersect` of two 500,000-id segments sharing 100 of 1,999 chunks: 206 GETs at the median | **$82.40 / million** | measured requests at list prices |
-| The same inside the region, each pointer read once: 204 GETs | $81.60 / million | expected |
-| Loading a segment: the write and the publish, pointer included | **$11.20 / million** | measured requests at list prices |
+| Cold `intersect` of two 500,000-id segments sharing 100 of 1,999 chunks: 204 GETs at the median | **$81.60 / million** | measured requests at list prices |
+| The same, each pointer read once, as expected | $81.60 / million | expected |
+| Loading a segment with `store.load()`: 2 PUT + 4 GET, pointer included | **$11.60 / million** | measured requests at list prices |
 
-The run was driven from outside the region, so it calibrates cost, not in-region latency. The
+Run from inside the region, that cold intersect took 492.69 ms at the median, a cold `count()` is one request at
+27.48 ms, and a single-part load ran at 6,020,505 bytes a second. The
 [benchmarks page](docs/benchmarks.md#real-cloud-calibration--aws) says exactly what it did and did not measure.
 
 ## Your data stays yours

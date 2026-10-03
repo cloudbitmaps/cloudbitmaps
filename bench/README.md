@@ -63,16 +63,18 @@ a dollar for a cost. A ratio's binary tail runs to 17 digits, and one of exactly
 ## Real-cloud calibration
 
 `calibrate-aws.cjs` measures three things that need a real object store rather than local disk. The benchmarks page
-publishes one of them and lists the other two as owed:
+publishes all three:
 
 1. **Load throughput** — ids/s and bytes/s into a bucket through `store.load()`, the whole write path, for
-   objects that fit one PUT and objects large enough to upload multipart. Still owed: it needs a run from inside the region.
+   objects that fit one PUT and objects large enough to upload multipart. **Paid** by the in-region run,
+   [`2026-10-03-e13c7`](calibration/2026-10-03-e13c7.md), from AWS CloudShell in `us-east-1`.
 2. **Cold intersect latency** — wall-clock for a chunk-skipping `A ∩ B` that has to fetch from the object store.
-   Still owed, for the same reason.
+   **Paid** by the same in-region run, [`2026-10-03-e13c7`](calibration/2026-10-03-e13c7.md).
 3. **The single-bucket bill** — the registry pointer lives in the same bucket as the data, so resolving a
-   generation costs an object GET and advancing one costs a conditional PUT. **Paid** by its one published
-   run, [`2026-09-23-94416`](calibration/2026-09-23-94416.md), from a laptop. A request count, and so the bill for
-   requests, does not depend on where the client is, with one exception, which that run measured: an intersect
+   generation costs an object GET and advancing one costs a conditional PUT. **Paid** by its own run,
+   [`2026-09-23-94416`](calibration/2026-09-23-94416.md), from a laptop, and measured again in-region by
+   [`2026-10-03-e13c7`](calibration/2026-10-03-e13c7.md). A request count, and so the bill for
+   requests, does not depend on where the client is, with one exception: an intersect
    slower than the pointer refresh reads each pointer again. The harness's timed store turns the pointer refresh
    off (`cache.genTtlMs: 0`). Bytes read out of the region are billed as transfer, which the harness counts and
    does not price.
@@ -295,9 +297,8 @@ hang-up on a real pseudo-terminal that is then closed, and the whole path by int
   client metered into the same bill: a transient failure there would otherwise leave the bucket behind.
 - **Cold reads only, and a count the network cannot move.** Each intersect gets a fresh store, so no cache can
   answer it, and the store's timed pointer refresh is off (`cache.genTtlMs: 0`). On the default 2 s refresh, an
-  intersect slower than that reads each pointer again — run `2026-09-23-94416`, 83 ms from the region, measured 206
-  GETs for its median intersect where the same intersect in-region would make 204 — so a count taken on the default
-  would describe the network. A test drives the real engine on a slow clock to prove each pointer is read once.
+  intersect slower than that reads each pointer again, which adds GETs to the 204 an intersect of this shape makes,
+  so a count taken on the default would describe the network. A test drives the real engine on a slow clock to prove each pointer is read once.
 - **Exact content.** Every pair of segments shares a planned set of ids, so each intersect must return precisely
   that set — the count *and* the sum — or the run refuses to report a latency.
 - **The published shape.** 500,000-id segments spanning ~2,000 chunks with 100 shared, so the run tests the "100
@@ -353,7 +354,7 @@ results land in `~/calibrate-aws-rehearsal.json`.
 
 ### What it does not measure
 
-Its scope is the three debts above, on one workload shape. Also owed, and **not** in this harness yet:
+Its scope is the three measurements above, on one workload shape. Still owed, and **not** in this harness yet:
 
 - **The `*Into` verbs**, which publish their result as a new generation of a destination segment.
 - **Other shapes of combine** — an intersect of more than two operands, a union, or an `andNot` with a different

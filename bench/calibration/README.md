@@ -30,6 +30,7 @@ take a run's numbers from one derivation, and hold them to it with one matcher.
 | report · evidence | when, and from where | what it established |
 |---|---|---|
 | [`2026-09-23-94416.md`](2026-09-23-94416.md) · [`2026-09-23-94416.json`](2026-09-23-94416.json) | 2026-09-23 (UTC), `us-east-1`, from a laptop outside the region | The single-bucket bill for a cold intersect and a load, pointer included, and chunk-skipping on real S3. Not latency or throughput: the client measured its own connection. |
+| [`2026-10-03-e13c7.md`](2026-10-03-e13c7.md) · [`2026-10-03-e13c7.json`](2026-10-03-e13c7.json) | 2026-10-03 (UTC), `us-east-1`, from AWS CloudShell in `us-east-1`, against the published `0.12.0` packages | The first complete in-region run: cold intersect latency, load throughput, the sweep, warm intersects, point reads and `andNot`, with the bill. Every stage exact, every request count as expected, $0.0376350 in all. |
 
 ## Adding a run
 

@@ -13,7 +13,7 @@ Start with the [README](README.md), then the [getting-started guide](docs/guide/
 [API reference](docs/guide/api-reference.md) — the complete callable surface, kept in sync with the exports by CI.
 [`docs/ROADMAP.md`](docs/ROADMAP.md) is what's shipped, what's proven to what degree, and what's next;
 [`docs/benchmarks.md`](docs/benchmarks.md) carries the published cost and memory figures, how each was measured
-or modelled, and what is still owed, in-region latency among them.
+or modelled, and what is still owed, a Lambda's cold start among them.
 
 ## Repo layout
 

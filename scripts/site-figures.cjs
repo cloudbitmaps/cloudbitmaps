@@ -63,13 +63,13 @@ if (/\|[^|\n]*[Ii]ncremental[^|\n]*\|\s*\*\*\$[\d.]+ per million/.test(doc)) {
 }
 
 // ── latency: deliberately unpublished, and that has to be enforced rather than trusted ────────────────────
-// The page must not publish a millisecond latency for a read verb until an in-region run measures one. Without
-// this, quoting one is a docs edit that CI would wave through.
+// The page states a latency in prose, beside the run that measured it, and never as a bare percentile row. Without
+// this, a table of p50/p95/p99 figures with no run named beside each would be a docs edit that CI would wave through.
 const strayLatency = /\|\s*(?:\*\*)?p(?:50|95|99)(?:\*\*)?\s*\|/.exec(doc);
 if (strayLatency) {
   fail(
-    'docs/benchmarks.md states a p50/p95/p99 latency row — in-region read latency is listed as owed, not ' +
-      'measured (see "What is still owed"); publishing one needs a run behind it',
+    'docs/benchmarks.md states a p50/p95/p99 latency row — state a latency in prose, with the in-region ' +
+      'run that measured it named beside it',
   );
 }
 

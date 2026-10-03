@@ -24,7 +24,7 @@ It's a living document, not a promise — see [the note at the bottom](#a-note-o
 ## Where it stands
 
 **The line is pre-1.0 on purpose.** `1.0` is earned by real-cloud
-calibration (cost and in-region latency), real adoption, and freezing the `.crbm` on-disk format (see
+calibration (the AWS runs are in; Lambda and the other clouds are not), real adoption, and freezing the `.crbm` on-disk format (see
 [On the way to 1.0](#on-the-way-to-10)) — until then the public API and the on-disk format stay evolvable.
 Everything described under [Shipped today](#shipped-today) is implemented and covered by tests — unit,
 property-vs-oracle, conformance suites run against real backends (or a faithful emulator), coverage-guided
@@ -42,7 +42,7 @@ with the release it is to ship in, and sits under `[Unreleased]` in the [changel
 | | Status |
 | --- | --- |
 | Loads, reads, chunk-skipping combines, `*Into` materialization, subject erasure as a rewrite, crypto-shred, disposal, retention, the DR check, export | **shipped** — [below](#shipped-today) |
-| Loaded-store benchmarks — load throughput, intersect latency | **owed**. Their **bill** is measured: the September 2026 calibration run (`2026-09-23-94416`) put the single-bucket topology on real S3 — the median cold intersect of two 500,000-id segments sharing 100 of 1,999 chunks made 206 GETs as measured, $82.40 per million derived from them at list prices, and inside the region it is expected at 204 GETs, $81.60; writing and publishing a segment is $11.20 per million, derived the same way, pointer included, and `store.load()` is expected at about a tenth more on average — and the [benchmarks page](benchmarks.md#the-single-bucket-bill--run-2026-09-23-94416) publishes it. Their **latency and throughput** are not: that run was driven from a laptop outside the region, so its timings measured the connection. The **RSS ceiling** is measured and published — it needs no cloud account, because a cgroup limit is enforceable locally. The harness is built and has one published run against a real account; its in-region run is **next**, and still owed |
+| Loaded-store benchmarks — load throughput, intersect latency | **measured on S3, in-region**, by run `2026-10-03-e13c7` from AWS CloudShell in `us-east-1`: the median cold intersect of two 500,000-id segments sharing 100 of 1,999 chunks took 492.69 ms and made 204 GETs, $81.60 per million at list prices; a single-part `store.load()` is 2 PUT + 4 GET, $11.60 per million, and ran at 2.86 million ids a second — the [benchmarks page](benchmarks.md#the-in-region-run--run-2026-10-03-e13c7) publishes it, and the [report](../bench/calibration/2026-10-03-e13c7.md) explains every figure. Still owed: Lambda cold start, the `*Into` verbs, other combine shapes, and in-region GCS and Azure runs. The **RSS ceiling** is measured and published — it needs no cloud account, because a cgroup limit is enforceable locally |
 | `load()` with the empty guard and `guard: { minCardinality, minRetained }` | **shipped** — `store.load(ref, ids)` is the write path in one call: next generation → write → guard → publish → collect. A refusal is reported (`published: false` + `reason`), not thrown, and deletes the object it wrote while the segment's row is unchanged or gone; once another write has changed the row, it leaves the object for collection. It reads the segment's row once, checks that its next number is free instead of listing for it, and with the default `keep` collects by name, deleting the one generation its publish pushed out of the window and listing the segment only every 16th generation: a steady load on S3 is 8 requests |
 | A load from a bitmap — `{ bitmap }`, `{ serialized }` | **shipped** — a caller holding the result as an in-memory Roaring bitmap loads it as one: the bytes are checked before anything is written, the chunks are cut from the bitmap's own containers with no per-id work, and the generation is byte for byte the one its ids write. Its time against the id path is measured by `pnpm bench:load-input`, whose figures are not recorded yet |
 | Registry rows at schema 2, and tokens no two writes share | **shipped** — a row carries an optional summary of its current generation, and a token with a random incarnation id and a random part for every write; a 0.11 process refuses a schema-2 row, so every 0.11 process stops before the first 0.12 write and there is no downgrade ([upgrade order](../CHANGELOG.md#0120--2026-10-03)) |
@@ -61,8 +61,8 @@ with the release it is to ship in, and sits under `[Unreleased]` in the [changel
 | Deferred past `0.12.0` | **not built** — `generations({ describe: true })`, the chunk-level `*Into`, the tombstone reaper, an `op` metric for `store.load`, the compare-and-swap memo, an unscoped listing that skips the due index's pointers, one generation from parts built in several processes, and the reconcile for `rollback`, `setRetention`, shred and `eraseSubject` writes: [On the way to 1.0](#on-the-way-to-10), item 9, says what each is |
 | WASM CRoaring research | **after** the loaded store |
 
-**What is next:** the in-region calibration run, which measures load throughput, intersect latency and what
-`store.load()` costs on S3 from inside the region. [On the way to 1.0](#on-the-way-to-10) lists everything that stands before `1.0`.
+**What is next:** a Lambda run, the `*Into` verbs and other combine shapes against a real store, and in-region GCS
+and Azure runs. [On the way to 1.0](#on-the-way-to-10) lists everything that stands before `1.0`.
 
 Current install and publish status lives in the [README](../README.md) — this page deliberately doesn't
 restate it, so the two can't drift. You install **one codec flavor plus the one storage package you need**,
@@ -253,17 +253,16 @@ envelope**:
 | --- | --- | --- |
 | **Workload** | read-mostly over loaded generations; loads as a batch job (a cron, a pipeline step, a Lambda on a schedule) | anything that needs per-call mutation — there is no write verb; micro-batch into a load |
 | **Scale** | up to ~100K segments; reads and intersects of segments up to 500,000 ids on S3 and 2,000,000 in memory, the largest with published evidence, and loads up to the 12,582,912-id segments the calibration run wrote and did not read | larger segments, which a load holds in RAM as their distinct ids (an external-merge bulk load is planned), and ids past 2³²−1, which want the reserved 64-bit format |
-| **Backends** | S3 storage — the validated tier | the GCS and Azure Blob registries and storage: conformance-passing and correctness-clean, but not envelope-validated. The S3 registry has one published real-cloud run, for cost only: the September 2026 calibration run kept its pointer in the same bucket as the data |
+| **Backends** | S3 storage — the validated tier | the GCS and Azure Blob registries and storage: conformance-passing and correctness-clean, but not envelope-validated. The S3 registry has a published in-region run, for cost and latency: the 2026-10-03 calibration run kept its pointer in the same bucket as the data |
 | **Tenancy / region** | single-tenant, single-region | multi-tenant isolation; multi-region active/active |
-| **Cost figures** | the **single-bucket bill of the September 2026 calibration run** (`us-east-1`, 2026-09-23: a cold intersect and a load, pointer included) — published prices applied to wire-metered requests — plus the estimator, all with published methodology | the invoice itself; **in-region latency**, which no run has measured — the calibration run was driven from outside the region and calibrates cost only; what `store.load()` costs on S3; and every loaded-store figure listed as owed below |
+| **Cost figures** | the **in-region run `2026-10-03-e13c7`** (`us-east-1`, from CloudShell: a cold intersect and a load, pointer included, and their latency) — published prices applied to wire-metered requests — plus the estimator, all with published methodology | the invoice itself; Lambda cold start; the `*Into` verbs and other combine shapes; and GCS and Azure on a real account |
 
 **Measured, not asserted — and measured on what.** The cloud figures on the [benchmarks page](benchmarks.md) are
-the cost of the requests the engine actually issued, from the September 2026 run. It measured the topology that
-ships, with the pointer in the same bucket as the data: what a cold intersect and a load cost, pointer included.
-**It carries no latency figure** — it was driven from a laptop outside the region, so its wall-clock numbers
-measured internet transit, and in-region latency is [owed](benchmarks.md#what-is-still-owed) rather than published. What is **not** yet measured is the
-rest of the loaded store's own shape — load throughput, `intersect` and `*Into` latency — and those are owed
-before `1.0`; until they exist this page quotes no number for them. RSS under a soak is measured and published
+the requests the engine actually issued and the time they took, from the 2026-10-03 run in `us-east-1`, driven from
+inside the region. It measured the topology that ships, with the pointer in the same bucket as the data: what a cold
+intersect and a load cost, pointer included, how long they take, and how fast a load runs. What is **not** yet
+measured is [what is still owed](benchmarks.md#what-is-still-owed): a Lambda's cold start, `*Into` latency, other
+combine shapes, and GCS and Azure on a real account. RSS under a soak is measured and published
 as a ceiling. There is no stress, tail-latency or chaos harness for the loaded store. Benchmark numbers come with their methodology: the benchmarks page and each run's report say,
 section by section, whether a figure is measured, derived, modelled or expected, and laptop and emulator numbers
 are labelled as such.
@@ -273,34 +272,29 @@ are labelled as such.
 `1.0` is a commitment to the on-disk format, so it waits for evidence rather than a date. What stands
 between here and there:
 
-1. **Real-cloud calibration — the single-bucket bill is measured; latency is not.**
-   The [single-bucket bill](benchmarks.md#the-single-bucket-bill--run-2026-09-23-94416) of the 2026-09-23 run is
-   published: 40 of 40 cold intersects exact, each fetching 100 of 1,999 chunks per segment; 206 GETs for the
-   median cold intersect of that shape, **$82.40 per million** (204 GETs, $81.60, expected inside the region);
-   writing and publishing a segment **$11.20 per million**, pointer included. Its
-   [report](../bench/calibration/2026-09-23-94416.md) explains every figure, and a gate holds each one to the
-   run's committed results file. **No latency figure is published**: the run was driven from a laptop outside the
-   region, so it calibrates cost only. What remains: an **in-region** run for
-   latency and load throughput, which `bash bench/calibrate-cloudshell.sh` makes from AWS CloudShell; what
-   `store.load()` costs on S3, since the run measured the write and the publish; a
+1. **Real-cloud calibration — measured on S3, in-region.**
+   The [in-region run](benchmarks.md#the-in-region-run--run-2026-10-03-e13c7) of 2026-10-03 is published: 40 of 40
+   cold intersects exact, each fetching 100 of 1,999 chunks per segment; 204 GETs and 492.69 ms for the median cold
+   intersect of that shape, **$81.60 per million** (204 GETs, $81.60, expected with each pointer read once);
+   a single-part `store.load()` **$11.60 per million**, pointer included, at 2.86 million ids a second. Its
+   [report](../bench/calibration/2026-10-03-e13c7.md) explains every figure, and a gate holds each one to the
+   run's committed results file. What remains: a
    **Lambda** run for the serverless figure with cold-start and init included, which needs a run from inside a
-   function; and a **real-GCS run of the conditional-delete probe**
+   function; in-region **GCS** and **Azure** runs; and a **real-GCS run of the conditional-delete probe**
    (`tests/integration/real-cloud-conditional-delete.test.ts`, skipped unless a bucket is named). The probe shows
    whether a real service refuses a delete whose precondition no longer holds, and whether a name the registry removed
    can be created again over the delete marker a versioned bucket leaves. It passed on real AWS S3 on 2026-10-03, five
    of five checks on an unversioned and a versioned bucket in us-east-1, so S3 defaults on for an AWS host. GCS has not
    been run, so GCS defaults off and needs the probe before its default turns on; the emulators the integration lane
    runs ignore the precondition, so CI cannot show it. [`bench/README.md`](../bench/README.md#real-cloud-calibration) describes the harness.
-2. **Loaded-store benchmarks — partly owed.** Load throughput (ids/s and bytes/s into the bucket, single-part
-   and multipart) and `intersect` / `*Into` latency by operand count and chunk overlap are still owed, both
-   against a real object store from inside the region. The calibration harness above covers load throughput and a
-   two-operand `intersect` at one overlap; `*Into` latency, and the sweep over operand count and overlap, are not in
-   it yet.
+2. **Loaded-store benchmarks — partly owed.** Load throughput and `intersect` latency are measured in-region (the
+   run above, with a sweep to 2,000 shared chunks). `*Into` latency, and `intersect` over more operands and other
+   overlaps, are still owed against a real object store from inside the region; the harness does not measure them yet.
    **The RSS soak is measured:** `pnpm rss-gate` records its run, and
    the measured ceiling — a sustained read + combine + re-load workload over 400 segments inside a hard
    384 MiB cgroup limit with swap off, no OOM — is published on the
    [benchmarks page](benchmarks.md#what-rss-is-and-why-it-is-the-number-we-bound). Until they exist, the only cloud measurements on the
-   benchmarks page are the one published calibration run's costs, and this page says so wherever it quotes one.
+   benchmarks page are the one published in-region run's, and this page says so wherever it quotes one.
 3. **The empty-load guard and `load()` — ✅ Shipped.** `load()` on the store with `allowEmpty` (an empty
    result over a non-empty segment is refused unless you say so), a `guard` over the result before it is
    published, and a refused load that deletes the object it wrote while the segment's row is unchanged or gone,
