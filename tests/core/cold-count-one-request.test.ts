@@ -30,7 +30,7 @@ function manualClock(): Clock & { advance(ms: number): void } {
 }
 
 /** A writer store, and a counting reader store over the same bucket, which has read nothing yet. */
-function world(options: { encrypted?: boolean } = {}) {
+function world(options: { encrypted?: boolean; readerMaxBytes?: number } = {}) {
   const keystore = options.encrypted
     ? new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' })
     : undefined;
@@ -59,10 +59,13 @@ function world(options: { encrypted?: boolean } = {}) {
     }),
     registryCalls,
   );
-  const reader = (): CloudRoaring =>
+  const reader = (retry = false): CloudRoaring =>
     new CloudRoaring({
       storage: brandAsBackend({ storage, registry }),
-      retry: false,
+      ...(retry ? {} : { retry: false }),
+      ...(options.readerMaxBytes === undefined
+        ? {}
+        : { cache: { readerMaxBytes: options.readerMaxBytes } }),
       seams: { clock },
       ...(keystore === undefined ? {} : { encryption: { keystore } }),
     });
@@ -136,12 +139,49 @@ describe('a cold count is one request', () => {
     expect(await seg.count()).toBe(3);
   });
 
+  it('a refresh that finds the same row keeps the open reader, so a read after it opens nothing', async () => {
+    const w = world();
+    await w.writer.load(SEG, spread(10));
+    const seg = w.reader().segment('s', { namespace: 'ns' });
+    expect(await seg.has(0)).toBe(true);
+    w.clock.advance(TTL + 1);
+    w.reset();
+    expect(await seg.count()).toBe(10);
+    expect(await seg.has(65_536)).toBe(true);
+    expect(w.sent()).toEqual({ rows: 1, tails: 0, ranges: 1 }); // the row, and the one chunk
+  });
+
+  it('through the default read retries, a cold count is still one row read', async () => {
+    const w = world();
+    await w.writer.load(SEG, spread(10));
+    const store = w.reader(true);
+    w.reset();
+    expect(await store.segment('s', { namespace: 'ns' }).count()).toBe(10);
+    expect(w.sent()).toEqual({ rows: 1, tails: 0, ranges: 0 });
+  });
+
+  it('a snapshot that holds only a target weighs its summary, so the reader cache stays bounded', async () => {
+    // A ceiling of a few hundred bytes holds about one target. Counting four segments and then the first again makes
+    // a second row read for it: its snapshot was evicted by the bytes it weighed, not kept for free.
+    const w = world({ readerMaxBytes: 600 });
+    for (const name of ['a', 'b', 'c', 'd'])
+      await w.writer.load({ ...SEG, segment: name }, spread(5));
+    const store = w.reader();
+    for (const name of ['a', 'b', 'c', 'd']) {
+      expect(await store.segment(name, { namespace: 'ns' }).count()).toBe(5);
+    }
+    w.reset();
+    expect(await store.segment('a', { namespace: 'ns' }).count()).toBe(5);
+    expect(w.sent().rows).toBe(1);
+  });
+
   it('a purge and re-create inside one TTL is read as the old one, and after it as the new row', async () => {
     const w = world();
     await w.writer.load(SEG, [1, 2, 3]);
     const store = w.reader();
     const seg = store.segment('s', { namespace: 'ns' });
     expect(await seg.count()).toBe(3);
+    expect(await seg.has(1)).toBe(true); // a reader of the old incarnation is open
     // The name is purged and loaded again: generation 0 again, with another count, under a new row.
     await w.registry.delete(SEG);
     await w.backend.storage.delete({ ...SEG, generation: 0 });

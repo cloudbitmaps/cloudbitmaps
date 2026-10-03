@@ -91,6 +91,19 @@ describe('a summary that disagrees with its object', () => {
     expect(await seg.count()).toBe(3);
   });
 
+  it("distrusting one segment leaves another's summary in use", async () => {
+    const w = world();
+    await w.writer.load(SEG, [1, 2, 3]);
+    await w.writer.load({ ...SEG, segment: 'other' }, [1, 2, 3, 4]);
+    w.tamper.row = (row) =>
+      row.segment === 's' ? withSummary({ generation: 0, cardinality: 99 })(row) : row;
+    const store = w.reader();
+    await store.segment('s', { namespace: 'ns' }).has(1);
+    w.calls.getTail = 0;
+    expect(await store.segment('other', { namespace: 'ns' }).count()).toBe(4);
+    expect(w.calls.getTail ?? 0).toBe(0);
+  });
+
   it('metadata that differs is the same disagreement', async () => {
     const w = world();
     await w.writer.load(SEG, [1, 2, 3], { metadata: META });
