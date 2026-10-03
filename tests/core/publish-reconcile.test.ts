@@ -372,6 +372,24 @@ describe('a publish whose registry write ends without a definite answer reads th
     expect(await idsOf(w.storage, 3)).toEqual([42, 43]);
   });
 
+  it("attempts that run out on an unanswered write, with another incarnation at the load's number over the load's own object, are not published", async () => {
+    const w = world(() => 1_000);
+    await threeLoads(w);
+    w.arm({ kind: 'conflict-unapplied' }, 2);
+    w.arm({ kind: 'transient-unapplied' }, 3);
+    w.duringWait(async () => {
+      if (w.waits.length !== 3) return;
+      // During the last wait the name is deleted and created again, in the same millisecond, pointing at the number this
+      // load took. The object under it is this load's own, which the footer proves, and the creation stamp is the same.
+      await w.base.delete(SEG);
+      await w.base.create(SEG, { currentGen: 3 });
+    });
+    const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9 });
+    expect(r).toMatchObject({ generation: 3, published: false, reason: 'superseded' });
+    expect(w.deletes()).toBe(0);
+    expect(await generations(w.storage)).toEqual([0, 1, 2, 3]);
+  });
+
   it('the write that lands after the load threw finds its object there, and the pointer is valid', async () => {
     const w = world();
     await threeLoads(w);

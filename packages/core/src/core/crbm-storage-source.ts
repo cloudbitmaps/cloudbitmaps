@@ -1346,12 +1346,16 @@ export async function publishGeneration(
   // Whether any write of this call ended without an answer: what the pointer then says about this number is not
   // taken for the caller's own write without the proof.
   let sawUnanswered = false;
+  // The row the last attempt acted on, which its write was made against: where the incarnation is read from when the
+  // attempts run out.
+  let lastRecord: RegistryRecord | null | undefined;
   for (let attempt = 0; attempt < 5; attempt++) {
     const reused = attempt === 0 && options.row !== undefined;
     const record =
       fresh !== undefined ? fresh : reused ? (options.row ?? null) : await registry.get(key);
     fresh = undefined;
     unanswered = undefined;
+    lastRecord = record;
     if (failedOn !== undefined) {
       let landed: boolean;
       try {
@@ -1498,10 +1502,10 @@ export async function publishGeneration(
   if (final !== null && final.currentGen !== null && final.currentGen >= key.generation) {
     if (final.currentGen !== key.generation) return false;
     if (!sawUnanswered) return true;
-    // A write that went unanswered may have landed during the last wait, or the number may be another writer's: the
-    // object under it decides, as after any unanswered write.
+    // A write that went unanswered may have landed during the last wait, or the number may be another writer's, or
+    // another incarnation's: the incarnation and the object under it decide, as after any unanswered write.
     try {
-      return await landedHere(final, null, key, options.holdsOwnObject);
+      return await landedHere(final, lastRecord ?? null, key, options.holdsOwnObject);
     } catch (proofErr) {
       throw outcomeUnknown(key, proofErr);
     }
