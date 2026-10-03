@@ -66,6 +66,7 @@ import type {
   BudgetOption,
   GenerationEntry,
   LoadGuard,
+  LoadInput,
   LoadOptions,
   LoadRefusal,
   LoadResult,
@@ -108,7 +109,7 @@ import { listGenerations, rollbackSegment } from '@cloudbitmaps/core';
 import { listSegments, segmentExists } from '@cloudbitmaps/core';
 import type { SegmentInfo } from '@cloudbitmaps/core';
 import { refuseReservedNamespace } from './reserved-namespace';
-import { roaringCodec } from './roaring-codec';
+import { bitmapAsLoadInput, roaringCodec } from './roaring-codec';
 import { SystemClock } from './system-clock';
 import { OPTION_KEYS, type OptionGroup } from './option-keys';
 
@@ -270,7 +271,8 @@ export interface CacheOptions {
    */
   readonly readerMax?: number;
   /**
-   * Aggregate byte ceiling on the parsed `.crbm` indices the open readers hold (default 64 MiB) — the byte half
+   * Aggregate byte ceiling on what the open readers hold, their parsed `.crbm` indices and the metadata a
+   * generation carries (default 64 MiB) — the byte half
    * of the memory bound, complementing the {@link CacheOptions.readerMax} *count* bound. A wide/dense segment's
    * parsed index can reach about 1.3 MB, so a count-only bound could let the open readers pin over a GB and blow a small
    * heap (e.g. a 128 MB Lambda); this evicts the least-recently-used reader once the summed index footprint
@@ -1310,9 +1312,10 @@ export class CloudRoaring {
    * one cannot.
    *
    * It refuses rather than guesses: a generation not in the bucket (collected, or never written) throws
-   * `NotFoundError` naming what *is* available, and a crypto-shredded segment throws
-   * {@link ValidationError} because every generation of it is unreadable. Rolling to the generation already
-   * current is a no-op that reports itself.
+   * `NotFoundError` naming what *is* available, a crypto-shredded segment throws
+   * {@link ValidationError} because every generation of it is unreadable, and a target that is cleartext under an
+   * encrypted segment, or encrypted under a cleartext one, throws {@link IntegrityError} from one read of its footer,
+   * because every read would refuse it. Rolling to the generation already current is a no-op that reports itself.
    *
    * It deletes nothing. The generations above the new pointer stay put — which is what makes this reversible —
    * and are then *above* `currentGen`, where collection never looks. They remain until loads pass them (the first
@@ -1346,7 +1349,14 @@ export class CloudRoaring {
   }
 
   /**
-   * **Replace this segment's contents** with `ids`, as one new immutable generation, and make it current.
+   * **Replace this segment's contents** with `input`, as one new immutable generation, and make it current.
+   *
+   * `input` is ids (any sync or async iterable of integers in `[0, 2^32)`), or a whole bitmap: `{ bitmap }`, anything
+   * with `serialize('portable')` such as `roaring`'s `RoaringBitmap32`, or `{ serialized }`, portable Roaring bytes.
+   * A bitmap is checked (size cap, structure, safe deserializer) before the first request, written from its own
+   * containers with no per-id work, and gives the generation byte for byte the one its ids would. A bare
+   * `RoaringBitmap32` passed as ids loads as `{ bitmap }`. A `Uint8Array` or `Buffer` passed as ids is refused with
+   * `ValidationError`, since each byte would load as an id: pass bytes as `{ serialized }`.
    *
    * The whole write path in one call: take the next generation number, write the object, check the result is
    * plausible, move the pointer, collect what the move superseded. Composed by hand those are four functions and
@@ -1400,15 +1410,11 @@ export class CloudRoaring {
    *
    * Needs a backend (throws {@link UnsupportedError} otherwise).
    */
-  async load(
-    ref: SegmentRef,
-    ids: Iterable<number> | AsyncIterable<number>,
-    options: LoadOptions = {},
-  ): Promise<LoadResult> {
+  async load(ref: SegmentRef, input: LoadInput, options: LoadOptions = {}): Promise<LoadResult> {
     validateSegmentRef(ref);
     const deps = this.lifecycleDeps('load');
     try {
-      return await loadSegment(ref, ids, deps, options);
+      return await loadSegment(ref, bitmapAsLoadInput(input), deps, options);
     } finally {
       // This store's view of the segment is now behind whatever just happened — a published load superseded the
       // generation the caches were built on, and a throw can still have published before failing its collect.
@@ -2553,7 +2559,9 @@ export type {
   CrbmReaderOptions,
   CrbmStorageChunkSourceOptions,
   DestroyResult,
+  ClearRegistrySummary,
   DropResult,
+  EncodedChunk,
   EraseDeps,
   EstimateInput,
   ExportFailure,
@@ -2565,6 +2573,7 @@ export type {
   ExportedSegment,
   GenKey,
   GenerationEntry,
+  GenerationMetadata,
   GovernanceMeta,
   IAuditSink,
   IKeystore,
@@ -2574,6 +2583,7 @@ export type {
   IdRange,
   InProcessKeystoreOptions,
   LoadGuard,
+  LoadInput,
   LoadOptions,
   LoadRefusal,
   LoadResult,
@@ -2585,6 +2595,7 @@ export type {
   NewRegistryRecord,
   PinnedAt,
   PinnedObject,
+  PortableBitmap,
   PricingProfile,
   RedisNodeType,
   RedisSizing,
@@ -2592,6 +2603,7 @@ export type {
   RegistryPatch,
   RegistryRecord,
   RegistryStatus,
+  RegistrySummary,
   RetentionPolicy,
   RetireEntry,
   RetireExpiredOptions,
@@ -2599,6 +2611,7 @@ export type {
   RetryPolicy,
   Rng,
   RollbackResult,
+  SealedRegistrySummary,
   SegmentInfo,
   SegmentRef,
   SegmentSize,

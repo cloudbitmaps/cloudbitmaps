@@ -11,6 +11,60 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Breaking
+
+- **A byte array passed as ids is refused: `store.load` and `loadSegment` throw `ValidationError` for a `Uint8Array`,
+  a `Uint8ClampedArray` or a `Buffer` where ids go**, before any request. A byte array is an iterable of numbers, so
+  until now each byte was loaded as an id: `store.load(ref, bitmap.serialize('portable'))` published the
+  serialization's byte values as the segment, with `published: true`. Pass portable Roaring bytes as
+  `{ serialized }` (below), and ids as a `Uint32Array` or an array of numbers; every other typed array is still ids.
+  An input that is neither ids nor one of the two bitmap forms now throws `ValidationError` too, where it threw a
+  `TypeError` from inside the load.
+
+- **Registry rows are schema 2, and there is no going back: stop every 0.11 process before the first 0.12 write.**
+  Every row a 0.12 registry writes, whether a create, a compare-and-swap or a tombstone, is stamped
+  `schemaVersion: 2`, whatever it holds, and 0.12 reads rows stamped 1 or 2. A 0.11 process refuses a schema-2 row
+  with `UnsupportedError`. One unreadable row stops every `list()` that reaches it, in its namespace and in every
+  unscoped listing, so a single 0.12 write stops each 0.11 call that lists the registry: `retireExpired`,
+  `eraseSubject`, `subjectReport`, `eraseNamespace`, `checkConsistency`, `store.segments()` and the
+  `export-segments` CLI. A 0.11 load, `*Into`, `rollback`, `setRetention` or drop of a schema-2 row throws too. It
+  fails closed and typed, and never misreads a row. Upgrade in this order:
+  1. Upgrade the processes that only read to 0.12 first: those that call `count`, `has`, `iterate`, the combines or
+     `pin`, and those that list, `store.segments()` and `subjectReport`. 0.12 reads every row 0.11 wrote.
+  2. Stop every 0.11 process that writes, sweeps, erases, checks consistency or exports, then start the 0.12 ones. A
+     0.11 `eraseSubject` cannot complete once a schema-2 row exists in a namespace it lists (every namespace, for an
+     unscoped run), so schedule erasure runs around the cut-over.
+  3. There is no downgrade. After the first 0.12 write, 0.11 cannot read the registry; the only way back is a
+     registry restore to a point before that write (the disaster-recovery guide), which loses every write since.
+
+  Schema 2 adds the record's optional `summary` and the new token form, both below. A row stamped 1 may hold only
+  what schema 1 could: a `summary` or a token with a write part on one is an `IntegrityError`.
+
+- **A registry token is now `<incarnation>.<counter>.<write>`, and no two writes under a name are given the same
+  one.** The incarnation is a 128-bit id as 32 lowercase hex digits, drawn from the platform's Web Crypto when a row
+  is created; the counter advances on every write and carries on across a tombstone; the write part is 64 bits as 16
+  lowercase hex digits, drawn for every write. Both random parts make the tokens unique with overwhelming
+  probability, where a counter alone was not:
+  - once a row's object was gone entirely (a tombstone removed by an object-store delete or a lifecycle rule), a
+    re-create restarted its counter at 0 and re-issued the earlier row's tokens. A warm store at the same generation
+    took the new row for the old one and kept serving the deleted ids; a publish fenced on a token read from the
+    earlier row (`expectToken`, as an erasure rewrite publishes) landed on the new one; and a collection pass over a
+    `destroyed` segment, which goes on only while the row's token is unchanged, took the new row for the old one and
+    deleted every generation, the new current included;
+  - after a registry restore from a backup, a row was back at an older counter, so its next writes were given the
+    tokens the writes after the backup had, and a store that skipped the restore's restart served the generation
+    the restore took away from its cache.
+
+  A row written before 0.12 keeps its bare decimal token (`"7"`) until its first 0.12 write, which gives it
+  `<counter>.<write>`; it gains no incarnation, since only a create starts one. No two of the three forms compare
+  equal. The library compares tokens only for equality; code of your own that read a shipped registry's token as a
+  number breaks. The in-memory backend's tokens take the same form, its counter still global to the backend.
+
+- **`CrbmReader.open` refuses a cleartext object when it is given a `crypto`.** It used to ignore the key and read the
+  object in the clear. Tooling that passes a `crypto` for every object it opens must pass it only for encrypted ones,
+  which an object's footer says (its `FLAG_ENCRYPTED` bit); nothing in the packages, the scripts or the CLI does. See
+  the `Fixed` entry on cleartext objects under an encrypted segment for why.
+
 ### Added
 
 - **`LoadDeps.collectByListing` makes `loadSegment` collect by listing whatever `keep` is.** Absent, a load that numbered
@@ -19,6 +73,96 @@ so, and so do the module headers in the code.
   deletes every generation below the new one beyond `keep`, as every load did. The `*Into` verbs set it, because their
   `keep` is how an operator clears a destination that earlier materialisations kept in full. `store.load` does not
   take it: its options are unchanged.
+
+- **A load takes a bitmap as well as ids: `store.load(ref, { bitmap })` and `store.load(ref, { serialized })`.**
+  `{ bitmap }` is anything with `serialize('portable')`, such as `roaring`'s `RoaringBitmap32`, and is loaded as
+  `{ serialized: bitmap.serialize('portable') }`, serialized once at the call, so changing the bitmap afterwards does
+  not change what is loaded. `{ serialized }` is one 32-bit bitmap in the portable Roaring format, the one the
+  `'roaring'` export writes. A bare `RoaringBitmap32` from the `roaring` this package uses, passed where ids go, is
+  loaded the same way.
+
+  Every bitmap input takes one path, all of it before the load's first request: the bytes are capped at
+  537,403,396 (more than any canonical 32-bit bitmap serializes to), must hold exactly one bitmap, are checked
+  structurally the way every stored chunk is, and are decoded by the safe deserializer. Malformed or oversized
+  bytes, and bytes after the bitmap's end (two serializations concatenated, say), throw `ValidationError`, and
+  nothing is read or written. The bytes are read through the typed array's own accessors, and a
+  `SharedArrayBuffer`'s are copied first; a `{ bitmap }` that can report its size is refused over the cap before it
+  serializes.
+
+  The chunks are then cut from the bitmap's own containers, per container and per byte and never per id, and the
+  generation is byte for byte the one the same ids write. A golden object written by the id path before this change
+  is reproduced by every input; a property test and a fixed corpus (run containers of 2 to 2,048 runs, the run
+  cookie at 65,536 containers) hold it over every container shape; and every existing test file that calls a load
+  runs a second time with its loads handed `{ serialized }`, the segments it seeds through the fixture loader included,
+  except the few that depend on when a load reads its ids (they inject races from inside the id stream, or count
+  the id path's own yields). Every guarantee of an id load holds: write-once, the fenced publish, `guard`, `keep`,
+  the empty refusal, encryption and the same `LoadResult`.
+
+  A test counts the per-id routes during a 12M-member load from a bitmap (iteration, building from values, the id
+  split) and finds none. Two whole-bitmap steps do not yield, each for a time that grows with the bytes: the input
+  check and the native decode at the call, and the re-encode before the write; at the cap they take about 400 ms or
+  more and about 250 ms (derived: twice a 256 MiB load of bitsets on an Apple M3 Pro). Around and after them the
+  load yields the event loop, and every 1,024 containers while it writes. As it writes, it checks every container
+  of the bitmap again, so a buffer another thread was still writing during the call (an unfinished `fs.read` into
+  it, say), which can decode into bytes the first check never saw, throws `IntegrityError` and publishes nothing.
+  `pnpm bench:load-input` measures the time, and its figures are not recorded yet. `loadSegment` takes the same
+  inputs (the trailing-byte refusal with a codec that honours `whole`, below); `LoadInput` and `PortableBitmap` are
+  the new types.
+
+- **`CodecBitmap.encodeChunks?()` and `EncodedChunk`, for a codec author.** A codec that implements it hands a load
+  its chunks as stored bytes, ascending, each exactly what `fromValues` of that chunk's low 16 bits, `optimize()` and
+  `serialize()` give, which is how a bitmap load writes without touching an id. Optional: a codec without it loads a
+  bitmap input through its ids. The roaring codec implements it. `CodecInterface.safeDeserialize` takes an optional
+  third argument, `{ whole }`, which a load passes for a caller's bytes: a codec must then refuse bytes after the
+  bitmap's end, since core cannot read the format, and one that ignores the option loads two concatenated bitmaps
+  as the first of them. A codec with the two-argument signature still type-checks.
+
+- **A `.crbm` generation can carry its metadata, in an extension block its footer flags.** The format stays 1.0. A
+  generation written with metadata gets one extension block between its last payload and its index, and its footer
+  sets a new flag bit, `FLAG_EXTENSION` (`1 << 3`); the block is found from a 12-byte trailer just before the index
+  (the sections' length, their CRC32C, and `CRBX`), and holds typed sections of a u32 length each.
+  Section 1 is the metadata's canonical JSON, at most 1 KiB, by the same rules and in the same form as a registry
+  summary's (`GenerationMetadata`): RFC 8785 for a flat object of strings and finite numbers, with vectors in
+  `tests/golden/metadata-canonical.json`, RFC 8785 Appendix B's number samples among them, for other languages to
+  check against. On an encrypted segment its content is
+  sealed under the segment's key like the index, bound to its namespace, segment and generation; that the block is
+  there is not, so whoever can write the object can remove it. A generation without metadata is written byte for
+  byte as before, flag clear, so every object written so far, and every one written without metadata, is unchanged.
+  A reader before 0.12 does not know the flag and refuses an object with metadata, rather than read past what it
+  cannot see. This build reads the block in the request that reads the index (one more only when the tail read ends
+  inside the block). It refuses with `IntegrityError` a block whose
+  trailer, CRC, 4 KiB cap or sections do not hold, metadata that breaks a rule or is not exactly its canonical form,
+  a flag with no valid block, and a payload that runs into the block, and it skips a section type it does not know,
+  so a later build can add one. The reader cache's byte bound (`cache.readerMaxBytes`) counts a reader's metadata with its index. For
+  tooling: `CrbmReader`'s `metadata` is the generation's metadata, and `aadFor` takes the scope `'metadata'`; a
+  `CrbmCrypto` of your own must map that scope as `aadFor` does to open an encrypted object with metadata. Nothing in the
+  library writes metadata yet: `load` takes none.
+
+- **A registry record can carry a `summary` of its current generation** (`RegistryRecord.summary`, for driver
+  authors). In the clear on a cleartext segment, `{ generation, cardinality, metadata? }`, with `cardinality` an
+  integer from 0 to 2^32 and `metadata` string keys to string or finite-number values, at most 1 KiB as canonical
+  JSON (`GenerationMetadata`); sealed on an encrypted one, `{ generation, sealed }`, base64 of a nonce, the count
+  sealed as a fixed-width u64 with the metadata after it, and a tag, so its length reveals only the metadata's size.
+  Each shape is checked at both registry boundaries: `ValidationError` on a write, `IntegrityError` naming the row
+  on a read. It names the generation it describes and follows the pointer and the keys: a patch that moves
+  `currentGen`, or changes `wrappedDeks` so the shape no longer agrees, without mentioning it drops the old one, and
+  one a write gives must name the `currentGen` and agree with the keys (sealed with wrapped keys, clear without) the
+  row will have. A stored row that disagrees is still read, so one such row cannot stop every listing, and whatever
+  reads the summary must not use it then. The registry stores a frozen copy of the summary it was called with. A
+  crypto-shred clears it. Nothing in the library writes or reads one yet, and a row without one is correct. Every
+  shipped registry round-trips it, and the registry conformance suite now requires a driver of your own to as well.
+  Types: `RegistrySummary`, `ClearRegistrySummary`, `SealedRegistrySummary`, `GenerationMetadata`.
+
+- **`Entropy`, the seam a registry draws its tokens' random parts from** (`(length) => Uint8Array`, from
+  `@cloudbitmaps/core`). `ObjectStoreRegistry` takes one as an optional fourth constructor argument and defaults to
+  Web Crypto. It is not the `Rng` seam, which is seedable for simulation: a seeded source hands every process the
+  same ids. Inject one only to make a test replayable. On a runtime with no Web Crypto a shipped registry still
+  reads and refuses every write with `UnsupportedError`.
+
+- **`RegCaps.canWrite`, an optional registry capability: `false` says the registry cannot write.** Absent means
+  writable, so an existing driver is unchanged. A shipped registry reports `false` on a runtime with no Web Crypto,
+  and a registry of your own may report it the same way. A load and an erasure rewrite check it before their first
+  request, so they refuse with `UnsupportedError` before they write an object.
 
 - **`AzureBlobStorage` can time each read: `readTimeoutMs`, off unless set.** With it set, every read request the
   Azure Blob storage and registry drivers send, a range read, a tail read's properties and its ranged download, each
@@ -109,6 +253,19 @@ so, and so do the module headers in the code.
   neighbours, so the storage conformance suite gains a case that holds every driver to it (`'delete of an absent
   key beside its neighbours'`, a new member of the exported `StorageDriverCase`).
 
+- **The roaring codec's `optimize()` is canonical: `removeRunCompression()`, then `runOptimize()`.** Where a
+  container's run and array encodings are the same size (three values in one run, five in two, and so on), CRoaring's
+  `runOptimize()` alone keeps whichever kind the container already has, so the same chunk could be stored as two
+  different byte strings. Now a chunk's bytes depend on its members alone, which is what makes a load from a bitmap
+  byte-identical to one from ids. No load's bytes change, since a chunk built from ids has no run compression to
+  undo. The one place they can: an erasure that rewrites a stored run chunk down to a tie now stores it as the array a
+  load writes, the same members in a payload 7 bytes larger (a one-container bitmap's header is 16 bytes, against 9
+  under the run cookie).
+
+- **A registry row whose token is in no form the library writes is refused when it is read**, with an
+  `IntegrityError` naming the row's key, where it used to pass the read and fail at its next write. A row stamped 1
+  must hold a decimal counter, and one stamped 2 a token with a write part.
+
 - **`store.load()` reads the segment's row once, and checks its next generation number instead of listing for it,
   which with the collection change above takes a steady load from 14 requests to 8.** A load read its registry row
   four times before its publish. On a cleartext segment it now reads it once, and the guard, the generation number,
@@ -167,9 +324,10 @@ so, and so do the module headers in the code.
     restore point and leave them above the pointer until a load's check meets one; the guide says to load until
     the pointer is above them. The re-runs below the strays count toward `keep` too, so keeping the restored
     generation as a rollback target takes a `keep` of at least the highest stray minus the restored pointer, plus
-    one, where the guide said one more than the number of strays. Because a re-run load takes again the numbers
-    collection freed, step 9's restart or invalidation of every store is what clears a store that read the segment
-    before the disaster.
+    one, where the guide said one more than the number of strays. A re-run load takes again the numbers collection
+    freed, but its writes are given tokens the row never had, so no cache takes a re-run's generation for an
+    earlier one under the same number; step 9's restart or invalidation of every store moves a store that read the
+    segment before the disaster onto the restored generation without waiting for its refresh.
   - **The calibration harness** expects each load's new shape, 2 PUT-class and 4 GET-class requests for a segment's
     first load. Its projection of a load's GET-class requests stays `5 + 2 × retryBound`, since a load whose check
     meets an object still reads the pointer before and after its listing and before its delete: the default
@@ -194,6 +352,29 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A cleartext `.crbm` object under an encrypted segment is refused, not believed.** A read of a segment whose row
+  carries wrapped keys opened such an object as if it were the segment's: the footer's encrypted flag alone decided,
+  and the key the read was given went unused, so a cleartext object written over a generation by anyone able to
+  write the bucket, with no key, answered `count()` with whatever its index claimed. Such an object was never one of
+  the segment's generations: a publish never adds a key to a lineage that has generations, and now refuses a
+  cleartext object onto a row with a key (see the `Changed` entry on loads that read their row once). So it is a
+  forgery, corruption, a cleartext write that never published (a store with no keystore that crashed between its
+  write and its publish, before the segment's first keyed load), or one an earlier release published while racing
+  that first keyed load. `CrbmReader.open` given a `crypto` now refuses an object that is not encrypted with
+  `IntegrityError` naming the generation, before it reads its index, and the live read, a pin and a load's guard all
+  open that way. The other paths that meet one:
+  - **An erasure** looks in it without the key, since it may hold the subject in the clear: it asks the object's
+    footer first, on that path alone, and deletes the object when it holds the id, as it deletes any holder, above
+    the pointer or below it. An id it does not hold is `not-member`, as before.
+  - **A `rollback`** onto it is refused with `IntegrityError` before the pointer moves, from one read of its footer,
+    and so is a rollback onto an encrypted object under a cleartext segment.
+  - **Its way out**: a load's collection takes it once it is below the pointer and outside `keep` (one load, or two
+    when it sits above the pointer), and `dropSegment`, an erasure of an id it holds, or deleting the object by hand
+    also remove it.
+
+  Tests forge a cleartext object in place of an encrypted segment's generation, erase ids from a cleartext write
+  that never published below and above an encrypted pointer, roll back onto one, race a cleartext load against a
+  first keyed load, and open cleartext objects with and without metadata with a key.
 - **An Azure Blob range or tail read whose connection drops part-way through the body is a `TransientError`.** The
   SDK fails such a body with an `AbortError`, which reached the caller as it was, so the store's read retry did not run
   it again and a `has()`, `count()` or erasure failed on one dropped connection. The registry already read the same

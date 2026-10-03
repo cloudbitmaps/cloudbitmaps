@@ -9,16 +9,28 @@
  * nonce/tag go in the footer). The footer then sets `FLAG_ENCRYPTED` and **zeroes `chunkCount` +
  * `totalCardinality`** so a leaked object reveals neither how many chunks nor how many ids it holds — the
  * reader derives both from the decrypted index. The per-chunk CRC covers the *encrypted* on-disk bytes.
+ *
+ * **Metadata (opt-in via `metadata`).** A generation given metadata carries an extension block between the last payload
+ * and the index, flagged in the footer (`FLAG_EXTENSION`), holding the metadata's canonical JSON, sealed like the index
+ * when the generation is encrypted. Without metadata the bytes are exactly those of an object written before the
+ * block existed.
  */
 import { ValidationError } from '../errors';
-import type { CrbmCrypto } from '../crypto';
+import type { AeadSealed, CrbmCrypto } from '../crypto';
+import { metadataBytes } from '../metadata';
+import type { GenerationMetadata } from '../ports';
 import { crc32c } from './crc32c';
 import { writeVarint } from './varint';
 import type { BlobSink } from '../blob';
 import {
   CONTAINER_CODEC_NONE,
   ELEMENT_WIDTH_32,
+  EXT_MAGIC,
+  EXT_SECTION_HEADER_BYTES,
+  EXT_SECTION_METADATA,
+  EXT_TRAILER_BYTES,
   FLAG_ENCRYPTED,
+  FLAG_EXTENSION,
   FLAG_LITTLE_ENDIAN,
   FOOTER,
   FOOTER_BYTES,
@@ -45,6 +57,13 @@ export interface CrbmWriterOptions {
   readonly elementWidth?: number;
   /** When set, payloads + index are AES-256-GCM-encrypted, bound to `(segment, generation, scope)` via AAD. */
   readonly crypto?: CrbmCrypto;
+  /**
+   * The generation's metadata, checked against the metadata rules and copied as its canonical JSON when the writer
+   * is constructed, so a later change to the caller's object never reaches the object. A value that breaks a rule
+   * throws {@link ValidationError} from the constructor, before a byte is written. None, or the empty object, writes
+   * format 1.0.
+   */
+  readonly metadata?: GenerationMetadata;
 }
 
 interface IndexEntry {
@@ -62,6 +81,8 @@ export class CrbmWriter {
   private totalCardinality = 0;
   private preambleWritten = false;
   private finished = false;
+  /** The metadata's canonical JSON, copied at construction; `undefined` writes format 1.0. */
+  private readonly metadata: Uint8Array | undefined;
   /** Bytes written so far, the footer included once {@link finish} has run. */
   private written = 0;
   private footerCrc32c: number | undefined;
@@ -75,6 +96,9 @@ export class CrbmWriter {
         `generation must be a non-negative integer; got ${options.generation}`,
       );
     }
+    this.metadata = metadataBytes(options.metadata, (message) => {
+      throw new ValidationError(message);
+    });
   }
 
   /**
@@ -100,7 +124,8 @@ export class CrbmWriter {
 
     await this.ensurePreamble();
     // Encrypt (if configured) to the on-disk bytes; the CRC + index length cover what actually lands on disk.
-    const stored = this.options.crypto ? this.sealChunk(chunkKey, payload) : payload;
+    const crypto = this.options.crypto;
+    const stored = crypto ? framed(crypto.aead.seal(payload, crypto.aadFor(chunkKey))) : payload;
     await this.sink.write(stored);
     this.entries.push({
       chunkKey,
@@ -114,21 +139,19 @@ export class CrbmWriter {
     this.lastKey = chunkKey;
   }
 
-  /** Seal one chunk payload into the on-disk frame `nonce ‖ ciphertext ‖ tag`, bound to its chunkKey. */
-  private sealChunk(chunkKey: number, payload: Uint8Array): Uint8Array {
-    const crypto = this.options.crypto!;
-    const sealed = crypto.aead.seal(payload, crypto.aadFor(chunkKey));
-    const out = new Uint8Array(sealed.nonce.length + sealed.ciphertext.length + sealed.tag.length);
-    out.set(sealed.nonce, 0);
-    out.set(sealed.ciphertext, sealed.nonce.length);
-    out.set(sealed.tag, sealed.nonce.length + sealed.ciphertext.length);
-    return out;
-  }
-
-  /** Write the index region + the fixed footer. After this the object is complete and immutable. */
+  /**
+   * Write the extension block (when there is metadata), the index region and the fixed footer. After this the object
+   * is complete and immutable.
+   */
   async finish(): Promise<void> {
     if (this.finished) throw new ValidationError('CrbmWriter already finished');
     await this.ensurePreamble();
+
+    if (this.metadata !== undefined) {
+      const block = this.extensionBlock(this.metadata);
+      await this.sink.write(block);
+      this.offset += block.length;
+    }
 
     const indexPlain = this.encodeIndex();
     // Encrypt the index too (its nonce/tag go in the footer); a leaked object then reveals no chunk metadata.
@@ -176,6 +199,26 @@ export class CrbmWriter {
     this.preambleWritten = true;
   }
 
+  /**
+   * The extension block: one metadata section (`u8 type ‖ u32 length ‖ bytes`), then the trailer
+   * (`u32 sectionsLength ‖ u32 crc32c(sections ‖ sectionsLength) ‖ "CRBX"`). Encrypted, the section holds
+   * `nonce ‖ ciphertext ‖ tag`, sealed with the metadata scope of the associated data.
+   */
+  private extensionBlock(metadata: Uint8Array): Uint8Array {
+    const crypto = this.options.crypto;
+    const body = crypto ? framed(crypto.aead.seal(metadata, crypto.aadFor('metadata'))) : metadata;
+    const sectionsLength = EXT_SECTION_HEADER_BYTES + body.length;
+    const block = new Uint8Array(sectionsLength + EXT_TRAILER_BYTES);
+    const view = new DataView(block.buffer);
+    block[0] = EXT_SECTION_METADATA;
+    view.setUint32(1, body.length, true);
+    block.set(body, EXT_SECTION_HEADER_BYTES);
+    view.setUint32(sectionsLength, sectionsLength, true);
+    view.setUint32(sectionsLength + 4, crc32c(block.subarray(0, sectionsLength + 4)), true);
+    block.set(EXT_MAGIC, sectionsLength + 8);
+    return block;
+  }
+
   private encodeIndex(): Uint8Array {
     const out: number[] = [];
     let prevKey = 0;
@@ -210,7 +253,13 @@ export class CrbmWriter {
     view.setBigUint64(FOOTER.indexOffset, BigInt(indexOffset), true);
     view.setBigUint64(FOOTER.indexLength, BigInt(indexRegion.length), true);
     view.setUint32(FOOTER.indexCrc32c, crc32c(indexRegion), true);
-    view.setUint32(FOOTER.flags, FLAG_LITTLE_ENDIAN | (encrypted ? FLAG_ENCRYPTED : 0), true);
+    view.setUint32(
+      FOOTER.flags,
+      FLAG_LITTLE_ENDIAN |
+        (encrypted ? FLAG_ENCRYPTED : 0) |
+        (this.metadata === undefined ? 0 : FLAG_EXTENSION),
+      true,
+    );
     view.setUint16(
       FOOTER.payloadCodecId,
       this.options.payloadCodecId ?? PAYLOAD_CODEC_ROARING_PORTABLE,
@@ -233,4 +282,13 @@ export class CrbmWriter {
     footer.set(MAGIC, FOOTER.endMagic);
     return footer;
   }
+}
+
+/** The on-disk frame of one sealed blob, `nonce ‖ ciphertext ‖ tag`. */
+function framed(sealed: AeadSealed): Uint8Array {
+  const out = new Uint8Array(sealed.nonce.length + sealed.ciphertext.length + sealed.tag.length);
+  out.set(sealed.nonce, 0);
+  out.set(sealed.ciphertext, sealed.nonce.length);
+  out.set(sealed.tag, sealed.nonce.length + sealed.ciphertext.length);
+  return out;
 }

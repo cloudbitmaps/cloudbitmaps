@@ -14,6 +14,7 @@ import { S3StorageDriver } from '@/s3/storage';
 import { IntegrityError, TransientError, ValidationError } from '@/core/errors';
 import { MAX_ROW_BYTES } from '@/drivers/_shared/object-registry';
 import type { GenKey } from '@/core/ports';
+import { CREATED_TOKEN, tokenAfter } from '../../helpers/tokens';
 
 /**
  * Every S3 read is cut off at `readTimeoutMs`, and nothing else is.
@@ -700,7 +701,7 @@ describe('S3: writes, deletes and listings are not timed', LIMIT, () => {
     stub.arm('PutObject', { kind: 'delay', ms: 3 * TIMEOUT });
 
     const outcome = await settle(backend.registry.create({ segment: 's' }, { currentGen: 0 }));
-    expect(outcome).toMatchObject({ value: { token: '0' } });
+    expect(outcome).toMatchObject({ value: { token: expect.stringMatching(CREATED_TOKEN) } });
     expect(stub.cut).toEqual([]);
   });
 
@@ -710,7 +711,7 @@ describe('S3: writes, deletes and listings are not timed', LIMIT, () => {
     const swapped = await settle(
       backend.registry.compareAndSwap({ segment: 's' }, token, { currentGen: 1 }),
     );
-    expect(swapped).toMatchObject({ value: { token: '1' } });
+    expect(swapped).toMatchObject({ value: { token: expect.stringMatching(tokenAfter(token)) } });
     expect(await backend.registry.get({ segment: 's' })).toMatchObject({ currentGen: 1 });
 
     stub.arm('PutObject', { kind: 'delay', ms: 3 * TIMEOUT }); // the tombstone

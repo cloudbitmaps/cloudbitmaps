@@ -81,6 +81,10 @@ const ids = RoaringBitmap32.deserialize(
 ).toArray();
 ```
 
+And a store loads one straight back, with no per-id work:
+`await store.load({ segment: 'vips' }, { serialized: readFileSync('dump/_default/vips.roaring') })`
+([what a load accepts](loading.md#what-a-load-accepts)).
+
 ## Things to know
 
 - **A copy of the bucket is not an export.** A raw copy holds every generation in the bucket, including ones that were

@@ -5,6 +5,7 @@ import { BufferSink, BufferReader } from '@/core/blob';
 import { crc32c } from '@/core/crbm/crc32c';
 import {
   FLAG_ENCRYPTED,
+  FLAG_EXTENSION,
   FLAG_LITTLE_ENDIAN,
   FOOTER,
   FOOTER_BYTES,
@@ -161,12 +162,39 @@ describe('version & feature gating', () => {
     await expect(CrbmReader.open(new BufferReader(bytes))).rejects.toBeInstanceOf(UnsupportedError);
   });
 
-  it('tolerates an unknown minor version', async () => {
+  it('tolerates an unknown minor version, and finds the extension block by its flag', async () => {
+    const sink = new BufferSink();
+    const writer = new CrbmWriter(sink, { generation: 1, metadata: { def: 'v9' } });
+    for (const c of SAMPLE) await writer.addChunk(c.chunkKey, c.payload, c.cardinality);
+    await writer.finish();
+    const bytes = patchFooter(sink.bytes(), (_view, footer) => {
+      footer[FOOTER.versionMinor] = 9;
+    });
+    bytes[5] = 9; // the preamble's minor, which must agree with the footer's
+    const reader = await CrbmReader.open(new BufferReader(bytes));
+    expect(reader.chunkKeys()).toEqual([0, 5, 65_535]);
+    expect(reader.metadata).toEqual({ def: 'v9' });
+  });
+
+  it('finds the extension block by its flag, not the minor: a minor above 0 without the flag reads no block', async () => {
     const bytes = patchFooter(await build(SAMPLE), (_view, footer) => {
       footer[FOOTER.versionMinor] = 9;
     });
+    bytes[5] = 9;
     const reader = await CrbmReader.open(new BufferReader(bytes));
-    expect(reader.chunkKeys()).toEqual([0, 5, 65_535]);
+    expect(reader.metadata).toBeUndefined();
+    expect(reader.chunkKeys()).toEqual(
+      (await CrbmReader.open(new BufferReader(await build(SAMPLE)))).chunkKeys(),
+    );
+  });
+
+  it('refuses the extension flag with no block before the index', async () => {
+    const bytes = patchFooter(await build(SAMPLE), (view) => {
+      view.setUint32(FOOTER.flags, view.getUint32(FOOTER.flags, true) | FLAG_EXTENSION, true);
+    });
+    await expect(CrbmReader.open(new BufferReader(bytes))).rejects.toThrow(
+      /extension block trailer magic/,
+    );
   });
 
   it('rejects an encrypted file when no decryption key is provided', async () => {

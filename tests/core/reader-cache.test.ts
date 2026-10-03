@@ -3,6 +3,8 @@ import type { IStorageDriver } from '@/index';
 import { RETAINED_BYTES_PER_INDEX_ENTRY } from '@/core/crbm/reader';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
+import { publishGeneration } from '@/core/crbm-storage-source';
+import { writeCrbm } from '../helpers/crbm-extension';
 
 /**
  * Bounded storage-reader cache. `CrbmStorageChunkSource` keeps its opened readers (each carrying a fully-parsed
@@ -126,6 +128,31 @@ describe('CrbmStorageChunkSource — byte-bounded reader cache (second half of t
     expect(opens()).toBe(4);
     await source.listChunkKeys({ segment: 's2' }); // still resident → no new open
     expect(opens()).toBe(4);
+  });
+
+  it('counts the metadata a reader holds against the same byte budget', async () => {
+    // Two segments whose one-entry indices together fill the cap exactly, each with an extension block of metadata. A
+    // reader holds its decoded metadata too, so the two cannot both stay resident: reading s0 again re-opens it.
+    const registry = new MemoryRegistryDriver({ now: () => 0 });
+    const { storage, opens } = countingStorage(new MemoryStorageDriver());
+    for (const segment of ['m0', 'm1']) {
+      const bytes = await writeCrbm([{ chunkKey: 0, payload: Uint8Array.of(1), cardinality: 1 }], {
+        generation: 0,
+        metadata: { def: 'x'.repeat(100) },
+      });
+      const key = { segment, generation: 0 };
+      await storage.putImmutable(key, async (out) => out.write(bytes));
+      await publishGeneration(registry, key);
+    }
+    const source = new CrbmStorageChunkSource(storage, {
+      registry,
+      maxOpenSegments: 100,
+      maxOpenIndexBytes: 2 * RETAINED_BYTES_PER_INDEX_ENTRY,
+    });
+    await source.listChunkKeys({ segment: 'm0' });
+    await source.listChunkKeys({ segment: 'm1' });
+    await source.listChunkKeys({ segment: 'm0' });
+    expect(opens()).toBe(3);
   });
 
   it('bounds resident index bytes across a large fleet — memory cannot accumulate with fleet size', async () => {
