@@ -90,7 +90,7 @@ so, and so do the module headers in the code.
 ### Added
 
 - **The cost model prices the retention sweep.** `Workload` gains `retirementsPerMonth`, `purgesPerMonth` and
-  `conditionalDelete` (default `true`), and `CostReport.monthlyUSD.byOp` gains `retention`. The requests are the ones a
+  `conditionalDelete` (default `true`; a `GcsStorage` reports `false` unless its option is set), and `CostReport.monthlyUSD.byOp` gains `retention`. The requests are the ones a
   store that counts its requests measured, per segment: with the registry's `conditionalDelete` on, a retirement is 9
   reads, 3 writes and a delete, a purge is 4 reads and 2 deletes, and a later sweep reads nothing of a purged segment;
   with it off, a retirement is 8 reads and 3 writes, a purge is 3 reads and a write, and every later full sweep reads
@@ -171,19 +171,21 @@ so, and so do the module headers in the code.
   absent, every delete leaves a tombstone. The cloud registries remove a row with `DeleteObject` under `If-Match` (sent
   once, as a registry write is), a GCS delete under `ifGenerationMatch`, and Delete Blob under `ifMatch`, each set to the
   version the registry read; a precondition that no longer holds, or an object already gone, is a
-  `WriteConflictError`, and the registry re-reads. The option defaults to `true` for Azure Blob, for GCS on its public endpoint, and for an
-  S3 client whose resolved host is an AWS S3 host, and to `false` for a GCS client with an endpoint of its own and an S3
-  client that sends anywhere else: MinIO and fake-gcs-server accept the precondition on a delete and ignore it, and on
-  such a store two sweepers and a re-create of the name could delete a live row. The S3 host is the one the SDK
+  `WriteConflictError`, and the registry re-reads. The option defaults to `true` for Azure Blob and for an S3 client whose resolved host is an
+  AWS S3 host, and to `false` for GCS, the public endpoint included, and for an S3 client that sends anywhere else.
+  GCS is off because no run against real GCS has verified that it applies `ifGenerationMatch` to a delete; set `true`
+  to remove rows for good. MinIO and fake-gcs-server accept the precondition on a delete and ignore it, and on such a
+  store two sweepers and a re-create of the name could delete a live row. The S3 host is the one the SDK
   resolves, so an endpoint set by `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL` or an `endpoint_url` in the shared config
   file counts as a constructor `endpoint` does, and an AWS regional, FIPS, dual-stack or VPC interface host is AWS. It is
   read from the client once, before the registry's first request, without sending one; until then
   `capabilities().conditionalDelete` reads `false` unless the option is set. A value that is not a boolean is refused with
   `ValidationError`. The in-memory and local-filesystem registries report `true`. For driver authors,
   `ObjectRegistryStore` may implement `delete(key, { version })` and set `conditionalDelete: true` to say its backend
-  applies the precondition; with both, `ObjectStoreRegistry` removes rows rather than tombstoning them. Whether real S3
-  and real GCS refuse a stale precondition is checked by `tests/integration/real-cloud-conditional-delete.test.ts`
-  against named buckets, skipped otherwise, which is a gate for this release.
+  applies the precondition; with both, `ObjectStoreRegistry` removes rows rather than tombstoning them. Real S3 refuses a stale
+  precondition: `tests/integration/real-cloud-conditional-delete.test.ts` passed against AWS S3 on 2026-10-03, on an
+  unversioned and a versioned bucket. The same probe has not been run against real GCS, which is why GCS is off by
+  default; it is skipped unless a bucket is named.
 
 - **`readTimeoutMs` on `GcsStorage` cuts off a GCS read that stalls; it is off unless you set it.** A client's own
   `timeout` does not bound a download on `@google-cloud/storage` 8.x, so a read whose server stops answering waited

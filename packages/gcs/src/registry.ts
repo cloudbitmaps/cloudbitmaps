@@ -6,8 +6,9 @@
  *
  * The protocol (an ABA-safe OCC token, the delete and its tombstone, the bounded retry, the key layout) lives once
  * in {@link ObjectStoreRegistry}; this file is only the I/O calls GCS makes. A delete removes a row for good, under
- * `ifGenerationMatch: <generation>`, when `conditionalDelete` is on: by default on the public endpoint, and off for a
- * client with a custom `apiEndpoint`, since an emulator may accept the precondition and ignore it (fake-gcs-server does).
+ * `ifGenerationMatch: <generation>`, when `conditionalDelete` is `true`. It is off by default, on the public endpoint too:
+ * no run against real GCS has verified that the service applies the precondition to a delete, and fake-gcs-server
+ * accepts it and ignores it, so CI cannot show it.
  *
  * **The atomic swap is offloaded to GCS's object preconditions.** `ifGenerationMatch: 0` is create-only
  * ("only if it does not exist") and `ifGenerationMatch: <generation>` is compare-and-swap — the same pair S3
@@ -69,8 +70,9 @@ export interface GcsRegistryDriverOptions {
   /**
    * Whether a delete removes a row for good, by an object delete sent with `ifGenerationMatch: <the generation it
    * read>`, rather than leaving a tombstone. Only a row born with an incarnation id is removed; a row a release before
-   * 0.12 wrote is always tombstoned. Defaults to `true` for a client on the public endpoint, and to `false` for one with
-   * a custom `apiEndpoint`: fake-gcs-server, for one, ignores the precondition on a delete.
+   * 0.12 wrote is always tombstoned. Defaults to `false`, on the public endpoint too: whether real GCS applies
+   * `ifGenerationMatch` to a delete has not been verified by a run against the service, and fake-gcs-server accepts the
+   * precondition and ignores it, so CI cannot show it. Set `true` to remove rows for good.
    */
   readonly conditionalDelete?: boolean;
 }
@@ -235,10 +237,10 @@ function mapError(err: unknown): unknown {
   return err;
 }
 
-/** {@link GcsRegistryDriverOptions.conditionalDelete}, checked, or its default: on unless the client has its own endpoint. */
-function resolveConditionalDelete(value: unknown, storage: Storage): boolean {
+/** {@link GcsRegistryDriverOptions.conditionalDelete}, checked, or its default: off. */
+function resolveConditionalDelete(value: unknown): boolean {
   if (value === undefined) {
-    return (storage as { customEndpoint?: unknown }).customEndpoint !== true;
+    return false;
   }
   if (typeof value !== 'boolean') {
     throw new ValidationError(`conditionalDelete must be a boolean; got ${String(value)}`);
@@ -254,7 +256,7 @@ export class GcsRegistryDriver extends ObjectStoreRegistry {
         options.readStorage ?? options.storage,
         options.bucket,
         resolveReadTimeoutMs(options.readTimeoutMs),
-        resolveConditionalDelete(options.conditionalDelete, options.storage),
+        resolveConditionalDelete(options.conditionalDelete),
       ),
       normalizeObjectPrefix(options.prefix),
       options.now ?? ((): number => Date.now()),

@@ -9,8 +9,8 @@
  *
  * - **Azurite applies it.** A stale ETag is a 412 and the blob stays. The Azure Blob registry removes rows by default,
  *   and this lane proves the fenced path end to end.
- * - **MinIO and fake-gcs-server ignore it.** A delete with a stale ETag or generation deletes the object anyway. So a
- *   client with a custom endpoint keeps tombstones by default, and the cases below that run a stale precondition
+ * - **MinIO and fake-gcs-server ignore it.** A delete with a stale ETag or generation deletes the object anyway. So S3
+ *   with a custom endpoint, and GCS everywhere, keep tombstones by default, and the cases below that run a stale precondition
  *   against them record that they ignore it: if a pinned image starts applying it, they fail, and the default can be
  *   reconsidered. This lane can therefore show that the S3 and GCS drivers *send* the precondition, never that real
  *   S3 or GCS apply it; `real-cloud-conditional-delete.test.ts` is the probe for that, and it is skipped here.

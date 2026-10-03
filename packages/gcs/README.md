@@ -43,7 +43,7 @@ It builds its own client from Application Default Credentials. Any other key is 
 | `projectId`, `apiEndpoint` | build a client for you, such as one for fake-gcs-server; refused beside `client` |
 | `simpleUploadThresholdBytes`, `maxObjectBytes` | the size up to which an object is one simple request (default 8 MiB) and the largest object (default 5 TiB, GCS's maximum) |
 | `readTimeoutMs` | cut off a read that has run this long, in milliseconds (see below); `0`, the default, sets no timeout |
-| `conditionalDelete` | whether the registry removes a deleted row with an object delete under `ifGenerationMatch`, rather than leaving a tombstone every full listing reads. On by default on the public endpoint, off with a custom `apiEndpoint`: fake-gcs-server ignores the precondition on a delete. Needs delete permission on the registry prefix |
+| `conditionalDelete` | whether the registry removes a deleted row with an object delete under `ifGenerationMatch`, rather than leaving a tombstone every full listing reads. Off by default, on the public endpoint too: whether real GCS applies `ifGenerationMatch` to a delete has not been verified by a run against the service, and fake-gcs-server ignores it, so CI cannot show it. Set `true` to remove rows for good. Needs delete permission on the registry prefix |
 
 ## Before production
 

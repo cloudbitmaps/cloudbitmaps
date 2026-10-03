@@ -137,7 +137,7 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   100-part loads a month is about $0.52.
 - **The retention sweep** is priced per segment, from the registry requests `retireExpired` makes, which a store
   that counts its requests measured. Set `retirementsPerMonth` and `purgesPerMonth` (at a steady state the same number,
-  a `tombstoneGraceMs` apart), and `conditionalDelete` to what your registry reports (`true` by default):
+  a `tombstoneGraceMs` apart), and `conditionalDelete` to what your registry reports (`true` by default, which is what S3 on AWS and Azure Blob report; a `GcsStorage` reports `false` unless you set its option, so set `false` here for it):
 
   | Per segment | Reads | Writes | Deletes |
   | --- | --- | --- | --- |

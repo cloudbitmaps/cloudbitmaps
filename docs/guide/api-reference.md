@@ -110,7 +110,7 @@ The registry needs delete permission on its prefix for it.
 | Backend | Default | Why |
 |---|---|---|
 | `S3Storage` | `true` when the host the client resolves is an AWS S3 host; `false` for any other host, or one that cannot be resolved | AWS documents `If-Match` on `DeleteObject` for general purpose and directory buckets. An S3-compatible store may accept the header and ignore it, and MinIO does, so a client that sends to one keeps tombstones until you set `true`. The host is the one the SDK resolves for a request, so an endpoint set by `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL` or an `endpoint_url` in the shared config file counts as a constructor `endpoint` does; an AWS regional, FIPS, dual-stack or VPC interface host is AWS |
-| `GcsStorage` | `true` on the public endpoint; `false` with a custom `apiEndpoint` | GCS applies `ifGenerationMatch` on a delete; fake-gcs-server ignores it |
+| `GcsStorage` | `false`, on the public endpoint too; `true` removes rows for good | Whether real GCS applies `ifGenerationMatch` to a delete has not been verified by a run against the service, and fake-gcs-server accepts it and ignores it, so CI cannot show it |
 | `AzureBlobStorage` | `true` | Azure Blob applies `If-Match` on Delete Blob, and Azurite does too |
 
 **The S3 default is read from the client, once, before the registry's first request.** The registry serialises the

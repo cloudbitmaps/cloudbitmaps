@@ -163,12 +163,17 @@ function soleObject(storage: FakeGcs): { key: string; object: FakeObject } {
   return { key, object: storage.objects.get(key) as FakeObject };
 }
 
-const driverOver = (storage: FakeGcs, prefix = 'cloudbitmaps'): GcsRegistryDriver =>
+const driverOver = (
+  storage: FakeGcs,
+  prefix = 'cloudbitmaps',
+  conditionalDelete?: boolean,
+): GcsRegistryDriver =>
   new GcsRegistryDriver({
     storage: storage as unknown as Storage,
     bucket: 'b',
     prefix,
     now: ticking(),
+    ...(conditionalDelete === undefined ? {} : { conditionalDelete }),
   });
 
 // The GCS registry must pass the SAME contract as memory / LocalFs / S3 / Azure, in the fast lane.
@@ -180,8 +185,8 @@ registryConcurrency('GcsRegistryDriver (fake GCS)', () => {
   return [driverOver(storage), driverOver(storage)];
 });
 
-// What a delete leaves behind: on by default for a client on the public endpoint, which the fake is.
-for (const conditionalDelete of [undefined, false] as const) {
+// What a delete leaves behind: a tombstone by default, a removed row when `conditionalDelete` is `true`.
+for (const conditionalDelete of [undefined, false, true] as const) {
   registryDeleteConformance(
     `GcsRegistryDriver (fake GCS, conditionalDelete: ${String(conditionalDelete)})`,
     () => {
@@ -214,13 +219,17 @@ describe('GcsRegistryDriver — whether a delete removes the row', () => {
   const emulator = (): Storage =>
     new Storage({ projectId: 'p', apiEndpoint: 'http://127.0.0.1:4443' });
 
-  it('is on for the public endpoint and off for a custom one, such as an emulator', () => {
-    expect(caps(publicGcs())).toBe(true);
+  it('is off by default, on the public endpoint and on a custom one alike', () => {
+    expect(caps(publicGcs())).toBe(false);
     expect(caps(emulator())).toBe(false);
+    expect(
+      new GcsStorage({ bucket: 'b', projectId: 'p' }).registry.capabilities().conditionalDelete,
+    ).toBe(false);
   });
 
   it("is the caller's to set either way, and GcsStorage passes it through", () => {
     expect(caps(emulator(), true)).toBe(true);
+    expect(caps(publicGcs(), true)).toBe(true);
     expect(caps(publicGcs(), false)).toBe(false);
     const built = new GcsStorage({ bucket: 'b', projectId: 'p', apiEndpoint: 'http://e:4443' });
     expect(built.registry.capabilities().conditionalDelete).toBe(false);
@@ -236,7 +245,7 @@ describe('GcsRegistryDriver — whether a delete removes the row', () => {
 
   it('deletes with ifGenerationMatch set to the generation it read', async () => {
     const storage = new FakeGcs();
-    const d = driverOver(storage);
+    const d = driverOver(storage, 'cloudbitmaps', true);
     const { token } = await d.create(ref, { currentGen: 0 });
     const { key, object } = soleObject(storage);
     await d.delete(ref, token);
@@ -246,7 +255,7 @@ describe('GcsRegistryDriver — whether a delete removes the row', () => {
 
   it('a 412 on the delete is a lost race: WriteConflictError, and the written row stays', async () => {
     const storage = new FakeGcs();
-    const [a, b] = [driverOver(storage), driverOver(storage)];
+    const [a, b] = [driverOver(storage, 'cloudbitmaps', true), driverOver(storage)];
     const { token } = await a.create(ref, { currentGen: 0 });
     let swapped = '';
     storage.beforeDelete = async () => {
@@ -284,7 +293,7 @@ describe('GcsRegistryDriver — construction + GCS specifics', () => {
     const storage = new FakeGcs() as unknown as Storage;
     expect(new GcsRegistryDriver({ storage, bucket: 'b' }).capabilities()).toEqual({
       strongRead: true,
-      conditionalDelete: true,
+      conditionalDelete: false,
     });
   });
 
