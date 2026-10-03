@@ -60,17 +60,19 @@ const {
  * requests, and its loads are priced from those; this table is what a reload and a load that collects cost, which a
  * run that loads each segment once does not measure. PUT-class: the object and the pointer. GETs: on a segment's
  * first load, three pointer reads (it found no row, so it reads it again after its ids, and the create reads once
- * more) and one check that the generation number is free (a HeadObject); a reload reads the current generation's
- * index in place of the second and third; from the third load on, collection deletes the generation the window pushed
- * out, by name, re-reading the pointer before its delete, so a collecting load lists nothing. Every sixteenth load
- * lists instead, `listing`: a listing, and the pointer read before and after it. The test asserts these numbers, so
- * the prices below cannot drift from what runs.
+ * more) and one check that the generation number is free (a HeadObject); a reload reads the pointer twice (its row,
+ * and the compare-and-swap's read of the row's version) and makes the one check, and sizes the current generation
+ * from its row's summary, so it opens no object; from the third load on, collection deletes the generation the
+ * window pushed out, by name, after a second check that the current generation's object is there, and re-reads the
+ * pointer before its delete, so a collecting load lists nothing. Every sixteenth load lists instead, `listing`: a
+ * listing, and the pointer read before and after it, and it needs no check that the current object is there. The test
+ * asserts these numbers, so the prices below cannot drift from what runs.
  */
 const STORE_LOAD_REQUESTS = Object.freeze({
   first: Object.freeze({ put: 2, get: 4 }),
-  reload: Object.freeze({ put: 2, get: 4 }),
+  reload: Object.freeze({ put: 2, get: 3 }),
   collecting: Object.freeze({ put: 2, get: 5 }),
-  listing: Object.freeze({ put: 3, get: 7 }),
+  listing: Object.freeze({ put: 3, get: 6 }),
 });
 
 /** Roaring's portable format stores a chunk of at most this many ids as an array: a header, then 2 bytes an id. */

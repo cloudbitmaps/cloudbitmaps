@@ -638,27 +638,31 @@ describe('a segment is loaded once', () => {
     expect(helper.indexOf('claimFirstLoad(segment)')).toBeLessThan(helper.indexOf('loader.load('));
   });
 
-  it("a reload whose number is taken and that loses four races makes more requests than a first load's bound, so a reload is not projected", async () => {
+  it("a reload of a row with no summary whose number is taken and that loses four races makes more requests than a first load's bound, so a reload is not projected", async () => {
     /**
      * The GET-class requests of a segment's load number `nth` (from 2), when its publish loses `lost` races, and
-     * when `taken`, a crashed load's object sits under the number it checks.
+     * when `taken`, a crashed load's object sits under the number it checks. `legacy` leaves the row as one written
+     * before rows carried a summary of the current generation, which the load then has to open to size.
      */
     const reload = async (
       nth: number,
       lost: number,
       taken = false,
+      legacy = false,
     ): Promise<{ gets: number; threw: boolean }> => {
       const calls: Record<string, number> = {};
       const pointer = new CountingObjectStore(0);
       const memory = new MemoryStorageDriver();
+      const registry = new ObjectStoreRegistry(pointer, undefined, () => 0);
       const store = new CloudRoaring({
-        storage: brandAsBackend({
-          storage: counting(memory, calls),
-          registry: new ObjectStoreRegistry(pointer, undefined, () => 0),
-        }),
+        storage: brandAsBackend({ storage: counting(memory, calls), registry }),
       });
       for (let i = 1; i < nth; i += 1) await store.load({ segment: 's' }, [1, 2, 3, i]);
       if (taken) await bulkLoadCrbmGeneration(memory, { segment: 's', generation: nth - 1 }, [7]);
+      if (legacy) {
+        const row = (await registry.get({ segment: 's' }))!;
+        await registry.compareAndSwap({ segment: 's' }, row.token, { summary: undefined });
+      }
       (pointer as unknown as { lostRaces: number }).lostRaces = lost;
       pointer.reads = 0;
       for (const k of Object.keys(calls)) delete calls[k];
@@ -669,7 +673,8 @@ describe('a segment is loaded once', () => {
         if (!(err instanceof WriteConflictError)) throw err;
         threw = true;
       }
-      // The pointer reads, the tail read of the current generation's index, and the check of the next number.
+      // The pointer reads, the checks of the next number and of the current object, and the tail read of the current
+      // generation's index when the row has no summary of it.
       return { gets: pointer.reads + (calls.getTail ?? 0), threw };
     };
     const bound = guards.projectOps({
@@ -679,18 +684,23 @@ describe('a segment is loaded once', () => {
       retryBound: guards.RETRY_BOUND,
     }).get;
     expect(bound).toBe(15);
-    // Nothing racing and the number free: a reload is the counted four, as many as a first load, and a load that
-    // collects five. Four lost publishes, the last attempt winning, put them at twelve and thirteen, inside the bound.
-    expect(await reload(2, 0)).toEqual({ gets: 4, threw: false });
+    // Nothing racing and the number free: a reload sizes the current generation from its row's summary, so it is the
+    // counted three, a request fewer than a first load, and a load that collects makes five (it also checks that the
+    // current object is there). Four lost publishes, the last attempt winning, put them at eleven and thirteen, inside
+    // the bound.
+    expect(await reload(2, 0)).toEqual({ gets: 3, threw: false });
     expect(await reload(3, 0)).toEqual({ gets: 5, threw: false });
-    expect(await reload(2, 4)).toEqual({ gets: 12, threw: false });
+    expect(await reload(2, 4)).toEqual({ gets: 11, threw: false });
     expect(await reload(3, 4)).toEqual({ gets: 13, threw: false });
     // A reload whose check finds the number taken lists to collect as well, and reads the pointer around its listing
-    // and before each delete: eight with nothing racing, and with four lost publishes sixteen, past the bound of
-    // fifteen, which only a segment's first load is held to.
-    expect(await reload(3, 0, true)).toEqual({ gets: 8, threw: false });
-    expect(await reload(3, 4, true)).toEqual({ gets: 16, threw: false });
-    expect((await reload(3, 4, true)).gets).toBeGreaterThan(bound);
+    // and before each delete: seven with nothing racing, and with four lost publishes fifteen, as many as the bound.
+    expect(await reload(3, 0, true)).toEqual({ gets: 7, threw: false });
+    expect(await reload(3, 4, true)).toEqual({ gets: 15, threw: false });
+    expect((await reload(3, 4, true)).gets).toBeLessThanOrEqual(bound);
+    // The same reload of a row written before rows carried a summary reads the current generation's index as well:
+    // one more, past the bound, which only a segment's first load is held to.
+    expect(await reload(3, 4, true, true)).toEqual({ gets: 16, threw: false });
+    expect((await reload(3, 4, true, true)).gets).toBeGreaterThan(bound);
   });
 });
 

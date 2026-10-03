@@ -369,8 +369,13 @@ describe('Azure Blob: a timed-out read is retried by the store', () => {
   );
 
   it('a guarded load whose read of the current generation stalls once still publishes', async () => {
-    const store = new CloudRoaring({ storage: backendWith(TIMEOUT) });
+    const backend = backendWith(TIMEOUT);
+    const store = new CloudRoaring({ storage: backend });
     await store.load(ERASE, [1, 2, 3]);
+    // A row with a summary of its current generation is sized from it, and the object is not read. This is a row written
+    // before rows carried one, whose generation the guard has to open.
+    const row = (await backend.registry.get(ERASE))!;
+    await backend.registry.compareAndSwap(ERASE, row.token, { summary: undefined });
     let gets = 0;
     stub.plan = (r) =>
       r.method === 'GET' && r.name === ERASE_GEN0 && ++gets === 1

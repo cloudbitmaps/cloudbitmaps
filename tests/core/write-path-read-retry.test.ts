@@ -87,10 +87,14 @@ function flakyReads(inner: IStorageDriver): {
   };
 }
 
-/** A store over `MemoryStorage` whose storage half fails the armed read; the registry is the real one. */
+/**
+ * A store over `MemoryStorage` whose storage half fails the armed read; the registry is the real one. `summary: false`
+ * leaves the row as one written before rows carried a summary of the current generation, which a load's guard has to
+ * open the object to size.
+ */
 async function world(
   ids: readonly number[],
-  options: { retry?: false } = {},
+  options: { retry?: false; summary?: false } = {},
 ): Promise<{
   backend: MemoryStorage;
   flaky: ReturnType<typeof flakyReads>;
@@ -100,6 +104,10 @@ async function world(
   await bulkLoadCrbmGeneration(backend.storage, { ...SEG, generation: 0 }, ids, {
     registry: backend.registry,
   });
+  if (options.summary === false) {
+    const row = (await backend.registry.get(SEG))!;
+    await backend.registry.compareAndSwap(SEG, row.token, { summary: undefined });
+  }
   const flaky = flakyReads(backend.storage);
   const store = new CloudRoaring({
     storage: brandAsBackend({ storage: flaky.storage, registry: backend.registry }),
@@ -132,7 +140,7 @@ function coreDeps(w: Awaited<ReturnType<typeof world>>, retried: boolean) {
 
 describe("a load's guard read is retried", () => {
   it('one transient fault on the read of the current generation: the load publishes', async () => {
-    const w = await world([1, 2, 3]);
+    const w = await world([1, 2, 3], { summary: false });
     w.flaky.arm({ op: 'getTail', generation: 0, nth: 1, error: transient });
 
     const res = await w.store.load(SEG, [1, 2, 3, 4], { guard: { minRetained: 0.5 } });
@@ -143,7 +151,7 @@ describe("a load's guard read is retried", () => {
   });
 
   it('with the store retry off, the same fault reaches the caller', async () => {
-    const w = await world([1, 2, 3], { retry: false });
+    const w = await world([1, 2, 3], { retry: false, summary: false });
     w.flaky.arm({ op: 'getTail', generation: 0, nth: 1, error: transient });
 
     await expect(
@@ -153,7 +161,7 @@ describe("a load's guard read is retried", () => {
   });
 
   it('a fault retrying cannot fix is not retried', async () => {
-    const w = await world([1, 2, 3]);
+    const w = await world([1, 2, 3], { summary: false });
     w.flaky.arm({ op: 'getTail', generation: 0, nth: 1, error: corrupt });
 
     await expect(
@@ -163,7 +171,7 @@ describe("a load's guard read is retried", () => {
   });
 
   it('in core: loadSegment retries it under the readRetry it is given, and not without one', async () => {
-    const w = await world([1, 2, 3]);
+    const w = await world([1, 2, 3], { summary: false });
     w.flaky.arm({ op: 'getTail', generation: 0, nth: 1, error: transient });
     const guard = { guard: { minRetained: 0.5 } };
     await expect(loadSegment(SEG, [1, 2, 3, 4], coreDeps(w, false), guard)).rejects.toBeInstanceOf(

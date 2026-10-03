@@ -119,8 +119,8 @@ A cold intersect costs 4 + 2k GETs for k shared chunks, so what two segments sha
 | shared chunks, of 2,000 | GETs a cold intersect | Medium, a month | against its Redis | Large, a month | against its Redis |
 |---:|---:|---:|---:|---:|---:|
 | 100 (the tables above) | 204 | $280 | 69% less | $6,703 | 75% less |
-| 1,000 | 2,004 | $2,172 | 2.4× as much | $44,547 | 1.6× as much |
-| 2,000 | 4,004 | $4,274 | 4.7× as much | $86,595 | 3.2× as much |
+| 1,000 | 2,004 | $2,172 | 2.4× as much | $44,546 | 1.6× as much |
+| 2,000 | 4,004 | $4,274 | 4.7× as much | $86,594 | 3.2× as much |
 <!-- SIZING:OVERLAP:END -->
 
 <!-- SIZING:OVERLAP_NOTE:START -->

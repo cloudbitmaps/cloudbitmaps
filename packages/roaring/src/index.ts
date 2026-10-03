@@ -65,6 +65,7 @@ import type {
   Budget,
   BudgetOption,
   GenerationEntry,
+  GenerationMetadata,
   LoadGuard,
   LoadInput,
   LoadOptions,
@@ -452,9 +453,10 @@ export interface MaterializeResult {
   readonly cardinality: number;
   /**
    * What the destination held when the guard judged it — `null` when it had no current generation, **or when
-   * no bound needed the read**. The read costs an object-header fetch, so it is taken only when a bound will
-   * use it: `allowEmpty: true` with no `guard.minRetained` skips it, and this is `null` even though `dest`
-   * was non-empty.
+   * no bound needed it**. It is taken only when a bound will use it: `allowEmpty: true` with no
+   * `guard.minRetained` skips it, and this is `null` even though `dest` was non-empty. When the destination's row
+   * carries a summary of its current generation the count comes from the row and the object is not read; a row
+   * written before rows carried a summary costs one object-header fetch.
    */
   readonly cardinalityBefore: number | null;
   /** Non-empty chunks in the generation. */
@@ -891,7 +893,7 @@ export class CloudRoaring {
   /**
    * Write `ids` as a **new generation of `dest`** and publish it — the shared body of the `*Into` verbs. An `*Into`
    * materialisation is a load, and publishes the same way (hard invariant 1): every load that finds a row fences its
-   * publish on the row's token; a guarded load (the default, since the empty refusal reads the current generation)
+   * publish on the row's token; a guarded load (the default, since the empty refusal needs the size of the current generation)
    * also fences on the pointer it judged (`expectFrom`), and one that found no row fences on that absence instead.
    * Only an unguarded load (`allowEmpty: true` and no `guard.minRetained`) onto a segment with no row publishes bare
    * forward-only. The destination's previous generation stays readable until the publish lands (readers re-resolve
@@ -937,11 +939,14 @@ export class CloudRoaring {
     // A materialisation's `keep` collects every generation below the new one beyond it, which a destination that
     // earlier materialisations kept in full needs a listing for.
     const deps = { ...this.lifecycleDeps(op), collectByListing: true };
+    // Read once, here: a getter or a proxy answering twice would otherwise be checked as one value and stored as another.
+    const metadata = options?.metadata;
     let result: Awaited<ReturnType<typeof loadSegment>>;
     try {
       result = await loadSegment(dest, ids, deps, {
         ...(options?.allowEmpty === undefined ? {} : { allowEmpty: options.allowEmpty }),
         ...(options?.guard === undefined ? {} : { guard: options.guard }),
+        ...(metadata === undefined ? {} : { metadata }),
         // COLLECT NOTHING by default, which `loadSegment` does not — it keeps a grace window of 1 and deletes
         // the rest. By default a materialisation collects nothing: the guide states "**It deletes nothing**,
         // unlike `load()`. The destination's previous generations stay in the bucket until you collect them", and
@@ -1321,8 +1326,13 @@ export class CloudRoaring {
    * It refuses rather than guesses: a generation not in the bucket (collected, or never written) throws
    * `NotFoundError` naming what *is* available, a crypto-shredded segment throws
    * {@link ValidationError} because every generation of it is unreadable, and a target that is cleartext under an
-   * encrypted segment, or encrypted under a cleartext one, throws {@link IntegrityError} from one read of its footer,
+   * encrypted segment, or encrypted under a cleartext one, throws {@link IntegrityError} from one tail read of it,
    * because every read would refuse it. Rolling to the generation already current is a no-op that reports itself.
+   *
+   * The same tail read (and a range read when the target's index is longer than it) gives the target's id count and
+   * metadata, which the rollback writes into the row with the pointer, so a reader that sees the target as current sees
+   * what describes it. The store's keystore opens an encrypted target for this; without it, or when it cannot open the
+   * key for any reason, the segment still rolls back and the row carries no summary of the target.
    *
    * It deletes nothing. The generations above the new pointer stay put — which is what makes this reversible —
    * and are then *above* `currentGen`, where collection never looks. They remain until loads pass them (the first
@@ -1377,6 +1387,14 @@ export class CloudRoaring {
    * if (!r.published) console.warn(`load refused: ${r.reason}`);
    * ```
    *
+   * `metadata` attaches a small record of your own to the generation: a flat object of string keys and string or finite
+   * number values, at most 1,024 bytes as canonical JSON and no key over 128 bytes. A record that breaks a rule throws
+   * `ValidationError` before the load makes a request. It is copied when you call, stored in the generation's object,
+   * and written to the segment's row with the generation's id count by the write that moves the pointer, so a reader
+   * that sees the generation as current sees its metadata. It never changes after that, a rollback puts the target's own
+   * back, and an erasure carries it over without scanning it, so keep a subject's id out of it. It is sealed under the
+   * segment's key on an encrypted segment.
+   *
    * **A load REPLACES.** Whatever the stream contains is what the segment contains afterwards, so an upstream
    * query that returns fewer rows than usual is a shrink nobody asked for and an empty one is a wipe — both
    * reported as a successful write, because at the storage layer they are one. That is what `guard` and the
@@ -1402,14 +1420,15 @@ export class CloudRoaring {
    *
    * **Collection is by name for the default `keep`.** With `keep` of 0 or 1, a load that found nothing above the
    * pointer deletes the one generation its publish pushed out of the window and lists nothing; it lists the segment's
-   * objects on every sixteenth generation, and on any load that met an object above the pointer or whose guard
-   * found the current generation's object gone, to take what the name-only passes leave, such as the generations an
+   * objects on every sixteenth generation, and on any load that met an object above the pointer or whose check found
+   * the current generation's object gone, to take what the name-only passes leave, such as the generations an
    * earlier, wider `keep` held. `keep` of 2 or more lists on every load. {@link LoadResult.collected} then names what
    * the pass deleted by name, and that generation may have been gone already.
    *
    * What it **throws** for is a fault rather than an outcome: invalid options or ids, and a crypto-shredded
    * segment (`ValidationError`); a key the keystore cannot provide (`KeyUnavailableError`); a current generation
-   * that will not open when a guard reads its size (`IntegrityError`); a driver failure; and a collection pass
+   * that will not open when a guard has to read its size, which it does only when the row has no usable summary of it
+   * (`IntegrityError`); a driver failure; and a collection pass
    * by listing that could not prove the segment was still the same one (`WriteConflictError`). That one, and a
    * failure in the collection's own reads or deletes, can be raised **after** the publish already landed, so a throw
    * does not by itself mean the load did not take effect — re-read the pointer rather than assuming. A collection by
@@ -1916,6 +1935,12 @@ export interface MaterializeOptions extends CombineOptions {
   readonly allowEmpty?: boolean;
   /** Refuse an implausible result rather than publish it. Same bounds, and same meaning, as on `load()`. */
   readonly guard?: LoadGuard;
+  /**
+   * Metadata for the generation this call publishes, under the rules and with the meaning of
+   * {@link LoadOptions.metadata}: small, immutable, published with the pointer, never a subject's id. A value that
+   * breaks a rule throws {@link ValidationError} before any request is made.
+   */
+  readonly metadata?: GenerationMetadata;
   /**
    * Generations to keep below the new pointer — see {@link LoadOptions.keep}. A value that is not a non-negative
    * integer throws `ValidationError`.

@@ -52,7 +52,8 @@ A refused load also emits `segment.load-refused` to the `audit` sink you pass.
 
 - invalid options or ids, or a crypto-shredded segment: `ValidationError`;
 - a key the keystore cannot provide: `KeyUnavailableError`;
-- a current generation that will not open when the load reads its size for a guard: `IntegrityError`;
+- a current generation that will not open when the load has to read its size for a guard, which it does only when the
+  segment's row has no usable summary of it (see [the guard's size](#where-the-guard-reads-the-size-of-the-current-generation)): `IntegrityError`;
 - a failure from your backend's storage or registry service, such as `TransientError`, which does not by itself mean
   the load did not take effect ([below](#when-a-write-is-throttled-or-gets-no-answer));
 - a collection pass by listing that could not prove the segment was unchanged: `WriteConflictError`. This and a
@@ -191,6 +192,56 @@ change is that a 12M-member load from a bitmap calls none of the per-id routes: 
 no id split (`tests/roaring/load-no-per-id.test.ts`).
 <!-- load-input:end -->
 
+## Metadata: what a generation was computed from
+
+`metadata` attaches a small record of your own to the generation a load writes: the version of the definition it was
+computed from, when its data landed, the run that built it. It goes on `load`, on every `*Into` verb, and on a load of a
+bitmap.
+
+```ts
+await store.load({ segment: 'audience:active' }, ids, {
+  metadata: { definition: 'v41', landedAt: 1_790_000_000_000, run: 'r-2204' },
+});
+```
+
+- **What it may hold.** A flat object of string keys and string or finite-number values. Nothing nested, and no boolean,
+  `null`, `NaN`, `Infinity`, array or class instance. A key is at most 128 bytes and the whole record at most 1,024 bytes
+  as canonical JSON: keys sorted by UTF-16 code unit, no whitespace, braces and quotes counted. Text has to be
+  well-formed (a lone surrogate is refused), and `__proto__` is not a key. `undefined` and `{}` store nothing, and a
+  generation without metadata is byte for byte the object it always was. Anything that breaks a rule is a
+  `ValidationError`, thrown **before the load makes a request**: nothing is read and nothing is written.
+- **It is copied when you call.** What is stored is the record as it was at the call, whatever the load's id source
+  takes to run and whatever you do to your object meanwhile. Key order never changes the bytes, so the same record
+  gives the same object.
+- **Published with the pointer, and immutable.** The metadata is in the generation's object, and the segment's row
+  carries a summary of the current generation (its id count and its metadata), written by the same compare-and-swap that
+  moves the pointer to it. A reader that sees generation N as current therefore sees N's metadata, never a later
+  generation's and never none. Nothing edits it afterwards: a new generation is how it changes, and a load does not
+  inherit the previous generation's.
+- **A rollback restores it.** The pointer moves to the target with the target's own count and metadata in the row. An
+  erasure's rewrite is the same generation without one id, so it carries the metadata over as it is, and counts one id
+  fewer. The metadata is not scanned for the erased id.
+- **Never put a subject's id in it.** An erasure removes an id from the ids and leaves your metadata alone, and the row
+  holds a copy of it. Put a version, a time or a run id there, and nothing that names a person.
+- **Encrypted segments seal it** in the object, as the index is, and in the row. See
+  [encryption](encryption.md#what-is-sealed-where).
+- **Reading it back.** This build writes the metadata and the summary; reading them back through the API, with a
+  count that costs one request, is the next piece of this work. See the [roadmap](../ROADMAP.md).
+
+### Where the guard reads the size of the current generation
+
+A guarded load compares what it wrote with what the segment held, which is the size of the current generation. It reads
+that size from the row's summary of the generation: a row that carries one for the generation it names gives the guard
+the number with no request for the object. A row with no usable summary is read as before, from the object's index
+with one tail read: a row written before rows carried one, a summary that names another generation, or a sealed one
+that does not open. The first load onto such a row writes a summary, and the next load reads none.
+
+One behaviour follows from reading the row. A row that names an object that is gone (a lifecycle rule, a partial
+restore) still remembers the size, so a repair load is judged against it: a repair smaller than `guard.minRetained`
+allows is refused. A guard that has to open the object, because the row has no usable summary, meets an object it cannot
+read and judges against nothing. Leave `minRetained` out to repair a segment whose row
+remembers a size: `allowEmpty: true` does not lift a `minRetained` refusal. See [disaster recovery](disaster-recovery.md).
+
 **Memory is bounded by the distinct set, not by the input.** A load holds one compressed bitmap per non-empty chunk, so a
 billion duplicate-heavy ids stream through holding only the distinct result. The buffer between the input and the
 bitmaps holds at most 1,048,576 ids, about 28 MB measured, whatever the key distribution. On S3 the writer also buffers
@@ -306,8 +357,11 @@ its pointer beyond `keep`, in three cases:
   stranded. The count is of generation numbers, so a rollback, which moves the pointer down, starts it again from the
   generation it moves to;
 - when the load's check of its generation number met an object, which is a crashed load's or what a rollback left
-  above the pointer, or its guard's read found the current generation's object gone, which a lifecycle rule or a
-  partial restore does;
+  above the pointer, or its check of the current generation's object found it gone, which a lifecycle rule or a
+  partial restore does. A guard that opens the object finds that out itself. A guard that took the size from the row's
+  summary opened nothing, so a load with a `keep` of 1 that is about to delete by name looks for the current object with
+  one zero-byte read first, and lists unless it finds it. A `keep` of 0 deletes the generation it superseded, which is
+  the object in question, so it makes no such read;
 - whenever `keep` is 2 or more. A window of 2 or more counts the generations that are in the bucket, and a name cannot
   know which they are: a load that was refused leaves a gap, and deleting `keep` and one below the new generation by
   name would take a generation the window promised to keep.
@@ -365,8 +419,16 @@ await store.rollback(ref, 4, { audit, allowForward: true });
   that were never published, such as those of a load that died before its publish.
 - A target that is not what the row says the segment is throws `IntegrityError` before the pointer moves: a cleartext
   object under an encrypted segment (a write that never published, from a store with no keystore, before the
-  segment's first keyed load), or an encrypted one under a cleartext segment. Every read would refuse it. The check
-  reads the target's footer, one request, with no key.
+  segment's first keyed load), or an encrypted one under a cleartext segment. Every read would refuse it. The check is
+  one tail read of the target, which needs no key to tell which kind it is.
+- The same read gives the target's id count and metadata, which the rollback writes into the row with the pointer (one
+  tail read, and a range read as well when the target's index is longer than the tail read). An encrypted target is
+  opened with the store's keystore for that, and a store without one, or one that cannot open the segment's key for any
+  reason, an unreachable or timed-out key service included, still rolls the segment back and leaves the row with no
+  summary of the target; the next load writes one. A target whose index or metadata does not open is refused, since no
+  read could use it either. A target above the pointer (`allowForward`) is read once more after the swap, and if it is
+  no longer the object that was read (an erasure deleted it and a load took its number meanwhile) the pointer and the
+  old summary are put back and the rollback throws `NotFoundError`.
 - A load keeps one generation below the one it publishes by default (`keep: 1`), so there is one to roll back to. Pass
   a larger `keep` on the loads of a segment you may want to roll further back.
 - Each move emits `segment.rollback` to the `audit` sink you pass
@@ -534,10 +596,11 @@ is not a lost race: a registry read or a delete that throws rejects the load, af
 pointer at the published generation, so re-read the pointer rather than assuming. The generation it deletes is always
 below the one it published, so it never touches the current generation, and with a `keep` of 0 or 1 it is one a
 listing pass would also take, or leave to a later pass: never one the listing would keep, so long as the object the
-row named is in the bucket. A load whose guard's read finds that object gone, the state a lifecycle rule or a partial
+row named is in the bucket. A load whose check of that object finds it gone, the state a lifecycle rule or a partial
 restore leaves and `checkConsistency` reports, lists instead, and keeps the older generation a listing keeps as the
-window. A load that makes no such read, one with `allowEmpty` and no `minRetained`, cannot tell, and deletes that
-generation by name.
+window: the check is the guard's read of the object, or, for a guard that took the size from the row's summary, one
+zero-byte read before the pass takes a name. A load that makes no such check, one with `allowEmpty` and no `minRetained`,
+cannot tell, and deletes that generation by name.
 
 A segment can be purged and re-created while a paginated listing is in flight, so both branches re-read the registry
 row afterwards and reconcile with it:

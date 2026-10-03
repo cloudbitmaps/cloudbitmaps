@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { loadSegment } from '@/core/load';
 import { openGenerationReader, publishGeneration } from '@/core/crbm-storage-source';
 import { eraseIdFromSegment } from '@/core/erase-id';
@@ -8,8 +9,11 @@ import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
 import { registryObjectKey } from '@/drivers/_shared/object-registry-keys';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
+import { setSegmentRetention } from '@/core/retention';
+import { usableSummary } from '@/core/summary';
+import { InProcessKeystore } from '@/drivers/crypto';
 import { roaringCodec } from '@/roaring-codec';
-import { CloudRoaring } from '@/index';
+import { CloudRoaring, MIN_EXPIRES_AT_MS } from '@/index';
 import { brandAsBackend } from '@/core/ports';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -60,6 +64,8 @@ function world(
   const faults: Fault[] = [];
   const held: Array<() => Promise<unknown>> = [];
   const waits: number[] = [];
+  /** The patches that move a pointer, each as the registry port received it, resends included. */
+  const sent: Array<{ write: Write; patch: Record<string, unknown> }> = [];
   let reads = 0;
   let failNextRead: Error | undefined;
   let failNextTail: Error | undefined;
@@ -80,6 +86,8 @@ function world(
       if (p !== 'create' && p !== 'compareAndSwap') return value;
       return async (...args: unknown[]) => {
         writes[p] = (writes[p] ?? 0) + 1;
+        const patch = (p === 'create' ? args[1] : args[2]) as Record<string, unknown>;
+        if ('currentGen' in patch) sent.push({ write: p, patch });
         const send = (): Promise<unknown> =>
           (base[p as Write] as (...a: unknown[]) => Promise<unknown>).apply(base, args);
         const f = faults.shift();
@@ -137,6 +145,7 @@ function world(
     base,
     registry,
     writes,
+    sent,
     waits,
     clock,
     reads: () => reads,
@@ -962,5 +971,121 @@ describe.each<
     const r = await eraseIdFromSegment(SEG, 2, w.deps);
     expect(r).toMatchObject({ erased: false, reason: 'superseded' });
     expect(r.collected).toEqual([]);
+  });
+});
+
+describe('a publish that is settled by reading the row carries the generation summary in every write it sends', () => {
+  const META = { run: 'r1', n: 2 };
+
+  type Keyed = ReturnType<typeof keyed>;
+  function keyed(encrypted: boolean) {
+    const keystore = encrypted
+      ? new InProcessKeystore({ keys: { k: randomBytes(32) }, activeKeyId: 'k' })
+      : undefined;
+    const w = world();
+    return { w, keystore, deps: { ...w.deps, keystore } };
+  }
+  const described = async (k: Keyed): Promise<unknown> => {
+    const row = (await k.w.base.get(SEG))!;
+    const aead =
+      row.wrappedDeks === undefined ? undefined : await k.keystore!.openDek(row.wrappedDeks);
+    return usableSummary(SEG, row, aead);
+  };
+  /** Every write sent since `from` moved the pointer with a summary, and the same one each time. */
+  const summariesSince = (k: Keyed, from: number): unknown[] => {
+    const writes = k.w.sent.slice(from);
+    expect(writes.length).toBeGreaterThan(0);
+    for (const { patch } of writes) expect(patch.summary).toBeDefined();
+    expect(new Set(writes.map(({ patch }) => JSON.stringify(patch.summary))).size).toBe(1);
+    return writes.map(({ patch }) => patch.summary);
+  };
+
+  describe.each([
+    ['cleartext', false],
+    ['encrypted', true],
+  ])('on a %s segment', (_name, encrypted) => {
+    describe.each([
+      ['the write landed and lost its response', { kind: 'land-then-transient' } as Fault, 1],
+      [
+        'the write was throttled and never applied, and is sent again',
+        { kind: 'transient-unapplied' } as Fault,
+        2,
+      ],
+    ])('when %s', (_when, fault, sends) => {
+      it("a segment's first load (a create) holds the summary", async () => {
+        const k = keyed(encrypted);
+        k.w.arm(fault);
+        const r = await loadSegment(SEG, [1, 2, 3], k.deps, { metadata: META });
+        expect(r).toMatchObject({ generation: 0, published: true });
+        expect(k.w.sent.map((x) => x.write)).toEqual(Array(sends).fill('create'));
+        summariesSince(k, 0);
+        expect(await described(k)).toEqual({ cardinality: 3, metadata: META });
+      });
+
+      it('a later load (a compare-and-swap) holds the summary', async () => {
+        const k = keyed(encrypted);
+        await loadSegment(SEG, [1, 2, 3], k.deps, { keep: 9, metadata: META });
+        const from = k.w.sent.length;
+        k.w.arm(fault);
+        const r = await loadSegment(SEG, [1, 2, 3, 4, 5], k.deps, {
+          keep: 9,
+          metadata: { run: 'r2' },
+        });
+        expect(r).toMatchObject({ generation: 1, published: true });
+        expect(k.w.sent.slice(from).map((x) => x.write)).toEqual(
+          Array(sends).fill('compareAndSwap'),
+        );
+        summariesSince(k, from);
+        expect(await described(k)).toEqual({ cardinality: 5, metadata: { run: 'r2' } });
+      });
+
+      it('a load onto a row that has no pointer yet holds the summary', async () => {
+        const k = keyed(encrypted);
+        await setSegmentRetention(
+          SEG,
+          { registry: k.w.base },
+          { expiresAt: MIN_EXPIRES_AT_MS + 86_400_000 * 900 },
+        );
+        expect((await k.w.base.get(SEG))!.currentGen).toBeNull();
+        const from = k.w.sent.length;
+        k.w.arm(fault);
+        const r = await loadSegment(SEG, [1, 2, 3], k.deps, { metadata: META });
+        expect(r).toMatchObject({ generation: 0, published: true });
+        expect(k.w.sent.slice(from).map((x) => x.write)).toEqual(
+          Array(sends).fill('compareAndSwap'),
+        );
+        summariesSince(k, from);
+        expect(await described(k)).toEqual({ cardinality: 3, metadata: META });
+      });
+
+      it('an erasure rewrite holds the summary of the rewrite', async () => {
+        const k = keyed(encrypted);
+        await loadSegment(SEG, [1, 2, 3, 4, 5], k.deps, { keep: 9, metadata: META });
+        const from = k.w.sent.length;
+        k.w.arm(fault);
+        const r = await eraseIdFromSegment(SEG, 2, k.deps);
+        expect(r).toMatchObject({ erased: true, generation: 1 });
+        expect(k.w.sent.slice(from).map((x) => x.write)).toEqual(
+          Array(sends).fill('compareAndSwap'),
+        );
+        summariesSince(k, from);
+        expect(await described(k)).toEqual({ cardinality: 4, metadata: META });
+      });
+    });
+  });
+
+  it('a bulk load that publishes by itself, throttled and sent again, holds the summary in each send', async () => {
+    const w = world();
+    w.arm({ kind: 'transient-unapplied' });
+    const r = await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [5, 6], {
+      registry: w.registry,
+      clock: w.clock,
+      metadata: META,
+    });
+    expect(r.becameCurrent).toBe(true);
+    expect(w.sent.map((x) => x.write)).toEqual(['create', 'create']);
+    for (const { patch } of w.sent) {
+      expect(patch.summary).toEqual({ generation: 0, cardinality: 2, metadata: META });
+    }
   });
 });

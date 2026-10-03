@@ -5,7 +5,7 @@
  * Storage generations are write-once, generation-keyed objects (`<segment>.<gen>.crbm`) behind one registry pointer
  * (`currentGen`). Every write path in the library — a load, an `*Into` materialisation, a subject-erasure rewrite —
  * writes a **new** object and then advances the pointer. Every load that finds a row fences its publish on the
- * row's token; a guarded load (the default, since the empty refusal reads the current generation) also fences on
+ * row's token; a guarded load (the default, since the empty refusal needs the size of the current generation) also fences on
  * the pointer it judged (`expectFrom`), and one that found no row fences on that absence instead. Only an unguarded
  * load (`allowEmpty: true` and no `guard.minRetained`) onto a segment with no row publishes bare forward-only. An
  * `*Into` materialisation is a load, and publishes the same way. The rewrite is fenced on its source generation and
@@ -15,7 +15,7 @@
  * randomness of its own.
  */
 import { ValidationError, WriteConflictError, isNotFoundError } from './errors';
-import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
+import type { GenKey, IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
 
 /** The two ports generation bookkeeping needs: the objects, and the pointer that says which one is current. */
 export interface GenerationDeps {
@@ -259,7 +259,7 @@ export async function gcOrphanGenerations(
  * at most one, and by listing otherwise ({@link gcOrphanGenerations}). A load lists in three cases: `keep` of 2 or
  * more, which a name cannot serve because the window then counts generations that may be absent (a refused
  * neighbour's number is a gap, and by name would take one the window promised to keep); a number the listing chose,
- * so something sits above the pointer or the check could not answer, or a current object the guard found gone; and
+ * so something sits above the pointer or the check could not answer, or a current object the load's check found gone; and
  * every {@link LIST_COLLECTION_CADENCE}th generation, which collects what a name-only pass leaves. It makes no
  * request when `keep` is at least the generation published, since no more generations than that exist below it. A
  * load onto a `destroyed` row is refused at its publish and never reaches here; a drop that lands after the publish
@@ -269,13 +269,48 @@ export async function gcOrphanGenerations(
 export async function collectAfterLoad(
   ref: SegmentRef,
   deps: GenerationDeps,
-  options: { generation: number; keep: number; byName: boolean },
+  options: {
+    generation: number;
+    keep: number;
+    byName: boolean;
+    /**
+     * The object the load's row named as current, which the caller did not open. Before it collects by name a generation
+     * the window keeps (a `keep` of 1), the pass looks for this object with one zero-byte read, and lists instead
+     * unless that finds it: a name-only pass is safe only while the object the row named is in the bucket.
+     */
+    proveCurrent?: GenKey;
+  },
 ): Promise<number[]> {
-  const { generation, keep, byName } = options;
+  const { generation, keep, byName, proveCurrent } = options;
   if (keep >= generation) return [];
   const periodic = generation % LIST_COLLECTION_CADENCE === 0;
-  if (byName && keep <= 1 && !periodic) return collectByName(ref, deps, { generation, keep });
+  if (byName && keep <= 1 && !periodic) {
+    // A `keep` of 0 deletes the generation it supersedes, which is the one in question: whether it is there or not, it is
+    // the name to take, and nothing is lost by taking it.
+    if (
+      keep === 1 &&
+      proveCurrent !== undefined &&
+      !(await objectIsThere(deps.storage, proveCurrent))
+    ) {
+      return gcOrphanGenerations(ref, deps, { keep });
+    }
+    return collectByName(ref, deps, { generation, keep });
+  }
   return gcOrphanGenerations(ref, deps, { keep });
+}
+
+/**
+ * Whether an object is in the bucket, from one zero-byte read, a metadata request on every shipped driver. False when it
+ * is not there and when the read fails in any way: a caller that collects by name on `true` needs the proof, and
+ * lists when it does not have it.
+ */
+async function objectIsThere(storage: IStorageDriver, key: GenKey): Promise<boolean> {
+  try {
+    await storage.getTail(key, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -291,8 +326,9 @@ export async function collectAfterLoad(
  * That rests on the object the row named being in the bucket, and a fault can break it (a lifecycle rule or a
  * partial restore removing it, or an erasure deleting the object of a load whose publish then landed;
  * `checkConsistency` reports the state). The caller, which learns that from its guard's read of the current
- * generation, lists instead; a load that made no such read (`allowEmpty` without `minRetained`) cannot tell, and
- * deletes by name the older generation a listing would have kept as the window. `keep` of 2 or more is refused,
+ * generation or, when the guard took the size from the row's summary and opened nothing, from one zero-byte read of
+ * it (see {@link collectAfterLoad}), lists instead; a load that made neither (`allowEmpty` without `minRetained`)
+ * cannot tell, and deletes by name the older generation a listing would have kept as the window. `keep` of 2 or more is refused,
  * because there the window counts the generations that exist, which a name cannot know.
  *
  * Collection never touches the current generation, and the row is re-proved before the delete as every pass does.

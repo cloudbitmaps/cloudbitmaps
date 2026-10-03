@@ -75,6 +75,9 @@ reaches them.
   held, and the library cannot know that source was meant to exclude the id. Pause loads of the affected segments for
   the duration, or fix the source first and load after. A writer that lands during the rewrite is caught and
   reported as `'superseded'`, not as an error.
+- **Never put a subject's id in a generation's metadata.** An erasure rewrites the ids and carries the metadata over as
+  it is, without scanning it: it would copy an id there into the new generation, and the registry row holds a copy of
+  the current generation's metadata too. Put a version, a time or a run id in it, and nothing that names a person.
 - **Do not roll the segment back while erasing from it.** A rollback that lands mid-erasure can move the pointer onto
   a generation the erasure did not rewrite. Roll back before the erasure starts or after it returns, and re-run an
   erasure that reports otherwise once the pointer is where you want it.
@@ -110,6 +113,18 @@ beside them keeps the **unwrapped** key for as long as that table's row for it s
 [freshness](reading.md#how-soon-a-reader-sees-a-new-load).
 
 ## What an erasure does not reach
+
+The **metadata** of a generation: the rewrite carries it over unchanged, and the row's summary of the new generation
+holds it again, with the id count one smaller. Neither is scanned for the id. On an encrypted segment, an object whose
+metadata block is missing, with a sealed summary on the row that has metadata, is rewritten with the row's metadata, since
+the block's presence is not authenticated and the summary is.
+
+A **deleted row**. When the S3, GCS, Azure Blob or local-file registry deletes a row, whether `registry.delete` or the
+retention sweep's purge of a tombstone, it keeps the row's record in a deleted marker, so the token counter survives a
+re-create. A tombstone
+from `dropSegment` or `destroySegment` holds no key and no summary, since both clear them, so what a purge keeps is the
+name, the pointer, the retention policy and the timestamps. A live row deleted directly with `registry.delete` keeps
+its summary too.
 
 Backups, replicas and noncurrent object versions hold the old object until their own lifecycle removes it. For an
 at-rest guarantee that survives those, encrypt and crypto-shred (`destroySegment` and `eraseNamespace`, see

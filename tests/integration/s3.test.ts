@@ -293,7 +293,8 @@ describe('S3Storage (MinIO) — the backend builds its own client', () => {
 // What `store.load()` sends to S3, counted by the request meter the calibration harness bills with. The in-memory
 // counts that the cost model is held to (`tests/core/cost.test.ts`) are of the driver ports; these are of the wire,
 // command by command. A load reads its row once before the publish and checks the next generation number with one
-// HeadObject instead of listing. It collects by name: it re-reads the pointer and deletes the one generation its
+// HeadObject instead of listing, and sizes the current generation from the row's summary of it. It collects by name:
+// it looks for the current object with a second HeadObject, re-reads the pointer and deletes the one generation its
 // publish pushed out of the window, listing nothing, except on every sixteenth generation, where it lists instead.
 describe('S3 (MinIO): the requests one store.load() sends', () => {
   const require_ = createRequire(import.meta.url);
@@ -334,27 +335,34 @@ describe('S3 (MinIO): the requests one store.load() sends', () => {
       byCommand: { GetObjectCommand: 3, HeadObjectCommand: 1, PutObjectCommand: 2 },
     };
     expect(await load(0)).toEqual(first);
-    // A reload also reads the current generation's index, to count what it replaces: its row read, that tail read and
-    // the compare-and-swap's read of the row's version, where the first load's second row read and create's read were.
-    expect(await load(1)).toEqual(first);
-    // From the third load on the collection deletes by name, re-reading the pointer before it.
+    // A reload takes the size of the current generation, to count what it replaces, from its row's summary and opens
+    // nothing: its row read and the compare-and-swap's read of the row's version, where the first load's second row read
+    // and create's read were, and no tail read.
+    expect(await load(1)).toEqual({
+      put: 2,
+      get: 3,
+      byCommand: { GetObjectCommand: 2, HeadObjectCommand: 1, PutObjectCommand: 2 },
+    });
+    // From the third load on the collection deletes by name: a second HeadObject first, that the current generation's
+    // object is there, and the pointer re-read before the delete.
     const steady = {
       put: 2,
       get: 5,
       byCommand: {
-        GetObjectCommand: 4,
-        HeadObjectCommand: 1,
+        GetObjectCommand: 3,
+        HeadObjectCommand: 2,
         PutObjectCommand: 2,
         DeleteObjectCommand: 1,
       },
     };
     for (let g = 2; g < 16; g++) expect(await load(g), `generation ${g}`).toEqual(steady);
-    // Every sixteenth generation lists instead: one ListObjectsV2, and the pointer read before and after it.
+    // Every sixteenth generation lists instead: one ListObjectsV2, and the pointer read before and after it. It needs no
+    // word that the current object is there.
     expect(await load(16)).toEqual({
       put: 3,
-      get: 7,
+      get: 6,
       byCommand: {
-        GetObjectCommand: 6,
+        GetObjectCommand: 5,
         HeadObjectCommand: 1,
         PutObjectCommand: 2,
         ListObjectsV2Command: 1,

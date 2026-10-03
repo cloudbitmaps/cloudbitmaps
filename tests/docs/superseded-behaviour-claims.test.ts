@@ -1783,16 +1783,17 @@ const LOAD_PRICES: Dollars = (() => {
     }).monthlyUSD.byOp.loads;
   const putAverage = requests({ putPerMillion: 1e6, getPerMillion: 0 });
   const getAverage = requests({ putPerMillion: 0, getPerMillion: 1e6 });
-  // The model averages one listing (a PUT-class request) and two more pointer reads over the cadence.
+  // The model averages one listing (a PUT-class request) and two more pointer reads over the cadence, less the check that
+  // the current object is there, which a load that lists does not make.
   const steady = {
     put: putAverage - 1 / LIST_COLLECTION_CADENCE,
-    get: getAverage - 2 / LIST_COLLECTION_CADENCE,
+    get: getAverage - 1 / LIST_COLLECTION_CADENCE,
   };
   const price = (r: { put: number; get: number }): number =>
     r.put * base.storage.putPerMillion + r.get * base.storage.getPerMillion;
   return {
     steady: price(steady),
-    listing: price({ put: steady.put + 1, get: steady.get + 2 }),
+    listing: price({ put: steady.put + 1, get: steady.get + 1 }),
     // A first load has nothing to collect, so it makes no re-read before a delete either.
     first: price({ put: steady.put, get: steady.get - 1 }),
     average: price({ put: putAverage, get: getAverage }),
@@ -2016,7 +2017,7 @@ describe("a page's figures for store.load() are the estimator's", () => {
       f(LOAD_PRICES.steady),
       f(LOAD_PRICES.listing),
       f(LOAD_PRICES.average),
-    ]).toEqual(['11.60', '12.00', '17.80', '12.36']);
+    ]).toEqual(['11.60', '12.00', '17.40', '12.34']);
     expect(WRITE_AND_PUBLISH.toFixed(2)).toBe('11.20');
     expect(LOAD_OVER_WRITE.toFixed(2)).toBe('1.10');
   });
@@ -2050,12 +2051,12 @@ describe("a page's figures for store.load() are the estimator's", () => {
   });
 
   it.each([
-    'about $12.36 per million single-part loads at the default prices',
+    'about $12.34 per million single-part loads at the default prices',
     "a segment's first store.load() is expected at $11.60 per million",
     'a load that does not list costs $12.00 per million',
-    'a load that lists costs $17.80 per million',
-    "$12.36 per million steady single-part loads at the default prices: $12.00 when a load does not list, $17.80 when it lists (every 16th generation), and $11.60 for a segment's first load",
-    "$12.36 per million single-part loads, where it was $23.60, and $11.60 for a segment's first load, where it was $22.80.",
+    'a load that lists costs $17.40 per million',
+    "$12.34 per million steady single-part loads at the default prices: $12.00 when a load does not list, $17.40 when it lists (every 16th generation), and $11.60 for a segment's first load",
+    "$12.34 per million single-part loads, where it was $23.60, and $11.60 for a segment's first load, where it was $22.80.",
     'one more GET ($0.40 per million at the default prices) that a load makes',
     'S3 GETs, $0.40 a million, and a PUT-class request, $5 per million, for each load',
     '$82.40 per million cold intersects of two segments, and $11.20 per million loads written and published',
@@ -2075,14 +2076,14 @@ describe("a page's figures for store.load() are the estimator's", () => {
     'Writing and publishing a segment, pointer included, with store.load() about a tenth more on average',
     '1M writes + publishes · store.load() ≈ 1.1×',
     'store.load() costs 1.1 times a write and publish, on average',
-    'a store.load() writes and publishes for $12.36 per million on average',
+    'a store.load() writes and publishes for $12.34 per million on average',
     // Prices another load's words call for, and other backends' and encrypted segments' counts.
     'a load that deletes by name costs $12.00 per million',
     'from the third load on, a load costs $12.00 per million',
     'a load that lists nothing costs $12.00 per million',
-    'a load on a generation divisible by 16 costs $17.80 per million',
-    'on Azure Blob a steady load costs $12.40 per million, $12.76 on average',
-    "an encrypted segment's load costs $12.76 per million on average",
+    'a load on a generation divisible by 16 costs $17.40 per million',
+    'on Azure Blob a steady load costs $12.00 per million, $12.34 on average',
+    "an encrypted segment's load costs $12.74 per million on average",
     // A ratio that is not a comparison with a write: a 64 × 1,024 product, and a write named without store.load().
     'the writer cuts 64 × 1,024 containers per slice, and store.load() writes each',
     'store.load() writes 64 × 1,024 containers, a slice at a time',

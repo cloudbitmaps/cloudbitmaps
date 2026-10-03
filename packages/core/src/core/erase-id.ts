@@ -9,6 +9,12 @@
  * (`keep: 0`), so the bit is **physically gone from the bucket when this returns**. Constant memory: one chunk in
  * flight, never the whole segment.
  *
+ * The rewrite is the same generation without one id, so it keeps everything else: the new object carries the source's
+ * metadata as it is, and the row's summary of it, built from what was written, counts one id fewer and holds the same
+ * metadata. Metadata is not scanned for the id. On an encrypted segment, a source object with no metadata block whose
+ * row's sealed summary of it has metadata is rewritten with the row's: the block's presence is not authenticated, so
+ * the authenticated copy decides, and the erasure still goes through.
+ *
  * **`erased: true` is a claim about every generation of the segment, not only the one it replaced.** A rollback
  * leaves generations above the pointer that were once current and can be made current again, so a holder can sit
  * above the pointer as well as below it, and there can be several. Before it reports `erased: true` the call
@@ -93,8 +99,16 @@ import {
 } from './errors';
 import { gcOrphanGenerations, nextGeneration } from './generation-gc';
 import { assertRegistryCanWrite } from './ports';
-import type { GenKey, IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
+import type {
+  GenKey,
+  IStorageDriver,
+  IRegistryDriver,
+  RegistryRecord,
+  RegistrySummary,
+  SegmentRef,
+} from './ports';
 import { type ReadRetry, retryRead } from './retry';
+import { metadataToCarry, summaryOf, usableSummary } from './summary';
 import { validateUserRef } from './validate';
 
 const DEFAULT_MAX_BITMAP_BYTES = 1 << 20;
@@ -492,7 +506,8 @@ export async function eraseIdFromSegment(
    * the one written *without* it, for an object that was never written.
    */
   const stage = async (): Promise<
-    EraseIdResult | { generation: number; key: GenKey; fingerprint: string }
+    | EraseIdResult
+    | { generation: number; key: GenKey; fingerprint: string; summary: RegistrySummary }
   > => {
     /** Set only once the object exists in the bucket — see the note above. */
     let written: number | undefined;
@@ -511,11 +526,20 @@ export async function eraseIdFromSegment(
       assertRegistryCanWrite(deps.registry, 'eraseIdFromSegment');
       const generation = await nextGeneration(ref, deps);
       const key: GenKey = { ...base, generation };
+      // The generation's metadata is part of it: the rewrite is the same generation without one id, so the new object
+      // carries the source's metadata as it is, and the row's summary of it says so. An erasure does not scan the
+      // metadata; it is the caller's to keep free of ids. On an encrypted segment a source with no metadata block, whose
+      // row's sealed summary of this generation has metadata, is carried with the row's: the block's presence is not
+      // authenticated and the summary is, so a stripped block is not made permanent by the rewrite.
+      const metadata = metadataToCarry(
+        reader.metadata,
+        aead === undefined ? undefined : usableSummary(ref, record, aead),
+      );
       const tally = await writeCrbmGenerationStream(
         deps.storage,
         key,
         rewrite(reader, chunkKey, target, codec, maxBytes, read),
-        { crypto: cryptoAt(generation), clock: deps.clock },
+        { crypto: cryptoAt(generation), clock: deps.clock, metadata },
       );
       written = generation; // `putImmutable` commits atomically, so the object exists exactly now
       // Re-check the pointer before spending the verification read. The fence below is what makes the publish
@@ -523,8 +547,18 @@ export async function eraseIdFromSegment(
       const beforeVerify = await deps.registry.get(ref);
       const early = rowVerdict(beforeVerify);
       if (early !== null) return refused(early, written);
-      await read(() => verifyGeneration(deps.storage, key, tally, cryptoAt(generation)));
-      return { generation, key, fingerprint: tally.fingerprint };
+      await read(() =>
+        verifyGeneration(deps.storage, key, { ...tally, metadata }, cryptoAt(generation)),
+      );
+      // The row's summary is built from what was written, never copied from the row it replaces: whatever that one
+      // held, a cached count or metadata that disagreed with the object it described goes with it.
+      const summary = summaryOf(
+        ref,
+        generation,
+        { cardinality: tally.cardinality, metadata },
+        aead,
+      );
+      return { generation, key, fingerprint: tally.fingerprint, summary };
     } catch (err) {
       if (!isNotFoundError(err)) throw err;
       // The row decides which answer this is — but only if it can be read. A re-read that faults must not
@@ -574,7 +608,7 @@ export async function eraseIdFromSegment(
     if (!staged.erased && staged.generation !== undefined) await discardRefused(staged.generation);
     return staged;
   }
-  const { generation, key, fingerprint } = staged;
+  const { generation, key, fingerprint, summary } = staged;
 
   // Read-modify-write, not merely forward-only, and the distinction is the whole correctness of this function.
   //
@@ -592,6 +626,7 @@ export async function eraseIdFromSegment(
   const published = await publishGeneration(deps.registry, key, {
     expectFrom: from,
     expectToken: fromToken,
+    summary,
     // A write that ends without an answer is settled by reading the row, and a pointer at this number is this
     // rewrite's only over the object it wrote: the footer proves it, so another incarnation's cannot pass for it.
     holdsOwnObject: () => provesOwnObject(deps.storage, key, fingerprint),

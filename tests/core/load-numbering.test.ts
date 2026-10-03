@@ -83,11 +83,9 @@ describe('a load numbers its generation from the row it read, with one existence
     w.reset();
     const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps);
     expect(r).toMatchObject({ generation: 3, published: true });
-    // The guard's tail read of the current generation, then the check of the next number. No listing.
-    expect(beforeWrite(w.calls)).toEqual([
-      { op: 'tail', generation: 2 },
-      { op: 'check', generation: 3 },
-    ]);
+    // The check of the next number, and nothing else: the guard took the size of the current generation from the row's
+    // summary, so it did not read its tail. No listing.
+    expect(beforeWrite(w.calls)).toEqual([{ op: 'check', generation: 3 }]);
   });
 
   it("checks 0 on a segment's first load", async () => {
@@ -117,11 +115,7 @@ describe('a load numbers its generation from the row it read, with one existence
     w.reset();
     const r = await loadSegment(SEG, [1, 2, 3], w.deps);
     expect(r).toMatchObject({ generation: 3, published: true });
-    expect(beforeWrite(w.calls)).toEqual([
-      { op: 'tail', generation: 1 },
-      { op: 'check', generation: 2 },
-      { op: 'list' },
-    ]);
+    expect(beforeWrite(w.calls)).toEqual([{ op: 'check', generation: 2 }, { op: 'list' }]);
   });
 
   it('numbers under an object further up when currentGen + 1 is free, and past it once the check meets it', async () => {
@@ -135,7 +129,7 @@ describe('a load numbers its generation from the row it read, with one existence
     w.reset();
     const past = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9 });
     expect(past).toMatchObject({ generation: 4, published: true });
-    expect(beforeWrite(w.calls).map((c) => c.op)).toEqual(['tail', 'check', 'list']);
+    expect(beforeWrite(w.calls).map((c) => c.op)).toEqual(['check', 'list']);
     expect(await generations(w.memory)).toEqual([0, 1, 2, 3, 4]);
   });
 
@@ -150,11 +144,8 @@ describe('a load numbers its generation from the row it read, with one existence
     const r = await loadSegment(SEG, [9], w.deps, { keep: 9 });
     // 2 is taken: never reuse a number an object holds. The listing goes above 3.
     expect(r).toMatchObject({ generation: 4, published: true });
-    expect(beforeWrite(w.calls)).toEqual([
-      { op: 'tail', generation: 1 },
-      { op: 'check', generation: 2 },
-      { op: 'list' },
-    ]);
+    // The rollback wrote the target's summary into the row, so the guard sizes generation 1 from it and reads no tail.
+    expect(beforeWrite(w.calls)).toEqual([{ op: 'check', generation: 2 }, { op: 'list' }]);
   });
 
   it('restarts at 0 after a purge and re-create, with one check', async () => {
@@ -216,7 +207,7 @@ describe('a load numbers its generation from the row it read, with one existence
     w.reset();
     const r = await loadSegment(SEG, [1, 2, 3], { ...w.deps, storage: flaky });
     expect(r).toMatchObject({ generation: 2, published: true });
-    expect(beforeWrite(w.calls).map((c) => c.op)).toEqual(['tail', 'list']);
+    expect(beforeWrite(w.calls).map((c) => c.op)).toEqual(['list']);
   });
   it('numbers above the pointer when the listing finds nothing as high: a pointer whose objects are gone', async () => {
     const w = world();

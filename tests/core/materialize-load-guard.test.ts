@@ -183,18 +183,55 @@ describe('the *Into verbs refuse an implausible result instead of publishing it'
     // `missing-storage-generation`: the row names a generation whose object is gone — a partial drop, a
     // bucket lifecycle rule, a registry restored without its bucket. Writing over it is the repair.
     //
-    // The guard's "before" read opens the current generation's object, which throws when the object is
-    // absent. Were that throw let through, the segment would be unreadable AND unrepairable — the opposite of
-    // what a guard is for — with `allowEmpty: true` as the accidental workaround, i.e. the one option that
-    // also disables the protection.
-    const { store, storage } = await loadedStore({ a: [1, 2, 3], b: [2, 3], dest: [9] });
+    // A guard that opens the current generation's object to size it gets a not-found when the object is absent. Were
+    // that let through, the segment would be unreadable AND unrepairable — the opposite of what a guard is for — with
+    // `allowEmpty: true` as the accidental workaround, i.e. the one option that also disables the protection. A row that
+    // carries a summary of the generation is sized from it without opening the object, so a row left with none (one
+    // written before rows carried it) is what reaches that open.
+    const { store, storage, registry } = await loadedStore({ a: [1, 2, 3], b: [2, 3], dest: [9] });
     const current = await storage.list({ segment: 'dest' })[Symbol.asyncIterator]().next();
     await storage.delete(current.value as { segment: string; generation: number });
+    const row = (await registry.get({ segment: 'dest' }))!;
+    await registry.compareAndSwap({ segment: 'dest' }, row.token, { summary: undefined });
 
     const res = await store.segment('a').intersectInto(store.segment('dest'), [store.segment('b')]);
 
     expect(res.published).toBe(true);
     expect(res.cardinalityBefore).toBeNull(); // nothing was there to protect
+    expect(await collect(store.segment('dest').iterate())).toEqual([2, 3]);
+  });
+
+  it('judges a destination whose current object is missing by what its row remembers of it', async () => {
+    // The row's summary still says the destination held four ids, so the guard has something to compare against, and a
+    // repair that retains less than the bound asks for is refused, and `allowEmpty` does not lift that: only leaving
+    // `minRetained` out repairs it.
+    const { store, storage } = await loadedStore({
+      a: [1, 2, 3],
+      b: [2, 3],
+      dest: [9, 10, 11, 12],
+    });
+    const current = await storage.list({ segment: 'dest' })[Symbol.asyncIterator]().next();
+    await storage.delete(current.value as { segment: string; generation: number });
+
+    const refused = await store
+      .segment('a')
+      .intersectInto(store.segment('dest'), [store.segment('b')], { guard: { minRetained: 0.75 } });
+    expect(refused).toMatchObject({
+      published: false,
+      reason: 'min-retained',
+      cardinalityBefore: 4,
+    });
+
+    const stillRefused = await store
+      .segment('a')
+      .intersectInto(store.segment('dest'), [store.segment('b')], {
+        allowEmpty: true,
+        guard: { minRetained: 0.75 },
+      });
+    expect(stillRefused).toMatchObject({ published: false, reason: 'min-retained' });
+
+    const res = await store.segment('a').intersectInto(store.segment('dest'), [store.segment('b')]);
+    expect(res).toMatchObject({ published: true, cardinalityBefore: 4 });
     expect(await collect(store.segment('dest').iterate())).toEqual([2, 3]);
   });
 

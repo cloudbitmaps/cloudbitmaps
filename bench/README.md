@@ -216,8 +216,9 @@ constants and the source text:
   names no bound on discards is refused rather than projected without them. After teardown, the run compares what it
   actually issued against what it projected, each stage's kept samples against its bound and its discards against the
   allowance, and flags itself if it went over.
-- **A segment is loaded once.** The projection bounds a segment's first load. A reload also opens the current
-  generation's index, so under four lost races it makes sixteen GET-class requests against that bound of fifteen, and
+- **A segment is loaded once.** The projection bounds a segment's first load. A reload of a row with a summary
+  opens nothing and makes fifteen GET-class requests under four lost races, as many as that bound; one of a row with none
+  also opens the current generation's index and makes sixteen. A
   a collecting load reads the pointer once more. The harness claims each name before it loads (`firstLoads`) and
   refuses a repeat before sending anything.
 - **A warm read that makes a request fails the stage.** Its count is not recorded and compared afterwards: the stage

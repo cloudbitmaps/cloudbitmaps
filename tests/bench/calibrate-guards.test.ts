@@ -2111,20 +2111,21 @@ describe('what a load requests: store.load()', () => {
       pointerReads: 3,
       pointerWrites: 1,
     });
-    // A reload also opens the current generation's index, to count what the load would replace, and reads the pointer
-    // twice: its row, and the compare-and-swap's read of the row's version. Both generations are inside the window.
+    // A reload takes the size of the current generation, to count what the load would replace, from its row's summary and
+    // opens nothing, and reads the pointer twice: its row, and the compare-and-swap's read of the row's version. Both
+    // generations are inside the window.
     const reload = await load(1);
     expect(reload).toEqual({
       putImmutable: 1,
       list: 0,
-      getTail: 2,
+      getTail: 1,
       getRange: 0,
       delete: 0,
       pointerReads: 2,
       pointerWrites: 1,
     });
-    // From the third load on, collection deletes by name the generation the window pushed out, and re-reads the
-    // pointer before it. It lists nothing.
+    // From the third load on, collection deletes by name the generation the window pushed out, after a check that the
+    // current generation's object is there, and re-reads the pointer before it. It lists nothing.
     const collecting = await load(2);
     expect(collecting).toEqual({
       putImmutable: 1,
@@ -2135,13 +2136,14 @@ describe('what a load requests: store.load()', () => {
       pointerReads: 3,
       pointerWrites: 1,
     });
-    // Every sixteenth generation lists instead, and reads the pointer before and after its listing.
+    // Every sixteenth generation lists instead, and reads the pointer before and after its listing. It needs no word that
+    // the current object is there.
     for (let g = 3; g < 16; g++) expect((await load(g)).list, `generation ${g}`).toBe(0);
     const listing = await load(16);
     expect(listing).toEqual({
       putImmutable: 1,
       list: 1,
-      getTail: 2,
+      getTail: 1,
       getRange: 0,
       delete: 1,
       pointerReads: 5,

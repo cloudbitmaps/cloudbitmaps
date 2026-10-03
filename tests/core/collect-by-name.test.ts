@@ -529,7 +529,9 @@ describe("a name-only delete keeps invariant 4's re-proof", () => {
       await gcOrphanGenerations(SEG, w.deps, { keep: 0 }); // another collector, taking everything below 5
     });
     const r = await loadSegment(SEG, ids, { ...w.deps, registry });
-    expect(r).toMatchObject({ generation: 5, published: true, collected: [3] });
+    // The other collector took 4 as well, so the look for the current object finds it gone and the pass lists, which
+    // finds nothing left below the pointer.
+    expect(r).toMatchObject({ generation: 5, published: true, collected: [] });
     expect(await generations(w.memory)).toEqual([5]);
   });
 
@@ -591,9 +593,10 @@ describe('a load that repairs a segment whose current object is gone lists, and 
     await w.memory.delete({ ...SEG, generation: 5 }); // a lifecycle rule, or a partial restore
     w.reset();
     const r = await loadSegment(SEG, [1, 2, 3, 4, 5, 6, 7], w.deps);
-    expect(r).toMatchObject({ generation: 6, published: true, cardinalityBefore: null });
+    // The guard took the size from the row's summary, which still remembers the generation, and opened nothing.
+    expect(r).toMatchObject({ generation: 6, published: true, cardinalityBefore: 6 });
     // Collecting by name would take 4, the one generation left from before the tear, and the rollback target
-    // an operator would reach for. The guard's read already found the current object gone, so the pass lists.
+    // an operator would reach for. The pass looks for the current object before it takes a name, finds it gone, and lists.
     expect(w.storageCalls.list).toBe(1);
     expect(r.collected).toEqual([]);
     expect(await generations(w.memory)).toEqual([4, 6]);
@@ -618,12 +621,12 @@ describe('a load that repairs a segment whose current object is gone lists, and 
     expect(await generations(w.memory)).toEqual([5]); // 6 is gone: the pointer names a missing object
     w.reset();
     const r = await loadSegment(SEG, [1, 2, 3, 4, 5, 6, 7], w.deps);
-    expect(r).toMatchObject({ generation: 7, published: true, cardinalityBefore: null });
+    expect(r).toMatchObject({ generation: 7, published: true, cardinalityBefore: 7 });
     expect(w.storageCalls.list).toBe(1);
     expect(await generations(w.memory)).toEqual([5, 7]);
   });
 
-  it('a load with no guard reads no tail, cannot tell, and collects by name: the documented limit', async () => {
+  it('a load with no guard reads nothing of the current object, cannot tell, and collects by name: the documented limit', async () => {
     const w = await atFive();
     await w.memory.delete({ ...SEG, generation: 5 });
     w.reset();
@@ -633,7 +636,7 @@ describe('a load that repairs a segment whose current object is gone lists, and 
     expect(await generations(w.memory)).toEqual([6]);
   });
 
-  it('a segment whose current object is present collects by name even when the guard reads it', async () => {
+  it('a segment whose current object is present collects by name even when the guard has looked for it', async () => {
     const w = await atFive();
     w.reset();
     const r = await loadSegment(SEG, [1, 2, 3, 4, 5, 6, 7], w.deps);
