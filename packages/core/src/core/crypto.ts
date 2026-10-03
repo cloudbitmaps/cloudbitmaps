@@ -64,27 +64,30 @@ export interface IKeystore {
 
 /**
  * What the encrypting codec needs: the {@link Aead} for this segment's DEK plus a way to build the AAD for a
- * given scope (`'index'` or a chunkKey). Built per (segment, generation) by the storage-source bridge so the
- * codec itself stays segment-agnostic.
+ * given scope (a chunkKey, `'index'`, or `'metadata'` for the generation's metadata section). Built per
+ * (segment, generation) by the storage-source bridge so the codec itself stays segment-agnostic.
  */
 export interface CrbmCrypto {
   readonly aead: Aead;
-  aadFor(scope: number | 'index'): Uint8Array;
+  aadFor(scope: number | 'index' | 'metadata'): Uint8Array;
 }
 
 const AAD_VERSION = 1;
 const SCOPE_CHUNK = 0;
 const SCOPE_INDEX = 1;
+const SCOPE_METADATA = 2;
 
 /**
- * Build the AEAD associated-data binding a chunk (or the index) to its exact location:
- * `v1 ‖ len(namespace) ‖ namespace ‖ len(segment) ‖ segment ‖ generation ‖ scope ‖ chunkKey`. Length-prefixed
- * so distinct `(namespace, segment)` pairs can never collide. Pure (no crypto) — just the authenticated label.
+ * Build the AEAD associated-data binding a chunk, the index or the metadata section to its exact location:
+ * `v1 ‖ len(namespace) ‖ namespace ‖ len(segment) ‖ segment ‖ generation ‖ scope ‖ chunkKey`, where scope is
+ * `0` for a chunk, `1` for the index and `2` for the metadata, and chunkKey is `0` for the last two.
+ * Length-prefixed so distinct `(namespace, segment)` pairs can never collide. Pure (no crypto) — just the
+ * authenticated label.
  */
 export function aadFor(
   ref: { readonly namespace?: string; readonly segment: string },
   generation: number,
-  scope: number | 'index',
+  scope: number | 'index' | 'metadata',
 ): Uint8Array {
   const enc = new TextEncoder();
   const ns = enc.encode(ref.namespace ?? '');
@@ -104,8 +107,8 @@ export function aadFor(
   o += seg.length;
   view.setBigUint64(o, BigInt(generation), true);
   o += 8;
-  out[o] = scope === 'index' ? SCOPE_INDEX : SCOPE_CHUNK;
+  out[o] = scope === 'index' ? SCOPE_INDEX : scope === 'metadata' ? SCOPE_METADATA : SCOPE_CHUNK;
   o += 1;
-  view.setUint32(o, scope === 'index' ? 0 : scope, true);
+  view.setUint32(o, typeof scope === 'number' ? scope : 0, true);
   return out;
 }

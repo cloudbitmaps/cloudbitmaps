@@ -277,7 +277,7 @@ wrote)
 | key | type | what it holds |
 |---|---|---|
 | `storage` **(required)** | `StorageBackend \| IStorageDriver \| StorageChunkSource` | where everything lives |
-| `cache?` | `CacheOptions` | `maxChunks?` (decoded chunks held in RAM, default 1024) · `ttlMs?` · `genTtlMs?` (default 2000 ms; [how soon a reader sees a new load](reading.md#how-soon-a-reader-sees-a-new-load); needs a backend) · `readerMax?` (open `.crbm` readers, default 1024) · `readerMaxBytes?` (their parsed indices, default 64 MiB) |
+| `cache?` | `CacheOptions` | `maxChunks?` (decoded chunks held in RAM, default 1024) · `ttlMs?` · `genTtlMs?` (default 2000 ms; [how soon a reader sees a new load](reading.md#how-soon-a-reader-sees-a-new-load); needs a backend) · `readerMax?` (open `.crbm` readers, default 1024) · `readerMaxBytes?` (their parsed indices and any metadata they hold, default 64 MiB) |
 | `encryption?` | `EncryptionOptions` | `keystore?` · `required?` — both need a backend, since the wrapped DEK lives in the registry |
 | `retry?` | `RetryOptions \| false` | a **partial** `RetryPolicy` (anything omitted keeps its `DEFAULT_RETRY_POLICY` value) plus `onRetry?`, for the transient retry of every read that answers a query, and of the reads a load's guard and an erasure make along the way; `false` turns it off. Writes are never retried ([Resilience](#resilience-the-store-wires-this-by-default)) |
 | `metrics?` | `IMetricsSink` | typed metric events; defaults to a no-op |
@@ -366,9 +366,39 @@ The name is deliberately **not** tied to a codec. `.crbm` is the container for a
 CRC32C checksums, the AES-GCM framing and the generation model are all codec-independent, and only the chunk
 payload bytes would differ. Roaring is the one codec that ships.
 
+**Format version.** Every object is format **1.0**: the preamble, the chunk payloads, the index and the fixed
+104-byte footer. A reader refuses an unknown major version, and refuses an object whose footer sets a flag bit it does
+not know. A generation written with metadata carries one **extension block** between the last payload and the index,
+and its footer sets the `FLAG_EXTENSION` bit (`1 << 3`); with no metadata the writer emits the same bytes as before the
+block existed, the flag clear. A reader before 0.12 does not know the bit, so it refuses an object with metadata.
+
+- **Where the block is.** It is found from the index's offset alone: its last 12 bytes, just before the index, are
+  its sections' length (u32), a CRC32C of the sections and that length (u32), and the magic `CRBX`. Payloads end
+  where the block starts.
+- **Sections.** At most 4 KiB in all, each a type (u8), a length (u32) and that many bytes, in strictly ascending
+  type order; type 0 is not a type. A reader skips a type it does not know, so a section must be safe to ignore: a
+  meaning every reader has to understand needs a footer flag bit of its own, which an older reader refuses.
+- **Type 1, the metadata.** Its canonical JSON, at most 1 KiB: RFC 8785 (the JSON Canonicalization Scheme) for one
+  flat object of string and finite-number values. Keys are sorted by UTF-16 code unit, strings are escaped as
+  `JSON.stringify` escapes them, numbers are written as ECMAScript's `Number.prototype.toString` writes them (`-0` is
+  `0`, `1e21` is `1e+21`, `5e-7` stays `5e-7`), and there is no whitespace. A language's ordinary JSON writer differs
+  in places (Python writes `1e-07`; Go and Rust sort keys by code point), so
+  [`tests/golden/metadata-canonical.json`](../../tests/golden/metadata-canonical.json) holds vectors to check a port
+  against.
+- **Encrypted.** The section is sealed like the index (AES-256-GCM, `nonce ‖ ciphertext ‖ tag`, under
+  `aadFor(ref, generation, 'metadata')`), so its content cannot be read or altered without the key; its length, like
+  the index's, stays visible. That the block is there at all is not authenticated: the flag, the trailer and the
+  section types are covered by CRCs, which take no key, so whoever can write the object can remove the block, and the
+  object then reads as one with no metadata.
+- **What a reader refuses**, with `IntegrityError`: a flag with no valid block; a block whose trailer, CRC, size or
+  sections do not hold;
+  metadata that breaks a rule or is not exactly its canonical form; a payload that runs into the block; and any
+  object that is not encrypted when it is opened with a key. It reads the block with the index, from the tail or in
+  the same range read, and makes one more read only when the tail ends inside the block.
+
 | Symbol | What it does |
 |---|---|
-| `CrbmReader` / `CrbmReaderOptions` | read it (`tailBytes`, `maxPayloadBytes`, `maxIndexBytes`, `crypto`, and `lineage`, an opaque marker of the incarnation of the name the object belongs to, which the reader carries and never interprets, so a caller can tell one generation of a segment from the same generation number of a segment deleted and re-created); `reader.fingerprint` names the object by its size and footer checksum, and `CrbmReader.sameObject(blob, fingerprint)` says whether the object behind `blob` is that one, from one footer's worth with no key: another size is another object, and a footer that fails its own checks throws. A fingerprint is opaque: compare two for equality, and do not parse one |
+| `CrbmReader` / `CrbmReaderOptions` | read it (`tailBytes`, `maxPayloadBytes`, `maxIndexBytes`, `crypto`, and `lineage`, an opaque marker of the incarnation of the name the object belongs to, which the reader carries and never interprets, so a caller can tell one generation of a segment from the same generation number of a segment deleted and re-created); `reader.fingerprint` names the object by its size and footer checksum, and `CrbmReader.sameObject(blob, fingerprint)` says whether the object behind `blob` is that one, from one footer's worth with no key: another size is another object, and a footer that fails its own checks throws. A fingerprint is opaque: compare two for equality, and do not parse one. `reader.metadata` is the generation's metadata (`GenerationMetadata`, frozen), checked and, on an encrypted object, decrypted at open; `undefined` on a generation with none, every 1.0 object included. |
 | `CrbmStorageChunkSource` / `CrbmStorageChunkSourceOptions` | the `.crbm` storage reader over an `IStorageDriver` (the store builds this from a raw driver for you); options add `registry`, `keystore`, `requireEncryption`, `clock`, `currentGenTtlMs`, `maxOpenSegments`, `maxOpenIndexBytes` |
 | `BufferReader` · `BlobSink` · `BlobReader` | the in-memory `BlobReader` you hand to `CrbmReader.open`, plus the two interfaces themselves: `BlobSink` takes bytes (one method, `write`), `BlobReader` serves them (`getRange`, `getTail`) |
 
@@ -648,7 +678,7 @@ otherwise throws the registry's `TransientError` and deletes nothing.
 
 | Symbol | What it does |
 |---|---|
-| `NodeAead` · `Aead` · `AeadSealed` · `WrappedDek` · `CrbmCrypto` · `aadFor` | the AES-256-GCM implementation + the crypto interfaces the `.crbm` reader/writer use. An **`Aead` implementation is handed** the associated data and never builds it. A **`CrbmCrypto` caller does** — it is the `{ aead, aadFor }` pair that `CrbmReader.open` takes, so tooling reading an *encrypted* archive builds one with `aadFor(ref, generation, scope)`, which binds each chunk and the index to `(segment, generation)` |
+| `NodeAead` · `Aead` · `AeadSealed` · `WrappedDek` · `CrbmCrypto` · `aadFor` | the AES-256-GCM implementation + the crypto interfaces the `.crbm` reader/writer use. An **`Aead` implementation is handed** the associated data and never builds it. A **`CrbmCrypto` caller does** — it is the `{ aead, aadFor }` pair that `CrbmReader.open` takes, so tooling reading an *encrypted* archive builds one with `aadFor(ref, generation, scope)`, which binds each chunk, the index and the metadata section (scope `'metadata'`) to `(segment, generation)` |
 | `EraseDeps` | `{ registry }` — deps for the free-function crypto-shred (`destroySegment` / `eraseNamespace`) |
 
 ### Low-level ports & capabilities (driver-author typing)

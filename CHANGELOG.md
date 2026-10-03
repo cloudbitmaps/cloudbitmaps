@@ -52,7 +52,33 @@ so, and so do the module headers in the code.
   equal. The library compares tokens only for equality; code of your own that read a shipped registry's token as a
   number breaks. The in-memory backend's tokens take the same form, its counter still global to the backend.
 
+- **`CrbmReader.open` refuses a cleartext object when it is given a `crypto`.** It used to ignore the key and read the
+  object in the clear. Tooling that passes a `crypto` for every object it opens must pass it only for encrypted ones,
+  which an object's footer says (its `FLAG_ENCRYPTED` bit); nothing in the packages, the scripts or the CLI does. See
+  the `Fixed` entry on cleartext objects under an encrypted segment for why.
+
 ### Added
+
+- **A `.crbm` generation can carry its metadata, in an extension block its footer flags.** The format stays 1.0. A
+  generation written with metadata gets one extension block between its last payload and its index, and its footer
+  sets a new flag bit, `FLAG_EXTENSION` (`1 << 3`); the block is found from a 12-byte trailer just before the index
+  (the sections' length, their CRC32C, and `CRBX`), and holds typed sections of a u32 length each.
+  Section 1 is the metadata's canonical JSON, at most 1 KiB, by the same rules and in the same form as a registry
+  summary's (`GenerationMetadata`): RFC 8785 for a flat object of strings and finite numbers, with vectors in
+  `tests/golden/metadata-canonical.json`, RFC 8785 Appendix B's number samples among them, for other languages to
+  check against. On an encrypted segment its content is
+  sealed under the segment's key like the index, bound to its namespace, segment and generation; that the block is
+  there is not, so whoever can write the object can remove it. A generation without metadata is written byte for
+  byte as before, flag clear, so every object written so far, and every one written without metadata, is unchanged.
+  A reader before 0.12 does not know the flag and refuses an object with metadata, rather than read past what it
+  cannot see. This build reads the block in the request that reads the index (one more only when the tail read ends
+  inside the block). It refuses with `IntegrityError` a block whose
+  trailer, CRC, 4 KiB cap or sections do not hold, metadata that breaks a rule or is not exactly its canonical form,
+  a flag with no valid block, and a payload that runs into the block, and it skips a section type it does not know,
+  so a later build can add one. The reader cache's byte bound (`cache.readerMaxBytes`) counts a reader's metadata with its index. For
+  tooling: `CrbmReader`'s `metadata` is the generation's metadata, and `aadFor` takes the scope `'metadata'`; a
+  `CrbmCrypto` of your own must map that scope as `aadFor` does to open an encrypted object with metadata. Nothing in the
+  library writes metadata yet: `load` takes none.
 
 - **A registry record can carry a `summary` of its current generation** (`RegistryRecord.summary`, for driver
   authors). In the clear on a cleartext segment, `{ generation, cardinality, metadata? }`, with `cardinality` an
@@ -264,6 +290,29 @@ so, and so do the module headers in the code.
   Tests run a real `@azure/storage-blob` client against a stub that applies the write, lands another on top, and then
   answers `503`.
 
+- **A cleartext `.crbm` object under an encrypted segment is refused, not believed.** A read of a segment whose row
+  carries wrapped keys opened such an object as if it were the segment's: the footer's encrypted flag alone decided,
+  and the key the read was given went unused, so a cleartext object written over a generation by anyone able to
+  write the bucket, with no key, answered `count()` with whatever its index claimed. Such an object was never one of
+  the segment's generations: a publish never adds a key to a lineage that has generations, and now refuses a
+  cleartext object onto a row with a key (see the `Changed` entry on loads that read their row once). So it is a
+  forgery, corruption, a cleartext write that never published (a store with no keystore that crashed between its
+  write and its publish, before the segment's first keyed load), or one an earlier release published while racing
+  that first keyed load. `CrbmReader.open` given a `crypto` now refuses an object that is not encrypted with
+  `IntegrityError` naming the generation, before it reads its index, and the live read, a pin and a load's guard all
+  open that way. The other paths that meet one:
+  - **An erasure** looks in it without the key, since it may hold the subject in the clear: it asks the object's
+    footer first, on that path alone, and deletes the object when it holds the id, as it deletes any holder, above
+    the pointer or below it. An id it does not hold is `not-member`, as before.
+  - **A `rollback`** onto it is refused with `IntegrityError` before the pointer moves, from one read of its footer,
+    and so is a rollback onto an encrypted object under a cleartext segment.
+  - **Its way out**: a load's collection takes it once it is below the pointer and outside `keep` (one load, or two
+    when it sits above the pointer), and `dropSegment`, an erasure of an id it holds, or deleting the object by hand
+    also remove it.
+
+  Tests forge a cleartext object in place of an encrypted segment's generation, erase ids from a cleartext write
+  that never published below and above an encrypted pointer, roll back onto one, race a cleartext load against a
+  first keyed load, and open cleartext objects with and without metadata with a key.
 - **An Azure Blob range or tail read whose connection drops part-way through the body is a `TransientError`.** The
   SDK fails such a body with an `AbortError`, which reached the caller as it was, so the store's read retry did not run
   it again and a `has()`, `count()` or erasure failed on one dropped connection. The registry already read the same

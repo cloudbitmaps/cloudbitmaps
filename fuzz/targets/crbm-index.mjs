@@ -8,7 +8,7 @@ import { parseIndex, isCloudRoaringError, DEFAULT_MAX_PAYLOAD_BYTES } from '../b
  *
  * Why a dedicated target: in a real read, `parseIndex` sits behind open()'s footer + index CRC32C wall, which
  * a mutational fuzzer can't cross (`crbm-reader.mjs` documents this) — so fuzzing it through the full reader
- * never reaches it. `parseIndex` is exported for this harness only (not public API; see fuzz-support.ts).
+ * never reaches it. `parseIndex` is exported for this harness only (not public API; see fuzz-core.ts).
  *
  * Contract: the raw index bytes parse to a self-consistent entry set OR throw a typed CloudRoaring error (matched by the cross-bundle brand predicate) —
  * never a `RangeError`/`TypeError`/hang. (`readVarint`/`parseIndex` are provably terminating: each advances
