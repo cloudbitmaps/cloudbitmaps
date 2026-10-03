@@ -270,7 +270,8 @@ export interface CacheOptions {
    */
   readonly readerMax?: number;
   /**
-   * Aggregate byte ceiling on the parsed `.crbm` indices the open readers hold (default 64 MiB) — the byte half
+   * Aggregate byte ceiling on what the open readers hold, their parsed `.crbm` indices and the metadata a
+   * generation carries (default 64 MiB) — the byte half
    * of the memory bound, complementing the {@link CacheOptions.readerMax} *count* bound. A wide/dense segment's
    * parsed index can reach about 1.3 MB, so a count-only bound could let the open readers pin over a GB and blow a small
    * heap (e.g. a 128 MB Lambda); this evicts the least-recently-used reader once the summed index footprint
@@ -1308,9 +1309,10 @@ export class CloudRoaring {
    * one cannot.
    *
    * It refuses rather than guesses: a generation not in the bucket (collected, or never written) throws
-   * `NotFoundError` naming what *is* available, and a crypto-shredded segment throws
-   * {@link ValidationError} because every generation of it is unreadable. Rolling to the generation already
-   * current is a no-op that reports itself.
+   * `NotFoundError` naming what *is* available, a crypto-shredded segment throws
+   * {@link ValidationError} because every generation of it is unreadable, and a target that is cleartext under an
+   * encrypted segment, or encrypted under a cleartext one, throws {@link IntegrityError} from one read of its footer,
+   * because every read would refuse it. Rolling to the generation already current is a no-op that reports itself.
    *
    * It deletes nothing. The generations above the new pointer stay put — which is what makes this reversible —
    * and are then *above* `currentGen`, where collection never looks. They remain until loads pass them (the first

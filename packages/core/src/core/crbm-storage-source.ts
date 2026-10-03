@@ -48,7 +48,7 @@ import type {
   SegmentSize,
   Token,
 } from './ports';
-import { CrbmReader, fingerprintFor } from './crbm/reader';
+import { CrbmReader, fingerprintFor, footerSaysEncrypted } from './crbm/reader';
 import type { CrbmReaderOptions } from './crbm/reader';
 import { CrbmWriter } from './crbm/writer';
 import type { CodecBitmap, CodecInterface } from './codec';
@@ -105,8 +105,8 @@ export interface CrbmStorageChunkSourceOptions extends CrbmReaderOptions {
    * Aggregate byte ceiling on the parsed `.crbm` indices resident in the reader cache (default 64 MiB) — the
    * **second half of that memory bound**. `maxOpenSegments` alone bounds by *count*, but a wide/dense segment's
    * parsed index can reach about 1.3 MB, so 1024 wide indices could pin over a GB and blow a small heap (e.g. a 128 MB
-   * Lambda) while the count is nominally "in bounds". This caps the summed {@link CrbmReader.retainedIndexBytes}
-   * across cached readers; the least-recently-used reader is evicted once the total would exceed it — whichever
+   * Lambda) while the count is nominally "in bounds". This caps the summed {@link CrbmReader.retainedBytes} (the
+   * parsed index, and any metadata a generation carries) across cached readers; the least-recently-used reader is evicted once the total would exceed it — whichever
    * of the count/byte bounds binds first. Lower it for memory-tight deployments with wide segments; a single
    * segment whose index alone exceeds the budget is still cached (it can't be shrunk) but nothing else alongside.
    */
@@ -355,9 +355,10 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         forgetIfStale();
         return;
       }
-      // Report the parsed index's footprint so the cache can bound aggregate resident bytes. Identity-
-      // guarded via `peek` (no recency change) so a since-replaced snapshot doesn't mis-weight the fresh entry.
-      if (this.snapshots.peek(key) === snap) this.snapshots.setWeight(key, r.retainedIndexBytes);
+      // Report what the reader holds (its parsed index and any metadata) so the cache can bound aggregate resident
+      // bytes. Identity-guarded via `peek` (no recency change) so a since-replaced snapshot doesn't mis-weight the
+      // fresh entry.
+      if (this.snapshots.peek(key) === snap) this.snapshots.setWeight(key, r.retainedBytes);
     }, forgetIfStale);
     return snap;
   }
@@ -1071,6 +1072,11 @@ export async function holdsObject(
   } catch {
     return false;
   }
+}
+
+/** Whether the object under `key` says it is encrypted, from one read of its footer, with no key. */
+export function objectIsEncrypted(storage: IStorageDriver, key: GenKey): Promise<boolean> {
+  return footerSaysEncrypted(storageBlobReader(storage, key));
 }
 
 /** What {@link writeCrbmGenerationStream} wrote: the driver's `{ size, sha256 }` + a tally of the generation. */
