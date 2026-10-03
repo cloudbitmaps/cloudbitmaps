@@ -3,8 +3,8 @@
  *
  * One JSON file per segment at `<root>/<namespace>/registry/<segment>.reg`, holding `{ deleted, record }`.
  * OCC: the token is a random incarnation id drawn when the row is created, a counter advanced on every mutation, and a
- * random part drawn for every write, so a deleted-then-recreated row, or one restored from a backup, never re-issues an
- * old token (ABA-safe). A `delete` unlinks a row born with an incarnation id, and **tombstones** one a release before
+ * random part drawn for every write, so with overwhelming probability a deleted-then-recreated row, or one restored from a backup, never
+ * re-issues an old token (ABA-safe). A `delete` unlinks a row born with an incarnation id, and **tombstones** one a release before
  * 0.12 wrote, whose bare counter a re-create carries on. Every write is temp → fsync(file) → atomic rename → fsync(dir), and
  * read-modify-write is serialized per row across the whole process (the lock is keyed by the row's resolved
  * path, so every instance on one root shares it). A root is for one process: two processes on one root are not

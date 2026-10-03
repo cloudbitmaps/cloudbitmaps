@@ -644,7 +644,7 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
     // out a fresh token each cycle, so `t0b !== t0` holds every time, while two incarnations several cycles
     // apart quietly collide. Tokens are opaque strings, so the contract is asserted as identity — no token
     // is ever issued twice, and no retired token is ever accepted again — not as a numbering scheme.
-    it('never re-issues a token across repeated delete-and-recreate cycles (ABA-safe)', async () => {
+    it('with overwhelming probability never re-issues a token across repeated delete-and-recreate cycles (ABA-safe)', async () => {
       const d = makeDriver();
       const retired: string[] = [];
       for (let cycle = 0; cycle < 4; cycle++) {

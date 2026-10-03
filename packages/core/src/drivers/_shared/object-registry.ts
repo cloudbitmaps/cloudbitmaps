@@ -5,8 +5,8 @@
  * the same place, with no separate database. One tiny JSON object per segment at
  * `<prefix>registry/<ns>/<segment>.reg` holding the `{ deleted, record }` envelope (the same shape LocalFs
  * persists). The OCC token is a random incarnation id drawn when the row is created, a counter advanced on every
- * mutation, and a random part drawn for every write, so a deleted-then-recreated row, or one restored from a backup,
- * never re-issues an old token (ABA-safe) — identical semantics to the LocalFs registry, so it passes the same
+ * mutation, and a random part drawn for every write, so with overwhelming probability a deleted-then-recreated row, or
+ * one restored from a backup, never re-issues an old token (ABA-safe) — identical semantics to the LocalFs registry, so it passes the same
  * conformance suite.
  *
  * **`delete` removes a row for good where the store vouches for a conditional delete** (`If-Match: <etag>`,
@@ -216,7 +216,7 @@ export class ObjectStoreRegistry implements IRegistryDriver {
     if (current !== null && !current.env.deleted) {
       throw new WriteConflictError(`registry row already exists for segment ${ref.segment}`);
     }
-    // A new incarnation, whose counter continues across a tombstone, so a recreate never re-issues an old token.
+    // A new incarnation, whose counter continues across a tombstone, so with overwhelming probability a recreate never re-issues an old token.
     const token = newIncarnationToken(this.entropy, current?.env.record);
     const env: RegistryEnvelope = {
       deleted: false,

@@ -81,7 +81,7 @@ export class CrbmWriter {
   private totalCardinality = 0;
   private preambleWritten = false;
   private finished = false;
-  /** The metadata's canonical JSON, copied at construction; `undefined` writes format 1.0. */
+  /** The metadata's canonical JSON, copied at construction; `undefined` leaves the footer's extension flag clear. */
   private readonly metadata: Uint8Array | undefined;
   /** Bytes written so far, the footer included once {@link finish} has run. */
   private written = 0;
