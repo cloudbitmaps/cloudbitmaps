@@ -195,6 +195,7 @@ describe('GCS: a load whose writes are throttled, through the real SDK', () => {
         sleep: async (ms: number) => {
           waits.push(ms);
         },
+        yieldNow: async (): Promise<void> => {},
       },
     };
   }

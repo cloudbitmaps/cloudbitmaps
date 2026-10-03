@@ -129,6 +129,7 @@ describe('Azure Blob: a load whose row write is throttled', () => {
       sleep: async (ms: number) => {
         waits.push(ms);
       },
+      yieldNow: async (): Promise<void> => {},
     },
   });
   /** Answer the `n`th PUT of the row `answer(n)` (or let it through), and count them. */

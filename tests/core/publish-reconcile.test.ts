@@ -126,6 +126,8 @@ function world(
       waits.push(ms);
       await duringWait?.();
     },
+    // A load hands the loop back through this, and it is not a wait: only the publish's backoff is recorded.
+    yieldNow: async (): Promise<void> => {},
   };
   const bare = { storage: faultyStorage, registry, codec: roaringCodec };
   return {

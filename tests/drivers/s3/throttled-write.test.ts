@@ -368,7 +368,7 @@ describe('S3: a load whose writes are throttled, through the real SDK', () => {
       registry: new S3RegistryDriver({ client, bucket: STUB_BUCKET }),
       codec: roaringCodec,
       // What a store wires: the publish waits on it before a fresh write, as the driver does before a re-send.
-      clock: { now: () => 0, sleep: clock.sleep },
+      clock: { now: () => 0, sleep: clock.sleep, yieldNow: async (): Promise<void> => {} },
     };
     return { bucket, deps, waits };
   }
