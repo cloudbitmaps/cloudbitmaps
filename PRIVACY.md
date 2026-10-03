@@ -240,12 +240,16 @@ to run, and the deletion is ours to perform correctly.** Practical patterns:
   assumed: `generationsRemaining` non-empty means bytes survived and the call should be repeated. It tombstones
   the segment and deletes **every Storage generation** — so the space is actually reclaimed. It works on a
   cleartext segment, and on an encrypted one it *also* crypto-shreds, making it a strict superset there.
-- **A deleted row keeps its record.** When the S3, GCS, Azure Blob or local-file registry deletes a row
-  (`registry.delete`, or the retention sweep's purge of a tombstone) it writes a deleted marker that holds the record, so
-  the row's token counter survives a re-create. A
-  tombstone left by `dropSegment` or `destroySegment` holds no wrapped key and no summary, since both clear them, so a
-  purge keeps the name, the pointer, the retention policy and the timestamps. A **live** row deleted directly with
-  `registry.delete` keeps its summary, the current generation's id count and your metadata, in that marker.
+- **A deleted row keeps its record only where the registry cannot remove it.** Where the registry reports
+  `conditionalDelete` (the default for S3 when its client sends to an AWS S3 host, for GCS on its public endpoint, for
+  Azure Blob, the local filesystem and memory), `registry.delete` and the retention sweep's purge of a tombstone remove
+  a row created by 0.12 from the bucket, and its token's random incarnation id keeps a re-create apart from it. Where it
+  does not (an S3 client that sends to an S3-compatible store or an emulator, by default, or `conditionalDelete:
+  false`), and for a row written by a release before 0.12 on any backend, a delete writes a deleted marker that holds
+  the record, so the row's token counter survives a re-create. A tombstone left by `dropSegment` or `destroySegment`
+  holds no wrapped key and no summary, since both clear them, so a purge that leaves a tombstone keeps the name, the
+  pointer, the retention policy and the timestamps. A **live** row deleted directly with `registry.delete` keeps its
+  summary, the current generation's id count and your metadata, in a marker where one is written.
 - **`destroySegment` crypto-shreds** — it removes the wrapped key from the registry row, so the Storage bytes
   become unreadable *everywhere including backups, replicas and WORM-locked copies* once no retained copy of that
   row still holds the key, or every KEK that wrapped it is destroyed (see the trap above), which no object

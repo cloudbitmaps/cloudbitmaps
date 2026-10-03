@@ -225,8 +225,9 @@ await store.load({ segment: 'audience:active' }, ids, {
   holds a copy of it. Put a version, a time or a run id there, and nothing that names a person.
 - **Encrypted segments seal it** in the object, as the index is, and in the row. See
   [encryption](encryption.md#what-is-sealed-where).
-- **Reading it back.** This build writes the metadata and the summary; reading them back through the API, with a
-  count that costs one request, is the next piece of this work. See the [roadmap](../ROADMAP.md).
+- **Reading it back.** `seg.stat()` returns the generation's number, id count and metadata in one request when cold,
+  and the current entry of `store.generations()` carries them from the row it already reads. See
+  [reading](reading.md#stat-the-generation-its-count-and-its-metadata).
 
 ### Where the guard reads the size of the current generation
 
