@@ -314,6 +314,7 @@ state and is cheap to check for, so check for it after any hard kill of a proces
      forgetDuePointer(ref)     delete the segment's due-index pointer, if it has one
   2. stampRetirement(ref)      CAS retention.retiredBySweepAt = now         ← the attribution
      filePurgePointer(ref)     create a due-index pointer under the day the grace ends
+                               (only on a registry that removes rows: `conditionalDelete`)
 ```
 
 A `SIGKILL` — or a `terminationGracePeriodSeconds` that expires, or a node that vanishes — landing anywhere after

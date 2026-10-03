@@ -313,9 +313,7 @@ export class ObjectStoreRegistry implements IRegistryDriver {
         throw err;
       }
     }
-    throw new WriteConflictError(
-      `registry delete: contention tombstoning "${ref.segment}" — retry`,
-    );
+    throw new WriteConflictError(`registry delete: contention deleting "${ref.segment}" — retry`);
   }
 
   /**

@@ -297,6 +297,24 @@ describe('ObjectStoreRegistry: delete under contention', () => {
     expect(await reg.get(ref)).not.toBeNull(); // and it did NOT report a false success
   });
 
+  it.each([
+    ['a row it removes for good', true],
+    ['a row it tombstones', false],
+  ])(
+    'gives up with an error that names a delete, not only a tombstone: %s',
+    async (_what, removes) => {
+      const store = new FakeObjectStore({ conditionalDelete: removes });
+      const reg = new ObjectStoreRegistry(store, undefined, ticking());
+      const { token } = await reg.create(ref, { currentGen: 0 });
+      store.conflictWrites = 500;
+      store.delete = (): Promise<void> => Promise.reject(new WriteConflictError('lost the race'));
+      const err = await reg.delete(ref, token).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(WriteConflictError);
+      expect((err as Error).message).toMatch(/contention deleting "s:v1"/);
+      expect((err as Error).message).not.toMatch(/tombstoning/);
+    },
+  );
+
   it('propagates a write fault that is not a lost race, instead of retrying it', async () => {
     const store = new FakeObjectStore();
     const reg = new ObjectStoreRegistry(store, undefined, ticking());

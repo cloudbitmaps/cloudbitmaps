@@ -422,7 +422,9 @@ because deleting the row is what makes the name writable again:
    the row changed under it. That is not a storage fault, and the next cycle simply retries.
 
 **What the purge removes.** On a backend whose registry can delete a row only while it is unchanged, the purge removes
-the row from the bucket for good, with a delete the store applies only to the version the sweep judged: S3
+the row from the bucket for good (a removed row stays recoverable wherever the storage keeps a copy of it: with object
+versioning on, until a noncurrent-version rule expires it, and with soft delete on, for its retention window: GCS, on by
+default for a new bucket, 7 days; Azure Blob, where enabled. [`PRIVACY.md`](../../PRIVACY.md) says what a row holds), with a delete the store applies only to the version the sweep judged: S3
 `DeleteObject` with `If-Match`, GCS with `ifGenerationMatch`, Azure Blob with `ifMatch`. The registry says which it is:
 `backend.registry.capabilities().conditionalDelete`. It is on by default for S3 when the host the client resolves is an
 AWS S3 host, for GCS on its public endpoint, for Azure Blob, and for the local-filesystem and in-memory backends. A full sweep then reads what is live and what is

@@ -87,7 +87,7 @@ export interface S3RegistryDriverOptions {
    * The host is the one the SDK resolves for a request, so an endpoint set through `AWS_ENDPOINT_URL_S3`,
    * `AWS_ENDPOINT_URL` or an `endpoint_url` in the shared config file counts exactly as a constructor `endpoint` does.
    * It is resolved once, lazily: until the registry's first read or listing the answer reads `false`, and a client that
-   * cannot be resolved then (no region, no credentials) keeps tombstoning for the life of the registry, so set the
+   * cannot be resolved then (no region) keeps tombstoning for the life of the registry, so set the
    * option to override it.
    *
    * Set it explicitly to override the host. An S3-compatible store must apply the precondition before you set it there:

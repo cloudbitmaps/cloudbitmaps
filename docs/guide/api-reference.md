@@ -118,7 +118,7 @@ requests it will send through a second client built from the first one's configu
 and reads back the host and the headers: the SDK's own resolution of the region, the environment, the shared config
 file and the endpoint options, with none of the middleware, logging or credentials you gave your client in play (a
 request counter of yours counts no probe, and a class-level mock of `S3Client.send` records none). A middleware of yours that changes where a request goes is not seen. Until that first read or listing, `capabilities().conditionalDelete` reads `false` unless you set the option,
-and a client that cannot be resolved then (no region, no credentials) keeps tombstoning for the life of the registry.
+and a client that cannot be resolved then (no region) keeps tombstoning for the life of the registry.
 It also checks that the SDK sends the preconditions the registry relies on: an `@aws-sdk/client-s3` whose model lacks a
 member drops it from the request without a word. A `DeleteObject` that would go out without `If-Match` keeps the row
 tombstoned, whatever `conditionalDelete` says, and a `PutObject` that would go out without `If-None-Match` (a create) or
@@ -639,7 +639,7 @@ driver to them (`IStorageDriver`'s doc comment states the same list):
 - Raise a transient fault as `TransientError`.
 
 **What a registry driver must do.** `create` and `compareAndSwap` are atomic conditional writes that throw
-`WriteConflictError` and change nothing when they lose; tokens are never reused, `delete` then `create` included;
+`WriteConflictError` and change nothing when they lose; a token is not reused, `delete` then `create` included, but for a collision of probability 2^-128 per pair of incarnations;
 reads are strongly consistent; `list` yields every existing row, `destroyed` tombstones included, with every field;
 the replay rule above applies to `create` and `compareAndSwap`; a transient fault is a `TransientError`; and
 `delete` is idempotent, with one addition.
