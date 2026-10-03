@@ -85,7 +85,7 @@ is a dependency of both and is never installed directly. The storage drivers are
   structurally and safely deserialized before anything is written, then written from the bitmap's own containers,
   never id by id, into the bytes the same ids write. A byte array passed as ids is refused rather than loaded byte
   by byte.
-- **A throttled write neither fails the load nor lands twice.** On S3 and GCS a write-once object the service answers
+- **A throttled write is sent again, and never lands twice.** On S3 and GCS a write-once object the service answers
   as throttled (`503 SlowDown`; `429` or `503`) is sent again, up to three more times with backoff, and a random write
   id in its metadata tells a first send that landed from another writer's object; on Azure Blob the client's retry does
   the same, with the same id. A registry row is sent once by the driver. When its write gets no answer, the load reads
