@@ -305,11 +305,11 @@ so, and so do the module headers in the code.
   drivers, which delete an absent object without failing as S3 does. Collection by name takes one PUT-class request
   (the listing) and two GET-class requests (the pointer reads around it) off a steady load: with the row read below it
   is 2 PUT-class requests, 5 GET-class and a delete, 8 requests, where 0.11.2 sent 14. A segment's first and second
-  load collect nothing and have no delete, 2 and 4. Every 16th generation lists, and is 3 and 7. GCS makes the same
-  counts; Azure Blob one GET-class request more, for its two-request tail read. `costReport()` and `estimateCost()`
-  price a load at those counts, averaged over the cadence: $12.36 per million steady single-part loads at the default
-  prices: $12.00 when a load does not list, $17.80 when it lists (every 16th generation), and $11.60 for a segment's
-  first load. The average has a sixteenth of a listing and two pointer reads a load in it. The calibration harness
+  load collect nothing and have no delete, 2 and 4, and 2 and 3 once a row carries a summary of its generation. Every
+  16th generation lists, and is 3 and 6. GCS and Azure Blob make the same counts. `costReport()` and `estimateCost()`
+  price a load at those counts, averaged over the cadence: $12.34 per million steady single-part loads at the default
+  prices: $12.00 when a load does not list, $17.40 when it lists (every 16th generation), and $11.60 for a segment's
+  first load. The average has a sixteenth of a listing and two pointer reads, less a check, a load in it. The calibration harness
   expects a first load of 2 PUT-class and 4 GET-class requests and its rehearsal fixtures are re-captured, and the
   pages that quote a load's price or its requests, the sizing tables and the cost guide's model say what the
   estimator now gives. Collection by name relies on a delete of an absent key succeeding without touching its
@@ -347,12 +347,12 @@ so, and so do the module headers in the code.
   drivers. This change takes a listing and, net, two GET-class requests off a steady load (three row reads fewer, a
   check more), and the collection change above takes the collection's listing and the two pointer reads around it: a
   steady single-part load on S3 is now 2 PUT-class requests (the object, the row), 5 GET-class (three row reads, the
-  guard's tail read, the check) and a delete, where it was 4, 9 and a delete; a segment's first load is 2 and 4,
-  where it was 4 and 7, and its second the same, where it was 4 and 8. GCS makes the same counts; Azure Blob one
-  GET-class request more, for its two-request tail read. An encrypted segment's load reads its row once more, which the
+  check that the next number is free, and the check that the current object is there) and a delete, where it was 4, 9
+  and a delete; a segment's first load is 2 and 4, where it was 4 and 7, and its second 2 and 3, where it was 4 and 8.
+  GCS and Azure Blob make the same counts. An encrypted segment's load reads its row once more, which the
   cost model leaves out: it prices a cleartext segment's load, as its docs now say. `costReport()` and
   `estimateCost()` price a load at those counts, the check at one request on every backend whatever
-  `requestsPerPointerRead` and `requestsPerSizedRead` say: $12.36 per million steady single-part loads at the default
+  `requestsPerPointerRead` and `requestsPerSizedRead` say: $12.34 per million steady single-part loads at the default
   prices, where it was $23.60, and $11.60 for a segment's first load, where it was $22.80.
 
   What else moves with it:

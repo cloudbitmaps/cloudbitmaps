@@ -367,7 +367,7 @@ describe('calibration reports are held to their evidence', () => {
         'Each of its requests took about 194 ms.',
         'A dollar buys 12,136 cold intersects.',
         'Past 329.15 cold intersects a second, sustained, the node is cheaper.',
-        "A segment's store.load() costs $11.20 per million.",
+        "A segment's store.load() costs $12.40 per million.",
         'The two objects are 2,104,496 bytes, and the index is 20,152 bytes.',
       ]) {
         expect(plant(wrong), wrong).not.toEqual([]);

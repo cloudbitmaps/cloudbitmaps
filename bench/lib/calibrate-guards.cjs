@@ -153,8 +153,9 @@ function projectOps({
  *
  * The projection bounds a segment's first load: its number checked once and its pointer read three times with nothing
  * racing it, six more when the check finds the number taken and the load collects what it met, and fifteen GET-class
- * requests at most when every publish attempt but the last is lost. A reload whose number is taken makes sixteen at
- * four lost races, past the bound, since it also reads the current generation's index. A stage that loaded a name
+ * requests at most when every publish attempt but the last is lost. A reload whose number is taken makes fifteen at
+ * four lost races, as many as the bound, and sixteen, past it, when its row was written before rows carried a summary
+ * of the current generation and it also reads that generation's index. A stage that loaded a name
  * twice would overspend a projection that said it was safe, so the harness loads each name once and a repeat is
  * refused before it sends anything.
  */

@@ -30,7 +30,7 @@ import {
 } from './crbm-storage-source';
 import type { Clock, Rng } from './determinism';
 import { aadFor } from './crypto';
-import type { CrbmCrypto, IKeystore } from './crypto';
+import type { Aead, CrbmCrypto, IKeystore } from './crypto';
 import {
   KeyUnavailableError,
   ValidationError,
@@ -51,6 +51,7 @@ import type {
   SegmentRef,
   Token,
 } from './ports';
+import { usableSummary } from './summary';
 import { validateUserRef } from './validate';
 
 /** What {@link loadSegment} needs: the objects, the pointer, the codec, and key material if encrypted. */
@@ -196,9 +197,23 @@ export interface LoadResult {
   readonly collected: readonly number[];
 }
 
+/** What the guard learned of the segment's current generation, and how it learned it. */
+interface CurrentSize {
+  /** The number of ids it holds, or `null` when there is no current generation to compare against, or its object is gone. */
+  readonly cardinality: number | null;
+  /** Whether the number came from the row's summary, so the object was not opened and nothing says it is there. */
+  readonly fromSummary: boolean;
+}
+
 /**
- * Cardinality of the segment's current generation, read from the `.crbm` index rather than its payload.
- * `null` when there is no current generation to compare against.
+ * Cardinality of the segment's current generation, from the row's summary of it when the row has one it can use, and
+ * otherwise from the `.crbm` index rather than its payload. `null` when there is no current generation to compare
+ * against.
+ *
+ * A summary is used only for the generation it names, in the shape the row's keys call for, and a sealed one only if
+ * it opens: anything else is no summary, and the tail is read exactly as it was before rows carried one. Using it
+ * opens nothing, so a row that names an object that is gone is judged by what it remembers of it, and a caller that
+ * must know the object is there (the collection after the publish) looks for itself.
  *
  * The crypto is derived **here** rather than taken from the caller, and that is not a convenience. AAD is bound
  * to a specific generation, so a `CrbmCrypto` passed in from outside would have to be pre-bound to whichever
@@ -209,9 +224,12 @@ async function currentCardinality(
   ref: SegmentRef,
   deps: LoadDeps,
   record: RegistryRecord | null,
-): Promise<number | null> {
-  if (record === null || record.currentGen === null || record.status === 'destroyed') return null;
+): Promise<CurrentSize> {
+  if (record === null || record.currentGen === null || record.status === 'destroyed') {
+    return { cardinality: null, fromSummary: false };
+  }
   const generation = record.currentGen;
+  let aead: Aead | undefined;
   let crypto: CrbmCrypto | undefined;
   const wrapped = record.wrappedDeks;
   if (wrapped !== undefined && wrapped.length > 0) {
@@ -220,9 +238,12 @@ async function currentCardinality(
         `segment "${ref.segment}" is encrypted but load was given no keystore`,
       );
     }
-    const aead = await deps.keystore.openDek(wrapped);
-    crypto = { aead, aadFor: (scope) => aadFor(ref, generation, scope) };
+    aead = await deps.keystore.openDek(wrapped);
+    const opened = aead;
+    crypto = { aead: opened, aadFor: (scope) => aadFor(ref, generation, scope) };
   }
+  const described = usableSummary(ref, record, aead);
+  if (described !== undefined) return { cardinality: described.cardinality, fromSummary: true };
   let reader;
   try {
     reader = await retryRead(
@@ -239,11 +260,11 @@ async function currentCardinality(
     // guard is for. Writing over it is precisely the repair, and it is what this path did before the guard
     // reached it. A caller who wants to be told instead can run `checkConsistency()`, whose job that is.
     if (!isNotFoundError(err)) throw err;
-    return null;
+    return { cardinality: null, fromSummary: false };
   }
   let total = 0;
   for (const n of reader.cardinalities().values()) total += n;
-  return total;
+  return { cardinality: total, fromSummary: false };
 }
 
 /**
@@ -311,7 +332,10 @@ export async function loadSegment(
   // generation is non-empty; `minRetained` needs its size. `minCardinality` compares against the new generation
   // alone, so it costs nothing extra.
   const needsBefore = guard?.minRetained !== undefined || options.allowEmpty !== true;
-  const before = needsBefore ? await currentCardinality(ref, deps, row) : null;
+  const current: CurrentSize = needsBefore
+    ? await currentCardinality(ref, deps, row)
+    : { cardinality: null, fromSummary: false };
+  const before = current.cardinality;
 
   const { generation, checked } = await nextLoadGeneration(ref, deps, row);
   const key = { namespace: ref.namespace, segment: ref.segment, generation };
@@ -499,12 +523,17 @@ export async function loadSegment(
   // bucket, so the generation below the new one that a listing keeps as the window is the one a name would take.
   // This load repairs the gap, and lists. `before` is null for a row that names a generation only when its object was
   // not found (a row with no pointer numbers 0, which has nothing below it to take, and a destroyed row is refused
-  // at its publish). A load that made no such read cannot tell.
+  // at its publish). A guard that took the size from the row's summary opened nothing, so it learned nothing about
+  // the object: the collection looks for itself, with one zero-byte read of it, only if it is about to delete by name
+  // a generation the window keeps. A load that made no read at all (`allowEmpty` without `minRetained`) cannot tell.
   const currentObjectGone = needsBefore && before === null;
   const collected = await collectAfterLoad(ref, deps, {
     generation,
     keep,
     byName: checked && !currentObjectGone && deps.collectByListing !== true,
+    ...(current.fromSummary && fromGeneration !== undefined
+      ? { proveCurrent: { ...ref, generation: fromGeneration } }
+      : {}),
   });
   return {
     generation,

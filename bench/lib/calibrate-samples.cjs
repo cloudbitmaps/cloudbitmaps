@@ -25,8 +25,9 @@
  * projection it was checked against before anything was created.
  *
  * WHAT IS NOT A SAMPLE. A load. A write that fails transiently may still have landed — its object, or its pointer, with
- * only the answer lost — so the same load run again is a reload of that name, which makes more requests than the first
- * load the projection bounds, and `firstLoads` refuses it. A load that meets a transient fault fails the run. Nor is a
+ * only the answer lost — so the same load run again is a reload of that name, which the projection does not bound (it
+ * bounds a first load, and a reload of a row with no summary of its current generation makes more requests than that),
+ * and `firstLoads` refuses it. A load that meets a transient fault fails the run. Nor is a
  * warm read: it makes no request, so it cannot meet a fault, and one that does make a request fails its stage anyway.
  */
 const { setTimeout: sleepFor } = require('node:timers/promises');

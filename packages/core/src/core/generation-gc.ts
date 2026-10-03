@@ -15,7 +15,7 @@
  * randomness of its own.
  */
 import { ValidationError, WriteConflictError, isNotFoundError } from './errors';
-import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
+import type { GenKey, IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
 
 /** The two ports generation bookkeeping needs: the objects, and the pointer that says which one is current. */
 export interface GenerationDeps {
@@ -269,13 +269,48 @@ export async function gcOrphanGenerations(
 export async function collectAfterLoad(
   ref: SegmentRef,
   deps: GenerationDeps,
-  options: { generation: number; keep: number; byName: boolean },
+  options: {
+    generation: number;
+    keep: number;
+    byName: boolean;
+    /**
+     * The object the load's row named as current, which the caller did not open. Before it collects by name a generation
+     * the window keeps (a `keep` of 1), the pass looks for this object with one zero-byte read, and lists instead
+     * unless that finds it: a name-only pass is safe only while the object the row named is in the bucket.
+     */
+    proveCurrent?: GenKey;
+  },
 ): Promise<number[]> {
-  const { generation, keep, byName } = options;
+  const { generation, keep, byName, proveCurrent } = options;
   if (keep >= generation) return [];
   const periodic = generation % LIST_COLLECTION_CADENCE === 0;
-  if (byName && keep <= 1 && !periodic) return collectByName(ref, deps, { generation, keep });
+  if (byName && keep <= 1 && !periodic) {
+    // A `keep` of 0 deletes the generation it supersedes, which is the one in question: whether it is there or not, it is
+    // the name to take, and nothing is lost by taking it.
+    if (
+      keep === 1 &&
+      proveCurrent !== undefined &&
+      !(await objectIsThere(deps.storage, proveCurrent))
+    ) {
+      return gcOrphanGenerations(ref, deps, { keep });
+    }
+    return collectByName(ref, deps, { generation, keep });
+  }
   return gcOrphanGenerations(ref, deps, { keep });
+}
+
+/**
+ * Whether an object is in the bucket, from one zero-byte read, a metadata request on every shipped driver. False when it
+ * is not there and when the read fails in any way: a caller that collects by name on `true` needs the proof, and
+ * lists when it does not have it.
+ */
+async function objectIsThere(storage: IStorageDriver, key: GenKey): Promise<boolean> {
+  try {
+    await storage.getTail(key, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**

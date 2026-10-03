@@ -13,8 +13,9 @@
  *
  * What the model covers, and states in `assumptions.notes`: object-store GETs for point reads, for
  * intersections (each operand's pointer and index as well as its chunks) and for the pointer refresh a long-lived
- * reader pays; the requests of a load (the object's write, and the pointer reads and write, the check of the next
- * generation number and the listing of every 16th generation that `store.load()` makes around it); and storage. Same-region egress is
+ * reader pays; the requests of a load (the object's write, and the pointer reads and write, the checks of the next
+ * generation number and of the current generation's object, and the listing of every 16th generation that
+ * `store.load()` makes around it); and storage. Same-region egress is
  * treated as free and internet egress is not modeled; request cost is derived from the supplied workload rates
  * (deriving it from live metrics counters is a later refinement). There is no per-write term because the loaded
  * store has no per-id write: data arrives as generations, and a generation is a load.
@@ -70,8 +71,9 @@ export interface PricingProfile {
      * Requests one tail read costs: the read of a segment's index from the end of its generation, which needs the
      * object's size. Default **1**, S3's, whose suffix-range GET returns the size with the bytes, and GCS's, the same.
      * **2** on Azure Blob, which takes no suffix range and reads the properties and then the bytes. Charged for each
-     * operand of an intersection and for the one index read a load makes. A chunk read knows its range, and is one
-     * request everywhere.
+     * operand of an intersection. A load reads no index of its own: a row that carries a summary of its current
+     * generation gives the load the size it needs, and the checks it makes are one metadata request on every backend.
+     * A chunk read knows its range, and is one request everywhere.
      */
     readonly requestsPerSizedRead?: number;
   };
@@ -214,12 +216,15 @@ export interface Workload {
    * PUT-class requests one load's object write issues, each priced at the PUT rate. Default **1** (a single-object
    * PUT). A multipart write of `P` parts bills `P + 2` (initiate, the parts, complete) — set it when you know your
    * object sizes. The model adds what `store.load()` does around the write, at the default `keep` of 1: the pointer's
-   * write, PUT-class on S3, and five GETs: the pointer read three times, the current generation's index once, and one
-   * check that the next generation number is free. Collection deletes the generation the window pushed out by name,
-   * so it lists only on every 16th generation, which adds a PUT-class request and two pointer reads there, a sixteenth
-   * of each on average. That is a segment with two generations behind it; its first two loads make fewer requests
-   * and collect nothing. On S3 at the default prices a single-part `store.load()` is then about $12.36 per million.
-   * A segment whose index outgrows the tail read makes one more GET, a publish that loses a race to another writer
+   * write, PUT-class on S3, and five GETs: the pointer read three times, one check that the next generation number is
+   * free, and one that the current generation's object is there, which tells the collection that deletes by name it
+   * may. The current generation's size comes from the row's summary of it, so the load reads no index. Collection
+   * deletes the generation the window pushed out by name, so it lists only on every 16th generation, which adds a
+   * PUT-class request and two pointer reads there and makes no check that the current generation is there, a
+   * sixteenth of each on average. That is a segment with two
+   * generations behind it, whose row carries a summary; its first two loads make fewer requests and collect nothing,
+   * and the first load of a row written before rows carried a summary reads the current generation's index, one tail
+   * read, in place of the check that its object is there. A publish that loses a race to another writer
    * reads the pointer again, and a load whose check finds the number taken (a crashed load's object, or the
    * generations a rollback left above the pointer) lists the segment's objects to number past them and to collect,
    * two PUT-class requests on S3 and two more pointer reads. So does every load that keeps two or more generations,
@@ -345,17 +350,18 @@ const GIB = 1024 ** 3;
  * listed, except on every {@link LIST_COLLECTION_CADENCE}th generation, where collection lists instead: one more
  * PUT-class request and two more pointer reads (before and after the listing). Those two are averaged over the
  * cadence, so a count of `n` loads is exact for `n` consecutive generations of the cadence. PUT-class: the
- * pointer's write and the averaged listing. Pointer reads each cost `requestsPerPointerRead` requests. One tail read of the
- * current generation's index costs `requestsPerSizedRead`, and one check that the next generation number is free is a
- * single metadata request on every backend (S3's `HeadObject`, GCS's object metadata, Azure Blob's properties), so
- * neither field applies to it. `tests/core/cost.test.ts` holds these to the engine over sixteen consecutive loads.
- * A load that keeps two or more generations, or whose check meets an object, lists on every load: one more
- * PUT-class request and two more pointer reads than these.
+ * pointer's write and the averaged listing. Pointer reads each cost `requestsPerPointerRead` requests. The load reads
+ * no index: the row's summary of the current generation gives it the size the guard needs. It makes two checks, each
+ * a single metadata request on every backend (S3's `HeadObject`, GCS's object metadata, Azure Blob's properties), so
+ * `requestsPerSizedRead` applies to neither: that the next generation number is free, on every load, and that the
+ * current generation's object is there, before the collection deletes by name the generation it pushed out of the
+ * window, so on every load but the listing one. `tests/core/cost.test.ts` holds these to the engine over sixteen
+ * consecutive loads. A load that keeps two or more generations, or whose check meets an object, lists on every load:
+ * one more PUT-class request and two more pointer reads than these, and one check fewer.
  */
 const STORE_LOAD_PUT_CLASS = 1 + 1 / LIST_COLLECTION_CADENCE;
 const STORE_LOAD_POINTER_READS = 3 + 2 / LIST_COLLECTION_CADENCE;
-const STORE_LOAD_TAIL_READS = 1;
-const STORE_LOAD_EXISTENCE_CHECKS = 1;
+const STORE_LOAD_EXISTENCE_CHECKS = 2 - 1 / LIST_COLLECTION_CADENCE;
 
 /** A count of requests for a note: at most two decimals, none when it is whole. */
 const shown = (n: number): string => String(Number(n.toFixed(2)));
@@ -672,10 +678,7 @@ function buildReport(input: {
   const getsPerColdOperand = pointerRead + sizedRead;
   const intersectGets = chunksPerIntersect + getsPerColdOperand * operandsPerIntersect;
   const intersectsUSD = intersects * intersectGets * storageGetUSD;
-  const loadGets =
-    STORE_LOAD_POINTER_READS * pointerRead +
-    STORE_LOAD_TAIL_READS * sizedRead +
-    STORE_LOAD_EXISTENCE_CHECKS;
+  const loadGets = STORE_LOAD_POINTER_READS * pointerRead + STORE_LOAD_EXISTENCE_CHECKS;
   const loadsUSD =
     loadsPerMonth * ((requestsPerLoad + STORE_LOAD_PUT_CLASS) * putUSD + loadGets * storageGetUSD);
   const refreshUSD = refreshes * pointerRead * storageGetUSD;
@@ -755,7 +758,7 @@ function buildReport(input: {
     loadsPerMonth > 0
       ? `Loads modeled: ${loadsPerMonth}/mo, each ${requestsPerLoad} PUT-class request(s) for the object plus ` +
         `${shown(STORE_LOAD_PUT_CLASS)} PUT-class and ${shown(loadGets)} GETs that store.load() adds (the pointer, ` +
-        'the index, a check that the next generation number is free, and a listing every ' +
+        'a check that the next generation number is free, a check that the current generation is there, and a listing every ' +
         `${LIST_COLLECTION_CADENCE}th load).`
       : 'Loads are NOT modeled — set workload.loadsPerMonth (+ requestsPerLoad for multipart) to include them.',
     ...(intersects > 0
