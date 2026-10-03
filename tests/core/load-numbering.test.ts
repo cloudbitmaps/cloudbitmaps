@@ -144,11 +144,8 @@ describe('a load numbers its generation from the row it read, with one existence
     const r = await loadSegment(SEG, [9], w.deps, { keep: 9 });
     // 2 is taken: never reuse a number an object holds. The listing goes above 3.
     expect(r).toMatchObject({ generation: 4, published: true });
-    expect(beforeWrite(w.calls)).toEqual([
-      { op: 'tail', generation: 1 },
-      { op: 'check', generation: 2 },
-      { op: 'list' },
-    ]);
+    // The rollback wrote the target's summary into the row, so the guard sizes generation 1 from it and reads no tail.
+    expect(beforeWrite(w.calls)).toEqual([{ op: 'check', generation: 2 }, { op: 'list' }]);
   });
 
   it('restarts at 0 after a purge and re-create, with one check', async () => {

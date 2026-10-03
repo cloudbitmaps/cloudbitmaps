@@ -17,15 +17,36 @@
  * Art. 30 record or an incident review wants to find.
  */
 import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
-import { objectIsEncrypted } from './crbm-storage-source';
-import { IntegrityError, NotFoundError, ValidationError } from './errors';
-import type { IStorageDriver, IRegistryDriver, SegmentRef } from './ports';
+import { openRollbackTarget } from './crbm-storage-source';
+import { aadFor } from './crypto';
+import type { Aead, CrbmCrypto, IKeystore } from './crypto';
+import {
+  IntegrityError,
+  KeyUnavailableError,
+  NotFoundError,
+  ValidationError,
+  isIntegrityError,
+} from './errors';
+import type {
+  IStorageDriver,
+  IRegistryDriver,
+  RegistryRecord,
+  RegistrySummary,
+  SegmentRef,
+} from './ports';
+import { summaryOf } from './summary';
 import { validateUserRef } from './validate';
 
 /** What the generation helpers need: the objects, and the pointer that says which one is current. */
 export interface GenerationListDeps {
   readonly storage: IStorageDriver;
   readonly registry: IRegistryDriver;
+  /**
+   * The key of an encrypted segment, so a rollback can read its target's count and metadata and seal them into the
+   * row. Without it, a rollback of an encrypted segment still works and leaves the row with no summary of the
+   * generation it moves to, which a reader then takes from the object.
+   */
+  readonly keystore?: IKeystore;
 }
 
 /** One generation present in the bucket. */
@@ -150,11 +171,30 @@ export async function rollbackSegment(
   }
 
   // The target must be what the row says the segment is, encrypted under its key or cleartext, or every read of the
-  // segment would refuse it once the pointer names it. One read of its footer, with no key, says which it is: a
-  // cleartext target under a row with keys is a write that never published, from before the segment's key was
-  // made, and an encrypted one under a row with none was sealed under a key no row holds.
+  // segment would refuse it once the pointer names it. One tail read of it says which it is, with no key needed for that:
+  // a cleartext target under a row with keys is a write that never published, from before the segment's key was made,
+  // and an encrypted one under a row with none was sealed under a key no row holds. The same read opens the target when
+  // the key is at hand, which gives the count and metadata the row's summary of it says, so nothing is read twice. A
+  // target whose footer, index or metadata does not open is refused: the pointer is not moved onto what no read opens.
   const keyed = record.wrappedDeks !== undefined && record.wrappedDeks.length > 0;
-  const encrypted = await objectIsEncrypted(deps.storage, { ...ref, generation: toGeneration });
+  let aead: Aead | undefined;
+  if (keyed && deps.keystore !== undefined) {
+    try {
+      aead = await deps.keystore.openDek(record.wrappedDeks!);
+    } catch (err) {
+      // A store whose keystore cannot open the segment's key (it holds none of its KEKs, or one that does not unwrap
+      // it) can still roll it back, as it could before: this is the call an operator reaches for when something is
+      // wrong. The row then carries no summary of the target.
+      if (!(err instanceof KeyUnavailableError) && !isIntegrityError(err)) throw err;
+    }
+  }
+  const crypto: CrbmCrypto | undefined =
+    aead === undefined ? undefined : { aead, aadFor: (scope) => aadFor(ref, toGeneration, scope) };
+  const { encrypted, reader } = await openRollbackTarget(
+    deps.storage,
+    { ...ref, generation: toGeneration },
+    crypto,
+  );
   if (encrypted !== keyed) {
     throw new IntegrityError(
       `rollback: generation ${toGeneration} of "${ref.segment}" is ${encrypted ? 'encrypted' : 'cleartext'}, ` +
@@ -162,12 +202,24 @@ export async function rollbackSegment(
         'never one of its generations. Roll back to another generation.',
     );
   }
+  // The target's own count and metadata, read from its object, in the same write that moves the pointer, so a reader that
+  // sees it as current sees them. None when the key was not at hand to open an encrypted target.
+  const summary: RegistrySummary | undefined =
+    reader === undefined
+      ? undefined
+      : summaryOf(
+          ref,
+          toGeneration,
+          { cardinality: reader.count(), metadata: reader.metadata },
+          aead,
+        );
 
   // Fenced on the row this decision was made against. A rollback is the most derived write there is — an
   // operator looked at a particular state and chose — so publishing it into a row that has moved since would
   // undo whatever moved it, which is the opposite of what they asked for.
   const { token } = await deps.registry.compareAndSwap(ref, record.token, {
     currentGen: toGeneration,
+    summary,
   });
 
   // THE check, and it has to be here rather than above. Every target but an `allowForward` one is below the old
@@ -189,7 +241,10 @@ export async function rollbackSegment(
   if (!stillThere) {
     let undone = false;
     try {
-      await deps.registry.compareAndSwap(ref, token, { currentGen: record.currentGen });
+      await deps.registry.compareAndSwap(ref, token, {
+        currentGen: record.currentGen,
+        summary: describingSummary(record),
+      });
       undone = true;
     } catch {
       // Not proof the undo did not land: a swap can apply and still throw, as when its response is lost. Only a
@@ -214,4 +269,16 @@ export async function rollbackSegment(
   });
 
   return { fromGeneration: record.currentGen, generation: toGeneration };
+}
+
+/**
+ * The summary a row had, for a write that puts the row back as it was: the one the row carried if it described the
+ * generation the row named and had the shape its keys called for, and none otherwise, since a registry refuses to write
+ * a summary that does not. A row a rollback is undone onto carries what it carried before the rollback moved it.
+ */
+function describingSummary(record: RegistryRecord): RegistrySummary | undefined {
+  const { summary } = record;
+  if (summary === undefined || summary.generation !== record.currentGen) return undefined;
+  const keyed = record.wrappedDeks !== undefined && record.wrappedDeks.length > 0;
+  return 'sealed' in summary === keyed ? summary : undefined;
 }

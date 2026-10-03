@@ -52,6 +52,7 @@ import type {
   SegmentSize,
   Token,
 } from './ports';
+import { DEFAULT_TAIL_BYTES } from './crbm/format';
 import { CrbmReader, fingerprintFor, footerSaysEncrypted } from './crbm/reader';
 import type { CrbmReaderOptions } from './crbm/reader';
 import { CrbmWriter } from './crbm/writer';
@@ -1131,6 +1132,55 @@ export async function holdsObject(
 /** Whether the object under `key` says it is encrypted, from one read of its footer, with no key. */
 export function objectIsEncrypted(storage: IStorageDriver, key: GenKey): Promise<boolean> {
   return footerSaysEncrypted(storageBlobReader(storage, key));
+}
+
+/**
+ * `blob`, with its first tail read remembered: a later tail read of no more bytes is answered from it, so a caller that
+ * asks the footer a question and then opens the object makes one request, not two.
+ */
+function rememberingTail(blob: BlobReader): BlobReader {
+  let first: { bytes: Uint8Array; size: number } | undefined;
+  return {
+    getRange: (offset, length) => blob.getRange(offset, length),
+    async getTail(maxBytes) {
+      // Answered from the first read when it holds the bytes asked for, or holds the whole object, which is all there is.
+      if (
+        first !== undefined &&
+        (maxBytes <= first.bytes.length || first.bytes.length === first.size)
+      ) {
+        const take = Math.min(maxBytes, first.bytes.length);
+        return { bytes: first.bytes.subarray(first.bytes.length - take), size: first.size };
+      }
+      const read = await blob.getTail(maxBytes);
+      first ??= read;
+      return read;
+    },
+  };
+}
+
+/**
+ * What one tail read of the object under `key` tells a rollback about it: whether the footer says it is encrypted, and,
+ * when the object and the key agree (an encrypted object opened with `crypto`, a cleartext one with none), the reader
+ * the open gives, which holds its count and metadata. No reader when they disagree, which the caller refuses as a
+ * target the row cannot use, and none for an encrypted object when the caller has no key. A footer that fails its own
+ * checks, an object another generation's, and an index or metadata that do not open are an {@link IntegrityError}.
+ */
+export async function openRollbackTarget(
+  storage: IStorageDriver,
+  key: GenKey,
+  crypto: CrbmCrypto | undefined,
+): Promise<{ encrypted: boolean; reader: CrbmReader | undefined }> {
+  const blob = rememberingTail(storageBlobReader(storage, key));
+  await blob.getTail(DEFAULT_TAIL_BYTES);
+  const encrypted = await footerSaysEncrypted(blob);
+  if (encrypted !== (crypto !== undefined)) return { encrypted, reader: undefined };
+  const reader = await CrbmReader.open(blob, { crypto });
+  if (reader.generation !== key.generation) {
+    throw new IntegrityError(
+      `segment "${key.segment}" generation ${key.generation}: its footer says generation ${reader.generation}`,
+    );
+  }
+  return { encrypted, reader };
 }
 
 /** What {@link writeCrbmGenerationStream} wrote: the driver's `{ size, sha256 }` + a tally of the generation. */
