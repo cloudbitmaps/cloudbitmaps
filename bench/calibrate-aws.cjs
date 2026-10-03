@@ -211,6 +211,7 @@ const log = (m) => console.log(`calibrate: ${m}`);
 const RUN_AGAIN = Object.freeze({
   'count() first read': 'on its store, once the store has forgotten the segment',
   'has() on an open segment': 'on the same store, which still holds the segment open',
+  'opening a segment': 'on its store, once the store has forgotten the segment',
 });
 function refuse(msg) {
   console.error(`calibrate: ${msg}`);
@@ -1433,8 +1434,8 @@ async function main() {
 
     // ---- point reads: count() and has(), three ways ---------------------------------------------------------------
     // One id from each shared chunk of each segment. `count()` on a store is answered from the segment's pointer row
-    // alone: one request. Then, on that same store, the first `has()` of a segment opens it, a tail and a chunk read,
-    // and every other `has()` is one chunk read, the chunk not being cached (`openSegment`); repeated they are none
+    // alone: one request. Then each segment is opened by a `has()` that reads no chunk (`opening`: one tail read), and on
+    // that same store every `has()` is one chunk read, the chunk not being cached (`openSegment`); repeated they are none
     // (`warm`). And for the first read the plan names, each of the same
     // pairs is read once more on a store of its own, which makes a pointer, a tail and a chunk read (`firstRead`).
     await stage('pointReads', {
@@ -1529,6 +1530,25 @@ async function main() {
         // that opens it. A re-run is on the same store, which a failed chunk read leaves with the segment open and
         // nothing cached for it, so it is one ranged read again; telling the store to forget the segment would drop the
         // chunks this phase read, which the warm phase is held to.
+        // `count()` resolves a segment and opens nothing, so each segment is opened first, outside the phase: a `has()` of
+        // an id in a chunk no segment holds reads the tail that opens it and no chunk. A re-run of a failed open forgets
+        // the segment, as a first count() does, so it is a first read again.
+        const openingId = 0xffff0000;
+        const opening = {
+          ...(await timedCalls(
+            names.map((name) => (rerun) => {
+              if (rerun > 0) counted.invalidate({ segment: name });
+              return counted.segment(name).has(openingId);
+            }),
+            (got) => {
+              if (got !== false) throw new Error('has() of an id no segment holds returned true');
+            },
+            'opening a segment',
+          )),
+          expectedGets: POINT_SEGMENTS,
+          store: pointConfig,
+        };
+        softCheck('opening a segment', opening.gets, opening.expectedGets);
         const openSegment = {
           ...(await timedCalls(
             pairs.map(
@@ -1539,7 +1559,7 @@ async function main() {
             present,
             'has() on an open segment',
           )),
-          expectedGets: pairs.length + POINT_SEGMENTS,
+          expectedGets: pairs.length,
           store: pointConfig,
         };
         softCheck('has() on an open segment', openSegment.gets, openSegment.expectedGets);
@@ -1592,7 +1612,7 @@ async function main() {
           segments: POINT_SEGMENTS,
           sharedChunks: chunks,
           count: { cold: countCold, warm: countWarm },
-          has: { openSegment, firstRead, warm: hasWarm },
+          has: { opening, openSegment, firstRead, warm: hasWarm },
         };
       },
     });
