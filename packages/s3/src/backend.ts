@@ -30,7 +30,8 @@ export interface S3StorageOptions {
   readonly prefix?: string;
   /**
    * A constructed client. Supply one for a credential chain the SDK cannot infer; otherwise one is built. Its retry
-   * applies to every request except the conditional writes, which are sent once whatever it is configured to do.
+   * applies to every request except the conditional writes, which the driver sends with that retry off whatever it is
+   * configured to do: a registry row once, and a generation's object again only after a throttle, under its own backoff.
    */
   readonly client?: S3Client;
   /** Region for the client built when `client` is absent (refused beside `client`). Falls back to the SDK's own resolution. */

@@ -353,9 +353,11 @@ describe('a nullish options bag is a typed error, not a TypeError', () => {
 
 describe('`retry` retries reads of segment data, and no write', () => {
   // A write that lands and then loses its response would, replayed, find its own write already there and report
-  // it as a conflict, so the store reports a transient fault on a write to its caller, who re-runs the call. The
-  // registry and bucket reads the store makes directly are left to the caller the same way. Each case fails one
-  // call once, with the retry on, and counts both the calls and the retries.
+  // it as a conflict, so the read retry never touches a write. An object put that fails throws to the caller, who
+  // re-runs the call; a registry write that gets no answer is settled by the publish itself, which reads the row and
+  // sends a fresh compare-and-swap from it when nothing changed. The registry and bucket reads the store makes
+  // directly are left to the caller. Each case fails one call once, with the retry on, and counts both the calls and
+  // the retries.
   type Fault = 'putImmutable' | 'create' | 'compareAndSwap' | 'get' | 'list' | 'getTail';
 
   const faultyStore = (fault: Fault) => {
@@ -409,20 +411,29 @@ describe('`retry` retries reads of segment data, and no write', () => {
     return { store, count, retries, arm: () => (state.armed = true) };
   };
 
+  it('a load whose object put fails once throws, and nothing retries it', async () => {
+    const f = faultyStore('putImmutable');
+    const before = f.count('putImmutable');
+    f.arm();
+    await expect(f.store.load(SEG, [1, 2, 3])).rejects.toBeInstanceOf(TransientError);
+    expect(f.count('putImmutable') - before).toBe(1);
+    expect(f.retries).toEqual([]);
+  });
+
   it.each([
-    ['object put', 'putImmutable', false],
     ['first pointer write, onto no row,', 'create', false],
     ['pointer advance', 'compareAndSwap', true],
   ] as const)(
-    'a load whose %s fails once throws, and nothing retries it',
+    'a load whose %s fails once is sent again by the publish, not by the read retry, and publishes',
     async (_, fault, loaded) => {
       const f = faultyStore(fault);
       if (loaded) await f.store.load(SEG, [1, 2]);
       const before = f.count(fault);
       f.arm();
-      await expect(f.store.load(SEG, [1, 2, 3])).rejects.toBeInstanceOf(TransientError);
-      expect(f.count(fault) - before).toBe(1);
-      expect(f.retries).toEqual([]);
+      const r = await f.store.load(SEG, [1, 2, 3]);
+      expect(r.published).toBe(true);
+      expect(f.count(fault) - before).toBe(2); // the one that failed, then a fresh write from the row read back
+      expect(f.retries).toEqual([]); // the read retry's hook never fired
     },
   );
 

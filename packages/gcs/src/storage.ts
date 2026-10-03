@@ -12,7 +12,10 @@
  * objects are immutable and never overwritten in place), the GCS analogue of S3's `If-None-Match: *` and
  * LocalFs's atomic `link`. **Writes stream in constant memory:** the codec's bytes are
  * piped into a GCS resumable-upload `Writable` (chunked/freed by the SDK as they go), so a load's write
- * footprint stays bounded regardless of segment size, up to the advertised `maxObjectBytes`. Drivers may use
+ * footprint stays bounded regardless of segment size, up to the advertised `maxObjectBytes`. Every object carries a
+ * random write id in its custom metadata (`cbwid`), so a `412` that may be the write meeting itself can be read back:
+ * a resumable upload's session is retried by the SDK, and a single-request upload is sent again by the driver after a
+ * `429` or `503`, at most {@link THROTTLE_RESENDS} times with backoff, and after nothing else. Drivers may use
  * `node:crypto`; only `core/` is bound by the determinism lint.
  */
 import {
@@ -45,6 +48,7 @@ import {
   isInvalidRange,
   isNotFound,
   isPreconditionFailed,
+  isThrottle,
   isTransient,
   isTransportFault,
 } from './gcs-errors';
@@ -62,8 +66,21 @@ import {
 /** Default object ceiling: GCS's 5 TiB per-object hard max. Set lower to fail fast on a runaway write. */
 const DEFAULT_MAX_OBJECT_BYTES = 5 * 1024 * 1024 * 1024 * 1024;
 
-/** The custom-metadata name a resumable upload stores its write id under. Short: it travels with every such write. */
+/** The custom-metadata name an object's write id is stored under. Short: it travels with every write. */
 const WRITE_ID_KEY = 'cbwid';
+/** How many times a throttled single-request upload is sent again: four sends in all, as the SDK's own retry makes. */
+const THROTTLE_RESENDS = 3;
+/** The backoff ceiling before the first re-send, doubling for each one after it. */
+const THROTTLE_BASE_DELAY_MS = 500;
+
+/** What the throttle backoff waits on. */
+interface Sleeper {
+  sleep(ms: number): Promise<void>;
+}
+
+const REAL_TIME: Sleeper = {
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+};
 
 /**
  * Objects at/under this size are uploaded in a **single simple (non-resumable) request**; larger ones switch to
@@ -99,6 +116,8 @@ export interface GcsStorageDriverOptions {
    * listings are not timed. A non-negative safe integer no larger than 2,147,483,647.
    */
   readonly readTimeoutMs?: number;
+  /** What the backoff before re-sending a throttled upload waits on; real time when absent. */
+  readonly clock?: Sleeper;
 }
 
 export class GcsStorageDriver implements IStorageDriver {
@@ -109,9 +128,11 @@ export class GcsStorageDriver implements IStorageDriver {
   private readonly maxObjectBytes: number;
   private readonly threshold: number;
   private readonly readTimeoutMs: number;
+  private readonly clock: Sleeper;
 
   constructor(options: GcsStorageDriverOptions) {
     this.storage = options.storage;
+    this.clock = options.clock ?? REAL_TIME;
     this.readStorage = options.readStorage ?? options.storage;
     this.bucket = options.bucket;
     this.prefix = normalizeGcsPrefix(options.prefix);
@@ -153,7 +174,12 @@ export class GcsStorageDriver implements IStorageDriver {
     write: (sink: BlobSink) => Promise<void>,
   ): Promise<{ size: number; sha256: string }> {
     const objectName = storageObjectName(this.prefix, key); // validates ref + generation
-    const sink = new GcsUploadSink(this.file(objectName), this.maxObjectBytes, this.threshold);
+    const sink = new GcsUploadSink(
+      this.file(objectName),
+      this.maxObjectBytes,
+      this.threshold,
+      this.clock,
+    );
     try {
       await write(sink);
       return await sink.finish();
@@ -426,11 +452,12 @@ function concatBytes(parts: readonly Uint8Array[], total: number): Uint8Array {
  * paths carry `ifGenerationMatch: 0` (create-only-if-absent) → a conflict is a 412, mapped by the driver to
  * {@link WriteConflictError}. On error the caller invokes {@link abort}.
  *
- * **The simple upload is sent once** ({@link saveOnce}): a replay of one that landed and lost its response would find
- * its own object and read as a lost race, so a transient failure throws {@link TransientError} instead. The resumable
- * upload is a session of requests, which the SDK retries within by asking the session how much it holds; the SDK takes
- * that retry from the client's options, not the call's, so it stays on. Instead, each resumable upload tags its
- * object with a random id in custom metadata, and a `412` on its commit is read back: an object that carries this
+ * **The simple upload is sent with no SDK retry** ({@link saveOnce}): a replay of one that landed and lost its response
+ * would find its own object and read as a lost race, so a lost response or a timeout throws {@link TransientError}. A
+ * `429` or `503` is the one answer it is sent again after, by {@link sendSimple}. The resumable upload is a session of
+ * requests, which the SDK retries within by asking the session how much it holds; the SDK takes that retry from the
+ * client's options, not the call's, so it stays on. Each upload, of either kind, tags its object with a random id in
+ * custom metadata, and a `412` that may be the upload meeting itself is read back: an object that carries this
  * upload's id is a success, and any other is the lost race. The read is paid only on that `412`.
  */
 class GcsUploadSink implements BlobSink {
@@ -446,6 +473,7 @@ class GcsUploadSink implements BlobSink {
     private readonly file: GcsFile,
     private readonly maxObjectBytes: number,
     private readonly threshold: number,
+    private readonly clock: Sleeper,
   ) {}
 
   private static readonly WRITE_OPTS = {
@@ -454,10 +482,23 @@ class GcsUploadSink implements BlobSink {
   };
 
   /**
-   * This write's own id, which the resumable upload stores in the object's custom metadata (outside the `.crbm`
-   * bytes) so a conflict can be told from a replay of this same write. The simple upload is sent once and needs none.
+   * This write's own id, stored in the object's custom metadata (outside the `.crbm` bytes) so a conflict can be told
+   * from a replay of this same write: the resumable session's, or the simple upload's re-send after a throttle.
    */
   private readonly writeId = randomBytes(16).toString('hex');
+
+  /** The upload options with this write's id in the object's custom metadata. */
+  private tagged(): typeof GcsUploadSink.WRITE_OPTS & {
+    metadata: { metadata: Record<string, string> };
+  } {
+    return {
+      ...GcsUploadSink.WRITE_OPTS,
+      metadata: {
+        ...GcsUploadSink.WRITE_OPTS.metadata,
+        metadata: { [WRITE_ID_KEY]: this.writeId },
+      },
+    };
+  }
 
   async write(bytes: Uint8Array): Promise<void> {
     if (this.failure !== undefined) throw this.failure;
@@ -481,14 +522,7 @@ class GcsUploadSink implements BlobSink {
 
   /** Cross into resumable streaming: open the stream, flush the buffered bytes, keep only ~one threshold resident. */
   private startResumable(): void {
-    const stream = this.file.createWriteStream({
-      resumable: true,
-      ...GcsUploadSink.WRITE_OPTS,
-      metadata: {
-        ...GcsUploadSink.WRITE_OPTS.metadata,
-        metadata: { [WRITE_ID_KEY]: this.writeId },
-      },
-    });
+    const stream = this.file.createWriteStream({ resumable: true, ...this.tagged() });
     this.stream = stream;
     this.done = once(stream, 'finish'); // resolves on a clean commit; rejects on 'error' (e.g. 412)
     stream.on('error', (e: unknown) => {
@@ -504,12 +538,8 @@ class GcsUploadSink implements BlobSink {
   async finish(): Promise<{ size: number; sha256: string }> {
     const sha256 = this.hash.digest('hex');
     if (this.stream === undefined) {
-      // Small object: one simple (non-resumable) upload, sent once — write-once enforced everywhere, the emulator too.
-      await saveOnce(
-        this.file,
-        concatBytes(this.buffered, this.bufferedLen),
-        GcsUploadSink.WRITE_OPTS,
-      );
+      // Small object: one simple (non-resumable) upload — write-once enforced everywhere, the emulator too.
+      await this.sendSimple(concatBytes(this.buffered, this.bufferedLen));
       return { size: this.total, sha256 };
     }
     try {
@@ -524,6 +554,35 @@ class GcsUploadSink implements BlobSink {
       if (!isPreconditionFailed(err) || (await this.storedWriteId()) !== this.writeId) throw err;
     }
     return { size: this.total, sha256 };
+  }
+
+  /**
+   * Send the simple upload once, and again after a `429` or `503`, up to {@link THROTTLE_RESENDS} times, waiting a
+   * full-jitter backoff before each. Any other failure is thrown at once. Once it has been sent again, a `412` can be
+   * an earlier send that landed after all, so the object's write id decides: this write's own is a success, and any
+   * other object, or one with no id, is the conflict. A failed read-back throws, and is neither. Exhausted, it throws
+   * {@link TransientError}; nothing is deleted.
+   */
+  private async sendSimple(body: Uint8Array): Promise<void> {
+    for (let resent = 0; ; resent++) {
+      try {
+        await saveOnce(this.file, body, this.tagged());
+        return;
+      } catch (err) {
+        if (resent > 0 && isPreconditionFailed(err)) {
+          if ((await this.storedWriteId()) === this.writeId) return;
+          throw err;
+        }
+        if (!isThrottle(err)) throw err;
+        if (resent >= THROTTLE_RESENDS) {
+          throw new TransientError(
+            `GCS upload was throttled on each of its ${resent + 1} sends; the object may or may not exist`,
+            { cause: err },
+          );
+        }
+        await this.clock.sleep(Math.floor(Math.random() * THROTTLE_BASE_DELAY_MS * 2 ** resent));
+      }
+    }
   }
 
   /** The id the stored object carries in its custom metadata, or `undefined` when it carries none or is gone. */

@@ -54,7 +54,12 @@ export interface StubRequest {
 export type Plan =
   | { readonly delayMs: number }
   | { readonly stall: 'before-headers' | 'after-headers' | 'mid-body' }
-  | { readonly drop: 'mid-body' };
+  | { readonly drop: 'mid-body' }
+  /**
+   * Answer `respond` instead of what the stub holds: without applying the request, or (`apply`) after applying it, and
+   * then running `after`, as another writer landing on top before the answer arrives.
+   */
+  | { readonly respond: Answer; readonly apply?: boolean; readonly after?: () => Promise<void> };
 
 export const xmlError = (status: number, code: string): Answer => ({
   status,
@@ -274,6 +279,13 @@ export class StubBlobService {
       }
       res.write(answer.body.subarray(0, Math.floor(answer.body.length / 2)));
       return;
+    }
+    if (plan !== undefined && 'respond' in plan) {
+      if (plan.apply === true) {
+        this.answer(req, request, body);
+        await plan.after?.();
+      }
+      return this.send(res, plan.respond);
     }
     if (plan !== undefined && 'drop' in plan) {
       const answer = this.answer(req, request, body);

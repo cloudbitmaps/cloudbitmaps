@@ -53,13 +53,58 @@ A refused load also emits `segment.load-refused` to the `audit` sink you pass.
 - invalid options or ids, or a crypto-shredded segment: `ValidationError`;
 - a key the keystore cannot provide: `KeyUnavailableError`;
 - a current generation that will not open when the load reads its size for a guard: `IntegrityError`;
-- a failure from your backend's storage or registry service, such as `TransientError`;
+- a failure from your backend's storage or registry service, such as `TransientError`, which does not by itself mean
+  the load did not take effect ([below](#when-a-write-is-throttled-or-gets-no-answer));
 - a collection pass by listing that could not prove the segment was unchanged: `WriteConflictError`. This and a
   failure in the collection's own reads or deletes can be raised after the publish landed, so a throw does not by
   itself mean the load did not take effect. A collection by name that finds the segment changed returns an empty
   `collected` instead.
 
 The `*Into` verbs throw on the same superseded condition instead of reporting it.
+
+### When a write is throttled or gets no answer
+
+A load makes two writes, and the backend handles each on its own terms.
+
+**The generation's object** is written once, to a number no other object holds, so a write the service refuses as too
+fast can be sent again. S3 answering `503 SlowDown` (or any `503`), and GCS answering `429` or `503`, make the driver
+send the write again, up to three more times, after a random wait under 500 ms, then under 1 s, then under 2 s; Azure
+Blob's client does the same under its own retry policy. Every object carries a random id in its metadata, because a
+service does not promise that a request it throttled was not applied: a re-send that meets an object carrying its own id
+is a write that landed, and one that meets any other object is a `WriteConflictError`, as any collision is. On S3, a
+refusal of a concurrent write (`409`) or an unknown upload ID after a re-send can be the first send still applying, so
+with nothing stored yet it is an unknown outcome, a `TransientError`, and never a report that nothing was written. A
+lost response, a timeout or a `500` is not sent again. A write throttled on every send throws `TransientError`, and its
+object may or may not exist. A load on the in-memory or the local-filesystem driver has nothing to throttle.
+
+A multipart upload whose completion is throttled on every send, or ends ambiguously, is aborted. S3 completes an upload
+atomically, so the abort never tears an object: a completion that had landed survives it, and one that had not is
+cancelled and its parts are reclaimed. Either way no object is deleted.
+
+**The registry row**: the S3 and GCS drivers send each row write once, whatever the answer. When a write ends without an
+answer (a throttle, a lost response, a timeout), it may have landed, and may still be on its way. The load reads the row
+again and decides from what it holds:
+
+| The row, read again | The load |
+|---|---|
+| names this load's generation, over the object this load wrote | `published: true`: the write landed, and only its response was lost |
+| names this load's generation over another writer's object, or belongs to another incarnation of the name | `published: false`, `reason: 'superseded'`: nothing this load wrote is published |
+| has moved on, because another write changed it | `published: false`, `reason: 'superseded'`: this load's write can no longer land. An unguarded load of a segment with no row fences on nothing, and publishes over the row that appeared |
+| is still as the write found it | the load sends a fresh compare-and-swap from the row it just read, after a wait on the store's clock: at most three, after under 500 ms, then 1 s, then 2 s. It is a new request, not a replay, and it carries the version the first one did, so the registry lets at most one of the two land. Each is settled by this same table. Still unanswered, the load throws the registry's own `TransientError` |
+
+Whether the object under the row's pointer is the load's own is proved by its footer, never taken from the pointer and
+the incarnation alone. On Azure Blob the client's retry policy runs under each of those writes too, so a registry that
+never answers costs the load up to four times the client's tries before it throws: about 16 s per write at the SDK's default schedule (it waits 0, 4 s, then 12 s between tries), so about 64 s for the four writes, plus up to 3.5 s of the publish's own waits (derived from that schedule, not measured).
+
+**What a thrown `TransientError` leaves behind.** The object this load wrote stays, above the pointer, and nothing is
+deleted: the write may still reach the registry after the load has returned, and a pointer that lands over a deleted
+object is the one state no reader can recover from. Re-run the load. It numbers its generation past the orphan, publishes
+whether or not the first attempt landed, and collection removes the orphan once a generation above it is current. To know
+whether the first attempt landed, check `store.generations(ref)` rather than replaying the request.
+
+A refusal that follows a write that went unanswered cannot say whether that write landed first, so the generation may have
+been current for a while before another writer moved on: its `segment.load-refused` audit event carries `unanswered:
+true`, and says only that the generation is not current now.
 
 ## What a load accepts
 
@@ -448,8 +493,9 @@ refused as `superseded`, because a publish never moves the pointer back.
 **A crash never moves the pointer.** If the process dies mid-write, the object never completes (every storage driver
 commits atomically: a hard link, a conditional PUT, a multipart complete) and the pointer still names the previous
 generation, which readers keep serving. A load that dies between the write and the publish leaves an orphan: an object
-that was never current. So does a refused load that finds another write has changed the segment's row, since by then
-its generation number may name a re-created segment's object. Once a generation above the orphan is current, the orphan
+that was never current. So does a load whose registry write ended without an answer that the row could settle (it throws
+`TransientError`), and a refused load that finds another write has changed the segment's row, since by then its
+generation number may name a re-created segment's object. Once a generation above the orphan is current, the orphan
 is one more generation below the pointer, which collection counts within `keep` like any other. So under the default
 `keep: 1` the load that lands above it keeps the orphan and collects the generation readers were on, and the next load
 collects the orphan. A load that collects by name takes an orphan only when it is the one generation its publish pushes

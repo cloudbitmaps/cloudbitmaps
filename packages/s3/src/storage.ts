@@ -15,10 +15,14 @@
  * constant memory — a small object is a single conditional `PutObject`; a large one is a **multipart upload**
  * (parts flushed as the codec writes, freed as they go) finished with a conditional `CompleteMultipartUpload`,
  * so a load's footprint stays ~one part regardless of segment size, up to the advertised `maxObjectBytes`
- * (default `partBytes × 10,000` — S3's per-upload part limit). **Each conditional request is sent once**, with the
- * SDK's retry off for it ({@link sendOnce}): a replay of a write that landed and lost its response would find its own
- * object and read as a lost race. A transient failure there throws {@link TransientError}, and the object may or may
- * not exist. The unconditional requests — the reads, the delete, and a multipart upload's own start, parts and abort —
+ * (default `partBytes × 10,000` — S3's per-upload part limit). **Each conditional request is sent with the SDK's retry
+ * off for it** ({@link sendOnce}): a replay of a write that landed and lost its response would find its own object and
+ * read as a lost race. A lost response or a timeout throws {@link TransientError}, and the object may or may not exist.
+ * A `503 SlowDown` is the one answer the driver sends the commit again after, at most {@link THROTTLE_RESENDS} times with
+ * backoff: every object carries a random write id in its user metadata (`x-amz-meta-cbwid`), and once the commit has
+ * been sent again, a precondition failure reads the object's metadata back, so a first send that landed after all is
+ * this write's own and any other object is the conflict it reads as. The unconditional requests — the reads, the
+ * delete, and a multipart upload's own start, parts and abort —
  * keep the SDK's retry. **Each read can be timed** ({@link timedRead}): with `readTimeoutMs` set, a `GetObject` or
  * `HeadObject` that has not finished, body included, after it throws {@link TransientError}. It is off by default, and
  * nothing else is timed. Drivers may use `node:crypto`; only `core/` is bound by the determinism lint.
@@ -39,7 +43,7 @@ import type {
   SegmentRef,
   StorageCaps,
 } from '@cloudbitmaps/core/driver-kit';
-import { createHash, type Hash } from 'node:crypto';
+import { createHash, randomBytes, type Hash } from 'node:crypto';
 import {
   AbortMultipartUploadCommand,
   CompleteMultipartUploadCommand,
@@ -61,7 +65,10 @@ import {
 import {
   isConditionalConflict,
   isInvalidRange,
+  isNoSuchUpload,
   isNotFound,
+  isPreconditionFailed,
+  isThrottle,
   isTransient,
   totalFromContentRange,
 } from './s3-errors';
@@ -73,6 +80,21 @@ import { sendOnce } from './send-once';
 const S3_PART_BYTES = 8 * 1024 * 1024;
 /** S3 hard limit: a multipart upload has at most 10,000 parts. This × the part size is the real object ceiling. */
 const S3_MAX_PARTS = 10_000;
+/** The user-metadata name an object's write id is stored under (`x-amz-meta-cbwid`). Short: every write sends it. */
+const WRITE_ID_KEY = 'cbwid';
+/** How many times a throttled commit is sent again: four sends in all, as many as the SDK's own retry makes. */
+const THROTTLE_RESENDS = 3;
+/** The backoff ceiling before the first re-send, doubling for each one after it: the SDK's own base for a throttle. */
+const THROTTLE_BASE_DELAY_MS = 500;
+
+/** What the throttle backoff waits on. */
+interface Sleeper {
+  sleep(ms: number): Promise<void>;
+}
+
+const REAL_TIME: Sleeper = {
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+};
 
 export interface S3StorageDriverOptions {
   /** A constructed S3 client (point its `endpoint` at MinIO for local/integration use). */
@@ -102,6 +124,8 @@ export interface S3StorageDriverOptions {
    * `maxSockets`. On a client built with `cacheMiddleware: true`, a timed read resolves its middleware each time.
    */
   readonly readTimeoutMs?: number;
+  /** What the backoff before re-sending a throttled commit waits on; real time when absent. */
+  readonly clock?: Sleeper;
 }
 
 export class S3StorageDriver implements IStorageDriver {
@@ -111,11 +135,13 @@ export class S3StorageDriver implements IStorageDriver {
   private readonly maxObjectBytes: number;
   private readonly partBytes: number;
   private readonly readTimeoutMs: number;
+  private readonly clock: Sleeper;
 
   constructor(options: S3StorageDriverOptions) {
     this.client = options.client;
     this.bucket = options.bucket;
     this.prefix = normalizeS3Prefix(options.prefix);
+    this.clock = options.clock ?? REAL_TIME;
     // Fail fast at the boundary: `??` only guards `undefined`, so NaN, 0, a negative or a fraction would otherwise
     // reach the arithmetic below and size every part (and the advertised cap) from garbage.
     for (const [name, value] of [
@@ -149,12 +175,18 @@ export class S3StorageDriver implements IStorageDriver {
       objectKey,
       this.partBytes,
       this.maxObjectBytes,
+      this.readTimeoutMs,
+      this.clock,
     );
     try {
       await write(sink);
       return await sink.finish();
     } catch (err) {
-      await sink.abort(); // best-effort cleanup of any in-flight multipart upload
+      // Best-effort cleanup of any in-flight multipart upload, sent after an ambiguous or exhausted completion too.
+      // S3 completes an upload atomically, so the abort never tears an object: a completion that had landed survives
+      // it (the abort then answers NoSuchUpload, which is swallowed), and one that had not is cancelled and its parts
+      // are reclaimed. No object is deleted here, and one that survives is the load's orphan above the pointer.
+      await sink.abort();
       // A lost conditional-write race — the precondition failed (412) or S3 rejected concurrent conditional
       // writes to the key (409) — is the write-once conflict, never a silent overwrite.
       if (isConditionalConflict(err)) {
@@ -335,8 +367,8 @@ function concatBytes(parts: readonly Uint8Array[], total: number): Uint8Array {
  * one part: as the codec writes, full parts are flushed via `UploadPart` and freed. A small object that never
  * reaches one part is committed as a single conditional `PutObject`; a larger one is finished with a
  * conditional `CompleteMultipartUpload` — **both enforce write-once** via `If-None-Match: *`, and both are sent
- * once. SHA-256 is hashed incrementally. On any error the caller invokes {@link abort} to clean up the in-flight
- * multipart upload.
+ * with the SDK's retry off, again only after a throttle ({@link commit}). SHA-256 is hashed incrementally. On any error
+ * the caller invokes {@link abort} to clean up the in-flight multipart upload.
  */
 class S3MultipartSink implements BlobSink {
   private readonly hash: Hash = createHash('sha256');
@@ -346,6 +378,8 @@ class S3MultipartSink implements BlobSink {
   private uploadId: string | undefined;
   private partNumber = 0;
   private readonly parts: { ETag: string | undefined; PartNumber: number }[] = [];
+  /** This write's own id, stored in the object's user metadata, outside the `.crbm` bytes: see {@link commit}. */
+  private readonly writeId = randomBytes(16).toString('hex');
 
   constructor(
     private readonly client: S3Client,
@@ -353,6 +387,8 @@ class S3MultipartSink implements BlobSink {
     private readonly objectKey: string,
     private readonly partBytes: number,
     private readonly maxObjectBytes: number,
+    private readonly readTimeoutMs: number,
+    private readonly clock: Sleeper,
   ) {}
 
   async write(bytes: Uint8Array): Promise<void> {
@@ -372,7 +408,11 @@ class S3MultipartSink implements BlobSink {
   private async flushPart(): Promise<void> {
     if (this.uploadId === undefined) {
       const res = await this.client.send(
-        new CreateMultipartUploadCommand({ Bucket: this.bucket, Key: this.objectKey }),
+        new CreateMultipartUploadCommand({
+          Bucket: this.bucket,
+          Key: this.objectKey,
+          Metadata: { [WRITE_ID_KEY]: this.writeId }, // stored on the object the completion makes
+        }),
       );
       if (res.UploadId === undefined) {
         throw new TransientError('S3 CreateMultipartUpload returned no UploadId');
@@ -404,34 +444,109 @@ class S3MultipartSink implements BlobSink {
   async finish(): Promise<{ size: number; sha256: string }> {
     const sha256 = this.hash.digest('hex');
     if (this.uploadId === undefined) {
-      await sendOnce(
-        this.client,
-        new PutObjectCommand({
-          Bucket: this.bucket,
-          Key: this.objectKey,
-          Body: concatBytes(this.pending, this.pendingLen),
-          IfNoneMatch: '*', // write-once
-        }),
+      const body = concatBytes(this.pending, this.pendingLen);
+      await this.commit('PutObject', () =>
+        sendOnce(
+          this.client,
+          new PutObjectCommand({
+            Bucket: this.bucket,
+            Key: this.objectKey,
+            Body: body,
+            IfNoneMatch: '*', // write-once
+            Metadata: { [WRITE_ID_KEY]: this.writeId },
+          }),
+        ),
       );
       return { size: this.total, sha256 };
     }
     if (this.pendingLen > 0) await this.flushPart(); // the final part may be < partBytes (allowed)
-    await sendOnce(
-      this.client,
-      new CompleteMultipartUploadCommand({
-        Bucket: this.bucket,
-        Key: this.objectKey,
-        UploadId: this.uploadId,
-        MultipartUpload: { Parts: this.parts },
-        IfNoneMatch: '*', // write-once: fail if the object already exists
-      }),
+    const uploadId = this.uploadId;
+    await this.commit('CompleteMultipartUpload', () =>
+      sendOnce(
+        this.client,
+        new CompleteMultipartUploadCommand({
+          Bucket: this.bucket,
+          Key: this.objectKey,
+          UploadId: uploadId,
+          MultipartUpload: { Parts: this.parts },
+          IfNoneMatch: '*', // write-once: fail if the object already exists
+        }),
+      ),
     );
     this.uploadId = undefined; // completed — nothing left to abort
     return { size: this.total, sha256 };
   }
 
+  /**
+   * Send the commit (`send` sends it once, with the SDK's retry off), and again after a throttle, up to
+   * {@link THROTTLE_RESENDS} times, waiting a full-jitter backoff before each. Any other failure is thrown at once.
+   * Once the commit has been sent again, an answer that can be an earlier send that landed or is still landing (a
+   * precondition failure, a concurrent-write conflict, or an upload S3 no longer knows) is settled by reading the
+   * object back. The object is never overwritten, so the id it holds says who wrote it:
+   *
+   * - this write's own id: a success;
+   * - another's id, or none (an object an earlier release wrote): the conflict it reads as;
+   * - nothing stored: a `412` still reads as the conflict it answered (an object was there, and is gone). A `409`
+   *   and an unknown upload are an unknown outcome, since the first send may still be applying: {@link TransientError},
+   *   and never a report that nothing was written.
+   *
+   * A failed read-back throws, and is neither. Exhausted, it throws {@link TransientError}; nothing is deleted.
+   */
+  private async commit(
+    operation: 'PutObject' | 'CompleteMultipartUpload',
+    send: () => Promise<unknown>,
+  ): Promise<void> {
+    for (let resent = 0; ; resent++) {
+      try {
+        await send();
+        return;
+      } catch (err) {
+        if (resent > 0 && (isConditionalConflict(err) || isNoSuchUpload(err))) {
+          const stored = await this.storedObject();
+          if (stored?.id === this.writeId) return;
+          if (stored === undefined && !isPreconditionFailed(err)) {
+            throw new TransientError(
+              `S3 ${operation}: ${this.objectKey} is not stored, and the first send may still be applying`,
+              { cause: err },
+            );
+          }
+          if (isConditionalConflict(err)) throw err;
+          throw new WriteConflictError(`generation already exists (write-once): ${this.objectKey}`);
+        }
+        if (!isThrottle(err)) throw err;
+        if (resent >= THROTTLE_RESENDS) {
+          throw new TransientError(
+            `S3 ${operation} was throttled on each of its ${resent + 1} sends; the object may or may not exist`,
+            { cause: err },
+          );
+        }
+        await this.clock.sleep(Math.floor(Math.random() * THROTTLE_BASE_DELAY_MS * 2 ** resent));
+      }
+    }
+  }
+
+  /**
+   * The object stored under the key: `undefined` when none is there, otherwise the write id it carries (`id` is
+   * `undefined` for an object that carries none). A failed read throws.
+   */
+  private storedObject(): Promise<{ readonly id: string | undefined } | undefined> {
+    return timedRead('HeadObject', this.readTimeoutMs, async (options) => {
+      try {
+        const head = await this.client.send(
+          new HeadObjectCommand({ Bucket: this.bucket, Key: this.objectKey }),
+          options,
+        );
+        return { id: head.Metadata?.[WRITE_ID_KEY] };
+      } catch (err) {
+        if (isNotFound(err)) return undefined;
+        throw err;
+      }
+    });
+  }
+
   /** Best-effort cleanup of an in-flight multipart upload after an error (a leaked MPU is reaped by a bucket
-   * lifecycle rule; never a correctness issue). No-op if nothing was started or it already completed. */
+   * lifecycle rule; never a correctness issue). No-op if nothing was started or it already completed. It aborts an
+   * upload, never an object: a completion that landed survives it. */
   async abort(): Promise<void> {
     if (this.uploadId === undefined) return;
     const id = this.uploadId;

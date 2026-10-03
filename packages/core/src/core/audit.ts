@@ -54,6 +54,11 @@ export type AuditEvent =
        * `'min-cardinality'`, `'min-retained'`, or `'superseded'` (another load took the generation number, or the
        * segment's registry row changed while the load was writing). `cardinality` is what the refused generation
        * would have contained, and `0` for a load that lost its generation number and wrote nothing.
+       *
+       * `unanswered` is present, and `true`, on a `'superseded'` refusal whose registry write ended without an answer
+       * before the row was found to have moved on: that write may have landed, so the generation may have been the
+       * segment's current one for a while before another writer replaced it. The refusal says only that it is not
+       * current now. Absent when every write the load made was answered.
        */
       readonly kind: 'segment.load-refused';
       readonly namespace?: string;
@@ -61,6 +66,7 @@ export type AuditEvent =
       readonly generation: number;
       readonly reason: 'empty' | 'min-cardinality' | 'min-retained' | 'superseded';
       readonly cardinality: number;
+      readonly unanswered?: true;
     }
   | {
       /**
