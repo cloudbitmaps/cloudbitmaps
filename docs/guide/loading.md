@@ -94,7 +94,7 @@ again and decides from what it holds:
 
 Whether the object under the row's pointer is the load's own is proved by its footer, never taken from the pointer and
 the incarnation alone. On Azure Blob the client's retry policy runs under each of those writes too, so a registry that
-never answers costs the load up to four times the client's tries before it throws.
+never answers costs the load up to four times the client's tries before it throws: about 16 s per write at the SDK's default schedule (it waits 0, 4 s, then 12 s between tries), so about 64 s for the four writes, plus up to 3.5 s of the publish's own waits (derived from that schedule, not measured).
 
 **What a thrown `TransientError` leaves behind.** The object this load wrote stays, above the pointer, and nothing is
 deleted: the write may still reach the registry after the load has returned, and a pointer that lands over a deleted

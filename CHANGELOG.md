@@ -258,7 +258,7 @@ so, and so do the module headers in the code.
     footer, so an erasure whose write went unanswered cannot report `erased: true` over another incarnation's generation.
     A caller that gives the publish no clock gets no fresh write: an unanswered write throws at once. On Azure Blob the
     client's own retry policy runs under each fresh write, so a registry that never answers costs up to four times the
-    policy's tries (sixteen requests at its default) before the load throws.
+    policy's tries (sixteen requests at its default) before the load throws: about 16 s per write at the SDK's default schedule (it waits 0, 4 s, then 12 s between tries), so about 64 s for the four writes, plus up to 3.5 s of the publish's own waits (derived from that schedule, not measured).
   - *Audit and errors.* A `segment.load-refused` event that follows a registry write which went unanswered carries
     `unanswered: true` (an optional field, absent otherwise): that write may have landed and the generation been current
     for a while before another writer replaced it. The materialisation error no longer says the result never became

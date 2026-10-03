@@ -928,7 +928,7 @@ the blob's metadata, and a conflict reads the stored blob back, so a blob that c
 any other a `WriteConflictError` ([why](production.md#reliability-retries-backoff--timeouts)). The client's policy sends
 a write again after a `503 ServerBusy` or a `500 OperationTimedOut`, and a write that every try refused throws
 `TransientError`. A load's fresh compare-and-swap after an unanswered row write goes through that policy too, so a registry
-that never answers costs up to four times the policy's tries.
+that never answers costs up to four times the policy's tries: about 16 s per write at the SDK's default schedule (it waits 0, 4 s, then 12 s between tries), so about 64 s for the four writes, plus up to 3.5 s of the publish's own waits (derived from that schedule, not measured).
 
 ## Keeping this in sync
 
