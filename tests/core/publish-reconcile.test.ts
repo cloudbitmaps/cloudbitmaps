@@ -9,6 +9,8 @@ import { registryObjectKey } from '@/drivers/_shared/object-registry-keys';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
+import { CloudRoaring } from '@/index';
+import { brandAsBackend } from '@/core/ports';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -708,6 +710,41 @@ describe('a publish whose registry write ends without a definite answer reads th
     expect(r).toMatchObject({ erased: true, fromGeneration: 2, generation: 3 });
     expect(w.writes.compareAndSwap).toBe(1);
     expect(await idsOf(w.storage, 3)).toEqual([1, 3]);
+  });
+});
+
+describe("the publish's backoff is spread by the store's random source, whatever `retry` says", () => {
+  /** A store over the harness's drivers, a clock that records its waits, and a random source that always answers 0.25. */
+  const storeOver = (w: ReturnType<typeof world>, retry: false | undefined) =>
+    new CloudRoaring({
+      storage: brandAsBackend({ storage: w.storage, registry: w.registry }),
+      ...(retry === undefined ? {} : { retry }),
+      seams: { clock: w.clock, rng: { next: () => 0.25 } },
+    });
+
+  it.each<['retry off' | 'retry on', false | undefined]>([
+    ['retry off', false],
+    ['retry on', undefined],
+  ])(
+    'a load that is throttled twice waits a random time under each bound, with %s',
+    async (_, retry) => {
+      const w = world();
+      const store = storeOver(w, retry);
+      await store.load(SEG, [1]);
+      w.arm({ kind: 'transient-unapplied' }, 2);
+      expect(await store.load(SEG, [1, 2])).toMatchObject({ published: true });
+      // 0.25 of the 500 ms and 1 s bounds. With the read retry off there is no `readRetry.rng`, and the waits would be the bounds.
+      expect(w.waits).toEqual([125, 250]);
+    },
+  );
+
+  it('an erasure rewrite that is throttled once draws its wait from the same source, with retry off', async () => {
+    const w = world();
+    const store = storeOver(w, false);
+    await store.load(SEG, [1, 2, 3]);
+    w.arm({ kind: 'transient-unapplied' });
+    expect(await store.eraseSubject(2, { namespace: 'ns' })).toMatchObject({ scannedSegments: 1 });
+    expect(w.waits).toEqual([125]);
   });
 });
 

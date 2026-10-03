@@ -28,7 +28,7 @@ import {
   provesOwnObject,
   publishGeneration,
 } from './crbm-storage-source';
-import type { Clock } from './determinism';
+import type { Clock, Rng } from './determinism';
 import { aadFor } from './crypto';
 import type { CrbmCrypto, IKeystore } from './crypto';
 import {
@@ -53,6 +53,11 @@ export interface LoadDeps {
   readonly keystore?: IKeystore;
   readonly requireEncryption?: boolean;
   readonly clock?: Clock;
+  /**
+   * The random source that spreads the waits between a publish's fresh compare-and-swaps (a random time under each
+   * bound). Absent, the read retry's source is used if it has one, and otherwise each wait is its bound.
+   */
+  readonly rng?: Rng;
   /**
    * The store's read retry, for the read the guard makes of the current generation: a transient fault there is run
    * again under it rather than failing the load. Absent, the read is made once. It does not govern the write: a
@@ -438,7 +443,7 @@ export async function loadSegment(
       holdsOwnObject: () => provesOwnObject(deps.storage, key, written.fingerprint),
       // And the wait before a fresh write, when the first left the row as it was.
       clock: deps.clock,
-      rng: deps.readRetry?.rng,
+      rng: deps.rng ?? deps.readRetry?.rng,
       onUnanswered: () => {
         unanswered = true;
       },

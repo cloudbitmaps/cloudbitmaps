@@ -71,6 +71,7 @@ import { MAX_REMAINDER, splitId } from './bit-route';
 import type { CodecBitmap, CodecInterface } from './codec';
 import { requireCodec } from './codec';
 import type { Yielder } from './cooperative';
+import type { Rng } from './determinism';
 import {
   objectIsEncrypted,
   openGenerationReader,
@@ -117,6 +118,11 @@ export interface EraseIdDeps {
   readonly requireEncryption?: boolean;
   /** Supplying a clock that can yield makes the rewrite cooperative, as it makes a load. */
   readonly clock?: Yielder;
+  /**
+   * The random source that spreads the waits between the rewrite's fresh compare-and-swaps. Absent, the read retry's
+   * source is used if it has one, and otherwise each wait is its bound.
+   */
+  readonly rng?: Rng;
   /** Per-chunk decode ceiling (invariant 5); defaults to 1 MiB. */
   readonly maxBitmapBytes?: number;
   /**
@@ -590,7 +596,7 @@ export async function eraseIdFromSegment(
     // rewrite's only over the object it wrote: the footer proves it, so another incarnation's cannot pass for it.
     holdsOwnObject: () => provesOwnObject(deps.storage, key, fingerprint),
     clock: deps.clock,
-    rng: deps.readRetry?.rng,
+    rng: deps.rng ?? deps.readRetry?.rng,
   });
   if (!published) {
     await discardRefused(generation);

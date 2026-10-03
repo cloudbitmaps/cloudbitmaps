@@ -644,6 +644,8 @@ interface LifecycleDeps {
   readonly registry: IRegistryDriver;
   readonly codec: CodecInterface;
   readonly clock: Clock;
+  /** The store's random source, which spreads a publish's waits between fresh writes whether or not reads retry. */
+  readonly rng: Rng;
   readonly keystore?: IKeystore;
   readonly requireEncryption?: boolean;
   readonly readRetry?: RetryingOptions;
@@ -667,6 +669,7 @@ export class CloudRoaring {
   private readonly retryOptions: RetryingOptions | undefined;
   private readonly crbmSource: CrbmStorageChunkSource | undefined;
   private readonly clock: Clock;
+  private readonly rng: Rng;
   private readonly metrics: IMetricsSink;
   // The store's own drivers, kept so the lifecycle helpers and the `*Into` verbs reuse them instead of making
   // you re-pass deps. `storageDriver` is set only when `storage` was a raw IStorageDriver (a pre-built StorageChunkSource has
@@ -806,6 +809,7 @@ export class CloudRoaring {
     this.crbmSource =
       resolved.source instanceof CrbmStorageChunkSource ? resolved.source : undefined;
     this.clock = clock;
+    this.rng = rng;
     this.metrics = metrics;
     // Keep the raw drivers for the lifecycle helpers (see the fields above). They use the raw drivers directly —
     // a one-shot admin op surfaces a transient fault to the caller rather than retrying under the hood — except for
@@ -843,6 +847,7 @@ export class CloudRoaring {
       storage: this.storageDriver,
       registry: this.registry,
       clock: this.clock,
+      rng: this.rng,
       codec: roaringCodec, // facade injects the flagship codec
       keystore: this.keystore,
       requireEncryption: this.requireEncryption,

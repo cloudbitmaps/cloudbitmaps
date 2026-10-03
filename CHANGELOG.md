@@ -248,7 +248,7 @@ so, and so do the module headers in the code.
     created in the same millisecond are told apart exactly; a row without an id (one 0.11 wrote, or a registry of your
     own) is told by its creation stamp, and the footer proof decides the rest. A row still as the write found it means the write did not land or is on
     its way, so the publish sends a **new** compare-and-swap from the version it just read, after a wait on the store's
-    clock: at most three, after under 500 ms, then 1 s, then 2 s (spread by the store's random source). It is a request
+    clock: at most three, after under 500 ms, then 1 s, then 2 s (spread by the store's random source, whether or not its reads retry). It is a request
     of its own, not a replay, carrying the version the first one did, so under the registry's fence at most one of the two
     lands, and a request delayed past the fresh one is refused. Each is settled the same way, and still unanswered the
     load throws the registry's own `TransientError`, with its object kept: no load deletes its object after an ambiguous
