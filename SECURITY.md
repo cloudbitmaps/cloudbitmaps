@@ -40,6 +40,18 @@ opened with an encrypted segment's key that is not itself encrypted is refused r
 boundary is exercised by coverage-guided fuzzing (`pnpm fuzz:*`, nightly) and the DR drill's byte-corruption
 scenario (`pnpm dr-drill`).
 
+**Bytes a caller loads are untrusted the same way.** A load from `{ serialized }` portable Roaring bytes, or from a
+`{ bitmap }` through its own `serialize('portable')`, puts them behind a size cap of their own (537,403,396 bytes,
+more than any canonical 32-bit bitmap serializes to), the same structural check and the same safe reader before the
+native addon sees them, and refuses bytes after the bitmap's end. They are read through the typed array's own
+accessors, so a subclass cannot show the check other bytes than the reader reads. Bytes in a `SharedArrayBuffer`
+are copied first. A plain buffer can still be written by another thread during the call (an unfinished `fs.read`,
+`crypto.randomFill` or asynchronous addon call into it), so the decode can see bytes the check did not: the load
+therefore checks every container of the bitmap again, by the same rules, as it writes it, and refuses one that does
+not hold what its header says with `IntegrityError`, before anything is published. Bytes that fail the first check
+are a `ValidationError`, since they are the caller's input rather than a stored object, and nothing is read or
+written.
+
 Encryption-at-rest (opt-in) is envelope AES-256-GCM with a per-segment DEK wrapped under operator-held KEK(s);
 the AEAD wiring is pinned to published known-answer vectors and the envelope/rotation/crypto-shred paths are
 tested (`tests/crypto-vectors.test.ts`, `tests/key-rotation.test.ts`, `tests/drivers/crypto.test.ts`, `tests/core/encryption-lifecycle.test.ts`).

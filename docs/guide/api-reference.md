@@ -151,12 +151,12 @@ A `Segment` has no public constructor: `store.segment(name)` and `seg.pin()` are
 handle is wired to the store's engine, caches and write path. The class is exported for `instanceof` and to annotate
 a variable, and `new Segment(…)` throws `ValidationError`.
 
-### Load a generation — `store.load(ref, ids, { allowEmpty?, guard?, keep?, audit? })`
+### Load a generation — `store.load(ref, input, { allowEmpty?, guard?, keep?, audit? })`
 
-The whole write path in one call: take the next generation number, stream `ids` — any sync **or async** iterable,
-unsorted, duplicates welcome — into one immutable `.crbm` object, check it is plausible, move the pointer, and collect
-what the move superseded, keeping the newest `keep` generations below the new pointer (default `1`; a non-negative integer, and anything else —
-negative, fractional, `NaN`, infinite — throws `ValidationError` before anything is written). The `*Into` verbs take
+The whole write path in one call: take the next generation number, stream `input` into one immutable `.crbm`
+object, check it is plausible, move the pointer, and collect what the move superseded, keeping the newest `keep`
+generations below the new pointer (default `1`; a non-negative integer, and anything else — negative, fractional,
+`NaN`, infinite — throws `ValidationError` before anything is written). The `*Into` verbs take
 the same `keep`, validated the same way. Returns a
 `LoadResult` — `{ generation, published, reason?, size, sha256, chunkCount, cardinality, cardinalityBefore,
 collected }`. Memory is bounded by the **distinct set** being built, not by the input length — a batch job's shape,
@@ -175,6 +175,21 @@ load's own, and leaves it in the bucket once another write has changed the
 row: once a generation above it is current, collection counts it within `keep` like any other generation below the
 pointer.
 The `store.load` row lists the guards and what throws instead.
+
+**`input` is a `LoadInput`: ids, or a whole bitmap.** Ids are any sync **or async** iterable of integers in
+`[0, 2^32)`, unsorted, duplicates welcome. A bitmap is `{ serialized }`, one 32-bit bitmap in the portable Roaring
+format, or `{ bitmap }`, any `PortableBitmap` (an object with `serialize('portable')`, such as `roaring`'s
+`RoaringBitmap32`, and optionally `getSerializationSizeInBytes('portable')`, which lets a load refuse one over the cap
+before serializing it), which is loaded as `{ serialized: bitmap.serialize('portable') }`, serialized once at the
+call. A
+bare `RoaringBitmap32` from the `roaring` this package uses, passed as ids, is loaded as `{ bitmap }`. Bitmap bytes are
+capped at 537,403,396 bytes (more than any canonical 32-bit bitmap serializes to), must hold exactly one bitmap, and
+are checked structurally and decoded by the safe deserializer before the first request; malformed or oversized
+bytes, and bytes after the bitmap's end, throw `ValidationError` with nothing read or written. The chunks are then
+cut from the bitmap's own containers, with no per-id work, and the generation is byte for byte the one the same ids
+write. A `Uint8Array`, `Uint8ClampedArray` or `Buffer` passed as ids throws `ValidationError` when the load runs
+(the type accepts one, since a byte array is an iterable of numbers): pass bytes as `{ serialized }`.
+Anything that is none of these throws `ValidationError` too ([what a load accepts](loading.md#what-a-load-accepts)).
 
 ### The segment verbs (the ~90% of daily use)
 
@@ -216,7 +231,7 @@ segment mid-call and how the timed refresh behaves.
 |---|---|
 | `store.subjectReport(id, { namespace? \| allNamespaces?, concurrency?, budget? })` → `Promise<SubjectReport>` | GDPR Art. 15 — which registered segments is this id in? Needs an explicit `namespace` or an `allNamespaces: true` ack, and throws `ValidationError` with neither. Needs a backend |
 | `store.eraseSubject(id, { namespace? \| allNamespaces?, audit?, concurrency?, budget? })` → `Promise<EraseSubjectResult>` | GDPR Art. 17: for every registered segment the id is in, **rewrite the current generation without it** and delete every generation that held the bit, so it is gone from the bucket on return. Returns the erasure ledger, one entry per segment ([erasure](erasure.md)). Needs a `namespace` or `allNamespaces: true`, and a backend |
-| `store.load(ref, ids, { allowEmpty?, guard?, keep?, audit? })` → `Promise<LoadResult>` | **replace this segment's contents** with `ids` as one new immutable generation: next number, write, check, move the pointer, collect. **Branch on `published`**: a refusal is a normal outcome, not a throw ([why a load is refused](loading.md#when-a-load-is-refused)). Needs a backend |
+| `store.load(ref, input, { allowEmpty?, guard?, keep?, audit? })` → `Promise<LoadResult>` | **replace this segment's contents** with `input` (ids, `{ serialized }` or `{ bitmap }`) as one new immutable generation: next number, write, check, move the pointer, collect. **Branch on `published`**: a refusal is a normal outcome, not a throw ([why a load is refused](loading.md#when-a-load-is-refused)). Needs a backend |
 | `store.exists(ref)` → `Promise<boolean>` | whether a read of this segment would find anything, as **one registry point read**. Not the same as `count() > 0` ([details](loading.md#does-this-segment-exist)). Needs a backend |
 | `store.segments({ namespace? })` → `AsyncIterable<SegmentInfo>` | every segment the registry holds, **streamed**, optionally scoped to one namespace. An admin call, not a request-path one ([details](loading.md#does-this-segment-exist)). Needs a backend |
 | `store.generations(ref)` → `Promise<GenerationEntry[]>` | every generation still in the bucket, ascending, with the current one marked: the set `store.rollback` can choose from ([details](loading.md#roll-back-a-segment)). Needs a backend |
@@ -409,8 +424,9 @@ a codec of your own — the `CloudRoaring` facade injects the roaring codec for 
 
 | Symbol | What it does |
 |---|---|
-| `CodecInterface` | the factory the engine builds bitmaps through (`empty` / `fromValues` / `safeDeserialize`) |
-| `CodecBitmap` | the value type a codec produces — a `u32` set with set algebra + portable (de)serialization. Optional `maximum?()` lets the engine range-check a chunk payload in O(1); a codec that can't answer cheaply omits it and the check is skipped |
+| `CodecInterface` | the factory the engine builds bitmaps through (`empty` / `fromValues` / `safeDeserialize`). `safeDeserialize(bytes, maxBytes, { whole? })`: with `whole: true`, which a load passes for a caller's bytes, bytes after the bitmap's end are refused too; a stored chunk is read without it. A codec must honour `whole`: core cannot read the format and relies on the codec for that refusal, so a codec that ignores it loads two concatenated bitmaps as the first |
+| `CodecBitmap` | the value type a codec produces — a `u32` set with set algebra + portable (de)serialization. Optional `maximum?()` lets the engine range-check a chunk payload in O(1); a codec that can't answer cheaply omits it and the check is skipped. Optional `optimize?()` re-encodes for storage, and must be canonical: afterwards `serialize()` depends on membership alone. Optional `encodeChunks?()` is flavor-author surface: the set as `EncodedChunk`s, ascending, each exactly the bytes `fromValues` of that chunk's low 16 bits, `optimize()` and `serialize()` give, which is how a bitmap load writes without touching an id. A codec without it loads a bitmap through its ids |
+| `EncodedChunk` | `{ chunkKey, payload, cardinality }`: one chunk as a `.crbm` generation stores it, what `encodeChunks?()` yields |
 
 ### Flavor-author kit (`@cloudbitmaps/core`)
 
@@ -451,7 +467,7 @@ because the store methods return them; the `*Deps` types (`LoadDeps`, `Generatio
 | `segmentExists(ref, registry)` → `Promise<boolean>` | the unwired form of `store.exists` — one registry `get`; true only when a live, non-`destroyed` row has a `currentGen` |
 | `listSegments(registry, { namespace? })` → `AsyncIterable<SegmentInfo>` | the unwired form of `store.segments`; validates `namespace`, and excludes internal bookkeeping rows on an unscoped scan |
 | `rollbackSegment(ref, toGeneration, { storage, registry }, { audit?, allowForward? })` → `Promise<RollbackResult>` | the unwired form of `store.rollback`, taking the drivers instead of a store. The target is verified after the swap, and the pointer is put back if it vanished ([how a rollback can fail half-way](disaster-recovery.md#checkconsistency--verify-before-you-serve-traffic)) |
-| `loadSegment(ref, ids, { storage, registry, codec?, keystore?, requireEncryption?, clock?, readRetry? }, { allowEmpty?, guard?, keep?, audit? })` → `Promise<LoadResult>` | the unwired form of `store.load`: replaces a segment's contents with `ids` as one immutable generation. It takes the drivers, plus a `codec`, `keystore` and `clock`, instead of a store. `readRetry` (a `RetryDeps` plus an optional `policy`) retries the guard's read of the current generation; without it that read is made once, and the write is never retried. Options, results and refusal reasons are `store.load`'s ([loading](loading.md)) |
+| `loadSegment(ref, input, { storage, registry, codec?, keystore?, requireEncryption?, clock?, readRetry? }, { allowEmpty?, guard?, keep?, audit? })` → `Promise<LoadResult>` | the unwired form of `store.load`: replaces a segment's contents with `input`, the same `LoadInput` (`{ serialized }` and `{ bitmap }` decoded by the `codec`, and written through its `encodeChunks?()`), as one immutable generation. It refuses a byte array passed as ids, as `store.load` does; a bare `RoaringBitmap32` passed as ids is ids here, since core names no codec's class. It takes the drivers, plus a `codec`, `keystore` and `clock`, instead of a store. `readRetry` (a `RetryDeps` plus an optional `policy`) retries the guard's read of the current generation; without it that read is made once, and the write is never retried. Options, results and refusal reasons are `store.load`'s ([loading](loading.md)) |
 | `eraseIdFromSegment(ref, id, { storage, registry, codec?, keystore?, requireEncryption?, clock?, maxBitmapBytes?, readRetry? }, { audit? })` → `Promise<EraseIdResult>` | remove **one id** from one segment by rewriting its current generation without it: the step `store.eraseSubject` runs over every registered segment. `erased: true` means no generation holds the id; otherwise `reason` says why ([the result of erasing one segment](erasure.md#how-it-stays-correct)). `readRetry`, shaped as `loadSegment`'s, retries the reads the rewrite makes; without it each is made once, and the writes and deletes are never retried |
 | `dropSegment(ref, { registry, storage }, { confirmSegment, dryRun?, audit? })` → `Promise<DropResult>` | **dispose of a segment** — tombstone, then delete every Storage generation. Works on cleartext; also crypto-shreds an encrypted one. `store.dropSegment` is the wired form |
 | `runConsistencyCheck({ storage, registry }, { namespace?, concurrency?, maxScanSegments? })` → `Promise<ConsistencyReport>` | the free function behind `store.checkConsistency` — run it over your own drivers, or over a backend's `storage` and `registry`. `maxScanSegments` (default 250,000) is how many registry rows one scan may hold resident; past it the call throws `BudgetExceededError` rather than report a partial scan |
@@ -774,7 +790,7 @@ does not re-export. A driver author told elsewhere on this page to import `Token
 `CloudRoaringOptions` · `CacheOptions` · `EncryptionOptions` · `RetryOptions` · `SeamOptions` ·
 `SegmentOptions` · `SubjectReport` · `SubjectSegmentRef` · `SubjectErasureEntry` · `EraseSubjectResult` ·
 `MaterializeResult` · `MaterializeRefusal` · `BaseCombineOptions` · `CombineOptions` · `MaterializeOptions`
-· `AndNotIntoOptions` · `IdRange` · `LoadOptions` · `LoadGuard`
+· `AndNotIntoOptions` · `IdRange` · `LoadInput` · `PortableBitmap` · `LoadOptions` · `LoadGuard`
 · `LoadResult` · `LoadRefusal` · `GenerationEntry` · `RollbackResult` · `SegmentInfo`
 · `CrbmStorageChunkSourceOptions` ·
 `MemoryStorageOptions` · `LocalFsStorageOptions` · `ExportFormat` · `ExportSink` · `ExportWriter` · `ExportOptions` ·
@@ -789,7 +805,7 @@ does not re-export. A driver author told elsewhere on this page to import `Token
 `IMetricsSink` · `MetricEvent` · `MetricOpName` · `MetricsSnapshot` · `PricingProfile` · `RedisSizing` ·
 `RedisNodeType` · `CostReport` · `Workload` · `SegmentSizing` · `EstimateInput` · `IAuditSink` · `AuditEvent` · `Clock` ·
 `Rng` · `Budget` · `BudgetOption` · `ConsistencyReport` · `ConsistencyIssue` · `ConsistencyErrorEntry` ·
-`CodecInterface` · `CodecBitmap` · `Token`
+`CodecInterface` · `CodecBitmap` · `EncodedChunk` · `Token`
 
 ### `@cloudbitmaps/core` — only on core
 

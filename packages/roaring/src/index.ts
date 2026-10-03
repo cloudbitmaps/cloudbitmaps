@@ -66,6 +66,7 @@ import type {
   BudgetOption,
   GenerationEntry,
   LoadGuard,
+  LoadInput,
   LoadOptions,
   LoadRefusal,
   LoadResult,
@@ -108,7 +109,7 @@ import { listGenerations, rollbackSegment } from '@cloudbitmaps/core';
 import { listSegments, segmentExists } from '@cloudbitmaps/core';
 import type { SegmentInfo } from '@cloudbitmaps/core';
 import { refuseReservedNamespace } from './reserved-namespace';
-import { roaringCodec } from './roaring-codec';
+import { bitmapAsLoadInput, roaringCodec } from './roaring-codec';
 import { SystemClock } from './system-clock';
 import { OPTION_KEYS, type OptionGroup } from './option-keys';
 
@@ -1346,7 +1347,14 @@ export class CloudRoaring {
   }
 
   /**
-   * **Replace this segment's contents** with `ids`, as one new immutable generation, and make it current.
+   * **Replace this segment's contents** with `input`, as one new immutable generation, and make it current.
+   *
+   * `input` is ids (any sync or async iterable of integers in `[0, 2^32)`), or a whole bitmap: `{ bitmap }`, anything
+   * with `serialize('portable')` such as `roaring`'s `RoaringBitmap32`, or `{ serialized }`, portable Roaring bytes.
+   * A bitmap is checked (size cap, structure, safe deserializer) before the first request, written from its own
+   * containers with no per-id work, and gives the generation byte for byte the one its ids would. A bare
+   * `RoaringBitmap32` passed as ids loads as `{ bitmap }`. A `Uint8Array` or `Buffer` passed as ids is refused with
+   * `ValidationError`, since each byte would load as an id: pass bytes as `{ serialized }`.
    *
    * The whole write path in one call: take the next generation number, write the object, check the result is
    * plausible, move the pointer, collect what the move superseded. Composed by hand those are four functions and
@@ -1402,15 +1410,11 @@ export class CloudRoaring {
    *
    * Needs a backend (throws {@link UnsupportedError} otherwise).
    */
-  async load(
-    ref: SegmentRef,
-    ids: Iterable<number> | AsyncIterable<number>,
-    options: LoadOptions = {},
-  ): Promise<LoadResult> {
+  async load(ref: SegmentRef, input: LoadInput, options: LoadOptions = {}): Promise<LoadResult> {
     validateSegmentRef(ref);
     const deps = this.lifecycleDeps('load');
     try {
-      return await loadSegment(ref, ids, deps, options);
+      return await loadSegment(ref, bitmapAsLoadInput(input), deps, options);
     } finally {
       // This store's view of the segment is now behind whatever just happened — a published load superseded the
       // generation the caches were built on, and a throw can still have published before failing its collect.
@@ -2555,6 +2559,7 @@ export type {
   DestroyResult,
   ClearRegistrySummary,
   DropResult,
+  EncodedChunk,
   EraseDeps,
   EstimateInput,
   ExportFailure,
@@ -2576,6 +2581,7 @@ export type {
   IdRange,
   InProcessKeystoreOptions,
   LoadGuard,
+  LoadInput,
   LoadOptions,
   LoadRefusal,
   LoadResult,
@@ -2587,6 +2593,7 @@ export type {
   NewRegistryRecord,
   PinnedAt,
   PinnedObject,
+  PortableBitmap,
   PricingProfile,
   RedisNodeType,
   RedisSizing,
