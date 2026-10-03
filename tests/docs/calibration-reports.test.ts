@@ -188,26 +188,33 @@ function checkBill(
         `the "${operation}" row is labelled "${row[cols.label]}", which the run does not use`,
       );
     }
-    const match = want.find((w) => w.requests === requests);
+    const group = want.filter((w) => w.requests === requests);
+    const match = group[0];
     if (match === undefined) {
       problems.push(`a row bills "${requests}", which the run does not derive`);
       continue;
     }
-    if (!match.says.test(operation)) {
+    // A run whose measured and expected counts are equal derives two rows with one request count and one price: a
+    // single row may state both, which then must say both, or two rows may each say one.
+    const same = group.every((w) => w.one === match.one && w.perMillion === match.perMillion);
+    const said = group.filter((w) => w.says.test(operation));
+    const ok = same && group.length > 1 ? said.length > 0 : said.includes(match);
+    if (!ok) {
       problems.push(
         `the "${requests}" row calls itself "${operation}", which does not say ${match.says}`,
       );
     }
     seen.set(requests, (seen.get(requests) ?? 0) + 1);
+    const wanted = same && group.length > 1 ? (said[0] ?? match) : match;
     const got = {
       one: row[cols.one],
       perMillion: row[cols.perMillion],
       ...(cols.label === undefined ? {} : { label: row[cols.label] }),
     };
     const expected = {
-      one: match.one,
-      perMillion: match.perMillion,
-      ...(cols.label === undefined ? {} : { label: match.label }),
+      one: wanted.one,
+      perMillion: wanted.perMillion,
+      ...(cols.label === undefined ? {} : { label: wanted.label }),
     };
     if (JSON.stringify(got) !== JSON.stringify(expected)) {
       problems.push(
@@ -215,9 +222,17 @@ function checkBill(
       );
     }
   }
-  for (const w of want) {
-    const n = seen.get(w.requests) ?? 0;
-    if (n !== 1) problems.push(`the "${w.requests}" row appears ${n} times, not once`);
+  for (const requests of new Set(want.map((w) => w.requests))) {
+    const group = want.filter((w) => w.requests === requests);
+    const n = seen.get(requests) ?? 0;
+    // Two derived rows with one figure may be stated as one row or as two.
+    const allowed =
+      group.length > 1 && group.every((w) => w.one === group[0]?.one) ? group.length : 1;
+    if (n < 1 || n > allowed) {
+      problems.push(
+        `the "${requests}" row appears ${n} times, not ${allowed === 1 ? 'once' : 'once or twice'}`,
+      );
+    }
   }
   return problems;
 }
@@ -352,6 +367,94 @@ describe('calibration reports are held to their evidence', () => {
       ]) {
         expect(check(wrong), wrong).not.toEqual([]);
       }
+    });
+  });
+
+  // A run whose measured and expected intersect make the same requests derives two rows with one figure. The bill
+  // may state them as one row or as two, but not as none, and a pair that differs still needs both rows.
+  describe('the bill table when the measured and the expected count agree', () => {
+    const cols = { operation: 0, requests: 1, one: 2, perMillion: 3, label: 4 };
+    const row = (requests: string, label: string, says: RegExp, price = '$0.0000816'): Row => ({
+      requests,
+      one: price,
+      perMillion: price === '$0.0000816' ? '$81.60' : '$82.40',
+      label,
+      says,
+    });
+    const equal = [
+      row('204 GET', 'derived', /\bmedian\b|\bmeasured\b/i),
+      row('204 GET', 'expected', /\bonce\b|\bexpected\b|\binside the region\b/i),
+    ];
+    const differ = [
+      row('206 GET', 'derived', /\bmedian\b|\bmeasured\b/i, '$0.0000824'),
+      row('204 GET', 'expected', /\bonce\b|\bexpected\b|\binside the region\b/i),
+    ];
+
+    it('accepts one row that says both, or two rows with the same figure', () => {
+      expect(
+        checkBill(
+          [
+            [
+              'cold intersect, the median measured and expected inside the region',
+              '204 GET',
+              '$0.0000816',
+              '$81.60',
+              'derived',
+            ],
+          ],
+          equal,
+          cols,
+        ),
+      ).toEqual([]);
+      expect(
+        checkBill(
+          [
+            [
+              'cold intersect, the median this run measured',
+              '204 GET',
+              '$0.0000816',
+              '$81.60',
+              'derived',
+            ],
+            [
+              'the same, expected, each pointer read once',
+              '204 GET',
+              '$0.0000816',
+              '$81.60',
+              'expected',
+            ],
+          ],
+          equal,
+          cols,
+        ),
+      ).toEqual([]);
+    });
+
+    it('refuses a wrong figure, a row that says neither, and a differing pair stated once', () => {
+      expect(
+        checkBill([['median measured', '204 GET', '$0.0000817', '$81.70', 'derived']], equal, cols),
+      ).not.toEqual([]);
+      expect(
+        checkBill([['cold intersect', '204 GET', '$0.0000816', '$81.60', 'derived']], equal, cols),
+      ).not.toEqual([]);
+      expect(checkBill([], equal, cols)).not.toEqual([]);
+      expect(
+        checkBill(
+          [['cold intersect, the median measured', '206 GET', '$0.0000824', '$82.40', 'derived']],
+          differ,
+          cols,
+        ),
+      ).not.toEqual([]);
+      expect(
+        checkBill(
+          [
+            ['cold intersect, the median measured', '206 GET', '$0.0000824', '$82.40', 'derived'],
+            ['the same, expected inside the region', '204 GET', '$0.0000816', '$81.60', 'expected'],
+          ],
+          differ,
+          cols,
+        ),
+      ).toEqual([]);
     });
   });
 
