@@ -15,8 +15,9 @@ import { STUB_GCS_BUCKET, StubGcsService } from '../../helpers/gcs-stub';
  * A write-once generation object up to the simple-upload threshold is one request, sent once by the driver. When GCS
  * answers it `429` or `503`, the driver sends it again, a bounded number of times, with backoff: the object carries a
  * random write id in its custom metadata, as a resumable upload's always has, so a `412` on a re-send reads the
- * metadata back, and an object carrying this write's id is this write's own. A registry row is sent once whatever the
- * answer; the publish reconciles it by reading the row (see the core tests).
+ * metadata back, and an object carrying this write's id is this write's own. The driver sends a registry row once
+ * whatever the answer. The publish, not the driver, settles an unanswered one by reading the row, and sends a fresh
+ * compare-and-swap from the version it read when the row is as it was.
  */
 
 const GEN: GenKey = { segment: 's', generation: 0 };
@@ -176,8 +177,10 @@ describe('GCS: a registry row is sent once, whatever the answer', () => {
 
 describe('GCS: a load whose writes are throttled, through the real SDK', () => {
   const SEG = { segment: 's' };
+  const waits: number[] = [];
   function deps() {
     const client = stub.client();
+    waits.length = 0;
     return {
       storage: new GcsStorageDriver({
         storage: client,
@@ -186,6 +189,13 @@ describe('GCS: a load whose writes are throttled, through the real SDK', () => {
       }),
       registry: new GcsRegistryDriver({ storage: client, bucket: STUB_GCS_BUCKET }),
       codec: roaringCodec,
+      // What a store wires: the publish waits on it before a fresh write, as the driver does before a re-send.
+      clock: {
+        now: () => 0,
+        sleep: async (ms: number) => {
+          waits.push(ms);
+        },
+      },
     };
   }
 
@@ -208,23 +218,54 @@ describe('GCS: a load whose writes are throttled, through the real SDK', () => {
     expect(stub.count('upload', isRow) - before).toBe(1);
   });
 
-  it('a row throttled and not applied throws TransientError: the row sent once, the object kept', async () => {
+  it('a row throttled once and not applied is sent again by the publish from the row it read back, and the load publishes', async () => {
     const d = deps();
     await loadSegment(SEG, [1], d);
     const before = stub.count('upload', isRow);
+    waits.length = 0;
     stub.arm({ status: 429, name: isRow });
+    const r = await loadSegment(SEG, [1, 2], d);
+    expect(r).toMatchObject({ generation: 1, published: true });
+    // The driver sent the throttled write once; the second is a fresh compare-and-swap the publish made.
+    expect(stub.count('upload', isRow) - before).toBe(2);
+    expect(waits).toEqual([500]);
+    expect(stub.count('delete')).toBe(0);
+    expect((await d.registry.get(SEG))!.currentGen).toBe(1);
+  });
+
+  it('a row throttled on every send is four writes, then the registry TransientError, and nothing deleted', async () => {
+    const d = deps();
+    await loadSegment(SEG, [1], d);
+    const before = stub.count('upload', isRow);
+    waits.length = 0;
+    for (let i = 0; i < 5; i++) stub.arm({ status: 429, name: isRow });
     await expect(loadSegment(SEG, [1, 2], d)).rejects.toBeInstanceOf(TransientError);
-    expect(stub.count('upload', isRow) - before).toBe(1);
+    expect(stub.count('upload', isRow) - before).toBe(4); // bounded: the first send and three fresh ones
+    expect(waits).toHaveLength(3);
     expect(stub.count('delete')).toBe(0);
     expect(stub.objects.has('_default/segments/s.1.crbm')).toBe(true);
+    expect((await d.registry.get(SEG))!.currentGen).toBe(0);
+  });
+
+  it('a row throttled once whose original request reaches GCS after the fresh write is refused by its generation: one write lands', async () => {
+    const d = deps();
+    await loadSegment(SEG, [1], d);
+    stub.arm({ status: 429, hold: true, name: isRow });
+    const r = await loadSegment(SEG, [1, 2], d);
+    expect(r).toMatchObject({ generation: 1, published: true });
+    const rowName = [...stub.objects.keys()].find((n) => isRow(n) && n.includes('/s.'))!;
+    const landed = stub.objects.get(rowName)!.generation;
+    stub.landHeld(); // the request answered 429 is applied now, against a generation that has moved on
+    expect(stub.objects.get(rowName)!.generation).toBe(landed);
+    expect((await d.registry.get(SEG))!.currentGen).toBe(1);
   });
 
   it('a row throttled that lands after the load threw points at an object that is there', async () => {
     const d = deps();
     await loadSegment(SEG, [1], d);
-    stub.arm({ status: 429, hold: true, name: isRow });
+    for (let i = 0; i < 4; i++) stub.arm({ status: 429, hold: true, name: isRow });
     await expect(loadSegment(SEG, [1, 2], d)).rejects.toBeInstanceOf(TransientError);
-    stub.landHeld(); // the compare-and-swap the service answered 429 is applied after all
+    stub.landHeld(); // the compare-and-swaps the service answered 429 are applied after all: one lands
     expect((await d.registry.get(SEG))!.currentGen).toBe(1);
     expect(stub.objects.has('_default/segments/s.1.crbm')).toBe(true);
     expect(stub.count('delete')).toBe(0);

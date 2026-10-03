@@ -115,21 +115,65 @@ describe('Azure Blob: a throttled write-once object is sent again by the client,
 
 describe('Azure Blob: a load whose row write is throttled', () => {
   const SEG = { segment: 's' };
+  const waits: number[] = [];
+  beforeEach(() => {
+    waits.length = 0;
+  });
   const deps = () => ({
     storage: new AzureBlobStorageDriver({ containerClient: stub.client(QUICK) }),
     registry: new AzureBlobRegistryDriver({ containerClient: stub.client(QUICK) }),
     codec: roaringCodec,
+    // What a store wires: the publish waits on it before a fresh write.
+    clock: {
+      now: () => 0,
+      sleep: async (ms: number) => {
+        waits.push(ms);
+      },
+    },
   });
+  /** Answer the `n`th PUT of the row `answer(n)` (or let it through), and count them. */
+  function planRowPuts(answer: (n: number) => Answer | undefined): () => number {
+    let n = 0;
+    stub.plan = (req) => {
+      if (req.method !== 'PUT' || req.name !== ROW) return undefined;
+      n += 1;
+      const respond = answer(n);
+      return respond === undefined ? undefined : { respond };
+    };
+    return () => n;
+  }
 
   it('a row answered 503 on every try throws TransientError, deletes nothing, and the pointer stays', async () => {
     const d = deps();
     await loadSegment(SEG, [1], d);
-    stub.plan = (req) =>
-      req.method === 'PUT' && req.name === ROW ? { respond: SERVER_BUSY } : undefined;
+    const rowPuts = planRowPuts(() => SERVER_BUSY);
     await expect(loadSegment(SEG, [1, 2], d)).rejects.toBeInstanceOf(TransientError);
+    // The client's policy tries each write four times, and the publish sends four writes: the SDK's retry runs under
+    // each fresh compare-and-swap, so a registry that never answers costs sixteen requests, not four.
+    expect(rowPuts()).toBe(16);
     expect(stub.count('DELETE')).toBe(0);
     expect(stub.blobs.has('_default/segments/s.1.crbm')).toBe(true); // the object stays, above the pointer
     expect((await d.registry.get(SEG))!.currentGen).toBe(0);
+  });
+
+  it('with no clock to wait on, a row answered 503 on every try is the client tries alone, then TransientError', async () => {
+    const { clock: _unused, ...d } = deps();
+    void _unused;
+    await loadSegment(SEG, [1], d);
+    const rowPuts = planRowPuts(() => SERVER_BUSY);
+    await expect(loadSegment(SEG, [1, 2], d)).rejects.toBeInstanceOf(TransientError);
+    expect(rowPuts()).toBe(4);
+    expect(stub.count('DELETE')).toBe(0);
+  });
+
+  it('a row answered 503 on the first try only is settled by the client alone: the publish sends one write', async () => {
+    const d = deps();
+    await loadSegment(SEG, [1], d);
+    const rowPuts = planRowPuts((n) => (n === 1 ? SERVER_BUSY : undefined));
+    const r = await loadSegment(SEG, [1, 2], d);
+    expect(r).toMatchObject({ generation: 1, published: true });
+    expect(rowPuts()).toBe(2); // the client's own retry; the publish waited for nothing
+    expect(waits).toEqual([]);
   });
 
   it('a row applied and answered 503 is recognised on the replay by its write id: published', async () => {

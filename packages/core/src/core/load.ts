@@ -395,6 +395,9 @@ export async function loadSegment(
       // A registry write that fails without an answer is reconciled by reading the row: the pointer at this number
       // is this load's publish only over the object this load wrote, which one footer read proves.
       holdsOwnObject: () => provesOwnObject(deps.storage, key, written.fingerprint),
+      // And the wait before a fresh write, when the first left the row as it was.
+      clock: deps.clock,
+      rng: deps.readRetry?.rng,
     });
   } catch (err) {
     // A refusal the publish states by throwing is as definite as a `false`: each of these is raised before that

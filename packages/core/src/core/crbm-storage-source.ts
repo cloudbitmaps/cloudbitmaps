@@ -31,7 +31,7 @@ import {
 import type { BlobReader } from './blob';
 import { yieldEvery } from './cooperative';
 import type { Yielder } from './cooperative';
-import type { Clock } from './determinism';
+import type { Clock, Rng } from './determinism';
 import { BoundedLru } from './lru';
 import { splitId } from './bit-route';
 import { segmentKey } from './keys';
@@ -1155,6 +1155,14 @@ function refuseCleartextOntoKey(
 }
 
 /**
+ * How many times a publish sends a fresh compare-and-swap after one that ended without an answer and left the row as it
+ * was: four sends of the row write in all.
+ */
+const UNANSWERED_RESENDS = 3;
+/** The wait before the first of those, in ms, as an upper bound: each next one doubles it, and a full jitter spreads it. */
+const UNANSWERED_RESEND_BASE_MS = 500;
+
+/**
  * Point a segment's registry `currentGen` at `key.generation` — the publish step that makes a freshly-written
  * generation the authoritative latest (so registry-aware readers see it). **Forward-only and idempotent:**
  * if the registry has no row it creates one; if it's already at/ahead of `key.generation` it's a no-op (an
@@ -1190,15 +1198,20 @@ function refuseCleartextOntoKey(
  * all (a `setRetention`, a due-index reindex), so such a write makes a derived publish report `superseded` and
  * the caller re-derive. That costs a re-run on a rare, unrelated write; the alternative costs a segment.
  *
- * **The registry write is sent once, and an unanswered one is reconciled by its effect.** A `create` or
+ * **The driver sends a registry write once, and an unanswered one is reconciled by its effect.** A `create` or
  * `compareAndSwap` that fails with {@link TransientError} (a throttle, a lost response, a timeout) may or may not
  * have landed, and may still be in flight. The publish reads the row once more and decides from what it holds:
  *
  * - the pointer names `key.generation`, on the incarnation the write was made against (the row's `createdAt`), and
  *   `holdsOwnObject` proves the object under it the caller's: the write landed, and the publish returns `true`. Only
  *   the writer of a write-once object publishes its number, and a number is never taken while an object holds it;
- * - the row is still the one the write was made against (the same token, or still no row): the write may land yet,
- *   so this throws `TransientError` and writes nothing more. A caller must not delete its object on it;
+ * - the row is still the one the write was made against (the same token, or still no row): the write may land yet. The
+ *   publish then waits, on the injected clock, and sends a **new** write from the row it just read: a request of its
+ *   own, not a replay of the driver's, carrying the same version, so under the registry's fence at most one of the two
+ *   lands and the other meets a conflict, which the next read settles. At most {@link UNANSWERED_RESENDS} follow, after
+ *   a wait under 500 ms, then 1 s, then 2 s (full jitter when an `rng` is given); each is settled the same way. Still
+ *   unanswered, or with no clock to wait on, this throws the registry's own `TransientError` and writes nothing more.
+ *   A caller must not delete its object on it;
  * - anything else: the row has moved past the state the write was conditioned on, so that write can never land, and
  *   the publish goes on as after a lost race, from the row it just read. A pointer at `key.generation` that is not over
  *   the caller's own object, or is on another incarnation, is a lost race too and answers `false`, never an already
@@ -1254,17 +1267,29 @@ export async function publishGeneration(
      * {@link TransientError} and the caller keeps its object.
      */
     holdsOwnObject?: () => Promise<boolean>;
+    /**
+     * What a publish waits on before it sends a fresh compare-and-swap, after a write that ended without an answer and
+     * left the row as it was. Without a `sleep`, such a write throws at once instead of being sent again.
+     */
+    clock?: Yielder;
+    /** Spreads that wait (full jitter) so concurrent publishers do not retry together. Without it the wait is the bound. */
+    rng?: Rng;
   } = {},
 ): Promise<boolean> {
   // A row read after a write that failed, which the next attempt acts on instead of reading it again.
   let fresh: RegistryRecord | null | undefined;
   // The row a failed write was made against. The next attempt first checks its row for that write's effect.
   let failedOn: RegistryRecord | null | undefined;
+  // The error of the last attempt, while it ended without an answer over an unchanged row; and how many fresh writes
+  // such answers have bought so far.
+  let unanswered: TransientError | undefined;
+  let resends = 0;
   for (let attempt = 0; attempt < 5; attempt++) {
     const reused = attempt === 0 && options.row !== undefined;
     const record =
       fresh !== undefined ? fresh : reused ? (options.row ?? null) : await registry.get(key);
     fresh = undefined;
+    unanswered = undefined;
     if (failedOn !== undefined) {
       let landed: boolean;
       try {
@@ -1378,10 +1403,24 @@ export async function publishGeneration(
       let now: RegistryRecord | null;
       try {
         now = await registry.get(key);
-      } catch {
+      } catch (readErr) {
+        // A row that is not one the library wrote says more than a throttle does, and the next call would raise it
+        // anyway. It is not a refusal either, so the caller keeps its object. Any other fault leaves the outcome unknown.
+        if (isIntegrityError(readErr)) throw readErr;
         throw outcomeUnknown(key, err);
       }
-      if (sameRow(now, record)) throw outcomeUnknown(key, err);
+      if (sameRow(now, record)) {
+        // The write did not land, or is still on its way. Send a new one from the row just read, a bounded number of
+        // times; the registry's fence lets at most one of the two copies land.
+        const sleep = options.clock?.sleep;
+        if (sleep === undefined || resends >= UNANSWERED_RESENDS) throw outcomeUnknown(key, err);
+        const bound = UNANSWERED_RESEND_BASE_MS * 2 ** resends;
+        resends += 1;
+        await sleep.call(options.clock, Math.floor((options.rng?.next() ?? 1) * bound));
+        unanswered = outcomeUnknown(key, err);
+        fresh = now;
+        continue;
+      }
       failedOn = record;
       fresh = now;
     }
@@ -1394,6 +1433,8 @@ export async function publishGeneration(
   // is published, so it falls through to the conflict below rather than being read as "a newer gen won".
   if (final !== null && final.currentGen !== null && final.currentGen >= key.generation)
     return final.currentGen === key.generation;
+  // The attempts ran out on writes that went unanswered, not on contention: say so.
+  if (unanswered !== undefined) throw unanswered;
   throw new WriteConflictError(
     `publishGeneration: contention setting currentGen for ${key.segment}`,
   );
@@ -1748,6 +1789,7 @@ export async function bulkLoadCrbmGeneration(
       wrappedDeks: newWrapped,
       cleartext: crypto === undefined,
       holdsOwnObject: () => provesOwnObject(driver, key, fingerprint),
+      clock: options.clock,
     });
     // Audit the publish only when this generation actually *became* the current one — not when a
     // forward-only publish no-oped because a newer generation was already current (the event's contract is

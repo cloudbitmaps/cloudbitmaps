@@ -15,8 +15,9 @@ import { STUB_BUCKET, StubS3Bucket, type FaultKind } from '../../helpers/s3-buck
  *
  * A write-once generation object whose commit is answered `503 SlowDown` is sent again, a bounded number of times,
  * with backoff: it is tagged with a random write id in user metadata (`x-amz-meta-cbwid`), so a precondition failure
- * on a re-send reads the object's metadata back, and an object carrying this write's id is this write's own. A
- * registry row is sent once whatever the answer; the publish reconciles it by reading the row (see the core tests).
+ * on a re-send reads the object's metadata back, and an object carrying this write's id is this write's own. The
+ * driver sends a registry row once whatever the answer. The publish, not the driver, settles an unanswered one by
+ * reading the row, and sends a fresh compare-and-swap from the version it read when the row is as it was.
  */
 
 const FIVE_MIB = 5 * 1024 * 1024;
@@ -280,13 +281,15 @@ describe('S3: a load whose writes are throttled, through the real SDK', () => {
   function store() {
     const bucket = new StubS3Bucket();
     const client = bucket.client();
-    const { clock } = recordingClock();
+    const { clock, waits } = recordingClock();
     const deps = {
       storage: new S3StorageDriver({ client, bucket: STUB_BUCKET, clock }),
       registry: new S3RegistryDriver({ client, bucket: STUB_BUCKET }),
       codec: roaringCodec,
+      // What a store wires: the publish waits on it before a fresh write, as the driver does before a re-send.
+      clock: { now: () => 0, sleep: clock.sleep },
     };
-    return { bucket, deps };
+    return { bucket, deps, waits };
   }
   const SEG = { segment: 's' };
   const rowWrites = (b: StubS3Bucket): number => b.count('PutObject', isRow);
@@ -312,19 +315,49 @@ describe('S3: a load whose writes are throttled, through the real SDK', () => {
     expect((await deps.registry.get(SEG))!.currentGen).toBe(0);
   });
 
-  it('a row throttled and not applied throws TransientError: the row sent once, the object kept', async () => {
-    const { bucket, deps } = store();
+  it('a row throttled once and not applied is sent again by the publish from the row it read back, and the load publishes', async () => {
+    const { bucket, deps, waits } = store();
     await loadSegment(SEG, [1], deps);
     const before = rowWrites(bucket);
+    waits.length = 0;
     bucket.arm('PutObject', 'throttle', isRow);
+    const r = await loadSegment(SEG, [1, 2], deps);
+    expect(r).toMatchObject({ generation: 1, published: true });
+    // The driver sent the throttled write once; the second is a fresh compare-and-swap the publish made.
+    expect(rowWrites(bucket) - before).toBe(2);
+    expect(waits).toEqual([500]);
+    expect(bucket.count('DeleteObject')).toBe(0);
+    expect((await deps.registry.get(SEG))!.currentGen).toBe(1);
+  });
+
+  it('a row throttled on every send is four writes, then the registry TransientError with the SDK error as its cause', async () => {
+    const { bucket, deps, waits } = store();
+    await loadSegment(SEG, [1], deps);
+    const before = rowWrites(bucket);
+    waits.length = 0;
+    for (let i = 0; i < 5; i++) bucket.arm('PutObject', 'throttle', isRow);
     const err = await loadSegment(SEG, [1, 2], deps).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(TransientError);
     // The registry's own error, whose cause is the SDK's: what a caller reads there does not move.
     expect((err as { cause?: { name?: string } }).cause?.name).toBe('SlowDown');
-    expect(rowWrites(bucket) - before).toBe(1);
+    expect(rowWrites(bucket) - before).toBe(4); // bounded: the first send and three fresh ones
+    expect(waits).toHaveLength(3);
     expect(bucket.count('DeleteObject')).toBe(0);
     expect(bucket.objects.has('_default/segments/s.1.crbm')).toBe(true);
     expect((await deps.registry.get(SEG))!.currentGen).toBe(0);
+  });
+
+  it('a row throttled once whose original request reaches S3 after the fresh write is refused by If-Match: one write lands', async () => {
+    const { bucket, deps } = store();
+    await loadSegment(SEG, [1], deps);
+    bucket.arm('PutObject', 'throttle-and-hold', isRow);
+    const r = await loadSegment(SEG, [1, 2], deps);
+    expect(r).toMatchObject({ generation: 1, published: true });
+    const rowKey = [...bucket.objects.keys()].find((k) => isRow(k) && k.includes('/s.'))!;
+    const landed = bucket.objects.get(rowKey)!.etag;
+    await bucket.landHeld(); // the request answered 503 is applied now, against a version that has moved on
+    expect(bucket.objects.get(rowKey)!.etag).toBe(landed);
+    expect((await deps.registry.get(SEG))!.currentGen).toBe(1);
   });
 
   it('a row throttled after it was applied is found by reading the row: published, the row sent once', async () => {
@@ -341,9 +374,9 @@ describe('S3: a load whose writes are throttled, through the real SDK', () => {
   it('a row throttled that lands after the load threw points at an object that is there', async () => {
     const { bucket, deps } = store();
     await loadSegment(SEG, [1], deps);
-    bucket.arm('PutObject', 'throttle-and-hold', isRow);
+    for (let i = 0; i < 4; i++) bucket.arm('PutObject', 'throttle-and-hold', isRow);
     await expect(loadSegment(SEG, [1, 2], deps)).rejects.toBeInstanceOf(TransientError);
-    await bucket.landHeld(); // the compare-and-swap the service answered 503 is applied after all
+    await bucket.landHeld(); // the compare-and-swaps the service answered 503 are applied after all: one lands
     expect((await deps.registry.get(SEG))!.currentGen).toBe(1);
     expect(bucket.objects.has('_default/segments/s.1.crbm')).toBe(true);
     expect(bucket.count('DeleteObject')).toBe(0);

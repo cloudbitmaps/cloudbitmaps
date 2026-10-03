@@ -573,6 +573,8 @@ export async function eraseIdFromSegment(
     // A write that ends without an answer is settled by reading the row, and a pointer at this number is this
     // rewrite's only over the object it wrote: the footer proves it, so another incarnation's cannot pass for it.
     holdsOwnObject: () => provesOwnObject(deps.storage, key, fingerprint),
+    clock: deps.clock,
+    rng: deps.readRetry?.rng,
   });
   if (!published) {
     await discardRefused(generation);

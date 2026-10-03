@@ -9,29 +9,33 @@ import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { counting } from '../helpers/counting';
 
 /**
- * A publish's registry write is sent once. When it ends without a definite answer (a throttle, a lost response, a
- * timeout: a `TransientError`), the publish reads the row again and decides from what it finds:
+ * The driver sends a publish's registry write once. When it ends without a definite answer (a throttle, a lost
+ * response, a timeout: a `TransientError`), the publish reads the row again and decides from what it finds:
  *
  * - the pointer names this generation, on the incarnation the write was made against, over the object this load wrote:
  *   the write landed, and the load is published;
- * - the row is the one the write was made against: the write may still land, so the load throws `TransientError` and
- *   deletes nothing;
+ * - the row is the one the write was made against: the write did not land, or may still be on its way. The publish
+ *   waits on the injected clock and sends a fresh compare-and-swap from the row it just read, at most three times; the
+ *   registry's fence lets at most one of the copies land. Still unanswered, the load throws the registry's own
+ *   `TransientError` and deletes nothing;
  * - anything else: the row has moved past the state the write was conditioned on, so the write can never land, and the
  *   publish goes on as after a lost race.
  *
- * The row write is never sent again: each test counts the writes at the registry port.
+ * Each test counts the writes at the registry port.
  */
 
 const SEG: SegmentRef = { namespace: 'ns', segment: 's' };
 
 type Write = 'create' | 'compareAndSwap';
 
-/** What the next registry write does, instead of simply landing. */
+/** What a registry write does, instead of simply landing. */
 type Fault =
   /** Apply the write, then fail as if its response were lost; `after` runs in between. */
   | { kind: 'land-then-transient'; after?: () => void }
   /** Apply the write, then report a conflict, as an Azure replay meeting its own row does. */
   | { kind: 'land-then-conflict' }
+  /** Report a conflict without applying anything: another writer won. */
+  | { kind: 'conflict-unapplied' }
   /** Fail before applying it, keeping the call to land later; `meanwhile` runs before the failure is reported. */
   | { kind: 'transient-unapplied'; meanwhile?: () => Promise<void> };
 
@@ -40,8 +44,10 @@ function world(now: () => number = () => 1_000) {
   const base = new MemoryRegistryDriver({ now });
   const writes: Record<string, number> = {};
   const deletes: Record<string, number> = {};
-  let fault: Fault | undefined;
-  let late: (() => Promise<unknown>) | undefined;
+  const faults: Fault[] = [];
+  const held: Array<() => Promise<unknown>> = [];
+  const waits: number[] = [];
+  let reads = 0;
   let failNextRead: Error | undefined;
   let failNextTail: Error | undefined;
   const registry = new Proxy(base, {
@@ -49,6 +55,7 @@ function world(now: () => number = () => 1_000) {
       const value = Reflect.get(t, p, rx) as unknown;
       if (p === 'get') {
         return async (ref: SegmentRef) => {
+          reads += 1;
           if (failNextRead !== undefined) {
             const e = failNextRead;
             failNextRead = undefined;
@@ -62,8 +69,7 @@ function world(now: () => number = () => 1_000) {
         writes[p] = (writes[p] ?? 0) + 1;
         const send = (): Promise<unknown> =>
           (base[p as Write] as (...a: unknown[]) => Promise<unknown>).apply(base, args);
-        const f = fault;
-        fault = undefined;
+        const f = faults.shift();
         if (f === undefined) return send();
         if (f.kind === 'land-then-transient') {
           await send();
@@ -74,7 +80,8 @@ function world(now: () => number = () => 1_000) {
           await send();
           throw new WriteConflictError('the replay met its own row');
         }
-        late = send;
+        if (f.kind === 'conflict-unapplied') throw new WriteConflictError('another writer won');
+        held.push(send);
         await f.meanwhile?.();
         throw new TransientError('503 SlowDown; the request may still land');
       };
@@ -96,18 +103,40 @@ function world(now: () => number = () => 1_000) {
       };
     },
   });
+  // A virtual clock: it waits for nothing and records each wait it is asked for.
+  const clock = {
+    now: () => 0,
+    sleep: async (ms: number): Promise<void> => {
+      waits.push(ms);
+    },
+  };
+  const bare = { storage: faultyStorage, registry, codec: roaringCodec };
   return {
     storage,
     base,
     registry,
     writes,
+    waits,
+    clock,
+    reads: () => reads,
     deletes: () => deletes.delete ?? 0,
-    deps: { storage: faultyStorage, registry, codec: roaringCodec },
+    /** What a store wires: the drivers, the codec and a clock to wait on. */
+    deps: { ...bare, clock },
+    /** The same with no clock, so there is nothing to wait on between writes. */
+    bare,
+    /** The same with the store's random source, which spreads each wait. */
+    withRng: (next: () => number) => ({ ...bare, clock, readRetry: { clock, rng: { next } } }),
     plain: { storage, registry: base, codec: roaringCodec },
-    arm: (f: Fault) => (fault = f),
+    /** Make the next `times` registry writes do `f`. */
+    arm: (f: Fault, times = 1) => {
+      for (let i = 0; i < times; i++) faults.push(f);
+    },
     failNextRead: (e: Error) => (failNextRead = e),
     failNextTail: (e: Error) => (failNextTail = e),
-    land: async () => late!(),
+    /** Let the first write a fault held reach the registry after all. */
+    land: async () => held[0]!(),
+    /** Let every write a fault held reach the registry, and say how each ended. */
+    landAll: async () => Promise.allSettled(held.map((send) => send())),
   };
 }
 
@@ -171,42 +200,184 @@ describe('a publish whose registry write ends without a definite answer reads th
     expect(w.writes.compareAndSwap).toBe(1);
   });
 
-  it('a compare-and-swap that did not land, with the row unchanged, throws TransientError and deletes nothing', async () => {
+  it('a compare-and-swap throttled once and not applied is sent again from the row just read, and the load publishes', async () => {
     const w = world();
     await threeLoads(w);
     w.arm({ kind: 'transient-unapplied' });
+    const before = w.reads();
+    const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9 });
+    expect(r).toMatchObject({ generation: 3, published: true });
+    expect(w.writes.compareAndSwap).toBe(2); // the one throttled, then one fresh write
+    expect(w.waits).toEqual([500]); // the first wait's bound, on the injected clock
+    expect(w.deletes()).toBe(0);
+    expect((await w.base.get(SEG))!.currentGen).toBe(3);
+    expect(await idsOf(w.storage, 3)).toEqual([1, 2, 3, 4]);
+    // The fresh write acts on the row the failure path read, so that path costs one extra read, not two.
+    const withFault = w.reads() - before;
+    const control = world();
+    await threeLoads(control);
+    const controlBefore = control.reads();
+    await loadSegment(SEG, [1, 2, 3, 4], control.deps, { keep: 9 });
+    expect(withFault - (control.reads() - controlBefore)).toBe(1);
+  });
+
+  it('the wait is spread by the store random source: a fraction of the bound', async () => {
+    const w = world();
+    await threeLoads(w);
+    w.arm({ kind: 'transient-unapplied' }, 2);
+    const r = await loadSegment(
+      SEG,
+      [1, 2, 3, 4],
+      w.withRng(() => 0.25),
+      { keep: 9 },
+    );
+    expect(r).toMatchObject({ generation: 3, published: true });
+    expect(w.waits).toEqual([125, 250]); // a quarter of 500 ms, then of 1 s
+  });
+
+  it("a segment's first create throttled once and not applied is sent again, and the load publishes", async () => {
+    const w = world();
+    w.arm({ kind: 'transient-unapplied' });
+    const r = await loadSegment(SEG, [5], w.deps);
+    expect(r).toMatchObject({ generation: 0, published: true });
+    expect(w.writes.create).toBe(2);
+    expect(w.waits).toEqual([500]);
+    expect(await idsOf(w.storage, 0)).toEqual([5]);
+  });
+
+  it('a throttled write whose next attempt lands and loses its response is settled the same way: published', async () => {
+    const w = world();
+    await threeLoads(w);
+    w.arm({ kind: 'transient-unapplied' });
+    w.arm({ kind: 'land-then-transient' });
+    const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9 });
+    expect(r).toMatchObject({ generation: 3, published: true });
+    expect(w.writes.compareAndSwap).toBe(2);
+  });
+
+  it('a throttled write whose next attempt lands and reports a conflict is published, not superseded', async () => {
+    const w = world();
+    await threeLoads(w);
+    w.arm({ kind: 'transient-unapplied' });
+    w.arm({ kind: 'land-then-conflict' });
+    const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9 });
+    expect(r).toMatchObject({ generation: 3, published: true });
+    expect(w.writes.compareAndSwap).toBe(2);
+  });
+
+  it('an original write delayed past the fresh one is refused by the registry: at most one lands', async () => {
+    const w = world();
+    await threeLoads(w);
+    w.arm({ kind: 'transient-unapplied' });
+    const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9 });
+    expect(r).toMatchObject({ generation: 3, published: true });
+    const landed = await w.registry.get(SEG);
+    // The request the service answered 503 reaches the registry after the fresh write landed: its version is stale.
+    await expect(w.land()).rejects.toBeInstanceOf(WriteConflictError);
+    expect(await w.base.get(SEG)).toEqual(landed);
+    expect(w.writes.compareAndSwap).toBe(2);
+    expect(await idsOf(w.storage, 3)).toEqual([1, 2, 3, 4]);
+  });
+
+  it('throttling that never clears is three fresh writes, then the registry TransientError, and nothing deleted', async () => {
+    const w = world();
+    await threeLoads(w);
+    w.arm({ kind: 'transient-unapplied' }, 10); // more than the bound allows
     const err = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9 }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(TransientError);
     // The registry's own error reaches the caller as it is, so its `cause` is where a caller reads the SDK's error.
     expect((err as Error).message).toBe('503 SlowDown; the request may still land');
-    expect(w.writes.compareAndSwap).toBe(1); // never sent again
+    expect(w.writes.compareAndSwap).toBe(4); // bounded: the first send and three fresh ones
+    expect(w.waits).toEqual([500, 1000, 2000]);
     expect(w.deletes()).toBe(0);
     expect(await generations(w.storage)).toEqual([0, 1, 2, 3]);
     expect((await w.base.get(SEG))!.currentGen).toBe(2);
   });
 
-  it('the compare-and-swap that lands after the load threw finds its object there, and the pointer is valid', async () => {
+  it('with no clock to wait on, a write that did not land throws at once and is not sent again', async () => {
     const w = world();
     await threeLoads(w);
     w.arm({ kind: 'transient-unapplied' });
+    const err = await loadSegment(SEG, [1, 2, 3, 4], w.bare, { keep: 9 }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(TransientError);
+    expect(w.writes.compareAndSwap).toBe(1);
+    expect(w.deletes()).toBe(0);
+  });
+
+  it('attempts that run out on unanswered writes throw the registry TransientError, not a contention error', async () => {
+    const w = world();
+    await threeLoads(w);
+    w.arm({ kind: 'conflict-unapplied' }, 2); // two lost races use two of the five attempts
+    w.arm({ kind: 'transient-unapplied' }, 3);
+    const err = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9 }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(TransientError);
+    expect(w.writes.compareAndSwap).toBe(5);
+    expect(w.deletes()).toBe(0);
+  });
+
+  it('the write that lands after the load threw finds its object there, and the pointer is valid', async () => {
+    const w = world();
+    await threeLoads(w);
+    w.arm({ kind: 'transient-unapplied' }, 10);
     await expect(loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9 })).rejects.toBeInstanceOf(
       TransientError,
     );
-    await w.land(); // the request the load gave up on reaches the registry after all
+    // Every request the load gave up on reaches the registry after all, each with the version it was made against.
+    const settled = await w.landAll();
+    expect(settled.filter((r) => r.status === 'fulfilled')).toHaveLength(1); // the fence: at most one lands
     expect((await w.base.get(SEG))!.currentGen).toBe(3);
     expect(await idsOf(w.storage, 3)).toEqual([1, 2, 3, 4]);
     expect(w.deletes()).toBe(0);
   });
 
-  it('a create that did not land, onto a row still absent, throws TransientError and keeps its object', async () => {
+  it('a create that is never answered and never lands is sent as fresh creates, then throws and keeps its object', async () => {
     const w = world();
-    w.arm({ kind: 'transient-unapplied' });
+    w.arm({ kind: 'transient-unapplied' }, 10);
     await expect(loadSegment(SEG, [5], w.deps)).rejects.toBeInstanceOf(TransientError);
-    expect(w.writes.create).toBe(1);
+    expect(w.writes.create).toBe(4);
     expect(w.deletes()).toBe(0);
     await w.land();
     expect((await w.base.get(SEG))!.currentGen).toBe(0);
     expect(await idsOf(w.storage, 0)).toEqual([5]);
+  });
+
+  it('an erasure rewrite whose compare-and-swap was throttled and not applied is sent again from the row just read', async () => {
+    const w = world();
+    await threeLoads(w);
+    w.arm({ kind: 'transient-unapplied' });
+    const r = await eraseIdFromSegment(SEG, 2, w.deps);
+    expect(r).toMatchObject({ erased: true, fromGeneration: 2, generation: 3 });
+    expect(w.writes.compareAndSwap).toBe(2);
+    expect(await idsOf(w.storage, 3)).toEqual([1, 3]);
+  });
+
+  it('a bulk load whose create was throttled and not applied is sent again from the clock it was given', async () => {
+    const w = world();
+    w.arm({ kind: 'transient-unapplied' });
+    const r = await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [5], {
+      registry: w.registry,
+      clock: w.clock,
+    });
+    expect(r.becameCurrent).toBe(true);
+    expect(w.writes.create).toBe(2);
+    expect(w.waits).toEqual([500]);
+  });
+
+  it('a re-read that finds a row the library did not write raises that, and nothing is deleted', async () => {
+    const w = world();
+    await threeLoads(w);
+    const corrupt = new IntegrityError('the registry row is not one this library wrote');
+    w.arm({
+      kind: 'transient-unapplied',
+      meanwhile: async () => {
+        w.failNextRead(corrupt);
+      },
+    });
+    const err = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9 }).catch((e: unknown) => e);
+    expect(err).toBe(corrupt);
+    expect(w.writes.compareAndSwap).toBe(1);
+    expect(w.deletes()).toBe(0);
+    expect(await generations(w.storage)).toContain(3);
   });
 
   it('a re-read that fails too leaves the outcome unknown: TransientError, and nothing deleted', async () => {
