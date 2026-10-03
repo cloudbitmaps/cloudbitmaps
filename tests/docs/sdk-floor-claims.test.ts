@@ -86,12 +86,12 @@ describe('a driver package states its SDK range identically in the manifest and 
     ).toBe(true);
   });
 
-  it('the floor is a measurement of If-None-Match alone, and the docs say the registry checks the other headers itself', () => {
-    // The 3.641.0 boundary above was measured for `PutObject` `IfNoneMatch`. The registry also sends `If-Match` on a
-    // `PutObject` (its compare-and-swap) and on a `DeleteObject` (its conditional delete), and no measurement records the
-    // first SDK that sends either: an SDK drops a member its model lacks, without a word. So `@cloudbitmaps/s3` asks the
-    // client at run time (`probeClient`), and says so wherever it states the floor. A floor raised to a measured version
-    // makes this check redundant, not wrong; one stated without the check would claim more than the measurement gives.
+  it('the docs say the registry checks the client it is given for the headers it sends, whatever the floor', () => {
+    // The floor stops an install from resolving an SDK that drops `If-None-Match` (below 3.641.0), `If-Match` on a
+    // `DeleteObject` (below 3.698.0) or `If-Match` on a `PutObject`, the registry's compare-and-swap (below 3.700.0). A
+    // `client` the caller passes, or an SDK a package manager pins, can still be older, and an SDK drops a member its
+    // model lacks without a word. So `@cloudbitmaps/s3` asks the client at run time (`probeClient`), and says so
+    // wherever it states the floor.
     const claims = [
       join(ROOT, 'packages', 's3', 'README.md'),
       join(ROOT, 'docs', 'guide', 'production.md'),

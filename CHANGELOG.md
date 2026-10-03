@@ -451,9 +451,9 @@ so, and so do the module headers in the code.
   compare-and-swap `If-Match` on `PutObject`, and its conditional delete sends `If-Match` on `DeleteObject`. An
   `@aws-sdk/client-s3` whose model lacks a member drops it from the request without a word, so on such an SDK a
   compare-and-swap lands as a plain overwrite and a concurrent writer's change is lost with no error, and a conditional
-  delete removes whatever is there. The declared range (`>=3.645.0 <4`) was set from a measurement of `If-None-Match`
-  alone, the first SDK that sends it; no measurement of the first SDK that sends `If-Match` on either call exists, so
-  the range may include one that does not. Before its first request the registry now serialises each of the three
+  delete removes whatever is there. The raised SDK floor (the next entry) keeps an install off an SDK that lacks `If-Match`, but a
+  `client` the caller passes, or an SDK a package manager pins, can still be older than 3.700.0 (3.698.0 for
+  `DeleteObject`). Before its first request the registry now serialises each of the three
   through a second client built from its configuration, sending nothing and running none of the caller's own
   middleware, and refuses a write the SDK would send without its precondition
   (`ValidationError` naming the header; upgrade `@aws-sdk/client-s3`), and leaves a row tombstoned when a `DeleteObject`

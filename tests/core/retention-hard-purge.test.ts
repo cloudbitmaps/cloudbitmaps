@@ -15,6 +15,7 @@ import { retireExpired, DEFAULT_LOOKBACK_BUCKETS } from '@/core/retention-sweep'
 import { setSegmentRetention } from '@/core/retention';
 import { gcOrphanGenerations } from '@/core/generation-gc';
 import { publishGeneration } from '@/core/crbm-storage-source';
+import { loadSegment } from '@/core/load';
 import { dueBucket, dueBucketsAt, dueIndexRef, dueNamespace } from '@/core/due-index';
 import { TransientError, UnsupportedError, WriteConflictError } from '@/core/errors';
 import type { IStorageDriver, RegistryRecord, SegmentRef } from '@/core/ports';
@@ -23,6 +24,7 @@ import { segmentKey, shardOf } from '@/core/keys';
 import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
 import { registryListPrefix, registryObjectKey } from '@/drivers/_shared/object-registry-keys';
 import { MemoryStorageDriver } from '@/drivers/memory';
+import { roaringCodec } from '@/roaring-codec';
 import { CloudRoaring } from '@/index';
 import { CountingObjectStore } from '../helpers/counting';
 import { readAs011 } from '../helpers/release-0-11';
@@ -1319,5 +1321,91 @@ describe('a purge pointer that outlives its row is removed by the unscoped fleet
       expect(res.purgeFaults).toBe(0);
       expect(await w.registry.get(gone)).toMatchObject({ token: reborn });
     });
+  });
+});
+
+describe('a load that collects by name meets a row the purge removed', () => {
+  const ref = { namespace: 'n', segment: 'day' };
+  const idsOf = (g: number): number[] => Array.from({ length: g + 1 }, (_, i) => i);
+  const present = async (w: World): Promise<number[]> => {
+    const out: number[] = [];
+    for await (const k of w.storage.list(ref)) out.push(k.generation);
+    return out.sort((a, b) => a - b);
+  };
+
+  /** A segment loaded five times (generations 0 to 4, of which 3 and 4 remain), whose sixth load publishes 5. */
+  async function atFour(w: World, expiresAt?: number): Promise<void> {
+    if (expiresAt !== undefined)
+      await setSegmentRetention(ref, { registry: w.registry }, { expiresAt });
+    for (let g = 0; g < 5; g++) {
+      const r = await loadSegment(ref, idsOf(g), { ...w.deps, codec: roaringCodec });
+      expect(r).toMatchObject({ generation: g, published: true });
+    }
+    expect(await present(w)).toEqual([3, 4]);
+  }
+
+  /** `registry`, with `after` run once, when its first compare-and-swap (the load's publish) has landed. */
+  function afterPublish(w: World, after: () => Promise<void>): ObjectStoreRegistry {
+    const wrapped = Object.create(w.registry) as ObjectStoreRegistry;
+    let fired = false;
+    wrapped.compareAndSwap = async (...args: Parameters<ObjectStoreRegistry['compareAndSwap']>) => {
+      const out = await w.registry.compareAndSwap(...args);
+      if (!fired) {
+        fired = true;
+        await after();
+      }
+      return out;
+    };
+    return wrapped;
+  }
+
+  it('a row removed outright at that moment: nothing is deleted by name, and the publish stands', async () => {
+    const w = world();
+    await atFour(w);
+    const registry = afterPublish(w, () => w.registry.delete(ref));
+    const r = await loadSegment(ref, idsOf(5), {
+      storage: w.storage,
+      registry,
+      codec: roaringCodec,
+    });
+    expect(r).toMatchObject({ generation: 5, published: true, collected: [] });
+    expect(await present(w)).toEqual([3, 4, 5]);
+  });
+
+  it('a name purged and created again with a pointer below the published generation: nothing is deleted', async () => {
+    const w = world();
+    await atFour(w);
+    const registry = afterPublish(w, async () => {
+      await w.registry.delete(ref);
+      await w.registry.create(ref, { currentGen: 0 });
+    });
+    const r = await loadSegment(ref, idsOf(5), {
+      storage: w.storage,
+      registry,
+      codec: roaringCodec,
+    });
+    expect(r).toMatchObject({ generation: 5, published: true, collected: [] });
+    expect(await present(w)).toEqual([3, 4, 5]);
+  });
+
+  it('the sweep itself retires and purges the row between the publish and the delete: the load is unharmed, and no object outlives the row', async () => {
+    const w = world();
+    await atFour(w, T0 + RETENTION);
+    w.advance(RETENTION + 1);
+    const registry = afterPublish(w, async () => {
+      // A retirement drops the segment (tombstone, then every object), and with no grace the next sweep purges the row.
+      await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: 0 });
+      const purged = await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: 0 });
+      expect(purged.tombstonesPurged).toBe(1);
+      expect(await w.registry.get(ref)).toBeNull();
+    });
+    const r = await loadSegment(ref, idsOf(5), {
+      storage: w.storage,
+      registry,
+      codec: roaringCodec,
+    });
+    expect(r).toMatchObject({ generation: 5, published: true, collected: [] });
+    expect(await present(w)).toEqual([]); // the drop took them all, and the by-name pass found no row to act on
+    expect(registryObjects(w)).toBe(0);
   });
 });
