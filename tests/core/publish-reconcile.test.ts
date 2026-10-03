@@ -196,7 +196,7 @@ describe('a publish whose registry write ends without a definite answer reads th
     const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 1 });
     expect(r).toMatchObject({ generation: 3, published: true });
     expect(r.reason).toBeUndefined();
-    expect([...r.collected].sort()).toEqual([0, 1]); // the collection pass ran, as after any publish
+    expect([...r.collected]).toEqual([1]); // the collection pass ran, as after any publish: by name, one outside keep
     expect(w.writes.compareAndSwap).toBe(1);
     expect((await w.base.get(SEG))!.currentGen).toBe(3);
     expect(await idsOf(w.storage, 3)).toEqual([1, 2, 3, 4]);
