@@ -100,6 +100,12 @@ const FOREIGN_VERSIONS = new Map<string, string>([
       'note on the node quota the estimator prices past. A third-party version, not a claim about our release',
   ],
   [
+    '3.699.0',
+    "the last @aws-sdk/client-s3 version whose PutObject serializer omits If-Match, in the s3 README's and the " +
+      "production guide's reason for the 3.700.0 floor: the registry's compare-and-swap goes out unconditionally on " +
+      'it and every version before. A third-party version, not a claim about our release',
+  ],
+  [
     '3.700.0',
     "the floor of @cloudbitmaps/s3's dependency on @aws-sdk/client-s3, in that package's README. It is a " +
       'correctness floor, not a preference: an SDK drops a conditional header it does not model, and up to ' +
