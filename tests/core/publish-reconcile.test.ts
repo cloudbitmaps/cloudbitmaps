@@ -4,10 +4,16 @@ import { eraseIdFromSegment } from '@/core/erase-id';
 import { IntegrityError, TransientError, WriteConflictError } from '@/core/errors';
 import type { AuditEvent } from '@/core/audit';
 import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
+import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
+import { registryObjectKey } from '@/drivers/_shared/object-registry-keys';
+import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
-import { counting } from '../helpers/counting';
+import { CountingObjectStore, counting } from '../helpers/counting';
 
 /**
  * The driver sends a publish's registry write once. When it ends without a definite answer (a throttle, a lost
@@ -40,9 +46,13 @@ type Fault =
   /** Fail before applying it, keeping the call to land later; `meanwhile` runs before the failure is reported. */
   | { kind: 'transient-unapplied'; meanwhile?: () => Promise<void> };
 
-function world(now: () => number = () => 1_000) {
+function world(
+  now: () => number = () => 1_000,
+  makeBase: (now: () => number) => IRegistryDriver = (clock) =>
+    new MemoryRegistryDriver({ now: clock }),
+) {
   const storage = new MemoryStorageDriver();
-  const base = new MemoryRegistryDriver({ now });
+  const base = makeBase(now);
   const writes: Record<string, number> = {};
   const deletes: Record<string, number> = {};
   const faults: Fault[] = [];
@@ -696,5 +706,171 @@ describe('a publish whose registry write ends without a definite answer reads th
     expect(r).toMatchObject({ erased: true, fromGeneration: 2, generation: 3 });
     expect(w.writes.compareAndSwap).toBe(1);
     expect(await idsOf(w.storage, 3)).toEqual([1, 3]);
+  });
+});
+
+describe('two incarnations created in the same millisecond are told apart by the token', () => {
+  it('an erasure on another incarnation that points at the rewrite object, under a clock that never advances, is not an erasure', async () => {
+    const w = world(() => 1_000);
+    await threeLoads(w);
+    w.arm({
+      kind: 'transient-unapplied',
+      meanwhile: async () => {
+        // The name is deleted and created again in the same millisecond, pointing at the number the rewrite took. The
+        // object under it is the rewrite's own, so the footer cannot tell, and neither can the creation stamp.
+        await w.base.delete(SEG);
+        await w.base.create(SEG, { currentGen: 3 });
+      },
+    });
+    const r = await eraseIdFromSegment(SEG, 2, w.deps);
+    expect(r).toMatchObject({ erased: false, reason: 'superseded' });
+    expect(r.collected).toEqual([]);
+    expect(await generations(w.storage)).toEqual([0, 1, 2, 3]);
+  });
+});
+
+describe('a row 0.11 wrote has no incarnation id, and its own write is still recognised', () => {
+  /** A live row as 0.11 serialized it: schema 1, a bare decimal token. */
+  const legacyRow = (currentGen: number, createdAt: number): string =>
+    `{"schemaVersion":1,"deleted":false,"record":{"segment":"s","namespace":"ns","currentGen":${currentGen},` +
+    `"status":"active","createdAt":${createdAt},"updatedAt":${createdAt},"token":"7"}}`;
+
+  /** A world over the object-store registry, with generations 0 to 2 loaded and the row then replaced by a legacy one. */
+  async function legacyWorld(): Promise<ReturnType<typeof world>> {
+    const store = new CountingObjectStore(0);
+    const w = world(
+      () => 30,
+      (clock) => new ObjectStoreRegistry(store, undefined, clock),
+    );
+    await threeLoads(w);
+    store.plant(registryObjectKey(undefined, SEG), legacyRow(2, 30));
+    expect((await w.base.get(SEG))!.token).toBe('7');
+    return w;
+  }
+
+  it('a write of its own that landed and lost its response is published: both tokens have no id, so the stamp decides', async () => {
+    const w = await legacyWorld();
+    w.arm({ kind: 'land-then-transient' });
+    const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9 });
+    expect(r).toMatchObject({ generation: 3, published: true });
+    // The row gained a write part and no incarnation.
+    expect((await w.base.get(SEG))!.token).toMatch(/^8\.[0-9a-f]{16}$/);
+  });
+
+  it('a write throttled once and not applied is sent again from the row just read, and the load publishes', async () => {
+    const w = await legacyWorld();
+    w.arm({ kind: 'transient-unapplied' });
+    const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9 });
+    expect(r).toMatchObject({ generation: 3, published: true });
+    expect(w.writes.compareAndSwap).toBe(2);
+  });
+
+  it('a name created again over it in the same millisecond is another incarnation: the token form says so', async () => {
+    const w = await legacyWorld();
+    w.arm({
+      kind: 'transient-unapplied',
+      meanwhile: async () => {
+        // The legacy row is deleted and the name created again in the same millisecond (its stamp is 30 too),
+        // pointing at the rewrite's number over the rewrite's own object. The row is now born with an incarnation id.
+        await w.base.delete(SEG);
+        await w.base.create(SEG, { currentGen: 3 });
+      },
+    });
+    const r = await eraseIdFromSegment(SEG, 2, w.deps);
+    expect(r).toMatchObject({ erased: false, reason: 'superseded' });
+    expect(r.collected).toEqual([]);
+  });
+});
+
+describe.each<
+  [
+    string,
+    () => Promise<{ make: (now: () => number) => IRegistryDriver; done: () => Promise<void> }>,
+  ]
+>([
+  [
+    'the in-memory registry',
+    async () => ({
+      make: (clock) => new MemoryRegistryDriver({ now: clock }),
+      done: async () => {},
+    }),
+  ],
+  [
+    'the local-filesystem registry',
+    async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'crbm-reconcile-'));
+      return {
+        make: (clock) => new LocalFsRegistryDriver(dir, { now: clock }),
+        done: async () => rm(dir, { recursive: true, force: true }),
+      };
+    },
+  ],
+  [
+    'the object-store registry (S3, GCS and Azure Blob share it)',
+    async () => ({
+      make: (clock) => new ObjectStoreRegistry(new CountingObjectStore(0), undefined, clock),
+      done: async () => {},
+    }),
+  ],
+])('the reconcile and the fresh write, over %s, with the tokens it issues', (_, open) => {
+  let made: Awaited<ReturnType<typeof open>>;
+  beforeEach(async () => {
+    made = await open();
+  });
+  afterEach(async () => {
+    await made.done();
+  });
+  const fresh = () => world(() => 1_000, made.make);
+
+  it('a write that landed and lost its response is published, written once', async () => {
+    const w = fresh();
+    await threeLoads(w);
+    w.arm({ kind: 'land-then-transient' });
+    const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9 });
+    expect(r).toMatchObject({ generation: 3, published: true });
+    expect(w.writes.compareAndSwap).toBe(1);
+  });
+
+  it('a write throttled once and not applied is sent again from the row just read, and the original is refused by the fence', async () => {
+    const w = fresh();
+    await threeLoads(w);
+    w.arm({ kind: 'transient-unapplied' });
+    const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9 });
+    expect(r).toMatchObject({ generation: 3, published: true });
+    expect(w.writes.compareAndSwap).toBe(2);
+    expect(w.waits).toEqual([500]);
+    const landed = await w.base.get(SEG);
+    await expect(w.land()).rejects.toBeInstanceOf(WriteConflictError);
+    expect(await w.base.get(SEG)).toEqual(landed);
+  });
+
+  it('throttling that never clears is four writes, then the registry TransientError, with nothing deleted and at most one landing late', async () => {
+    const w = fresh();
+    await threeLoads(w);
+    w.arm({ kind: 'transient-unapplied' }, 10);
+    await expect(loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9 })).rejects.toBeInstanceOf(
+      TransientError,
+    );
+    expect(w.writes.compareAndSwap).toBe(4);
+    expect(w.deletes()).toBe(0);
+    const settled = await w.landAll();
+    expect(settled.filter((x) => x.status === 'fulfilled')).toHaveLength(1);
+    expect((await w.base.get(SEG))!.currentGen).toBe(3);
+    expect(await idsOf(w.storage, 3)).toEqual([1, 2, 3, 4]);
+  });
+
+  it('an erasure on another incarnation created in the same millisecond, over the rewrite object, is not an erasure', async () => {
+    const w = fresh();
+    await threeLoads(w);
+    w.arm({
+      kind: 'transient-unapplied',
+      meanwhile: async () => {
+        await w.base.delete(SEG);
+        await w.base.create(SEG, { currentGen: 3 });
+      },
+    });
+    const r = await eraseIdFromSegment(SEG, 2, w.deps);
+    expect(r).toMatchObject({ erased: false, reason: 'superseded' });
+    expect(r.collected).toEqual([]);
   });
 });

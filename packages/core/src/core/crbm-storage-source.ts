@@ -32,6 +32,7 @@ import type { BlobReader } from './blob';
 import { yieldEvery } from './cooperative';
 import type { Yielder } from './cooperative';
 import type { Clock, Rng } from './determinism';
+import { sameIncarnation } from './token';
 import { BoundedLru } from './lru';
 import { splitId } from './bit-route';
 import { segmentKey } from './keys';
@@ -1465,9 +1466,11 @@ export async function publishGeneration(
  * Whether `now` shows the effect of a publish's write that was made against `before`: an active row, on the same
  * incarnation (a `create` has none to compare), whose pointer names `key.generation`, over the caller's own object.
  *
- * The object is always proved, never assumed: `createdAt` is a clock stamp, and two incarnations of a name can share
- * one, so the pointer and the incarnation alone cannot say whose write this is. With no proof to ask for, the answer
- * cannot be given, and that is an unknown outcome, never a guess.
+ * The incarnation is the one in the row's token ({@link sameIncarnation}): exact, and no clock. A row with no id in its
+ * token (one 0.11 wrote, or a registry of someone else's) is compared by its creation stamp, a clock reading that two
+ * incarnations can share. So the object is always proved too, never assumed: the pointer and the incarnation alone
+ * cannot say whose write this is. With no proof to ask for, the answer cannot be given, and that is an unknown outcome,
+ * never a guess.
  */
 async function landedHere(
   now: RegistryRecord | null,
@@ -1476,7 +1479,7 @@ async function landedHere(
   holdsOwnObject: (() => Promise<boolean>) | undefined,
 ): Promise<boolean> {
   if (now === null || now.status === 'destroyed' || now.currentGen !== key.generation) return false;
-  if (before !== null && now.createdAt !== before.createdAt) return false;
+  if (before !== null && !sameIncarnation(before, now)) return false;
   if (holdsOwnObject === undefined) {
     throw new TransientError(
       `publish of "${key.segment}" generation ${key.generation}: whether its registry write landed could not be ` +

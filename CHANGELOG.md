@@ -144,7 +144,9 @@ so, and so do the module headers in the code.
   - *The row.* The drivers still send each row write once. When a `create` or compare-and-swap ends without an answer (a
     throttle, a lost response, a timeout), the publish reads the row once and decides. A pointer at the load's number,
     on the incarnation the write was made against, over the object the load wrote, proved by one footer read, is the
-    load's own landed write: `published: true`. A row still as the write found it means the write did not land or is on
+    load's own landed write: `published: true`. The incarnation is the id in the row's token, so two incarnations
+    created in the same millisecond are told apart exactly; a row without an id (one 0.11 wrote, or a registry of your
+    own) is told by its creation stamp, and the footer proof decides the rest. A row still as the write found it means the write did not land or is on
     its way, so the publish sends a **new** compare-and-swap from the version it just read, after a wait on the store's
     clock: at most three, after under 500 ms, then 1 s, then 2 s (spread by the store's random source). It is a request
     of its own, not a replay, carrying the version the first one did, so under the registry's fence at most one of the two
