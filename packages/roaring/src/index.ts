@@ -1390,11 +1390,13 @@ export class CloudRoaring {
    *
    * **A `TransientError` can leave the publish unsettled, and deletes nothing.** The generation's object is sent
    * again after a throttle where the backend allows it (a write id tells a first send that landed from another
-   * writer's object), and the registry write is sent once. When that write ends without an answer, the load reads the
-   * row: its own landed write is `published: true`, a row that has moved on is `superseded`, and a row still as the
-   * write found it leaves the outcome unknown, so the load throws `TransientError` and keeps its object, which the
-   * write may still point the row at. Re-run the load: it numbers past that object, and collection removes it once a
-   * generation above it is current.
+   * writer's object), and a driver sends each registry write once. When that write ends without an answer, the load
+   * reads the row: its own landed write is `published: true`, a row that has moved on is `superseded`, and a row still
+   * as the write found it gets a fresh compare-and-swap from the version just read, at most three times, after a wait
+   * on the store's clock. Still unanswered, the load throws the registry's `TransientError` and keeps its object, which
+   * a write may still point the row at. Re-run the load: it numbers past that object, and collection removes it once a
+   * generation above it is current. A `'superseded'` refusal that follows an unanswered write sets `unanswered: true`
+   * on its audit event: that write may have landed, and the generation been current for a while, first.
    *
    * Needs a backend (throws {@link UnsupportedError} otherwise).
    */

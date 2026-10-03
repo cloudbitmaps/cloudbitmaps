@@ -434,7 +434,9 @@ response is sent again, meets itself, and fails its own precondition, which read
 won. This covers a generation's write-once put and the registry's create, compare-and-swap and delete (a delete
 writes a tombstone). So the S3 and GCS packages send a conditional write with the SDK's retry off for that request alone:
 a registry row once, whatever the answer, and a generation's object once, or again after a throttle, when a random id
-in its metadata tells a first send that landed from another writer's object
+in its metadata tells a first send that landed from another writer's object. A row write that gets no answer is settled
+by the load itself, which reads the row and sends a fresh compare-and-swap from it if nothing changed, at most three
+times
 ([a load's writes](loading.md#when-a-write-is-throttled-or-gets-no-answer)). The Azure Blob package, whose retry has
 no per-request switch, tags each write and settles a conflict by reading it back. The GCS package does the same for an
 object above `simpleUploadThresholdBytes`, which uploads as a resumable session. The client is otherwise left as it is, a client
@@ -446,9 +448,9 @@ package stands:
 
 | package | conditional writes |
 |---|---|
-| `@cloudbitmaps/s3` | the registry's create, compare-and-swap and delete are each sent once. A generation's write-once `PutObject` or `CompleteMultipartUpload` is sent with the SDK's retry off, and again, at most three more times, after a `503 SlowDown` (or any `503`) and nothing else, waiting a random time under 500 ms, then 1 s, then 2 s. It carries a random id in its user metadata (`x-amz-meta-cbwid`), and a precondition failure on a re-send, or an upload S3 no longer knows, reads it back |
+| `@cloudbitmaps/s3` | the registry's create, compare-and-swap and delete are each sent once. A generation's write-once `PutObject` or `CompleteMultipartUpload` is sent with the SDK's retry off, and again, at most three more times, after a `503 SlowDown` (or any `503`) and nothing else, waiting a random time under 500 ms, then 1 s, then 2 s. A bare `429`, which AWS S3 does not send but some S3-compatible services do, is not retried and is not classified transient: it surfaces as the SDK's own error, so a layer of yours that keys on `TransientError` will not retry it. The object carries a random id in its user metadata (`x-amz-meta-cbwid`), and a precondition failure, a `409` or an unknown upload on a re-send reads it back; with nothing stored, a `409` or an unknown upload is an unknown outcome (`TransientError`) |
 | `@cloudbitmaps/gcs` | the registry's writes are each one request, sent once. An object up to `simpleUploadThresholdBytes` (8 MiB by default) is one request, sent again, at most three more times with the same waits, after a `429` or `503` and nothing else, and carries a random id in its metadata. A larger object is a resumable upload, a session of requests that the SDK retries within, under the client's retry options; it carries the same id, as every Azure Blob write does, as described below |
-| `@cloudbitmaps/azure-blob` | sent through the client's retry policy, which sends a request again after a network error or a 500 or 503, `503 ServerBusy` and `500 OperationTimedOut` among them. Each write is tagged with a random id in blob metadata, and a conflict is settled by reading the stored blob back, as described below |
+| `@cloudbitmaps/azure-blob` | sent through the client's retry policy, which sends a request again after a network error or a 500 or 503, `503 ServerBusy` and `500 OperationTimedOut` among them. Each write is tagged with a random id in blob metadata, and a conflict is settled by reading the stored blob back, as described below. The policy runs under each fresh compare-and-swap a load sends for a row write that went unanswered, so a registry that never answers costs a load up to four times the policy's tries (sixteen requests at its default of four) before it throws |
 | in-memory and local filesystem | nothing is throttled, so nothing is sent again |
 
 **Writes that are tagged.** Azure Blob's retry is a policy on the client's pipeline, a GCS resumable upload is a
@@ -462,5 +464,7 @@ only on a conflict, works with a client you pass, and adds no option. A read-bac
 is overwritten by compare-and-swap, so a writer that swaps in over a write that landed, before the read-back, makes
 that write report `WriteConflictError`. The publish reads the row again on it, and after any registry write that ended
 without an answer, and recognises its own write there by its effect: the pointer at its generation, over its own
-object. No caller deletes a generation because of either, and a load that cannot tell whether its row write landed
-throws `TransientError` and keeps its object.
+object. No caller deletes a generation because of either, and a load whose row writes all go unanswered throws the
+registry's `TransientError` and keeps its object. A multipart upload whose completion ends ambiguously or exhausted is
+aborted: S3 completes an upload atomically, so a completion that had landed survives the abort and one that had not is
+cancelled.

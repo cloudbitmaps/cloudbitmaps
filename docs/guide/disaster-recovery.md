@@ -720,7 +720,7 @@ current versions.
   partial one — but the bucket cannot tell you whether it was ever current. After a restore it is usually a load
   published after `T`; otherwise it can be a load whose process died between writing and publishing, a load refused
   or superseded after the row changed, or a load whose publish threw. A `TransientError` from a load whose registry
-  write was never answered leaves its object for that reason: the write can still land after the load returned, and
+  writes were never answered leaves its object for that reason: a write can still land after the load returned, and
   then points the row at it, so a load never deletes it. A rollback with
   `allowForward: true` will point at it if asked.
 

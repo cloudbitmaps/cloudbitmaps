@@ -69,26 +69,40 @@ fast can be sent again. S3 answering `503 SlowDown` (or any `503`), and GCS answ
 send the write again, up to three more times, after a random wait under 500 ms, then under 1 s, then under 2 s; Azure
 Blob's client does the same under its own retry policy. Every object carries a random id in its metadata, because a
 service does not promise that a request it throttled was not applied: a re-send that meets an object carrying its own id
-is a write that landed, and one that meets any other object is a `WriteConflictError`, as any collision is. A lost
-response, a timeout or a `500` is not sent again. A write throttled on every send throws `TransientError`, and its
+is a write that landed, and one that meets any other object is a `WriteConflictError`, as any collision is. On S3, a
+refusal of a concurrent write (`409`) or an unknown upload ID after a re-send can be the first send still applying, so
+with nothing stored yet it is an unknown outcome, a `TransientError`, and never a report that nothing was written. A
+lost response, a timeout or a `500` is not sent again. A write throttled on every send throws `TransientError`, and its
 object may or may not exist. A load on the in-memory or the local-filesystem driver has nothing to throttle.
 
-**The registry row** is sent once on S3 and GCS, whatever the answer. When the send ends without one (a throttle, a lost
-response, a timeout), the write may have landed, and may still be on its way. The load reads the row again and decides
-from what it holds:
+A multipart upload whose completion is throttled on every send, or ends ambiguously, is aborted. S3 completes an upload
+atomically, so the abort never tears an object: a completion that had landed survives it, and one that had not is
+cancelled and its parts are reclaimed. Either way no object is deleted.
+
+**The registry row**: the S3 and GCS drivers send each row write once, whatever the answer. When a write ends without an
+answer (a throttle, a lost response, a timeout), it may have landed, and may still be on its way. The load reads the row
+again and decides from what it holds:
 
 | The row, read again | The load |
 |---|---|
 | names this load's generation, over the object this load wrote | `published: true`: the write landed, and only its response was lost |
 | names this load's generation over another writer's object, or belongs to another incarnation of the name | `published: false`, `reason: 'superseded'`: nothing this load wrote is published |
 | has moved on, because another write changed it | `published: false`, `reason: 'superseded'`: this load's write can no longer land. An unguarded load of a segment with no row fences on nothing, and publishes over the row that appeared |
-| is still as the write found it | the outcome is unknown, so the load throws `TransientError` |
+| is still as the write found it | the load sends a fresh compare-and-swap from the row it just read, after a wait on the store's clock: at most three, after under 500 ms, then 1 s, then 2 s. It is a new request, not a replay, and it carries the version the first one did, so the registry lets at most one of the two land. Each is settled by this same table. Still unanswered, the load throws the registry's own `TransientError` |
+
+Whether the object under the row's pointer is the load's own is proved by its footer, never taken from the pointer and
+the incarnation alone. On Azure Blob the client's retry policy runs under each of those writes too, so a registry that
+never answers costs the load up to four times the client's tries before it throws.
 
 **What a thrown `TransientError` leaves behind.** The object this load wrote stays, above the pointer, and nothing is
 deleted: the write may still reach the registry after the load has returned, and a pointer that lands over a deleted
 object is the one state no reader can recover from. Re-run the load. It numbers its generation past the orphan, publishes
 whether or not the first attempt landed, and collection removes the orphan once a generation above it is current. To know
 whether the first attempt landed, check `store.generations(ref)` rather than replaying the request.
+
+A refusal that follows a write that went unanswered cannot say whether that write landed first, so the generation may have
+been current for a while before another writer moved on: its `segment.load-refused` audit event carries `unanswered:
+true`, and says only that the generation is not current now.
 
 ## What a load accepts
 

@@ -82,15 +82,19 @@ is a dependency of both and is never installed directly. The storage drivers are
   RAM wants the external-merge bulk load listed under [Planned](#planned--exploring).
 - **A throttled write neither fails the load nor lands twice.** On S3 and GCS a write-once object the service answers
   as throttled (`503 SlowDown`; `429` or `503`) is sent again, up to three more times with backoff, and a random write
-  id in its metadata tells a first send that landed from another writer's object; on Azure Blob the client's retry
-  does the same, with the same id. A registry row is sent once. When its write gets no answer, the load reads the row,
-  reports its own landed write as published, and otherwise throws `TransientError` with its object kept: nothing is
-  deleted after an ambiguous outcome, because the write may still land. A throttle only adds requests, so the cost
-  model is unchanged. **Proven against** stubbed services under each real SDK (the throttle answers, a request applied
-  and then refused, one applied after the load gave up) and, for the objects, against MinIO and fake-gcs-server with
-  the throttle injected at the client. **Not yet captured** from the real services: whether S3, GCS and Azure apply a
-  request they answered as throttled is not documented, so correctness rests on the write id and the row, never on that,
-  and the in-region calibration is where real throttle answers are measured.
+  id in its metadata tells a first send that landed from another writer's object; on Azure Blob the client's retry does
+  the same, with the same id. A registry row is sent once by the driver. When its write gets no answer, the load reads
+  the row and reports its own landed write as published (proved by the object's footer); and when the row is as it was,
+  the load sends a fresh compare-and-swap from the version it read, at most three times with backoff on the injected
+  clock, under the registry's fence, so at most one copy lands. Throttling that never clears throws the registry's
+  `TransientError` with the object kept: nothing is deleted after an ambiguous outcome, because a write may still land.
+  A throttle only adds requests, so the cost model is unchanged. **Proven against** stubbed services under each real
+  SDK (the throttle answers, a request applied and then refused, one applied after the load gave up, a request delayed
+  past the fresh one) and, for the objects, against MinIO and fake-gcs-server with the throttle injected at the client.
+  **Not yet captured** from the real services: whether S3, GCS and Azure apply a request they answered as throttled is
+  not documented, so correctness rests on the write id, the footer and the registry's fence, never on that, and the
+  in-region calibration is where real throttle answers are measured. **Known limit:** a bare `429` from an S3-compatible
+  service is not retried and not classified transient on S3.
 - **Chunk-skipping intersection** — `intersect` aligns on chunk keys and fetches only the chunks present in
   *every* operand, with bounded read concurrency and a bounded streaming window.
 - **Id-range reads for keyset paging** —

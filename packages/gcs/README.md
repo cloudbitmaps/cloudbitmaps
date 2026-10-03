@@ -63,10 +63,11 @@ It builds its own client from Application Default Credentials. Any other key is 
 - **A client `timeout` does not bound a download on `@google-cloud/storage` 8.x**, so a read whose server stalls waits
   for it. Measured against a local server that never answers: still pending after 12 s with `timeout: 2000`.
 - **A transient failure of a write throws `TransientError`, and the write may or may not have landed.** Re-run the
-  call, or check `store.generations(ref)`. The registry's writes are sent once. A generation's object of up to
+  call, or check `store.generations(ref)`. The driver sends each registry write once; a load that gets no answer reads
+  the row and sends a fresh compare-and-swap from it, at most three times. A generation's object of up to
   `simpleUploadThresholdBytes` is sent again, up to three more times, only after a `429` or `503`; every object carries
-  a random id in its metadata, so a first send that landed is told from another writer's object. A load that cannot tell
-  whether its row write landed throws `TransientError` and keeps its object.
+  a random id in its metadata, so a first send that landed is told from another writer's object. A load whose row writes
+  all go unanswered throws `TransientError` and keeps its object.
 
 The [production checklist](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md) covers each item, and the ones every backend shares: backups of the data and the registry, and a schedule for your loads.
 

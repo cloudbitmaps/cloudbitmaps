@@ -556,9 +556,11 @@ driver to them (`IStorageDriver`'s doc comment states the same list):
 **What a registry driver must do.** `create` and `compareAndSwap` are atomic conditional writes that throw
 `WriteConflictError` and change nothing when they lose; tokens are never reused, `delete` then `create` included;
 reads are strongly consistent; `list` yields every existing row, `destroyed` tombstones included, with every field;
-the replay rule above applies to `create` and `compareAndSwap`, which are never sent again on a throttle: the
-store's publish reads the row and recognises its own landed write by its effect; a transient fault is a
-`TransientError`; and
+the replay rule above applies to `create` and `compareAndSwap`, which a driver never sends again on a throttle. The
+store's publish reads the row after one that ended without an answer and recognises its own landed write by its
+effect; when the row is unchanged it sends a **fresh** compare-and-swap from the version it read (at most three, after a
+wait on the injected clock), so both writes must fence on that version, for real, and at most one of the two lands; a
+transient fault is a `TransientError`; and
 `delete` is idempotent, with one addition.
 
 **`delete(ref, expected?)` takes an optional expected token.** Without it, deleting an absent row is a no-op, as
@@ -607,7 +609,8 @@ bucket reads (`exists`, `segments`, `generations`, `getRetention`, and the regis
 `exportSegments` and `checkConsistency` start from), report a `TransientError` to their caller instead. A fault on
 one segment inside `checkConsistency` is recorded in `report.errored`, not thrown. To retry a write, re-run the call.
 A load settles one outcome itself: when its registry write ends without an answer, it reads the row, reports a write
-that landed as `published: true`, and otherwise throws `TransientError` and deletes nothing.
+that landed as `published: true`, sends a fresh compare-and-swap (at most three) when the row is unchanged, and
+otherwise throws the registry's `TransientError` and deletes nothing.
 [Reliability](production.md#reliability-retries-backoff--timeouts) says how, and how to tell whether an attempt landed.
 
 ### Crypto seams
@@ -769,9 +772,11 @@ the client is one you passed or one `S3Storage` built. Every other request keeps
 writes are sent once. A generation's object is sent again, at most three more times, after `503 SlowDown` (or any `503`)
 and nothing else, waiting a random time under 500 ms, then 1 s, then 2 s: it carries a random id in its user metadata
 (`x-amz-meta-cbwid`), and a precondition failure on a re-send, or an upload S3 no longer knows, reads it back, so an
-object with its own id is a success and any other a `WriteConflictError`. A transient failure of a conditional write
-throws `TransientError`, and the write may or may not have landed
-([why](production.md#reliability-retries-backoff--timeouts)).
+object with its own id is a success and any other a `WriteConflictError`; with nothing stored, a `409` or an unknown
+upload is an unknown outcome, a `TransientError`. A bare `429`, which AWS S3 does not send but some S3-compatible
+services do, is not retried and is not classified transient: it surfaces as the SDK's own error, so a layer that keys on
+`TransientError` will not retry it. A transient failure of a conditional write throws `TransientError`, and the write may
+or may not have landed ([why](production.md#reliability-retries-backoff--timeouts)).
 
 With `readTimeoutMs` set (it is off by default), each read the backend makes, every `GetObject` and `HeadObject` of a
 generation or a pointer, is aborted if it has not finished, body included, after that many ms, and throws
@@ -816,7 +821,8 @@ through the client's retry policy, the conditional writes included. Each conditi
 the blob's metadata, and a conflict reads the stored blob back, so a blob that carries its own id is a success and
 any other a `WriteConflictError` ([why](production.md#reliability-retries-backoff--timeouts)). The client's policy sends
 a write again after a `503 ServerBusy` or a `500 OperationTimedOut`, and a write that every try refused throws
-`TransientError`.
+`TransientError`. A load's fresh compare-and-swap after an unanswered row write goes through that policy too, so a registry
+that never answers costs up to four times the policy's tries.
 
 ## Keeping this in sync
 
