@@ -847,7 +847,7 @@ function render() {
     `    hotSegments: ${w.hotSegments}, // segments a long-lived reader keeps reading: each refreshes its pointer every ${ttlLabel(GEN_TTL_MS)}`,
     '  },',
     '});',
-    `report.monthlyUSD.byOp; // { reads: ${approx(o.reads)}, intersects: ${approx(o.intersects)}, storage: ${approx(o.storage)}, loads: ${approx(o.loads)}, pointerRefresh: ${approx(o.pointerRefresh)} }`,
+    `report.monthlyUSD.byOp; // { reads: ${approx(o.reads)}, intersects: ${approx(o.intersects)}, storage: ${approx(o.storage)}, loads: ${approx(o.loads)}, pointerRefresh: ${approx(o.pointerRefresh)}, retention: 0 }`,
     `report.monthlyUSD.total; // ${approx(g.monthlyUSD.total)}`,
     `report.redisBaseline; // ${usd2(g.redisBaseline.monthlyUSD)} a month: the cheapest cluster in the catalogue that holds ${guideWords.holds}, ${guideWords.cluster}`,
     `report.verdict; // '${g.verdict}' — 'win-big' | 'win' | 'lose-zone', never hides the lose case`,

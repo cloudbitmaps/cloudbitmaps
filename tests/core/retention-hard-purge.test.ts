@@ -11,6 +11,7 @@
  * deletes for real, so a request count here is the count a cloud store would bill.
  */
 import { describe, expect, it } from 'vitest';
+import { RETENTION_SWEEP_REQUESTS } from '@/core/cost';
 import { retireExpired, DEFAULT_LOOKBACK_BUCKETS } from '@/core/retention-sweep';
 import { setSegmentRetention } from '@/core/retention';
 import { gcOrphanGenerations } from '@/core/generation-gc';
@@ -1049,8 +1050,7 @@ describe('what a retirement and a purge cost, per segment, with the gate on and 
 
   it('gate off: a retirement is 8 reads and 3 writes, a purge 3 and 1, two objects stay, and a sweep reads 100', async () => {
     expect(await costs(false)).toEqual({
-      retirement: { reads: 8, writes: 3, deletes: 0 },
-      purge: { reads: 3, writes: 1, deletes: 0 },
+      ...RETENTION_SWEEP_REQUESTS.tombstoning,
       objectsLeft: 2,
       nextUnscopedSweepReads: 100,
     });
@@ -1058,8 +1058,7 @@ describe('what a retirement and a purge cost, per segment, with the gate on and 
 
   it('gate on: a retirement is 9 reads, 3 writes and a delete, a purge 4 reads and 2 deletes, and nothing stays', async () => {
     expect(await costs(true)).toEqual({
-      retirement: { reads: 9, writes: 3, deletes: 1 },
-      purge: { reads: 4, writes: 0, deletes: 2 },
+      ...RETENTION_SWEEP_REQUESTS.conditionalDelete,
       objectsLeft: 0,
       nextUnscopedSweepReads: 0,
     });

@@ -394,8 +394,8 @@ and GCS, and 2 for Azure Blob, which takes no suffix range and reads the object'
 or `{ monthlyUSD }`, one cluster whatever the data size — exactly one of the two, or it is refused. `RedisSizing` is `{ source, nodeTypes, replicasPerShard,
 reservedMemoryFraction }`, and each `RedisNodeType` is `{ name, memoryGiB, ssdGiB?, hourlyUSD, maxShards? }`;
 `Workload` is `{ readsPerSec?, intersectsPerSec?, cacheHitRate?, chunksPerIntersect?, operandsPerIntersect?,
-loadsPerMonth?, requestsPerLoad?, hotSegments?, readerProcesses?, genTtlMs? }`; `CostReport.monthlyUSD.byOp` is
-`{ reads, intersects, storage, loads, pointerRefresh }`; `redisBaseline` is `{ basis: 'fixed', monthlyUSD }` or
+loadsPerMonth?, requestsPerLoad?, hotSegments?, readerProcesses?, genTtlMs?, retirementsPerMonth?, purgesPerMonth?,
+conditionalDelete? }`; `CostReport.monthlyUSD.byOp` is `{ reads, intersects, storage, loads, pointerRefresh, retention }`; `redisBaseline` is `{ basis: 'fixed', monthlyUSD }` or
 `{ basis: 'sized-to-data', monthlyUSD, cluster: { nodeType, shards, nodes, dataTiering } }`, the Redis the verdict
 compares against, with the last of `assumptions.notes` saying how it was priced; and
 `redisCrossover.readsPerSec` is the sustained read rate at which pay-per-use passes it, net of storage and the pointer
