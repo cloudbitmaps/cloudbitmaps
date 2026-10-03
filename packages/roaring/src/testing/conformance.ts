@@ -169,6 +169,17 @@ function patterned(n: number): Uint8Array {
   return Uint8Array.from({ length: n }, (_v, i) => (i * 31 + 7) % 251);
 }
 
+/**
+ * The first index at which two byte arrays differ, or -1 when they hold the same bytes. A deep `toEqual` walks a
+ * typed array element by element: on 6 MiB it took about 9 s locally and up to 30 s on a CI runner, enough to run the
+ * large-object case past its timeout. This loop takes milliseconds, and a failure names the byte.
+ */
+function firstDifference(a: Uint8Array, b: Uint8Array): number {
+  if (a.length !== b.length) return Math.min(a.length, b.length);
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return i;
+  return -1;
+}
+
 async function putBytes(
   d: IStorageDriver,
   key: GenKey,
@@ -251,7 +262,7 @@ export function storageDriverConformance(
         );
         // The loser changed nothing: the stored object is still the first, byte for byte.
         expect((await d.getTail(key(0), 10)).size).toBe(large);
-        expect(await d.getRange(key(0), 0, large)).toEqual(first);
+        expect(firstDifference(await d.getRange(key(0), 0, large), first)).toBe(-1);
         expect(await generationsOf(d, SEG)).toEqual([0]);
       });
     }
