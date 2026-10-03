@@ -10,9 +10,10 @@
  * `totalCardinality`** so a leaked object reveals neither how many chunks nor how many ids it holds — the
  * reader derives both from the decrypted index. The per-chunk CRC covers the *encrypted* on-disk bytes.
  *
- * **Metadata (opt-in via `metadata`).** A generation given metadata is written as format 1.1: an extension block
- * between the last payload and the index carries the metadata's canonical JSON, sealed like the index when the
- * generation is encrypted. Without metadata the bytes are format 1.0 exactly.
+ * **Metadata (opt-in via `metadata`).** A generation given metadata carries an extension block between the last payload
+ * and the index, flagged in the footer (`FLAG_EXTENSION`), holding the metadata's canonical JSON, sealed like the index
+ * when the generation is encrypted. Without metadata the bytes are exactly those of an object written before the
+ * block existed.
  */
 import { ValidationError } from '../errors';
 import type { AeadSealed, CrbmCrypto } from '../crypto';
@@ -29,6 +30,7 @@ import {
   EXT_SECTION_METADATA,
   EXT_TRAILER_BYTES,
   FLAG_ENCRYPTED,
+  FLAG_EXTENSION,
   FLAG_LITTLE_ENDIAN,
   FOOTER,
   FOOTER_BYTES,
@@ -40,7 +42,6 @@ import {
   PAYLOAD_CODEC_ROARING_PORTABLE,
   VERSION_MAJOR,
   VERSION_MINOR,
-  VERSION_MINOR_EXTENSION,
 } from './format';
 
 export interface CrbmWriterOptions {
@@ -98,11 +99,6 @@ export class CrbmWriter {
     this.metadata = metadataBytes(options.metadata, (message) => {
       throw new ValidationError(message);
     });
-  }
-
-  /** The format minor this object is written as: 1.1 when it carries metadata, else 1.0. */
-  private get versionMinor(): number {
-    return this.metadata === undefined ? VERSION_MINOR : VERSION_MINOR_EXTENSION;
   }
 
   /**
@@ -197,7 +193,7 @@ export class CrbmWriter {
     const preamble = new Uint8Array(PREAMBLE_BYTES);
     preamble.set(MAGIC, 0);
     preamble[4] = VERSION_MAJOR;
-    preamble[5] = this.versionMinor;
+    preamble[5] = VERSION_MINOR;
     // bytes 6-7 reserved = 0
     await this.sink.write(preamble);
     this.preambleWritten = true;
@@ -257,7 +253,13 @@ export class CrbmWriter {
     view.setBigUint64(FOOTER.indexOffset, BigInt(indexOffset), true);
     view.setBigUint64(FOOTER.indexLength, BigInt(indexRegion.length), true);
     view.setUint32(FOOTER.indexCrc32c, crc32c(indexRegion), true);
-    view.setUint32(FOOTER.flags, FLAG_LITTLE_ENDIAN | (encrypted ? FLAG_ENCRYPTED : 0), true);
+    view.setUint32(
+      FOOTER.flags,
+      FLAG_LITTLE_ENDIAN |
+        (encrypted ? FLAG_ENCRYPTED : 0) |
+        (this.metadata === undefined ? 0 : FLAG_EXTENSION),
+      true,
+    );
     view.setUint16(
       FOOTER.payloadCodecId,
       this.options.payloadCodecId ?? PAYLOAD_CODEC_ROARING_PORTABLE,
@@ -266,7 +268,7 @@ export class CrbmWriter {
     footer[FOOTER.elementWidth] = this.options.elementWidth ?? ELEMENT_WIDTH_32;
     footer[FOOTER.containerCodec] = CONTAINER_CODEC_NONE;
     footer[FOOTER.versionMajor] = VERSION_MAJOR;
-    footer[FOOTER.versionMinor] = this.versionMinor;
+    footer[FOOTER.versionMinor] = VERSION_MINOR;
     // When encrypted, the index's AEAD nonce/tag live in these reserved slots; key_id stays zero (the wrapped
     // DEKs live in the registry, not the object). Unencrypted: all crypto fields stay zero.
     if (indexNonce !== undefined) footer.set(indexNonce, FOOTER.indexNonce);

@@ -59,24 +59,25 @@ so, and so do the module headers in the code.
 
 ### Added
 
-- **`.crbm` format 1.1: a generation can carry its metadata, in a block a 0.11 reader skips.** A generation written
-  with metadata gets one extension block between its last payload and its index, found from a 12-byte trailer just
-  before the index (the sections' length, their CRC32C, and `CRBX`), holding typed sections of a u32 length each.
+- **A `.crbm` generation can carry its metadata, in an extension block its footer flags.** The format stays 1.0. A
+  generation written with metadata gets one extension block between its last payload and its index, and its footer
+  sets a new flag bit, `FLAG_EXTENSION` (`1 << 3`); the block is found from a 12-byte trailer just before the index
+  (the sections' length, their CRC32C, and `CRBX`), and holds typed sections of a u32 length each.
   Section 1 is the metadata's canonical JSON, at most 1 KiB, by the same rules and in the same form as a registry
   summary's (`GenerationMetadata`): RFC 8785 for a flat object of strings and finite numbers, with vectors in
   `tests/golden/metadata-canonical.json`, RFC 8785 Appendix B's number samples among them, for other languages to
   check against. On an encrypted segment its content is
   sealed under the segment's key like the index, bound to its namespace, segment and generation; that the block is
-  there is not, so whoever can write the object can remove it. A generation without metadata is written as format
-  1.0, byte for byte, so every object written so far, and every one written without metadata, is unchanged. A reader
-  of 1.0, 0.11 included, opens a 1.1 object and gives the same answers, ignoring the block: a test runs the 0.11.2
-  reader itself against the new golden files. This build reads both, and reads the block in the request that reads
-  the index (one more only when the tail read ends inside the block). It refuses with `IntegrityError` a block whose
+  there is not, so whoever can write the object can remove it. A generation without metadata is written byte for
+  byte as before, flag clear, so every object written so far, and every one written without metadata, is unchanged.
+  A reader before 0.12 does not know the flag and refuses an object with metadata, rather than read past what it
+  cannot see. This build reads the block in the request that reads the index (one more only when the tail read ends
+  inside the block). It refuses with `IntegrityError` a block whose
   trailer, CRC, 4 KiB cap or sections do not hold, metadata that breaks a rule or is not exactly its canonical form,
-  and a payload that runs into the block, and it skips a section type it does not know, so a later minor can add
-  one. The reader cache's byte bound (`cache.readerMaxBytes`) counts a reader's metadata with its index. For
+  a flag with no valid block, and a payload that runs into the block, and it skips a section type it does not know,
+  so a later build can add one. The reader cache's byte bound (`cache.readerMaxBytes`) counts a reader's metadata with its index. For
   tooling: `CrbmReader`'s `metadata` is the generation's metadata, and `aadFor` takes the scope `'metadata'`; a
-  `CrbmCrypto` of your own must map that scope as `aadFor` does to open an encrypted 1.1 object. Nothing in the
+  `CrbmCrypto` of your own must map that scope as `aadFor` does to open an encrypted object with metadata. Nothing in the
   library writes metadata yet: `load` takes none.
 
 - **A registry record can carry a `summary` of its current generation** (`RegistryRecord.summary`, for driver
@@ -254,7 +255,7 @@ so, and so do the module headers in the code.
 
   Tests forge a cleartext object in place of an encrypted segment's generation, erase ids from a cleartext write
   that never published below and above an encrypted pointer, roll back onto one, race a cleartext load against a
-  first keyed load, and open cleartext 1.0 and 1.1 objects with a key.
+  first keyed load, and open cleartext objects with and without metadata with a key.
 - **An Azure Blob range or tail read whose connection drops part-way through the body is a `TransientError`.** The
   SDK fails such a body with an `AbortError`, which reached the caller as it was, so the store's read retry did not run
   it again and a `has()`, `count()` or erasure failed on one dropped connection. The registry already read the same

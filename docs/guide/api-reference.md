@@ -366,19 +366,18 @@ The name is deliberately **not** tied to a codec. `.crbm` is the container for a
 CRC32C checksums, the AES-GCM framing and the generation model are all codec-independent, and only the chunk
 payload bytes would differ. Roaring is the one codec that ships.
 
-**Format versions.** A reader refuses an unknown major version and reads every minor of its major. **1.0** is
-the preamble, the chunk payloads, the index and the fixed 104-byte footer. **1.1** adds, only to a generation written
-with metadata, one **extension block** between the last payload and the index; with no metadata the writer emits 1.0
-byte for byte. A 1.0 reader, 0.11 included, opens a 1.1 object and ignores the block, since it never reads between
-the last payload and the index.
+**Format version.** Every object is format **1.0**: the preamble, the chunk payloads, the index and the fixed
+104-byte footer. A reader refuses an unknown major version, and refuses an object whose footer sets a flag bit it does
+not know. A generation written with metadata carries one **extension block** between the last payload and the index,
+and its footer sets the `FLAG_EXTENSION` bit (`1 << 3`); with no metadata the writer emits the same bytes as before the
+block existed, the flag clear. A reader before 0.12 does not know the bit, so it refuses an object with metadata.
 
 - **Where the block is.** It is found from the index's offset alone: its last 12 bytes, just before the index, are
   its sections' length (u32), a CRC32C of the sections and that length (u32), and the magic `CRBX`. Payloads end
   where the block starts.
 - **Sections.** At most 4 KiB in all, each a type (u8), a length (u32) and that many bytes, in strictly ascending
   type order; type 0 is not a type. A reader skips a type it does not know, so a section must be safe to ignore: a
-  meaning every reader has to understand needs a footer flag bit instead, which an older reader refuses. Every minor
-  from 1.1 on carries the block, an empty one if it has no section, and a later minor adds section types to it.
+  meaning every reader has to understand needs a footer flag bit of its own, which an older reader refuses.
 - **Type 1, the metadata.** Its canonical JSON, at most 1 KiB: RFC 8785 (the JSON Canonicalization Scheme) for one
   flat object of string and finite-number values. Keys are sorted by UTF-16 code unit, strings are escaped as
   `JSON.stringify` escapes them, numbers are written as ECMAScript's `Number.prototype.toString` writes them (`-0` is
@@ -388,10 +387,11 @@ the last payload and the index.
   against.
 - **Encrypted.** The section is sealed like the index (AES-256-GCM, `nonce ‖ ciphertext ‖ tag`, under
   `aadFor(ref, generation, 'metadata')`), so its content cannot be read or altered without the key; its length, like
-  the index's, stays visible. That the block is there at all is not authenticated: the minor, the trailer and the
+  the index's, stays visible. That the block is there at all is not authenticated: the flag, the trailer and the
   section types are covered by CRCs, which take no key, so whoever can write the object can remove the block, and the
   object then reads as one with no metadata.
-- **What a 1.1 reader refuses**, with `IntegrityError`: a block whose trailer, CRC, size or sections do not hold;
+- **What a reader refuses**, with `IntegrityError`: a flag with no valid block; a block whose trailer, CRC, size or
+  sections do not hold;
   metadata that breaks a rule or is not exactly its canonical form; a payload that runs into the block; and any
   object that is not encrypted when it is opened with a key. It reads the block with the index, from the tail or in
   the same range read, and makes one more read only when the tail ends inside the block.

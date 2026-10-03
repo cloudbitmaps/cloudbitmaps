@@ -8,7 +8,7 @@ that evolves inputs toward unreached branches and persists a growing corpus.
 
 ## Why four targets (the CRC wall)
 
-`CrbmReader.open()` gates the index parser, the format 1.1 extension block and the payload deserialize behind
+`CrbmReader.open()` gates the index parser, the extension block and the payload deserialize behind
 CRC32C checks (footer, index, extension block, per-chunk payload) — each *before* the code it protects. A
 mutational fuzzer cannot satisfy a CRC32C, so a single "read a `.crbm`" target would only ever exercise `open()`'s
 pre-CRC validation. So we fuzz the three deep surfaces **directly**, ungated, and keep a fourth target for the
@@ -18,8 +18,8 @@ validation front:
 | --- | --- | --- | --- |
 | `targets/safe-deserialize.mjs` | the codec's safe deserialize → its structural check → **native** CRoaring portable deserializer | **coverage-guided** over the structural check; black-box beyond it (native C++ isn't instrumentable from JS) | `pnpm fuzz:deser` |
 | `targets/crbm-index.mjs` | `parseIndex` **directly** on raw index bytes | **coverage-guided** (pure, branch-dense TS) | `pnpm fuzz:index` |
-| `targets/crbm-ext.mjs` | `parseExtension` **directly** on the raw sections of a 1.1 extension block: the section walk, then the metadata record (UTF-8, JSON, the metadata rules, canonical form), read as cleartext and again as sealed under a key whose every open fails | **coverage-guided** (pure TS) | `pnpm fuzz:ext` |
-| `targets/crbm-reader.mjs` | `CrbmReader.open` validation front (+ full chain on valid seeds, 1.0 and 1.1), opened at the default tail, a footer-sized tail, a footer-sized tail with every range read a byte short, and tails at and a byte either side of where the input's footer puts the index, the block's trailer and the block | **coverage-guided** | `pnpm fuzz:crbm` |
+| `targets/crbm-ext.mjs` | `parseExtension` **directly** on the raw sections of an extension block: the section walk, then the metadata record (UTF-8, JSON, the metadata rules, canonical form), read as cleartext and again as sealed under a key whose every open fails | **coverage-guided** (pure TS) | `pnpm fuzz:ext` |
+| `targets/crbm-reader.mjs` | `CrbmReader.open` validation front (+ full chain on valid seeds, with and without an extension block), opened at the default tail, a footer-sized tail, a footer-sized tail with every range read a byte short, and tails at and a byte either side of where the input's footer puts the index, the block's trailer and the block | **coverage-guided** | `pnpm fuzz:crbm` |
 
 The **contract** all four assert: arbitrary bytes either succeed self-consistently or throw a typed
 `CloudRoaringError` — never a `RangeError`/`TypeError`, native crash, unbounded allocation, or hang. The two
@@ -50,7 +50,7 @@ narrow it to something that matches nothing and coverage guidance silently degra
 ## Fuzz-only internals build
 
 The targets need entry points that aren't public API (notably `parseIndex` and `parseExtension`), and the seed
-generator needs the `.crbm` writer for format 1.1 objects. `packages/core/src/testing/fuzz-core.ts`
+generator needs the `.crbm` writer for objects with an extension block. `packages/core/src/testing/fuzz-core.ts`
 re-exports them and is built by `scripts/build.mjs` (esbuild) to **`fuzz/build/`** (git-ignored, never under `dist/`,
 never in the package `files`) — so the fuzzer reaches the hand-written parser directly while the published API
 stays minimal. Targets fuzz this build; the regression test (below) replays against `src` via vitest — fidelity
@@ -60,7 +60,7 @@ rests on `dist ≈ src` (esbuild, no minify, same native addon).
 
 `fuzz/corpus/` (seed + evolved inputs), `fuzz/crashes/` (findings), and `fuzz/build/` are git-ignored. Seeds are
 generated deterministically by `fuzz/seed-corpus.cjs` (valid bitmaps/`.crbm` files/index regions spanning every
-container type, 1.1 objects and extension-block sections spanning the metadata shapes up to the 1 KiB cap, plus
+container type, objects with an extension block and its sections spanning the metadata shapes up to the 1 KiB cap, plus
 truncations/flips), so no seed is committed: the only inputs in the repo are the
 reproducers below. The nightly workflow caches `fuzz/corpus/` so coverage accretes across runs.
 

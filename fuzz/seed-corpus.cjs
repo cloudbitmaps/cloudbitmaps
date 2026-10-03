@@ -17,7 +17,7 @@
  * cannot drift from the format the library actually emits. The bitmaps for the `safe-deserialize` target come
  * from the native `roaring` addon's portable serializer, which is what the library's codec calls.
  *
- * Format 1.1 objects, which carry a generation's metadata, come from the `.crbm` writer itself, through the fuzz
+ * Objects with an extension block, which carry a generation's metadata, come from the `.crbm` writer itself, through the fuzz
  * build (`fuzz/build/fuzz-core.js`): a load is not given metadata, so it writes format 1.0 only.
  *
  * ONE CONSEQUENCE WORTH KNOWING: a load calls `runOptimize()` before serializing, which the writer class did
@@ -122,11 +122,11 @@ async function seedCrbmReader() {
     flipped[10] = flipped[10] ^ 0xff; // corrupt a preamble/payload byte
     writeSeed('crbm-reader', `flip-${l.name}.bin`, flipped);
   }
-  // Format 1.1: the extension block between the last payload and the index. A flip in the block's trailer reaches
+  // The extension block between the last payload and the index, flagged in the footer. A flip in the block's trailer reaches
   // the trailer checks; one in its sections reaches the block CRC.
   for (const [name, metadata] of Object.entries(metadataSets())) {
     const bytes = await validCrbmWithMetadata(metadata);
-    writeSeed('crbm-reader', `valid-v1_1-${name}.bin`, bytes);
+    writeSeed('crbm-reader', `valid-ext-${name}.bin`, bytes);
     const { indexOffset } = extensionOf(bytes);
     for (const [where, at] of [
       ['magic', indexOffset - 1],
@@ -135,7 +135,7 @@ async function seedCrbmReader() {
     ]) {
       const flipped = bytes.slice();
       flipped[at] = flipped[at] ^ 0xff;
-      writeSeed('crbm-reader', `flip-v1_1-${where}-${name}.bin`, flipped);
+      writeSeed('crbm-reader', `flip-ext-${where}-${name}.bin`, flipped);
     }
   }
 }
@@ -156,7 +156,7 @@ function metadataSets() {
   };
 }
 
-/** Where a 1.1 object's index starts, and its extension block's sections (the bytes before the block's trailer). */
+/** Where an object's index starts, and its extension block's sections (the bytes before the block's trailer). */
 function extensionOf(bytes) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const indexOffset = Number(view.getBigUint64(bytes.length - 104, true));
@@ -180,7 +180,7 @@ async function assertSectionsHold(sections, metadata, name) {
   }
 }
 
-/** A format 1.1 `.crbm` holding three chunks and `metadata`, written by the `.crbm` writer from the fuzz build. */
+/** A `.crbm` with an extension block, holding three chunks and `metadata`, written by the `.crbm` writer from the fuzz build. */
 async function validCrbmWithMetadata(metadata) {
   const { CrbmWriter, BufferSink } = await import('./build/fuzz-core.js');
   const sink = new BufferSink();
@@ -248,10 +248,10 @@ function seedCrbmIndex() {
 }
 
 // ── crbm-ext target: raw extension-block sections fed straight to parseExtension (no CRC wall) ──
-// Taken from real 1.1 objects, so a seed is exactly what the writer emits: one metadata section (u8 type 1, a u32
+// Taken from real objects with metadata, so a seed is exactly what the writer emits: one metadata section (u8 type 1, a u32
 // length, the canonical JSON).
 async function seedCrbmExt() {
-  // A section of a type a later minor might add (u8 type 9, u32 length 1, one byte), which the parser skips.
+  // A section of a type a later build might add (u8 type 9, u32 length 1, one byte), which the parser skips.
   const later = Uint8Array.of(9, 1, 0, 0, 0, 0x78);
   for (const [name, metadata] of Object.entries(metadataSets())) {
     const { sections } = extensionOf(await validCrbmWithMetadata(metadata));

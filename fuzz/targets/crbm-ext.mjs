@@ -1,7 +1,7 @@
 import { parseExtension, isCloudRoaringError, IntegrityError } from '../build/fuzz-core.js';
 
 /*
- * Coverage-guided fuzz target: the `.crbm` 1.1 extension block's sections (`parseExtension`), driven DIRECTLY on raw
+ * Coverage-guided fuzz target: the `.crbm` extension block's sections (`parseExtension`), driven DIRECTLY on raw
  * bytes. In a real read they sit behind the block's own CRC32C, which a mutational fuzzer cannot satisfy, so
  * `crbm-reader.mjs` reaches only the trailer checks in front of it. Past that wall are the section walk (a u8 type and
  * a u32 length each, ascending, filling the block exactly) and the metadata record: untrusted bytes through a fatal

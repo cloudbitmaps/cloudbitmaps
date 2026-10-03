@@ -12,10 +12,10 @@
  * hidden), so both are derived from the decrypted index; AEAD authentication (incl. the per-location AAD)
  * replaces the cleartext-count cross-check.
  *
- * **Format 1.1.** An object whose minor is 1 or more carries an extension block just before the index, found from
- * the trailer at `indexOffset - 12`. `open()` reads it with the index, from the tail or from the same range read,
+ * **The extension block.** An object whose footer sets `FLAG_EXTENSION` carries an extension block just before the
+ * index, found from the trailer at `indexOffset - 12`. `open()` reads it with the index, from the tail or from the same range read,
  * checks its trailer, its CRC32C, its sections and the metadata in them before anything trusts them, and holds payloads
- * to the bytes before it. A 1.0 object has no block, and is read exactly as before.
+ * to the bytes before it. An object without the flag has no block, and is read exactly as before.
  */
 import { IntegrityError, isIntegrityError, UnsupportedError, ValidationError } from '../errors';
 import type { BlobReader } from '../blob';
@@ -38,6 +38,7 @@ import {
   EXT_SECTION_METADATA,
   EXT_TRAILER_BYTES,
   FLAG_ENCRYPTED,
+  FLAG_EXTENSION,
   FLAG_LITTLE_ENDIAN,
   FOOTER,
   FOOTER_BYTES,
@@ -51,7 +52,6 @@ import {
   MAX_EXT_BYTES,
   PAYLOAD_CODEC_ROARING_PORTABLE,
   VERSION_MAJOR,
-  VERSION_MINOR_EXTENSION,
 } from './format';
 
 /**
@@ -349,8 +349,7 @@ export class CrbmReader {
       );
     }
     const versionMinor = footer[FOOTER.versionMinor]!;
-    // A later minor may only add to 1.1, so it carries the block too.
-    const hasExtension = versionMinor >= VERSION_MINOR_EXTENSION;
+    const hasExtension = (flags & FLAG_EXTENSION) !== 0;
 
     // Bounds + size cap on the index region before trusting/fetching it.
     if (indexOffset < PAYLOAD_START || indexOffset + indexLength > size - FOOTER_BYTES) {
@@ -371,7 +370,7 @@ export class CrbmReader {
     }
 
     // --- Index: already in the tail, or one more GET ---
-    // On 1.1 the range read starts a whole block's worth before the index, so a block of any size it may hold comes
+    // With the block flagged, the range read starts a whole block's worth before the index, so a block of any size it may hold comes
     // with the index: the block costs bytes, never a request, unless the tail ends inside it.
     const lowest = hasExtension
       ? Math.max(PAYLOAD_START, indexOffset - EXT_TRAILER_BYTES - MAX_EXT_BYTES)
@@ -410,14 +409,14 @@ export class CrbmReader {
         )
       : indexBytes;
 
-    // --- Extension block (1.1): sections ‖ u32 sectionsLength ‖ u32 crc32c ‖ "CRBX", just before the index ---
+    // --- Extension block (flagged): sections ‖ u32 sectionsLength ‖ u32 crc32c ‖ "CRBX", just before the index ---
     let payloadEnd = indexOffset;
     let metadata: GenerationMetadata | undefined;
     let metadataLength = 0;
     if (hasExtension) {
       const trailerStart = indexOffset - EXT_TRAILER_BYTES;
       if (trailerStart < PAYLOAD_START) {
-        throw new IntegrityError(`.crbm minor ${versionMinor} has no room for its extension block`);
+        throw new IntegrityError('.crbm flags an extension block, but has no room for one');
       }
       // The block's bytes come from what is already fetched, or, when the tail ends inside the block, from one read.
       let window = { bytes: region, start: regionStart };
@@ -590,7 +589,7 @@ function extensionCorrupt(message: string): never {
  * Read the sections of an extension block, its bytes before the trailer, once their CRC has passed. Each section is
  * `u8 type ‖ u32 length ‖ bytes`, in strictly ascending type order, and together they fill the region exactly. Type 1
  * is the generation's metadata, held to the metadata rules and its canonical form (and opened first with `crypto`,
- * under the metadata scope, when the object is encrypted); a type this build does not know is a later minor's, and
+ * under the metadata scope, when the object is encrypted); a type this build does not know is a later build's, and
  * is skipped. Returns the metadata, or `undefined` when the block has none. Every other shape is an
  * {@link IntegrityError}.
  *
@@ -662,7 +661,7 @@ function metadataSection(
   } catch (err) {
     if (!isIntegrityError(err)) throw err;
     // The index has opened under the same key and generation, so the key is right: the causes left are these, and a
-    // CrbmCrypto written before format 1.1, which maps only chunk keys and the index, is one of them.
+    // CrbmCrypto written before the extension block existed, which maps only chunk keys and the index, is one of them.
     extensionCorrupt(
       "the sealed metadata does not open: tampered bytes, a block moved from another object, or a CrbmCrypto whose aadFor does not map the 'metadata' scope",
     );

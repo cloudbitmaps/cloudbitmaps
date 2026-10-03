@@ -106,7 +106,7 @@ export interface CrbmStorageChunkSourceOptions extends CrbmReaderOptions {
    * **second half of that memory bound**. `maxOpenSegments` alone bounds by *count*, but a wide/dense segment's
    * parsed index can reach about 1.3 MB, so 1024 wide indices could pin over a GB and blow a small heap (e.g. a 128 MB
    * Lambda) while the count is nominally "in bounds". This caps the summed {@link CrbmReader.retainedBytes} (the
-   * parsed index, and any metadata a format 1.1 generation carries) across cached readers; the least-recently-used reader is evicted once the total would exceed it — whichever
+   * parsed index, and any metadata a generation carries) across cached readers; the least-recently-used reader is evicted once the total would exceed it — whichever
    * of the count/byte bounds binds first. Lower it for memory-tight deployments with wide segments; a single
    * segment whose index alone exceeds the budget is still cached (it can't be shrunk) but nothing else alongside.
    */

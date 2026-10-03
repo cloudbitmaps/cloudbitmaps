@@ -14,7 +14,6 @@ import {
   MAX_EXT_BYTES,
   PAYLOAD_START,
   VERSION_MINOR,
-  VERSION_MINOR_EXTENSION,
 } from '@/core/crbm/format';
 import { aadFor } from '@/core/crypto';
 import type { CrbmCrypto } from '@/core/crypto';
@@ -30,10 +29,10 @@ import {
   utf8,
   writeCrbm,
   type RawChunk,
-} from '../../helpers/crbm-v1_1';
+} from '../../helpers/crbm-extension';
 
 /**
- * Format 1.1: the extension block that carries a generation's metadata. What the writer emits, that an object
+ * The extension block that carries a generation's metadata, flagged in the footer. What the writer emits, that an object
  * without metadata stays format 1.0 byte for byte, the reads a reader makes for the block, and that every malformed
  * trailer, block, section and metadata record is refused with `IntegrityError` (hard invariant 5).
  */
@@ -58,20 +57,22 @@ const open = (bytes: Uint8Array, crypto?: CrbmCrypto): Promise<CrbmReader> =>
 /** Metadata whose canonical JSON is exactly `n` bytes: `{"k":"…"}` is 8 bytes around the value. */
 const metadataOf = (n: number): Record<string, string> => ({ k: 'x'.repeat(n - 8) });
 
-describe('.crbm 1.1 writer', () => {
+describe('.crbm extension block, writer', () => {
   it('writes format 1.0 byte for byte when there is no metadata, or only the empty object', async () => {
     const none = await writeCrbm(CHUNKS, { generation: GEN });
     expect(layoutOf(none).versionMinor).toBe(VERSION_MINOR);
+    expect(layoutOf(none).flagged).toBe(false);
     expect(await writeCrbm(CHUNKS, { generation: GEN, metadata: undefined })).toEqual(none);
     expect(await writeCrbm(CHUNKS, { generation: GEN, metadata: {} })).toEqual(none);
     expect((await open(none)).metadata).toBeUndefined();
   });
 
-  it('writes minor 1 and the block between the last payload and the index, where the spec places it', async () => {
+  it('writes minor 0, flags the block, and places it between the last payload and the index, where the spec places it', async () => {
     const bytes = await writeCrbm(CHUNKS, { generation: GEN, metadata: META });
-    const { indexOffset, versionMinor } = layoutOf(bytes);
-    expect(versionMinor).toBe(VERSION_MINOR_EXTENSION);
-    expect(bytes[5]).toBe(VERSION_MINOR_EXTENSION); // the preamble agrees
+    const { indexOffset, versionMinor, flagged } = layoutOf(bytes);
+    expect(versionMinor).toBe(VERSION_MINOR);
+    expect(bytes[5]).toBe(VERSION_MINOR); // the preamble agrees
+    expect(flagged).toBe(true);
 
     const view = new DataView(bytes.buffer, bytes.byteOffset);
     const payloadEnd = PAYLOAD_START + 4 + 3 + 5;
@@ -176,7 +177,7 @@ describe('.crbm 1.1 writer', () => {
   });
 });
 
-describe('.crbm 1.1 round trip, over generated metadata', () => {
+describe('.crbm extension block, round trip, over generated metadata', () => {
   // Keys and string values drawn from the whole of Unicode, lone surrogates excluded by the rules themselves;
   // numbers from every finite double, -0 included (canonical JSON writes it as 0).
   const text = fc.string({ unit: 'grapheme', maxLength: 12 });
@@ -210,7 +211,7 @@ describe('.crbm 1.1 round trip, over generated metadata', () => {
   });
 });
 
-describe('.crbm 1.1 reader: the reads it makes', () => {
+describe('.crbm extension block, reader: the reads it makes', () => {
   it('reads the block from the tail, in the one request that reads the index', async () => {
     const counting = new CountingReader(
       await writeCrbm(CHUNKS, { generation: GEN, metadata: META }),
@@ -342,7 +343,7 @@ describe('.crbm 1.1 reader: the reads it makes', () => {
   });
 });
 
-describe('.crbm 1.1 reader: a malformed trailer or block is refused', () => {
+describe('.crbm extension block, reader: a malformed trailer or block is refused', () => {
   const json = utf8(META_JSON);
   const good = section(EXT_SECTION_METADATA, json);
 
@@ -383,7 +384,7 @@ describe('.crbm 1.1 reader: a malformed trailer or block is refused', () => {
       (b) => spliceBlock(b, extensionBlock(good, { sectionsLength: good.length - 1 })),
       /CRC mismatch|section/,
     ],
-    ['minor 1 with no block at all', (b) => spliceBlock(b, new Uint8Array(0)), /trailer magic/],
+    ['a flag with no block at all', (b) => spliceBlock(b, new Uint8Array(0)), /trailer magic/],
   ];
   it.each(trailerCases)('refuses %s', async (_name, forge, message) => {
     const hostile = forge(await writeCrbm(CHUNKS, { generation: GEN }));
@@ -391,17 +392,19 @@ describe('.crbm 1.1 reader: a malformed trailer or block is refused', () => {
     await expect(open(hostile)).rejects.toThrow(message);
   });
 
-  it('refuses minor 1 when the index starts too close to the payloads to have a trailer', async () => {
+  it('refuses the flag when the index starts too close to the payloads to have a trailer', async () => {
     const tiny = await writeCrbm([{ chunkKey: 0, payload: Uint8Array.of(1), cardinality: 1 }], {
       generation: GEN,
     });
-    const minorOnly = spliceBlock(tiny, new Uint8Array(0));
-    await expect(open(minorOnly)).rejects.toThrow(/no room for its extension block/);
+    const flagOnly = spliceBlock(tiny, new Uint8Array(0));
+    await expect(open(flagOnly)).rejects.toThrow(
+      /flags an extension block, but has no room for one/,
+    );
   });
 
   it('refuses a preamble whose minor disagrees with the footer', async () => {
     const bytes = await writeCrbm(CHUNKS, { generation: GEN, metadata: META });
-    bytes[5] = 0;
+    bytes[5] = 1;
     await expect(open(bytes)).rejects.toThrow(/preamble magic\/version mismatch/);
   });
 
@@ -419,7 +422,7 @@ describe('.crbm 1.1 reader: a malformed trailer or block is refused', () => {
   });
 });
 
-describe('.crbm 1.1 reader: a malformed section or metadata record is refused', () => {
+describe('.crbm extension block, reader: a malformed section or metadata record is refused', () => {
   const sectionCases: Array<[string, Uint8Array, RegExp]> = [
     ['a cut-off section header', Uint8Array.of(1, 0, 0), /section header is cut off/],
     ['a section running past the block', section(1, utf8(META_JSON), 999), /runs past the block/],
@@ -477,20 +480,20 @@ describe('.crbm 1.1 reader: a malformed section or metadata record is refused', 
 
   it('skips a section type it does not know, after the metadata or in a block without one', async () => {
     const meta = section(1, utf8(META_JSON));
-    expect(parseExtension(concat(meta, section(200, utf8('a later minor'))), undefined)).toEqual(
+    expect(parseExtension(concat(meta, section(200, utf8('a later build'))), undefined)).toEqual(
       META,
     );
     expect(parseExtension(section(9, new Uint8Array(0)), undefined)).toBeUndefined();
     expect(parseExtension(new Uint8Array(0), undefined)).toBeUndefined();
     const base = await writeCrbm(CHUNKS, { generation: GEN });
-    const later = spliceBlock(base, extensionBlock(concat(meta, section(2, randomBytes(64)))), 2);
+    const later = spliceBlock(base, extensionBlock(concat(meta, section(2, randomBytes(64)))));
     const reader = await open(later);
     expect(reader.metadata).toEqual(META);
     expect(reader.count()).toBe(7);
   });
 });
 
-describe('.crbm 1.1 on an encrypted object', () => {
+describe('.crbm extension block, on an encrypted object', () => {
   it('seals the metadata like the index: no plaintext in the object, read back with the key', async () => {
     const dek = randomBytes(32);
     const bytes = await writeCrbm(CHUNKS, {
@@ -512,6 +515,7 @@ describe('.crbm 1.1 on an encrypted object', () => {
       crypto: cryptoFor(dek),
     });
     expect(layoutOf(bytes).versionMinor).toBe(VERSION_MINOR);
+    expect(layoutOf(bytes).flagged).toBe(false);
     expect((await open(bytes, cryptoFor(dek))).metadata).toBeUndefined();
   });
 
@@ -616,7 +620,7 @@ describe('.crbm 1.1 on an encrypted object', () => {
       metadata: META,
       crypto: cryptoFor(dek),
     });
-    // A hand-written CrbmCrypto from before 1.1 knows chunk keys and 'index' only, and gives anything else chunk 0's
+    // A hand-written CrbmCrypto from before the extension block knows chunk keys and 'index' only, and gives anything else chunk 0's
     // associated data. It still opens the index, so the failure comes at the metadata.
     const old: CrbmCrypto = {
       aead: new NodeAead(dek),
@@ -629,7 +633,7 @@ describe('.crbm 1.1 on an encrypted object', () => {
     );
   });
 
-  it('refuses a cleartext object opened with a key, 1.0 or 1.1, before it believes its index or metadata', async () => {
+  it('refuses a cleartext object opened with a key, with a block or without, before it believes its index or metadata', async () => {
     // A key is passed only for an encrypted segment, and every generation such a segment publishes is encrypted,
     // so a cleartext object under one is corrupt or forged: its count and its metadata must not be believed.
     const forged = await writeCrbm(

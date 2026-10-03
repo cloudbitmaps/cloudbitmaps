@@ -270,7 +270,7 @@ export interface CacheOptions {
    */
   readonly readerMax?: number;
   /**
-   * Aggregate byte ceiling on what the open readers hold, their parsed `.crbm` indices and the metadata a format 1.1
+   * Aggregate byte ceiling on what the open readers hold, their parsed `.crbm` indices and the metadata a
    * generation carries (default 64 MiB) — the byte half
    * of the memory bound, complementing the {@link CacheOptions.readerMax} *count* bound. A wide/dense segment's
    * parsed index can reach about 1.3 MB, so a count-only bound could let the open readers pin over a GB and blow a small

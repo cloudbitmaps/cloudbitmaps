@@ -19,7 +19,7 @@ import { SafeBitmap, assertConsistentDecode } from '../build/fuzz-codec.js';
  * the wall) and the native deserializer by `safe-deserialize.mjs` (direct, ungated); the deterministic
  * crafted-hostile suite (tests/core/crbm/crafted.test.ts) forges valid-CRC hostile indexes too.
  *
- * Each input is opened more than once, so the read paths a 1.1 extension block adds are reached too: with the default
+ * Each input is opened more than once, so the read paths an extension block adds are reached too: with the default
  * tail, which holds a small object whole; with a footer-sized tail, so the index and the block come from one range
  * read, and again with every range read coming back a byte short; and with tails that start at the block, at its
  * trailer and at the index, and one byte either side of each, read from the input's own footer without trusting it.

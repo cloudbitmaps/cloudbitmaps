@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { aadFor } from '@/core/crypto';
 import { IntegrityError } from '@/core/errors';
 import { NodeAead } from '@/drivers/crypto';
-import { writeCrbm } from '../helpers/crbm-v1_1';
+import { writeCrbm } from '../helpers/crbm-extension';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import type { EraseIdDeps } from '@/core/erase-id';
 import { nextGeneration } from '@/core/generation-gc';

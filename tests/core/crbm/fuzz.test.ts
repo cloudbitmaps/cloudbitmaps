@@ -68,7 +68,7 @@ describe('fuzz the .crbm read boundary (hard invariant 5: tier bytes are untrust
     );
   });
 
-  it('a single flipped byte in a format 1.1 file, block included, never crashes the reader', async () => {
+  it('a single flipped byte in a file with an extension block, block included, never crashes the reader', async () => {
     const base = await validFile({ def: 'v41', landedAt: 1_790_000_000_000 });
     await fc.assert(
       fc.asyncProperty(

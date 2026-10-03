@@ -9,7 +9,7 @@
  * bitmap codec is exactly what core does not have.
  */
 export { CrbmReader, parseExtension, parseIndex } from '../core/crbm/reader';
-// The writer, for the seed corpus's format 1.1 objects: a generation with metadata.
+// The writer, for the seed corpus's objects with an extension block: a generation with metadata.
 export { CrbmWriter } from '../core/crbm/writer';
 export { BufferReader, BufferSink } from '../core/blob';
 // Export the BRAND PREDICATE, not just the class. The harness is two bundles and they do NOT agree on the

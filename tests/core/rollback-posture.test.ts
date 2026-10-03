@@ -7,7 +7,7 @@ import { InProcessKeystore, NodeAead } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import type { IKeystore, SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
-import { writeCrbm } from '../helpers/crbm-v1_1';
+import { writeCrbm } from '../helpers/crbm-extension';
 
 /**
  * A rollback refuses a target that is not what the row says the segment is, from one read of the target's footer:

@@ -3,11 +3,11 @@ import { runInNewContext } from 'node:vm';
 import { BufferReader } from '@/core/blob';
 import { CrbmReader } from '@/core/crbm/reader';
 import { metadataBytes, metadataFromBytes } from '@/core/metadata';
-import { writeCrbm } from '../../helpers/crbm-v1_1';
+import { writeCrbm } from '../../helpers/crbm-extension';
 
 /**
  * The reader's weight must not under-count the heap its decoded metadata retains, for the reason
- * `index-heap.test.ts` gives for the index: the storage reader cache evicts on the weight. What a 1.1 reader holds
+ * `index-heap.test.ts` gives for the index: the storage reader cache evicts on the weight. What a reader of an object with metadata holds
  * beyond a 1.0 one is the frozen record `metadataFromBytes` returns, so this decodes records as the reader does,
  * holds them, and divides the heap that stayed by their count, for three shapes near the 1 KiB cap: one long value,
  * many keys every record shares, and many keys unique to each record, which is the costly one (each record carries

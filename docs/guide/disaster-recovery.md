@@ -733,7 +733,8 @@ storage objects self-describing enough to rebuild it (and to decrypt without the
 the keystore's KEK) would take a
 `.crbm` **format change** that carries a KEK-wrapped DEK in each object. The fixed 104-byte footer cannot hold one
 (its reserved field is 2 bytes, and its 16-byte `key_id` field, written as zeros, is smaller than a wrapped DEK), so
-it would be a new section type in the extension block that format 1.1 added, which a 1.1 reader skips. It
+it would be a new section in the extension block, with a footer flag bit of its own, since every reader must
+understand it. It
 would also change the crypto-shred model, since shredding would then have to delete the storage objects too, not
 just the key. The capability is listed on the [roadmap](../ROADMAP.md). **Back up the registry and keystore** —
 they are not reconstructable from storage alone.

@@ -13,7 +13,8 @@ release.
 ## Trust boundary (what the library defends)
 
 CloudBitmaps treats **all bytes read back from storage as untrusted input**. Every `.crbm` object — its chunk
-payloads, its index, its footer and, in format 1.1, the extension block that carries a generation's metadata — is
+payloads, its index, its footer and, when its footer flags one, the extension block that carries a generation's
+metadata — is
 length-checked and CRC-verified, and deserialized with the **safe**
 RoaringBitmap reader (never the
 trusting variant) behind a hard size cap, before the native addon sees it. That reader only keeps its reads inside

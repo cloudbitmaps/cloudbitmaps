@@ -7,6 +7,7 @@ import type { CrbmWriterOptions } from '@/core/crbm/writer';
 import {
   EXT_MAGIC,
   EXT_TRAILER_BYTES,
+  FLAG_EXTENSION,
   FOOTER,
   FOOTER_BYTES,
   FOOTER_CRC_COVERAGE,
@@ -64,12 +65,13 @@ export class CounterNonceAead implements Aead {
   }
 }
 
-/** Where a written object's parts sit: its footer view, its index offset and its minor. */
+/** Where a written object's parts sit: its footer view, its index offset, its minor and whether it flags a block. */
 export function layoutOf(bytes: Uint8Array): {
   footer: DataView;
   indexOffset: number;
   indexLength: number;
   versionMinor: number;
+  flagged: boolean;
 } {
   const footer = new DataView(
     bytes.buffer,
@@ -81,6 +83,7 @@ export function layoutOf(bytes: Uint8Array): {
     indexOffset: Number(footer.getBigUint64(FOOTER.indexOffset, true)),
     indexLength: Number(footer.getBigUint64(FOOTER.indexLength, true)),
     versionMinor: footer.getUint8(FOOTER.versionMinor),
+    flagged: (footer.getUint32(FOOTER.flags, true) & FLAG_EXTENSION) !== 0,
   };
 }
 
@@ -119,22 +122,21 @@ export function section(type: number, body: Uint8Array, length = body.length): U
 export const utf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
 
 /**
- * Splice `block` into a format 1.0 object between its last payload and its index, as a 1.1 writer would place it:
- * the index moves up by the block's length, the preamble and the footer say `minor`, and the footer's CRC is
- * re-stamped. Payload offsets are unaffected, since they are gaps from the start. Bypasses the writer's checks, so
- * a test can present the hostile bytes a storage tier could.
+ * Splice `block` into an object without one, between its last payload and its index, as the writer places it: the
+ * index moves up by the block's length, the footer sets `FLAG_EXTENSION`, and the footer's CRC is re-stamped. Payload
+ * offsets are unaffected, since they are gaps from the start. Bypasses the writer's checks, so a test can present the
+ * hostile bytes a storage tier could.
  */
-export function spliceBlock(base: Uint8Array, block: Uint8Array, minor = 1): Uint8Array {
+export function spliceBlock(base: Uint8Array, block: Uint8Array): Uint8Array {
   const { indexOffset } = layoutOf(base);
   const out = new Uint8Array(base.length + block.length);
   out.set(base.subarray(0, indexOffset), 0);
   out.set(block, indexOffset);
   out.set(base.subarray(indexOffset), indexOffset + block.length);
-  out[5] = minor;
   const footer = out.subarray(out.length - FOOTER_BYTES);
   const view = new DataView(footer.buffer, footer.byteOffset, FOOTER_BYTES);
   view.setBigUint64(FOOTER.indexOffset, BigInt(indexOffset + block.length), true);
-  footer[FOOTER.versionMinor] = minor;
+  view.setUint32(FOOTER.flags, view.getUint32(FOOTER.flags, true) | FLAG_EXTENSION, true);
   view.setUint32(FOOTER.footerCrc32c, crc32c(footer.subarray(0, FOOTER_CRC_COVERAGE)), true);
   return out;
 }

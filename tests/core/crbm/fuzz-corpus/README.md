@@ -7,7 +7,7 @@ bug stays fixed. A reproducer passes when it is refused with a typed error or de
 
 - `safe-deserialize/` — raw serialized-bitmap inputs, replayed through the roaring codec's safe deserialize.
 - `crbm-index/` — raw `.crbm` index-region bytes, replayed through `parseIndex`.
-- `crbm-ext/` — raw sections of a format 1.1 extension block, replayed through `parseExtension`.
+- `crbm-ext/` — raw sections of an extension block, replayed through `parseExtension`.
 - `crbm-reader/` — whole `.crbm` objects, replayed through the full `open → getChunk → safeDeserialize` chain.
 
 To add one: minimize the `fuzz/crashes/…` artifact, drop the bytes into the matching subdirectory (any
@@ -17,7 +17,7 @@ The hand-written ones in `safe-deserialize/` are portable-roaring payloads the n
 the structural check in the roaring codec's safe deserialize refuses: containers or values out of order or listed twice,
 runs overlapping or running past their container, a run container with no runs, and a bitset whose header
 cardinality disagrees with its bits. In `crbm-reader/`, `chunk-containers-out-of-order.crbm` is a whole `.crbm`, with valid
-checksums, whose chunk payload lists its containers out of order, and `v1_1-payload-runs-into-block.crbm` a format
-1.1 object, with valid checksums, whose last payload runs into its extension block. The ones in `crbm-ext/` are
+checksums, whose chunk payload lists its containers out of order, and `payload-runs-into-block.crbm` an object
+that flags an extension block, with valid checksums, whose last payload runs into that block. The ones in `crbm-ext/` are
 metadata sections whose JSON parses but is refused: a key listed twice (`JSON.parse` keeps the last, so only the
 canonical-form check catches it) and the key `__proto__`.
