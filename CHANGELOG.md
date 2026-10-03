@@ -208,9 +208,10 @@ so, and so do the module headers in the code.
     restore point and leave them above the pointer until a load's check meets one; the guide says to load until
     the pointer is above them. The re-runs below the strays count toward `keep` too, so keeping the restored
     generation as a rollback target takes a `keep` of at least the highest stray minus the restored pointer, plus
-    one, where the guide said one more than the number of strays. Because a re-run load takes again the numbers
-    collection freed, step 9's restart or invalidation of every store is what clears a store that read the segment
-    before the disaster.
+    one, where the guide said one more than the number of strays. A re-run load takes again the numbers collection freed, but its writes
+    are given tokens the row never had, so no cache takes a re-run's generation for an earlier one under the same
+    number; step 9's restart or invalidation of every store moves a store that read the segment before the disaster
+    onto the restored generation without waiting for its refresh.
   - **The calibration harness** expects each load's new shape, and its projection of a load's GET-class requests is
     now `4 + 2 × retryBound`: the default workload's bound is 364 PUT-class and 106,583 GET-class requests,
     $0.044453, and its expected bill 142 PUT-class and 92,907 GET-class, $0.037873.
