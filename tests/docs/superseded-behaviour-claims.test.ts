@@ -1610,17 +1610,20 @@ function hitsIn(rel: string, text: string): string[] {
 //
 // What it reads: a clause (a sentence, a clause past a semicolon or a dash, a table cell or a line of a box) that
 // names a load and says "per million" gives its dollar amounts, and each must be the one its words call for:
-// a segment's first load, a load that does not list, one that lists, or, with no such word, the average a
-// million single-part loads cost. The price of one GET or one PUT-class request is allowed anywhere, and so is a
-// price 0.11.2 published, after "was". A clause about a write and publish, a multipart write or an intersect is
+// a segment's first load, a load that does not list (or deletes by name, or is the third or later), one that lists,
+// or, with no such word, the average a million single-part loads cost. The price of one GET or one PUT-class
+// request is allowed anywhere, and so are the run's write-and-publish price and a price 0.11.2 published, after
+// "was". A clause about a multipart write, an intersect, or another backend's or an encrypted segment's load is
 // another figure's, and is left to the gates that hold it (the calibration report and the site's figures).
+// Ratio: a clause that compares `store.load()` with a write and publish says, just after `store.load()`, the
+// multiple the model's average makes of the run's write-and-publish price.
 // Cadence: a sentence about listing or collecting that says how many generations apart the listings are ("every 16th
 // generation", "within 16 generations", "divisible by 16", "a sixteenth of a listing") says the constant.
 //
 // Known limits, stated rather than hidden: it does not read a figure that has no "per million" in its clause
-// (a table cell is its own clause), and a stale figure in a clause that is also about a write and publish
-// passes. Those figures are held where they are derived, `tests/bench/calibrate-guards.test.ts`
-// and `tests/core/cost.test.ts`.
+// (a table cell is its own clause), a ratio more than 40 characters after `store.load()`, or another backend's or
+// an encrypted segment's price, which the model does not derive. Those figures are held where they are derived,
+// `tests/bench/calibrate-guards.test.ts` and `tests/core/cost.test.ts`.
 // ---------------------------------------------------------------------------------------------------
 type Dollars = {
   first: number;
@@ -1660,21 +1663,45 @@ const LOAD_PRICES: Dollars = (() => {
 })();
 /** What 0.11.2 published for a steady and a first load. History belongs to the changelog, after "was". */
 const PRICES_BEFORE = [23.6, 22.8];
+/**
+ * A million single-part writes and publishes, pointer included: the run's figure, from its committed evidence by the
+ * module the site's figures take it from. A page compares `store.load()` with it, so the ratio it states is checked
+ * against the two sources the figures come from.
+ */
+const WRITE_AND_PUBLISH: number = (() => {
+  const calibration = createRequire(import.meta.url)('../../bench/lib/calibration-figures.cjs') as {
+    evidenceFiles: (root: string) => string[];
+    readSources: (root: string) => unknown;
+    derive: (run: unknown, src: unknown) => { usd: { singleLoad: number } };
+  };
+  const latest = calibration.evidenceFiles(ROOT).at(-1);
+  if (latest === undefined) throw new Error('bench/calibration/ holds no run evidence');
+  const run: unknown = JSON.parse(readFileSync(join(ROOT, latest), 'utf8'));
+  return 1e6 * calibration.derive(run, calibration.readSources(ROOT)).usd.singleLoad;
+})();
 
 const SAYS_PER_MILLION = /\bper\s+(?:million|1M)\b|\ba million\b|\/\s*1M\b/i;
 const AMOUNT = /\$([\d,]+(?:\.\d+)?)/g;
-/** A clause about another figure's subject: a write and publish, a multipart write, an intersect, Redis. */
+/**
+ * A clause about another figure's subject: a multipart write, an intersect, Redis, the crossover, or a load on another
+ * backend's or an encrypted segment's counts, which price differently. A write and publish is not exempt as a
+ * subject: its own amount is (`WRITE_AND_PUBLISH`), so a stale load price beside it is still read.
+ */
 const ANOTHER_FIGURE =
-  /\bpublish(?:ed|ing|es)?\b|\bmultipart\b|\bintersect|\bRedis\b|\bcrossover\b/i;
+  /\bmultipart\b|\bintersect|\bRedis\b|\bcrossover\b|\bAzure\b|\bGCS\b|\bGoogle Cloud Storage\b|\bencrypt/i;
 const ABOUT_A_LOAD = /\bstore\.load\b|\bloads?\b|\bcalls?\b/i;
 /** Which load a stretch of words calls for, if it says. */
 const whichLoad = (
   words: string,
 ): keyof Pick<Dollars, 'first' | 'steady' | 'listing'> | undefined => {
   if (/\b(?:first|second)\b/i.test(words)) return 'first';
-  if (/\b(?:does not|doesn't|do not|without|no)\b[^.;,]{0,12}\blist(?:s|ing)?\b/i.test(words))
+  if (
+    /\b(?:does not|doesn't|do not|without|no)\b[^.;,]{0,12}\blist(?:s|ing)?\b/i.test(words) ||
+    /\blists? nothing\b|\bby name\b|\bthird\b/i.test(words)
+  )
     return 'steady';
-  if (/\b(?:16th|sixteenth)\b|\blists?\b|\blisting\b/i.test(words)) return 'listing';
+  if (/\b(?:16th|sixteenth)\b|\bdivisible by\b|\blists?\b|\blisting\b/i.test(words))
+    return 'listing';
   return undefined;
 };
 
@@ -1737,6 +1764,26 @@ const CADENCE_CLAIMS: ReadonlyArray<{ re: RegExp; n: (m: RegExpMatchArray) => nu
 const ABOUT_LISTING = /\b(?:list(?:s|ing|ings)?|collect(?:s|ed|ion)?)\b/i;
 const ABOUT_GENERATIONS = /\b(?:generations?|loads?)\b/i;
 
+/**
+ * What `store.load()` costs as a multiple of a write and publish: the model's average over the run's figure. A clause
+ * that names `store.load()` and a write or publish and says, in the words just after `store.load()`, how many times
+ * as much ("≈ 2×", "twice", "1.1 times", "half as much again", "a tenth more") must say this, to within a tenth of it.
+ */
+const LOAD_OVER_WRITE = LOAD_PRICES.average / WRITE_AND_PUBLISH;
+const COMPARES_A_LOAD = /\bstore\.load\(\)/;
+const AGAINST_A_WRITE = /\bwrit(?:e|es|ing|ten)\b|\bpublish(?:ed|ing|es)?\b/i;
+const RATIO_CLAIMS: ReadonlyArray<{ re: RegExp; n: (m: RegExpMatchArray) => number }> = [
+  // A multiplier, not a product: "2×", but not "64 × 1,024".
+  { re: /(\d+(?:\.\d+)?)\s?[×x](?!\w)(?!\s*\d)/g, n: (m) => Number(m[1]) },
+  { re: /\b(\d+(?:\.\d+)?)\s+times\b/gi, n: (m) => Number(m[1]) },
+  { re: /\b(?:twice|double)\b/gi, n: () => 2 },
+  { re: /\bhalf as much again\b/gi, n: () => 1.5 },
+  {
+    re: new RegExp(String.raw`\ba (${WORD_ALTERNATION(FRACTION_WORDS)}) more\b`, 'gi'),
+    n: (m) => 1 + 1 / (FRACTION_WORDS[m[1]!.toLowerCase()] ?? 1),
+  },
+];
+
 /** The figures and cadences a file states about a load that the estimator does not give, each with its line. */
 function loadFigureHits(rel: string, text: string): string[] {
   const src = scanned(rel, text);
@@ -1776,7 +1823,10 @@ function loadFigureHits(rel: string, text: string): string[] {
         const behind = clause.slice(Math.max(0, m.index - 60), m.index);
         const which = whichLoad(aheadAfter) ?? whichLoad(behind) ?? 'average';
         const expected = which === 'average' ? LOAD_PRICES.average : LOAD_PRICES[which];
-        const unit = close(value, LOAD_PRICES.get) || close(value, LOAD_PRICES.put);
+        const unit =
+          close(value, LOAD_PRICES.get) ||
+          close(value, LOAD_PRICES.put) ||
+          close(value, WRITE_AND_PUBLISH);
         const history =
           PRICES_BEFORE.some((p) => close(value, p)) && /\b(?:where it )?was\s*$/i.test(behind);
         if (!close(value, expected) && !unit && !history) {
@@ -1785,6 +1835,21 @@ function loadFigureHits(rel: string, text: string): string[] {
               `$${expected.toFixed(2)} at the default prices (first $${LOAD_PRICES.first.toFixed(2)}, steady $${LOAD_PRICES.steady.toFixed(2)}, ` +
               `listing $${LOAD_PRICES.listing.toFixed(2)}, average $${LOAD_PRICES.average.toFixed(2)})`,
           );
+        }
+      }
+    }
+    if (COMPARES_A_LOAD.test(clause) && AGAINST_A_WRITE.test(clause)) {
+      for (const named of clause.matchAll(new RegExp(COMPARES_A_LOAD.source, 'g'))) {
+        const from = named.index + named[0].length;
+        const words = clause.slice(from, from + 40);
+        for (const { re, n } of RATIO_CLAIMS) {
+          for (const m of words.matchAll(new RegExp(re.source, re.flags))) {
+            if (Math.abs(n(m) - LOAD_OVER_WRITE) <= 0.1 * LOAD_OVER_WRITE) continue;
+            hits.push(
+              `${rel}:${lineOf(offset + from + m.index)} — "${m[0]}" is not what store.load() costs against a write and publish: ` +
+                `about ${LOAD_OVER_WRITE.toFixed(2)}× ($${LOAD_PRICES.average.toFixed(2)} on average against $${WRITE_AND_PUBLISH.toFixed(2)} per million)`,
+            );
+          }
         }
       }
     }
@@ -1813,6 +1878,8 @@ describe("a page's figures for store.load() are the estimator's", () => {
       f(LOAD_PRICES.listing),
       f(LOAD_PRICES.average),
     ]).toEqual(['11.60', '12.00', '17.80', '12.36']);
+    expect(WRITE_AND_PUBLISH.toFixed(2)).toBe('11.20');
+    expect(LOAD_OVER_WRITE.toFixed(2)).toBe('1.10');
   });
 
   // Both directions: each stale form is caught, and the sentences that must stay legal are not.
@@ -1833,6 +1900,12 @@ describe("a page's figures for store.load() are the estimator's", () => {
     'a load lists to collect, and costs a third of a PUT-class request more on average',
     'each load collects by listing on every 15th generation',
     "the rest go at the destination's next eighth generation, when a load lists",
+    // A ratio against a write and publish, and a stale price beside one.
+    '1M writes + publishes · store.load() ≈ 2×',
+    'store.load() costs twice what a write and publish does',
+    'a write and publish, with store.load() half as much again',
+    'store.load() is 1.5 times a write and publish',
+    'a store.load() that writes and publishes costs $17.80 per million',
   ])('refuses the stale form %j', (text) => {
     expect(loadFigureHits('x.md', text)).not.toEqual([]);
   });
@@ -1859,6 +1932,23 @@ describe("a page's figures for store.load() are the estimator's", () => {
     'A long-lived reader refreshes every 2 seconds, one load of a pointer each time.',
     'It lists the bucket every third request in the test, to collect nothing.',
     'a half of a segment is loaded from the warehouse',
+    // The ratio as it is, and the write and publish's own amount.
+    'Writing and publishing a segment, pointer included, with store.load() about a tenth more on average',
+    '1M writes + publishes · store.load() ≈ 1.1×',
+    'store.load() costs 1.1 times a write and publish, on average',
+    'a store.load() writes and publishes for $12.36 per million on average',
+    // Prices another load's words call for, and other backends' and encrypted segments' counts.
+    'a load that deletes by name costs $12.00 per million',
+    'from the third load on, a load costs $12.00 per million',
+    'a load that lists nothing costs $12.00 per million',
+    'a load on a generation divisible by 16 costs $17.80 per million',
+    'on Azure Blob a steady load costs $12.40 per million, $12.76 on average',
+    "an encrypted segment's load costs $12.76 per million on average",
+    // A ratio that is not a comparison with a write: a 64 × 1,024 product, and a write named without store.load().
+    'the writer cuts 64 × 1,024 containers per slice, and store.load() writes each',
+    'store.load() writes 64 × 1,024 containers, a slice at a time',
+    'it timed a write and a publish rather than store.load(), which is why its median intersect read each pointer twice',
+    'a write and publish of 2× the bytes',
   ])('leaves %j alone', (text) => {
     expect(loadFigureHits('x.md', text)).toEqual([]);
   });
