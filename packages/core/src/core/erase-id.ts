@@ -123,7 +123,7 @@ export interface EraseIdDeps {
    * The store's read retry, for the reads the rewrite makes along the way: the generation it rewrites and each of its
    * chunks, the read-back that verifies the generation it wrote, and any other generation it checks for the id. A
    * transient fault on one is run again under it rather than failing the erasure. Absent, each read is made once.
-   * The writes and deletes are never retried.
+   * The deletes are not retried, and the rewrite's registry write is settled as a load's is.
    */
   readonly readRetry?: ReadRetry;
 }

@@ -12,7 +12,7 @@ checklist: work down the table, and follow each link for the detail.
 | With versioning on, noncurrent versions expire after your restore window | Each generation a load collects is otherwise billed for as long as the bucket keeps it, out of sight | [Bucket lifecycle](#bucket-lifecycle) |
 | The bucket honors conditional writes, and the S3 SDK is 3.700.0 or later | Otherwise a write-once generation can be silently overwritten | [Conditional writes and the S3 SDK](#conditional-writes-and-the-s3-sdk) |
 | Your reads have a timeout | Without one a hung request hangs its call. `readTimeoutMs` on `S3Storage`, `GcsStorage` and `AzureBlobStorage` bounds each read, and is off by default. It is the only bound on a GCS 8.x or Azure Blob download's body, which no client setting reaches. The library times no write, delete or listing | [Reliability](#reliability-retries-backoff--timeouts) |
-| Your job re-runs a write after a transient error | Writes are never retried for you | [Reliability](#reliability-retries-backoff--timeouts) |
+| Your job re-runs a write after a transient error | A write is retried for you only where that is safe: a throttled S3 or GCS object, and a registry write that went unanswered. Any other transient fault reaches you as `TransientError` | [Reliability](#reliability-retries-backoff--timeouts) |
 | You know the request budget and the memory ceilings | A runaway call is refused, not billed | [Limits](#limits-the-per-op-budget-and-the-memory-ceilings) |
 | The keystore is backed up, if you encrypt | Losing the key makes the data permanently unreadable | [Encryption](encryption.md#before-you-encrypt) |
 | Metrics and audit sinks are wired to your stack | Both are off by default | [Observability](observability.md) |
@@ -292,17 +292,18 @@ left alone. `requestTimeout` on its own only logs a warning when it passes: chec
 `@smithy/node-http-handler` comes with the AWS SDK; declare it in your own `package.json` as well, since your code
 imports it. A `client` carries its own region and credentials, so passing `region` or `credentials` beside it is refused.
 
-**Writes are yours to re-run.** What is retried for you:
+**Reads retry by themselves; a write is retried only where that is safe, and any other fault on it is yours to re-run.** What is retried for you:
 
 | Calls | Retried for you? |
 |---|---|
 | Reads that answer a query: `has`, `count`, `iterate`, the combines (the `*Into` verbs' reads of their operands included), a pinned handle's reads, and `pin()` | Yes, with backoff; `retry` tunes it |
-| Writes: `load`, the write half of the `*Into` verbs, and the lifecycle helpers (`eraseSubject`, `dropSegment`, `retireExpired`, `rollback` and the rest) | No: run the call again. The reads they make along the way are retried, with backoff: a load guard's read of the current generation, and an erasure's reads of the generation it rewrites, of the one it wrote, and of any other that may still hold the id |
+| Writes: `load`, the write half of the `*Into` verbs, and the lifecycle helpers (`eraseSubject`, `dropSegment`, `retireExpired`, `rollback` and the rest) | Only where it is safe, and not by `retry`: a throttled write-once object on S3 and GCS is sent again, and a registry write that got no answer is settled by reading the row and, if nothing changed, sent again as a fresh compare-and-swap (at most three, after a wait; [a load's writes](loading.md#when-a-write-is-throttled-or-gets-no-answer)). Any other transient fault reaches you: run the call again. The reads they make along the way are retried, with backoff: a load guard's read of the current generation, and an erasure's reads of the generation it rewrites, of the one it wrote, and of any other that may still hold the id |
 | Registry reads and listings: `exists`, `segments`, `generations`, `getRetention`, and the registry scan that `subjectReport`, `exportSegments` and `checkConsistency` start from | No: call it again |
 
 A write that lands and then loses its response looks, from the error alone, like a write that failed, and replaying it
-would find itself already there and report a conflict. So a transient fault on a write reaches you, and the retry is
-yours.
+would find itself already there and report a conflict. So the drivers send a conditional write once, and again only
+where an id it carries tells a replay apart (a throttled object), and the load settles an unanswered registry write by
+reading the row. A fault those do not settle reaches you as `TransientError`, and the retry is yours.
 
 Re-running a `load` is safe. It takes a fresh generation number and re-reads the pointer, so it publishes whether or
 not the first attempt landed, under every guard setting. Three things to know:

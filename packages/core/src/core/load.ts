@@ -55,7 +55,9 @@ export interface LoadDeps {
   readonly clock?: Clock;
   /**
    * The store's read retry, for the read the guard makes of the current generation: a transient fault there is run
-   * again under it rather than failing the load. Absent, the read is made once. The write is never retried.
+   * again under it rather than failing the load. Absent, the read is made once. It does not govern the write: a
+   * registry write that gets no answer is settled by reading the row, and sent again only as a bounded fresh
+   * compare-and-swap.
    */
   readonly readRetry?: ReadRetry;
   /**

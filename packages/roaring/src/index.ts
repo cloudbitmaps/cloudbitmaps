@@ -197,10 +197,12 @@ export interface CloudRoaringOptions {
    * `iterate` and the combines, the `*Into` verbs' reads of their operands included, a pinned handle's reads and
    * `pin()` itself, and the reads a write makes along the way: a load's guard read of the current generation, and an
    * erasure's reads of the generation it rewrites, of the one it wrote and of any other that may still hold the id.
-   * Writes are not retried, and nor are the calls that read the registry or list the bucket directly (`exists`,
+   * This option does not govern writes, nor the calls that read the registry or list the bucket directly (`exists`,
    * `segments`, `generations`, `getRetention`, and the registry scan `subjectReport`, `exportSegments` and
    * `checkConsistency` start from): they report a transient fault to their caller, because a conditional write that
-   * lands and then loses its response would, replayed, report its own write as a conflict. Pass a partial policy to tune it — anything you leave out keeps its
+   * lands and then loses its response would, replayed blindly, report its own write as a conflict. A write is
+   * retried only where that is safe: a load's registry write that gets no answer is settled by reading the row,
+   * and a throttled write-once object is sent again by the S3 and GCS drivers. Pass a partial policy to tune it — anything you leave out keeps its
    * default — or `false` to turn the read retry off (e.g. if your injected client already retries). A GCS download is retried by
    * the GCS driver whatever this says.
    * Deterministic errors (`ValidationError`/`IntegrityError`/`WriteConflictError`/…) are never retried by this
