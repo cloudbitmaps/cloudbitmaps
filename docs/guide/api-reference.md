@@ -112,7 +112,8 @@ The registry needs delete permission on its prefix for it.
 
 **The S3 default is read from the client, once, before the registry's first request.** The registry serialises the
 requests it will send through the client's own stack, without sending anything, and reads back the host and the
-headers. Until that first read or listing, `capabilities().conditionalDelete` reads `false` unless you set the option.
+headers. Until that first read or listing, `capabilities().conditionalDelete` reads `false` unless you set the option,
+and a client that cannot be resolved then (no region, no credentials) keeps tombstoning for the life of the registry.
 It also checks that the SDK sends the preconditions the registry relies on: an `@aws-sdk/client-s3` whose model lacks a
 member drops it from the request without a word. A `DeleteObject` that would go out without `If-Match` keeps the row
 tombstoned, whatever `conditionalDelete` says, and a `PutObject` that would go out without `If-None-Match` (a create) or

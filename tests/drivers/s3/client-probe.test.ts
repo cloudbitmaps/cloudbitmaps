@@ -253,6 +253,19 @@ describe('a client the probe cannot read', () => {
     expect(sent).toBe(0);
   });
 
+  it('a client whose credentials cannot be resolved answers nothing, and sends nothing', async () => {
+    let lookups = 0;
+    const noCredentials = client({
+      credentials: () => {
+        lookups += 1;
+        return Promise.reject(new Error('no credentials'));
+      },
+    });
+    expect(await probeClient(noCredentials, BUCKET)).toBeUndefined();
+    expect(lookups).toBeGreaterThan(0); // the SDK looks them up on its way to the step the probe reads
+    expect(sent).toBe(0);
+  });
+
   it('a client whose send fails answers nothing', async () => {
     const c = client();
     c.send = (() => Promise.reject(new Error('boom'))) as never;

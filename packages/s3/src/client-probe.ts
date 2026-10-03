@@ -12,12 +12,13 @@
  *    predates one drops it from the request without a word, so a conditional write or delete goes out unconditional.
  *
  * So the probe builds the requests the registry sends, hands each to the client's own stack, and reads the request back
- * as it stands once the SDK has serialised it, which is before credentials are fetched or the request is signed. A
- * middleware added to the probe command's own stack answers there instead of passing the request on, so nothing is sent
- * and no credentials are touched; what the client resolves is what its first real request resolves.
+ * as it stands once the SDK has serialised it, which is before it is signed or sent. A middleware added to the probe
+ * command's own stack answers there instead of passing the request on, so nothing is sent. The SDK resolves the client's
+ * credentials on its way to that step, as it does for any first request, so the probe makes the same lookup the first
+ * real request would, which the client then caches; what the client resolves is what its first real request resolves.
  *
- * A probe that cannot run (a client with no middleware stack, an unresolvable region, a stack that does not hold the
- * step the probe hooks) answers `undefined`, which callers read as "not known".
+ * A probe that cannot run (a client with no middleware stack, an unresolvable region or credential chain, a stack that
+ * does not hold the step the probe hooks) answers `undefined`, which callers read as "not known".
  */
 import { DeleteObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import type {
