@@ -161,6 +161,7 @@ export type StorageDriverCase =
   | 'out-of-range read'
   | 'tail size'
   | 'idempotent delete'
+  | 'delete of an absent key beside its neighbours'
   | 'list read-after-delete';
 
 /** `n` bytes that differ at every offset, so a read from the wrong offset cannot match by accident. */
@@ -190,7 +191,8 @@ async function generationsOf(d: IStorageDriver, ref: SegmentRef): Promise<number
 /**
  * Contract tests for an {@link IStorageDriver} — the contract its doc comment lists: write-once with
  * `WriteConflictError` on a collision, `NotFoundError` for a missing object, `ValidationError` for an out-of-range
- * read, `getTail`'s true total size, idempotent `delete`, and a `list` that is read-after-delete. `makeDriver` MUST
+ * read, `getTail`'s true total size, idempotent `delete` (of an absent key too, with neighbours present), and a `list`
+ * that is read-after-delete. `makeDriver` MUST
  * return a driver over an empty, isolated keyspace on each call.
  *
  * `skip` names the cases a backend cannot exercise (a local emulator that does not model a contract), so each
@@ -304,6 +306,20 @@ export function storageDriverConformance(
       await d.delete(key(0));
       await d.delete(key(0)); // already gone: a no-op
       await expect(d.getTail(key(0), 10)).rejects.toBeInstanceOf(NotFoundError);
+    });
+
+    // Collection deletes a generation by name without knowing whether it is there, so an absent name between two
+    // present ones has to be a no-op that touches neither.
+    test('delete of an absent key beside its neighbours', async () => {
+      const d = makeDriver();
+      await putBytes(d, key(1), patterned(10));
+      await putBytes(d, key(3), patterned(12));
+      await d.delete(key(2));
+      await d.delete(key(0));
+      await d.delete(key(4));
+      expect(await generationsOf(d, SEG)).toEqual([1, 3]);
+      expect((await d.getTail(key(1), 10)).size).toBe(10);
+      expect((await d.getTail(key(3), 12)).size).toBe(12);
     });
 
     test('list read-after-delete', async () => {

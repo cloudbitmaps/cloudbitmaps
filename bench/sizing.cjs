@@ -1022,7 +1022,7 @@ function render() {
         'at most one a read, and one a genTtlMs',
       ],
       [
-        'each load       ──► S3 PUTs and LISTs, GETs, a pointer write',
+        'each load       ──► S3 PUTs and GETs, a pointer write',
         'grows with how often the data changes',
       ],
     ]),

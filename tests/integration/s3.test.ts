@@ -293,15 +293,15 @@ describe('S3Storage (MinIO) — the backend builds its own client', () => {
 // What `store.load()` sends to S3, counted by the request meter the calibration harness bills with. The in-memory
 // counts that the cost model is held to (`tests/core/cost.test.ts`) are of the driver ports; these are of the wire,
 // command by command. A load reads its row once before the publish and checks the next generation number with one
-// HeadObject instead of listing; the collection pass lists once, reads the pointer around its listing, and again
-// before its delete.
+// HeadObject instead of listing. It collects by name: it re-reads the pointer and deletes the one generation its
+// publish pushed out of the window, listing nothing, except on every sixteenth generation, where it lists instead.
 describe('S3 (MinIO): the requests one store.load() sends', () => {
   const require_ = createRequire(import.meta.url);
   const { meter } = require_('../../bench/lib/aws-meter.cjs') as {
     meter: (c: S3Client) => { put: number; get: number; byCommand: Record<string, number> };
   };
 
-  it('a first load, a reload, and every load from the third on', async () => {
+  it('a first load, a reload, and every load from the third on, with a listing every sixteenth', async () => {
     const metered = new S3Client({
       endpoint: ENDPOINT,
       region: 'us-east-1',
@@ -316,39 +316,41 @@ describe('S3 (MinIO): the requests one store.load() sends', () => {
         registry: new S3RegistryDriver({ client: metered, bucket: BUCKET, prefix }),
       }),
     });
-    const load = async (ids: number[]) => {
+    const load = async (generation: number) => {
       tally.put = 0;
       tally.get = 0;
       for (const k of Object.keys(tally.byCommand)) delete tally.byCommand[k];
-      expect((await store.load({ namespace: 'ns', segment: 's' }, ids)).published).toBe(true);
+      const ids = Array.from({ length: generation + 1 }, (_, i) => i);
+      const result = await store.load({ namespace: 'ns', segment: 's' }, ids);
+      expect(result).toMatchObject({ generation, published: true });
       return { put: tally.put, get: tally.get, byCommand: { ...tally.byCommand } };
     };
-    // The object and the row (2 PutObject) and the collection's listing are PUT-class; the row read, its second read
-    // after the ids (a first load found no row), the check, the collection's two pointer reads and the create's
-    // read are GET-class.
-    expect(await load([1, 2, 3])).toEqual({
-      put: 3,
-      get: 6,
-      byCommand: {
-        GetObjectCommand: 5,
-        HeadObjectCommand: 1,
-        PutObjectCommand: 2,
-        ListObjectsV2Command: 1,
-      },
-    });
-    // A reload also reads the current generation's index, to count what it replaces.
-    expect(await load([1, 2, 3, 4])).toEqual({
-      put: 3,
-      get: 6,
-      byCommand: {
-        GetObjectCommand: 5,
-        HeadObjectCommand: 1,
-        PutObjectCommand: 2,
-        ListObjectsV2Command: 1,
-      },
-    });
-    // From the third load on the collection deletes a generation, re-reading the pointer before it.
+    // The object and the row (2 PutObject) are PUT-class; the row read, its second read after the ids (a first load
+    // found no row), the create's read and the check are GET-class. Nothing is outside the window yet, so nothing
+    // is read or deleted after the publish.
+    const first = {
+      put: 2,
+      get: 4,
+      byCommand: { GetObjectCommand: 3, HeadObjectCommand: 1, PutObjectCommand: 2 },
+    };
+    expect(await load(0)).toEqual(first);
+    // A reload also reads the current generation's index, to count what it replaces: its row read, that tail read and
+    // the compare-and-swap's read of the row's version, where the first load's second row read and create's read were.
+    expect(await load(1)).toEqual(first);
+    // From the third load on the collection deletes by name, re-reading the pointer before it.
     const steady = {
+      put: 2,
+      get: 5,
+      byCommand: {
+        GetObjectCommand: 4,
+        HeadObjectCommand: 1,
+        PutObjectCommand: 2,
+        DeleteObjectCommand: 1,
+      },
+    };
+    for (let g = 2; g < 16; g++) expect(await load(g), `generation ${g}`).toEqual(steady);
+    // Every sixteenth generation lists instead: one ListObjectsV2, and the pointer read before and after it.
+    expect(await load(16)).toEqual({
       put: 3,
       get: 7,
       byCommand: {
@@ -358,9 +360,8 @@ describe('S3 (MinIO): the requests one store.load() sends', () => {
         ListObjectsV2Command: 1,
         DeleteObjectCommand: 1,
       },
-    };
-    expect(await load([1, 2, 3, 4, 5])).toEqual(steady);
-    expect(await load([1, 2, 3, 4, 5, 6])).toEqual(steady);
+    });
+    expect(await load(17)).toEqual(steady);
     metered.destroy();
   });
 });

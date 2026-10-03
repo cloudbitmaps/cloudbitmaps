@@ -36,7 +36,7 @@ const report = CloudRoaring.estimateCost({
     hotSegments: 2, // segments a long-lived reader keeps reading: each refreshes its pointer every 2 s
   },
 });
-report.monthlyUSD.byOp; // { reads: ≈42, intersects: ≈25.2, storage: ≈0.0257, loads: ≈0.000534, pointerRefresh: ≈1.05 }
+report.monthlyUSD.byOp; // { reads: ≈42, intersects: ≈25.2, storage: ≈0.0257, loads: ≈0.000371, pointerRefresh: ≈1.05 }
 report.monthlyUSD.total; // ≈68.4
 report.redisBaseline; // $142.35 a month: the cheapest cluster in the catalogue that holds 1.12 GiB, 1 shard of 3 cache.t4g.medium nodes
 report.verdict; // 'win' — 'win-big' | 'win' | 'lose-zone', never hides the lose case
@@ -111,16 +111,21 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   `chunksPerIntersect`. `cacheHitRate` does not apply to intersections, so a long-lived reader that answers
   repeats from its cache pays less than the report says, and pays the pointer refresh instead.
 - **A load** is `requestsPerLoad` PUT-class requests for the object (1 by default; a multipart write of P parts is
-  P + 2), plus what `store.load()` adds: the collection pass's listing and the pointer's write, PUT-class on S3, and
-  seven GETs: five pointer reads, one read of the current index, and one check that the next generation number is
-  free, a single request on every backend (a `HeadObject` on S3). That is a segment with two generations behind it,
-  and about $17.80 per million single-part loads at the default prices; a segment's first two loads make one fewer GET
-  each. A segment whose index outgrows the tail read makes one more, a publish that loses a race
-  to another writer reads the pointer again, and a load whose check finds the number taken (a crashed load's object,
-  or the generations a rollback left above the pointer) lists the segment to number past it, one more PUT-class
-  request. These are a cleartext segment's counts: an encrypted segment's load reads its row once more, after its
-  ids and before it unwraps the key, one more GET ($0.40 per million at the default prices), which the model leaves
-  out, as it leaves out the key-management calls an encrypted load makes. Loads are cheap by construction: a thousand 100-part loads a month is about $0.52.
+  P + 2), plus what `store.load()` adds: the pointer's write, PUT-class on S3, and five GETs: three pointer reads, one
+  read of the current index, and one check that the next generation number is free, a single request on every
+  backend (a `HeadObject` on S3). It then deletes by name the one generation its publish pushed out of the window, a
+  request S3 does not bill, and lists the segment only on every 16th generation, which adds a PUT-class request and
+  two pointer reads there, a sixteenth of each a load on average. That is a segment with two generations behind it, at the default
+  `keep` of 1, and about $12.36 per million single-part loads at the default prices; a segment's first two loads
+  collect nothing and make fewer requests. A segment whose index outgrows the tail read makes one more GET, a publish
+  that loses a race to another writer reads the pointer again, and a load whose check finds the number taken (a
+  crashed load's object, or the generations a rollback left above the pointer) lists the segment to number past it
+  and lists again to collect, two PUT-class requests and two more pointer reads. So does every load with a `keep` of
+  2 or more, which lists to collect: one more PUT-class request and two more pointer reads than the model counts.
+  These are a cleartext segment's counts: an encrypted segment's load reads its row once more, after its ids and
+  before it unwraps the key, one more GET ($0.40 per million at the default prices), which the model leaves out, as
+  it leaves out the key-management calls an encrypted load makes. Loads are cheap by construction: a thousand
+  100-part loads a month is about $0.52.
 - **The pointer refresh**: a long-lived reader re-reads a segment's pointer when it reads the segment after
   `cache.genTtlMs` has passed. So each hot segment costs at most one GET per `genTtlMs`, 1,314,000 a month at the
   default 2 s, about $0.53, and the whole term at most one GET per point read. Pass `hotSegments` for the segments
