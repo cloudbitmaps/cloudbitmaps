@@ -631,7 +631,11 @@ if (singleBucket !== null) {
       }
       const [operation, perMillion, requests] = cells;
       const key = requests.replace(/\b(GET|PUT)s\b/g, '$1');
-      const want = singleBucket.rows.find((r) => r.requests === key);
+      const group = singleBucket.rows.filter((r) => r.requests === key);
+      const want = group[0];
+      // A run whose measured and expected counts are equal derives two rows with one count and one price: the panel
+      // may state them as one row or as two, and then either may say "expected".
+      const sameFigure = group.length > 1 && group.every((r) => r.perMillion === want.perMillion);
       if (want === undefined) {
         fail(`the #single-bucket panel bills "${requests}", which the run does not derive`);
         continue;
@@ -642,14 +646,17 @@ if (singleBucket !== null) {
           `the #single-bucket panel prices "${requests}" at ${perMillion}, not ${want.perMillion}`,
         );
       }
-      if ((want.label === 'expected') !== /\bexpected\b/i.test(operation)) {
+      if (!sameFigure && (want.label === 'expected') !== /\bexpected\b/i.test(operation)) {
         fail(`the #single-bucket panel's "${requests}" row must say "expected" exactly when it is`);
       }
     }
-    for (const r of singleBucket.rows) {
-      if ((seen.get(r.requests) ?? 0) !== 1) {
+    for (const key of new Set(singleBucket.rows.map((r) => r.requests))) {
+      const group = singleBucket.rows.filter((r) => r.requests === key);
+      const most = group.every((r) => r.perMillion === group[0].perMillion) ? group.length : 1;
+      const n = seen.get(key) ?? 0;
+      if (n < 1 || n > most) {
         fail(
-          `the #single-bucket panel has the "${r.requests}" row ${seen.get(r.requests) ?? 0} times, not once`,
+          `the #single-bucket panel has the "${key}" row ${n} times, not ${most === 1 ? 'once' : 'once or twice'}`,
         );
       }
     }

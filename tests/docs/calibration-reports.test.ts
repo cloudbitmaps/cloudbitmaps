@@ -58,6 +58,7 @@ interface Row {
 interface Figures {
   runId: string;
   remote: boolean;
+  loadVia: string | null;
   chunksPerSegment: number;
   chunksPerOperand: number;
   byCommand: Record<string, number>;
@@ -133,6 +134,31 @@ function evidenceCommits(file: string, cwd: string = ROOT): string[] {
     if (moved !== undefined && !(moved[1] ?? '').startsWith('bench/calibration/')) break;
   }
   return commits;
+}
+
+/**
+ * The anchors a benchmarks-page section must state. A run that timed `store.load()` has the loads' own prices to
+ * state; one that timed the write and publish has those, and the first `store.load()` the tests count.
+ */
+function requiredAnchors(loadVia: string | null): string[] {
+  return [
+    'run id',
+    'exact cold intersects',
+    'chunks fetched',
+    'GETs the median cold intersect made',
+    'a cold intersect, measured',
+    'per million cold intersects, measured',
+    'GETs a cold intersect makes with each pointer read once',
+    'per million cold intersects with each pointer read once',
+    ...(loadVia === null
+      ? [
+          'per million single-part write-and-publishes',
+          'per million multipart write-and-publishes',
+          "per million of a segment's first store.load()",
+        ]
+      : ['per million single-part store.load() calls', 'per million multipart store.load() calls']),
+    'the run',
+  ];
 }
 
 /** The rows of the markdown table whose header line matches `header`, as trimmed cells. */
@@ -455,6 +481,44 @@ describe('calibration reports are held to their evidence', () => {
           cols,
         ),
       ).toEqual([]);
+    });
+  });
+
+  // Which anchors a section must state follows from what the run timed.
+  describe('the anchors a benchmarks section must state', () => {
+    const names = (via: string | null): string[] =>
+      requiredAnchors(via).filter((n) => /single-part|multipart|first store\.load/.test(n));
+    const anchorsOf = (path: string): string[] => {
+      const ev = EVIDENCE.find((e) => e.includes(path));
+      if (ev === undefined) throw new Error(`no evidence for ${path}`);
+      return figures.derive(JSON.parse(read(ev)), SOURCES).anchors.map(([n]) => n);
+    };
+
+    it('are, for a run that timed store.load(), its own load prices, and all of them exist', () => {
+      expect(names('store.load()')).toHaveLength(2);
+      const have = anchorsOf('2026-10-03-e13c7');
+      for (const n of requiredAnchors('store.load()')) expect(have).toContain(n);
+      expect(requiredAnchors('store.load()')).not.toContain(
+        'per million single-part write-and-publishes',
+      );
+    });
+
+    it('are, for a write-and-publish run, the three old names, and all of them exist', () => {
+      expect(names(null)).toHaveLength(3);
+      const have = anchorsOf('2026-09-23-94416');
+      for (const n of requiredAnchors(null)) expect(have).toContain(n);
+      expect(requiredAnchors(null)).not.toContain('per million multipart store.load() calls');
+    });
+
+    it('fail a section that leaves out a load anchor', () => {
+      const ev = EVIDENCE.find((e) => e.includes('2026-10-03-e13c7'));
+      if (ev === undefined) throw new Error('no evidence');
+      const f = figures.derive(JSON.parse(read(ev)), SOURCES);
+      const section = 'run 2026-10-03-e13c7 $11.60 per million single-part';
+      const missing = f.anchors
+        .filter(([n]) => requiredAnchors(f.loadVia).includes(n))
+        .filter(([, want]) => !figures.statesFigure(section, want));
+      expect(missing.map(([n]) => n)).toContain('per million multipart store.load() calls');
     });
   });
 
@@ -940,20 +1004,7 @@ describe('calibration reports are held to their evidence', () => {
     const ALIASES = ['September run', 'September 2026', 'single-bucket run', 'single-bucket bill'];
     const claims = f === undefined ? null : figures.claimsAbout(doc, f.runId, ALIASES);
     const section = claims?.section ?? null;
-    const REQUIRED = [
-      'run id',
-      'exact cold intersects',
-      'chunks fetched',
-      'GETs the median cold intersect made',
-      'a cold intersect, measured',
-      'per million cold intersects, measured',
-      'GETs a cold intersect makes with each pointer read once',
-      'per million cold intersects with each pointer read once',
-      'per million single-part write-and-publishes',
-      'per million multipart write-and-publishes',
-      "per million of a segment's first store.load()",
-      'the run',
-    ];
+    const REQUIRED = requiredAnchors(f?.loadVia ?? null);
 
     it('has a section on the latest run, which links its report', () => {
       expect(section, `docs/benchmarks.md has no heading naming run ${f?.runId}`).not.toBeNull();
