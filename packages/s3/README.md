@@ -66,7 +66,10 @@ It builds its own client from your usual AWS credentials. Any other key is refus
   sends a fresh compare-and-swap from it, at most three times. A generation's object is sent again, up to three more
   times, only after a `503` (`SlowDown` is the usual one); it carries a random id in its user metadata
   (`x-amz-meta-cbwid`), so a first send that landed is told from another writer's object. A load whose row writes all go
-  unanswered throws `TransientError` and keeps its object. **A bare `429`** (AWS S3 does not send one; some
+  unanswered throws `TransientError` and keeps its object. The waits before an object's re-sends use real timers: the
+  store's injected clock does not reach them, and `S3Storage` takes no clock, so a test that throttles one object
+  write three times waits about 3.5 s at most (the publish's waits before a fresh row write do use the store's
+  clock). **A bare `429`** (AWS S3 does not send one; some
   S3-compatible services do) **is not retried and is not classified transient**: it surfaces as the SDK's own error, so a
   layer of yours that keys on `TransientError` will not retry it.
 - **Reads can be timed, and writes are not.** Nothing is timed unless you set `readTimeoutMs`. Set, a read that has

@@ -91,7 +91,10 @@ It builds its own client from Application Default Credentials. Any other key is 
   the row and sends a fresh compare-and-swap from it, at most three times. A generation's object of up to
   `simpleUploadThresholdBytes` is sent again, up to three more times, only after a `429` or `503`; every object carries
   a random id in its metadata, so a first send that landed is told from another writer's object. A load whose row writes
-  all go unanswered throws `TransientError` and keeps its object.
+  all go unanswered throws `TransientError` and keeps its object. The waits before an object's re-sends use real
+  timers: the store's injected clock does not reach them, and `GcsStorage` takes no clock, so a test that throttles
+  one object write three times waits about 3.5 s at most (the publish's waits before a fresh row write do use the
+  store's clock).
 
 The [production checklist](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md) covers each item, and the ones every backend shares: backups of the data and the registry, and a schedule for your loads.
 
