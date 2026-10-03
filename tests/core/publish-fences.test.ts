@@ -1,7 +1,10 @@
 import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { randomBytes } from 'node:crypto';
 import { eraseIdFromSegment } from '@/core/erase-id';
-import { publishGeneration } from '@/core/crbm-storage-source';
+import { loadSegment } from '@/core/load';
+import { aadFor } from '@/core/crypto';
+import { summaryAgrees, usableSummary } from '@/core/summary';
+import { openGenerationReader, publishGeneration } from '@/core/crbm-storage-source';
 import { rollbackSegment } from '@/core/rollback';
 import { IntegrityError, ValidationError, WriteConflictError } from '@/core/errors';
 import { InProcessKeystore } from '@/drivers/crypto';
@@ -634,5 +637,197 @@ describe('the guards no happy-path test reaches', () => {
     // current generation but the object that held it is still in the bucket.
     expect((await w.registry.get(SEG))!.currentGen).toBe(1);
     expect(await generations(w.storage, SEG)).toEqual([0, 1]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// A row's summary describes the generation the row names as current, and each write that moves the pointer writes the
+// summary of the generation it moves it to. Whichever of a load, a rollback and an erasure wins a race, the row ends
+// holding a summary of the generation it names, with the count and metadata that generation's object holds: never one
+// writer's pointer over another's count, and never the summary of a write that lost.
+// ---------------------------------------------------------------------------------------------------------------
+describe('a summary never describes another generation than the one the row names', () => {
+  const META_A = { run: 'a' };
+  const META_B = { run: 'b' };
+
+  /** The row's summary, as the key holder reads it, and what the object it names actually holds. */
+  async function agreement(w: Awaited<ReturnType<typeof world>>) {
+    const row = (await w.registry.get(SEG))!;
+    const aead =
+      row.wrappedDeks === undefined ? undefined : await w.deps.keystore!.openDek(row.wrappedDeks);
+    const crypto =
+      aead === undefined
+        ? undefined
+        : {
+            aead,
+            aadFor: (scope: number | 'index' | 'metadata') => aadFor(SEG, row.currentGen!, scope),
+          };
+    const reader = await openGenerationReader(
+      w.storage,
+      { ...SEG, generation: row.currentGen! },
+      crypto,
+    );
+    const described = usableSummary(SEG, row, aead);
+    return {
+      row,
+      described,
+      object: { cardinality: reader.count(), metadata: reader.metadata },
+      agrees:
+        described !== undefined &&
+        summaryAgrees(described, { cardinality: reader.count(), metadata: reader.metadata }),
+    };
+  }
+
+  it.each([
+    ['cleartext', undefined],
+    ['encrypted', new InProcessKeystore({ keys: { k: key32() }, activeKeyId: 'k' })],
+  ] as const)(
+    'a load that publishes mid-rewrite leaves its own summary, on a %s segment',
+    async (_name, keystore) => {
+      const w = await world(keystore);
+      await loadSegment(SEG, [1, 2, 3], w.deps, { metadata: META_A, keep: 9 });
+      const storage = afterFirstChunkRead(w.storage, async () => {
+        await loadSegment(SEG, [1, 2, 3, 99], w.deps, { metadata: META_B, keep: 9 });
+      });
+      const res = await eraseIdFromSegment(SEG, 2, { ...w.deps, storage });
+      expect(res).toMatchObject({ erased: false, reason: 'superseded' });
+      const a = await agreement(w);
+      expect(a.row.currentGen).toBe(1);
+      expect(a.described).toEqual({ cardinality: 4, metadata: META_B });
+      expect(a.agrees).toBe(true);
+    },
+  );
+
+  it('an erasure that publishes between a guarded load and its publish leaves the erasure summary', async () => {
+    const w = await world();
+    await loadSegment(SEG, [1, 2, 3], w.deps, { metadata: META_A, keep: 9 });
+    // The load's object is written, and an erasure of 2 publishes before the load does.
+    let erased = false;
+    const racing: IStorageDriver = {
+      ...w.storage,
+      capabilities: () => w.storage.capabilities(),
+      getTail: (k, m) => w.storage.getTail(k, m),
+      getRange: (k, o, l) => w.storage.getRange(k, o, l),
+      delete: (k) => w.storage.delete(k),
+      list: (r) => w.storage.list(r),
+      putImmutable: async (k, fn) => {
+        const out = await w.storage.putImmutable(k, fn);
+        if (!erased) {
+          erased = true;
+          const inner = await eraseIdFromSegment(SEG, 2, w.deps);
+          expect(inner).toMatchObject({ erased: true });
+        }
+        return out;
+      },
+    };
+    const r = await loadSegment(
+      SEG,
+      [5, 6],
+      { ...w.deps, storage: racing },
+      { metadata: META_B, keep: 9 },
+    );
+    expect(r).toMatchObject({ published: false, reason: 'superseded' });
+    const a = await agreement(w);
+    expect(a.described).toEqual({ cardinality: 2, metadata: META_A });
+    expect(a.agrees).toBe(true);
+  });
+
+  it('a rollback that lands between a load writing its object and publishing it leaves the rollback summary', async () => {
+    const w = await world();
+    await loadSegment(SEG, [1, 2, 3], w.deps, { metadata: META_A, keep: 9 });
+    await loadSegment(SEG, [1, 2, 3, 4], w.deps, { metadata: META_B, keep: 9 });
+    let rolled = false;
+    const racing: IStorageDriver = {
+      ...w.storage,
+      capabilities: () => w.storage.capabilities(),
+      getTail: (k, m) => w.storage.getTail(k, m),
+      getRange: (k, o, l) => w.storage.getRange(k, o, l),
+      delete: (k) => w.storage.delete(k),
+      list: (r) => w.storage.list(r),
+      putImmutable: async (k, fn) => {
+        const out = await w.storage.putImmutable(k, fn);
+        if (!rolled) {
+          rolled = true;
+          await rollbackSegment(SEG, 0, w.deps);
+        }
+        return out;
+      },
+    };
+    const r = await loadSegment(
+      SEG,
+      [7, 8, 9, 10, 11],
+      { ...w.deps, storage: racing },
+      { metadata: { run: 'c' }, keep: 9 },
+    );
+    expect(r).toMatchObject({ published: false, reason: 'superseded' });
+    const a = await agreement(w);
+    expect(a.row.currentGen).toBe(0);
+    expect(a.described).toEqual({ cardinality: 3, metadata: META_A });
+    expect(a.agrees).toBe(true);
+  });
+
+  it('a load that lands between a rollback reading its target and publishing leaves the load summary', async () => {
+    const w = await world();
+    await loadSegment(SEG, [1, 2, 3], w.deps, { metadata: META_A, keep: 9 });
+    await loadSegment(SEG, [1, 2, 3, 4], w.deps, { metadata: META_B, keep: 9 });
+    let loaded = false;
+    const racing: IStorageDriver = {
+      ...w.storage,
+      capabilities: () => w.storage.capabilities(),
+      getRange: (k, o, l) => w.storage.getRange(k, o, l),
+      delete: (k) => w.storage.delete(k),
+      list: (r) => w.storage.list(r),
+      putImmutable: (k, fn) => w.storage.putImmutable(k, fn),
+      getTail: async (k, m) => {
+        const out = await w.storage.getTail(k, m);
+        if (!loaded && k.generation === 0 && m > 0) {
+          loaded = true;
+          await loadSegment(SEG, [1, 2, 3, 4, 5], w.deps, { metadata: { run: 'c' }, keep: 9 });
+        }
+        return out;
+      },
+    };
+    // The rollback's compare-and-swap is fenced on the row it read, so the load that moved it wins.
+    await expect(rollbackSegment(SEG, 0, { ...w.deps, storage: racing })).rejects.toBeInstanceOf(
+      WriteConflictError,
+    );
+    const a = await agreement(w);
+    expect(a.row.currentGen).toBe(2);
+    expect(a.described).toEqual({ cardinality: 5, metadata: { run: 'c' } });
+    expect(a.agrees).toBe(true);
+  });
+
+  it('an unguarded load fences on the row too, so a load that published first keeps its summary', async () => {
+    const w = await world();
+    await loadSegment(SEG, [1, 2, 3], w.deps, { metadata: META_A, keep: 9 });
+    let other = false;
+    const racing: IStorageDriver = {
+      ...w.storage,
+      capabilities: () => w.storage.capabilities(),
+      getTail: (k, m) => w.storage.getTail(k, m),
+      getRange: (k, o, l) => w.storage.getRange(k, o, l),
+      delete: (k) => w.storage.delete(k),
+      list: (r) => w.storage.list(r),
+      putImmutable: async (k, fn) => {
+        const out = await w.storage.putImmutable(k, fn);
+        if (!other) {
+          other = true;
+          // Another load publishes, one above this one's object, with other ids and other metadata.
+          await loadSegment(SEG, [50], w.deps, { metadata: META_B, keep: 9, allowEmpty: true });
+        }
+        return out;
+      },
+    };
+    const r = await loadSegment(
+      SEG,
+      [1, 2, 3, 4, 5, 6],
+      { ...w.deps, storage: racing },
+      { allowEmpty: true, metadata: { run: 'c' }, keep: 9 },
+    );
+    expect(r).toMatchObject({ published: false, reason: 'superseded' });
+    const a = await agreement(w);
+    expect(a.row.currentGen).toBe(2);
+    expect(a.described).toEqual({ cardinality: 1, metadata: META_B });
+    expect(a.agrees).toBe(true);
   });
 });

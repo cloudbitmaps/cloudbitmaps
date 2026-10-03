@@ -55,6 +55,8 @@ export const ROUTED: readonly string[] = [
   'tests/core/segment-discovery.test.ts',
   'tests/core/storage-source-heal-open.test.ts',
   'tests/core/subject-erasure.test.ts',
+  'tests/core/summary-lifecycle.test.ts',
+  'tests/core/summary-sequences.property.test.ts',
   'tests/core/subject-report-fresh.test.ts',
   'tests/core/union-andnot.test.ts',
   'tests/core/write-path-read-retry.test.ts',
