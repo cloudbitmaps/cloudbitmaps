@@ -73,6 +73,7 @@ import { requireCodec } from './codec';
 import type { Yielder } from './cooperative';
 import {
   openGenerationReader,
+  provesOwnObject,
   publishGeneration,
   verifyGeneration,
   writeCrbmGenerationStream,
@@ -470,7 +471,9 @@ export async function eraseIdFromSegment(
    * `0`, so the ledger read `fromGeneration: 0 → generation: 0` — the generation that *held* the bit named as
    * the one written *without* it, for an object that was never written.
    */
-  const stage = async (): Promise<EraseIdResult | { generation: number; key: GenKey }> => {
+  const stage = async (): Promise<
+    EraseIdResult | { generation: number; key: GenKey; fingerprint: string }
+  > => {
     /** Set only once the object exists in the bucket — see the note above. */
     let written: number | undefined;
     try {
@@ -499,7 +502,7 @@ export async function eraseIdFromSegment(
       const early = rowVerdict(beforeVerify);
       if (early !== null) return refused(early, written);
       await read(() => verifyGeneration(deps.storage, key, tally, cryptoAt(generation)));
-      return { generation, key };
+      return { generation, key, fingerprint: tally.fingerprint };
     } catch (err) {
       if (!isNotFoundError(err)) throw err;
       // The row decides which answer this is — but only if it can be read. A re-read that faults must not
@@ -549,7 +552,7 @@ export async function eraseIdFromSegment(
     if (!staged.erased && staged.generation !== undefined) await discardRefused(staged.generation);
     return staged;
   }
-  const { generation, key } = staged;
+  const { generation, key, fingerprint } = staged;
 
   // Read-modify-write, not merely forward-only, and the distinction is the whole correctness of this function.
   //
@@ -567,6 +570,9 @@ export async function eraseIdFromSegment(
   const published = await publishGeneration(deps.registry, key, {
     expectFrom: from,
     expectToken: fromToken,
+    // A write that ends without an answer is settled by reading the row, and a pointer at this number is this
+    // rewrite's only over the object it wrote: the footer proves it, so another incarnation's cannot pass for it.
+    holdsOwnObject: () => provesOwnObject(deps.storage, key, fingerprint),
   });
   if (!published) {
     await discardRefused(generation);

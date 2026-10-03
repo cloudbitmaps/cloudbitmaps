@@ -1,5 +1,5 @@
 import { loadSegment } from '@/core/load';
-import { openGenerationReader } from '@/core/crbm-storage-source';
+import { openGenerationReader, publishGeneration } from '@/core/crbm-storage-source';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { IntegrityError, TransientError, WriteConflictError } from '@/core/errors';
 import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
@@ -346,6 +346,66 @@ describe('a publish whose registry write ends without a definite answer reads th
     const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9 });
     expect(r).toMatchObject({ generation: 3, published: false, reason: 'superseded' });
     expect(w.writes.compareAndSwap).toBe(1);
+  });
+
+  it('an erasure whose write did not land, with another incarnation pointing at its number over its own object, is not an erasure', async () => {
+    // The registry clock never advances, so the two incarnations share a `createdAt` and only the object tells them apart.
+    const w = world();
+    await threeLoads(w);
+    w.arm({
+      kind: 'transient-unapplied',
+      meanwhile: async () => {
+        await w.storage.delete({ ...SEG, generation: 3 });
+        await w.base.delete(SEG);
+        await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 3 }, [2, 99], {
+          registry: w.base,
+        });
+      },
+    });
+    const r = await eraseIdFromSegment(SEG, 2, w.deps);
+    expect(r).toMatchObject({ erased: false, reason: 'superseded' });
+    expect(r.collected).toEqual([]);
+    expect(await idsOf(w.storage, 3)).toEqual([2, 99]);
+    expect(await generations(w.storage)).toEqual([0, 1, 2, 3]);
+  });
+
+  it('a bulk load whose create did not land, over an object replaced under its number, did not become current', async () => {
+    const w = world();
+    w.arm({
+      kind: 'transient-unapplied',
+      meanwhile: async () => {
+        await w.storage.delete({ ...SEG, generation: 0 });
+        await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [42, 43], {
+          registry: w.base,
+        });
+      },
+    });
+    const r = await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [5], {
+      registry: w.registry,
+    });
+    expect(r.becameCurrent).toBe(false);
+    expect(await idsOf(w.storage, 0)).toEqual([42, 43]);
+  });
+
+  it('a bulk load whose create landed and lost its response became current', async () => {
+    const w = world();
+    w.arm({ kind: 'land-then-transient' });
+    const r = await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [5], {
+      registry: w.registry,
+    });
+    expect(r.becameCurrent).toBe(true);
+    expect(w.writes.create).toBe(1);
+  });
+
+  it('a publish given no way to prove its object cannot settle an unanswered write that names its number', async () => {
+    const w = world();
+    w.arm({ kind: 'land-then-transient' });
+    const err = await publishGeneration(w.registry, { ...SEG, generation: 0 }).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(TransientError);
+    expect((err as Error).message).toMatch(/gave no way to tell its own object/);
+    expect(w.writes.create).toBe(1);
   });
 
   it('an erasure rewrite whose compare-and-swap landed and lost its response completes, written once', async () => {

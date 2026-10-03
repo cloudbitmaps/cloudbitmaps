@@ -1081,6 +1081,8 @@ export interface StreamWriteResult {
   readonly chunkKeys: number[];
   /** Total ids written. */
   readonly cardinality: number;
+  /** The fingerprint of what this call wrote ({@link CrbmReader.fingerprint}), which tells it from another object under its key. */
+  readonly fingerprint: string;
 }
 
 /**
@@ -1103,6 +1105,7 @@ export async function writeCrbmGenerationStream(
   // already-resident chunks resolves on a microtask — so it needs the same periodic macrotask as the
   // non-streaming writer above.
   const tick = yieldEvery(options.clock);
+  let identity: { readonly size: number; readonly footerCrc: number } | undefined;
   const { size, sha256 } = await driver.putImmutable(key, async (sink) => {
     const writer = new CrbmWriter(sink, { generation: key.generation, crypto: options.crypto });
     for await (const { chunkKey, bitmap } of chunks) {
@@ -1115,8 +1118,20 @@ export async function writeCrbmGenerationStream(
       if (pause !== null) await pause;
     }
     await writer.finish();
+    identity = writer.identity;
   });
-  return { size, sha256, chunkKeys, cardinality };
+  if (identity === undefined) {
+    throw new IntegrityError(
+      `the driver committed ${key.segment}.${key.generation} without writing it`,
+    );
+  }
+  return {
+    size,
+    sha256,
+    chunkKeys,
+    cardinality,
+    fingerprint: fingerprintFor(identity.size, identity.footerCrc),
+  };
 }
 
 /**
@@ -1234,7 +1249,9 @@ export async function publishGeneration(
     /**
      * Whether the object under `key` is the one the caller wrote, and throws when it cannot tell. Asked only when a
      * registry write failed and the row then names `key.generation`, to tell this publish's write from another
-     * writer's at the same number. Without it the pointer and the incarnation decide alone.
+     * writer's at the same number. Every caller that writes the object passes it. Without it, a write that ended
+     * without an answer over a row that names `key.generation` cannot be settled: the publish throws
+     * {@link TransientError} and the caller keeps its object.
      */
     holdsOwnObject?: () => Promise<boolean>;
   } = {},
@@ -1385,6 +1402,10 @@ export async function publishGeneration(
 /**
  * Whether `now` shows the effect of a publish's write that was made against `before`: an active row, on the same
  * incarnation (a `create` has none to compare), whose pointer names `key.generation`, over the caller's own object.
+ *
+ * The object is always proved, never assumed: `createdAt` is a clock stamp, and two incarnations of a name can share
+ * one, so the pointer and the incarnation alone cannot say whose write this is. With no proof to ask for, the answer
+ * cannot be given, and that is an unknown outcome, never a guess.
  */
 async function landedHere(
   now: RegistryRecord | null,
@@ -1394,7 +1415,14 @@ async function landedHere(
 ): Promise<boolean> {
   if (now === null || now.status === 'destroyed' || now.currentGen !== key.generation) return false;
   if (before !== null && now.createdAt !== before.createdAt) return false;
-  return holdsOwnObject === undefined || (await holdsOwnObject());
+  if (holdsOwnObject === undefined) {
+    throw new TransientError(
+      `publish of "${key.segment}" generation ${key.generation}: whether its registry write landed could not be ` +
+        `settled, since the caller gave no way to tell its own object from another's. Its object is kept; re-run the ` +
+        `write, which numbers past it.`,
+    );
+  }
+  return holdsOwnObject();
 }
 
 /** Whether two reads of a row saw it unwritten in between: the same token, or no row both times. */
@@ -1719,6 +1747,7 @@ export async function bulkLoadCrbmGeneration(
     const becameCurrent = await publishGeneration(options.registry, key, {
       wrappedDeks: newWrapped,
       cleartext: crypto === undefined,
+      holdsOwnObject: () => provesOwnObject(driver, key, fingerprint),
     });
     // Audit the publish only when this generation actually *became* the current one — not when a
     // forward-only publish no-oped because a newer generation was already current (the event's contract is
