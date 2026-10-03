@@ -927,7 +927,9 @@ export class CloudRoaring {
     op: string,
     options?: MaterializeOptions,
   ): Promise<MaterializeResult> {
-    const deps = this.lifecycleDeps(op);
+    // A materialisation's `keep` collects every generation below the new one beyond it, which a destination that
+    // earlier materialisations kept in full needs a listing for.
+    const deps = { ...this.lifecycleDeps(op), collectByListing: true };
     let result: Awaited<ReturnType<typeof loadSegment>>;
     try {
       result = await loadSegment(dest, ids, deps, {
@@ -1391,12 +1393,20 @@ export class CloudRoaring {
    * so it leaves the orphan rather than risk deleting live data. The orphan is an ordinary generation once a later
    * one is current above it, and collection counts it within `keep`.
    *
+   * **Collection is by name for the default `keep`.** With `keep` of 0 or 1, a load that found nothing above the
+   * pointer deletes the one generation its publish pushed out of the window and lists nothing; it lists the segment's
+   * objects on every sixteenth generation, and on any load that met an object above the pointer or whose guard
+   * found the current generation's object gone, to take what the name-only passes leave, such as the generations an
+   * earlier, wider `keep` held. `keep` of 2 or more lists on every load. {@link LoadResult.collected} then names what
+   * the pass deleted by name, and that generation may have been gone already.
+   *
    * What it **throws** for is a fault rather than an outcome: invalid options or ids, and a crypto-shredded
    * segment (`ValidationError`); a key the keystore cannot provide (`KeyUnavailableError`); a current generation
    * that will not open when a guard reads its size (`IntegrityError`); a driver failure; and a collection pass
-   * that could not prove the segment was still the same one (`WriteConflictError`). The last can be raised
-   * **after** the publish already landed, so a throw does not by itself mean the load did not take effect —
-   * re-read the pointer rather than assuming.
+   * by listing that could not prove the segment was still the same one (`WriteConflictError`). That one, and a
+   * failure in the collection's own reads or deletes, can be raised **after** the publish already landed, so a throw
+   * does not by itself mean the load did not take effect — re-read the pointer rather than assuming. A collection by
+   * name that finds the segment changed returns an empty `collected` instead.
    *
    * **A `TransientError` can leave the publish unsettled, and deletes nothing.** The generation's object is sent
    * again after a throttle where the backend allows it (a write id tells a first send that landed from another
@@ -1892,10 +1902,12 @@ export interface MaterializeOptions extends CombineOptions {
    * Generations to keep below the new pointer — see {@link LoadOptions.keep}. A value that is not a non-negative
    * integer throws `ValidationError`.
    *
-   * **Defaults to keeping everything**, unlike `load()`, which keeps 1 and collects the rest. An operator's
+   * **Defaults to keeping everything**, unlike `load()`, which keeps 1 and collects what it supersedes. An operator's
    * recovery story can depend on a materialisation collecting nothing: `rollbackSegment` refuses a target that
    * has been collected. Pass a number to collect on the way through; `0` keeps only the
-   * generation this call publishes.
+   * generation this call publishes. It collects by listing the destination, so it clears every generation below the
+   * new one beyond `keep`, however many earlier calls kept, where a `load()` deletes by name the one generation its
+   * publish pushes out of the window.
    */
   readonly keep?: number;
 }

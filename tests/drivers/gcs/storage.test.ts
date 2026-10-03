@@ -189,3 +189,25 @@ describe('GcsStorageDriver — what a tail read costs', () => {
     expect(calls).toEqual([{ end: -40, decompress: false }]);
   });
 });
+
+// Collecting by name deletes one generation without knowing whether an object is there, so a delete is one request
+// that asks the SDK to treat a missing object as success.
+describe('GcsStorageDriver — what a delete costs', () => {
+  it('makes one delete call with ignoreNotFound, so an absent object is no error', async () => {
+    const calls: { name: string; options: unknown }[] = [];
+    const storage = {
+      bucket: () => ({
+        file: (name: string) => ({
+          delete: async (options: unknown) => {
+            calls.push({ name, options });
+          },
+        }),
+      }),
+    } as unknown as Storage;
+    const driver = new GcsStorageDriver({ storage, bucket: 'b', prefix: 'p' });
+    await expect(driver.delete({ segment: 's', generation: 3 })).resolves.toBeUndefined();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.name).toMatch(/s\.3\.crbm$/);
+    expect(calls[0]?.options).toEqual({ ignoreNotFound: true });
+  });
+});

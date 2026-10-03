@@ -19,6 +19,7 @@ export const ROUTED: readonly string[] = [
   'tests/bench/calibrate-guards.test.ts',
   'tests/bench/calibrate-samples.test.ts',
   'tests/bench/calibrate-stages.test.ts',
+  'tests/core/collect-by-name.test.ts',
   'tests/core/cost.test.ts',
   'tests/core/drop-segment.test.ts',
   'tests/core/due-index-fast-sweep.test.ts',
