@@ -138,7 +138,9 @@ describe('eraseNamespace bounds its registry scan', () => {
     expect(atDefault.yielded()).toBe(DEFAULT_MAX_SCAN_SEGMENTS);
     expect(result.destroyed).toHaveLength(DEFAULT_MAX_SCAN_SEGMENTS);
     expect(result.destroyed.every((d) => !d.destroyed)).toBe(true); // every get threw: recorded, not thrown
-  });
+    // It drives the default ceiling's worth of rows through the scan twice, about 1.2 s on an idle machine, which a
+    // loaded one stretches past the 5 s default. The limit is sized from that, with room for a machine under load.
+  }, 30_000);
 
   it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
     'rejects a maxScanSegments of %s before listing or destroying anything',

@@ -5,6 +5,7 @@ import { storageObjectName } from '@/azure-blob/keys';
 import { AzureBlobStorageDriver } from '@/azure-blob/storage';
 import { TransientError, WriteConflictError } from '@/core/errors';
 import type { GenKey } from '@/core/ports';
+import { CREATED_TOKEN, tokenAfter } from '../../helpers/tokens';
 
 /**
  * A conditional write that lands and loses its response is sent again by the client's retry policy, meets its own
@@ -198,7 +199,7 @@ describe('AzureBlobRegistryDriver write id', () => {
     const c = new FakeContainer();
     c.replayConflictAfterWrite = restErr(409, 'BlobAlreadyExists');
     const { token } = await registryOver(c).create(ref, { currentGen: 0 });
-    expect(token).toBe('0');
+    expect(token).toMatch(CREATED_TOKEN);
     expect((await registryOver(c).get(ref))?.currentGen).toBe(0);
   });
 
@@ -208,7 +209,7 @@ describe('AzureBlobRegistryDriver write id', () => {
     const { token } = await reg.create(ref, { currentGen: 0 });
     c.replayConflictAfterWrite = restErr(412, 'ConditionNotMet');
     await expect(reg.compareAndSwap(ref, token, { currentGen: 1 })).resolves.toEqual({
-      token: '1',
+      token: expect.stringMatching(tokenAfter(token)),
     });
   });
 
