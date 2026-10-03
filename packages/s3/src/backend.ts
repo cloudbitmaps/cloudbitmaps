@@ -83,9 +83,10 @@ export interface S3StorageOptions {
   readonly now?: () => number;
   /**
    * Whether the registry removes a deleted row for good, by a `DeleteObject` sent with `If-Match`, rather than leaving
-   * a tombstone a full listing reads forever. Defaults to `true` on AWS S3 and to `false` when the client has a custom
-   * `endpoint`: set it for an S3-compatible store only once you know the store applies `If-Match` on a delete. MinIO,
-   * for one, ignores it.
+   * a tombstone a full listing reads forever. Defaults to `true` when the host the client resolves is an AWS S3 host,
+   * whichever way its endpoint was set (`endpoint`, `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL`, the shared config file),
+   * and to `false` for any other host: set it for an S3-compatible store only once you know the store applies `If-Match`
+   * on a delete. MinIO, for one, ignores it. It is never `true` for an SDK that does not send the header.
    */
   readonly conditionalDelete?: boolean;
 }

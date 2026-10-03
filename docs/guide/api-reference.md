@@ -106,9 +106,18 @@ The registry needs delete permission on its prefix for it.
 
 | Backend | Default | Why |
 |---|---|---|
-| `S3Storage` | `true` with no `endpoint` and a client without one; `false` with a custom endpoint | AWS documents `If-Match` on `DeleteObject` for general purpose and directory buckets. An S3-compatible store may accept the header and ignore it, and MinIO does, so a client with an endpoint of its own keeps tombstones until you set `true`. A VPC endpoint is a custom endpoint too |
+| `S3Storage` | `true` when the host the client resolves is an AWS S3 host; `false` for any other host, or one that cannot be resolved | AWS documents `If-Match` on `DeleteObject` for general purpose and directory buckets. An S3-compatible store may accept the header and ignore it, and MinIO does, so a client that sends to one keeps tombstones until you set `true`. The host is the one the SDK resolves for a request, so an endpoint set by `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL` or an `endpoint_url` in the shared config file counts as a constructor `endpoint` does; an AWS regional, FIPS, dual-stack or VPC interface host is AWS |
 | `GcsStorage` | `true` on the public endpoint; `false` with a custom `apiEndpoint` | GCS applies `ifGenerationMatch` on a delete; fake-gcs-server ignores it |
 | `AzureBlobStorage` | `true` | Azure Blob applies `If-Match` on Delete Blob, and Azurite does too |
+
+**The S3 default is read from the client, once, before the registry's first request.** The registry serialises the
+requests it will send through the client's own stack, without sending anything, and reads back the host and the
+headers. Until that first read or listing, `capabilities().conditionalDelete` reads `false` unless you set the option.
+It also checks that the SDK sends the preconditions the registry relies on: an `@aws-sdk/client-s3` whose model lacks a
+member drops it from the request without a word. A `DeleteObject` that would go out without `If-Match` keeps the row
+tombstoned, whatever `conditionalDelete` says, and a `PutObject` that would go out without `If-None-Match` (a create) or
+`If-Match` (a compare-and-swap) is refused with `ValidationError` before anything is sent, since it would overwrite
+instead of failing. Set `conditionalDelete: true` or `false` to override the host; it never overrides the SDK.
 
 Whether real S3 and real GCS refuse a stale precondition on a delete is checked by a probe against real buckets
 (`tests/integration/real-cloud-conditional-delete.test.ts`), which the integration lane, on emulators that ignore it,

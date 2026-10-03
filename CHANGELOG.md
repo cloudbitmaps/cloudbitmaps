@@ -75,10 +75,14 @@ so, and so do the module headers in the code.
   absent, every delete leaves a tombstone. The cloud registries remove a row with `DeleteObject` under `If-Match` (sent
   once, like the S3 writes), a GCS delete under `ifGenerationMatch`, and Delete Blob under `ifMatch`, each set to the
   version the registry read; a precondition that no longer holds, or an object already gone, is a
-  `WriteConflictError`, and the registry re-reads. The option defaults to `true` for AWS S3 (a client with no custom
-  endpoint), GCS on its public endpoint and Azure Blob, and to `false` for an S3 or GCS client with an endpoint of its
-  own: MinIO and fake-gcs-server accept the precondition on a delete and ignore it, and on such a store two sweepers
-  and a re-create of the name could delete a live row. A value that is not a boolean is refused with
+  `WriteConflictError`, and the registry re-reads. The option defaults to `true` for Azure Blob, for GCS on its public endpoint, and for an
+  S3 client whose resolved host is an AWS S3 host, and to `false` for a GCS client with an endpoint of its own and an S3
+  client that sends anywhere else: MinIO and fake-gcs-server accept the precondition on a delete and ignore it, and on
+  such a store two sweepers and a re-create of the name could delete a live row. The S3 host is the one the SDK
+  resolves, so an endpoint set by `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL` or an `endpoint_url` in the shared config
+  file counts as a constructor `endpoint` does, and an AWS regional, FIPS, dual-stack or VPC interface host is AWS. It is
+  read from the client once, before the registry's first request, without sending one; until then
+  `capabilities().conditionalDelete` reads `false` unless the option is set. A value that is not a boolean is refused with
   `ValidationError`. The in-memory and local-filesystem registries report `true`. For driver authors,
   `ObjectRegistryStore` may implement `delete(key, { version })` and set `conditionalDelete: true` to say its backend
   applies the precondition; with both, `ObjectStoreRegistry` removes rows rather than tombstoning them. Whether real S3
@@ -190,6 +194,18 @@ so, and so do the module headers in the code.
   and `requestsPerPointerRead` at its default of 1.
 
 ### Fixed
+
+- **The S3 registry no longer assumes the SDK sends the headers it relies on.** Its create sends `If-None-Match` and its
+  compare-and-swap `If-Match` on `PutObject`, and its conditional delete sends `If-Match` on `DeleteObject`. An
+  `@aws-sdk/client-s3` whose model lacks a member drops it from the request without a word, so on such an SDK a
+  compare-and-swap lands as a plain overwrite and a concurrent writer's change is lost with no error, and a conditional
+  delete removes whatever is there. The declared range (`>=3.645.0 <4`) was set from a measurement of `If-None-Match`
+  alone, the first SDK that sends it; no measurement of the first SDK that sends `If-Match` on either call exists, so
+  the range may include one that does not. Before its first request the registry now serialises each of the three
+  through the client's own stack, sending nothing, and refuses a write the SDK would send without its precondition
+  (`ValidationError` naming the header; upgrade `@aws-sdk/client-s3`), and leaves a row tombstoned when a `DeleteObject`
+  would go out without `If-Match`, whatever `conditionalDelete` says. A client it cannot read (a test double) is not
+  refused.
 
 - **An Azure Blob range or tail read whose connection drops part-way through the body is a `TransientError`.** The
   SDK fails such a body with an `AbortError`, which reached the caller as it was, so the store's read retry did not run

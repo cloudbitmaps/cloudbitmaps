@@ -109,6 +109,12 @@ object and `If-Match` for the pointer.
 - **Use `@aws-sdk/client-s3` 3.645.0 or later if you pass your own `client`.** Measured against MinIO, 3.640.0
   silently overwrites an existing object, which loses a published generation without an error. `@cloudbitmaps/s3`
   never resolves its own SDK below the floor. If your own code imports the SDK, to build that `client`, add it to your own `package.json` too: pnpm does not let your code import a dependency of a dependency.
+- **The registry checks the SDK for the other headers it sends.** That floor is measured for `If-None-Match` alone. The
+  registry's compare-and-swap sends `If-Match` on `PutObject`, and its conditional delete sends `If-Match` on
+  `DeleteObject`, and an SDK drops a member its model lacks without a word. Before its first request the registry
+  serialises each of the three through your client, sending nothing, and refuses a write the SDK would send without its
+  precondition (`ValidationError`, naming the header) and tombstones instead of deleting when a `DeleteObject` would go
+  out without `If-Match`. If you see that error, upgrade `@aws-sdk/client-s3`.
 
 ## Reliability: retries, backoff & timeouts
 

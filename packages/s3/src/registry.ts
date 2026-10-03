@@ -7,8 +7,10 @@
  * and Azure registries cannot drift from one another.
  *
  * **A delete removes the row for good** with a `DeleteObject` under `If-Match: <etag>`, sent once like the writes,
- * when `conditionalDelete` is on: by default for AWS S3, and off for a client with a custom endpoint, since an
- * S3-compatible store may accept the header and ignore it (MinIO does).
+ * when `conditionalDelete` is on. By default it is on when the host the client resolves is an AWS S3 host, whichever way
+ * the endpoint was set (a constructor `endpoint`, `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL`, the shared config file), and
+ * off for any other, since an S3-compatible store may accept the header and ignore it (MinIO does). The client is asked
+ * once, before the registry's first request, and the SDK is checked to send the header at all ({@link probeClient}).
  *
  * **The atomic swap is offloaded to S3's conditional writes** (GA Nov 2024): `If-None-Match: *` for
  * create-only and `If-Match: <etag>` for compare-and-swap, so a concurrent writer between our read and our
@@ -50,6 +52,8 @@ import {
 import { resolveReadTimeoutMs, timedRead } from './read-timeout';
 import { isConditionalConflict, isNotFound, isTransient } from './s3-errors';
 import { sendOnce } from './send-once';
+import { isAwsS3Host, probeClient } from './client-probe';
+import type { ClientFacts } from './client-probe';
 
 export interface S3RegistryDriverOptions {
   /** A constructed S3 client (point its `endpoint` at MinIO for local/integration use). */
@@ -75,26 +79,78 @@ export interface S3RegistryDriverOptions {
   /**
    * Whether a delete removes a row for good, by a `DeleteObject` sent with `If-Match: <the ETag it read>`, rather than
    * leaving a tombstone. Only a row born with an incarnation id is removed; a row a release before 0.12 wrote is
-   * always tombstoned. Defaults to `true` for a client with no custom endpoint, which is AWS S3, where `If-Match` on
-   * `DeleteObject` is documented for general purpose and directory buckets, and to `false` for a client with an
-   * `endpoint`. An S3-compatible store must apply the precondition before you set it there: MinIO, for one, ignores it
-   * and deletes anyway, and on such a store two sweepers and a re-create can delete a live row.
+   * always tombstoned.
+   *
+   * Defaults to `true` when the host the client resolves is an AWS S3 host (`*.amazonaws.com`, `*.amazonaws.com.cn`: the
+   * FIPS, dual-stack, access-point and VPC interface forms included), where `If-Match` on `DeleteObject` is documented
+   * for general purpose and directory buckets, and to `false` for any other host, or when the host cannot be resolved.
+   * The host is the one the SDK resolves for a request, so an endpoint set through `AWS_ENDPOINT_URL_S3`,
+   * `AWS_ENDPOINT_URL` or an `endpoint_url` in the shared config file counts exactly as a constructor `endpoint` does.
+   * It is resolved once, lazily: until the registry's first read or listing the answer reads `false`.
+   *
+   * Set it explicitly to override the host. An S3-compatible store must apply the precondition before you set it there:
+   * MinIO, for one, ignores it and deletes anyway, and on such a store two sweepers and a re-create can delete a live
+   * row. A `true` never overrides the SDK: one that does not send `If-Match` on a `DeleteObject` leaves the row
+   * tombstoned whatever is set.
    */
   readonly conditionalDelete?: boolean;
 }
 
-/** The calls {@link ObjectStoreRegistry} needs, in S3's dialect. Exported for the tests that drive one directly. */
+/**
+ * The calls {@link ObjectStoreRegistry} needs, in S3's dialect. Exported for the tests that drive one directly.
+ *
+ * `conditionalDelete` is the caller's explicit setting, or `undefined` to follow the client. What the client does is
+ * found out once, before the first read, listing or write ({@link probeClient}), so by the time the registry decides
+ * how to delete it has been.
+ */
 export class S3RegistryStore implements ObjectRegistryStore {
   readonly label = 'S3';
+  private probed: Promise<void> | undefined;
+  private facts: ClientFacts | undefined;
 
   constructor(
     private readonly client: S3Client,
     private readonly bucket: string,
     private readonly readTimeoutMs: number,
-    readonly conditionalDelete: boolean,
+    private readonly explicitConditionalDelete?: boolean,
   ) {}
 
-  read(key: string): Promise<ObjectRow | null> {
+  /**
+   * Whether a delete may rely on `If-Match`: the caller's setting, else whether the client's host is AWS S3, and in
+   * neither case when the SDK is seen not to send the header. `false` until the client has been asked, unless the caller
+   * vouched for the store.
+   */
+  get conditionalDelete(): boolean {
+    if (this.explicitConditionalDelete === false) return false;
+    const facts = this.facts;
+    if (this.explicitConditionalDelete === true) return facts?.sendsDeleteIfMatch !== false;
+    return facts !== undefined && facts.sendsDeleteIfMatch && isAwsS3Host(facts.host);
+  }
+
+  /** Ask the client once what it does with the registry's requests; every caller waits for the same answer. */
+  private settle(): Promise<void> {
+    this.probed ??= probeClient(this.client, this.bucket).then((facts) => {
+      this.facts = facts;
+    });
+    return this.probed;
+  }
+
+  /** Refuse a write the SDK would send without its precondition: it would land as a plain overwrite. */
+  private refuseUnfencedWrites(expect: 'absent' | { version: string }): void {
+    const header = expect === 'absent' ? 'If-None-Match' : 'If-Match';
+    const sent =
+      expect === 'absent' ? this.facts?.sendsPutIfNoneMatch : this.facts?.sendsPutIfMatch;
+    if (sent === false) {
+      throw new ValidationError(
+        `the S3 client does not send ${header} on a PutObject: its @aws-sdk/client-s3 predates the member, so a ` +
+          `registry write would overwrite whatever is there and lose a concurrent writer's change. Use a newer ` +
+          `@aws-sdk/client-s3; the registry sent nothing`,
+      );
+    }
+  }
+
+  async read(key: string): Promise<ObjectRow | null> {
+    await this.settle();
     return timedRead('GetObject', this.readTimeoutMs, async (options) => {
       let res;
       try {
@@ -135,6 +191,8 @@ export class S3RegistryStore implements ObjectRegistryStore {
     body: Uint8Array,
     expect: 'absent' | { version: string },
   ): Promise<void> {
+    await this.settle();
+    this.refuseUnfencedWrites(expect);
     try {
       // Sent once: a replay of a write that landed would fail its own precondition, and read as a lost race.
       await sendOnce(
@@ -175,6 +233,7 @@ export class S3RegistryStore implements ObjectRegistryStore {
   }
 
   async *listKeys(prefix: string): AsyncIterable<string> {
+    await this.settle();
     let token: string | undefined;
     do {
       let res;
@@ -213,17 +272,9 @@ function mapError(err: unknown): unknown {
   return err;
 }
 
-/**
- * Whether `client` was built with an endpoint of its own: an S3-compatible store, or a private AWS endpoint. The SDK
- * records it on the resolved config; a client without that config (a test double) reads as AWS.
- */
-function hasCustomEndpoint(client: S3Client): boolean {
-  return (client as { config?: { isCustomEndpoint?: unknown } }).config?.isCustomEndpoint === true;
-}
-
-/** {@link S3RegistryDriverOptions.conditionalDelete}, checked, or its default for `client`. */
-function resolveConditionalDelete(value: unknown, client: S3Client): boolean {
-  if (value === undefined) return !hasCustomEndpoint(client);
+/** {@link S3RegistryDriverOptions.conditionalDelete}, checked: `undefined` leaves the decision to the client. */
+function checkConditionalDelete(value: unknown): boolean | undefined {
+  if (value === undefined) return undefined;
   if (typeof value !== 'boolean') {
     throw new ValidationError(`conditionalDelete must be a boolean; got ${String(value)}`);
   }
@@ -237,7 +288,7 @@ export class S3RegistryDriver extends ObjectStoreRegistry {
         options.client,
         options.bucket,
         resolveReadTimeoutMs(options.readTimeoutMs),
-        resolveConditionalDelete(options.conditionalDelete, options.client),
+        checkConditionalDelete(options.conditionalDelete),
       ),
       normalizeObjectPrefix(options.prefix),
       options.now ?? ((): number => Date.now()),

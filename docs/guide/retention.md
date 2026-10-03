@@ -410,19 +410,21 @@ because deleting the row is what makes the name writable again:
 **What the purge removes.** On a backend whose registry can delete a row only while it is unchanged, the purge removes
 the row from the bucket for good, with a delete the store applies only to the version the sweep judged: S3
 `DeleteObject` with `If-Match`, GCS with `ifGenerationMatch`, Azure Blob with `ifMatch`. The registry says which it is:
-`backend.registry.capabilities().conditionalDelete`. It is on by default for AWS S3, for GCS on its public endpoint,
-for Azure Blob, and for the local-filesystem and in-memory backends. A full sweep then reads what is live and what is
+`backend.registry.capabilities().conditionalDelete`. It is on by default for S3 when the host the client resolves is an
+AWS S3 host, for GCS on its public endpoint, for Azure Blob, and for the local-filesystem and in-memory backends. A full sweep then reads what is live and what is
 inside its grace, not every name the namespace ever held: after 10,000 short-lived segments are created, retired and
 purged, a sweep of that namespace makes one registry read, for the one segment still live.
 
 Where the registry cannot, the purge leaves a small tombstone in the row's place, and every later full sweep reads it,
 one request per row. That is the case:
 
-- on an S3 client with a custom `endpoint` (MinIO, Ceph, R2) and a GCS client with a custom `apiEndpoint`, by default.
-  Such a store may accept the precondition and ignore it, and MinIO and fake-gcs-server both do: there, a delete
-  conditioned on a version that has moved on deletes anyway, and two sweepers and a re-create of the name could
-  delete a live row. Set `conditionalDelete: true` on the backend only once you know your store applies it. An AWS
-  endpoint you name yourself, such as a VPC endpoint, reads as custom too, and AWS S3 applies the precondition there;
+- on an S3 client that sends to a host other than AWS S3 (MinIO, Ceph, R2) and a GCS client with a custom `apiEndpoint`,
+  by default. Such a store may accept the precondition and ignore it, and MinIO and fake-gcs-server both do: there, a
+  delete conditioned on a version that has moved on deletes anyway, and two sweepers and a re-create of the name could
+  delete a live row. Set `conditionalDelete: true` on the backend only once you know your store applies it. For S3 the
+  host is the one the SDK resolves, however the endpoint was set: a constructor `endpoint`, `AWS_ENDPOINT_URL_S3`,
+  `AWS_ENDPOINT_URL` or an `endpoint_url` in the shared config file. An AWS regional, FIPS, dual-stack or VPC interface
+  endpoint is an AWS S3 host, and AWS S3 applies the precondition there;
 - with `conditionalDelete: false` on any backend;
 - for a row written by a release before 0.12, always. Its token is a bare counter, and a process still on that
   release, re-creating the name over nothing, would start the counter at 0 again and issue the deleted row's tokens,
