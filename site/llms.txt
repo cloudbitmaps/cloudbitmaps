@@ -78,14 +78,13 @@ on every combine, yields only the ids in (after, through] and fetches only the c
 
 Benchmarked against real S3 in us-east-1 — not an emulator — with the request counts read off the AWS SDK layer.
 With the pointer in the same bucket as the data, the topology that ships: the median cold intersect of two
-500,000-id segments sharing 100 of their 1,999 chunks made 206 GETs as measured, $82.40 per million, requesting
-only the shared chunks. Inside the region, where each pointer is read once, the same intersect is expected at
-204 GETs, $81.60 per million. Writing and publishing a segment is 2 PUTs and 3 GETs, $11.20 per million, and
-store.load(), which also checks its generation number and collects, is expected at about a tenth more on average. For comparison: an always-on
+500,000-id segments sharing 100 of their 1,999 chunks made 204 GETs as measured, $81.60 per million, requesting
+only the shared chunks, and took 492.69 ms at the median from inside the region. A segment's first store.load() is
+2 PUTs and 4 GETs, $11.60 per million. For comparison: an always-on
 Redis-HA line of $346/month standing, and a modelled $0.03/month for 1.2 GiB of segments at rest. The run was
-driven from outside the region, so no latency is published. One crossover is published, in GETs: past 329.15
+driven from AWS CloudShell inside the region. One crossover is published, in GETs: past 329.15
 sustained GETs a second, with every read missing the cache, metered GETs pass the standing cluster — a warmer
-cache moves that line up. For cold intersects of the shape above, at 206 GETs each, that line is 1.6 intersects
+cache moves that line up. For cold intersects of the shape above, at 204 GETs each, that line is 1.6 intersects
 a second.
 
 ## Coming from Redis bitmaps
@@ -141,7 +140,7 @@ backend's registry rather than the store, so a store beside them is told with st
 If you need a sub-millisecond p99, use Redis. Our cache is in-process RAM, so on a hit there is nothing between
 us; the limit is the tail: a check that misses the cache costs a ranged GET against object storage, where an
 in-process RAM store costs a memory read. CloudBitmaps is for sets that are large, mostly read, and shouldn't
-cost $346/month to keep warm. In-region latency is not yet calibrated and no in-region figure is published.
+cost $346/month to keep warm. The in-region run measured a cold intersect of two segments at 492.69 ms and a cold count() at 27.48 ms.
 
 ## Status
 

@@ -7,9 +7,7 @@ Three illustrative deployments, small, medium and large, priced by the library's
 would hold its data.** The workloads are made up; the arithmetic is not. Each workload is a guess at what a typical
 deployment of that size looks like, not anyone's measured system. To price your own, see [Price your own](#price-your-own).
 
-**There is no latency on this page.** The loaded read path has not been timed inside a region yet, so how fast
-these deployments would answer is not published; the [benchmarks page](../benchmarks.md#what-is-still-owed) keeps
-it on the list of what is owed.
+**There is no latency on this page.** How fast these deployments would answer is not modelled here. The loaded read path was timed inside a region for one shape, and the [benchmarks page](../benchmarks.md#real-cloud-calibration--aws) has the figures.
 
 ## Contents
 
@@ -200,7 +198,7 @@ real segment at its measured size and the store's own `cache.genTtlMs`.
 
 ## What this page does not establish
 
-- **Latency.** Nothing here says how fast a query returns; the in-region run is owed.
+- **Latency.** Nothing here says how fast a query returns; the [in-region run](../benchmarks.md#real-cloud-calibration--aws) measured one shape.
 - **A warm reader's intersects.** They are priced cold: an upper bound on their requests, but for what a call reads
   again when it outlives `cache.genTtlMs` (a pointer, and an index once the segment's row has changed, as a load's
   publish changes it) or the reader cache evicts its reader part-way through (a pointer and an index), and a second

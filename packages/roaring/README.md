@@ -69,10 +69,10 @@ name.
 
 ## What it costs
 
-Measured against real S3 in `us-east-1`, with the pointer in the same bucket as the data: the median cold `intersect`
-of two 500,000-id segments sharing 100 of their 1,999 chunks made 206 GETs, **$82.40 per million**, requesting only
-the shared chunks. Inside the region it is expected at 204 GETs, $81.60 per million. Writing and publishing a segment
-is **$11.20 per million**, pointer included, from its measured requests at list prices. A cold `count()` is one pointer read: it reads no payload and no object.
+Measured against real S3 in `us-east-1`, from inside the region, with the pointer in the same bucket as the data: the median cold `intersect`
+of two 500,000-id segments sharing 100 of their 1,999 chunks made 204 GETs, **$81.60 per million**, requesting only
+the shared chunks, and took 492.69 ms from inside the region. A segment's first `store.load()`
+is **$11.60 per million**, pointer included, from its measured requests at list prices. A cold `count()` is one pointer read: it reads no payload and no object.
 
 The trade is stated plainly. A membership check that misses the cache costs a ranged GET against object storage,
 where an in-process store costs a memory read. If you need sub-millisecond answers on a working set that fits a

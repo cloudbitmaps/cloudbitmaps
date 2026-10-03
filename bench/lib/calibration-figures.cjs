@@ -749,6 +749,7 @@ function derive(run, src) {
       sequentialFloorMs: (putsPerSingle + getsPerLoad) * run.network.rttFloorMs,
     },
     elapsedMs: run.elapsedMs,
+    stages: stageFiguresOf(run, src.pricing),
     price: { getUSD, putUSD, ...src.pricing },
     genTtlMs: src.genTtlMs,
     secondsPerMonth: src.secondsPerMonth,
@@ -973,6 +974,76 @@ const measuredValue = (v) => bind(v, MEASURED, ['measured'], false);
 const expectedValue = (v) => bind(v, MEASURED, ['expected']);
 const discardValue = (v) => bind(v, ['discard'], ['discard']);
 
+/**
+ * What a run's stages measured beyond the packed cold intersect, read out of `run.phases`: every stage's percentiles
+ * and request counts, the load rates, the sweep's overlaps, and the figures that follow from them: a GET round (a
+ * stage's median over the rounds it measured), the sweep's scaling, and the projected allowance at list price. A
+ * report may state each one and no other; nothing here is a literal.
+ */
+function stageFiguresOf(run, pricing) {
+  const out = {
+    ms: [],
+    millions: [],
+    gets: [],
+    puts: [],
+    chunkReads: [],
+    tailReads: [],
+    pointerReads: [],
+    bytes: [],
+    chunks: [],
+    segments: [],
+    ids: [],
+    intersects: [],
+    ratios: [],
+    usd: [],
+  };
+  const walk = (o) => {
+    if (o === null || typeof o !== 'object') return;
+    if (Array.isArray(o)) {
+      for (const e of o) walk(e);
+      return;
+    }
+    for (const [k, v] of Object.entries(o)) {
+      // A discarded sample's requests are the report's to state beside the words for a discard, not a stage's.
+      if (k === 'discarded') continue;
+      if (typeof v !== 'number') {
+        walk(v);
+        continue;
+      }
+      if (/^p(50|95|99)ms$/.test(k)) out.ms.push(v);
+      else if (k === 'get' || k === 'gets' || k === 'expectedGets' || k === 'medianGets')
+        out.gets.push(v);
+      else if (k === 'put') out.puts.push(v);
+      else if (k === 'chunkReadsPerCall') out.chunkReads.push(v);
+      else if (k === 'tailReadsPerCall') out.tailReads.push(v);
+      else if (k === 'pointerReadsPerCall') out.pointerReads.push(v);
+      else if (k === 'medianPeakInFlight') out.gets.push(v);
+      else if (k === 'medianIdsPerSec') {
+        out.millions.push(v / 1e6);
+        out.ids.push(Math.round(v));
+      } else if (k === 'medianBytesPerSec') out.bytes.push(Math.round(v));
+      else if (k === 'segments' || k === 'segmentsEach') out.segments.push(v);
+      else if (k === 'k') out.chunks.push(v);
+      else if (k === 'intersects') out.intersects.push(v);
+    }
+    if (typeof o.p50ms === 'number' && typeof o.medianRounds === 'number') {
+      out.ms.push(o.p50ms / o.medianRounds);
+    }
+    if (typeof o.medianUploadBytes === 'number' && typeof o.medianObjectBytes === 'number') {
+      out.bytes.push(o.medianUploadBytes - o.medianObjectBytes);
+    }
+  };
+  walk(run.phases);
+  const sweep = run.phases?.sweep?.entries ?? [];
+  if (sweep.length === 2) out.ratios.push(sweep[1].p50ms / sweep[0].p50ms);
+  if (run.projected) {
+    out.usd.push(
+      (run.projected.put * pricing.putPerMillion + run.projected.get * pricing.getPerMillion) / 1e6,
+    );
+  }
+  return out;
+}
+
 /** Every value a page may state for this run, by unit and by counted noun — what the reverse check accepts. */
 function valuesOf(f, { withLatency }) {
   const b = f.bytes;
@@ -980,6 +1051,7 @@ function valuesOf(f, { withLatency }) {
   const u = f.upload;
   if (withLatency) {
     ms.push(f.latency.p50, f.latency.p95, f.latency.p99, f.elapsedMs, f.latency.perRequestOnPath);
+    ms.push(...f.stages.ms);
     ms.push(u.singleSeconds * 1000, u.multipartSeconds * 1000, u.sequentialFloorMs);
   }
   const sl = f.storeLoad;
@@ -989,6 +1061,7 @@ function valuesOf(f, { withLatency }) {
     1,
     f.chunksPerOperand,
     2 * f.chunksPerOperand,
+    ...(withLatency ? f.stages.gets : []),
     f.fixedGets,
     f.fixedGets + 1,
     f.fixedGets + 2,
@@ -1010,7 +1083,15 @@ function valuesOf(f, { withLatency }) {
       ? []
       : [f.discards.get, ...f.discards.samples.map((d) => d.requests.get)].map(discardValue)),
   ];
-  const put = [1, f.putsPerSingle, f.putsPerMultipart, sl.first.put, f.ledger.put, f.projected.put];
+  const put = [
+    ...(withLatency ? f.stages.puts : []),
+    1,
+    f.putsPerSingle,
+    f.putsPerMultipart,
+    sl.first.put,
+    f.ledger.put,
+    f.projected.put,
+  ];
   return {
     usd: [
       f.price.getUSD,
@@ -1025,6 +1106,7 @@ function valuesOf(f, { withLatency }) {
       f.usd.segmentMonth,
       f.usd.multipartMonth,
       f.usd.pointerRefreshMonth,
+      ...(withLatency ? f.stages.usd : []),
       bind(1e6 * f.usd.singleLoadPuts, ['puts', 'gets'], ['puts']),
       bind(1e6 * f.usd.loadGets, ['puts', 'gets'], ['gets']),
       bind(1e6 * f.usd.loadRereads, ['rereads'], ['rereads']),
@@ -1094,6 +1176,7 @@ function valuesOf(f, { withLatency }) {
       b.up,
       b.perIdSingle,
       b.perIdMultipart,
+      ...(withLatency ? f.stages.bytes : []),
       b.chunkBytesPerOperand,
       BITMAP_CONTAINER_BYTES,
       ...(withLatency ? [f.upload.singleBytesPerSec, f.upload.multipartBytesPerSec] : []),
@@ -1104,6 +1187,7 @@ function valuesOf(f, { withLatency }) {
     bits: withLatency ? [8 * f.upload.singleBytesPerSec, 8 * f.upload.multipartBytesPerSec] : [],
     ratio: [
       2, // two operands
+      ...(withLatency ? f.stages.ratios : []),
       f.price.putPerMillion / f.price.getPerMillion,
       b.multipartObject / b.object,
       ...(f.loadVia === null ? [f.usd.storeLoad.first / f.usd.singleLoad] : []),
@@ -1133,6 +1217,7 @@ function valuesOf(f, { withLatency }) {
         f.chunksPerSegment,
         f.workload.largeChunks,
         f.intersectConcurrency,
+        ...(withLatency ? f.stages.chunks.map((k) => bind(k, ['overlap'], ['overlap'])) : []),
         // The table's overlaps: a count of chunks the two segments SHARE, and nothing else.
         ...f.kRows.map((r) => bind(r.k, ['overlap'], ['overlap'])),
         Math.round(f.chunksPerSegment / 100), // the chunk-skipping diagram's scale: a hundred squares
@@ -1144,6 +1229,7 @@ function valuesOf(f, { withLatency }) {
         f.workload.sharedIds,
         f.multipartIds,
         f.largeIdsPerChunk,
+        ...(withLatency ? f.stages.ids : []),
         ARRAY_CONTAINER_MAX,
         CHUNK_SPAN,
       ],
@@ -1152,6 +1238,7 @@ function valuesOf(f, { withLatency }) {
       // at each overlap in the table as a rate.
       intersects: [
         f.intersects,
+        ...(withLatency ? f.stages.intersects : []),
         f.parity.intersectsPerMonth,
         // At ten shared chunks the table is expected throughout, so none of it is "as measured".
         bind(f.parity.kTen.perMonth, MEASURED, ['expected'], false),
@@ -1162,10 +1249,16 @@ function valuesOf(f, { withLatency }) {
         // …and at each overlap in the table, expected, and whole ones: a dollar does not buy a fraction.
         ...f.kRows.map((r) => bind(Math.floor(1 / r.usd), MEASURED, ['expected'], false)),
       ],
-      segments: [f.workload.segments, f.workload.largeSegments, 1],
+      segments: [
+        f.workload.segments,
+        f.workload.largeSegments,
+        1,
+        ...(withLatency ? f.stages.segments : []),
+      ],
       // How many samples the run discarded, and in each stage.
       discards: [f.discards.count, ...Object.values(f.discards.byStage)],
       pointerReads: [
+        ...(withLatency ? f.stages.pointerReads : []),
         f.ledger.pointerReads,
         f.ledger.loadPointerReads,
         f.pointerReadsMeasured,
@@ -1175,8 +1268,13 @@ function valuesOf(f, { withLatency }) {
         2,
         1,
       ],
-      tailReads: [f.ledger.tailReads, 2, 1],
-      chunkReads: [f.ledger.chunkReads, 2 * f.chunksPerOperand, f.chunksPerOperand],
+      tailReads: [f.ledger.tailReads, 2, 1, ...(withLatency ? f.stages.tailReads : [])],
+      chunkReads: [
+        f.ledger.chunkReads,
+        2 * f.chunksPerOperand,
+        f.chunksPerOperand,
+        ...(withLatency ? f.stages.chunkReads : []),
+      ],
       getObjects: [
         f.byCommand.GetObjectCommand,
         f.ledger.loadPointerReads,
@@ -1194,6 +1292,7 @@ function valuesOf(f, { withLatency }) {
     // The parity at ten shared chunks is from the table of cost by overlap, expected throughout, so it is never "as
     // measured", in millions or a second.
     million: [
+      ...(withLatency ? f.stages.millions : []),
       f.parity.intersectsPerMonth / 1e6,
       f.parity.loadsPerMonth / 1e6,
       bind(f.parity.kTen.perMonth / 1e6, MEASURED, ['expected'], false),

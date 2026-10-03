@@ -63,13 +63,13 @@ if (/\|[^|\n]*[Ii]ncremental[^|\n]*\|\s*\*\*\$[\d.]+ per million/.test(doc)) {
 }
 
 // ── latency: deliberately unpublished, and that has to be enforced rather than trusted ────────────────────
-// The page must not publish a millisecond latency for a read verb until an in-region run measures one. Without
-// this, quoting one is a docs edit that CI would wave through.
+// The page states a latency in prose, beside the run that measured it, and never as a bare percentile row. Without
+// this, a table of p50/p95/p99 figures with no run named beside each would be a docs edit that CI would wave through.
 const strayLatency = /\|\s*(?:\*\*)?p(?:50|95|99)(?:\*\*)?\s*\|/.exec(doc);
 if (strayLatency) {
   fail(
-    'docs/benchmarks.md states a p50/p95/p99 latency row — in-region read latency is listed as owed, not ' +
-      'measured (see "What is still owed"); publishing one needs a run behind it',
+    'docs/benchmarks.md states a p50/p95/p99 latency row — state a latency in prose, with the in-region ' +
+      'run that measured it named beside it',
   );
 }
 
@@ -126,6 +126,22 @@ if (calibrationRuns.length === 0) {
     fail(err.message);
   }
 }
+/**
+ * The anchors a run's loads have: the write and publish and a segment's first `store.load()` for a run that timed the
+ * write and publish, and the single-part and multipart `store.load()` for a run that timed that.
+ */
+const LOAD_ANCHORS =
+  singleBucket !== null && singleBucket.loadVia !== null
+    ? {
+        single: 'per million single-part store.load() calls',
+        multipart: 'per million multipart store.load() calls',
+        first: null,
+      }
+    : {
+        single: 'per million single-part write-and-publishes',
+        multipart: 'per million multipart write-and-publishes',
+        first: "per million of a segment's first store.load()",
+      };
 /** One of the run's anchors, by the name calibration-figures gives it. A name it no longer has is a failure. */
 const singleBucketFigure = (name) => {
   if (singleBucket === null) return null;
@@ -307,15 +323,11 @@ const anchors = [
     'single-bucket · 1M cold intersects, each pointer read once',
     singleBucketFigure('per million cold intersects with each pointer read once'),
   ],
-  [
-    'single-bucket · 1M writes and publishes',
-    singleBucketFigure('per million single-part write-and-publishes'),
-  ],
-  ['single-bucket · 1M multipart', singleBucketFigure('per million multipart write-and-publishes')],
-  [
-    'single-bucket · 1M first store.load()s',
-    singleBucketFigure("per million of a segment's first store.load()"),
-  ],
+  ['single-bucket · 1M single-part loads', singleBucketFigure(LOAD_ANCHORS.single)],
+  ['single-bucket · 1M multipart', singleBucketFigure(LOAD_ANCHORS.multipart)],
+  ...(LOAD_ANCHORS.first === null
+    ? []
+    : [['single-bucket · 1M first store.load()s', singleBucketFigure(LOAD_ANCHORS.first)]]),
   ['single-bucket · the whole run', singleBucketFigure('the run')],
 ];
 
@@ -341,7 +353,7 @@ const anchors = [
 // nothing else checks them.
 const MEASURED_1M = 'per million cold intersects, measured';
 const EXPECTED_1M = 'per million cold intersects with each pointer read once';
-const WRITE_1M = 'per million single-part write-and-publishes';
+const WRITE_1M = LOAD_ANCHORS.single;
 const PAGES = [
   // `mustState` names the latest run's figures a page quotes, so that replacing one — a load row that turns into
   // a per-PUT $5, say — fails even where the replacement is a value some source accounts for.
@@ -423,9 +435,9 @@ const RUN_TRIGGERS = [
   'per million cold intersects, measured',
   'GETs a cold intersect makes with each pointer read once',
   'per million cold intersects with each pointer read once',
-  'per million single-part write-and-publishes',
-  'per million multipart write-and-publishes',
-  "per million of a segment's first store.load()",
+  LOAD_ANCHORS.single,
+  LOAD_ANCHORS.multipart,
+  ...(LOAD_ANCHORS.first === null ? [] : [LOAD_ANCHORS.first]),
   'the run',
   'cold intersects the Redis line buys a month',
   'loads the Redis line buys a month',
@@ -631,7 +643,11 @@ if (singleBucket !== null) {
       }
       const [operation, perMillion, requests] = cells;
       const key = requests.replace(/\b(GET|PUT)s\b/g, '$1');
-      const want = singleBucket.rows.find((r) => r.requests === key);
+      const group = singleBucket.rows.filter((r) => r.requests === key);
+      const want = group[0];
+      // A run whose measured and expected counts are equal derives two rows with one count and one price: the panel
+      // may state them as one row or as two, and then either may say "expected".
+      const sameFigure = group.length > 1 && group.every((r) => r.perMillion === want.perMillion);
       if (want === undefined) {
         fail(`the #single-bucket panel bills "${requests}", which the run does not derive`);
         continue;
@@ -642,14 +658,17 @@ if (singleBucket !== null) {
           `the #single-bucket panel prices "${requests}" at ${perMillion}, not ${want.perMillion}`,
         );
       }
-      if ((want.label === 'expected') !== /\bexpected\b/i.test(operation)) {
+      if (!sameFigure && (want.label === 'expected') !== /\bexpected\b/i.test(operation)) {
         fail(`the #single-bucket panel's "${requests}" row must say "expected" exactly when it is`);
       }
     }
-    for (const r of singleBucket.rows) {
-      if ((seen.get(r.requests) ?? 0) !== 1) {
+    for (const key of new Set(singleBucket.rows.map((r) => r.requests))) {
+      const group = singleBucket.rows.filter((r) => r.requests === key);
+      const most = group.every((r) => r.perMillion === group[0].perMillion) ? group.length : 1;
+      const n = seen.get(key) ?? 0;
+      if (n < 1 || n > most) {
         fail(
-          `the #single-bucket panel has the "${r.requests}" row ${seen.get(r.requests) ?? 0} times, not once`,
+          `the #single-bucket panel has the "${key}" row ${n} times, not ${most === 1 ? 'once' : 'once or twice'}`,
         );
       }
     }

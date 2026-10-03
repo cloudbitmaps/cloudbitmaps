@@ -184,7 +184,7 @@ set `storage.requestsPerSizedRead: 2` and leave `requestsPerPointerRead` at 1; c
 S3 and GCS keep both defaults. Each count above is held to the engine by a test that counts its requests, on S3's
 request shape, and each backend's own tests pin the requests it makes (a pointer read in one everywhere; a tail read in
 one on GCS and two on Azure Blob), so the model moves when the engine does. The
-[benchmarks page](../benchmarks.md#the-single-bucket-bill--run-2026-09-23-94416) has the request shapes measured
+[benchmarks page](../benchmarks.md#the-in-region-run--run-2026-10-03-e13c7) has the request shapes measured
 on real S3.
 
 **See it at three sizes.** [What it costs at your size](sizing.md) prices a small, a medium and a large deployment

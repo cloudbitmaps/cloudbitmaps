@@ -163,7 +163,7 @@ A dashboard running 100 cold intersects a second over 5 GB costs **$21,445** a m
 A cold intersect of two segments sharing 100 chunks waits on a chain of requests **15 deep**: both operands' pointers, then both indexes, then the shared chunks, 8 at a time, each read from both operands together, so 16 requests are in flight, and the next chunk starts as the oldest finishes. At an even latency that is 15 request times end to end. A slow request holds up those queued behind it, so what the chain takes is for a measurement to say. A repeat served from the chunk cache makes no request within `cache.genTtlMs`, and one round of pointer reads after it.
 <!-- SIZING:DEPTH:END -->
 
-Neither is timed yet: the in-region run is owed.
+The in-region run timed one shape of cold intersect, and a cold `count()`; the [benchmarks page](../benchmarks.md#real-cloud-calibration--aws) has the figures, and the other shapes are not timed.
 
 **S3's request rate.**
 
@@ -210,7 +210,7 @@ proposed in an issue on this repo before it is built.
 
 ## What this page does not establish
 
-- **Latency.** Nothing here says how fast a query returns; the in-region run is owed.
+- **Latency.** Nothing here says how fast a query returns; the [in-region run](../benchmarks.md#real-cloud-calibration--aws) measured one shape.
 - **A warm reader's intersects.** They are priced cold: an upper bound on their requests, but for what a call reads
   again when it outlives `cache.genTtlMs` (a pointer, and an index once the segment's row has changed, as a load's
   publish changes it) or the reader cache evicts its reader part-way through (a pointer and an index), and a second

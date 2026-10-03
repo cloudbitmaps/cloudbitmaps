@@ -58,6 +58,7 @@ interface Row {
 interface Figures {
   runId: string;
   remote: boolean;
+  loadVia: string | null;
   chunksPerSegment: number;
   chunksPerOperand: number;
   byCommand: Record<string, number>;
@@ -113,6 +114,53 @@ const { int, usd } = figures.format;
 const git = (...args: string[]): string =>
   execFileSync('git', args, { cwd: ROOT, encoding: 'utf8' }).trim();
 
+/**
+ * The commits that touched an evidence file, following it through a move between evidence paths. Git's `--follow`
+ * also finds a copy source for a file that merely resembles another, such as a test fixture of the same shape, and
+ * would then count that fixture's history as the evidence's. The history is cut at the first commit that adds the
+ * file from a path outside `bench/calibration/`.
+ */
+function evidenceCommits(file: string, cwd: string = ROOT): string[] {
+  const out = execFileSync(
+    'git',
+    ['log', '--follow', '--name-status', '--format=%x00%H', '--', file],
+    { cwd, encoding: 'utf8' },
+  );
+  const commits: string[] = [];
+  for (const block of out.split('\0').filter((b) => b.trim() !== '')) {
+    const [hash, ...rest] = block.trim().split('\n');
+    commits.push(hash ?? '');
+    const moved = rest.map((l) => l.split('\t')).find((c) => /^[RC]\d+$/.test(c[0] ?? ''));
+    if (moved !== undefined && !(moved[1] ?? '').startsWith('bench/calibration/')) break;
+  }
+  return commits;
+}
+
+/**
+ * The anchors a benchmarks-page section must state. A run that timed `store.load()` has the loads' own prices to
+ * state; one that timed the write and publish has those, and the first `store.load()` the tests count.
+ */
+function requiredAnchors(loadVia: string | null): string[] {
+  return [
+    'run id',
+    'exact cold intersects',
+    'chunks fetched',
+    'GETs the median cold intersect made',
+    'a cold intersect, measured',
+    'per million cold intersects, measured',
+    'GETs a cold intersect makes with each pointer read once',
+    'per million cold intersects with each pointer read once',
+    ...(loadVia === null
+      ? [
+          'per million single-part write-and-publishes',
+          'per million multipart write-and-publishes',
+          "per million of a segment's first store.load()",
+        ]
+      : ['per million single-part store.load() calls', 'per million multipart store.load() calls']),
+    'the run',
+  ];
+}
+
 /** The rows of the markdown table whose header line matches `header`, as trimmed cells. */
 function tableAfter(text: string, header: RegExp): string[][] {
   const lines = text.split('\n');
@@ -166,26 +214,33 @@ function checkBill(
         `the "${operation}" row is labelled "${row[cols.label]}", which the run does not use`,
       );
     }
-    const match = want.find((w) => w.requests === requests);
+    const group = want.filter((w) => w.requests === requests);
+    const match = group[0];
     if (match === undefined) {
       problems.push(`a row bills "${requests}", which the run does not derive`);
       continue;
     }
-    if (!match.says.test(operation)) {
+    // A run whose measured and expected counts are equal derives two rows with one request count and one price: a
+    // single row may state both, which then must say both, or two rows may each say one.
+    const same = group.every((w) => w.one === match.one && w.perMillion === match.perMillion);
+    const said = group.filter((w) => w.says.test(operation));
+    const ok = same && group.length > 1 ? said.length > 0 : said.includes(match);
+    if (!ok) {
       problems.push(
         `the "${requests}" row calls itself "${operation}", which does not say ${match.says}`,
       );
     }
     seen.set(requests, (seen.get(requests) ?? 0) + 1);
+    const wanted = same && group.length > 1 ? (said[0] ?? match) : match;
     const got = {
       one: row[cols.one],
       perMillion: row[cols.perMillion],
       ...(cols.label === undefined ? {} : { label: row[cols.label] }),
     };
     const expected = {
-      one: match.one,
-      perMillion: match.perMillion,
-      ...(cols.label === undefined ? {} : { label: match.label }),
+      one: wanted.one,
+      perMillion: wanted.perMillion,
+      ...(cols.label === undefined ? {} : { label: wanted.label }),
     };
     if (JSON.stringify(got) !== JSON.stringify(expected)) {
       problems.push(
@@ -193,9 +248,17 @@ function checkBill(
       );
     }
   }
-  for (const w of want) {
-    const n = seen.get(w.requests) ?? 0;
-    if (n !== 1) problems.push(`the "${w.requests}" row appears ${n} times, not once`);
+  for (const requests of new Set(want.map((w) => w.requests))) {
+    const group = want.filter((w) => w.requests === requests);
+    const n = seen.get(requests) ?? 0;
+    // Two derived rows with one figure may be stated as one row or as two.
+    const allowed =
+      group.length > 1 && group.every((w) => w.one === group[0]?.one) ? group.length : 1;
+    if (n < 1 || n > allowed) {
+      problems.push(
+        `the "${requests}" row appears ${n} times, not ${allowed === 1 ? 'once' : 'once or twice'}`,
+      );
+    }
   }
   return problems;
 }
@@ -232,6 +295,233 @@ describe('calibration reports are held to their evidence', () => {
 
   // The reverse check is only as good as its ability to fail. These are the look-alikes it must tell apart, and
   // the spellings a wrong figure could otherwise hide behind.
+  // The evidence is committed once. A new file that resembles a fixture is not followed into the fixture's history,
+  // a second commit touching it still counts, and a move between evidence paths is followed.
+  describe('the evidence commit count', () => {
+    const body = JSON.stringify({ a: Array.from({ length: 50 }, (_, i) => `line ${i}`) }, null, 2);
+    const repo = (): string => {
+      const dir = mkdtempSync(join(tmpdir(), 'evidence-commits-'));
+      execFileSync('git', ['init', '-q'], { cwd: dir });
+      mkdirSync(join(dir, 'bench', 'calibration'), { recursive: true });
+      mkdirSync(join(dir, 'fixtures'), { recursive: true });
+      return dir;
+    };
+    const commit = (dir: string, msg: string): void => {
+      execFileSync('git', ['add', '-A'], { cwd: dir });
+      execFileSync(
+        'git',
+        [
+          '-c',
+          'user.name=t',
+          '-c',
+          'user.email=t@example.com',
+          '-c',
+          'commit.gpgsign=false',
+          'commit',
+          '-q',
+          '-m',
+          msg,
+        ],
+        { cwd: dir },
+      );
+    };
+
+    it('counts a new file that resembles a fixture once, and a second commit twice', () => {
+      const dir = repo();
+      try {
+        writeFileSync(join(dir, 'fixtures', 'f.json'), `${body}\n`);
+        commit(dir, 'fixture');
+        writeFileSync(join(dir, 'fixtures', 'f.json'), `${body.replace('line 1"', 'line 1b"')}\n`);
+        commit(dir, 'fixture edit');
+        const file = 'bench/calibration/run.json';
+        writeFileSync(join(dir, file), `${body.replace('line 2"', 'line 2b"')}\n`);
+        commit(dir, 'evidence');
+        expect(evidenceCommits(file, dir)).toHaveLength(1);
+        writeFileSync(join(dir, file), `${body}\n`);
+        commit(dir, 'edit');
+        expect(evidenceCommits(file, dir)).toHaveLength(2);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('follows a move between evidence paths', () => {
+      const dir = repo();
+      try {
+        writeFileSync(join(dir, 'bench', 'calibration', 'old.json'), `${body}\n`);
+        commit(dir, 'evidence');
+        execFileSync('git', ['mv', 'bench/calibration/old.json', 'bench/calibration/new.json'], {
+          cwd: dir,
+        });
+        commit(dir, 'move');
+        expect(evidenceCommits('bench/calibration/new.json', dir)).toHaveLength(2);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  // The figures of a run's own stages are derived from its evidence, not listed: each real one is accepted, and a
+  // number that no stage holds is refused beside them.
+  describe('the stage figures of the in-region run', () => {
+    const evidence = EVIDENCE.find((e) => e.includes('2026-10-03-e13c7'));
+    const run = evidence === undefined ? undefined : JSON.parse(read(evidence));
+    const f = run === undefined ? undefined : figures.derive(run, SOURCES);
+    const check = (sentence: string): string[] =>
+      f === undefined ? ['no evidence'] : figures.unaccounted(sentence, f.values);
+
+    it('accepts what each stage measured, and what follows from it', () => {
+      expect(
+        check(
+          'The sweep at 1,000 shared chunks took 4,238.82 ms and 2,004 GETs; at 2,000, 8,658.44 ms and 4,004 GETs, 2.04 times the first. ' +
+            'A warm intersect took 3.96 ms. A cold count took 27.48 ms. andNot took 8,687.10 ms and 3,021 GETs. ' +
+            'A GET round is about 26.9 ms. Loads ran at 2.86 million ids a second and 11.3 million. The run was bounded at $0.044470.',
+        ),
+      ).toEqual([]);
+    });
+
+    it('refuses a figure that no stage holds', () => {
+      for (const wrong of [
+        'The sweep at 1,000 shared chunks took 4,238.83 ms.',
+        'A warm intersect took 3.97 ms.',
+        'A cold count took 31.37 ms.',
+        'andNot made 3,333 GETs.',
+        'A GET round is about 31.2 ms.',
+        'Loads ran at 3.86 million ids a second.',
+        'The run was bounded at $0.054470.',
+        'Doubling the overlap took 3.04 times as long.',
+      ]) {
+        expect(check(wrong), wrong).not.toEqual([]);
+      }
+    });
+  });
+
+  // A run whose measured and expected intersect make the same requests derives two rows with one figure. The bill
+  // may state them as one row or as two, but not as none, and a pair that differs still needs both rows.
+  describe('the bill table when the measured and the expected count agree', () => {
+    const cols = { operation: 0, requests: 1, one: 2, perMillion: 3, label: 4 };
+    const row = (requests: string, label: string, says: RegExp, price = '$0.0000816'): Row => ({
+      requests,
+      one: price,
+      perMillion: price === '$0.0000816' ? '$81.60' : '$82.40',
+      label,
+      says,
+    });
+    const equal = [
+      row('204 GET', 'derived', /\bmedian\b|\bmeasured\b/i),
+      row('204 GET', 'expected', /\bonce\b|\bexpected\b|\binside the region\b/i),
+    ];
+    const differ = [
+      row('206 GET', 'derived', /\bmedian\b|\bmeasured\b/i, '$0.0000824'),
+      row('204 GET', 'expected', /\bonce\b|\bexpected\b|\binside the region\b/i),
+    ];
+
+    it('accepts one row that says both, or two rows with the same figure', () => {
+      expect(
+        checkBill(
+          [
+            [
+              'cold intersect, the median measured and expected inside the region',
+              '204 GET',
+              '$0.0000816',
+              '$81.60',
+              'derived',
+            ],
+          ],
+          equal,
+          cols,
+        ),
+      ).toEqual([]);
+      expect(
+        checkBill(
+          [
+            [
+              'cold intersect, the median this run measured',
+              '204 GET',
+              '$0.0000816',
+              '$81.60',
+              'derived',
+            ],
+            [
+              'the same, expected, each pointer read once',
+              '204 GET',
+              '$0.0000816',
+              '$81.60',
+              'expected',
+            ],
+          ],
+          equal,
+          cols,
+        ),
+      ).toEqual([]);
+    });
+
+    it('refuses a wrong figure, a row that says neither, and a differing pair stated once', () => {
+      expect(
+        checkBill([['median measured', '204 GET', '$0.0000817', '$81.70', 'derived']], equal, cols),
+      ).not.toEqual([]);
+      expect(
+        checkBill([['cold intersect', '204 GET', '$0.0000816', '$81.60', 'derived']], equal, cols),
+      ).not.toEqual([]);
+      expect(checkBill([], equal, cols)).not.toEqual([]);
+      expect(
+        checkBill(
+          [['cold intersect, the median measured', '206 GET', '$0.0000824', '$82.40', 'derived']],
+          differ,
+          cols,
+        ),
+      ).not.toEqual([]);
+      expect(
+        checkBill(
+          [
+            ['cold intersect, the median measured', '206 GET', '$0.0000824', '$82.40', 'derived'],
+            ['the same, expected inside the region', '204 GET', '$0.0000816', '$81.60', 'expected'],
+          ],
+          differ,
+          cols,
+        ),
+      ).toEqual([]);
+    });
+  });
+
+  // Which anchors a section must state follows from what the run timed.
+  describe('the anchors a benchmarks section must state', () => {
+    const names = (via: string | null): string[] =>
+      requiredAnchors(via).filter((n) => /single-part|multipart|first store\.load/.test(n));
+    const anchorsOf = (path: string): string[] => {
+      const ev = EVIDENCE.find((e) => e.includes(path));
+      if (ev === undefined) throw new Error(`no evidence for ${path}`);
+      return figures.derive(JSON.parse(read(ev)), SOURCES).anchors.map(([n]) => n);
+    };
+
+    it('are, for a run that timed store.load(), its own load prices, and all of them exist', () => {
+      expect(names('store.load()')).toHaveLength(2);
+      const have = anchorsOf('2026-10-03-e13c7');
+      for (const n of requiredAnchors('store.load()')) expect(have).toContain(n);
+      expect(requiredAnchors('store.load()')).not.toContain(
+        'per million single-part write-and-publishes',
+      );
+    });
+
+    it('are, for a write-and-publish run, the three old names, and all of them exist', () => {
+      expect(names(null)).toHaveLength(3);
+      const have = anchorsOf('2026-09-23-94416');
+      for (const n of requiredAnchors(null)) expect(have).toContain(n);
+      expect(requiredAnchors(null)).not.toContain('per million multipart store.load() calls');
+    });
+
+    it('fail a section that leaves out a load anchor', () => {
+      const ev = EVIDENCE.find((e) => e.includes('2026-10-03-e13c7'));
+      if (ev === undefined) throw new Error('no evidence');
+      const f = figures.derive(JSON.parse(read(ev)), SOURCES);
+      const section = 'run 2026-10-03-e13c7 $11.60 per million single-part';
+      const missing = f.anchors
+        .filter(([n]) => requiredAnchors(f.loadVia).includes(n))
+        .filter(([, want]) => !figures.statesFigure(section, want));
+      expect(missing.map(([n]) => n)).toContain('per million multipart store.load() calls');
+    });
+  });
+
   describe('the reverse check', () => {
     const values: Values = {
       usd: [0.0000816, 81.6, 346],
@@ -600,9 +890,7 @@ describe('calibration reports are held to their evidence', () => {
           git('rev-parse', '--is-shallow-repository'),
           'a shallow checkout has no history to check; CI checks out with fetch-depth: 0',
         ).toBe('false');
-        const commits = git('log', '--follow', '--format=%H', '--', file)
-          .split('\n')
-          .filter(Boolean);
+        const commits = evidenceCommits(file);
         expect(
           commits.length,
           `${file} is touched by ${commits.length} commits`,
@@ -716,20 +1004,7 @@ describe('calibration reports are held to their evidence', () => {
     const ALIASES = ['September run', 'September 2026', 'single-bucket run', 'single-bucket bill'];
     const claims = f === undefined ? null : figures.claimsAbout(doc, f.runId, ALIASES);
     const section = claims?.section ?? null;
-    const REQUIRED = [
-      'run id',
-      'exact cold intersects',
-      'chunks fetched',
-      'GETs the median cold intersect made',
-      'a cold intersect, measured',
-      'per million cold intersects, measured',
-      'GETs a cold intersect makes with each pointer read once',
-      'per million cold intersects with each pointer read once',
-      'per million single-part write-and-publishes',
-      'per million multipart write-and-publishes',
-      "per million of a segment's first store.load()",
-      'the run',
-    ];
+    const REQUIRED = requiredAnchors(f?.loadVia ?? null);
 
     it('has a section on the latest run, which links its report', () => {
       expect(section, `docs/benchmarks.md has no heading naming run ${f?.runId}`).not.toBeNull();
