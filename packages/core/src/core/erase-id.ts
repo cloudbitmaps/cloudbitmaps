@@ -11,7 +11,9 @@
  *
  * The rewrite is the same generation without one id, so it keeps everything else: the new object carries the source's
  * metadata as it is, and the row's summary of it, built from what was written, counts one id fewer and holds the same
- * metadata. Metadata is not scanned for the id.
+ * metadata. Metadata is not scanned for the id. On an encrypted segment, a source object with no metadata block whose
+ * row's sealed summary of it has metadata is rewritten with the row's: the block's presence is not authenticated, so
+ * the authenticated copy decides, and the erasure still goes through.
  *
  * **`erased: true` is a claim about every generation of the segment, not only the one it replaced.** A rollback
  * leaves generations above the pointer that were once current and can be made current again, so a holder can sit
@@ -106,7 +108,7 @@ import type {
   SegmentRef,
 } from './ports';
 import { type ReadRetry, retryRead } from './retry';
-import { summaryOf } from './summary';
+import { metadataToCarry, summaryOf, usableSummary } from './summary';
 import { validateUserRef } from './validate';
 
 const DEFAULT_MAX_BITMAP_BYTES = 1 << 20;
@@ -526,8 +528,13 @@ export async function eraseIdFromSegment(
       const key: GenKey = { ...base, generation };
       // The generation's metadata is part of it: the rewrite is the same generation without one id, so the new object
       // carries the source's metadata as it is, and the row's summary of it says so. An erasure does not scan the
-      // metadata; it is the caller's to keep free of ids.
-      const metadata = reader.metadata;
+      // metadata; it is the caller's to keep free of ids. On an encrypted segment a source with no metadata block, whose
+      // row's sealed summary of this generation has metadata, is carried with the row's: the block's presence is not
+      // authenticated and the summary is, so a stripped block is not made permanent by the rewrite.
+      const metadata = metadataToCarry(
+        reader.metadata,
+        aead === undefined ? undefined : usableSummary(ref, record, aead),
+      );
       const tally = await writeCrbmGenerationStream(
         deps.storage,
         key,

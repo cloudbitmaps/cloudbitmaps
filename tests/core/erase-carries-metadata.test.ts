@@ -156,29 +156,99 @@ describe.each([
   });
 });
 
+/** Replace generation 0 with the same ids and no metadata block, under the same key and the same number. */
+async function stripBlock(w: World): Promise<void> {
+  await w.storage.delete({ ...SEG, generation: 0 });
+  await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, IDS, {
+    registry: w.registry,
+    keystore: w.keystore,
+    publish: false,
+  });
+  expect((await readerOf(w, 0)).metadata).toBeUndefined();
+}
+
 describe('an erasure over an object whose metadata block was stripped', () => {
-  it('carries the object as it is, none, and the row is rebuilt from it', async () => {
-    const keystore = key();
-    const w = world(keystore);
+  // Whoever can write the bucket replaces generation 0 with the same ids and no block: whether an encrypted object's
+  // block is there is not authenticated, so it opens without complaint. The row's sealed summary is authenticated.
+  it('on an encrypted segment carries the metadata the row authenticated, and the erasure goes through', async () => {
+    const w = world(key());
     await loadSegment(SEG, IDS, w.deps, { metadata: META });
-    // Whoever can write the bucket replaces generation 0 with the same ids and no block: whether an encrypted object's
-    // block is there is not authenticated, so it opens without complaint.
-    await w.storage.delete({ ...SEG, generation: 0 });
-    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, IDS, {
-      registry: w.registry,
-      keystore,
-      publish: false,
-    });
-    expect((await readerOf(w, 0)).metadata).toBeUndefined();
+    await stripBlock(w);
 
     const result = await eraseIdFromSegment(SEG, 1, w.deps);
     expect(result).toMatchObject({ erased: true, generation: 1 });
-    expect((await readerOf(w, 1)).metadata).toBeUndefined();
+    expect((await readerOf(w, 1)).metadata).toEqual(META);
     const row = (await w.registry.get(SEG))!;
     expect(usableSummary(SEG, row, await aeadOf(w))).toEqual({
       cardinality: IDS.length - 1,
+      metadata: META,
+    });
+  });
+
+  it('carries the object as it is when the row has no summary to hold it to', async () => {
+    const w = world(key());
+    await loadSegment(SEG, IDS, w.deps, { metadata: META });
+    await stripBlock(w);
+    const row = (await w.registry.get(SEG))!;
+    await w.registry.compareAndSwap(SEG, row.token, { summary: undefined });
+
+    expect(await eraseIdFromSegment(SEG, 1, w.deps)).toMatchObject({ erased: true });
+    expect((await readerOf(w, 1)).metadata).toBeUndefined();
+    const after = (await w.registry.get(SEG))!;
+    expect(usableSummary(SEG, after, await aeadOf(w))).toEqual({
+      cardinality: IDS.length - 1,
       metadata: undefined,
     });
+  });
+
+  it('carries the object as it is when the row never had metadata to hold it to', async () => {
+    const w = world(key());
+    await loadSegment(SEG, IDS, w.deps);
+    await eraseIdFromSegment(SEG, 1, w.deps);
+    expect((await readerOf(w, 1)).metadata).toBeUndefined();
+  });
+
+  it('carries the object, not the row, when the object has metadata of its own that the row does not say', async () => {
+    const w = world(key());
+    await loadSegment(SEG, IDS, w.deps, { metadata: META });
+    const aead = (await aeadOf(w))!;
+    const row = (await w.registry.get(SEG))!;
+    await w.registry.compareAndSwap(SEG, row.token, {
+      summary: sealSummary(aead, SEG, 0, IDS.length, { def: 'other' }),
+    });
+
+    expect(await eraseIdFromSegment(SEG, 1, w.deps)).toMatchObject({ erased: true });
+    expect((await readerOf(w, 1)).metadata).toEqual(META);
+    const after = (await w.registry.get(SEG))!;
+    expect(usableSummary(SEG, after, aead)?.metadata).toEqual(META);
+  });
+
+  it('does not take the metadata of a summary it cannot open: that is no authority', async () => {
+    const w = world(key());
+    await loadSegment(SEG, IDS, w.deps, { metadata: META });
+    await stripBlock(w);
+    const row = (await w.registry.get(SEG))!;
+    // The sealed bytes are another generation's: they do not open under this one's associated data.
+    const aead = (await aeadOf(w))!;
+    await w.registry.compareAndSwap(SEG, row.token, {
+      summary: { ...sealSummary(aead, SEG, 7, IDS.length, META), generation: 0 },
+    });
+
+    expect(await eraseIdFromSegment(SEG, 1, w.deps)).toMatchObject({ erased: true });
+    expect((await readerOf(w, 1)).metadata).toBeUndefined();
+  });
+
+  it('on a cleartext segment carries the object as it is: a clear summary has no more authority than the block it sits beside', async () => {
+    const w = world();
+    await loadSegment(SEG, IDS, w.deps, { metadata: META });
+    await stripBlock(w);
+    const row = (await w.registry.get(SEG))!;
+    expect(row.summary).toMatchObject({ metadata: META });
+
+    expect(await eraseIdFromSegment(SEG, 1, w.deps)).toMatchObject({ erased: true });
+    expect((await readerOf(w, 1)).metadata).toBeUndefined();
+    const after = (await w.registry.get(SEG))!;
+    expect(after.summary).toEqual({ generation: 1, cardinality: IDS.length - 1 });
   });
 });
 

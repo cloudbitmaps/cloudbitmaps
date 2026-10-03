@@ -5,6 +5,7 @@ import { IntegrityError } from '@/core/errors';
 import type { RegistryRecord, SealedRegistrySummary } from '@/core/ports';
 import {
   clearSummary,
+  metadataToCarry,
   openSummary,
   sealSummary,
   summaryAgrees,
@@ -309,5 +310,27 @@ describe('a summary held against the object it describes', () => {
   it('takes the empty record for none', () => {
     expect(summaryAgrees({ cardinality: 5, metadata: {} }, { cardinality: 5 })).toBe(true);
     expect(summaryAgrees({ cardinality: 5 }, { cardinality: 5, metadata: {} })).toBe(true);
+  });
+});
+
+describe('what an erasure carries into its rewrite', () => {
+  const some = { def: 'v7', n: 3 };
+
+  it("is the object's own metadata when it has any, whatever the summary says", () => {
+    expect(metadataToCarry(some, undefined)).toEqual(some);
+    expect(metadataToCarry(some, { cardinality: 5, metadata: { def: 'other' } })).toEqual(some);
+    expect(metadataToCarry(some, { cardinality: 5 })).toEqual(some);
+  });
+
+  it("is the authenticated summary's when the object has none and the summary has some", () => {
+    expect(metadataToCarry(undefined, { cardinality: 5, metadata: some })).toEqual(some);
+    expect(metadataToCarry({}, { cardinality: 5, metadata: some })).toEqual(some);
+  });
+
+  it('is none when neither has any, or when there is no authenticated summary', () => {
+    expect(metadataToCarry(undefined, undefined)).toBeUndefined();
+    expect(metadataToCarry(undefined, { cardinality: 5 })).toBeUndefined();
+    expect(metadataToCarry(undefined, { cardinality: 5, metadata: {} })).toBeUndefined();
+    expect(metadataToCarry({}, undefined)).toEqual({});
   });
 });

@@ -224,6 +224,25 @@ export function summaryAgrees(
   );
 }
 
+/**
+ * The metadata an erasure carries into its rewrite of a generation: the object's own, except that an object with none
+ * whose row's authenticated summary of the same generation has some gets the row's. Whether an encrypted object has a
+ * metadata block is not authenticated, so a block stripped from one reads as none, and the sealed summary on the row is
+ * the one copy that says there was a block; carrying it keeps the rewrite from erasing the record of what it dropped.
+ * Pass `authenticated` only for a summary that was opened (a clear one has no more authority than the block it sits
+ * beside). Never refuses: a rewrite over a stripped block is still an erasure.
+ */
+export function metadataToCarry(
+  object: GenerationMetadata | undefined,
+  authenticated: GenerationDescription | undefined,
+): GenerationMetadata | undefined {
+  const empty = (metadata: GenerationMetadata | undefined): boolean =>
+    metadata === undefined || Object.keys(metadata).length === 0;
+  return empty(object) && authenticated !== undefined && !empty(authenticated.metadata)
+    ? authenticated.metadata
+    : object;
+}
+
 /** The summary of a generation of `ref`, clear or sealed under `aead` as the segment's keys call for. */
 export function summaryOf(
   ref: SegmentRef,
