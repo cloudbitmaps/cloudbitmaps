@@ -58,7 +58,7 @@ import { CrbmWriter } from './crbm/writer';
 import type { CodecBitmap, CodecInterface, EncodedChunk } from './codec';
 import { requireCodec } from './codec';
 import { DecodedLoadInput } from './load-input';
-import { clearSummary, sealSummary } from './summary';
+import { summaryAgrees, summaryOf } from './summary';
 
 export interface CrbmStorageChunkSourceOptions extends CrbmReaderOptions {
   /**
@@ -1839,10 +1839,12 @@ export async function bulkLoadCrbmGeneration(
     chunks,
     { crypto, clock: options.clock, metadata: options.metadata },
   );
-  const summary =
-    crypto === undefined
-      ? clearSummary(key.generation, cardinality, options.metadata)
-      : sealSummary(crypto.aead, key, key.generation, cardinality, options.metadata);
+  const summary = summaryOf(
+    key,
+    key.generation,
+    { cardinality, metadata: options.metadata },
+    crypto?.aead,
+  );
   // Publish only after the immutable object is durable (write-then-publish): a registry-aware reader should
   // never point at a generation that isn't fully written. A freshly minted DEK is stored on this publish.
   if (options.registry !== undefined && options.publish !== false) {
@@ -2016,15 +2018,21 @@ async function openChecked(
 
 /**
  * Re-open a freshly written generation and assert it round-trips exactly what was streamed into it: the same
- * per-chunk key set *and* the same total cardinality (on top of the codec's own per-chunk CRC + footer checks).
- * `expected` is the streaming writer's tally (the stream is consumed, so it can't be re-iterated) — the key-set
- * comparison catches a dropped/extra chunk that a cardinality-only check could miss when two errors cancel out.
+ * per-chunk key set *and* the same total cardinality (on top of the codec's own per-chunk CRC + footer checks), and the
+ * metadata it was given. `expected` is the streaming writer's tally (the stream is consumed, so it can't be
+ * re-iterated) — the key-set comparison catches a dropped/extra chunk that a cardinality-only check could miss when
+ * two errors cancel out. The count and the metadata are what the generation's row summary is about to claim, so the
+ * summary is held to the object it describes before it is published.
  * Throws {@link IntegrityError}: the object is on disk but must not be published.
  */
 export async function verifyGeneration(
   storage: IStorageDriver,
   key: GenKey,
-  expected: { readonly chunkKeys: readonly number[]; readonly cardinality: number },
+  expected: {
+    readonly chunkKeys: readonly number[];
+    readonly cardinality: number;
+    readonly metadata?: GenerationMetadata | undefined;
+  },
   crypto: CrbmCrypto | undefined,
 ): Promise<void> {
   const expectedKeys = [...expected.chunkKeys].sort((a, b) => a - b);
@@ -2040,6 +2048,11 @@ export async function verifyGeneration(
   if (reader.count() !== expected.cardinality) {
     throw new IntegrityError(
       `verify failed for ${key.segment}.${key.generation}: cardinality ${reader.count()} != ${expected.cardinality}`,
+    );
+  }
+  if (!summaryAgrees(expected, { cardinality: reader.count(), metadata: reader.metadata })) {
+    throw new IntegrityError(
+      `verify failed for ${key.segment}.${key.generation}: the object's metadata is not the metadata it was written with`,
     );
   }
 }

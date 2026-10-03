@@ -26,6 +26,7 @@ export const ROUTED: readonly string[] = [
   'tests/core/encrypted-segment-cleartext-object.test.ts',
   'tests/core/encryption-lifecycle.test.ts',
   'tests/core/engine-metrics.test.ts',
+  'tests/core/erase-carries-metadata.test.ts',
   'tests/core/erase-id.test.ts',
   'tests/core/erase-not-in-current-awaited.test.ts',
   'tests/core/erase-swept-generation.test.ts',

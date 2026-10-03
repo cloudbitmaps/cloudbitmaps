@@ -223,3 +223,15 @@ export function summaryAgrees(
     canonicalOrNone(summary.metadata) === canonicalOrNone(object.metadata)
   );
 }
+
+/** The summary of a generation of `ref`, clear or sealed under `aead` as the segment's keys call for. */
+export function summaryOf(
+  ref: SegmentRef,
+  generation: number,
+  description: GenerationDescription,
+  aead: Aead | undefined,
+): RegistrySummary {
+  return aead === undefined
+    ? clearSummary(generation, description.cardinality, description.metadata)
+    : sealSummary(aead, ref, generation, description.cardinality, description.metadata);
+}
