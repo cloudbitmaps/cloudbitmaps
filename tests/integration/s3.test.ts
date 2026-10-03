@@ -20,7 +20,7 @@ import { storageObjectKey } from '@/s3/keys';
 import { CrbmStorageChunkSource, writeCrbmGeneration } from '@/core/crbm-storage-source';
 import { CloudRoaring } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
-import { NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
+import { NotFoundError, TransientError, ValidationError, WriteConflictError } from '@/core/errors';
 import { brandAsBackend, type GenKey } from '@/core/ports';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
@@ -482,5 +482,161 @@ describe('S3 (MinIO): a write-once object the client is told was throttled', () 
     await expect(
       writeCrbmGeneration(driver, gen(1), [{ chunkKey: 0, bitmap: bm(1) }]),
     ).rejects.toBeInstanceOf(WriteConflictError);
+  });
+});
+
+describe('S3 (MinIO): a registry row the client is told was throttled', () => {
+  const SEG = { namespace: 'ns', segment: 's' };
+  const throttle = (): Error =>
+    Object.assign(new Error('Please reduce your request rate.'), {
+      name: 'SlowDown',
+      $fault: 'server',
+      $metadata: { httpStatusCode: 503 },
+    });
+  const newClient = (): S3Client =>
+    new S3Client({
+      endpoint: ENDPOINT,
+      region: 'us-east-1',
+      credentials: { accessKeyId: 'minioadmin', secretAccessKey: 'minioadmin' },
+      forcePathStyle: true,
+    });
+  const keyOf = (args: { input: unknown }): string => (args.input as { Key?: string }).Key ?? '';
+  const statusOf = (err: unknown): number | undefined =>
+    (err as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode;
+
+  /**
+   * A store over MinIO whose registry client answers the first `times` row writes `503 SlowDown`: after MinIO applied
+   * each one (`landed`), or without sending it, keeping the request in `held` so a test can deliver it later, as a
+   * service that delivers a throttled request late would. The fresh writes the store sends after a throttle are real
+   * conditional PutObjects: MinIO's own `If-None-Match` and `If-Match` decide between them.
+   */
+  function rig(
+    prefix: string,
+    plan: { times: number; landed?: boolean; onWait?: () => Promise<void> },
+  ) {
+    const held: Array<() => Promise<unknown>> = [];
+    const deleted: string[] = [];
+    const waits: number[] = [];
+    let rowPuts = 0;
+    let answered = 0;
+    const rowClient = newClient();
+    rowClient.middlewareStack.add(
+      (next, context) => async (args) => {
+        const isRowPut =
+          context.commandName === 'PutObjectCommand' && keyOf(args).includes('registry/');
+        if (!isRowPut) return next(args);
+        rowPuts += 1;
+        if (answered >= plan.times) return next(args);
+        answered += 1;
+        if (plan.landed === true) await next(args);
+        else held.push(() => next(args));
+        throw throttle();
+      },
+      { step: 'initialize', name: 'throttledRows' },
+    );
+    const objectClient = newClient();
+    objectClient.middlewareStack.add(
+      (next, context) => async (args) => {
+        if (context.commandName === 'DeleteObjectCommand') deleted.push(keyOf(args));
+        return next(args);
+      },
+      { step: 'initialize', name: 'recordDeletes' },
+    );
+    const storage = new S3StorageDriver({ client: objectClient, bucket: BUCKET, prefix });
+    const registry = new S3RegistryDriver({ client: rowClient, bucket: BUCKET, prefix });
+    const store = new CloudRoaring({
+      storage: brandAsBackend({ storage, registry }),
+      seams: {
+        clock: {
+          now: () => Date.now(),
+          sleep: async (ms: number) => {
+            waits.push(ms);
+            await plan.onWait?.();
+          },
+          yieldNow: async () => {},
+        },
+      },
+    });
+    // A reader that sees what is in the bucket and no fault.
+    const plain = {
+      registry: new S3RegistryDriver({ client, bucket: BUCKET, prefix }),
+      storage: new S3StorageDriver({ client, bucket: BUCKET, prefix }),
+    };
+    return { store, held, deleted, waits, plain, rowPuts: () => rowPuts };
+  }
+
+  const generations = async (storage: S3StorageDriver): Promise<number[]> => {
+    const out: number[] = [];
+    for await (const k of storage.list(SEG)) out.push(k.generation);
+    return out.sort((a, b) => a - b);
+  };
+  const prefixFor = (name: string): string => `${RUN}/row-fence/${name}/${n++}`;
+
+  it('a create answered 503 and never sent is sent fresh; the held original, delivered after, is refused by If-None-Match', async () => {
+    const r = rig(prefixFor('create'), { times: 1 });
+    expect(await r.store.load(SEG, [1, 2])).toMatchObject({ published: true, generation: 0 });
+    expect(r.held).toHaveLength(1);
+    expect(r.waits).toHaveLength(1);
+    const before = await r.plain.registry.get(SEG);
+    const late = await r.held[0]!().catch((e: unknown) => e);
+    expect(statusOf(late)).toBe(412);
+    expect((await r.plain.registry.get(SEG))!.token).toBe(before!.token);
+    expect(r.deleted).toEqual([]);
+  });
+
+  it('two compare-and-swaps answered 503 and never sent: the third lands, and both held originals are refused by If-Match', async () => {
+    const prefix = prefixFor('swap');
+    await rig(prefix, { times: 0 }).store.load(SEG, [1]);
+    const r = rig(prefix, { times: 2 });
+    expect(await r.store.load(SEG, [1, 2])).toMatchObject({ published: true, generation: 1 });
+    expect(r.held).toHaveLength(2);
+    expect(r.waits).toHaveLength(2);
+    const landed = await r.plain.registry.get(SEG);
+    expect(landed!.currentGen).toBe(1);
+    const late = await Promise.allSettled(r.held.map((send) => send()));
+    expect(late.every((s) => s.status === 'rejected')).toBe(true);
+    expect((await r.plain.registry.get(SEG))!.token).toBe(landed!.token);
+    expect(r.deleted).toEqual([]);
+  });
+
+  it('a row throttled on every send throws the registry TransientError with the SlowDown as its cause, deletes nothing, and exactly one late landing takes', async () => {
+    const r = rig(prefixFor('every'), { times: 99 });
+    const err = await r.store.load(SEG, [7, 8, 9]).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(TransientError);
+    expect((err as Error & { cause?: { name?: string } }).cause?.name).toBe('SlowDown');
+    expect(r.held).toHaveLength(4); // the first send, then three fresh ones
+    expect(r.waits).toHaveLength(3);
+    expect(r.deleted).toEqual([]);
+    expect(await generations(r.plain.storage)).toEqual([0]);
+    // The four requests the service held reach it after the load gave up: the fence lets exactly one land.
+    const late = await Promise.allSettled(r.held.map((send) => send()));
+    expect(late.filter((s) => s.status === 'fulfilled')).toHaveLength(1);
+    expect((await r.plain.registry.get(SEG))!.currentGen).toBe(0);
+    // And the row points at an object that is there: a reader gets the load's ids.
+    const reader = new CloudRoaring({ storage: brandAsBackend(r.plain) });
+    expect(await reader.segment('s', { namespace: 'ns' }).count()).toBe(3);
+  });
+
+  it('the held original is delivered during the wait: the fresh write meets 412 and the load is published, not refused', async () => {
+    let held: Array<() => Promise<unknown>> = [];
+    const r = rig(prefixFor('delivered'), {
+      times: 1,
+      onWait: async () => {
+        await held[0]!();
+      },
+    });
+    held = r.held;
+    expect(await r.store.load(SEG, [4, 5])).toMatchObject({ published: true, generation: 0 });
+    expect((await r.plain.registry.get(SEG))!.currentGen).toBe(0);
+    expect(r.deleted).toEqual([]);
+    expect(await generations(r.plain.storage)).toEqual([0]);
+  });
+
+  it('a row MinIO applied and then answered 503 for is found by reading it: published, one row write, no wait', async () => {
+    const r = rig(prefixFor('applied'), { times: 1, landed: true });
+    expect(await r.store.load(SEG, [4, 5])).toMatchObject({ published: true, generation: 0 });
+    expect(r.rowPuts()).toBe(1);
+    expect(r.waits).toEqual([]);
+    expect(r.deleted).toEqual([]);
   });
 });
