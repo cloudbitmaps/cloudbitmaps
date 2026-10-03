@@ -115,7 +115,9 @@ beside them keeps the **unwrapped** key for as long as that table's row for it s
 ## What an erasure does not reach
 
 The **metadata** of a generation: the rewrite carries it over unchanged, and the row's summary of the new generation
-holds it again, with the id count one smaller. Neither is scanned for the id.
+holds it again, with the id count one smaller. Neither is scanned for the id. On an encrypted segment, an object whose
+metadata block is missing, with a sealed summary on the row that has metadata, is rewritten with the row's metadata, since
+the block's presence is not authenticated and the summary is.
 
 A **deleted row**. When the S3, GCS, Azure Blob or local-file registry deletes a row, whether `registry.delete` or the
 retention sweep's purge of a tombstone, it keeps the row's record in a deleted marker, so the token counter survives a

@@ -203,7 +203,8 @@ describe('the *Into verbs refuse an implausible result instead of publishing it'
 
   it('judges a destination whose current object is missing by what its row remembers of it', async () => {
     // The row's summary still says the destination held four ids, so the guard has something to compare against, and a
-    // repair that retains less than the bound asks for is refused. `allowEmpty` or no `minRetained` repairs it.
+    // repair that retains less than the bound asks for is refused, and `allowEmpty` does not lift that: only leaving
+    // `minRetained` out repairs it.
     const { store, storage } = await loadedStore({
       a: [1, 2, 3],
       b: [2, 3],
@@ -220,6 +221,14 @@ describe('the *Into verbs refuse an implausible result instead of publishing it'
       reason: 'min-retained',
       cardinalityBefore: 4,
     });
+
+    const stillRefused = await store
+      .segment('a')
+      .intersectInto(store.segment('dest'), [store.segment('b')], {
+        allowEmpty: true,
+        guard: { minRetained: 0.75 },
+      });
+    expect(stillRefused).toMatchObject({ published: false, reason: 'min-retained' });
 
     const res = await store.segment('a').intersectInto(store.segment('dest'), [store.segment('b')]);
     expect(res).toMatchObject({ published: true, cardinalityBefore: 4 });

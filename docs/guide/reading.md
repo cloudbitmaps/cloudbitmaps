@@ -67,8 +67,8 @@ an index that is not internally consistent:
 - on an unencrypted object, the footer's chunk count and total cardinality equal to what the index holds.
 
 A corrupt index that is still internally consistent yields a wrong count, with no error. `iterate()` and the combines
-decode the payloads, whose structure is checked. The same index supplies `load`'s `cardinalityBefore` and the chunk
-keys an `intersect` plans its fetches from. Where an exact answer matters more than the request count, `iterate()` the
+decode the payloads, whose structure is checked. The same index supplies the chunk keys an `intersect` plans its
+fetches from, and `load`'s `cardinalityBefore` when the row carries no summary of the generation. Where an exact answer matters more than the request count, `iterate()` the
 segment and count what it yields.
 
 ## How soon a reader sees a new load

@@ -1329,9 +1329,10 @@ export class CloudRoaring {
    * encrypted segment, or encrypted under a cleartext one, throws {@link IntegrityError} from one tail read of it,
    * because every read would refuse it. Rolling to the generation already current is a no-op that reports itself.
    *
-   * The same tail read gives the target's id count and metadata, which the rollback writes into the row with the
-   * pointer, so a reader that sees the target as current sees what describes it. The store's keystore opens an
-   * encrypted target for this; without it the segment still rolls back and the row carries no summary of the target.
+   * The same tail read (and a range read when the target's index is longer than it) gives the target's id count and
+   * metadata, which the rollback writes into the row with the pointer, so a reader that sees the target as current sees
+   * what describes it. The store's keystore opens an encrypted target for this; without it, or when it cannot open the
+   * key for any reason, the segment still rolls back and the row carries no summary of the target.
    *
    * It deletes nothing. The generations above the new pointer stay put — which is what makes this reversible —
    * and are then *above* `currentGen`, where collection never looks. They remain until loads pass them (the first

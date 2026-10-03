@@ -87,12 +87,16 @@ so, and so do the module headers in the code.
   summary of the generation, its id count and the metadata, in the same compare-and-swap, so a reader that sees
   generation N as current sees N's metadata. It never changes: a new generation is how it does, and a load does not
   inherit the last one's. A rollback writes its target's own into the row, with the one tail read it already makes to
-  check the target, which now also opens it when the store has the segment's key (an encrypted target on a store with no
-  keystore, or whose key it cannot open, still rolls back and leaves the row with no summary; a target whose index or
+  check the target (and a range read when its index is longer than that read), which now also opens it when the store has the segment's key (an encrypted target on a store with no
+  keystore, or whose key it cannot open for any reason, an unreachable key service included, still rolls back and leaves the row with no summary; a target whose index or
   metadata does not open is refused, where only a footer that failed its own checks was). The undo of a rollback whose
-  target was collected meanwhile puts back the summary the old row had. An erasure's rewrite carries the source's
+  target was collected meanwhile puts back the summary the old row had, and an `allowForward` rollback re-reads its
+  target after the swap and puts the pointer back, with `NotFoundError`, when an erasure and a load replaced the object
+  under that number in between. An erasure's rewrite carries the source's
   metadata into the new object as it is, and the row's summary of it, built from what was written, counts one id fewer;
-  it does not scan the metadata, so never put a subject's id in it. A crypto-shred and a drop clear the summary, and a
+  it does not scan the metadata, so never put a subject's id in it. On an encrypted segment, a source with no metadata
+  block whose row's sealed summary has metadata is rewritten with the row's, since the block's presence is not
+  authenticated and the summary is; the erasure still goes through. A crypto-shred and a drop clear the summary, and a
   retention policy or a sweep that finds a segment not yet due leaves it. On an encrypted segment the object's block
   and the row's summary are sealed, the summary as a fixed-width 64-bit count then the metadata, bound to its
   namespace, segment and generation under a scope of its own, so its length reveals only the metadata's size and a copy
@@ -308,7 +312,9 @@ so, and so do the module headers in the code.
   for its second. `requestsPerSizedRead` no longer prices a load. One behaviour changes with it: a row that names an
   object that is gone still remembers the size, so a repair load is judged against it, and a repair smaller than
   `guard.minRetained` allows is refused, where the guard met an object it could not read and judged against nothing.
-  Repair with `allowEmpty: true` or without `minRetained`.
+  Repair without `minRetained`: `allowEmpty: true` does not lift it. A guarded load over a current object that is present
+  but corrupt, whose row has a summary, no longer fails at the guard, which does not open it: the look for the object
+  proves it is there, not that it is intact, and a read of it still fails closed.
   The calibration harness expects a reload of 2 and 3, a listing load of 3 and 6, and its report says so.
 
 - **`retireExpired` counts the deletes the registry refuses, and a refused purge no longer holds the retirements behind

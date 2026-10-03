@@ -2082,8 +2082,8 @@ describe("a page's figures for store.load() are the estimator's", () => {
     'from the third load on, a load costs $12.00 per million',
     'a load that lists nothing costs $12.00 per million',
     'a load on a generation divisible by 16 costs $17.40 per million',
-    'on Azure Blob a steady load costs $12.40 per million, $12.76 on average',
-    "an encrypted segment's load costs $12.76 per million on average",
+    'on Azure Blob a steady load costs $12.00 per million, $12.34 on average',
+    "an encrypted segment's load costs $12.74 per million on average",
     // A ratio that is not a comparison with a write: a 64 × 1,024 product, and a write named without store.load().
     'the writer cuts 64 × 1,024 containers per slice, and store.load() writes each',
     'store.load() writes 64 × 1,024 containers, a slice at a time',

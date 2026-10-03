@@ -77,13 +77,13 @@ one below its rewrite (`keep: 0`); and `dropSegment` deletes them all. Two loads
 to delete the generation the restored registry names.
 
 **The summary a row carries.** A row also holds a summary of its current generation, its id count and metadata, written
-by the same compare-and-swap that moves the pointer, so a restored row always describes the generation it names. A load
+by the same compare-and-swap that moves the pointer, so a row describes the generation it names as of the moment it was written, and a restored one as of the restore; a later disagreement between a row and its object is caught by the cross-check that comes with the read path. A load
 sizes the current generation from it for its guard and opens no object. That changes what a repair load meets in a torn
 restore: the row names a generation whose object is gone, and the summary still says how many ids it held, so a repair
-smaller than `guard.minRetained` allows is refused. Repair with `allowEmpty: true`, or without `minRetained`, and the
+smaller than `guard.minRetained` allows is refused. Repair without `minRetained` (`allowEmpty: true` does not lift it), and the
 load publishes a new generation and a new summary. The load also keeps the older
 generation a listing keeps, which is the one you can still roll back to: before it takes a generation by name it looks
-for the current object with one zero-byte read, finds it gone, and lists. A row from before rows carried a summary has
+for the current object with one zero-byte read, finds it gone, and lists. A rollback writes the target's own summary with the pointer; a store that cannot open the segment's key, for any reason, rolls back all the same and leaves the row with none, and an `allowForward` rollback whose target was replaced after it was read puts the pointer back. A row from before rows carried a summary has
 none, and is read from the object as before. A summary that names another generation, or a sealed one that does not
 open, is not used.
 

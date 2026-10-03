@@ -239,8 +239,8 @@ that does not open. The first load onto such a row writes a summary, and the nex
 One behaviour follows from reading the row. A row that names an object that is gone (a lifecycle rule, a partial
 restore) still remembers the size, so a repair load is judged against it: a repair smaller than `guard.minRetained`
 allows is refused. A guard that has to open the object, because the row has no usable summary, meets an object it cannot
-read and judges against nothing. Pass `allowEmpty: true` or leave `minRetained` out to repair a segment whose row
-remembers a size. See [disaster recovery](disaster-recovery.md).
+read and judges against nothing. Leave `minRetained` out to repair a segment whose row
+remembers a size: `allowEmpty: true` does not lift a `minRetained` refusal. See [disaster recovery](disaster-recovery.md).
 
 **Memory is bounded by the distinct set, not by the input.** A load holds one compressed bitmap per non-empty chunk, so a
 billion duplicate-heavy ids stream through holding only the distinct result. The buffer between the input and the
@@ -421,10 +421,14 @@ await store.rollback(ref, 4, { audit, allowForward: true });
   object under an encrypted segment (a write that never published, from a store with no keystore, before the
   segment's first keyed load), or an encrypted one under a cleartext segment. Every read would refuse it. The check is
   one tail read of the target, which needs no key to tell which kind it is.
-- The same read gives the target's id count and metadata, which the rollback writes into the row with the pointer. An
-  encrypted target is opened with the store's keystore for that, and a store without one, or one that cannot open the
-  segment's key, still rolls the segment back and leaves the row with no summary of the target; the next load writes
-  one. A target whose index or metadata does not open is refused, since no read could use it either.
+- The same read gives the target's id count and metadata, which the rollback writes into the row with the pointer (one
+  tail read, and a range read as well when the target's index is longer than the tail read). An encrypted target is
+  opened with the store's keystore for that, and a store without one, or one that cannot open the segment's key for any
+  reason, an unreachable or timed-out key service included, still rolls the segment back and leaves the row with no
+  summary of the target; the next load writes one. A target whose index or metadata does not open is refused, since no
+  read could use it either. A target above the pointer (`allowForward`) is read once more after the swap, and if it is
+  no longer the object that was read (an erasure deleted it and a load took its number meanwhile) the pointer and the
+  old summary are put back and the rollback throws `NotFoundError`.
 - A load keeps one generation below the one it publishes by default (`keep: 1`), so there is one to roll back to. Pass
   a larger `keep` on the loads of a segment you may want to roll further back.
 - Each move emits `segment.rollback` to the `audit` sink you pass
