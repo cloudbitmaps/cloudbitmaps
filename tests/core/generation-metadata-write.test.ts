@@ -239,12 +239,22 @@ describe('an encrypted load with metadata', () => {
         metadata: { owner: 'a-recognisable-owner', run: 7_654_321 },
       },
     );
-    const row = JSON.stringify(await registry.get(SEG));
+    const record = await registry.get(SEG);
+    const row = JSON.stringify(record);
     expect(row).not.toContain('recognisable');
     expect(row).not.toContain('7654321');
     expect(row).not.toContain('"cardinality"');
     expect(row).not.toContain('"metadata"');
-    expect(row).not.toContain('4321');
+    // The count as a value anywhere in the row. Searching the serialised row for its digits would also search the
+    // random token, the timestamps and the ciphertext, which hold any four digits now and then.
+    const values: unknown[] = [];
+    const walk = (v: unknown): void => {
+      if (v !== null && typeof v === 'object') Object.values(v).forEach(walk);
+      else values.push(v);
+    };
+    walk(record);
+    expect(values).not.toContain(4_321);
+    expect(values).not.toContain('4321');
     const bytes = await objectBytes(storage, 0);
     expect(contains(bytes, 'recognisable')).toBe(false);
     expect(contains(bytes, 'owner')).toBe(false);
