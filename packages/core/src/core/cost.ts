@@ -13,7 +13,8 @@
  *
  * What the model covers, and states in `assumptions.notes`: object-store GETs for point reads, for
  * intersections (each operand's pointer and index as well as its chunks) and for the pointer refresh a long-lived
- * reader pays; the requests of a load (the object's write, and the pointer reads and write, the checks of the next
+ * reader pays; the requests of the retention sweep (a retirement and a purge, each priced from the registry requests
+ * it makes); the requests of a load (the object's write, and the pointer reads and write, the checks of the next
  * generation number and of the current generation's object, and the listing of every 16th generation that
  * `store.load()` makes around it); and storage. Same-region egress is
  * treated as free and internet egress is not modeled; request cost is derived from the supplied workload rates
@@ -261,6 +262,26 @@ export interface Workload {
    * write invalidates it, none of which this term prices.
    */
   readonly genTtlMs?: number;
+  /**
+   * Segments the retention sweep (`retireExpired`) retires a month. Each costs 9 registry reads, 3 writes and a
+   * delete with {@link Workload.conditionalDelete} on, and 8 reads and 3 writes with it off, priced at the GET and PUT
+   * rates, a delete unbilled, as S3 leaves it. Default
+   * **0**.
+   */
+  readonly retirementsPerMonth?: number;
+  /**
+   * Tombstones the sweep purges a month: at a steady state, as many as it retires a month, a `tombstoneGraceMs` later.
+   * A purge costs 4 reads and 2 deletes with {@link Workload.conditionalDelete} on, and 3 reads and a write with it
+   * off. Default **0**.
+   */
+  readonly purgesPerMonth?: number;
+  /**
+   * Whether the registry's deletes remove a row for good (`RegCaps.conditionalDelete`), which the shipped registries
+   * do where the backend applies a delete precondition. Default **true**. `false` prices the sweep of a registry that
+   * only tombstones: a purge rewrites the row instead of deleting it, and every later full sweep reads each tombstone
+   * left (two reads per purged segment), which this term does not price.
+   */
+  readonly conditionalDelete?: boolean;
 }
 
 /** One (group of) segment(s) for planning. `count` = how many like this (default 1). */
@@ -290,6 +311,11 @@ export interface CostReport {
       readonly loads: number;
       /** The pointer refresh of {@link Workload.hotSegments}. 0 unless `hotSegments` is set. */
       readonly pointerRefresh: number;
+      /**
+       * The retention sweep's retirements and purges: each's registry reads at the GET rate and its writes at the PUT
+       * rate. 0 unless `retirementsPerMonth` or `purgesPerMonth` is set.
+       */
+      readonly retention: number;
     };
     readonly total: number;
   };
@@ -362,6 +388,32 @@ const GIB = 1024 ** 3;
 const STORE_LOAD_PUT_CLASS = 1 + 1 / LIST_COLLECTION_CADENCE;
 const STORE_LOAD_POINTER_READS = 3 + 2 / LIST_COLLECTION_CADENCE;
 const STORE_LOAD_EXISTENCE_CHECKS = 2 - 1 / LIST_COLLECTION_CADENCE;
+
+/** The requests one segment's retirement or purge makes: reads (GET-class), writes (PUT-class) and deletes. */
+interface SweepRequests {
+  readonly reads: number;
+  readonly writes: number;
+  readonly deletes: number;
+}
+
+/**
+ * What the retention sweep makes per segment, counted with a store that counts its requests
+ * (`tests/core/retention-hard-purge.test.ts` holds each figure to the engine, and `tests/core/cost.test.ts` holds the
+ * estimator to these). With the registry's `conditionalDelete` on, a retirement files a due-index pointer to the
+ * tombstone and a purge removes the row and every pointer: a later sweep reads nothing of a purged segment. With it
+ * off, a retirement files no pointer, a purge rewrites the row as a tombstone, and every later full sweep reads what
+ * is left, two objects per purged segment.
+ */
+export const RETENTION_SWEEP_REQUESTS = deepFreeze({
+  conditionalDelete: {
+    retirement: { reads: 9, writes: 3, deletes: 1 },
+    purge: { reads: 4, writes: 0, deletes: 2 },
+  },
+  tombstoning: {
+    retirement: { reads: 8, writes: 3, deletes: 0 },
+    purge: { reads: 3, writes: 1, deletes: 0 },
+  },
+}) satisfies Readonly<Record<string, Readonly<Record<string, SweepRequests>>>>;
 
 /** A count of requests for a note: at most two decimals, none when it is whole. */
 const shown = (n: number): string => String(Number(n.toFixed(2)));
@@ -655,6 +707,15 @@ function buildReport(input: {
     input.workload.genTtlMs ?? DEFAULT_CURRENT_GEN_TTL_MS,
     'genTtlMs',
   );
+  const retirementsPerMonth = requireFiniteNonNeg(
+    input.workload.retirementsPerMonth ?? 0,
+    'retirementsPerMonth',
+  );
+  const purgesPerMonth = requireFiniteNonNeg(input.workload.purgesPerMonth ?? 0, 'purgesPerMonth');
+  const conditionalDelete = input.workload.conditionalDelete ?? true;
+  if (typeof conditionalDelete !== 'boolean') {
+    throw new ValidationError(`conditionalDelete must be a boolean; got ${conditionalDelete}`);
+  }
 
   // Per-request unit costs (USD). Same-region egress is free; internet egress not modeled.
   const storageGetUSD = storage.getPerMillion / 1e6;
@@ -682,7 +743,12 @@ function buildReport(input: {
   const loadsUSD =
     loadsPerMonth * ((requestsPerLoad + STORE_LOAD_PUT_CLASS) * putUSD + loadGets * storageGetUSD);
   const refreshUSD = refreshes * pointerRead * storageGetUSD;
-  const total = readsUSD + intersectsUSD + storageUSD + loadsUSD + refreshUSD;
+  const sweep = RETENTION_SWEEP_REQUESTS[conditionalDelete ? 'conditionalDelete' : 'tombstoning'];
+  const retentionUSD =
+    retirementsPerMonth *
+      (sweep.retirement.reads * storageGetUSD + sweep.retirement.writes * putUSD) +
+    purgesPerMonth * (sweep.purge.reads * storageGetUSD + sweep.purge.writes * putUSD);
+  const total = readsUSD + intersectsUSD + storageUSD + loadsUSD + refreshUSD + retentionUSD;
 
   // Crossover: the sustained read rate (other axes 0) where request cost alone passes the baseline less the fixed
   // monthly costs (storage and the pointer refresh), evaluated at this report's cache posture (misses).
@@ -695,7 +761,14 @@ function buildReport(input: {
   const verdict: CostReport['verdict'] =
     total <= baselineUSD * 0.1 ? 'win-big' : total < baselineUSD ? 'win' : 'lose-zone';
 
-  const dominant = Math.max(readsUSD, intersectsUSD, storageUSD, loadsUSD, refreshUSD);
+  const dominant = Math.max(
+    readsUSD,
+    intersectsUSD,
+    storageUSD,
+    loadsUSD,
+    refreshUSD,
+    retentionUSD,
+  );
   let driver = 'storage';
   if (dominant === readsUSD && readsUSD > 0) driver = 'point reads (object GETs)';
   else if (dominant === intersectsUSD && intersectsUSD > 0) {
@@ -703,6 +776,8 @@ function buildReport(input: {
   } else if (dominant === loadsUSD && loadsUSD > 0)
     driver = 'loads (object, listing and pointer requests)';
   else if (dominant === refreshUSD && refreshUSD > 0) driver = 'the pointer refresh (object GETs)';
+  else if (dominant === retentionUSD && retentionUSD > 0)
+    driver = 'the retention sweep (registry reads and writes)';
   // A fixed baseline keeps the words it always had — "flat baseline" in a lose-zone, "baseline" otherwise — and a
   // sized one says what it priced.
   const sized = baseline.sized;
@@ -783,6 +858,19 @@ function buildReport(input: {
         'the reader evicted opens it again, a pointer and a tail read, which this does not price. Raise ' +
         'cache.readerMax, and cache.readerMaxBytes, to keep them open.'
       : null,
+    ...(retirementsPerMonth > 0 || purgesPerMonth > 0
+      ? [
+          `Retention sweep modeled: ${retirementsPerMonth}/mo retirements at ${sweep.retirement.reads} reads, ` +
+            `${sweep.retirement.writes} writes and ${sweep.retirement.deletes} delete(s) each, ${purgesPerMonth}/mo ` +
+            `purges at ${sweep.purge.reads} reads, ${sweep.purge.writes} writes and ${sweep.purge.deletes} ` +
+            'delete(s) each; reads are priced at the GET rate and writes at the PUT rate, deletes at nothing, as S3 ' +
+            'bills none' +
+            (conditionalDelete
+              ? '.'
+              : '; a registry that only tombstones is read again, two reads per purged segment, by every later ' +
+                'full sweep, which is not priced.'),
+        ]
+      : []),
     ...(input.extraNotes ?? []),
     // Last, so the notes a report already carried keep their places.
     redisNote,
@@ -796,6 +884,7 @@ function buildReport(input: {
         storage: storageUSD,
         loads: loadsUSD,
         pointerRefresh: refreshUSD,
+        retention: retentionUSD,
       },
       total,
     },

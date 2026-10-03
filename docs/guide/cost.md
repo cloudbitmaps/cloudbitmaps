@@ -9,12 +9,13 @@ of reality.
 ## Cost: estimate it, then ground it
 
 CloudBitmaps can tell you what a workload will cost, and what your real segments are costing, because the library owns
-the storage and the cache. The model has five terms and no per-id write:
+the storage and the cache. The model has six terms and no per-id write:
 
 - object-store **GETs** for point reads;
 - GETs for **intersections**, each operand's pointer and index as well as its chunks;
 - the requests of a **load**: the object's write and what `store.load()` does around it;
 - the **pointer refresh** a long-lived reader pays;
+- the **retention sweep**: the registry reads and writes of a retirement and a purge;
 - **storage**.
 
 Each request count is one the engine is tested to make.
@@ -36,7 +37,7 @@ const report = CloudRoaring.estimateCost({
     hotSegments: 2, // segments a long-lived reader keeps reading: each refreshes its pointer every 2 s
   },
 });
-report.monthlyUSD.byOp; // { reads: ≈42, intersects: ≈25.2, storage: ≈0.0257, loads: ≈0.00037, pointerRefresh: ≈1.05 }
+report.monthlyUSD.byOp; // { reads: ≈42, intersects: ≈25.2, storage: ≈0.0257, loads: ≈0.00037, pointerRefresh: ≈1.05, retention: 0 }
 report.monthlyUSD.total; // ≈68.4
 report.redisBaseline; // $142.35 a month: the cheapest cluster in the catalogue that holds 1.12 GiB, 1 shard of 3 cache.t4g.medium nodes
 report.verdict; // 'win' — 'win-big' | 'win' | 'lose-zone', never hides the lose case
@@ -59,7 +60,8 @@ region/cloud. [What it compares against](#what-it-compares-against) covers `redi
 lists the model's simplifications (same-region egress free; request cost from your supplied workload rates —
 deriving it from live metrics is a later refinement; how many GETs each intersection was priced at; and, when you
 leave `loadsPerMonth` or `hotSegments` unset, that **loads** or **the pointer refresh are not modeled** — disclosed
-rather than silently under-counted; and, last, which Redis it compared with and how it priced it).
+rather than silently under-counted; what a retirement and a purge were priced at, when you set `retirementsPerMonth` or
+`purgesPerMonth`; and, last, which Redis it compared with and how it priced it).
 
 ### What it compares against
 
@@ -133,6 +135,27 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   before it unwraps the key, one more GET ($0.40 per million at the default prices), which the model leaves out, as
   it leaves out the key-management calls an encrypted load makes. Loads are cheap by construction: a thousand
   100-part loads a month is about $0.52.
+- **The retention sweep** is priced per segment, from the registry requests `retireExpired` makes, which a store
+  that counts its requests measured. Set `retirementsPerMonth` and `purgesPerMonth` (at a steady state the same number,
+  a `tombstoneGraceMs` apart), and `conditionalDelete` to what your registry reports (`true` by default):
+
+  | Per segment | Reads | Writes | Deletes |
+  | --- | --- | --- | --- |
+  | A retirement, `conditionalDelete` on | 9 | 3 | 1 |
+  | A purge, `conditionalDelete` on | 4 | 0 | 2 |
+  | Each later sweep, `conditionalDelete` on | 0 | 0 | 0 |
+  | A retirement, `conditionalDelete` off | 8 | 3 | 0 |
+  | A purge, `conditionalDelete` off | 3 | 1 | 0 |
+  | Each later full sweep, `conditionalDelete` off | 2 | 0 | 0 |
+
+  With it on, a purge removes the row and every pointer to it, so a purged segment costs the sweep nothing again. With
+  it off, a purge rewrites the row as a tombstone, and every later full sweep reads what is left, two objects a purged
+  segment; the model prices that last row in prose only, since how often you sweep is yours. Reads are priced at the
+  GET rate and writes at the PUT rate; a delete is counted and priced at nothing, because S3 bills none. At the default
+  prices a segment retired and purged costs $20.20 per million with the gate on and $24.40 per million with it off.
+  At fleet scale, a fleet that retires and purges 2,000,000 segments a month pays $40.40 a month with it on and
+  $48.80 with it off, and with it off, once a year's 24,000,000 tombstones are left, each full sweep reads 48,000,000
+  objects, $19.20, where with it on a sweep reads only the segments that are live or inside their grace.
 - **The pointer refresh**: a long-lived reader re-reads a segment's pointer when it reads the segment after
   `cache.genTtlMs` has passed. So each hot segment costs at most one GET per `genTtlMs`, 1,314,000 a month at the
   default 2 s, about $0.53, and the whole term at most one GET per point read. Pass `hotSegments` for the segments
@@ -146,6 +169,11 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   64 MiB of parsed index (`cache.readerMaxBytes`). A read of a segment the cache evicted opens it again, a pointer
   read and a tail read, which the model does not price, and the report says so when `hotSegments` is past 1,024.
   Nor does it price the index each reader opens again after every load. Size the caches to keep the hot set open.
+
+**`checkConsistency({ summaries: true })` costs one tail read per segment**, on top of the listing the default check
+makes: it opens each current object to compare the row's summary with it. The model does not price it, since a
+consistency check is a run of your own, not a rate; at the default prices a million segments cost $0.40 on S3 and GCS
+(`requestsPerSizedRead` of 1) and $0.80 on Azure Blob (2).
 
 **A pointer read is one request on every backend**: S3, GCS and Azure Blob each answer it with a single GET whose
 headers carry the version beside the bytes. **A tail read needs the object's size.** S3 and GCS answer it with a single

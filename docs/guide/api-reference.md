@@ -213,7 +213,8 @@ the generation's id count, by the same compare-and-swap that moves the pointer, 
 current sees its metadata. It is immutable: a new generation is how it changes. A rollback puts the target's own back,
 and an erasure rewrite carries it over unchanged without scanning it, so keep a subject's id out of it. Sealed under
 the segment's key on an encrypted segment. `MaterializeOptions` takes it too, so each `*Into` verb does
-([details](loading.md#metadata-what-a-generation-was-computed-from)). **Reading it back is not in this build.**
+([details](loading.md#metadata-what-a-generation-was-computed-from)). `seg.stat()` and the current entry of
+`store.generations()` read it back, with the generation's id count.
 
 **The guard's size.** A guarded load takes the size of the current generation from the row's summary of it when the
 row has a usable one, and opens no object for it; a row with none is read from the object's index, as before
@@ -394,8 +395,8 @@ and GCS, and 2 for Azure Blob, which takes no suffix range and reads the object'
 or `{ monthlyUSD }`, one cluster whatever the data size — exactly one of the two, or it is refused. `RedisSizing` is `{ source, nodeTypes, replicasPerShard,
 reservedMemoryFraction }`, and each `RedisNodeType` is `{ name, memoryGiB, ssdGiB?, hourlyUSD, maxShards? }`;
 `Workload` is `{ readsPerSec?, intersectsPerSec?, cacheHitRate?, chunksPerIntersect?, operandsPerIntersect?,
-loadsPerMonth?, requestsPerLoad?, hotSegments?, readerProcesses?, genTtlMs? }`; `CostReport.monthlyUSD.byOp` is
-`{ reads, intersects, storage, loads, pointerRefresh }`; `redisBaseline` is `{ basis: 'fixed', monthlyUSD }` or
+loadsPerMonth?, requestsPerLoad?, hotSegments?, readerProcesses?, genTtlMs?, retirementsPerMonth?, purgesPerMonth?,
+conditionalDelete? }`; `CostReport.monthlyUSD.byOp` is `{ reads, intersects, storage, loads, pointerRefresh, retention }`; `redisBaseline` is `{ basis: 'fixed', monthlyUSD }` or
 `{ basis: 'sized-to-data', monthlyUSD, cluster: { nodeType, shards, nodes, dataTiering } }`, the Redis the verdict
 compares against, with the last of `assumptions.notes` saying how it was priced; and
 `redisCrossover.readsPerSec` is the sustained read rate at which pay-per-use passes it, net of storage and the pointer
@@ -700,7 +701,7 @@ agrees, without mentioning `summary` drops the old one; and a patch or create th
 the call changes nothing. Each shape is checked at both boundaries (`ValidationError` on a write, `IntegrityError`
 naming the row on a read). A stored row whose summary disagrees with its keys, or names another generation than
 `currentGen`, is still read, so one such row cannot stop every listing: whatever reads the summary must not use it
-then. Nothing in this release writes one yet, and a row without one is correct. **The registry conformance suite
+then. Every write that moves a pointer writes one, and a row without one is correct. **The registry conformance suite
 now requires a driver to persist it**: to round-trip it through `create`, `get`, `list` and `compareAndSwap`, keep it
 across a patch that does not mention it, store it as it was when the write was called, and refuse a malformed one with
 `ValidationError` on the write.
@@ -709,7 +710,7 @@ across a patch that does not mention it, store it as it was when the write was c
 digits, drawn when a row is created, so a re-created name never meets an earlier incarnation's token, even once the
 earlier row is gone entirely. The counter advances on every write and carries on across a tombstone. The write part
 is 64 bits as 16 lowercase hex digits, drawn for every write, so a row restored from a backup to an older counter is
-never given a token it had before. Both random parts make it hold by chance rather than by construction: two
+never given a token it had before. Both random parts make it hold with overwhelming probability rather than by construction: two
 incarnations of one name draw the same incarnation id with probability 2^-128 for any pair (about n² / 2^129 among n of
 them), and two writes at one counter, after a restore, the same write part with probability 2^-64. A row first written by a release before 0.12 keeps its bare decimal counter (`"7"`) until its first
 write, which gives it `<counter>.<write>`; only a create starts an incarnation. Tokens stay opaque to the library,

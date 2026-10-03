@@ -17,6 +17,7 @@ import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
 import { CountingObjectStore, counting } from '../helpers/counting';
 import { seededStore } from '../helpers/loaded';
 import { estimateCost } from '@cloudbitmaps/core';
+import { RETENTION_SWEEP_REQUESTS } from '@/core/cost';
 import { brandAsBackend, type GenKey } from '@/core/ports';
 import { MemoryStorageDriver } from '@/drivers/memory';
 
@@ -808,11 +809,18 @@ describe('cost model — additional coverage', () => {
         chunksPerIntersect: 3,
         loadsPerMonth: 50,
         hotSegments: 4,
+        retirementsPerMonth: 10,
+        purgesPerMonth: 10,
       },
     });
     const { byOp, total } = r.monthlyUSD;
     expect(
-      byOp.reads + byOp.intersects + byOp.storage + byOp.loads + byOp.pointerRefresh,
+      byOp.reads +
+        byOp.intersects +
+        byOp.storage +
+        byOp.loads +
+        byOp.pointerRefresh +
+        byOp.retention,
     ).toBeCloseTo(total, 9);
     // Every term is genuinely exercised, so the identity above is not passing on a bed of zeroes.
     for (const term of [
@@ -821,6 +829,7 @@ describe('cost model — additional coverage', () => {
       byOp.storage,
       byOp.loads,
       byOp.pointerRefresh,
+      byOp.retention,
     ]) {
       expect(term).toBeGreaterThan(0);
     }
@@ -1591,5 +1600,92 @@ describe('the estimator counts the requests the engine makes', () => {
     expect(
       await at({ seams: { clock }, cache: { genTtlMs: 60_000 } }, { genTtlMs: 2000 }),
     ).toBeCloseTo((SECONDS_PER_MONTH * 1000) / 2000, 3);
+  });
+});
+
+describe('retention sweep cost term', () => {
+  /** Reads a later full sweep makes of one purged segment on a registry that only tombstones: its row and its pointer. */
+  const RETENTION_TOMBSTONE_READS = 2;
+  const putUSD = P.storage.putPerMillion / 1e6;
+  const getUSD = P.storage.getPerMillion / 1e6;
+  const retention = (workload: Workload): number =>
+    estimateCost({ segments: [{ sizeBytes: 0 }], workload }).monthlyUSD.byOp.retention;
+
+  it('is 0 and silent unless a retirement or a purge is set', () => {
+    const r = estimateCost({ segments: [{ sizeBytes: 1e9 }], workload: { loadsPerMonth: 100 } });
+    expect(r.monthlyUSD.byOp.retention).toBe(0);
+    expect(r.assumptions.notes.some((n) => /Retention sweep/.test(n))).toBe(false);
+  });
+
+  it('prices a retirement and a purge with the gate on: 9 reads and 3 writes, 4 reads, deletes unbilled', () => {
+    expect(RETENTION_SWEEP_REQUESTS.conditionalDelete).toEqual({
+      retirement: { reads: 9, writes: 3, deletes: 1 },
+      purge: { reads: 4, writes: 0, deletes: 2 },
+    });
+    expect(retention({ retirementsPerMonth: 1000 })).toBeCloseTo(
+      1000 * (9 * getUSD + 3 * putUSD),
+      12,
+    );
+    expect(retention({ purgesPerMonth: 1000 })).toBeCloseTo(1000 * 4 * getUSD, 12);
+    // $20.20 per million segments retired and purged, at the default prices.
+    expect(1e6 * retention({ retirementsPerMonth: 1, purgesPerMonth: 1 })).toBeCloseTo(20.2, 9);
+  });
+
+  it('prices a registry that only tombstones, as before: 8 reads and 3 writes, 3 reads and a write', () => {
+    expect(RETENTION_SWEEP_REQUESTS.tombstoning).toEqual({
+      retirement: { reads: 8, writes: 3, deletes: 0 },
+      purge: { reads: 3, writes: 1, deletes: 0 },
+    });
+    const off = retention({
+      retirementsPerMonth: 1,
+      purgesPerMonth: 1,
+      conditionalDelete: false,
+    });
+    expect(off).toBeCloseTo(11 * getUSD + 4 * putUSD, 12);
+    // $24.40 per million segments, and the gate is the cheaper one.
+    expect(1e6 * off).toBeCloseTo(24.4, 9);
+    expect(1e6 * off).toBeGreaterThan(
+      1e6 * retention({ retirementsPerMonth: 1, purgesPerMonth: 1 }),
+    );
+  });
+
+  it("holds the cost guide's fleet-scale figures", () => {
+    const fleet = { retirementsPerMonth: 2_000_000, purgesPerMonth: 2_000_000 };
+    expect(retention(fleet)).toBeCloseTo(40.4, 6);
+    expect(retention({ ...fleet, conditionalDelete: false })).toBeCloseTo(48.8, 6);
+    // A full sweep of a registry that only tombstones reads two objects for each of a year's purged segments.
+    expect(24_000_000 * RETENTION_TOMBSTONE_READS * getUSD).toBeCloseTo(19.2, 6);
+    // `checkConsistency({ summaries: true })`: one tail read a segment, per million segments.
+    expect(1e6 * 1 * getUSD).toBeCloseTo(0.4, 9);
+    expect(1e6 * 2 * getUSD).toBeCloseTo(0.8, 9);
+  });
+
+  it('says what it priced, and what it leaves out when rows stay', () => {
+    const on = estimateCost({
+      segments: [{ sizeBytes: 0 }],
+      workload: { retirementsPerMonth: 5, purgesPerMonth: 5 },
+    }).assumptions.notes.find((n) => /Retention sweep modeled/.test(n));
+    expect(on).toContain('9 reads, 3 writes and 1 delete(s)');
+    expect(on).not.toContain('not priced');
+    const off = estimateCost({
+      segments: [{ sizeBytes: 0 }],
+      workload: { retirementsPerMonth: 5, conditionalDelete: false },
+    }).assumptions.notes.find((n) => /Retention sweep modeled/.test(n));
+    expect(off).toContain('8 reads, 3 writes and 0 delete(s)');
+    expect(off).toContain('which is not priced');
+  });
+
+  it('refuses a count that is not a finite number of at least 0, and a gate that is not a boolean', () => {
+    for (const bad of [{ retirementsPerMonth: -1 }, { purgesPerMonth: NaN }]) {
+      expect(() => estimateCost({ segments: [{ sizeBytes: 0 }], workload: bad })).toThrow(
+        ValidationError,
+      );
+    }
+    expect(() =>
+      estimateCost({
+        segments: [{ sizeBytes: 0 }],
+        workload: { retirementsPerMonth: 1, conditionalDelete: 'yes' as unknown as boolean },
+      }),
+    ).toThrow(ValidationError);
   });
 });

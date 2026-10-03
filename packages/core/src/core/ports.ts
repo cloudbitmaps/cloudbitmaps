@@ -328,7 +328,7 @@ export interface RegistryRecord extends SegmentRef {
   /**
    * Opaque OCC token — compare-by-equality, ABA-safe. A shipped registry gives no two writes under one name the same
    * token: not two writes of this row, not a write of an earlier row under the name, and not a write after this row is
-   * restored from a backup. It holds by chance rather than by construction, since the token carries random parts: a
+   * restored from a backup. It holds with overwhelming probability rather than by construction, since the token carries random parts: a
    * 128-bit incarnation id drawn when the row is created, and a 64-bit part drawn for each write. Two incarnations of one
    * name meet with probability 2^-128 for any pair (about n^2 / 2^129 among n of them), and two writes at one counter,
    * after a restore, with probability 2^-64. A bare decimal token, on a row no 0.12 or later registry has written,

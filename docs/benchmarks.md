@@ -55,8 +55,8 @@ Every number above is turned into a **deterministic, build-breaking CI assertion
   sink observed for a point-read workload on an in-memory store, the prediction must land on or above the measured
   cost. That covers point reads' chunk GETs.
 - **The estimator counts what the engine sends** — a cold intersect's pointer and index reads for each operand before
-  its chunks, what `store.load()` adds to a load's object write, and at most one pointer read per hot segment per
-  `cache.genTtlMs`. A test drives the real engine over the single-bucket registry protocol and holds each count to
+  its chunks, what `store.load()` adds to a load's object write, the registry reads and writes of a retirement and of a purge in
+  the retention sweep, and at most one pointer read per hot segment per `cache.genTtlMs`. A test drives the real engine over the single-bucket registry protocol and holds each count to
   the requests it makes, on S3's request shape, which GCS shares. Azure Blob shares it for a pointer read and makes
   two requests for a tail read, which the pricing profile's `requestsPerSizedRead` carries; `requestsPerPointerRead`
   carries a pointer read's. A fleet of readers pays the refresh once per reader,

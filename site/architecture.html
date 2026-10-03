@@ -308,8 +308,9 @@
           <div class="limit">
             <p class="label">Exact counts, zero payload reads</p>
             <p>
-              Cardinality per chunk is stored beside the chunk key, so <span class="m">count()</span> sums
-              metadata and never opens a payload. It is <strong>exact, not estimated</strong> — no
+              The registry row records the current generation's id count, and each chunk's cardinality is
+              stored beside its key, so <span class="m">count()</span> answers from metadata, in one request
+              when cold, and never opens a payload. It is <strong>exact, not estimated</strong> — no
               HyperLogLog, no error bars.
             </p>
           </div>
