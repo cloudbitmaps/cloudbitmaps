@@ -557,9 +557,9 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
     claim: new RegExp(g('no orphan is left behind by a refused rewrite'), 'i'),
     why: "a refused rewrite deletes its object only when it sits above the winner's pointer; elsewhere it stays, as a refused load's does",
   },
-  // The S3 and Azure Blob packages can time their reads (`readTimeoutMs`), so a page may not say the library has no
-  // timeout. What is true is narrower: nothing is timed unless that is set, no write, delete or listing is timed on any
-  // backend, and nor is any GCS request.
+  // The S3, GCS and Azure Blob packages can time their reads (`readTimeoutMs`), so a page may not say the library has
+  // no timeout. What is true is narrower: nothing is timed unless that is set, and no write, delete or listing is timed
+  // on any backend.
   {
     claim: new RegExp(
       g(
@@ -567,7 +567,7 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
       ),
       'i',
     ),
-    why: 'the S3 and Azure Blob packages time each read when `readTimeoutMs` is set — say what is not timed: any read while it is unset, every write, delete and listing, and every GCS request',
+    why: 'the S3, GCS and Azure Blob packages time each read when `readTimeoutMs` is set — say what is not timed: any read while it is unset, and every write, delete and listing',
   },
   // A load's guard read and an erasure's reads run under the store's read retry, so no page may say they are not
   // retried. The write itself is still sent once; say that instead.
@@ -1312,8 +1312,7 @@ describe('no document claims behaviour this library does not have', () => {
     'A refused load leaves its object behind once the row has changed.',
     'The library times no write, deliberately, since a timeout of its own would abandon a write in flight.',
     'An S3 write has no timeout of its own.',
-    'The GCS package sets no timeout of its own.',
-    'No S3 or Azure Blob write has a timeout of its own.',
+    'No S3, GCS or Azure Blob write has a timeout of its own.',
     "An erasure's writes are not retried; its reads are.",
     "An erasure's reads are retried, and its writes are not retried.",
     'A row written before 0.12 keeps its bare decimal token (`"7"`) until its first 0.12 write.',

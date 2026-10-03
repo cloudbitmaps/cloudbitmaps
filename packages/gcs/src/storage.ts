@@ -50,7 +50,14 @@ import {
 } from './gcs-errors';
 import { retryDownload } from './download-retry';
 import { saveOnce } from './send-once';
-import { readOnce, singleHeader, type ObjectRead } from './read-once';
+import { downloadFile, readOnce, singleHeader, type ObjectRead } from './read-once';
+import {
+  ReadTimedOut,
+  resolveReadTimeoutMs,
+  startDeadline,
+  withDeadline,
+  type Deadline,
+} from './read-timeout';
 
 /** Default object ceiling: GCS's 5 TiB per-object hard max. Set lower to fail fast on a runaway write. */
 const DEFAULT_MAX_OBJECT_BYTES = 5 * 1024 * 1024 * 1024 * 1024;
@@ -84,6 +91,14 @@ export interface GcsStorageDriverOptions {
   /** Bytes at/under which a single non-resumable upload is used instead of a resumable stream (default 8 MiB).
    * Must be a positive safe integer. */
   readonly simpleUploadThresholdBytes?: number;
+  /**
+   * Cut off a read that has run this long, in milliseconds: a tail read (with the metadata read it falls back on for
+   * an empty object) or a range read, every attempt and the backoff between them included. `0` (the default) sets no
+   * timeout. The clock starts at the call into the driver, so a credential fetch counts, and runs until the body has
+   * ended; when it passes the read throws `TransientError` and no further attempt starts. Uploads, deletes and
+   * listings are not timed. A non-negative safe integer no larger than 2,147,483,647.
+   */
+  readonly readTimeoutMs?: number;
 }
 
 export class GcsStorageDriver implements IStorageDriver {
@@ -93,6 +108,7 @@ export class GcsStorageDriver implements IStorageDriver {
   private readonly prefix: string | undefined;
   private readonly maxObjectBytes: number;
   private readonly threshold: number;
+  private readonly readTimeoutMs: number;
 
   constructor(options: GcsStorageDriverOptions) {
     this.storage = options.storage;
@@ -111,6 +127,7 @@ export class GcsStorageDriver implements IStorageDriver {
     }
     this.maxObjectBytes = options.maxObjectBytes ?? DEFAULT_MAX_OBJECT_BYTES;
     this.threshold = options.simpleUploadThresholdBytes ?? DEFAULT_UPLOAD_THRESHOLD_BYTES;
+    this.readTimeoutMs = resolveReadTimeoutMs(options.readTimeoutMs);
   }
 
   capabilities(): StorageCaps {
@@ -121,9 +138,14 @@ export class GcsStorageDriver implements IStorageDriver {
     return this.storage.bucket(this.bucket).file(name);
   }
 
-  /** The same object on the download client. */
+  /** The same object on the download client, off the SDK's shared agent ({@link downloadFile}). */
   private downloadable(name: string) {
-    return this.readStorage.bucket(this.bucket).file(name);
+    return downloadFile(this.readStorage, this.bucket, name);
+  }
+
+  /** The deadline a read of `key` made now runs under, every attempt included, named for its error; none when off. */
+  private deadline(read: string, key: GenKey): Deadline | undefined {
+    return startDeadline(this.readTimeoutMs, `${read} of ${key.segment}.${key.generation}`);
   }
 
   async putImmutable(
@@ -155,27 +177,76 @@ export class GcsStorageDriver implements IStorageDriver {
     if (length === 0) return new Uint8Array(0);
     const objectName = storageObjectName(this.prefix, key);
     try {
-      // GCS `end` is inclusive.
-      const [buf] = await retryDownload(() =>
-        this.downloadable(objectName).download({ start: offset, end: offset + length - 1 }),
+      // One request, buffering at most the bytes asked for. GCS `end` is inclusive. `decompress: false`, as for the tail:
+      // the offsets are into the bytes as stored.
+      const deadline = this.deadline('range read', key);
+      const res = await retryDownload(
+        () =>
+          readOnce(
+            this.downloadable(objectName),
+            { start: offset, end: offset + length - 1, decompress: false },
+            length,
+            () => this.badRange(key, `the response is longer than the ${length}B requested`),
+            deadline,
+          ),
+        deadline,
       );
-      // A short read means the range ran past EOF — treat as out-of-bounds, never a partial result.
-      if (buf.length !== length) {
-        throw new ValidationError(
-          `range [${offset}, ${offset + length}) out of bounds (got ${buf.length}B)`,
-        );
-      }
-      return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+      this.checkRange(res, key, offset, length);
+      return res.bytes;
     } catch (err) {
       throw this.mapReadError(err, key);
     }
   }
 
+  /**
+   * Refuse a range response unless it is exactly the bytes asked for. A 206 must name them in `Content-Range: bytes
+   * a-b/total`, starting at `offset`, and hold that many; a 200 (a server that ignored the range) is the whole object,
+   * which is the range only when the range starts at 0. A short read means the range ran past the end of the object:
+   * out of bounds, never a partial result.
+   */
+  private checkRange(res: ObjectRead, key: GenKey, offset: number, length: number): void {
+    const received = res.bytes.length;
+    if (res.status === 200) {
+      if (offset !== 0)
+        throw this.badRange(key, `whole object returned for a range from ${offset}`);
+    } else if (res.status === 206) {
+      const header = singleHeader(res.headers, 'content-range');
+      const m = header === undefined ? null : /^bytes (\d+)-(\d+)\/(\d+)$/.exec(header);
+      if (m === null) throw this.badRange(key, 'Content-Range is missing or malformed');
+      const [first, last, total] = [Number(m[1]), Number(m[2]), Number(m[3])];
+      if (![first, last, total].every(Number.isSafeInteger)) {
+        throw this.badRange(key, 'Content-Range holds a number that is not a safe integer');
+      }
+      if (first !== offset || last - first + 1 !== received || last >= total) {
+        throw this.badRange(
+          key,
+          `Content-Range ${first}-${last}/${total} disagrees with ${received}B received from ${offset}`,
+        );
+      }
+    } else {
+      throw this.badRange(key, `unexpected HTTP ${res.status}`);
+    }
+    if (received !== length) {
+      throw new ValidationError(
+        `range [${offset}, ${offset + length}) out of bounds (got ${received}B)`,
+      );
+    }
+  }
+
+  private badRange(key: GenKey, why: string): ValidationError {
+    return new ValidationError(
+      `GCS range read of ${key.segment}.${key.generation} refused: ${why}`,
+    );
+  }
+
   async getTail(key: GenKey, maxBytes: number): Promise<{ bytes: Uint8Array; size: number }> {
     const objectName = storageObjectName(this.prefix, key);
+    // One deadline for the whole call: the tail's attempts, and the metadata read it may fall back on.
+    const deadline = this.deadline('tail read', key);
     try {
       // Nothing to read: only the size is wanted, which the metadata answers in one request.
-      if (maxBytes <= 0) return { bytes: new Uint8Array(0), size: await this.sizeOf(objectName) };
+      if (maxBytes <= 0)
+        return { bytes: new Uint8Array(0), size: await this.sizeOf(objectName, deadline) };
       if (!Number.isSafeInteger(maxBytes)) {
         throw new ValidationError(`invalid tail length ${maxBytes}`);
       }
@@ -183,25 +254,28 @@ export class GcsStorageDriver implements IStorageDriver {
       // `Content-Range: bytes a-b/total`, the object's size. An object shorter than N comes back whole.
       let res;
       try {
-        res = await retryDownload(() =>
-          readOnce(
-            this.downloadable(objectName),
-            { end: -maxBytes, decompress: false },
-            maxBytes,
-            () => this.badTail(key, `the response is longer than the ${maxBytes}B requested`),
-          ),
+        res = await retryDownload(
+          () =>
+            readOnce(
+              this.downloadable(objectName),
+              { end: -maxBytes, decompress: false },
+              maxBytes,
+              () => this.badTail(key, `the response is longer than the ${maxBytes}B requested`),
+              deadline,
+            ),
+          deadline,
         );
       } catch (err) {
         // A zero-byte object has no suffix to satisfy, and a server may refuse the range with a 416. The metadata
         // settles whether that is an empty object (a valid, empty tail) or a real range fault.
         if (!isInvalidRange(err)) throw err;
-        const size = await this.sizeOf(objectName);
+        const size = await this.sizeOf(objectName, deadline);
         if (size !== 0) throw err;
         return { bytes: new Uint8Array(0), size };
       }
       if (res.bytes.length === 0) {
         // No bytes came back for a positive request: only an empty object may do that.
-        const size = await this.sizeOf(objectName);
+        const size = await this.sizeOf(objectName, deadline);
         if (size !== 0) throw this.badTail(key, `no bytes returned for an object of ${size}B`);
         return { bytes: res.bytes, size };
       }
@@ -211,9 +285,15 @@ export class GcsStorageDriver implements IStorageDriver {
     }
   }
 
-  /** The object's size from its metadata, validated. */
-  private async sizeOf(objectName: string): Promise<number> {
-    const [meta] = await this.file(objectName).getMetadata();
+  /**
+   * The object's size from its metadata, validated. Read on the download client and retried as a download is, within
+   * the calling read's `deadline` ({@link withDeadline}), so nothing but the one request in flight runs past it.
+   */
+  private async sizeOf(objectName: string, deadline: Deadline | undefined): Promise<number> {
+    const [meta] = await retryDownload(
+      () => withDeadline(() => this.downloadable(objectName).getMetadata(), deadline),
+      deadline,
+    );
     const size = Number(meta.size ?? 0);
     if (!Number.isSafeInteger(size) || size < 0) {
       throw new ValidationError(`GCS returned an invalid object size: ${String(meta.size)}`);
@@ -294,6 +374,8 @@ export class GcsStorageDriver implements IStorageDriver {
     if (isInvalidRange(err)) {
       return new ValidationError(`range out of bounds for ${key.segment}.${key.generation}`);
     }
+    // Timed out on every attempt: transient, in words that name the read and the timeout.
+    if (err instanceof ReadTimedOut) return new TransientError(err.message, { cause: err });
     // A connection that failed or was cut off, after the driver's retries: transient, whichever code Node gave it.
     if (isTransportFault(err)) {
       return new TransientError(
