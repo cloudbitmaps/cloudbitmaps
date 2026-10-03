@@ -546,7 +546,7 @@ describe('an allowForward rollback onto an object above the pointer that was rep
     await rolledBackBelowTwo(w);
     const original = (await w.storage.getTail({ ...SEG, generation: 2 }, 1 << 20)).bytes;
     const corrupt = original.slice();
-    corrupt[corrupt.length - 1] ^= 0xff;
+    corrupt[corrupt.length - 1] = (corrupt[corrupt.length - 1] ?? 0) ^ 0xff;
     const garbage = async (): Promise<void> => {
       await w.storage.putImmutable({ ...SEG, generation: 2 }, (sink) => sink.write(corrupt));
     };
