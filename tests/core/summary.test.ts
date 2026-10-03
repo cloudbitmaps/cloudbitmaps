@@ -103,6 +103,17 @@ describe('a sealed summary', () => {
     expect(JSON.stringify(sealed)).not.toContain('recognisable');
   });
 
+  it('opens metadata of exactly the cap, and a count alone, the largest and smallest it can be', async () => {
+    const aead = await aeadOf();
+    const metadata = { k: 'x'.repeat(1_016) };
+    const sealed = sealSummary(aead, REF, 4, 2 ** 32, metadata);
+    expect(bytesOf(sealed.sealed).length).toBe(12 + 8 + 1_024 + 16);
+    expect(openSummary(aead, REF, sealed)).toEqual({ cardinality: 2 ** 32, metadata });
+    const bare = sealSummary(aead, REF, 4, 0);
+    expect(bytesOf(bare.sealed).length).toBe(12 + 8 + 16);
+    expect(openSummary(aead, REF, bare)).toEqual({ cardinality: 0, metadata: undefined });
+  });
+
   it('seals under a fresh nonce each time', async () => {
     const aead = await aeadOf();
     expect(sealSummary(aead, REF, 4, 5).sealed).not.toBe(sealSummary(aead, REF, 4, 5).sealed);

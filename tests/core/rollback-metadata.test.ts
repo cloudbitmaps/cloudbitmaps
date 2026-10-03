@@ -331,6 +331,29 @@ describe('the undo of a rollback whose target was collected while the pointer mo
     expect(after.summary).toBeUndefined();
   });
 
+  it('does not put back a summary in the clear beside the keys of an encrypted row, which a registry refuses to write', async () => {
+    const w = world(key());
+    await twoGenerations(w);
+    // A registry of someone else's left a clear summary of generation 1 on an encrypted row. A shipped registry refuses
+    // to write that shape, so the undo writes none rather than fail.
+    const odd: IRegistryDriver = new Proxy(w.registry, {
+      get(t, p, rx) {
+        const value: unknown = Reflect.get(t, p, rx);
+        if (p !== 'get') return value;
+        return async (...args: Parameters<IRegistryDriver['get']>) => {
+          const row = await (value as IRegistryDriver['get']).apply(t, args);
+          return row === null ? null : { ...row, summary: { generation: 1, cardinality: 1 } };
+        };
+      },
+    });
+    await expect(
+      rollbackSegment(SEG, 0, { ...w.deps, registry: odd, storage: collectingAfterSwap(w, 0) }),
+    ).rejects.toThrow(/the pointer was put back/);
+    const after = (await w.registry.get(SEG))!;
+    expect(after.currentGen).toBe(1);
+    expect(after.summary).toBeUndefined();
+  });
+
   it('is a NotFoundError either way', async () => {
     const w = world();
     await twoGenerations(w);

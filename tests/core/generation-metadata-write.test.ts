@@ -7,9 +7,10 @@ import { loadSegment } from '@/core/load';
 import type { GenerationMetadata, IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { openSummary, summaryAgrees, usableSummary } from '@/core/summary';
 import { InProcessKeystore } from '@/drivers/crypto';
-import { MemoryRegistryDriver } from '@/drivers/memory';
+import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { CloudRoaring, MemoryStorage } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 const { RoaringBitmap32 } = roaring;
 
@@ -293,6 +294,50 @@ describe('an encrypted load with metadata', () => {
     expect(() => openSummary(aead, { ...SEG, segment: 'other' }, row.summary as never)).toThrow(
       IntegrityError,
     );
+  });
+});
+
+describe('the loader that publishes by itself', () => {
+  it('writes the summary of what it wrote, clear on a cleartext segment', async () => {
+    const storage = new MemoryStorageDriver();
+    const registry = new MemoryRegistryDriver();
+    const written = await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2, 3], {
+      registry,
+      metadata: META,
+    });
+    expect(written.summary).toEqual({ generation: 0, cardinality: 3, metadata: META });
+    expect((await registry.get(SEG))!.summary).toEqual(written.summary);
+  });
+
+  it('seals it on an encrypted segment, and returns the same one it published', async () => {
+    const keystore = new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
+    const storage = new MemoryStorageDriver();
+    const registry = new MemoryRegistryDriver();
+    const written = await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2, 3], {
+      registry,
+      keystore,
+      metadata: META,
+    });
+    const row = (await registry.get(SEG))!;
+    expect(row.summary).toEqual(written.summary);
+    expect(Object.keys(row.summary!).sort()).toEqual(['generation', 'sealed']);
+    expect(
+      openSummary(await keystore.openDek(row.wrappedDeks!), SEG, row.summary as never),
+    ).toEqual({
+      cardinality: 3,
+      metadata: META,
+    });
+  });
+
+  it('returns the summary without publishing it when asked not to publish', async () => {
+    const storage = new MemoryStorageDriver();
+    const registry = new MemoryRegistryDriver();
+    const written = await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2], {
+      registry,
+      publish: false,
+    });
+    expect(written.summary).toStrictEqual({ generation: 0, cardinality: 2 });
+    expect(await registry.get(SEG)).toBeNull();
   });
 });
 
