@@ -100,12 +100,11 @@ const FOREIGN_VERSIONS = new Map<string, string>([
       'note on the node quota the estimator prices past. A third-party version, not a claim about our release',
   ],
   [
-    '3.645.0',
+    '3.700.0',
     "the floor of @cloudbitmaps/s3's dependency on @aws-sdk/client-s3, in that package's README. It is a " +
-      'correctness floor, not a preference: measured against MinIO, 3.640.0 drops the unmodeled ' +
-      '`IfNoneMatch: "*"` and a second PUT to the same key SUCCEEDS — write-once silently lost, which is ' +
-      'hard invariant 2 — while 3.641.0 rejects it. 3.645.0 is the pinned floor, a small margin above the ' +
-      'measured boundary',
+      'correctness floor, not a preference: an SDK drops a conditional header it does not model, and up to ' +
+      "3.699.0 PutObject's serializer omits If-Match, so the registry's compare-and-swap goes out " +
+      'unconditionally; 3.700.0 is the first version that sends it',
   ],
   [
     '3.640.0',

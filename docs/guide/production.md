@@ -10,7 +10,7 @@ checklist: work down the table, and follow each link for the detail.
 | Nothing expires current objects or the `registry/` prefix | An expired pointer or generation makes a live segment unreadable | [Bucket lifecycle](#bucket-lifecycle) |
 | Versioning and backups cover the data and the pointers | A restore must bring both back to the same point in time | [Versioning and backups](#versioning-and-backups) |
 | With versioning on, noncurrent versions expire after your restore window | Each generation a load collects is otherwise billed for as long as the bucket keeps it, out of sight | [Bucket lifecycle](#bucket-lifecycle) |
-| The bucket honors conditional writes, and the S3 SDK is 3.645.0 or later | Otherwise a write-once generation can be silently overwritten | [Conditional writes and the S3 SDK](#conditional-writes-and-the-s3-sdk) |
+| The bucket honors conditional writes, and the S3 SDK is 3.700.0 or later | Otherwise a write-once generation can be silently overwritten | [Conditional writes and the S3 SDK](#conditional-writes-and-the-s3-sdk) |
 | Your reads have a timeout | Without one a hung request hangs its call. `readTimeoutMs` on `S3Storage` and `AzureBlobStorage` bounds each read, and is off by default; on Azure Blob it is the only bound on a download's body, which no client setting reaches. On GCS 8.x nothing bounds a download's body. The library times no write, delete or listing | [Reliability](#reliability-retries-backoff--timeouts) |
 | Your job re-runs a write after a transient error | Writes are never retried for you | [Reliability](#reliability-retries-backoff--timeouts) |
 | You know the request budget and the memory ceilings | A runaway call is refused, not billed | [Limits](#limits-the-per-op-budget-and-the-memory-ceilings) |
@@ -105,9 +105,11 @@ object and `If-Match` for the pointer.
 - **The bucket must honor them.** AWS S3 does, and the test suite runs against MinIO. Another S3-compatible service
   that ignores the headers turns write-once into overwrite, so check yours before you depend on it. GCS and Azure
   Blob use their own equivalents (`ifGenerationMatch`; `If-None-Match` and `If-Match`).
-- **Use `@aws-sdk/client-s3` 3.645.0 or later if you pass your own `client`.** Measured against MinIO, 3.640.0
-  silently overwrites an existing object, which loses a published generation without an error. `@cloudbitmaps/s3`
-  never resolves its own SDK below the floor. If your own code imports the SDK, to build that `client`, add it to your own `package.json` too: pnpm does not let your code import a dependency of a dependency.
+- **Use `@aws-sdk/client-s3` 3.700.0 or later if you pass your own `client`.** An SDK drops a conditional header it
+  does not model, without an error. Measured against MinIO, 3.640.0 drops `If-None-Match` and silently overwrites an
+  existing object, which loses a published generation; up to 3.699.0 the serializer drops `If-Match` on `PutObject`,
+  so the registry's compare-and-swap goes out unconditionally. `@cloudbitmaps/s3` never resolves its own SDK below
+  the floor. If your own code imports the SDK, to build that `client`, add it to your own `package.json` too: pnpm does not let your code import a dependency of a dependency.
 
 ## Reliability: retries, backoff & timeouts
 
