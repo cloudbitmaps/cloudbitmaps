@@ -274,6 +274,44 @@ describe('leak-scan', () => {
     });
   });
 
+  describe('an AWS account id or an ARN', () => {
+    // A fixture cannot be told from a real account, so any standalone run of exactly 12 digits and any ARN is a
+    // failure, as the private needles CI configures already make them. Every sample is built here at run time, so
+    // this file holds none of what it tests for.
+    const twelve = '1234'.repeat(3);
+    const arn = (partition: string, rest: string): string => `${'arn'}:${partition}:${rest}`;
+
+    it.each([
+      [
+        'an access point host',
+        `const host = 'my-ap-${twelve}.s3-accesspoint.us-east-1.amazonaws.com';`,
+      ],
+      ['an account id in JSON', `{ "account": "${twelve}" }`],
+      ['an account id in prose', `the bucket belongs to ${twelve}.`],
+      ['a float printed with 12 fraction digits', `{ "medianRounds": 0.${twelve} }`],
+      ['an S3 ARN', `"Resource": "${arn('aws', 's3:::my-bitmaps/*')}"`],
+      ['an IAM ARN', `role ${arn('aws', `iam::${'0'.repeat(12)}:role/x`)}`],
+      ['a China-partition ARN', `${arn('aws-cn', 's3:::b')}`],
+      ['a GovCloud ARN', `${arn('aws-us-gov', 's3:::b')}`],
+    ])('flags %s', (_label, line) => {
+      const { status, out } = scan(`${line}\n`, 'sample.md');
+      expect(status).toBe(1);
+      expect(out).toMatch(/AWS account id|ARN literal/);
+    });
+
+    it.each([
+      ['eleven digits', `const n = ${twelve.slice(1)};`],
+      ['thirteen digits, a millisecond timestamp', `const at = ${twelve}5;`],
+      ['twelve digits inside a hex digest', `sha256 a${twelve}b${'f'.repeat(50)}`],
+      ['twelve digits after an underscore', `const id = run_${twelve};`],
+      ['nine fraction digits', `{ "medianRounds": 0.${twelve.slice(3)} }`],
+      ['the word ARN', 'grant the role by its ARN, named in words: the bucket, then the prefix'],
+      ['a URN', `urn:aws:${'not-an-arn'}`],
+    ])('leaves alone %s', (_label, line) => {
+      expect(scan(`${line}\n`, 'sample.md').status).toBe(0);
+    });
+  });
+
   it('always DISCLOSES its needle state, configured or not', () => {
     // `.leak-needles` is gitignored on purpose (committing it would BE the leak), so the scanner has to say
     // which mode it is in rather than reporting a reassuring all-clear either way.

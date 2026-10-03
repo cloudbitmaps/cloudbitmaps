@@ -7,7 +7,8 @@
 // scanned for things that must not leave the private world. Two classes of finding:
 //
 //   HARD   — always a failure, in any repo, at any time: credentials, private keys, non-noreply email
-//            addresses, and absolute local machine paths. None of these are ever correct to ship.
+//            addresses, absolute local machine paths, and AWS account ids and ARNs. None of these are ever
+//            correct to ship.
 //   MIGRATION — expected in the pre-launch repo, forbidden in the curated snapshot: references to a repo
 //            under the maintainer's own account, and dangling references to private docs (both the private
 //            path prefix AND bare numbered doc-names, which dangle just as hard without the directory).
@@ -197,6 +198,13 @@ const HARD = [
     except: JS_LIKE,
   },
   { name: 'absolute local machine path', re: /(?:\/Users\/|\/home\/)[A-Za-z0-9._-]+\// },
+  // An AWS account id, or anything that could be one: a run of exactly 12 digits standing alone. A placeholder
+  // cannot be told from a real account, which is the point, so a test that needs one builds it at run time
+  // (`'1234'.repeat(3)`), and a file of measured floats is written with fewer than 12 fraction digits. Digits
+  // inside a hex digest or after an underscore are word characters on both sides and do not match.
+  { name: 'AWS account id (a standalone 12-digit run)', re: /\b\d{12}\b/ },
+  // An ARN in any partition. Policy samples name the resource in words instead; the bare word "ARN" is fine.
+  { name: 'ARN literal', re: /\barn:aws(?:-[a-z]+)*:/i },
 ];
 
 // Any email address that is not a GitHub noreply, an SSH git remote, or an obvious doc placeholder.
