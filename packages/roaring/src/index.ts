@@ -453,9 +453,10 @@ export interface MaterializeResult {
   readonly cardinality: number;
   /**
    * What the destination held when the guard judged it — `null` when it had no current generation, **or when
-   * no bound needed the read**. The read costs an object-header fetch, so it is taken only when a bound will
-   * use it: `allowEmpty: true` with no `guard.minRetained` skips it, and this is `null` even though `dest`
-   * was non-empty.
+   * no bound needed it**. It is taken only when a bound will use it: `allowEmpty: true` with no
+   * `guard.minRetained` skips it, and this is `null` even though `dest` was non-empty. When the destination's row
+   * carries a summary of its current generation the count comes from the row and the object is not read; a row
+   * written before rows carried a summary costs one object-header fetch.
    */
   readonly cardinalityBefore: number | null;
   /** Non-empty chunks in the generation. */

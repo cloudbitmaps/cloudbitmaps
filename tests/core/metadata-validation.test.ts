@@ -86,39 +86,51 @@ const BAD_VALUES: Array<[string, Record<string, unknown>]> = [
   ['one byte over the cap', sized(CAP + 1)],
 ];
 
-/** Every way a generation is written, each with a way to hand it metadata. */
-type Writer = (w: ReturnType<typeof counted>, metadata: unknown) => Promise<unknown>;
+/** Every way a generation is written, each handed its options, and the segment it writes. */
+type OptionWriter = (w: ReturnType<typeof counted>, options: unknown) => Promise<unknown>;
 
 const ids = [1, 2, 3];
-const WRITERS: Array<[string, Writer]> = [
-  ['load of ids', (w, metadata) => w.store.load(SEG, ids, { metadata } as never)],
+const DEST: SegmentRef = { namespace: 'ns', segment: 'dest' };
+const WITH_OPTIONS: Array<[string, OptionWriter, SegmentRef]> = [
+  ['load of ids', (w, options) => w.store.load(SEG, ids, options as never), SEG],
   [
     'load of a serialized bitmap',
-    (w, metadata) =>
-      w.store.load(SEG, { serialized: new RoaringBitmap32(ids).serialize(true) }, {
-        metadata,
-      } as never),
+    (w, options) =>
+      w.store.load(SEG, { serialized: new RoaringBitmap32(ids).serialize(true) }, options as never),
+    SEG,
   ],
   [
     'load of a bitmap',
-    (w, metadata) => w.store.load(SEG, { bitmap: new RoaringBitmap32(ids) }, { metadata } as never),
+    (w, options) => w.store.load(SEG, { bitmap: new RoaringBitmap32(ids) }, options as never),
+    SEG,
   ],
-  ['core load of ids', (w, metadata) => loadSegment(SEG, ids, w.deps, { metadata } as never)],
-  ...(['intersectInto', 'unionInto', 'andNotInto'] as const).map((verb): [string, Writer] => [
-    verb,
-    async (w, metadata) => {
-      const a = w.store.segment('a', { namespace: 'ns' });
-      const b = w.store.segment('b', { namespace: 'ns' });
-      const dest = w.store.segment('dest', { namespace: 'ns' });
-      // Two source segments, written before the counters are cleared by the caller.
-      await w.store.load({ namespace: 'ns', segment: 'a' }, [1, 2, 3, 4]);
-      await w.store.load({ namespace: 'ns', segment: 'b' }, [3, 4, 5]);
-      w.reset();
-      const options = { metadata } as never;
-      return verb === 'andNotInto' ? a.andNotInto(dest, [b], options) : a[verb](dest, [b], options);
-    },
-  ]),
+  ['core load of ids', (w, options) => loadSegment(SEG, ids, w.deps, options as never), SEG],
+  ...(['intersectInto', 'unionInto', 'andNotInto'] as const).map(
+    (verb): [string, OptionWriter, SegmentRef] => [
+      verb,
+      async (w, options) => {
+        const a = w.store.segment('a', { namespace: 'ns' });
+        const b = w.store.segment('b', { namespace: 'ns' });
+        const dest = w.store.segment('dest', { namespace: 'ns' });
+        // Two source segments, written before the counters are cleared by the caller.
+        await w.store.load({ namespace: 'ns', segment: 'a' }, [1, 2, 3, 4]);
+        await w.store.load({ namespace: 'ns', segment: 'b' }, [3, 4, 5]);
+        w.reset();
+        return verb === 'andNotInto'
+          ? a.andNotInto(dest, [b], options as never)
+          : a[verb](dest, [b], options as never);
+      },
+      DEST,
+    ],
+  ),
 ];
+
+/** Every way a generation is written, each with a way to hand it metadata. */
+type Writer = (w: ReturnType<typeof counted>, metadata: unknown) => Promise<unknown>;
+const WRITERS: Array<[string, Writer]> = WITH_OPTIONS.map(([name, write]) => [
+  name,
+  (w, metadata) => write(w, { metadata }),
+]);
 
 describe.each(WRITERS)('metadata on a %s', (_name, write) => {
   it.each([...NOT_A_RECORD, ...BAD_VALUES])(
@@ -180,5 +192,21 @@ describe('metadata that changes while a load runs', () => {
     expect(result.published).toBe(true);
     const row = (await w.backend.registry.get(SEG))!;
     expect(row.summary).toEqual({ generation: 0, cardinality: 2, metadata: { run: 'one' } });
+  });
+});
+
+describe.each(WITH_OPTIONS)('the metadata option of a %s', (_name, write, written) => {
+  it('is read once: what is checked is what is stored, whatever the property answers the second time', async () => {
+    const w = counted();
+    let reads = 0;
+    // The first answer is legal. A second read would find a record past the cap.
+    const options = Object.defineProperty({}, 'metadata', {
+      enumerable: true,
+      get: () => (++reads === 1 ? { run: 'first' } : { run: 'x'.repeat(2_000) }),
+    });
+    await write(w, options);
+    expect(reads).toBe(1);
+    const row = (await w.backend.registry.get(written))!;
+    expect(row.summary).toMatchObject({ metadata: { run: 'first' } });
   });
 });
