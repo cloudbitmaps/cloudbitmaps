@@ -23,6 +23,7 @@ import { SafeBitmap } from '@/roaring-codec';
 import { NotFoundError, TransientError, ValidationError, WriteConflictError } from '@/core/errors';
 import { brandAsBackend, type GenKey } from '@/core/ports';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { forwardingProxy } from '../helpers/forwarding-proxy';
 
 /**
  * A keyspace unique to THIS run.
@@ -646,5 +647,51 @@ describe('S3 (MinIO): a registry row the client is told was throttled', () => {
     expect(r.rowPuts()).toBe(1);
     expect(r.waits).toEqual([]);
     expect(r.deleted).toEqual([]);
+  });
+});
+
+// A cold count is one request on the wire: the pointer row's GET, and no read of the object, however wide its index is.
+// Counted by a forwarding proxy in front of MinIO, with a reader store that has read nothing.
+describe('S3 (MinIO): a cold count is one request', () => {
+  const client = (endpoint: string): S3Client =>
+    new S3Client({
+      endpoint,
+      region: 'us-east-1',
+      credentials: { accessKeyId: 'minioadmin', secretAccessKey: 'minioadmin' },
+      forcePathStyle: true,
+    });
+  const storeOver = (c: S3Client, prefix: string): CloudRoaring =>
+    new CloudRoaring({
+      storage: brandAsBackend({
+        storage: new S3StorageDriver({ client: c, bucket: BUCKET, prefix }),
+        registry: new S3RegistryDriver({ client: c, bucket: BUCKET, prefix }),
+      }),
+    });
+
+  it.each([
+    ['a medium index', 200],
+    ['an index wider than the 256 KiB tail read', 40_000],
+  ])('%s: one GET of the row', async (_, chunks) => {
+    const prefix = `${RUN}/cold-count/${n++}`;
+    const ref = { namespace: 'ns', segment: 's' };
+    await storeOver(client(ENDPOINT), prefix).load(
+      ref,
+      Array.from({ length: chunks }, (_, c) => c * 65_536),
+    );
+    const proxy = await forwardingProxy(ENDPOINT);
+    try {
+      const reader = storeOver(client(proxy.url), prefix);
+      expect(await reader.segment('s', { namespace: 'ns' }).count()).toBe(chunks);
+      expect(proxy.requests.map((r) => r.method)).toEqual(['GET']);
+      expect(proxy.requests[0]!.path).toContain('registry');
+      proxy.requests.length = 0;
+      expect(await reader.segment('s', { namespace: 'ns' }).stat()).toMatchObject({
+        generation: 0,
+        cardinality: chunks,
+      });
+      expect(proxy.requests).toEqual([]);
+    } finally {
+      await proxy.close();
+    }
   });
 });

@@ -22,8 +22,9 @@ import { CrbmStorageChunkSource, writeCrbmGeneration } from '@/core/crbm-storage
 import { CloudRoaring } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
 import { NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
-import type { GenKey } from '@/core/ports';
+import { brandAsBackend, type GenKey } from '@/core/ports';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { forwardingProxy } from '../helpers/forwarding-proxy';
 
 /**
  * A keyspace unique to THIS run.
@@ -540,4 +541,45 @@ describe('GCS (fake-gcs-server): a single-request upload the client is told was 
       expect(SafeBitmap.safeDeserialize(bytes!, 1 << 20).toArray()).toEqual([4, 5]);
     },
   );
+});
+
+// A cold count is one request on the wire: the pointer row's GET, and no read of the object, however wide its index is.
+// Counted by a forwarding proxy in front of fake-gcs-server, with a reader store that has read nothing.
+describe('GCS (fake-gcs-server): a cold count is one request', () => {
+  const storeOver = (apiEndpoint: string, prefix: string): CloudRoaring => {
+    const client = new Storage({ projectId: 'test', apiEndpoint });
+    return new CloudRoaring({
+      storage: brandAsBackend({
+        storage: new GcsStorageDriver({ storage: client, bucket: BUCKET, prefix }),
+        registry: new GcsRegistryDriver({ storage: client, bucket: BUCKET, prefix }),
+      }),
+    });
+  };
+
+  it.each([
+    ['a medium index', 200],
+    ['an index wider than the 256 KiB tail read', 40_000],
+  ])('%s: one GET of the row', async (_, chunks) => {
+    const prefix = `${RUN}/cold-count/${n++}`;
+    const ref = { namespace: 'ns', segment: 's' };
+    await storeOver(ENDPOINT, prefix).load(
+      ref,
+      Array.from({ length: chunks }, (_, c) => c * 65_536),
+    );
+    const proxy = await forwardingProxy(ENDPOINT);
+    try {
+      const reader = storeOver(proxy.url, prefix);
+      expect(await reader.segment('s', { namespace: 'ns' }).count()).toBe(chunks);
+      expect(proxy.requests.map((r) => r.method)).toEqual(['GET']);
+      expect(decodeURIComponent(proxy.requests[0]!.path)).toContain('registry');
+      proxy.requests.length = 0;
+      expect(await reader.segment('s', { namespace: 'ns' }).stat()).toMatchObject({
+        generation: 0,
+        cardinality: chunks,
+      });
+      expect(proxy.requests).toEqual([]);
+    } finally {
+      await proxy.close();
+    }
+  });
 });

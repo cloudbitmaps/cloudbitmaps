@@ -22,7 +22,7 @@ import { CloudRoaring } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
 import { IntegrityError, NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
 import { MAX_ROW_BYTES } from '@/drivers/_shared/object-registry';
-import type { GenKey } from '@/core/ports';
+import { brandAsBackend, type GenKey } from '@/core/ports';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 /**
@@ -601,5 +601,47 @@ describe('AzureBlobRegistryDriver: a pointer read is one request (Azurite)', () 
     proxy.requests.length = 0;
     await expect(viaProxy.get(ref)).rejects.toBeInstanceOf(IntegrityError);
     expect(proxy.requests.map((r) => r.method)).toEqual(['GET']);
+  });
+});
+
+// A cold count is one request on the wire: the pointer row's GET, and no read of the object, however wide its index is.
+// A cold count that opened the object took three (the row, then the object's properties and its tail). Counted by the
+// forwarding proxy in front of Azurite, with a reader store that has read nothing.
+describe('Azure Blob (Azurite): a cold count is one request', () => {
+  let proxy: Awaited<ReturnType<typeof azuriteProxy>>;
+  beforeEach(async () => {
+    proxy = await azuriteProxy();
+  });
+  afterEach(async () => {
+    await proxy.close();
+  });
+  const storeOver = (c: ContainerClient, prefix: string): CloudRoaring =>
+    new CloudRoaring({
+      storage: brandAsBackend({
+        storage: new AzureBlobStorageDriver({ containerClient: c, prefix }),
+        registry: new AzureBlobRegistryDriver({ containerClient: c, prefix, now: ticking() }),
+      }),
+    });
+
+  it.each([
+    ['a medium index', 200],
+    ['an index wider than the 256 KiB tail read', 40_000],
+  ])('%s: one GET of the row', async (_, chunks) => {
+    const prefix = `${RUN}/cold-count/${n++}`;
+    await storeOver(container, prefix).load(
+      { namespace: 'ns', segment: 's' },
+      Array.from({ length: chunks }, (_, c) => c * 65_536),
+    );
+    proxy.requests.length = 0;
+    const reader = storeOver(proxy.container, prefix);
+    expect(await reader.segment('s', { namespace: 'ns' }).count()).toBe(chunks);
+    expect(proxy.requests.map((r) => r.method)).toEqual(['GET']);
+    expect(proxy.requests[0]!.name).toContain('registry');
+    proxy.requests.length = 0;
+    expect(await reader.segment('s', { namespace: 'ns' }).stat()).toMatchObject({
+      generation: 0,
+      cardinality: chunks,
+    });
+    expect(proxy.requests).toEqual([]);
   });
 });
