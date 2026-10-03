@@ -17,16 +17,10 @@
  * Art. 30 record or an incident review wants to find.
  */
 import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
-import { openRollbackTarget } from './crbm-storage-source';
+import { openRollbackTarget, provesOwnObject } from './crbm-storage-source';
 import { aadFor } from './crypto';
 import type { Aead, CrbmCrypto, IKeystore } from './crypto';
-import {
-  IntegrityError,
-  KeyUnavailableError,
-  NotFoundError,
-  ValidationError,
-  isIntegrityError,
-} from './errors';
+import { IntegrityError, NotFoundError, ValidationError, isIntegrityError } from './errors';
 import type {
   IStorageDriver,
   IRegistryDriver,
@@ -106,9 +100,13 @@ export interface RollbackResult {
  *
  * The same tail read opens the target when the segment's key is at hand, and the rollback writes the target's own id
  * count and metadata into the row, in the compare-and-swap that moves the pointer: a reader that sees the target as
- * current sees what describes it. A store with no keystore, or one that cannot open the segment's key, still rolls an
- * encrypted segment back and leaves the row with no summary of the target; the undo of a rollback whose target was
- * collected meanwhile puts back the summary the row had.
+ * current sees what describes it. (One tail read, and a range read as well when the target's index is longer than the
+ * tail read: a target of very many chunks.) A store with no keystore, or one that cannot open the segment's key for any
+ * reason, a keystore that is unreachable or timed out included, still rolls an encrypted segment back and leaves the
+ * row with no summary of the target. The undo of a rollback whose target was collected meanwhile puts back the summary
+ * the row had, and so does the undo of an `allowForward` rollback whose target was replaced meanwhile: an object above
+ * the pointer can be deleted by an erasure and its number taken by a load, between the read and the swap, so after the
+ * swap such a target is read once more, and the pointer put back unless it is the object whose summary was written.
  *
  * What it does **not** do is delete anything. The generations above the new pointer stay in the bucket, which is
  * what makes the rollback reversible — roll forward again by naming one of them. They are also then *above*
@@ -187,11 +185,11 @@ export async function rollbackSegment(
   if (keyed && deps.keystore !== undefined) {
     try {
       aead = await deps.keystore.openDek(record.wrappedDeks!);
-    } catch (err) {
-      // A store whose keystore cannot open the segment's key (it holds none of its KEKs, or one that does not unwrap
-      // it) can still roll it back, as it could before: this is the call an operator reaches for when something is
-      // wrong. The row then carries no summary of the target.
-      if (!(err instanceof KeyUnavailableError) && !isIntegrityError(err)) throw err;
+    } catch {
+      // A key the store cannot open, for any reason (it holds none of the segment's KEKs, one that does not unwrap it, a
+      // keystore that is unreachable or timed out) is no key at hand, and the rollback still happens, as it could
+      // before it touched the keystore: this is the call an operator reaches for when something is wrong, and the key
+      // service being down is often it. The row then carries no summary of the target.
     }
   }
   const crypto: CrbmCrypto | undefined =
@@ -244,7 +242,24 @@ export async function rollbackSegment(
       break;
     }
   }
-  if (!stillThere) {
+  // An object above the old pointer is where collection never looks, but an erasure can delete one and a load can then
+  // take its number, between the read of the target and the swap: the number is there, and it is another object than the
+  // one the summary just written describes. So a target above the pointer is read once more, by its footer, and is the
+  // one that was read or is put back like a vanished one. Below the pointer a number cannot be taken again.
+  let replaced = false;
+  if (stillThere && reader !== undefined && toGeneration > (record.currentGen ?? -1)) {
+    try {
+      replaced = !(await provesOwnObject(
+        deps.storage,
+        { ...ref, generation: toGeneration },
+        reader.fingerprint,
+      ));
+    } catch (err) {
+      if (!isIntegrityError(err)) throw err;
+      replaced = true; // a footer that no longer checks is not the object that was read
+    }
+  }
+  if (!stillThere || replaced) {
     let undone = false;
     try {
       await deps.registry.compareAndSwap(ref, token, {
@@ -257,7 +272,7 @@ export async function rollbackSegment(
       // read of the row says where the pointer is, so the message below says "may", not "does".
     }
     throw new NotFoundError(
-      `rollback: generation ${toGeneration} of "${ref.segment}" was collected while the pointer was moving` +
+      `rollback: generation ${toGeneration} of "${ref.segment}" was ${replaced ? 'replaced' : 'collected'} while the pointer was moving` +
         (undone
           ? ' — the pointer was put back'
           : `, and the move back failed, so the pointer may still name ${toGeneration} (a write that landed and lost ` +
