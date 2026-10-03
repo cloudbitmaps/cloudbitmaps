@@ -76,18 +76,21 @@ const AAD_VERSION = 1;
 const SCOPE_CHUNK = 0;
 const SCOPE_INDEX = 1;
 const SCOPE_METADATA = 2;
+const SCOPE_SUMMARY = 3;
 
 /**
- * Build the AEAD associated-data binding a chunk, the index or the metadata section to its exact location:
+ * Build the AEAD associated-data binding a chunk, the index, the metadata section or a registry row's sealed summary
+ * to its exact location:
  * `v1 ‖ len(namespace) ‖ namespace ‖ len(segment) ‖ segment ‖ generation ‖ scope ‖ chunkKey`, where scope is
- * `0` for a chunk, `1` for the index and `2` for the metadata, and chunkKey is `0` for the last two.
+ * `0` for a chunk, `1` for the index, `2` for the metadata and `3` for the row's summary, and chunkKey is `0` for
+ * the last three.
  * Length-prefixed so distinct `(namespace, segment)` pairs can never collide. Pure (no crypto) — just the
  * authenticated label.
  */
 export function aadFor(
   ref: { readonly namespace?: string; readonly segment: string },
   generation: number,
-  scope: number | 'index' | 'metadata',
+  scope: number | 'index' | 'metadata' | 'summary',
 ): Uint8Array {
   const enc = new TextEncoder();
   const ns = enc.encode(ref.namespace ?? '');
@@ -107,7 +110,14 @@ export function aadFor(
   o += seg.length;
   view.setBigUint64(o, BigInt(generation), true);
   o += 8;
-  out[o] = scope === 'index' ? SCOPE_INDEX : scope === 'metadata' ? SCOPE_METADATA : SCOPE_CHUNK;
+  out[o] =
+    scope === 'index'
+      ? SCOPE_INDEX
+      : scope === 'metadata'
+        ? SCOPE_METADATA
+        : scope === 'summary'
+          ? SCOPE_SUMMARY
+          : SCOPE_CHUNK;
   o += 1;
   view.setUint32(o, typeof scope === 'number' ? scope : 0, true);
   return out;
