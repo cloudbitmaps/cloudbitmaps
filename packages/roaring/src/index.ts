@@ -1619,7 +1619,7 @@ export class CloudRoaring {
    * exactly that row, and deleting it would destroy the Art. 17 attestation and un-fence the name. By default a
    * segment that held nothing has its row deleted in the pass that retires it, since that row would only fence the name.
    * Pass `purgeTombstones: false` to keep every tombstone, that row included. On a backend whose registry reports
-   * `conditionalDelete` (AWS S3, GCS on its public endpoint, Azure Blob, the local filesystem and memory, by default)
+   * `conditionalDelete` (AWS S3, Azure Blob, the local filesystem and memory, by default; GCS when you set `conditionalDelete: true`)
    * the purge removes the row from the bucket for good, by a delete the store applies only to the version it judged,
    * so a full sweep reads what is live or inside its grace rather than every name a namespace ever held; elsewhere,
    * and for a row a release before 0.12 wrote, it leaves a tombstone. Each retirement files a pointer in the due index

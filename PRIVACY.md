@@ -241,11 +241,11 @@ to run, and the deletion is ours to perform correctly.** Practical patterns:
   the segment and deletes **every Storage generation** — so the space is actually reclaimed. It works on a
   cleartext segment, and on an encrypted one it *also* crypto-shreds, making it a strict superset there.
 - **A deleted row keeps its record only where the registry cannot remove it.** Where the registry reports
-  `conditionalDelete` (the default for S3 when its client sends to an AWS S3 host, for GCS on its public endpoint, for
+  `conditionalDelete` (the default for S3 when its client sends to an AWS S3 host, for
   Azure Blob, the local filesystem and memory), `registry.delete` and the retention sweep's purge of a tombstone remove
   a row created by 0.12 from the bucket, and its token's random incarnation id keeps a re-create apart from it. Where it
-  does not (an S3 client that sends to an S3-compatible store or an emulator, by default, or `conditionalDelete:
-  false`), and for a row written by a release before 0.12 on any backend, a delete writes a deleted marker that holds
+  does not (an S3 client that sends to an S3-compatible store or an emulator, or a GCS client, by default, or
+  `conditionalDelete: false`), and for a row written by a release before 0.12 on any backend, a delete writes a deleted marker that holds
   the record, so the row's token counter survives a re-create. A tombstone left by `dropSegment` or `destroySegment`
   holds no wrapped key and no summary, since both clear them, so a purge that leaves a tombstone keeps the name, the
   pointer, the retention policy and the timestamps. A **live** row deleted directly with `registry.delete` keeps its
@@ -291,14 +291,14 @@ them included), its timestamps and its token. It holds no id, and on an encrypte
 drop shreds it. The due index holds a pointer to it whose name spells out the same namespace and name. Both stay
 for `tombstoneGraceMs` (24 h by default) after the retirement, and for as long as the segment's storage cannot be
 proven gone. Then the sweep's purge removes the row, and the pointers it read to it, from the bucket, where the registry
-reports `conditionalDelete`: the default for S3 when its client sends to an AWS S3 host, for GCS on its public endpoint,
+reports `conditionalDelete`: the default for S3 when its client sends to an AWS S3 host,
 for Azure Blob, the local filesystem and memory. **A pointer can outlive its row**, and with it the name in its key: a
 purge that ran with another `tombstoneGraceMs` than the sweep that filed the pointer, a delete that landed and lost its
 response, a removal the registry refused (`purgeFaults` counts it), or a pointer older than an index scan's
 `lookbackBuckets`. The next sweep that reads it removes it once its row is confirmed absent: an index scan from the days
 it reads, and an unscoped fleet scan, one given no `namespace`, from every day. A deployment that scopes every sweep to a
 namespace, or runs only index scans, keeps such a pointer until an unscoped fleet scan runs. Where the registry does not
-report `conditionalDelete` (an S3 client that sends to an S3-compatible store or an emulator, by default, or
+report `conditionalDelete` (an S3 client that sends to an S3-compatible store or an emulator, or a GCS client, by default, or
 `conditionalDelete: false`), and for a row written by a release before 0.12 on any backend, the purge leaves a tombstone
 instead: every one of those fields, in the bucket, indefinitely, read by every full listing. A registry that does not
 report it files no pointer to begin with. A removed

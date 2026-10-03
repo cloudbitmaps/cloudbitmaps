@@ -194,8 +194,8 @@ is a dependency of both and is never installed directly. The storage drivers are
   forward by the very refresh meant to keep it current. The sweep is bounded (`limit`, `maxScanSegments`),
   previewable (`dryRun`), shardable across replicas, reports a per-segment ledger instead of throwing, and
   purges the tombstone rows its own retirements leave. From `0.12.0` (unreleased), on a registry that can delete a row only while it is
-  unchanged (S3 when its client sends to an AWS S3 host, GCS and Azure Blob by default, by `If-Match` /
-  `ifGenerationMatch`), the purge removes the row for good, so a full sweep reads what is live and inside its grace
+  unchanged (S3 when its client sends to an AWS S3 host and Azure Blob by default, GCS when you set
+  `conditionalDelete: true`, by `If-Match` / `ifGenerationMatch`), the purge removes the row for good, so a full sweep reads what is live and inside its grace
   rather than every name a namespace ever held, and `scan: 'index'` purges as well as retires, by a pointer each
   retirement files under the day its tombstone's grace ends. A refused delete is counted (`purgeFaults`) and holds no
   retirement back. Setting a policy before the first load mints the registry row, so the policy is recorded ahead of the data.
@@ -284,12 +284,13 @@ between here and there:
    latency and load throughput, which `bash bench/calibrate-cloudshell.sh` makes from AWS CloudShell; what
    `store.load()` costs on S3, since the run measured the write and the publish; a
    **Lambda** run for the serverless figure with cold-start and init included, which needs a run from inside a
-   function; and, before the `0.12.0` release (unreleased), which turns the registry's conditional delete on by default for an AWS S3 host,
-   GCS's public endpoint and Azure Blob, a probe that real
-   S3 and real GCS refuse a delete whose precondition no longer holds
-   (`tests/integration/real-cloud-conditional-delete.test.ts`, skipped unless a bucket is named), since the emulators
-   the integration lane runs ignore it, and that a name the registry removed can be created again over the delete
-   marker a versioned bucket leaves (its versioned run). If either does not, its default goes off before the cut. [`bench/README.md`](../bench/README.md#real-cloud-calibration) describes the harness.
+   function; and a **real-GCS run of the conditional-delete probe**
+   (`tests/integration/real-cloud-conditional-delete.test.ts`, skipped unless a bucket is named). The probe shows
+   whether a real service refuses a delete whose precondition no longer holds, and whether a name the registry removed
+   can be created again over the delete marker a versioned bucket leaves. It passed on real AWS S3 on 2026-10-03, five
+   of five checks on an unversioned and a versioned bucket in us-east-1, so S3 defaults on for an AWS host. GCS has not
+   been run, so GCS defaults off and needs the probe before its default turns on; the emulators the integration lane
+   runs ignore the precondition, so CI cannot show it. [`bench/README.md`](../bench/README.md#real-cloud-calibration) describes the harness.
 2. **Loaded-store benchmarks — partly owed.** Load throughput (ids/s and bytes/s into the bucket, single-part
    and multipart) and `intersect` / `*Into` latency by operand count and chunk overlap are still owed, both
    against a real object store from inside the region. The calibration harness above covers load throughput and a

@@ -2,12 +2,12 @@
  * REAL-CLOUD PROBE, skipped unless asked for: do real S3 and real GCS apply the precondition on a delete?
  *
  * The S3 registry removes a row with `DeleteObject` under `If-Match: <etag>`, and the GCS registry with a delete under
- * `ifGenerationMatch: <generation>`, by default on AWS S3 and on the public GCS endpoint. That default is safe only if
- * the service refuses a delete whose precondition no longer holds: one that deleted anyway would let two sweepers and a
- * re-create delete a live row. The integration lane cannot show it, because MinIO and fake-gcs-server ignore the
- * precondition (see `conditional-delete.test.ts`). This file is the check, against real buckets, and it is a release
- * gate for the release that turns the default on: if a stale precondition deletes, turn that backend's default off
- * before the cut, and record what this printed either way.
+ * `ifGenerationMatch: <generation>`. That is safe only if the service refuses a delete whose precondition no longer
+ * holds: one that deleted anyway would let two sweepers and a re-create delete a live row. The integration lane cannot
+ * show it, because MinIO and fake-gcs-server ignore the precondition (see `conditional-delete.test.ts`). This file is
+ * the check, against real buckets. The S3 half passed on AWS S3 on 2026-10-03, so S3 defaults on for an AWS host. The
+ * GCS half has not been run, so GCS defaults off: run it before turning the GCS default on, and if a stale
+ * precondition deletes, leave it off.
  *
  * It never runs in CI or on a laptop by accident: each half is skipped unless its bucket is named. It writes, reads
  * and deletes a handful of small objects under one random prefix in the bucket you name, and removes them at the end.
