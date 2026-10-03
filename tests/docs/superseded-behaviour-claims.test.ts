@@ -2098,3 +2098,292 @@ describe("a page's figures for store.load() are the estimator's", () => {
     expect(loadFigureHits(rel, readFileSync(join(ROOT, rel), 'utf8'))).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------------------------------
+// How many requests a `store.load()`, a cold `count()`, a cold `stat()` or a reload makes is the cost model's.
+//
+// The prices above are held, and the counts behind them were not: a request count in prose (a guide, the bench README,
+// a doc-comment, the changelog) was restated by hand each time the engine's counts moved, and each time a copy was
+// missed. The counts here come from the cost model, which `tests/core/cost.test.ts` holds to the engine by counting
+// what it sends, and from the pricing the model gives a pointer read and a tail read, so a count that moves with the
+// engine moves the gate with it.
+//
+// What it reads: a clause (as above) that says a number of requests, `N requests`, `N GETs`, `N GET-class`,
+// `N PUT-class` or `N pointer reads` (a digit or a number word to twelve), and whose nearest earlier subject is
+//   - a load (`store.load()`, `loadSegment`, "a load", "a steady load", "a first load", "a second load", "a reload"):
+//     its PUT-class and GET-class counts, and its total with the delete it makes; steady, first, second or one that
+//     lists, as the words around it say; with no such word, a steady load;
+//   - a cold `count()` or `stat()`: one request, one pointer read, or, where the clause says the row has no summary to
+//     use or that the index is read, the tail read it adds (two, or three on Azure Blob).
+// It never reads: a number after "was", "were", "made", "took", "from", "used to" or a 0.11 release's name (history is
+// the changelog's, and says so), a range or a bound ("1 to 3", "two or three", "at most 4", "up to 8"), a count
+// of "more", "fewer" or "extra" requests, a clause about another operation nearer than the subject (an intersect, a
+// `has()`, an erasure, a rollback, a retirement, a purge, a sweep, a pointer refresh), a multipart or an encrypted
+// load, and a warm `count()` or `stat()`.
+//
+// Known limits, stated rather than hidden: it does not read a count with no unit ("2 and 3"), a bare "reads" (it counts
+// payload and index reads too), a count that comes before its subject in the clause ("5 GETs make a load"), a pointer
+// read or a check counted inside a load, a total for a load that lists, a clause that names two operations without a
+// word between a subject and its count that tells them apart, or a subject worded another way ("one write and publish").
+// The first and second load's counts are derived from the steady load's, as the cost test's counts of the engine hold
+// them (2 PUT-class and 4 GET-class, then 2 and 3).
+// ---------------------------------------------------------------------------------------------------
+type LoadKind = 'steady' | 'first' | 'second' | 'listing';
+type Requests = { put: number; get: number };
+const REQUEST_COUNTS: {
+  load: Record<LoadKind, Requests & { total?: number }>;
+  coldCount: { pointer: number; withTail: number[] };
+} = (() => {
+  const base = AWS_US_EAST_1_ONDEMAND;
+  const average = (storage: { putPerMillion: number; getPerMillion: number }): number =>
+    estimateCost({
+      segments: [{ sizeBytes: 0 }],
+      workload: { loadsPerMonth: 1, requestsPerLoad: 1 },
+      pricing: { ...base, storage: { ...base.storage, ...storage } },
+    }).monthlyUSD.byOp.loads;
+  const steady = {
+    put: average({ putPerMillion: 1e6, getPerMillion: 0 }) - 1 / LIST_COLLECTION_CADENCE,
+    get: average({ putPerMillion: 0, getPerMillion: 1e6 }) - 1 / LIST_COLLECTION_CADENCE,
+  };
+  const DELETE = 1; // the one generation a steady load deletes by name; the first two loads delete none
+  // A cold count is the pointer read the profile prices, and a count that must open the object adds the tail read the
+  // backend's profile prices: S3 and GCS the default, Azure Blob its two requests.
+  const pointer = base.storage.requestsPerPointerRead ?? 1;
+  const sized = (base.storage.requestsPerSizedRead ?? 1) + 1; // Azure Blob's tail read is one request more
+  return {
+    load: {
+      steady: { ...steady, total: steady.put + steady.get + DELETE },
+      listing: { put: steady.put + 1, get: steady.get + 1 },
+      first: { ...steady, get: steady.get - 1, total: steady.put + steady.get - 1 },
+      second: { ...steady, get: steady.get - 2, total: steady.put + steady.get - 2 },
+    },
+    coldCount: {
+      pointer,
+      withTail: [pointer + (base.storage.requestsPerSizedRead ?? 1), pointer + sized],
+    },
+  };
+})();
+
+const COUNT_WORDS: Readonly<Record<string, number>> = {
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  eleven: 11,
+  twelve: 12,
+};
+const REQUEST_CLAIM = new RegExp(
+  String.raw`\b(\d[\d,]*|${Object.keys(COUNT_WORDS).join('|')})\s+(?:(PUT(?:-class(?:\s+requests?)?|\s+requests?)|GET(?:-class)?s?(?:\s+requests?)?)|(pointer\s+reads?)|(requests?))(?![\w-])`,
+  'gi',
+);
+const LOAD_SUBJECT = /\bstore\.load\(\)|\bloadSegment\b|\bloads?\b(?!-)|\breloads?\b/gi;
+const COLD_READ_SUBJECT = /\bcount\(\)|\bstat\(\)|\bcold\s+(?:count|stat)s?\b/gi;
+const OTHER_SUBJECT =
+  /\bintersect\w*|\bhas\(\)|\biterate\b|\brollback\b|\bera(?:se|ses|sure|sures)\b|\beraseSubject\b|\bretire\w*|\bpurg\w*|\bsweeps?\b|\bcombines?\b|\bexists\(\)|\bpins?\b|\bcheckConsistency\b|\bwrite and publish\b|\bwrit(?:ten|e|es) and published\b|\bwritten once\b|\bpointer refresh\b|\brefresh(?:es)?\b|\bchecks?\b|\bcalibration\b|\bharness\b|\bprojection\b|\bbounds?\b/gi;
+/** A count that is history, a bound or a range, or counts requests "more" or "fewer": none is a claim about the count. */
+const NOT_A_COUNT_BEFORE =
+  /(?:\b(?:was|were|made|took|sent|from|until)|\bused to|\bwhere it|\b0\.11\.\d+(?:\s+\w+)?|\bat most|\bat least|\bup to|\bno more than|\bmore than|\bfewer than|\b(?:\d[\d,]*|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:to|or|and)|\d\s*[–-])\s*$/i;
+const NOT_A_COUNT_AFTER = /^\s*(?:more|fewer|less|extra|additional|too)\b/i;
+const ANOTHER_LOAD = /\bmultipart\b|\b\d+-part\b|\buploads?\b|\bencrypt/i;
+const WARM = /\bwarm\b|\bwithin\b|\bpinned\b|\bcached\b|\bno request/i;
+const NO_SUMMARY_TO_USE =
+  /\bno summary\b|\bwithout (?:a|the) summary\b|\bwritten before\b|\btail read\b|\bfrom the object\b|\bopens? the object\b|\bindex\b/i;
+
+/** The kind of load a stretch of words names, if it names one. */
+const loadKindIn = (words: string): LoadKind | undefined => {
+  if (/\bfirst\b/i.test(words)) return 'first';
+  if (/\bsecond\b|\breloads?\b/i.test(words)) return 'second';
+  if (
+    /\b(?:does not|doesn't|do not|without|no)\b[^.;,]{0,12}\blist(?:s|ing)?\b|\blists? nothing\b|\bby name\b|\bthird\b|\bsteady\b/i.test(
+      words,
+    )
+  )
+    return 'steady';
+  if (/\b(?:16th|sixteenth)\b|\bdivisible by\b|\blists?\b|\blisting\b/i.test(words))
+    return 'listing';
+  return undefined;
+};
+
+/** The request counts a file states for a load, a cold count or a cold stat that the cost model does not give. */
+function requestCountHits(rel: string, text: string): string[] {
+  const src = scanned(rel, text);
+  const reading = readings(src)[0] ?? '';
+  const hits: string[] = [];
+  let line = 1;
+  let at = 0;
+  const lineOf = (offset: number): number => {
+    line += lineCount(reading.slice(at, offset));
+    at = offset;
+    return line;
+  };
+  const CLAUSE_END = /[;|│]|\.\s+(?=\S)|\s[—–]\s/g;
+  let start = 0;
+  const clauses: Array<{ text: string; offset: number }> = [];
+  for (const m of reading.matchAll(CLAUSE_END)) {
+    clauses.push({ text: reading.slice(start, m.index), offset: start });
+    start = m.index + m[0].length;
+  }
+  clauses.push({ text: reading.slice(start), offset: start });
+  for (const { text: clause, offset } of clauses) {
+    for (const m of clause.matchAll(REQUEST_CLAIM)) {
+      const n = COUNT_WORDS[m[1]!.toLowerCase()] ?? Number(m[1]!.replace(/,/g, ''));
+      const before = clause.slice(Math.max(0, m.index - 40), m.index);
+      if (NOT_A_COUNT_BEFORE.test(before)) continue;
+      if (NOT_A_COUNT_AFTER.test(clause.slice(m.index + m[0].length))) continue;
+      // The nearest subject before the count, in this clause: another operation's count is not this gate's.
+      const head = clause.slice(0, m.index);
+      const last = (re: RegExp): number =>
+        Math.max(-1, ...[...head.matchAll(re)].map((x) => x.index));
+      const load = last(LOAD_SUBJECT);
+      const cold = last(COLD_READ_SUBJECT);
+      const other = last(OTHER_SUBJECT);
+      const subject = Math.max(load, cold, other);
+      if (subject < 0 || subject === other) continue;
+      const end = m.index + m[0].length;
+      /** The words a subject's qualifiers are read from: from its adjectives to just past the count. */
+      const near = clause.slice(Math.max(0, subject - 40), end + 60);
+      const kind =
+        m[2] !== undefined
+          ? /^PUT/i.test(m[2])
+            ? 'PUT'
+            : 'GET'
+          : m[3] !== undefined
+            ? 'pointer'
+            : 'total';
+      const where = `${rel}:${lineOf(offset + m.index)} — "${m[0]}"`;
+      if (subject === load) {
+        if (ANOTHER_LOAD.test(clause.slice(Math.max(0, subject - 40), end)) || kind === 'pointer')
+          continue;
+        // Which load is told by the words from the subject, and the adjectives before it, to the count.
+        // A kind named after the count counts too ("2 PUT-class and 4 GET-class requests for a first load"), up to the
+        // next subject, and only where the words before it name none.
+        const next = [...clause.slice(end).matchAll(LOAD_SUBJECT)][0];
+        const which =
+          loadKindIn(clause.slice(Math.max(0, subject - 40), m.index)) ??
+          loadKindIn(
+            clause.slice(end, next === undefined ? end + 60 : end + next.index + next[0].length),
+          ) ??
+          'steady';
+        const want = REQUEST_COUNTS.load[which];
+        const expected = kind === 'PUT' ? want.put : kind === 'GET' ? want.get : want.total;
+        if (expected === undefined || n === expected) continue;
+        hits.push(
+          `${where} is not what a ${which} load makes: ${kind === 'total' ? 'requests' : `${kind}-class`} ${expected} ` +
+            `(PUT-class ${want.put}, GET-class ${want.get}${want.total === undefined ? '' : `, ${want.total} with its delete`})`,
+        );
+      } else {
+        if (WARM.test(near) || kind === 'PUT') continue;
+        const { pointer, withTail } = REQUEST_COUNTS.coldCount;
+        const allowed = NO_SUMMARY_TO_USE.test(near) ? [pointer, ...withTail] : [pointer];
+        if (allowed.includes(n)) continue;
+        hits.push(
+          `${where} is not what a cold count() or stat() makes: ${pointer} request(s), a pointer read, ` +
+            `${withTail.join(' or ')} where the row has no summary to use`,
+        );
+      }
+    }
+  }
+  return hits;
+}
+
+describe("a page's request counts for a load, a cold count and a cold stat are the cost model's", () => {
+  it('derives the counts the model gives', () => {
+    expect(REQUEST_COUNTS.load).toEqual({
+      steady: { put: 2, get: 5, total: 8 },
+      listing: { put: 3, get: 6 },
+      first: { put: 2, get: 4, total: 6 },
+      second: { put: 2, get: 3, total: 5 },
+    });
+    expect(REQUEST_COUNTS.coldCount).toEqual({ pointer: 1, withTail: [2, 3] });
+  });
+
+  // Both directions: each stale or wrong form is caught, and the honest phrasings and the look-alikes are not.
+  it.each([
+    'a steady single-part load on S3 is 2 PUT-class requests, 5 GET-class and a delete, 9 requests',
+    'a steady store.load() is 3 PUT-class requests and 5 GET-class',
+    "a segment's first load is expected at 2 PUT-class and 5 GET requests",
+    "a segment's second load makes 4 GET-class requests",
+    'a reload of a segment makes 4 GETs',
+    'a load that lists is 3 PUT-class and 7 GET-class',
+    'a load makes 14 requests',
+    'a cold count() makes 2 requests',
+    'a cold count is two requests',
+    'count() is one request when cold, and a cold stat() is three requests',
+    'A cold `stat()` is 2 pointer reads',
+    'a cold count on S3 and GCS makes 3 requests, with the row summary',
+  ])('refuses %j', (text) => {
+    expect(requestCountHits('x.md', text)).not.toEqual([]);
+  });
+
+  it.each([
+    'a steady single-part load on S3 is 2 PUT-class requests, 5 GET-class and a delete, 8 requests',
+    'a steady store.load() is 2 PUT-class requests and 5 GET-class',
+    "a segment's first load is expected at 2 PUT-class and 4 GET requests",
+    "a segment's second load is 2 PUT-class and 3 GET-class requests, 5 in all",
+    'a load that lists is 3 PUT-class and 6 GET-class',
+    'a load that does not list makes 8 requests',
+    'a cold count() makes 1 request',
+    'a cold count is one request',
+    'count() is one request when cold, and a cold stat() is one pointer read',
+    // Where the row has no summary to use, the tail read is added: S3 and GCS two, Azure Blob three.
+    'a cold count() of a row with no summary makes 2 requests, and 3 on Azure Blob',
+    // History is the changelog's.
+    'a steady load makes 8 requests, where 0.11.2 made 14',
+    'a cold count makes 1 request where it was 2',
+    'it takes a steady load from 14 requests to 8',
+    // Ranges, bounds, and "more" or "fewer".
+    'a load makes 2 to 3 PUT-class requests',
+    'a load makes one or two requests more than it needs',
+    'a load lists on at most 4 requests',
+    'a load that loses a race makes one request more',
+    'a load whose check meets an object makes 2 more pointer reads',
+    // Another operation's count, a multipart or an encrypted load, a warm count.
+    'a cold intersect of two segments sharing 100 chunks makes 206 GETs',
+    'a load, then a has() of one id: a has() makes 2 requests',
+    'a retirement is 9 reads, 3 writes and a delete, and a purge is 4 reads and 2 deletes',
+    'the sweep makes 4 requests a segment',
+    'a multipart load of 100 parts makes 102 PUT-class requests',
+    "an encrypted segment's load makes 9 requests",
+    'a warm count() makes 0 requests',
+    'a count() within cache.genTtlMs makes 0 requests',
+    // A count of something else, in a clause that names a load or a count.
+    'the load reads 1,024 containers per request',
+    'a count of 3 segments makes a report',
+    'objects that fit one PUT, loaded through store.load(), and objects large enough to upload multipart',
+    'store.load() writes the object with one PUT, then moves the pointer',
+    'a cold intersect makes 206 GETs, and a load makes 2 PUT-class requests and 5 GET-class requests',
+  ])('leaves %j alone', (text) => {
+    expect(requestCountHits('x.md', text)).toEqual([]);
+  });
+
+  // The pages themselves: the prose a reader is given (Markdown, the site, the doc-comments in the packages), not the
+  // tests and the harness scripts, whose comments count a run's own requests.
+  const pages = textFiles().filter(
+    (f) =>
+      !f.startsWith('tests') &&
+      (/\.(?:md|html|txt)$/.test(f) || (f.startsWith(join('packages', '')) && f.endsWith('.ts'))),
+  );
+  it('reads the pages a request count is written on', () => {
+    for (const f of [
+      'README.md',
+      'CHANGELOG.md',
+      join('bench', 'README.md'),
+      join('docs', 'guide', 'cost.md'),
+      join('docs', 'guide', 'reading.md'),
+      join('docs', 'ROADMAP.md'),
+      join('site', 'usage.html'),
+      join('packages', 'core', 'src', 'core', 'cost.ts'),
+    ])
+      expect(pages).toContain(f);
+    expect(pages.some((f) => f.startsWith('tests'))).toBe(false);
+  });
+  it.each(pages)('%s', (rel) => {
+    expect(requestCountHits(rel, readFileSync(join(ROOT, rel), 'utf8'))).toEqual([]);
+  });
+});
