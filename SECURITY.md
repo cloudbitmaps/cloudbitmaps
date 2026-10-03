@@ -27,8 +27,13 @@ another chunk's space. The last two checks matter because size caps and CRCs cat
 bytes are the bytes that were written, which an attacker able to write your storage satisfies by construction.
 A hostile or corrupted object fails
 closed with a typed `IntegrityError` on read — it can neither crash the process nor return a wrong answer from a
-payload it decodes. `count()` is the exception to the second half: it answers from the index without decoding a
-payload, so opening an object checks the index for internal consistency (key order and range, each cardinality in
+payload it decodes. `count()` is the exception to the second half: it answers from the registry row's summary of the
+current generation, or from the index when the row has none it can use, without decoding a payload. The row's summary is
+used only for the generation it names, on an active row, in the shape the keys call for (a sealed one only if it opens
+under its generation's associated data), and is not confirmed against the object on the cold path, so a party who can
+write the registry row can make a count wrong, as they can already repoint the generation; whenever an object is opened
+anyway, the store holds the summary against it and stops using one that disagrees. Opening an object checks the index
+for internal consistency (key order and range, each cardinality in
 `1..65536`, payloads inside the payload region, and the footer's chunk count and total against the index on an
 unencrypted object), and an index that is corrupt yet still internally consistent yields a wrong count. The
 metadata in an extension block is held to the same rules a caller's metadata is (string keys of at most 128 bytes,

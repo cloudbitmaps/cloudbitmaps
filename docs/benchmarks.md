@@ -43,8 +43,9 @@ Every number above is turned into a **deterministic, build-breaking CI assertion
 [`tests/core/cost.test.ts`](../tests/core/cost.test.ts); `pnpm bench:check` holds the chart, the table and
 `bench/results.json` to the same estimator — a regression or an overclaim fails the build:
 
-- **Counting is free** — `count()` on a loaded segment performs **0 payload reads**, summing cardinality
-  straight from the `.crbm` index.
+- **Counting is free** — `count()` on a loaded segment performs **0 payload reads**, and a cold one is **one pointer
+  read** and no read of the object: the registry row records the generation's id count. The index sum answers only
+  when the row has no summary it can use.
 - **Chunk-skipping works** — the chunks a 5%-overlap intersection fetches come to ≤ 10% of the bytes of a full
   two-segment download (measured through the metrics sink, which counts chunk reads).
 - **Cheap at rest** — the reference ~1.2 GiB set with no traffic costs ≤ 10% of the $346 cluster.

@@ -77,6 +77,31 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **A cold `count()` is one request, and `seg.stat()` says what the generation is.** The registry row records the
+  current generation's id count, so a count reads the pointer and nothing else: no read of the object, cleartext or
+  encrypted, and none however wide the index is (an index longer than the 256 KiB tail read took a third request). A
+  cold count on S3 and GCS makes 1 request where it made 2, and on Azure Blob 1 where it made 3 (derived from the
+  driver ports, held by a test that counts them; one wire request on each emulator in the integration lane). Within
+  `cache.genTtlMs` it makes none, and a refresh that finds the same generation under a changed row (a `setRetention`)
+  costs it no re-open. `seg.stat()` returns `{ generation, cardinality, metadata? }` from the same resolution:
+  the generation's number, its id count and the metadata it was loaded with, one request when cold and none when warm
+  or pinned (`pin().stat()`), and `{ generation: null, cardinality: 0 }` for a segment with no generation. The current
+  entry of `store.generations(ref)` carries `cardinality` and `metadata` from the row it already reads, with no extra
+  request (an encrypted segment's need a keystore that opens its key), and the other entries carry only their number.
+  A snapshot is now a resolved target with a reader opened on first use, so a `count` and the `has` after it read one
+  generation. **What a count trusts:** the row's summary, used only for the generation it names, on an active row, in the
+  shape the keys call for (a sealed one only if it opens under that generation's associated data), with
+  `requireEncryption` applied as it is to a read. It is not confirmed on the cold path, so a party who can write the
+  registry row can make a count wrong, as they can already repoint the generation. Whenever a read opens the object
+  anyway (a `has`, an `iterate`, a combine, a `pin()`), the store holds the row's count and metadata against the object
+  at no extra request; a disagreement, including a row with metadata over an object with none, stops that store using
+  that row's summary for that generation, and fails no read. A row with no summary it can use (written before rows
+  carried one, naming another generation, or sealed and not opening) sends the count to the index as before, with the
+  tail read. `checkConsistency({ summaries: true })` opens each current object (one tail read each) and reports
+  `summary-mismatch` where a row's summary disagrees with it; a sealed summary needs the store's keystore, and is counted
+  in `summariesUnchecked` without one. The default check lists only, as before. The cost model, calibration
+  expectations and the benchmark and cost pages state a cold count as one pointer read.
+
 - **`load` and the `*Into` verbs take `metadata`: a small record of your own, written with the generation and with the
   pointer.** A flat object of string keys and string or finite-number values, at most 1,024 bytes as canonical JSON
   and no key over 128 bytes: the record a definition's version, a landing time or a run id fits in. A record that
@@ -290,6 +315,12 @@ so, and so do the module headers in the code.
   with `ValidationError`, as `requestsPerSizedRead` is.
 
 ### Changed
+
+- **A cold `count()` of a torn restore answers instead of throwing.** A segment whose pointer names an object that is
+  gone (a registry restored ahead of its bucket, or an object a lifecycle rule removed) counts the number its row
+  records, which is true of the generation the row names, where the count opened the object and threw `NotFoundError`.
+  A `has`, an `iterate` or a combine still throws, so a count alone no longer shows the tear: `checkConsistency()` is
+  what finds it. `exists()` and `count()` say so in their documentation, as the disaster-recovery guide does.
 
 - **A guarded load sizes the current generation from its row's summary and reads no tail of it; a segment whose
   rows carry no summary reads it as before.** The guard needs how many ids the segment holds, and a row that carries a

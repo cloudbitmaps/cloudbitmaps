@@ -65,8 +65,8 @@ difference can tear. The obvious case is a **registry that is ahead of the objec
      registry[S].currentGen = 42   ──points at──▶   storage/S.42.crbm   ❌ NOT RESTORED
 
   Every read of S now tries to open a .crbm that isn't there, and fails with
-  NotFoundError. The restore "succeeded" (no errors at restore time) but S is
-  broken until you notice.
+  NotFoundError; its count still answers the number the row records. The restore
+  "succeeded" (no errors at restore time) but S is broken until you notice.
 ```
 
 This is the exact failure `checkConsistency()` detects (issue `missing-storage-generation`). The reverse — storage
@@ -77,7 +77,7 @@ one below its rewrite (`keep: 0`); and `dropSegment` deletes them all. Two loads
 to delete the generation the restored registry names.
 
 **The summary a row carries.** A row also holds a summary of its current generation, its id count and metadata, written
-by the same compare-and-swap that moves the pointer, so a row describes the generation it names as of the moment it was written, and a restored one as of the restore; a later disagreement between a row and its object is caught by the cross-check that comes with the read path. A load
+by the same compare-and-swap that moves the pointer, so a row describes the generation it names as of the moment it was written, and a restored one as of the restore. A cold `count()` answers from that summary, so over a torn restore it answers the number the row records, which is true of the generation the row names, while a `has`, an `iterate` or a combine throws `NotFoundError`; the count alone does not show the tear. A disagreement between a row and an object that is there (a registry restored from another point than its bucket, with a number re-taken since) is caught whenever a read opens the object, which stops that store using the row's summary, and by `checkConsistency({ summaries: true })`. A load
 sizes the current generation from it for its guard and opens no object. That changes what a repair load meets in a torn
 restore: the row names a generation whose object is gone, and the summary still says how many ids it held, so a repair
 smaller than `guard.minRetained` allows is refused. Repair without `minRetained` (`allowEmpty: true` does not lift it), and the
@@ -519,6 +519,12 @@ if (report.errored.length > 0) {
     backend never see them (a store on a bare `IStorageDriver` serves the newest of them; see
     [readers still on an old generation](#readers-still-on-an-old-generation)); see
     [what a restore does and does not bring back](#what-a-restore-does-and-does-not-bring-back).
+- **`summaries: true` also checks what a count answers from.** The default check lists, and reads no object. With the
+  option it opens each segment's current object (one tail read each, a second for an index longer than that) and holds
+  the row's summary against it: the same id count and the same metadata. A segment whose summary disagrees is
+  reported as `summary-mismatch` in `inconsistent`. A sealed summary needs the store's keystore; a segment whose
+  summary it cannot open is counted in `summariesUnchecked`, neither checked nor found wrong. A row with no summary
+  has nothing to check.
 - **A segment with no Storage generation is healthy, not torn.** A registry row whose `currentGen` is `null` says
   *this segment exists and has no Storage data yet* — a row minted by `setRetention` ahead of the first load, so the
   policy is recorded before the data. There is no generation that ought to exist, so nothing can be missing, and
@@ -634,7 +640,7 @@ resolution:
 - **Torn restore** (registry recovered ahead of storage) and a **lost `.crbm`** are detected as
   `missing-storage-generation`, then cleared by rolling `currentGen` back with `store.rollback`, which records a
   `segment.rollback` (remedy (b) above), or by restoring the object from backup (remedy (a)). A read of the torn
-  segment fails with `NotFoundError` until then.
+  segment's object fails with `NotFoundError` until then, while its count answers the row's number.
 - **Byte corruption inside a present `.crbm`** is the one case `checkConsistency()` **cannot** see — it verifies
   the generation is *present*, not its bytes. The drill confirms the sweep stays clean **and** that a read fails
   closed with `IntegrityError` (the per-chunk CRC), so the corruption surfaces at the trust boundary, not as a

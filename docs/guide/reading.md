@@ -38,11 +38,14 @@ generation of another segment. See [Loading in depth](loading.md#write-a-result-
 
 ## What a read costs
 
-- **`count()` reads no payload.** It is summed from the `.crbm` index. A cold count is a pointer read and one tail
-  read, which brings the index (a second read for an index larger than the tail read). A reader that already has the
-  segment open re-reads only the pointer, at most once each `cache.genTtlMs`. So counting a ten-million-id segment
-  makes the same requests as counting a thousand, while its index fits that one tail read. The sum is the index's own
-  word: see [What `count()` trusts](#what-count-trusts).
+- **`count()` is one request when cold, and reads no payload.** The registry row records the id count of the
+  generation it names, so a cold count is the pointer read and nothing else: no read of the object, however wide its
+  index, encrypted or not. A reader that already has the segment re-reads only the pointer, at most once each
+  `cache.genTtlMs`, and a refresh that finds the same generation under a changed row (a `setRetention`) costs the count
+  no re-open. So counting a ten-million-id segment makes the same requests as counting a thousand. A row with no
+  summary it can use (one written before rows carried it, one that names another generation, one that does not open)
+  sends the count to the `.crbm` index, which costs a tail read more. The row's word is what the count trusts: see
+  [What `count()` trusts](#what-count-trusts).
 - **`has()` comes from memory once warm.** A `has()` whose chunk is in the cache makes no request, beyond at most one
   pointer read per segment each `cache.genTtlMs` (2 s by default) for as long as the reader cache keeps the segment
   open.
@@ -57,9 +60,24 @@ What a load costs is on the [benchmarks page](../benchmarks.md#real-cloud-calibr
 
 ## What `count()` trusts
 
-`count()` answers from the `.crbm` index: it sums the per-chunk cardinalities the index records and decodes no
-payload, which is what makes it cheap. Opening a generation checks the index once, and refuses with `IntegrityError`
-an index that is not internally consistent:
+`count()` answers from the registry row's summary of the current generation when the row has one it can use, and from
+the `.crbm` index otherwise. Neither decodes a payload, which is what makes it cheap.
+
+**The row's summary** is used only for the generation it names, on an active row, in the shape the row's keys call
+for: clear on a segment with no wrapped keys, sealed on one with them, and a sealed one is used only if it opens under
+the segment's key with its generation as associated data. Anything else is no summary, and the count reads the index.
+`requireEncryption` applies as it does to a read: a cleartext row is refused with `KeyUnavailableError`. The summary is
+**not confirmed on the cold path**: someone who can write the registry row can edit it, and a count then answers what
+the row says, as it answers a crafted but consistent index, and as that person could already repoint the generation.
+Whenever a read opens the generation's object anyway (a `has`, an `iterate`, a combine, a `pin()`), the store holds the
+row's id count and metadata against the object, at no extra request; a disagreement, including a row that has metadata
+over an object that has none, stops that store from using that row's summary for that generation, so its counts then
+read the object, and fails no read. `checkConsistency({ summaries: true })` finds the disagreement across a fleet. A
+segment whose pointer names an object that is gone (a torn restore) still counts the row's number, which is true of
+the generation the row names, while every read of the object throws: `checkConsistency()` is what finds it.
+
+**The index**, which answers when the row has no summary it can use. Opening a generation checks the index once, and
+refuses with `IntegrityError` an index that is not internally consistent:
 
 - every chunk key in range and ascending;
 - every cardinality in `1..65536`;
@@ -70,6 +88,18 @@ A corrupt index that is still internally consistent yields a wrong count, with n
 decode the payloads, whose structure is checked. The same index supplies the chunk keys an `intersect` plans its
 fetches from, and `load`'s `cardinalityBefore` when the row carries no summary of the generation. Where an exact answer matters more than the request count, `iterate()` the
 segment and count what it yields.
+
+## `stat()`: the generation, its count and its metadata
+
+`seg.stat()` returns `{ generation, cardinality, metadata? }`: the number of the generation the handle reads, its id
+count, and the metadata it was loaded with (absent when it has none). One resolution answers all three, so they
+describe one generation and cannot straddle a publish. It is one registry read when cold, none when the store has the
+segment, and none on a pinned handle, which answers for the generation it pinned. The same row read answers a `count()`,
+so a `stat()` then a `count()` is one request. It trusts what `count()` trusts. A segment with no generation answers
+`{ generation: null, cardinality: 0 }`, as does an expired handle.
+
+`store.generations(ref)` carries the same `cardinality` and `metadata` on its current entry, from the row it already
+reads. Only the current entry has them: the other generations are not opened.
 
 ## How soon a reader sees a new load
 

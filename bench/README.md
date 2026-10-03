@@ -91,7 +91,7 @@ file under `expectedMissed`, and the run carries on, because a count that differ
 | `spread` | 10 segments of the same overlap with the shared chunks spread uniformly over each segment's chunks from a fixed seed, and 40 cold intersects | the same 4 + 2k, so a difference in latency is the layout's |
 | `sweep` | segments sharing 1,000 chunks (10 intersects) and 2,000 (5), `CR_CALIBRATE_SWEEP` to change the list | 4 + 2k each, at each k |
 | `warm` | the calibration pairs again on one store that trusts its pointers and holds every chunk it read; a priming pass first | the priming pass reads each segment once (a pointer, a tail, the shared chunks); a warm intersect makes none, **and a stage in which one does fails** |
-| `pointReads` | three phases, each with its own count and the store it ran on: `count()` on 10 segments (a first read); `has()` of one id in every shared chunk of each, on the store `count()` opened (an open segment, no chunk cached); and the same pairs once more, each on a fresh store (a first read); then the open-segment reads repeated warm | `count()` first read: a pointer and a tail; `has()` on an open segment: exactly one chunk read; `has()` first read: a pointer, a tail and a chunk, exactly 3; warm: none, which fails the stage if not. A cold phase that differs is recorded under `expectedMissed` and the run carries on |
+| `pointReads` | three phases, each with its own count and the store it ran on: `count()` on 10 segments (a first read); `has()` of one id in every shared chunk of each, on the store `count()` resolved (no chunk cached); and the same pairs once more, each on a fresh store (a first read); then the open-segment reads repeated warm | `count()` first read: a pointer, exactly 1; `has()` on that store: one chunk read, and the first of each segment adds the tail that opens it; `has()` first read: a pointer, a tail and a chunk, exactly 3; warm: none, which fails the stage if not. A cold phase that differs is recorded under `expectedMissed` and the run carries on |
 | `andNot` | 10 calls of one calibration segment against 10 others, each on a fresh store | 2 + 2 x 10 + every chunk of the include operand + each exclude's chunks where it overlaps it |
 
 **Depth.** A count of requests does not say how many ran at once, so the meter also keeps the requests in flight, their
@@ -117,7 +117,7 @@ requests; at that rate a run of this size would finish about a third of the time
 transient fault is **discarded**, never retried inside ([`lib/calibrate-samples.cjs`](lib/calibrate-samples.cjs)):
 
 - **What a sample is.** One cold intersect (in `intersect`, `spread` and `sweep`), the warm stage's priming pass, one
-  cold point read (`count()` as a first read, `has()` on an open segment, `has()` as a first read), and one `andNot`
+  cold point read (`count()` as a first read, `has()` on a store that has resolved the segment, `has()` as a first read), and one `andNot`
   call. A warm read makes no request, so it cannot meet a fault, and one that does make a request fails its stage.
 - **What a load is not.** A load is never discarded: a write that failed transiently may still have landed, its object
   or its pointer with only the answer lost, so the same load run again is a reload, which makes more requests than the
