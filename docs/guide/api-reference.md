@@ -588,7 +588,9 @@ the replay rule above applies to `create` and `compareAndSwap`; a transient faul
 incarnation id from the backend for good, and only while the row is still the exact version it read (by a precondition
 the backend applies, or a lock every writer of the backend takes), so a full `list` no longer reads it. A row a
 release before 0.12 wrote has a bare decimal token and is still tombstoned: a process on that release, re-creating
-the name over nothing, would issue its counters again from 0. `false` or absent: every delete leaves a tombstone. A
+the name over nothing, would issue its counters again from 0. That protection ends once a 0.12 process re-creates the
+name over the legacy tombstone, and matters only for a 0.11 process that outlived the upgrade's stop step. `false` or
+absent: every delete leaves a tombstone. A
 shipped registry reports it: the in-memory and local-filesystem ones `true`, the cloud ones as their backend's
 `conditionalDelete` option says. It is optional and additive: a driver of your own that omits it is read as `false`.
 The in-repo conformance suite's `registryDeleteConformance(label, make)` holds every shipped driver to what it declares;
@@ -626,8 +628,9 @@ across a patch that does not mention it, store it as it was when the write was c
 digits, drawn when a row is created, so a re-created name never meets an earlier incarnation's token, even once the
 earlier row is gone entirely. The counter advances on every write and carries on across a tombstone. The write part
 is 64 bits as 16 lowercase hex digits, drawn for every write, so a row restored from a backup to an older counter is
-never given a token it had before. Both random parts make it hold with overwhelming probability rather than by
-construction. A row first written by a release before 0.12 keeps its bare decimal counter (`"7"`) until its first
+never given a token it had before. Both random parts make it hold by chance rather than by construction: two
+incarnations of one name draw the same incarnation id with probability 2^-128 for any pair (about n² / 2^129 among n of
+them), and two writes at one counter, after a restore, the same write part with probability 2^-64. A row first written by a release before 0.12 keeps its bare decimal counter (`"7"`) until its first
 write, which gives it `<counter>.<write>`; only a create starts an incarnation. Tokens stay opaque to the library,
 which compares them only for equality. `ObjectStoreRegistry`'s constructor takes an optional fourth argument, an
 `Entropy` source (`(length) => Uint8Array`), which defaults to the platform's Web Crypto: inject one only to make a

@@ -284,14 +284,22 @@ So the two are complements, not alternatives: **`dropSegment` for "stop paying f
 them included), its timestamps and its token. It holds no id, and on an encrypted segment no wrapped key, since the
 drop shreds it. The due index holds a pointer to it whose name spells out the same namespace and name. Both stay
 for `tombstoneGraceMs` (24 h by default) after the retirement, and for as long as the segment's storage cannot be
-proven gone. Then the sweep's purge removes both from the bucket, where the registry reports `conditionalDelete`:
-the default for AWS S3, GCS on its public endpoint, Azure Blob, the local filesystem and memory. A pointer whose
-removal fails stays until a `scan: 'index'` sweep reads its day and removes it, so a deployment that never runs one
-keeps such a pointer. Where the registry does not report `conditionalDelete` (an S3-compatible store or an
-emulator, by default, or `conditionalDelete: false`), and for a row written by a
-release before 0.12 on any backend, the purge leaves a tombstone instead: every one of those fields, in the bucket,
-indefinitely, read by every full listing. With object versioning on, a removed row's earlier versions stay until a
-noncurrent-version rule expires them, as an overwritten row's do. A tombstone a hand-run `dropSegment` or a
+proven gone. Then the sweep's purge removes the row, and the pointers it read to it, from the bucket, where the registry
+reports `conditionalDelete`: the default for S3 when its client sends to an AWS S3 host, for GCS on its public endpoint,
+for Azure Blob, the local filesystem and memory. **A pointer can outlive its row**, and with it the name in its key: a
+purge that ran with another `tombstoneGraceMs` than the sweep that filed the pointer, a delete that landed and lost its
+response, a removal the registry refused (`purgeFaults` counts it), or a pointer older than an index scan's
+`lookbackBuckets`. The next sweep that reads it removes it once its row is confirmed absent: an index scan from the days
+it reads, and an unscoped fleet scan, one given no `namespace`, from every day. A deployment that scopes every sweep to a
+namespace, or runs only index scans, keeps such a pointer until an unscoped fleet scan runs. Where the registry does not
+report `conditionalDelete` (an S3 client that sends to an S3-compatible store or an emulator, by default, or
+`conditionalDelete: false`), and for a row written by a release before 0.12 on any backend, the purge leaves a tombstone
+instead: every one of those fields, in the bucket, indefinitely, read by every full listing. A registry that does not
+report it files no pointer to begin with. A removed
+row stays recoverable wherever the storage keeps a copy of it: with object versioning on, its earlier versions stay until
+a noncurrent-version rule expires them, as an overwritten row's do; with soft delete on, it stays for the retention
+window (GCS: on by default for a new bucket, 7 days; Azure Blob: where enabled, for the days set), whatever the registry
+did. A tombstone a hand-run `dropSegment` or a
 crypto-shred left is never purged by the library.
 
 Full detail, including the dated-bucket pattern and the pitfalls, is in the retention section of the

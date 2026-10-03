@@ -236,7 +236,8 @@ between here and there:
    function; and, before the release that turns the registry's conditional delete on by default, a probe that real
    S3 and real GCS refuse a delete whose precondition no longer holds
    (`tests/integration/real-cloud-conditional-delete.test.ts`, skipped unless a bucket is named), since the emulators
-   the integration lane runs ignore it. If either does not, its default goes off before the cut. [`bench/README.md`](../bench/README.md#real-cloud-calibration) describes the harness.
+   the integration lane runs ignore it, and that a name the registry removed can be created again over the delete
+   marker a versioned bucket leaves (its versioned run). If either does not, its default goes off before the cut. [`bench/README.md`](../bench/README.md#real-cloud-calibration) describes the harness.
 2. **Loaded-store benchmarks — partly owed.** Load throughput (ids/s and bytes/s into the bucket, single-part
    and multipart) and `intersect` / `*Into` latency by operand count and chunk overlap are still owed, both
    against a real object store from inside the region. The calibration harness above covers load throughput and a

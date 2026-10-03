@@ -440,25 +440,66 @@ one request per row. That is the case:
 - for a row written by a release before 0.12, always. Its token is a bare counter, and a process still on that
   release, re-creating the name over nothing, would start the counter at 0 again and issue the deleted row's tokens,
   so its row could not be told apart from the deleted one. A row created by 0.12 carries a random incarnation id in
-  its token, so a re-create is told apart from it with overwhelming probability, whatever is left of it.
+  its token, so a re-create is told apart from it, whatever is left of it, but for a collision of probability 2^-128
+  per pair of incarnations. The legacy protection ends once a 0.12 process re-creates the name over the legacy
+  tombstone: the new row has an incarnation, and when it is purged nothing keeps the legacy counter. It matters only for
+  a 0.11 process that outlived the upgrade's stop-every-0.11-process step, which the upgrade does not support.
 
 A tombstone already in the bucket stays: the purge never sees a row that is already deleted, and nothing in the library
 removes one. A cleanup for them, safe once no process on a release before 0.12 is left, is on the
 [roadmap](../ROADMAP.md).
 
-**An index scan purges too.** Each retirement files a pointer in the due index under the day its tombstone's grace
-ends, beside the expiry pointers, and `scan: 'index'` reads it with them, so a namespace can sweep by index alone and
-keep the fleet scan as its repair pass. No field of the row records that day: the purge works it out from the
-retirement's stamp and the grace. The pointer is removed with the row, and a pointer whose segment is gone is removed
-by the next index scan that reads it. A sweep run with a longer grace than the one that filed a pointer finds it early
-and leaves it; once its day is older than `lookbackBuckets`, the fleet scan purges the row.
+**An index scan purges too, where the registry removes rows.** Each retirement files a pointer in the due index under
+the day its tombstone's grace ends, beside the expiry pointers, and `scan: 'index'` reads it with them, so a namespace
+can sweep by index alone and keep the fleet scan as its repair pass. No field of the row records that day: the purge
+works it out from the retirement's stamp and the grace. The purge removes every pointer it read to the row, and the one
+its own grace would have filed. Where the registry only tombstones, no pointer is filed: nothing is removed for good, so
+a pointer would only add a row for every scan to read, and the fleet scan purges, as it always did. A sweep run with a
+longer grace than the one that filed a pointer finds it early and leaves it; once its day is older than
+`lookbackBuckets`, the fleet scan purges the row.
 
-**What it costs.** A retirement makes one registry read and one write to file the pointer, and a purge one read and one
-delete to remove it. On S3 the purge itself is a `DeleteObject`, which is not billed, where a tombstone is a
-`PutObject`. The registry needs delete permission on its prefix (`s3:DeleteObject`,
-`storage.objects.delete`, or a role that may delete blobs); without it a purge fails, the row stays, and the ledger
-entry says why. An unscoped sweep also lists the due index's pointers, one read each before it skips them, so
-give each sweep a `namespace` where you can.
+**A pointer can outlive its row, and what removes it.** The pointer's key spells out the namespace and the segment name,
+so until it goes the name is in the bucket, in a key. It lingers when the purge did not run to its end:
+
+- the purge ran with another `tombstoneGraceMs` than the sweep that filed the pointer, so the day it computes holds
+  none (a purge removes the pointers its scan read, whatever day they are under, but a scan limited to a `namespace`
+  reads none);
+- a delete landed and lost its response, so the sweep never learned the row was gone and kept the pointer, as it must;
+- the registry refused the pointer's removal (`purgeFaults` counts it);
+- the pointer's day has passed out of `lookbackBuckets`, where no index scan reads it.
+
+The next scan that reads it removes it, once the segment's row is read again and still absent: an index scan removes
+it from the days it reads, and an **unscoped** `'fleet'` scan (no `namespace`) removes it from every day, since the
+listing it makes already reads every pointer. A scan limited to a `namespace` lists no pointers, so a deployment that
+scopes every sweep, or runs only index scans, keeps such a pointer until an unscoped fleet scan runs: run one as the
+repair pass. The removal is fenced on the pointer's token, so a pointer filed anew is kept; it covers the sweep's own
+`shards` only, never runs under `dryRun`, and removes at most `limit` pointers per call, each a few reads and a delete
+(a pointer an index scan reads costs four reads and a delete in all, the listing's read of it included; one a fleet
+scan reads costs two reads and a delete more than the scan already paid).
+
+One race stays, and the fleet scan repairs it. A name created again with a policy due on the very day a pointer to
+nothing sits under (a same-day or back-dated expiry) can lose that pointer: `setRetention` takes the pointer already at
+the key as its own, and a sweep that read the segment before its row existed can remove it in the two round trips that
+follow. The purge's own pointer removal has the same window: it can remove a pointer a re-created name has just taken as
+its own, when that name's policy is due on the pointer's day. The row is untouched and still expires; only its expiry pointer is gone, so an index scan never finds it, and
+the default `'fleet'` scan, which reads every row, retires it. An index-only deployment is repaired only if it also
+schedules a fleet scan, which is why the index is the fast half of a pair.
+
+**What it costs.** Per segment, counted with a store that counts requests. Where the registry removes rows, a
+retirement is 9 reads, 3 writes and a delete, and a purge 4 reads and 2 deletes: the pointer is filed with a create,
+which is the one write the removal of the expiry pointer would otherwise have been, and the purge removes the row and
+the pointer where a tombstone would have been written. On S3 a `DeleteObject` is not billed, and a `PutObject` is.
+Where the registry only tombstones (`conditionalDelete: false`, or a backend that does not report it), no purge pointer
+is filed or removed: a retirement is 8 reads and 3 writes, a purge 3 reads and 1 write, and two small objects stay per
+segment, which every full scan reads (100 reads for 50 segments). The registry needs delete permission on its prefix
+(`s3:DeleteObject`, `storage.objects.delete`, or a role that may delete blobs); without it a purge fails, the row stays,
+the ledger entry and `purgeFaults` say why, and the retirements behind it still go on.
+
+An unscoped sweep also lists the due index's pointers, one read each before it skips them, so give each sweep a
+`namespace` where you can. So does every other unscoped enumeration: `checkConsistency`, `eraseSubject`,
+`subjectReport`, `store.segments()` and the `export-segments` CLI read each pointer before they skip it, and where
+pointers are filed each tombstone inside its grace holds a second row, so those calls read about twice the rows of the
+grace period. (The [roadmap](../ROADMAP.md) lists an unscoped listing that skips the pointers before reading them.)
 
 Pass `purgeTombstones: false` to keep every tombstone. That is the right choice if something outside this library
 treats the presence of a `destroyed` row as an attestation. It includes the row of a retirement whose drop found no

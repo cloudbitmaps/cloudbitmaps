@@ -84,6 +84,26 @@ describe('a driver package states its SDK range identically in the manifest and 
     ).toBe(true);
   });
 
+  it('the floor is a measurement of If-None-Match alone, and the docs say the registry checks the other headers itself', () => {
+    // The 3.641.0 boundary above was measured for `PutObject` `IfNoneMatch`. The registry also sends `If-Match` on a
+    // `PutObject` (its compare-and-swap) and on a `DeleteObject` (its conditional delete), and no measurement records the
+    // first SDK that sends either: an SDK drops a member its model lacks, without a word. So `@cloudbitmaps/s3` asks the
+    // client at run time (`probeClient`), and says so wherever it states the floor. A floor raised to a measured version
+    // makes this check redundant, not wrong; one stated without the check would claim more than the measurement gives.
+    const claims = [
+      join(ROOT, 'packages', 's3', 'README.md'),
+      join(ROOT, 'docs', 'guide', 'production.md'),
+      join(ROOT, 'docs', 'guide', 'api-reference.md'),
+    ];
+    for (const file of claims) {
+      const text = readFileSync(file, 'utf8').replace(/\s+/g, ' ');
+      expect(text, `${file} never says the registry checks the SDK's headers`).toMatch(
+        /(checks|serialises)[\s\S]{0,500}If-Match[\s\S]{0,200}PutObject/,
+      );
+      expect(text, `${file} never names the DeleteObject header`).toMatch(/DeleteObject/);
+    }
+  });
+
   it('the S3 write-once floor has not been lowered', () => {
     // Named explicitly, and separately from the derived check above, because this one number is the
     // difference between refusing a colliding write and silently overwriting a published generation. A

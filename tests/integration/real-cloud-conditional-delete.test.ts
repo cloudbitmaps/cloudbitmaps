@@ -15,6 +15,11 @@
  * guide asks for versioning on the registry prefix and a delete there leaves a delete marker or a noncurrent version.
  * On a versioned bucket the cleanup at the end leaves noncurrent versions for the bucket's own lifecycle to expire.
  *
+ * The versioned run also answers a second question: whether a name the registry has removed can be created again. A
+ * delete in a versioned bucket leaves a delete marker, and the registry's create is a conditional write that must find
+ * the key absent (`If-None-Match: *` on S3, `ifGenerationMatch: 0` on GCS). If the service answered 412 over a marker, a
+ * purged name could never be re-created on the configuration the disaster-recovery guide recommends.
+ *
  *   CBM_PROBE_S3_BUCKET=<scratch bucket> AWS_REGION=<its region> \
  *     pnpm exec vitest run -c vitest.integration.config.ts tests/integration/real-cloud-conditional-delete.test.ts
  *   CBM_PROBE_GCS_BUCKET=<scratch bucket> \
@@ -133,6 +138,32 @@ describe.skipIf(S3_BUCKET === undefined)('REAL S3: DeleteObject with If-Match', 
     expect(await exists(key)).toBe(false);
   });
 
+  it('GATE (the versioned run is the one that matters): a create over a removed key succeeds, and a read answers absent', async () => {
+    const prefix = `${PREFIX}/s3-recreate`;
+    const reg = new S3RegistryDriver({
+      client,
+      bucket,
+      prefix,
+      now: ticking(),
+      conditionalDelete: true,
+    });
+    const ref = { segment: 'reborn' };
+    const first = await reg.create(ref, { currentGen: 0 });
+    await reg.delete(ref, first.token);
+    expect(await exists(registryObjectKey(prefix, ref))).toBe(false); // a GET answers 404, a marker or not
+    expect(await reg.get(ref)).toBeNull();
+    // The registry's own create, and the request under it: If-None-Match: * over whatever the delete left.
+    const second = await reg.create(ref, { currentGen: 0 });
+    expect(second.token).not.toBe(first.token);
+    expect(await reg.get(ref)).toMatchObject({ token: second.token });
+    const key = `${PREFIX}/s3-recreate-raw`;
+    const etag = await put(key, 'one');
+    await store.delete(key, { version: etag });
+    await expect(
+      store.write(key, new TextEncoder().encode('two'), 'absent'),
+    ).resolves.toBeUndefined();
+  });
+
   it('RECORD: what an If-Match on a missing key answers (either is safe; the evidence names which)', async () => {
     const seen = await outcome(() => store.delete(`${PREFIX}/s3-missing`, { version: '"0"' }));
     console.info(`real S3, DeleteObject with If-Match on a missing key: ${seen}`);
@@ -184,6 +215,31 @@ describe.skipIf(GCS_BUCKET === undefined)('REAL GCS: delete with ifGenerationMat
     const generation = await put(name, 'one');
     expect(await outcome(() => store.delete(name, { version: generation }))).toBe('deleted');
     expect(await exists(name)).toBe(false);
+  });
+
+  it('GATE (the versioned run is the one that matters): a create over a removed object succeeds, and a read answers absent', async () => {
+    const prefix = `${PREFIX}/gcs-recreate`;
+    const reg = new GcsRegistryDriver({
+      storage,
+      bucket,
+      prefix,
+      now: ticking(),
+      conditionalDelete: true,
+    });
+    const ref = { segment: 'reborn' };
+    const first = await reg.create(ref, { currentGen: 0 });
+    await reg.delete(ref, first.token);
+    expect(await exists(registryObjectKey(prefix, ref))).toBe(false);
+    expect(await reg.get(ref)).toBeNull();
+    const second = await reg.create(ref, { currentGen: 0 });
+    expect(second.token).not.toBe(first.token);
+    expect(await reg.get(ref)).toMatchObject({ token: second.token });
+    const name = `${PREFIX}/gcs-recreate-raw`;
+    const generation = await put(name, 'one');
+    await store.delete(name, { version: generation });
+    await expect(
+      store.write(name, new TextEncoder().encode('two'), 'absent'),
+    ).resolves.toBeUndefined();
   });
 
   it('RECORD: what ifGenerationMatch on a missing object answers (either is safe; the evidence names which)', async () => {

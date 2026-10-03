@@ -44,8 +44,9 @@ so, and so do the module headers in the code.
 - **A registry token is now `<incarnation>.<counter>.<write>`, and no two writes under a name are given the same
   one.** The incarnation is a 128-bit id as 32 lowercase hex digits, drawn from the platform's Web Crypto when a row
   is created; the counter advances on every write and carries on across a tombstone; the write part is 64 bits as 16
-  lowercase hex digits, drawn for every write. Both random parts make the tokens unique with overwhelming
-  probability, where a counter alone was not:
+  lowercase hex digits, drawn for every write. Both random parts make the tokens unique by chance, where a counter alone was not: two
+  incarnations of one name meet with probability 2^-128 for any pair (about n² / 2^129 among n of them), and two writes
+  at one counter after a restore with probability 2^-64:
   - once a row's object was gone entirely (a tombstone removed by an object-store delete or a lifecycle rule), a
     re-create restarted its counter at 0 and re-issued the earlier row's tokens. A warm store at the same generation
     took the new row for the old one and kept serving the deleted ids; a publish fenced on a token read from the
@@ -63,11 +64,16 @@ so, and so do the module headers in the code.
 
 ### Added
 
-- **The due index carries a pointer to each retirement's tombstone, so `scan: 'index'` purges as well as retires.**
-  A retirement files it under the day the tombstone's grace ends, its stamp plus `tombstoneGraceMs`; no field of the
-  row records that day. An index scan reads it back with the expiry pointers and hands the row to the same purge the
-  fleet scan runs, which removes the pointer once the row is gone, and never after a delete whose outcome is unknown.
-  A retirement costs one registry read and one write more, a purge one read and one delete more.
+- **The due index carries a pointer to each retirement's tombstone, so `scan: 'index'` purges as well as retires, on a
+  registry that reports `conditionalDelete`.** A retirement files it under the day the tombstone's grace ends, its
+  stamp plus `tombstoneGraceMs`; no field of the row records that day. An index scan reads it back with the expiry
+  pointers and hands the row to the same purge the fleet scan runs, which removes every pointer it read to the row,
+  once the row is gone, and never after a delete whose outcome is unknown. A registry that only tombstones files none,
+  since nothing it purges is removed for good: there the fleet scan purges, and what a retirement and a purge cost is
+  what it was. Per segment, counted with a store that counts requests: a retirement is 9 reads, 3 writes and a delete
+  with the pointer where it was 8 reads and 3 writes (one read and one delete more), and a purge is 4 reads and 2
+  deletes where it was 3 reads and a write (one read and two deletes more, a write fewer). On S3 a delete is not
+  billed and a tombstone's write is.
 
 - **`RegCaps.conditionalDelete`, and a `conditionalDelete` option on `S3Storage`, `GcsStorage` and
   `AzureBlobStorage` and their registry drivers.** `true` says a registry's `delete` removes a row from its backend for
@@ -169,9 +175,19 @@ so, and so do the module headers in the code.
   `limit` as before.
 
 - **The local-filesystem registry unlinks a deleted row born with an incarnation id**, under the row's lock, and
-  tombstones one a release before 0.12 wrote. **An index scan removes a due-index pointer whose segment has no row**,
-  fenced on the pointer's token and after reading the segment again, where it skipped it on every scan that read its
-  day; only in the sweep's own namespace and shards, and never under `dryRun`.
+  tombstones one a release before 0.12 wrote.
+
+- **The retention sweep removes a due-index pointer whose segment has no row**, where an index scan skipped it on every
+  scan that read its day and a fleet scan never could. An index scan removes it from the days it reads. An **unscoped**
+  fleet scan (no `namespace`) now keeps the pointers its listing already reads, and removes a pointer to nothing from
+  every day, and the purge removes every pointer it read to the row: a pointer survives a purge that ran with another
+  `tombstoneGraceMs` than the sweep that filed it, a delete that landed and lost its response, and a day older than
+  `lookbackBuckets`, and its key spells out the namespace and segment name. A removal re-reads the segment, is fenced
+  on the pointer's token, covers the sweep's own shards, never runs under `dryRun`, and is bounded: at most `limit`
+  pointers per call, each costing four reads and a delete from an index scan (the listing's read of the pointer
+  included) and two reads and a delete beyond the listing's from a fleet scan. A scan limited to a `namespace` lists no
+  pointers and removes none. A registry that only tombstones does none of this, since a removed pointer would stay as a
+  tombstone every scan reads.
 
 - **The retention sweep's purge removes a tombstone's row for good, where the registry reports
   `conditionalDelete`.** It used to rewrite the row as a tombstone that every later full listing read, so a sweep of a

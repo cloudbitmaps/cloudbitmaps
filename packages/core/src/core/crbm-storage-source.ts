@@ -127,8 +127,8 @@ function storageBlobReader(driver: IStorageDriver, key: GenKey): BlobReader {
 /**
  * A resolved read target, as `resolveTarget` produces it: which generation is current, and its DEK wrappings if it
  * is encrypted. `lineage` is the registry row's OCC token — the identity that survives a delete, because a shipped
- * registry never gives two writes under one name the same token, with overwhelming probability: each row's token
- * carries a random incarnation id, and each write a random part of its own. It is what separates two *incarnations*
+ * registry never gives two writes under one name the same token, but for a collision of probability 2^-128 per pair of
+ * incarnations: each row's token carries a random 128-bit incarnation id, and each write a random part of its own. It is what separates two *incarnations*
  * of one name, which a generation number cannot:
  * `nextGeneration` restarts at 0 once the row is purged and the bucket emptied, so a retired-and-re-created
  * segment presents different data at the same `currentGen`. Undefined for a registry-less source, which has no
@@ -1082,7 +1082,7 @@ export async function writeCrbmGenerationStream(
  * `currentGen`. `expectFrom` alone matched it — and an erasure rewrite then published one incarnation's content
  * over another's, deleted the live objects with its `keep: 0` collection, and returned `erased: true`. The row's
  * OCC token is the identity that survives this: a shipped registry's later `create` gets a token never issued before
- * under that name, with overwhelming probability, so no token is reused across incarnations.
+ * under that name, but for a collision of probability 2^-128 per pair of incarnations, so no token is reused across them.
  *
  * Pass the token read alongside `expectFrom` and the publish lands only on the same row it was derived from.
  * The check is deliberately **conservative**: the token also changes on writes that are not supersessions at

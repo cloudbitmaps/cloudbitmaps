@@ -39,7 +39,8 @@
  * - **Do not apply a lifecycle-expiration rule to the `registry/` prefix that expires a current version.**
  *   Expiring a live row loses its pointer. A tombstone `delete` left keeps the counter for a re-create; one expired
  *   by a rule is no worse than a row removed for good, since a recreate draws a fresh incarnation and its tokens are
- *   new with overwhelming probability, but a rule cannot tell a tombstone from a live row.
+ *   new but for a collision of probability 2^-128 per pair of incarnations, but a rule cannot tell a tombstone from a
+ *   live row.
  * - **A store's conditional delete must be honoured by its backend** before the store sets `conditionalDelete`.
  *   One that ignores the precondition lets two sweepers and a re-create delete a live row.
  *

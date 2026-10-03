@@ -85,6 +85,26 @@ days are also the oldest point you can restore to: set them at or above your res
 }
 ```
 
+**Add, if versioning is on: remove expired delete markers on the registry prefix.** Where the registry removes a row
+(`conditionalDelete`), a delete in a versioned bucket leaves a delete marker, not an absence. Once the noncurrent
+versions beneath it expire, the marker is all that is left of the name: one per name ever purged, which every listing
+of the prefix steps over. A rule that removes expired delete markers is the last piece of the recipe, scoped to the
+registry prefix (`<prefix>registry/` on a backend built with a `prefix`), as a third rule in the same configuration:
+
+```json
+{
+  "ID": "expire-registry-delete-markers",
+  "Status": "Enabled",
+  "Filter": { "Prefix": "registry/" },
+  "Expiration": { "ExpiredObjectDeleteMarker": true }
+}
+```
+
+It cannot touch a live row: S3 removes a delete marker only when no version remains under it. A create over a delete
+marker (`If-None-Match: *`) is one the registry makes whenever a purged name is loaded again, and the probe in
+`tests/integration/real-cloud-conditional-delete.test.ts`, run against a versioned bucket, checks that S3 and GCS accept
+it.
+
 **Never: expire current objects.** No rule may delete current generations, and no rule may delete current versions
 under the `registry/` prefix. A rule cannot tell a live row from a tombstone or from a due-index pointer, and an
 expired live row is a pointer lost: every generation it named looks unreferenced. Where the registry removes a row
