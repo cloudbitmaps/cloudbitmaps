@@ -138,8 +138,8 @@ is a dependency of both and is never installed directly. The storage drivers are
   collected }`. An empty or implausible result over a non-empty destination is **refused** rather than
   published, with `allowEmpty` / `guard` to override — the same guard `load()` takes. Unlike `load()` it
   collects nothing by default, so a `rollback` target survives the materialization.
-- **Cheap counts.** `count()` sums per-chunk cardinality straight from the `.crbm` index, so a segment counts
-  with **zero payload reads**.
+- **Cheap counts.** `count()` answers from the registry row's summary of the current generation (one request when cold),
+  else sums per-chunk cardinality from the `.crbm` index, so a segment counts with **zero payload reads**.
 - **Bounded memory, always.** A hard LRU ceiling on cached chunks, a byte-aware storage-reader cache, bounded fan-out
   on every admin path, and a default-on per-operation **request budget** that fails with `BudgetExceededError`
   rather than quietly running up a bill. Every registry scan has a ceiling by default: the DR consistency check,
