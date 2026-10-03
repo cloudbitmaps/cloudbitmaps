@@ -170,15 +170,15 @@ describe('bench:sizing:check fails what it exists to catch', () => {
   });
 
   it('fails a generated figure edited by hand', () => {
-    expect(sizing).toContain('**$281**');
-    refused({ [SIZING]: sizing.replace('**$281**', '**$280**') }, /not what the shipped estimator/);
+    expect(sizing).toContain('**$280**');
+    refused({ [SIZING]: sizing.replace('**$280**', '**$281**') }, /not what the shipped estimator/);
   });
 
   it('fails a hand-edited figure in the README, and a hand-edited or missing chart', () => {
     const readme = page('README.md');
-    expect(readme).toContain('**90% less**');
+    expect(readme).toContain('**91% less**');
     refused(
-      { 'README.md': readme.replace('**90% less**', '**91% less**') },
+      { 'README.md': readme.replace('**91% less**', '**90% less**') },
       /README\.md \(WHY_SIZES\)/,
     );
     const CHART = 'bench/bill-as-data-grows.svg';

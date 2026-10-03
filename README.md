@@ -130,15 +130,15 @@ Redis OSS cluster that would hold each one's data:
 <!-- SIZING:WHY_SIZES:START -->
 | | data | CloudBitmaps a month | the Redis that holds it | CloudBitmaps costs |
 |---|---:|---:|---:|---:|
-| **Small** — a product team keeping its user cohorts | 200 MB | $3.35 | $35.04 | **90% less** |
-| **Medium** — an ad platform matching audiences | 20 GB | $281 | $900 | **69% less** |
-| **Large** — a marketplace filtering its catalogue | 2 TB | $6,771 | $27,325 | **75% less** |
+| **Small** — a product team keeping its user cohorts | 200 MB | $3.29 | $35.04 | **91% less** |
+| **Medium** — an ad platform matching audiences | 20 GB | $280 | $900 | **69% less** |
+| **Large** — a marketplace filtering its catalogue | 2 TB | $6,703 | $27,325 | **75% less** |
 <!-- SIZING:WHY_SIZES:END -->
 
 <!-- SIZING:WHY_CAVEATS:START -->
-Each Redis is the cheapest on-demand ElastiCache for Redis OSS cluster in the estimator's catalogue that holds the data, every shard a primary and two replicas: the cheapest of one kind, not the least Redis could cost. Against [ElastiCache for Valkey](https://aws.amazon.com/elasticache/pricing/), which AWS prices 20% lower a node, CloudBitmaps costs 88% less, 61% less and 69% less; with one replica a shard, 86% less, 53% less and 63% less; with both, 82% less, 41% less and 54% less. Reserved nodes cost less again, and stack on both: on a one-year term with nothing upfront, CloudBitmaps costs 74% less, 14% less and 32% less, and on three years paid upfront, 60% less, 1.3× as much and 1.03× as much, so a Redis bought all three ways costs less than CloudBitmaps at the medium and large sizes.
+Each Redis is the cheapest on-demand ElastiCache for Redis OSS cluster in the estimator's catalogue that holds the data, every shard a primary and two replicas: the cheapest of one kind, not the least Redis could cost. Against [ElastiCache for Valkey](https://aws.amazon.com/elasticache/pricing/), which AWS prices 20% lower a node, CloudBitmaps costs 88% less, 61% less and 69% less; with one replica a shard, 86% less, 53% less and 63% less; with both, 82% less, 42% less and 54% less. Reserved nodes cost less again, and stack on both: on a one-year term with nothing upfront, CloudBitmaps costs 74% less, 15% less and 32% less, and on three years paid upfront, 61% less, 1.3× as much and 1.02× as much, so a Redis bought all three ways costs less than CloudBitmaps at the medium and large sizes.
 
-All three assume that two segments share 100 of their 2,000 chunks, and filters over one catalogue or one audience can share most of theirs: at 1,000 shared chunks, the medium and large deployments cost 2.4× and 1.6× their Redis, and their bills pass it at 395 and 589 shared chunks.
+All three assume that two segments share 100 of their 2,000 chunks, and filters over one catalogue or one audience can share most of theirs: at 1,000 shared chunks, the medium and large deployments cost 2.4× and 1.6× their Redis, and their bills pass it at 396 and 591 shared chunks.
 
 The large deployment's 200,000 segments are past the roughly 100,000 the library has been validated at, and its readers would need an index budget and a chunk cache far past their defaults ([what each reader holds](docs/guide/sizing.md#what-each-reader-holds)), in memory not priced here.
 <!-- SIZING:WHY_CAVEATS:END -->
@@ -199,7 +199,7 @@ How this compares with pure Roaring libraries and bitmap databases on lock-in is
   │                                                                       │
   │  on the STORE                      on a SEGMENT                       │
   │  ─────────────                     ──────────────                     │
-  │  load(ref, ids)      ← the write   has(id)      count()   iterate()   │
+  │  load(ref, input)    ← the write   has(id)      count()   iterate()   │
   │  segment(name, opts)               intersect()  union()   andNot()    │
   │  exists()  segments()              intersectInto() unionInto()        │
   │  generations() rollback()          andNotInto()                       │
@@ -218,10 +218,12 @@ import { S3Storage } from '@cloudbitmaps/s3';
 
 const store = new CloudRoaring({ storage: new S3Storage({ bucket: 'bitmaps', prefix: 'prod' }) });
 
-// idsFromWarehouse() and engagedFromWarehouse() are your functions: each yields the ids (an array, a generator, a cursor).
+// Yours: idsFromWarehouse() and engagedFromWarehouse() each yield ids (an array, a generator, a cursor), and
+// `retained` is a RoaringBitmap32 you computed.
 const r = await store.load({ segment: 'vips' }, idsFromWarehouse());
 if (!r.published) console.warn({ reason: r.reason, had: r.cardinalityBefore });
 await store.load({ segment: 'engaged' }, engagedFromWarehouse()); // an operand has to exist: load it first
+await store.load({ segment: 'retained' }, { bitmap: retained }); // a bitmap loads with no per-id work
 
 for await (const id of store.segment('vips').intersect([store.segment('engaged')])) {
   /* the audience */

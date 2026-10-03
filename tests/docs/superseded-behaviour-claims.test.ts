@@ -2,6 +2,8 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { AWS_US_EAST_1_ONDEMAND, estimateCost } from '@cloudbitmaps/core';
+import { LIST_COLLECTION_CADENCE } from '@/core/generation-gc';
 
 /**
  * Claims about the library's behaviour that its code makes FALSE, spelled out so no page makes them.
@@ -321,6 +323,19 @@ const FIXED = String.raw`(?:(?:never|does not|doesn't|will not|won't) (?:changes
 const STAYS = String.raw`\b(?:(?:stays?|remains?|stuck|sticks?|freezes?|frozen|locks?|locked)(?<!\b(?:not|never|no) \w+)|(?<!\b(?:not|never|no)|n't) keeps? (?:serving|using|reading)) (?:(?:on|at|to|with|in) )?(?:(?:each|every|its|their|the|one|a) )?(?:(?!(?:newest|latest) )[\w'-]+ )?(?:segments?|generations?|snapshots?|pointers?)\b(?!${UNTIL_MOVED})`;
 
 /** Phrases that describe the library's behaviour falsely, each with what to say instead. */
+/** A load as a sentence's subject: one, the, each or every load (a later or next one too), or loads. */
+const A_LOAD = String.raw`\b(?:(?:an?|the|each|every)(?: later| next)? load|loads)\b`;
+/** A load as a sentence's subject, `store.load()` too. */
+const A_LOAD_CALL = String.raw`(?:${A_LOAD}|\bstore\.load\(\))`;
+/**
+ * What a true sentence about a load's collection names: that it is by name, the sixteenth generation it lists on, the
+ * `keep` of 2 or more or a check that met an object that make it list, or a writer that always lists. (`*Into` is
+ * not one of the words: a reading of the page drops its asterisk, so it would be a word that can never match.)
+ */
+const COLLECTION_CONDITION = String.raw`\b(?:by name|sixteenth|16th|check(?:s|ed)?|taken|meets?|holds?|held|erasure|rewrite|materiali[sz]ations?|wider|keeps? (?:of )?(?:2|two|more))\b`;
+/** What a true sentence about a load's numbering names: the check and what it finds, or the writers that list. */
+const NUMBERING_CONDITION = String.raw`\b(?:check(?:s|ed)?|taken|meets?|holds?|held|cannot answer|erasure|rewrite|nextGeneration)\b`;
+
 const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: string }> = [
   {
     claim: new RegExp(g(String.raw`publish(?:es|ing)? an empty generation over \`?dest`), 'i'),
@@ -572,6 +587,117 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
   {
     claim: new RegExp(g(String.raw`no \`?AbortSignal\`? anywhere in (?:this|the) library`), 'i'),
     why: "the S3 and Azure Blob packages abort a read that runs past `readTimeoutMs` through its request's abort signal — say that no write is timed",
+  },
+  {
+    claim: new RegExp(g('fresh, greater token'), 'i'),
+    why: 'tokens are not ordered: a later create gets a token never issued before under the name',
+  },
+  {
+    claim: new RegExp(g("makes the row's token unique for all time"), 'i'),
+    why: "a tombstone's counter is not all that keeps tokens apart: every token carries random parts",
+  },
+  {
+    claim: new RegExp(g('starts the counter again and re-issues a token'), 'i'),
+    why: 'a re-created row draws a new incarnation id, so its tokens are new even when its counter restarts',
+  },
+  {
+    claim: new RegExp(g('would issue tokens from 0 again'), 'i'),
+    why: "a re-created row's tokens carry a new incarnation id, whatever its counter",
+  },
+  {
+    claim: new RegExp(g('tokens issued after `?T`? will be issued again'), 'i'),
+    why: 'every write draws its own part of the token, so a restored row is never given a token it had before',
+  },
+  {
+    claim: new RegExp(
+      g(
+        String.raw`keeps (?:its bare token|the (?:token )?form it was born with) for (?:as long as it lives|life)`,
+      ),
+      'i',
+    ),
+    why: 'a row 0.11 wrote keeps its bare counter only until its first 0.12 write, which adds a write part',
+  },
+  {
+    claim: new RegExp(g('token that is not a plain decimal counter passes the read'), 'i'),
+    why: 'a token in no form the registry writes fails the read, naming the row',
+  },
+  {
+    claim: new RegExp(
+      g('(?:keeps? the token monotonic|monotonic token survives|token is a monotonic counter)'),
+      'i',
+    ),
+    why: 'the token is not ordered: its counter advances, beside random parts',
+  },
+  // A load's numbering. A true sentence about it says the condition the retired rule left out: the check finding the
+  // number taken, an object holding it, or another writer, the erasure rewrite or `nextGeneration`, which still number
+  // above everything. The first three entries leave alone a sentence that names one of these anywhere in it, and refuse
+  // one that states the rule without it; such a sentence passes reworded to say it ("once its check meets one, a load
+  // numbers above them all"), and the cases below show each collision with its rewording.
+  {
+    claim: new RegExp(
+      g(
+        String.raw`(?<!${NUMBERING_CONDITION}[^.]{0,160})${A_LOAD}(?![^.]{0,160}${NUMBERING_CONDITION})[^.]{0,80}?\b(?:one )?above the highest\b`,
+      ),
+      'i',
+    ),
+    why: 'a load takes `currentGen + 1` when no object holds it, and numbers above everything in the bucket only when its check finds that number taken or cannot answer',
+  },
+  {
+    claim: new RegExp(
+      g(
+        String.raw`(?<!${NUMBERING_CONDITION}[^.]{0,160})${A_LOAD} (?:numbers?|is numbered|are numbered) (?:its generation |their generations? )?above (?:them|it)\b(?![^.]{0,160}${NUMBERING_CONDITION})`,
+      ),
+      'i',
+    ),
+    why: 'a load can number below an object above the pointer: such objects stay until loads pass them (the first whose number one of them holds numbers above them all), or until a generation above them is current',
+  },
+  {
+    claim: new RegExp(
+      g(
+        String.raw`(?<!${NUMBERING_CONDITION}[^.]{0,160})\b(?:lists?|listing|listings)\b(?: the segment)?(?: twice)?[^.]{0,30}?\b(?:to (?:choose|number)|that numbers?) (?:the|a|its) generation(?: number)?\b(?![^.]{0,160}${NUMBERING_CONDITION})`,
+      ),
+      'i',
+    ),
+    why: 'a load checks that its generation number is free with one metadata request, and lists the segment for it only when the check finds the number taken',
+  },
+  {
+    claim: new RegExp(
+      g(
+        String.raw`store\.load\([^)]*\)[^.]{0,200}?\babout (?:twice|doubles?|half as much again)\b|\babout doubles a load(?:'|’)s bill\b|\bhalf (?:a|the) load(?:'|’)s bill again\b`,
+      ),
+      'i',
+    ),
+    why: "store.load() adds about a tenth to the write and publish's bill, not half again and not as much again",
+  },
+  {
+    claim: new RegExp(
+      g(
+        String.raw`\b(?:reads (?:the |its )?(?:registry )?pointer seven times|seven (?:registry )?pointer reads)\b`,
+      ),
+      'i',
+    ),
+    why: "a segment's first load reads the pointer three times and checks its generation number once",
+  },
+  // A load's collection. A true sentence about it says the condition the retired rule left out: that the generation
+  // is deleted by name and the segment listed on the sixteenth, or the `keep` or the object above the pointer that
+  // makes it list, or the writer that always lists.
+  {
+    claim: new RegExp(
+      g(
+        String.raw`(?<!${COLLECTION_CONDITION}[^.]{0,160})${A_LOAD_CALL}(?![^.]{0,200}${COLLECTION_CONDITION})[^.]{0,80}?\b(?:lists?|listing)\b[^.]{0,60}?\b(?:to collect|and collects?|then collects?|before it collects?|for (?:its )?collection)\b`,
+      ),
+      'i',
+    ),
+    why: 'a load that keeps at most one generation and found nothing above its pointer deletes the one generation its publish pushed out of the window by name, and lists the segment only every sixteenth generation',
+  },
+  {
+    claim: new RegExp(
+      g(
+        String.raw`\bnext (?:store\.)?load of (?:the|that|its) destination collects (?:everything|its predecessors)\b`,
+      ),
+      'i',
+    ),
+    why: "the next load of a destination deletes the one generation its own publish pushes out of the window by name; an `*Into` with `keep` collects every generation below its own pointer at once, and a load's listing, on every sixteenth generation, takes the rest",
   },
 ];
 
@@ -1037,6 +1163,41 @@ describe('no document claims behaviour this library does not have', () => {
     'This library sets no request timeout of its own.',
     '- **Set a request timeout.** There is no `AbortSignal` anywhere in this library —',
     'there is no AbortSignal anywhere in the\n  library',
+    // How a row's token changes.
+    'A row written before 0.12 keeps its bare token for as long as it lives.',
+    'a row keeps the form it was born with for life',
+    // A load's numbering and cost as they were, and the paraphrases an honest rewrite would produce.
+    'a load takes the next number itself: one above the highest the registry points at or that is present in the bucket',
+    'A load numbers its generation one above the highest of the pointer and any object in the bucket',
+    'The load takes one above the highest generation.',
+    'Each load numbers its generation one above the highest.',
+    'Loads number their generation one above the highest of the pointer and the bucket.',
+    'a load numbers its generation above the highest present',
+    'a load numbers its generation above them, and its collection never touches them',
+    'They remain until a load numbers above them.',
+    'until the next load numbers above them',
+    'a later load numbers above it',
+    'a later load is numbered above them',
+    '`store.load()` adds the listings that number\n            the generation and collect what it supersedes',
+    '`store.load()` also lists the segment to choose a generation number',
+    'adds a listing to choose the generation number',
+    'lists the segment twice (to choose the generation number, and to collect',
+    '`store.load()` is expected at about twice that',
+    '`store.load(ref, ids)` costs about twice the write and publish',
+    "which about doubles a load's bill",
+    '`store.load()` is expected at about half as much again.',
+    "A test counts what that adds, about half a load's bill again.",
+    'and reads the pointer seven times even with nothing racing it',
+    'it reads the registry pointer seven times',
+    'a first load makes seven pointer reads',
+    // A load's collection as it was: a listing in every load, and the claims that follow from it.
+    "`store.load()` also lists the segment's objects and collects the old ones",
+    'Each load lists the segment to collect what its publish superseded.',
+    'A load lists the bucket after it publishes, then collects the old generation.',
+    'the load lists the segment and collects everything below its pointer',
+    'The next load of the destination collects everything below its own pointer beyond its `keep`.',
+    'and the next load of its destination collects its predecessors',
+    "the next store.load of that destination collects everything it didn't",
   ])('catches the refused form %j', (text) => {
     expect(hitsIn('x.md', text)).not.toEqual([]);
   });
@@ -1154,6 +1315,42 @@ describe('no document claims behaviour this library does not have', () => {
     'No S3, GCS or Azure Blob write has a timeout of its own.',
     "An erasure's writes are not retried; its reads are.",
     "An erasure's reads are retried, and its writes are not retried.",
+    'A row written before 0.12 keeps its bare decimal token (`"7"`) until its first 0.12 write.',
+    // A load's numbering, true: each names the check, what it finds, or the writer that lists.
+    'When its check meets one of them, a load numbers above them all.',
+    'When the check finds the number taken, a load numbers one above the highest of the pointer and every object in the bucket.',
+    'A load whose check meets an object lists the segment to number its generation above everything in it.',
+    'The erasure rewrite lists the segment to number its generation above everything in the bucket.',
+    'A load numbers above them all once its check meets one.',
+    'A load takes `currentGen + 1` while no object holds it, and otherwise numbers above everything in the bucket.',
+    '`nextGeneration` lists the segment to number the next generation above everything in it.',
+    '`store.load()` is expected at about a tenth more.',
+    'A first load reads the pointer three times and checks its generation number once.',
+    // A load's collection, true: each names that it is by name, the sixteenth generation, or what makes it list.
+    'A load that keeps one generation deletes by name the generation its publish pushed out, and lists the segment to collect only every sixteenth generation.',
+    'With `keep` of 2 or more, a load lists the segment to collect on every load.',
+    // Each word the exemption names, once: a sentence that would be refused without it.
+    'A load lists the segment to collect what it did not take by name.',
+    'A load lists the segment to collect on the sixteenth pass.',
+    'A load lists the segment to collect on the 16th pass.',
+    'A load lists the segment to collect after its check.',
+    'A load lists the segment to collect once its check has run.',
+    'A load lists the segment to collect when a number is taken.',
+    'A load lists the segment to collect when a stray meets it.',
+    'A load lists the segment to collect while a wide window holds older generations.',
+    'A load lists the segment to collect what an earlier window held.',
+    'A load lists the segment to collect after an erasure.',
+    'A load lists the segment to collect after a rewrite.',
+    'A load lists the segment to collect after a materialisation.',
+    'A load lists the segment to collect after a materialization.',
+    'A load lists the segment to collect under a wider window.',
+    'With keep of two, a load lists the segment to collect on every load.',
+    'A load whose check meets an object lists the segment to number past it, and lists again to collect.',
+    'The retention sweep lists the segment to collect what a drop left.',
+    'The erasure rewrite lists the segment and collects every generation below its own.',
+    '`store.load()` collects by name and lists every sixteenth generation.',
+    'An `*Into` that passes `keep` lists the destination and collects every generation below its own beyond it.',
+    'The next load of the destination deletes the generation its own publish pushed out of the window, by name.',
   ])('leaves %j alone', (text) => {
     expect(hitsIn('x.md', text)).toEqual([]);
   });
@@ -1233,6 +1430,16 @@ describe('no document claims behaviour this library does not have', () => {
     [
       'A store with no clock re-resolves a segment only when it is invalidated, evicted or swept.',
       'A store with no clock re-resolves a segment on an invalidation, an eviction or a swept read.',
+    ],
+    // A load's numbering: true after a plain rollback, whose generation above the pointer the check then meets,
+    // but stated without the check; and a sum that reads as the cost claim.
+    [
+      'After a rollback, the next load numbers above them.',
+      'After a rollback, the next load finds the generation above the pointer held, and numbers above them all.',
+    ],
+    [
+      'Two store.load() calls cost about twice what one does.',
+      'Two calls of store.load() cost twice what one does.',
     ],
   ])('refuses %j, though true, and passes it reworded', (refused, reworded) => {
     expect(hitsIn('x.md', refused)).not.toEqual([]);
@@ -1435,3 +1642,362 @@ function hitsIn(rel: string, text: string): string[] {
   }
   return hits;
 }
+
+// ---------------------------------------------------------------------------------------------------
+// What a page says a `store.load()` costs, and how often it lists, is the estimator's.
+//
+// The price of a load and the cadence of its listing have been restated by hand in the guides, the site, the roadmap,
+// the changelog and the doc-comments each time the engine's counts moved, and each time one copy was missed. The
+// figures here are derived from `estimateCost` and the cadence constant, so a count that moves with the engine moves
+// the gate with it, and a figure left behind fails it.
+//
+// What it reads: a clause (a sentence, a clause past a semicolon or a dash, a table cell or a line of a box) that
+// names a load and says "per million" gives its dollar amounts, and each must be the one its words call for:
+// a segment's first load, a load that does not list (or deletes by name, or is the third or later), one that lists,
+// or, with no such word, the average a million single-part loads cost. The price of one GET or one PUT-class
+// request is allowed anywhere, and so are the run's write-and-publish price and a price 0.11.2 published, after
+// "was". A clause about a multipart write, an intersect, or another backend's or an encrypted segment's load is
+// another figure's, and is left to the gates that hold it (the calibration report and the site's figures).
+// Ratio: a clause that compares `store.load()` with a write and publish says, just after `store.load()`, the
+// multiple the model's average makes of the run's write-and-publish price.
+// Cadence: a sentence about listing or collecting that says how many generations apart the listings are ("every 16th
+// generation", "within 16 generations", "divisible by 16", "a sixteenth of a listing") says the constant.
+//
+// Known limits, stated rather than hidden: it does not read a figure that has no "per million" in its clause
+// (a table cell is its own clause), a ratio more than 40 characters after `store.load()`, or another backend's or
+// an encrypted segment's price, which the model does not derive. Those figures are held where they are derived,
+// `tests/bench/calibrate-guards.test.ts` and `tests/core/cost.test.ts`.
+// ---------------------------------------------------------------------------------------------------
+type Dollars = {
+  first: number;
+  steady: number;
+  listing: number;
+  average: number;
+  get: number;
+  put: number;
+};
+const LOAD_PRICES: Dollars = (() => {
+  const base = AWS_US_EAST_1_ONDEMAND;
+  /** One modelled load's requests of one kind: price that kind at a dollar each and the other at nothing. */
+  const requests = (storage: { putPerMillion: number; getPerMillion: number }): number =>
+    estimateCost({
+      segments: [{ sizeBytes: 0 }],
+      workload: { loadsPerMonth: 1, requestsPerLoad: 1 },
+      pricing: { ...base, storage: { ...base.storage, ...storage } },
+    }).monthlyUSD.byOp.loads;
+  const putAverage = requests({ putPerMillion: 1e6, getPerMillion: 0 });
+  const getAverage = requests({ putPerMillion: 0, getPerMillion: 1e6 });
+  // The model averages one listing (a PUT-class request) and two more pointer reads over the cadence.
+  const steady = {
+    put: putAverage - 1 / LIST_COLLECTION_CADENCE,
+    get: getAverage - 2 / LIST_COLLECTION_CADENCE,
+  };
+  const price = (r: { put: number; get: number }): number =>
+    r.put * base.storage.putPerMillion + r.get * base.storage.getPerMillion;
+  return {
+    steady: price(steady),
+    listing: price({ put: steady.put + 1, get: steady.get + 2 }),
+    // A first load has nothing to collect, so it makes no re-read before a delete either.
+    first: price({ put: steady.put, get: steady.get - 1 }),
+    average: price({ put: putAverage, get: getAverage }),
+    get: base.storage.getPerMillion,
+    put: base.storage.putPerMillion,
+  };
+})();
+/** What 0.11.2 published for a steady and a first load. History belongs to the changelog, after "was". */
+const PRICES_BEFORE = [23.6, 22.8];
+/**
+ * A million single-part writes and publishes, pointer included: the run's figure, from its committed evidence by the
+ * module the site's figures take it from. A page compares `store.load()` with it, so the ratio it states is checked
+ * against the two sources the figures come from.
+ */
+const WRITE_AND_PUBLISH: number = (() => {
+  const calibration = createRequire(import.meta.url)('../../bench/lib/calibration-figures.cjs') as {
+    evidenceFiles: (root: string) => string[];
+    readSources: (root: string) => unknown;
+    derive: (run: unknown, src: unknown) => { usd: { singleLoad: number } };
+  };
+  const latest = calibration.evidenceFiles(ROOT).at(-1);
+  if (latest === undefined) throw new Error('bench/calibration/ holds no run evidence');
+  const run: unknown = JSON.parse(readFileSync(join(ROOT, latest), 'utf8'));
+  return 1e6 * calibration.derive(run, calibration.readSources(ROOT)).usd.singleLoad;
+})();
+
+const SAYS_PER_MILLION = /\bper\s+(?:million|1M)\b|\ba million\b|\/\s*1M\b/i;
+const AMOUNT = /\$([\d,]+(?:\.\d+)?)/g;
+/**
+ * A clause about another figure's subject: a multipart write, an intersect, Redis, the crossover, or a load on another
+ * backend's or an encrypted segment's counts, which price differently. A write and publish is not exempt as a
+ * subject: its own amount is (`WRITE_AND_PUBLISH`), so a stale load price beside it is still read.
+ */
+const ANOTHER_FIGURE =
+  /\bmultipart\b|\bintersect|\bRedis\b|\bcrossover\b|\bAzure\b|\bGCS\b|\bGoogle Cloud Storage\b|\bencrypt/i;
+const ABOUT_A_LOAD = /\bstore\.load\b|\bloads?\b|\bcalls?\b/i;
+/** Which load a stretch of words calls for, if it says. */
+const whichLoad = (
+  words: string,
+): keyof Pick<Dollars, 'first' | 'steady' | 'listing'> | undefined => {
+  if (/\b(?:first|second)\b/i.test(words)) return 'first';
+  if (
+    /\b(?:does not|doesn't|do not|without|no)\b[^.;,]{0,12}\blist(?:s|ing)?\b/i.test(words) ||
+    /\blists? nothing\b|\bby name\b|\bthird\b/i.test(words)
+  )
+    return 'steady';
+  if (/\b(?:16th|sixteenth)\b|\bdivisible by\b|\blists?\b|\blisting\b/i.test(words))
+    return 'listing';
+  return undefined;
+};
+
+const ORDINAL_WORDS: Readonly<Record<string, number>> = {
+  second: 2,
+  third: 3,
+  fourth: 4,
+  fifth: 5,
+  sixth: 6,
+  seventh: 7,
+  eighth: 8,
+  ninth: 9,
+  tenth: 10,
+  eleventh: 11,
+  twelfth: 12,
+  thirteenth: 13,
+  fourteenth: 14,
+  fifteenth: 15,
+  sixteenth: 16,
+  seventeenth: 17,
+  eighteenth: 18,
+  twentieth: 20,
+  'thirty-second': 32,
+  'sixty-fourth': 64,
+  hundredth: 100,
+};
+const FRACTION_WORDS: Readonly<Record<string, number>> = {
+  half: 2,
+  third: 3,
+  quarter: 4,
+  fifth: 5,
+  sixth: 6,
+  eighth: 8,
+  tenth: 10,
+  twelfth: 12,
+  sixteenth: 16,
+  'thirty-second': 32,
+};
+const WORD_ALTERNATION = (words: Readonly<Record<string, number>>): string =>
+  Object.keys(words).join('|');
+const CADENCE_CLAIMS: ReadonlyArray<{ re: RegExp; n: (m: RegExpMatchArray) => number }> = [
+  {
+    re: new RegExp(
+      String.raw`\b(?:every|each|on the|on every|the next|next)\s+(?:(\d+)(?:st|nd|rd|th)|(${WORD_ALTERNATION(ORDINAL_WORDS)}))\b`,
+      'gi',
+    ),
+    n: (m) => (m[1] !== undefined ? Number(m[1]) : (ORDINAL_WORDS[m[2]!.toLowerCase()] ?? 0)),
+  },
+  { re: /\bwithin\s+(\d+)\s+generations\b/gi, n: (m) => Number(m[1]) },
+  { re: /\bdivisible\s+by\s+(\d+)\b/gi, n: (m) => Number(m[1]) },
+  {
+    re: new RegExp(
+      String.raw`\b(?:a|one)\s+(${WORD_ALTERNATION(FRACTION_WORDS)})\s+of\s+(?:a|an|each)\b`,
+      'gi',
+    ),
+    n: (m) => FRACTION_WORDS[m[1]!.toLowerCase()] ?? 0,
+  },
+];
+/** A cadence claim is made in a clause about listing or collecting, of generations or loads. */
+const ABOUT_LISTING = /\b(?:list(?:s|ing|ings)?|collect(?:s|ed|ion)?)\b/i;
+const ABOUT_GENERATIONS = /\b(?:generations?|loads?)\b/i;
+
+/**
+ * What `store.load()` costs as a multiple of a write and publish: the model's average over the run's figure. A clause
+ * that names `store.load()` and a write or publish and says, in the words just after `store.load()`, how many times
+ * as much ("≈ 2×", "twice", "1.1 times", "half as much again", "a tenth more") must say this, to within a tenth of it.
+ */
+const LOAD_OVER_WRITE = LOAD_PRICES.average / WRITE_AND_PUBLISH;
+const COMPARES_A_LOAD = /\bstore\.load\(\)/;
+const AGAINST_A_WRITE = /\bwrit(?:e|es|ing|ten)\b|\bpublish(?:ed|ing|es)?\b/i;
+const RATIO_CLAIMS: ReadonlyArray<{ re: RegExp; n: (m: RegExpMatchArray) => number }> = [
+  // A multiplier, not a product: "2×", but not "64 × 1,024".
+  { re: /(\d+(?:\.\d+)?)\s?[×x](?!\w)(?!\s*\d)/g, n: (m) => Number(m[1]) },
+  { re: /\b(\d+(?:\.\d+)?)\s+times\b/gi, n: (m) => Number(m[1]) },
+  { re: /\b(?:twice|double)\b/gi, n: () => 2 },
+  { re: /\bhalf as much again\b/gi, n: () => 1.5 },
+  {
+    re: new RegExp(String.raw`\ba (${WORD_ALTERNATION(FRACTION_WORDS)}) more\b`, 'gi'),
+    n: (m) => 1 + 1 / (FRACTION_WORDS[m[1]!.toLowerCase()] ?? 1),
+  },
+];
+
+/** The figures and cadences a file states about a load that the estimator does not give, each with its line. */
+function loadFigureHits(rel: string, text: string): string[] {
+  const src = scanned(rel, text);
+  const reading = readings(src)[0] ?? '';
+  const hits: string[] = [];
+  let line = 1;
+  let at = 0;
+  const lineOf = (offset: number): number => {
+    line += lineCount(reading.slice(at, offset));
+    at = offset;
+    return line;
+  };
+  // Clauses, each with where it starts: past a sentence, a semicolon, a dash, a table cell, a box edge.
+  const CLAUSE_END = /[;|│]|\.\s+(?=\S)|\s[—–]\s/g;
+  let start = 0;
+  const clauses: Array<{ text: string; offset: number }> = [];
+  for (const m of reading.matchAll(CLAUSE_END)) {
+    clauses.push({ text: reading.slice(start, m.index), offset: start });
+    start = m.index + m[0].length;
+  }
+  clauses.push({ text: reading.slice(start), offset: start });
+  const close = (a: number, b: number): boolean => Math.abs(a - b) < 0.005;
+  for (const { text: clause, offset } of clauses) {
+    if (
+      ABOUT_A_LOAD.test(clause) &&
+      SAYS_PER_MILLION.test(clause) &&
+      !ANOTHER_FIGURE.test(clause)
+    ) {
+      for (const m of clause.matchAll(AMOUNT)) {
+        const value = Number(m[1]!.replace(/,/g, ''));
+        const end = m.index + m[0].length;
+        const aheadAfter = clause
+          .slice(end)
+          .replace(SAYS_PER_MILLION, ' ')
+          .split('$')[0]!
+          .slice(0, 45);
+        const behind = clause.slice(Math.max(0, m.index - 60), m.index);
+        const which = whichLoad(aheadAfter) ?? whichLoad(behind) ?? 'average';
+        const expected = which === 'average' ? LOAD_PRICES.average : LOAD_PRICES[which];
+        const unit =
+          close(value, LOAD_PRICES.get) ||
+          close(value, LOAD_PRICES.put) ||
+          close(value, WRITE_AND_PUBLISH);
+        const history =
+          PRICES_BEFORE.some((p) => close(value, p)) && /\b(?:where it )?was\s*$/i.test(behind);
+        if (!close(value, expected) && !unit && !history) {
+          hits.push(
+            `${rel}:${lineOf(offset + m.index)} — "${m[0]}" is not what a ${which === 'average' ? 'single-part load' : `${which} load`} costs per million: ` +
+              `$${expected.toFixed(2)} at the default prices (first $${LOAD_PRICES.first.toFixed(2)}, steady $${LOAD_PRICES.steady.toFixed(2)}, ` +
+              `listing $${LOAD_PRICES.listing.toFixed(2)}, average $${LOAD_PRICES.average.toFixed(2)})`,
+          );
+        }
+      }
+    }
+    if (COMPARES_A_LOAD.test(clause) && AGAINST_A_WRITE.test(clause)) {
+      for (const named of clause.matchAll(new RegExp(COMPARES_A_LOAD.source, 'g'))) {
+        const from = named.index + named[0].length;
+        const words = clause.slice(from, from + 40);
+        for (const { re, n } of RATIO_CLAIMS) {
+          for (const m of words.matchAll(new RegExp(re.source, re.flags))) {
+            if (Math.abs(n(m) - LOAD_OVER_WRITE) <= 0.1 * LOAD_OVER_WRITE) continue;
+            hits.push(
+              `${rel}:${lineOf(offset + from + m.index)} — "${m[0]}" is not what store.load() costs against a write and publish: ` +
+                `about ${LOAD_OVER_WRITE.toFixed(2)}× ($${LOAD_PRICES.average.toFixed(2)} on average against $${WRITE_AND_PUBLISH.toFixed(2)} per million)`,
+            );
+          }
+        }
+      }
+    }
+    if (ABOUT_LISTING.test(clause) && ABOUT_GENERATIONS.test(clause)) {
+      for (const { re, n } of CADENCE_CLAIMS) {
+        for (const m of clause.matchAll(new RegExp(re.source, re.flags))) {
+          if (n(m) !== LIST_COLLECTION_CADENCE) {
+            hits.push(
+              `${rel}:${lineOf(offset + m.index)} — "${m[0]}" is not the cadence: a load lists every ${LIST_COLLECTION_CADENCE}th generation`,
+            );
+          }
+        }
+      }
+    }
+  }
+  return hits;
+}
+
+describe("a page's figures for store.load() are the estimator's", () => {
+  it('derives the prices the model gives: first, steady, listing and average', () => {
+    const f = (n: number): string => n.toFixed(2);
+    expect(LIST_COLLECTION_CADENCE).toBe(16);
+    expect([
+      f(LOAD_PRICES.first),
+      f(LOAD_PRICES.steady),
+      f(LOAD_PRICES.listing),
+      f(LOAD_PRICES.average),
+    ]).toEqual(['11.60', '12.00', '17.80', '12.36']);
+    expect(WRITE_AND_PUBLISH.toFixed(2)).toBe('11.20');
+    expect(LOAD_OVER_WRITE.toFixed(2)).toBe('1.10');
+  });
+
+  // Both directions: each stale form is caught, and the sentences that must stay legal are not.
+  it.each([
+    'about $17.80 per million single-part loads at the default prices',
+    "a segment's first store.load() is expected at $17.40 per million",
+    '$12.00 per million single-part loads, on average',
+    '$17.80 per million steady single-part loads at the default prices',
+    'a load that lists costs $12.36 per million',
+    'a load that does not list costs $17.80 per million',
+    "$23.60 per million loads, and $17.40 for a segment's first load",
+    'It costs $12.36 per million loads, and a first load $17.40.',
+    'every 8th generation a load lists the segment to collect',
+    'On every eighth generation the load lists to collect what the by-name passes left.',
+    'what collection leaves is gone within 8 generations of a load',
+    'a load lists on every generation divisible by 8, to collect',
+    'a load lists a quarter of a PUT-class request a load, on average, to collect',
+    'a load lists to collect, and costs a third of a PUT-class request more on average',
+    'each load collects by listing on every 15th generation',
+    "the rest go at the destination's next eighth generation, when a load lists",
+    // A ratio against a write and publish, and a stale price beside one.
+    '1M writes + publishes · store.load() ≈ 2×',
+    'store.load() costs twice what a write and publish does',
+    'a write and publish, with store.load() half as much again',
+    'store.load() is 1.5 times a write and publish',
+    'a store.load() that writes and publishes costs $17.80 per million',
+  ])('refuses the stale form %j', (text) => {
+    expect(loadFigureHits('x.md', text)).not.toEqual([]);
+  });
+
+  it.each([
+    'about $12.36 per million single-part loads at the default prices',
+    "a segment's first store.load() is expected at $11.60 per million",
+    'a load that does not list costs $12.00 per million',
+    'a load that lists costs $17.80 per million',
+    "$12.36 per million steady single-part loads at the default prices: $12.00 when a load does not list, $17.80 when it lists (every 16th generation), and $11.60 for a segment's first load",
+    "$12.36 per million single-part loads, where it was $23.60, and $11.60 for a segment's first load, where it was $22.80.",
+    'one more GET ($0.40 per million at the default prices) that a load makes',
+    'S3 GETs, $0.40 a million, and a PUT-class request, $5 per million, for each load',
+    '$82.40 per million cold intersects of two segments, and $11.20 per million loads written and published',
+    'a multipart load costs $26.20 per million',
+    'every 16th generation a load lists the segment to collect',
+    'every sixteenth generation a load lists the segment to collect',
+    'what collection leaves is gone within 16 generations of a load',
+    'a load lists on every generation divisible by 16, to collect',
+    "the rest go at the destination's next sixteenth generation, when a load lists",
+    'a load lists a sixteenth of a PUT-class request a load, on average, to collect',
+    // Other things that are every something: not about a listing, or not a cadence of generations.
+    'A reader re-reads the pointer every second.',
+    'A long-lived reader refreshes every 2 seconds, one load of a pointer each time.',
+    'It lists the bucket every third request in the test, to collect nothing.',
+    'a half of a segment is loaded from the warehouse',
+    // The ratio as it is, and the write and publish's own amount.
+    'Writing and publishing a segment, pointer included, with store.load() about a tenth more on average',
+    '1M writes + publishes · store.load() ≈ 1.1×',
+    'store.load() costs 1.1 times a write and publish, on average',
+    'a store.load() writes and publishes for $12.36 per million on average',
+    // Prices another load's words call for, and other backends' and encrypted segments' counts.
+    'a load that deletes by name costs $12.00 per million',
+    'from the third load on, a load costs $12.00 per million',
+    'a load that lists nothing costs $12.00 per million',
+    'a load on a generation divisible by 16 costs $17.80 per million',
+    'on Azure Blob a steady load costs $12.40 per million, $12.76 on average',
+    "an encrypted segment's load costs $12.76 per million on average",
+    // A ratio that is not a comparison with a write: a 64 × 1,024 product, and a write named without store.load().
+    'the writer cuts 64 × 1,024 containers per slice, and store.load() writes each',
+    'store.load() writes 64 × 1,024 containers, a slice at a time',
+    'it timed a write and a publish rather than store.load(), which is why its median intersect read each pointer twice',
+    'a write and publish of 2× the bytes',
+  ])('leaves %j alone', (text) => {
+    expect(loadFigureHits('x.md', text)).toEqual([]);
+  });
+
+  // The pages themselves: every file the claims gate reads.
+  it.each(textFiles())('%s', (rel) => {
+    expect(loadFigureHits(rel, readFileSync(join(ROOT, rel), 'utf8'))).toEqual([]);
+  });
+});

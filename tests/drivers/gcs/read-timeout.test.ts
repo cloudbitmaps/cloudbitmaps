@@ -345,7 +345,8 @@ async function realGeneration(): Promise<{ row: string; object: Buffer }> {
   const { bytes } = await memory.storage.getTail({ segment: 's', generation }, 1 << 20);
   const record = await memory.registry.get({ segment: 's' });
   return {
-    row: JSON.stringify({ schemaVersion: 1, deleted: false, record }),
+    // A row the registry writes today is stamped 2: its token carries an incarnation, which a schema-1 row cannot.
+    row: JSON.stringify({ schemaVersion: 2, deleted: false, record }),
     object: Buffer.from(bytes),
   };
 }

@@ -13,7 +13,9 @@ release.
 ## Trust boundary (what the library defends)
 
 CloudBitmaps treats **all bytes read back from storage as untrusted input**. Every `.crbm` object — its chunk
-payloads, its index and its footer — is length-checked and CRC-verified, and deserialized with the **safe**
+payloads, its index, its footer and, when its footer flags one, the extension block that carries a generation's
+metadata — is
+length-checked and CRC-verified, and deserialized with the **safe**
 RoaringBitmap reader (never the
 trusting variant) behind a hard size cap, before the native addon sees it. That reader only keeps its reads inside
 the buffer, so each payload's **structure** is checked before the reader runs: containers and values in order,
@@ -28,9 +30,27 @@ closed with a typed `IntegrityError` on read — it can neither crash the proces
 payload it decodes. `count()` is the exception to the second half: it answers from the index without decoding a
 payload, so opening an object checks the index for internal consistency (key order and range, each cardinality in
 `1..65536`, payloads inside the payload region, and the footer's chunk count and total against the index on an
-unencrypted object), and an index that is corrupt yet still internally consistent yields a wrong count. This
+unencrypted object), and an index that is corrupt yet still internally consistent yields a wrong count. The
+metadata in an extension block is held to the same rules a caller's metadata is (string keys of at most 128 bytes,
+string or finite-number values, at most 1 KiB as canonical JSON) and must be exactly its canonical form, so a record
+that only parses is refused. On an encrypted object its content is sealed and authenticated like the index, but
+its presence is not: the minor, the block's trailer and its section types are covered by CRCs, which take no key, so
+whoever can write the object can remove the block, and the generation then reads as one without metadata. An object
+opened with an encrypted segment's key that is not itself encrypted is refused rather than read in the clear. This
 boundary is exercised by coverage-guided fuzzing (`pnpm fuzz:*`, nightly) and the DR drill's byte-corruption
 scenario (`pnpm dr-drill`).
+
+**Bytes a caller loads are untrusted the same way.** A load from `{ serialized }` portable Roaring bytes, or from a
+`{ bitmap }` through its own `serialize('portable')`, puts them behind a size cap of their own (537,403,396 bytes,
+more than any canonical 32-bit bitmap serializes to), the same structural check and the same safe reader before the
+native addon sees them, and refuses bytes after the bitmap's end. They are read through the typed array's own
+accessors, so a subclass cannot show the check other bytes than the reader reads. Bytes in a `SharedArrayBuffer`
+are copied first. A plain buffer can still be written by another thread during the call (an unfinished `fs.read`,
+`crypto.randomFill` or asynchronous addon call into it), so the decode can see bytes the check did not: the load
+therefore checks every container of the bitmap again, by the same rules, as it writes it, and refuses one that does
+not hold what its header says with `IntegrityError`, before anything is published. Bytes that fail the first check
+are a `ValidationError`, since they are the caller's input rather than a stored object, and nothing is read or
+written.
 
 Encryption-at-rest (opt-in) is envelope AES-256-GCM with a per-segment DEK wrapped under operator-held KEK(s);
 the AEAD wiring is pinned to published known-answer vectors and the envelope/rotation/crypto-shred paths are

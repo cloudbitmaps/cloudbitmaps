@@ -66,6 +66,7 @@ import type {
   BudgetOption,
   GenerationEntry,
   LoadGuard,
+  LoadInput,
   LoadOptions,
   LoadRefusal,
   LoadResult,
@@ -108,7 +109,7 @@ import { listGenerations, rollbackSegment } from '@cloudbitmaps/core';
 import { listSegments, segmentExists } from '@cloudbitmaps/core';
 import type { SegmentInfo } from '@cloudbitmaps/core';
 import { refuseReservedNamespace } from './reserved-namespace';
-import { roaringCodec } from './roaring-codec';
+import { bitmapAsLoadInput, roaringCodec } from './roaring-codec';
 import { SystemClock } from './system-clock';
 import { OPTION_KEYS, type OptionGroup } from './option-keys';
 
@@ -270,7 +271,8 @@ export interface CacheOptions {
    */
   readonly readerMax?: number;
   /**
-   * Aggregate byte ceiling on the parsed `.crbm` indices the open readers hold (default 64 MiB) — the byte half
+   * Aggregate byte ceiling on what the open readers hold, their parsed `.crbm` indices and the metadata a
+   * generation carries (default 64 MiB) — the byte half
    * of the memory bound, complementing the {@link CacheOptions.readerMax} *count* bound. A wide/dense segment's
    * parsed index can reach about 1.3 MB, so a count-only bound could let the open readers pin over a GB and blow a small
    * heap (e.g. a 128 MB Lambda); this evicts the least-recently-used reader once the summed index footprint
@@ -925,7 +927,9 @@ export class CloudRoaring {
     op: string,
     options?: MaterializeOptions,
   ): Promise<MaterializeResult> {
-    const deps = this.lifecycleDeps(op);
+    // A materialisation's `keep` collects every generation below the new one beyond it, which a destination that
+    // earlier materialisations kept in full needs a listing for.
+    const deps = { ...this.lifecycleDeps(op), collectByListing: true };
     let result: Awaited<ReturnType<typeof loadSegment>>;
     try {
       result = await loadSegment(dest, ids, deps, {
@@ -960,8 +964,8 @@ export class CloudRoaring {
       // materialisation that silently did not take effect is the one outcome a caller cannot detect on its
       // own.
       // `size > 0` distinguishes the two ways a materialisation loses the race, and the operator needs them
-      // apart: the object either exists as an orphan above the pointer (collected by the first load that collects
-      // once a generation above it is current) or was
+      // apart: the object either exists as an orphan (collected by the first load that collects once a generation
+      // above it is current, or deleted by the refusal itself when the destination was dropped meanwhile) or was
       // never written at all, because the write-once PUT itself collided. Telling someone to look for an
       // orphan that does not exist is a wasted investigation.
       // Deliberately does NOT assert which of the four causes it was. "A newer generation was published first"
@@ -976,7 +980,7 @@ export class CloudRoaring {
       throw new WriteConflictError(
         `${op}: the destination "${dest.segment}" changed while this materialisation was in flight, so it ` +
           `never became current: ${wrote}. The pointer may have moved, the row may have been rewritten ` +
-          `(a retention policy does this) or purged. Re-read the destination and re-run.`,
+          `(a retention policy does this), dropped or purged. Re-read the destination and re-run.`,
       );
     }
     return {
@@ -1308,13 +1312,15 @@ export class CloudRoaring {
    * one cannot.
    *
    * It refuses rather than guesses: a generation not in the bucket (collected, or never written) throws
-   * `NotFoundError` naming what *is* available, and a crypto-shredded segment throws
-   * {@link ValidationError} because every generation of it is unreadable. Rolling to the generation already
-   * current is a no-op that reports itself.
+   * `NotFoundError` naming what *is* available, a crypto-shredded segment throws
+   * {@link ValidationError} because every generation of it is unreadable, and a target that is cleartext under an
+   * encrypted segment, or encrypted under a cleartext one, throws {@link IntegrityError} from one read of its footer,
+   * because every read would refuse it. Rolling to the generation already current is a no-op that reports itself.
    *
    * It deletes nothing. The generations above the new pointer stay put — which is what makes this reversible —
-   * and are then *above* `currentGen`, where collection never looks. They remain until a load numbers above them
-   * (collection then keeps the newest `keep` of what is below its pointer), {@link CloudRoaring.dropSegment}
+   * and are then *above* `currentGen`, where collection never looks. They remain until loads pass them (the first
+   * load whose number one of them holds numbers above them all, and collection then keeps the newest `keep` of what is
+   * below its pointer), {@link CloudRoaring.dropSegment}
    * deletes them, or {@link CloudRoaring.eraseSubject} does: all of those present when it rewrites, and only those holding
    * the id when the current generation does not. An operator who has just undone a bad load should not have the
    * evidence collected out from under them, while a rollback target that still holds erased data would make the
@@ -1343,7 +1349,14 @@ export class CloudRoaring {
   }
 
   /**
-   * **Replace this segment's contents** with `ids`, as one new immutable generation, and make it current.
+   * **Replace this segment's contents** with `input`, as one new immutable generation, and make it current.
+   *
+   * `input` is ids (any sync or async iterable of integers in `[0, 2^32)`), or a whole bitmap: `{ bitmap }`, anything
+   * with `serialize('portable')` such as `roaring`'s `RoaringBitmap32`, or `{ serialized }`, portable Roaring bytes.
+   * A bitmap is checked (size cap, structure, safe deserializer) before the first request, written from its own
+   * containers with no per-id work, and gives the generation byte for byte the one its ids would. A bare
+   * `RoaringBitmap32` passed as ids loads as `{ bitmap }`. A `Uint8Array` or `Buffer` passed as ids is refused with
+   * `ValidationError`, since each byte would load as an id: pass bytes as `{ serialized }`.
    *
    * The whole write path in one call: take the next generation number, write the object, check the result is
    * plausible, move the pointer, collect what the move superseded. Composed by hand those are four functions and
@@ -1380,24 +1393,28 @@ export class CloudRoaring {
    * so it leaves the orphan rather than risk deleting live data. The orphan is an ordinary generation once a later
    * one is current above it, and collection counts it within `keep`.
    *
+   * **Collection is by name for the default `keep`.** With `keep` of 0 or 1, a load that found nothing above the
+   * pointer deletes the one generation its publish pushed out of the window and lists nothing; it lists the segment's
+   * objects on every sixteenth generation, and on any load that met an object above the pointer or whose guard
+   * found the current generation's object gone, to take what the name-only passes leave, such as the generations an
+   * earlier, wider `keep` held. `keep` of 2 or more lists on every load. {@link LoadResult.collected} then names what
+   * the pass deleted by name, and that generation may have been gone already.
+   *
    * What it **throws** for is a fault rather than an outcome: invalid options or ids, and a crypto-shredded
    * segment (`ValidationError`); a key the keystore cannot provide (`KeyUnavailableError`); a current generation
    * that will not open when a guard reads its size (`IntegrityError`); a driver failure; and a collection pass
-   * that could not prove the segment was still the same one (`WriteConflictError`). The last can be raised
-   * **after** the publish already landed, so a throw does not by itself mean the load did not take effect —
-   * re-read the pointer rather than assuming.
+   * by listing that could not prove the segment was still the same one (`WriteConflictError`). That one, and a
+   * failure in the collection's own reads or deletes, can be raised **after** the publish already landed, so a throw
+   * does not by itself mean the load did not take effect — re-read the pointer rather than assuming. A collection by
+   * name that finds the segment changed returns an empty `collected` instead.
    *
    * Needs a backend (throws {@link UnsupportedError} otherwise).
    */
-  async load(
-    ref: SegmentRef,
-    ids: Iterable<number> | AsyncIterable<number>,
-    options: LoadOptions = {},
-  ): Promise<LoadResult> {
+  async load(ref: SegmentRef, input: LoadInput, options: LoadOptions = {}): Promise<LoadResult> {
     validateSegmentRef(ref);
     const deps = this.lifecycleDeps('load');
     try {
-      return await loadSegment(ref, ids, deps, options);
+      return await loadSegment(ref, bitmapAsLoadInput(input), deps, options);
     } finally {
       // This store's view of the segment is now behind whatever just happened — a published load superseded the
       // generation the caches were built on, and a throw can still have published before failing its collect.
@@ -1431,9 +1448,12 @@ export class CloudRoaring {
    * forever and quietly. Branch on `dropped`, and treat `reason: 'absent'` as the alert.
    *
    * **Inspect `generationsRemaining`.** Empty is the normal outcome; non-empty means the storage was NOT fully
-   * reclaimed and the drop should be re-run. A load that was already writing when the tombstone landed still
-   * finishes its object, so a single sweep can miss it — this call re-sweeps and then reports whatever it still
-   * could not remove rather than returning a result that looks like a clean drop.
+   * reclaimed and the drop should be re-run. A load that had read the segment before the tombstone landed, whether it
+   * was writing or still consuming its ids, can still write its object, so a single sweep can miss it — this call
+   * re-sweeps and then reports whatever it still could not remove rather than returning a result that looks like a
+   * clean drop. A load that writes after the last sweep deletes its own object once its publish is refused; only one
+   * whose process stops in between, or whose publish fails without a definite answer (a lost response, a timeout),
+   * leaves it, for a re-run of the drop.
    *
    * Reads become empty within `cache.genTtlMs` (default 2 s), not instantly: a store that had already read this
    * segment may answer from its cached generation + cached chunks until that window lapses, or, while the registry
@@ -1872,10 +1892,12 @@ export interface MaterializeOptions extends CombineOptions {
    * Generations to keep below the new pointer — see {@link LoadOptions.keep}. A value that is not a non-negative
    * integer throws `ValidationError`.
    *
-   * **Defaults to keeping everything**, unlike `load()`, which keeps 1 and collects the rest. An operator's
+   * **Defaults to keeping everything**, unlike `load()`, which keeps 1 and collects what it supersedes. An operator's
    * recovery story can depend on a materialisation collecting nothing: `rollbackSegment` refuses a target that
    * has been collected. Pass a number to collect on the way through; `0` keeps only the
-   * generation this call publishes.
+   * generation this call publishes. It collects by listing the destination, so it clears every generation below the
+   * new one beyond `keep`, however many earlier calls kept, where a `load()` deletes by name the one generation its
+   * publish pushes out of the window.
    */
   readonly keep?: number;
 }
@@ -2537,7 +2559,9 @@ export type {
   CrbmReaderOptions,
   CrbmStorageChunkSourceOptions,
   DestroyResult,
+  ClearRegistrySummary,
   DropResult,
+  EncodedChunk,
   EraseDeps,
   EstimateInput,
   ExportFailure,
@@ -2549,6 +2573,7 @@ export type {
   ExportedSegment,
   GenKey,
   GenerationEntry,
+  GenerationMetadata,
   GovernanceMeta,
   IAuditSink,
   IKeystore,
@@ -2558,6 +2583,7 @@ export type {
   IdRange,
   InProcessKeystoreOptions,
   LoadGuard,
+  LoadInput,
   LoadOptions,
   LoadRefusal,
   LoadResult,
@@ -2569,6 +2595,7 @@ export type {
   NewRegistryRecord,
   PinnedAt,
   PinnedObject,
+  PortableBitmap,
   PricingProfile,
   RedisNodeType,
   RedisSizing,
@@ -2576,6 +2603,7 @@ export type {
   RegistryPatch,
   RegistryRecord,
   RegistryStatus,
+  RegistrySummary,
   RetentionPolicy,
   RetireEntry,
   RetireExpiredOptions,
@@ -2583,6 +2611,7 @@ export type {
   RetryPolicy,
   Rng,
   RollbackResult,
+  SealedRegistrySummary,
   SegmentInfo,
   SegmentRef,
   SegmentSize,

@@ -22,6 +22,7 @@ import type {
   IRegistryDriver,
   IStorageDriver,
   RegistryRecord,
+  RegistrySummary,
   SegmentRef,
 } from '@cloudbitmaps/core';
 import { NotFoundError, ValidationError, WriteConflictError } from '@cloudbitmaps/core';
@@ -160,6 +161,7 @@ export type StorageDriverCase =
   | 'out-of-range read'
   | 'tail size'
   | 'idempotent delete'
+  | 'delete of an absent key beside its neighbours'
   | 'list read-after-delete';
 
 /** `n` bytes that differ at every offset, so a read from the wrong offset cannot match by accident. */
@@ -189,7 +191,8 @@ async function generationsOf(d: IStorageDriver, ref: SegmentRef): Promise<number
 /**
  * Contract tests for an {@link IStorageDriver} — the contract its doc comment lists: write-once with
  * `WriteConflictError` on a collision, `NotFoundError` for a missing object, `ValidationError` for an out-of-range
- * read, `getTail`'s true total size, idempotent `delete`, and a `list` that is read-after-delete. `makeDriver` MUST
+ * read, `getTail`'s true total size, idempotent `delete` (of an absent key too, with neighbours present), and a `list`
+ * that is read-after-delete. `makeDriver` MUST
  * return a driver over an empty, isolated keyspace on each call.
  *
  * `skip` names the cases a backend cannot exercise (a local emulator that does not model a contract), so each
@@ -257,8 +260,11 @@ export function storageDriverConformance(
       const d = makeDriver();
       await expect(d.getRange(key(0), 0, 10)).rejects.toBeInstanceOf(NotFoundError);
       await expect(d.getTail(key(0), 10)).rejects.toBeInstanceOf(NotFoundError);
+      // A zero-byte tail is how a load checks that the generation number it is about to take is free.
+      await expect(d.getTail(key(0), 0)).rejects.toBeInstanceOf(NotFoundError);
       await putBytes(d, key(1), patterned(100));
       await expect(d.getRange(key(0), 0, 10)).rejects.toBeInstanceOf(NotFoundError); // a neighbour is not it
+      await expect(d.getTail(key(0), 0)).rejects.toBeInstanceOf(NotFoundError);
     });
 
     test('out-of-range read', async () => {
@@ -300,6 +306,20 @@ export function storageDriverConformance(
       await d.delete(key(0));
       await d.delete(key(0)); // already gone: a no-op
       await expect(d.getTail(key(0), 10)).rejects.toBeInstanceOf(NotFoundError);
+    });
+
+    // Collection deletes a generation by name without knowing whether it is there, so an absent name between two
+    // present ones has to be a no-op that touches neither.
+    test('delete of an absent key beside its neighbours', async () => {
+      const d = makeDriver();
+      await putBytes(d, key(1), patterned(10));
+      await putBytes(d, key(3), patterned(12));
+      await d.delete(key(2));
+      await d.delete(key(0));
+      await d.delete(key(4));
+      expect(await generationsOf(d, SEG)).toEqual([1, 3]);
+      expect((await d.getTail(key(1), 10)).size).toBe(10);
+      expect((await d.getTail(key(3), 12)).size).toBe(12);
     });
 
     test('list read-after-delete', async () => {
@@ -722,6 +742,77 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       await d.delete(SEG);
       expect(await d.get(SEG)).toBeNull();
       await d.delete(SEG); // and stays idempotent
+    });
+
+    // ── `summary`: the row's cached description of its current generation ─────────────────────────────────
+    // A driver stores it like any other field. A driver that dropped it would still be correct, only slower, so
+    // the reason to hold every driver to it is the other direction: a driver that kept a summary a patch cleared,
+    // or lost one a patch did not mention, would describe the wrong generation.
+    const clearSummary: RegistrySummary = {
+      generation: 3,
+      cardinality: 12_000_000,
+      metadata: { def: 'v41', landedAt: 1_790_000_000_000 },
+    };
+    const sealedSummary: RegistrySummary = {
+      generation: 4,
+      sealed: 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIj',
+    };
+
+    it('round-trips a summary of either shape through create, get, list and compare-and-swap', async () => {
+      const d = makeDriver();
+      const { token: t0 } = await d.create(SEG, { currentGen: 3, summary: clearSummary });
+      expect((await d.get(SEG))!.summary).toEqual(clearSummary);
+      expect((await drainRecords(d.list()))[0]!.summary).toEqual(clearSummary);
+
+      // A sealed summary goes with wrapped keys: an encrypted segment's row never carries a clear one.
+      const wrappedDeks = [{ keyId: 'active', wrapped: 'YWN0aXZlLXdyYXBwZWQ=' }];
+      await d.compareAndSwap(SEG, t0, { currentGen: 4, wrappedDeks, summary: sealedSummary });
+      expect((await d.get(SEG))!.summary).toEqual(sealedSummary);
+      expect((await drainRecords(d.list()))[0]!.summary).toEqual(sealedSummary);
+    });
+
+    // A write must store the summary it was called with. A driver that checks it at the call and serialises the
+    // caller's object after awaiting the row would store whatever the caller changed in between: a row every later
+    // read refuses, or another write's metadata.
+    it('stores the summary as it was when the write was called, whatever the caller changes after', async () => {
+      const d = makeDriver();
+      const asCalled = { generation: 3, cardinality: 5, metadata: { day: 'mon' } };
+      const mine = structuredClone(asCalled);
+      const created = d.create(SEG, { currentGen: 3, summary: mine });
+      mine.cardinality = -1;
+      mine.metadata.day = 'x'.repeat(2000);
+      const { token } = await created;
+      expect((await d.get(SEG))!.summary).toEqual(asCalled);
+
+      const next = { generation: 4, cardinality: 6, metadata: { day: 'tue' } };
+      const theirs = structuredClone(next);
+      const swapped = d.compareAndSwap(SEG, token, { currentGen: 4, summary: theirs });
+      theirs.generation = 9;
+      theirs.metadata.day = 'wed';
+      await swapped;
+      expect((await d.get(SEG))!.summary).toEqual(next);
+      expect((await drainRecords(d.list()))[0]!.summary).toEqual(next);
+    });
+
+    it('keeps a summary across a patch that does not mention it, and clears it when told to', async () => {
+      const d = makeDriver();
+      const { token: t0 } = await d.create(SEG, { currentGen: 3, summary: clearSummary });
+      const { token: t1 } = await d.compareAndSwap(SEG, t0, { retention: { expiresAt: 9 } });
+      expect((await d.get(SEG))!.summary).toEqual(clearSummary);
+      await d.compareAndSwap(SEG, t1, { status: 'destroyed', summary: undefined });
+      const rec = await d.get(SEG);
+      expect(rec!.summary).toBeUndefined();
+      expect(rec!.retention).toEqual({ expiresAt: 9 });
+    });
+
+    it('refuses a malformed summary and leaves the row unchanged', async () => {
+      const d = makeDriver();
+      const bad = { generation: 3, cardinality: -1 } as RegistrySummary;
+      await expectValidationReject(d.create(SEG, { currentGen: 3, summary: bad }));
+      expect(await d.get(SEG)).toBeNull();
+      const { token } = await d.create(SEG, { currentGen: 3, summary: clearSummary });
+      await expectValidationReject(d.compareAndSwap(SEG, token, { summary: bad }));
+      expect(await d.get(SEG)).toMatchObject({ token, summary: clearSummary });
     });
 
     it('list(namespace) excludes a namespace that merely shares its prefix', async () => {

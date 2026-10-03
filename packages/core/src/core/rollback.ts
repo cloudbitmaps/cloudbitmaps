@@ -17,7 +17,8 @@
  * Art. 30 record or an incident review wants to find.
  */
 import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
-import { NotFoundError, ValidationError } from './errors';
+import { objectIsEncrypted } from './crbm-storage-source';
+import { IntegrityError, NotFoundError, ValidationError } from './errors';
 import type { IStorageDriver, IRegistryDriver, SegmentRef } from './ports';
 import { validateUserRef } from './validate';
 
@@ -77,12 +78,16 @@ export interface RollbackResult {
  *   design exists to avoid;
  * - a **crypto-shredded** segment is refused: every generation of it is unreadable, so a rollback would produce a
  *   segment that resolves and then fails;
+ * - a target that is **not what the row says the segment is** is refused with `IntegrityError`: a cleartext object
+ *   under a row with keys, or an encrypted one under a row with none, either of which every read would then refuse.
+ *   One read of the target's footer, with no key, decides it, as does a footer that fails its own checks;
  * - rolling to the generation **already current** is a no-op that reports itself, not an error.
  *
  * What it does **not** do is delete anything. The generations above the new pointer stay in the bucket, which is
  * what makes the rollback reversible — roll forward again by naming one of them. They are also then *above*
- * `currentGen`, where generation collection never looks. They stay until a load numbers above them (collection
- * then keeps the newest `keep` of what is below its pointer), `dropSegment` deletes them, or a subject erasure
+ * `currentGen`, where generation collection never looks. They stay until loads pass them (the first load whose
+ * number one of them holds numbers above them all, and collection then keeps the newest `keep` of what is below its
+ * pointer), `dropSegment` deletes them, or a subject erasure
  * deletes them: all of those present when it rewrites, and only those holding the id when the current generation does not.
  * Not collecting them is a deliberate trade: an operator who has just undone a bad load should not have the
  * evidence collected out from under them, while a rollback target that still holds erased data would make the
@@ -141,6 +146,20 @@ export async function rollbackSegment(
       `rollback: generation ${toGeneration} of "${ref.segment}" is above the current pointer ` +
         `(${record.currentGen}) — it may never have been published. Pass { allowForward: true } if you are ` +
         `undoing an earlier rollback.`,
+    );
+  }
+
+  // The target must be what the row says the segment is, encrypted under its key or cleartext, or every read of the
+  // segment would refuse it once the pointer names it. One read of its footer, with no key, says which it is: a
+  // cleartext target under a row with keys is a write that never published, from before the segment's key was
+  // made, and an encrypted one under a row with none was sealed under a key no row holds.
+  const keyed = record.wrappedDeks !== undefined && record.wrappedDeks.length > 0;
+  const encrypted = await objectIsEncrypted(deps.storage, { ...ref, generation: toGeneration });
+  if (encrypted !== keyed) {
+    throw new IntegrityError(
+      `rollback: generation ${toGeneration} of "${ref.segment}" is ${encrypted ? 'encrypted' : 'cleartext'}, ` +
+        `but the segment is ${keyed ? 'encrypted' : 'cleartext'}, so no read of the segment could use it; it was ` +
+        'never one of its generations. Roll back to another generation.',
     );
   }
 

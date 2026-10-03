@@ -48,7 +48,9 @@ To persist, pass a different **backend** as `storage`. Nothing else changes:
 | `AzureBlobStorage({ connectionString, container })` | `@cloudbitmaps/azure-blob` | Azure Blob Storage; outside the [validated envelope](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/ROADMAP.md#the-validated-envelope--whats-proven-and-what-isnt) |
 
 There is no `add` or `remove`: a segment changes only by loading a new generation. A load is a batch job, not a
-request handler. `store.exists(ref)` says whether a segment has been loaded.
+request handler. `store.exists(ref)` says whether a segment has been loaded. A load takes ids, or a bitmap you already
+hold: `store.load(ref, { bitmap })` for a `RoaringBitmap32`, or `{ serialized }` for portable Roaring bytes, checked
+before anything is written and loaded with no per-id work, into the same bytes its ids would write.
 
 ## Options
 

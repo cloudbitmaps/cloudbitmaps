@@ -430,7 +430,7 @@ const RUN_TRIGGERS = [
   'cold intersects the Redis line buys a month',
   'loads the Redis line buys a month',
 ];
-// A request shape, "4 PUT-class + 7 GET", is the run's to state: a block that states one is about it, and the shape
+// A request shape, "2 PUT-class + 4 GET", is the run's to state: a block that states one is about it, and the shape
 // must then be one the run has. A `store.load()` row, say, can carry a shape and none of the run's figures.
 const REQUEST_SHAPE = /\d+\s?PUTs?(?:-class)?(?:\s+requests?)?,?\s*(?:\+|and|plus)\s*\d+\s?GETs?/;
 function quotesTheRun(block) {
@@ -571,8 +571,8 @@ for (const page of PAGES) {
   // with the words that say which claim each makes (see calibration-figures.cjs).
   if (singleBucket !== null) {
     // The run's own figures come from its values, bindings and all. Only the page's other sources join them, as plain
-    // values: the run's anchors, merged in plainly, would let "store.load() costs $11.20 per million" pass on every
-    // page here, because a plain value passes whatever words stand beside it.
+    // values: the run's anchors, merged in plainly, would let a page give store.load() the run's write-and-publish price
+    // pass on every page here, because a plain value passes whatever words stand beside it.
     const otherSources = anchors
       .filter(([name, v]) => v && !name.startsWith('single-bucket'))
       .map(([, v]) => v);
