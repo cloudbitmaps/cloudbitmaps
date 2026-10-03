@@ -70,6 +70,14 @@ import { isReservedNamespace, validateUserNamespace } from './validate';
 export const DEFAULT_RETIRE_LIMIT = 100;
 
 /**
+ * How many purges in a row the registry may refuse in one call before the sweep stops purging for the rest of it. A
+ * blanket refusal (a policy that denies delete) costs this many attempts and no more; a refusal particular to one row
+ * (a blob with a snapshot, an object under a legal hold) does not hold the purges behind it, since a purge that succeeds
+ * starts the count again.
+ */
+export const MAX_CONSECUTIVE_PURGE_FAULTS = 3;
+
+/**
  * Default delay before a retirement's own tombstone row is purged: 24 h.
  *
  * The row is a fence — while it exists, a load refuses the segment, so
@@ -88,7 +96,8 @@ export interface RetireExpiredOptions {
   readonly now: number;
   /**
    * Maximum segments to retire in this cycle (default 100). It also bounds the purges attempted (a purge the registry
-   * refuses is not charged, and ends purging for the call) and the due-index pointers to nothing one call removes.
+   * refuses is not charged; {@link RetireExpiredResult.purgeFaults} says how purging stops after refusals) and the
+   * due-index pointers to nothing one call removes.
    */
   readonly limit?: number;
   /** Report what would be retired and change nothing. */
@@ -234,10 +243,12 @@ export interface RetireExpiredResult {
    * `failed: contended` in the ledger). Each leaves its row or pointer in place, so a purge that keeps failing never
    * frees the name.
    *
-   * A refused purge is not charged to `limit`, and **the first one ends purging for the rest of the call**, so
-   * retirements go on: a tombstone that cannot be purged does not hold the segments behind it past their expiry. The
-   * next call tries again. Check this field; a ledger entry for each is `skipped`, but a caller that reads only
-   * `retired` sees none of it.
+   * A refused purge is not charged to `limit`, so retirements go on: a tombstone that cannot be purged does not hold
+   * the segments behind it past their expiry. **Purging stops for the rest of the call after
+   * {@link MAX_CONSECUTIVE_PURGE_FAULTS} (3) refused purges in a row**, and a purge that succeeds starts the count
+   * again. A blanket refusal therefore costs three attempts a call, and a refusal particular to one row (a blob with a
+   * snapshot, an object under a legal hold) holds nothing behind it. The next call tries again. Check this field; a
+   * ledger entry for each is `skipped`, but a caller that reads only `retired` sees none of it.
    */
   readonly purgeFaults: number;
   /** The first of those faults, as a ledger reason (`failed: …` with the provider's message). Absent when there were none. */
@@ -549,7 +560,9 @@ export async function retireExpired(
     purgeFaults += 1;
     firstPurgeFault ??= failureReason(err);
   };
-  // Cleared by the first purge that is refused: the next would be too, and each costs reads before it fails.
+  // Purging stops after this many refused purges in a row, and a purge that succeeds starts the count again. Each refused
+  // attempt costs reads before it fails, and a blanket refusal would fail them all; one row's refusal must not hold the rest.
+  let purgeRun = 0;
   let purging = true;
   // The budget is charged on ATTEMPT, not on success, and that distinction is the whole guard. `dropSegment`
   // writes the tombstone BEFORE sweeping Storage, so a fault in the Storage phase is a segment that is
@@ -600,6 +613,7 @@ export async function retireExpired(
         if (!dryRun) {
           await deps.registry.delete(ref, rec.token);
           tombstonesPurged += 1;
+          purgeRun = 0;
           if (removesRows) {
             await forgetPurgePointers(
               deps.registry,
@@ -616,10 +630,11 @@ export async function retireExpired(
         });
       } catch (err) {
         if (!isWriteConflictError(err)) {
-          // Refused for a reason that will repeat for the next tombstone. Not charged to the limit, so the retirements
-          // behind it still get their turn, and no more purges are tried this call.
+          // Refused for a reason other than a lost race. Not charged to the limit, so the retirements behind it still
+          // get their turn; and after enough in a row, no more purges are tried this call.
           attempted -= 1;
-          purging = false;
+          purgeRun += 1;
+          if (purgeRun >= MAX_CONSECUTIVE_PURGE_FAULTS) purging = false;
           noteFault(err);
         }
         entries.push({ ...base, action: 'skipped', reason: failureReason(err) });

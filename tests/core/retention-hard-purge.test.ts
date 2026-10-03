@@ -840,15 +840,20 @@ describe('a delete the backend refuses starves nothing', () => {
       expect(res.retired).toBe(3);
       expect(res.limited).toBe(false);
       expect(res.tombstonesPurged).toBe(0);
-      // One purge was tried, and failed; the sweep stopped purging, and went on to retire.
-      expect(res.entries.filter((e) => e.action === 'skipped')).toEqual([
-        { namespace: 'n', segment: 'stuck-0', action: 'skipped', reason },
-      ]);
+      // Three purges were tried, in a row, and refused; the sweep stopped purging, and went on to retire.
+      expect(res.entries.filter((e) => e.action === 'skipped')).toEqual(
+        [0, 1, 2].map((i) => ({
+          namespace: 'n',
+          segment: `stuck-${i}`,
+          action: 'skipped',
+          reason,
+        })),
+      );
       expect(res.entries.filter((e) => e.action === 'retired')).toHaveLength(3);
-      // The fault is in the result, not only in the ledger: that purge, and the three expiry pointers it could not remove.
-      expect(res.purgeFaults).toBe(4);
+      // The faults are in the result, not only in the ledger: those purges, and the three expiry pointers it could not remove.
+      expect(res.purgeFaults).toBe(6);
       expect(res.firstPurgeFault).toBe(reason);
-      expect(w.store.deletes - deletesBefore).toBe(4); // 1 purge, then 3 pointers; the other five tombstones untried
+      expect(w.store.deletes - deletesBefore).toBe(6); // 3 purges, then 3 pointers; the other three tombstones untried
     },
   );
 
@@ -869,7 +874,7 @@ describe('a delete the backend refuses starves nothing', () => {
         name: 'AccessDenied',
       });
     const res = await retireExpired(w.deps, { now: w.now(), limit: 4, tombstoneGraceMs: GRACE });
-    expect(res.purgeFaults).toBe(4);
+    expect(res.purgeFaults).toBe(6);
     expect(res.firstPurgeFault).toBe('failed: row denied');
   });
 
@@ -1407,5 +1412,79 @@ describe('a load that collects by name meets a row the purge removed', () => {
     expect(r).toMatchObject({ generation: 5, published: true, collected: [] });
     expect(await present(w)).toEqual([]); // the drop took them all, and the by-name pass found no row to act on
     expect(registryObjects(w)).toBe(0);
+  });
+});
+
+describe('how far purging goes on after refusals', () => {
+  const denied = (): Error => Object.assign(new Error('Access Denied'), { name: 'AccessDenied' });
+  /** Refuse the delete of these names' rows, and of nothing else: a pointer to one is under a `cbm.due.` namespace. */
+  const refusing =
+    (...names: string[]) =>
+    (key: string): Error | undefined =>
+      names.some((segment) => key === registryObjectKey(undefined, { namespace: 'n', segment }))
+        ? denied()
+        : undefined;
+
+  /** Retire `names`, in that scan order, and age them past their grace: tombstones, all purgeable. */
+  async function tombstones(w: World, names: string[]): Promise<void> {
+    for (const segment of names) await seed(w, { namespace: 'n', segment }, T0 + RETENTION);
+    w.advance(RETENTION + 1);
+    const res = await retireExpired(w.deps, {
+      now: w.now(),
+      limit: names.length,
+      tombstoneGraceMs: GRACE,
+    });
+    expect(res.retired).toBe(names.length);
+    w.advance(GRACE);
+  }
+
+  it('a refusal particular to one row does not hold the purges behind it: three good rows purge in the same call', async () => {
+    const w = world();
+    await tombstones(w, ['a-stuck', 'b-good', 'c-good', 'd-good']);
+    w.store.refuseDelete = refusing('a-stuck');
+    const res = await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: GRACE });
+    expect(res.tombstonesPurged).toBe(3);
+    expect(res.purgeFaults).toBe(1);
+    expect(res.firstPurgeFault).toBe('failed: Access Denied');
+    expect(res.entries.filter((e) => e.action === 'skipped')).toEqual([
+      { namespace: 'n', segment: 'a-stuck', action: 'skipped', reason: 'failed: Access Denied' },
+    ]);
+    expect((await w.registry.get({ namespace: 'n', segment: 'a-stuck' }))?.status).toBe(
+      'destroyed',
+    );
+  });
+
+  it('a blanket denial still stops fast: exactly three refused deletes in a call, however many tombstones wait', async () => {
+    const w = world();
+    await tombstones(w, ['a', 'b', 'c', 'd', 'e', 'f']);
+    w.store.refuseDelete = () => denied();
+    const before = w.store.deletes;
+    const res = await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: GRACE });
+    expect(w.store.deletes - before).toBe(3);
+    expect(res.tombstonesPurged).toBe(0);
+    expect(res.purgeFaults).toBe(3);
+    expect(res.entries.filter((e) => e.action === 'skipped')).toHaveLength(3);
+  });
+
+  it('a purge that succeeds starts the count again: two refusals, a success, two refusals, a success, and so on, never stop', async () => {
+    const w = world();
+    const names = ['s1', 's2', 'g1', 's3', 's4', 'g2', 's5', 's6', 'g3'];
+    await tombstones(w, names);
+    w.store.refuseDelete = refusing('s1', 's2', 's3', 's4', 's5', 's6');
+    const res = await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: GRACE });
+    expect(res.tombstonesPurged).toBe(3); // g1, g2 and g3
+    expect(res.purgeFaults).toBe(6);
+  });
+
+  it('a refused purge costs nothing against the limit even when the segments behind it outnumber the limit: two retire, and the limit says more remain', async () => {
+    const w = world();
+    await tombstones(w, ['a-stuck']);
+    for (const segment of ['x1', 'x2', 'x3'])
+      await seed(w, { namespace: 'n', segment }, w.now() - DAY); // expired, behind the stuck tombstone in scan order
+    w.store.refuseDelete = refusing('a-stuck');
+    const res = await retireExpired(w.deps, { now: w.now(), limit: 2, tombstoneGraceMs: GRACE });
+    expect(res.retired).toBe(2);
+    expect(res.limited).toBe(true);
+    expect(res.purgeFaults).toBe(1);
   });
 });

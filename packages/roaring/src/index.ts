@@ -1571,7 +1571,8 @@ export class CloudRoaring {
    * **Check `purgeFaults`.** A delete the registry refuses for a reason other than a lost race (a policy that denies
    * delete, an Azure blob with a snapshot, a raw provider error), whether of a tombstone or of a due-index pointer, is
    * counted there, with the first one's reason in `firstPurgeFault`. A refused purge is `skipped` in the ledger, is not
-   * charged to `limit`, and ends purging for the rest of the call, so it never holds the retirements behind it.
+   * charged to `limit`, so it never holds the retirements behind it, and purging stops for the rest of the call after
+   * three refused purges in a row (a purge that succeeds starts the count again).
    *
    * It also **deletes the tombstone rows its own past retirements left**, after `tombstoneGraceMs` (default 24 h)
    * and only once that segment's Storage generations are provably gone — collecting a straggler generation itself

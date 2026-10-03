@@ -269,8 +269,10 @@ so, and so do the module headers in the code.
   SnapshotsPresent`, any raw provider error), and `firstPurgeFault`, the first one's ledger reason. A refused purge was
   charged to `limit`, so with `limit` or more stuck tombstones ahead of them in scan order every call spent its whole
   budget on purges that could not succeed and no expired segment was retired; one refused purge now costs nothing
-  against `limit`, and it ends purging for the rest of the call while retirements go on. Its ledger entry stays
-  `skipped`, with the provider's message, and the next call tries again. Pointer removals the sweep makes and the
+  against `limit`, and retirements go on. Purging stops for the rest of the call after three refused purges in a row, and
+  a purge that succeeds starts the count again, so a blanket refusal costs three attempts a call and a refusal particular
+  to one row holds nothing behind it. Its ledger entry stays `skipped`, with the provider's message, and the next call
+  tries again. Pointer removals the sweep makes and the
   registry refuses used to leave no trace at all. A lost race (`failed: contended`) is not a fault, and is charged to
   `limit` as before.
 

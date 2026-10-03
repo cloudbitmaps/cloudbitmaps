@@ -172,9 +172,12 @@ if (swept.purgeFaults > 0) console.error(`the registry refused ${swept.purgeFaul
 removal that fails for a reason other than a lost race (a policy that denies `s3:DeleteObject`, an Azure blob with a
 snapshot, any raw provider error) leaves its row or pointer in place and is counted in `purgeFaults`, with the first
 one's reason in `firstPurgeFault`. A refused purge is `skipped` in the ledger, with the provider's message, and is not
-charged to `limit`; **the first one ends purging for the rest of the call**, since the next would fail the same way, and
-the sweep goes on to retire what is eligible. So a tombstone that cannot be purged never holds the segments behind it
-past their expiry. The next call tries again. A lost race (`failed: contended`) is not a fault: it is the fence working,
+charged to `limit`, and the sweep goes on to retire what is eligible, so a tombstone that cannot be purged never holds
+the segments behind it past their expiry. **Purging stops for the rest of the call after three refused purges in a
+row**, and a purge that succeeds starts the count again. A blanket refusal (a policy that denies delete) costs three
+attempts a call and no more. A refusal particular to one row (one blob with a snapshot, one object under a legal hold)
+holds nothing behind it: the purges after it still go through, and the row is counted every call until it is cleared.
+The next call tries again. A lost race (`failed: contended`) is not a fault: it is the fence working,
 it is charged to `limit` as before, and the purges go on.
 
 **Two bounds to set deliberately.**
