@@ -15,6 +15,7 @@ import type { Budget, BudgetOption } from './budget';
 import { ChunkWindow } from './chunk-window';
 import type { Clock } from './determinism';
 import { IntegrityError, ValidationError } from './errors';
+import { DEFAULT_MAX_BITMAP_BYTES } from './crbm/format';
 import { chunkGenKey, chunkRefKey, segmentPrefix } from './keys';
 import type { BoundedLru } from './lru';
 import { NOOP_METRICS, safeMetrics } from './metrics';
@@ -27,7 +28,6 @@ import type {
   SegmentSize,
 } from './ports';
 
-const DEFAULT_MAX_BITMAP_BYTES = 1 << 20; // 1 MiB per bitmap — generous; real chunks are far smaller
 /**
  * Chunk keys a combine resolves at once by default, and how far `iterate` and `count` read ahead — bounds memory and
  * concurrent reads (invariant 6). A read of `n` chunks takes about `n / 32` sequential round trips, so this, not the
@@ -44,6 +44,7 @@ export interface EngineDeps {
   readonly storage: StorageChunkSource;
   /** Optional cache of decoded (immutable) Storage chunks. */
   readonly cache?: BoundedLru<string, CodecBitmap>;
+  /** Per-chunk decode ceiling (invariant 5); defaults to 1 MiB. The `.crbm` reader refuses an entry above its own `maxPayloadBytes` (1 MiB, plus 28 bytes when encrypted) at open, so raise that on the chunk source too. */
   readonly maxBitmapBytes?: number;
   /**
    * The bitmap codec — **required**. `core/` is codec-agnostic: it can have no default, because the concrete codec

@@ -32,7 +32,9 @@ so, and so do the module headers in the code.
   on S3). The requests are the same ones, so the request count and the cost are unchanged, and the order, the retry
   of each read, the refusal of a chunk that is not decodable or holds a value above 65,535, and the chunk it names
   are as before: each chunk is decoded as the writer reaches it. Memory is bounded by the window, not the segment:
-  up to 32 raw chunk payloads (about 8 KiB each at most) are held ahead of the writer.
+  up to 32 raw chunk payloads are held ahead of the writer, about 8 KiB each for a well-formed segment and never more
+  than the reader's per-chunk cap. `eraseSubject`, which erases up to `concurrency` segments at once (8 by default),
+  can have up to `concurrency × 32` range reads open together, 256 by default.
 - **A long combine or `iterate` takes far fewer round trips: the default `concurrency` is 32, up from 8.** The
   default `concurrency` of `intersect`, `union` and `andNot` (and of the `*Into` reads that run through them) is 32
   chunk keys, and so is the most `iterate` and the storage-path `count` read ahead. A read of `n` chunks takes about
@@ -64,6 +66,19 @@ so, and so do the module headers in the code.
 - **The calibration harness models the new window.** The expected depth of a cold intersect is a pointer, a tail and
   then the rounds a window that opens 8 wide and widens to 32 takes, stepped from the engine's constants. A run of
   0.12.0 or earlier is read against the fixed window of 8 it ran with.
+
+### Fixed
+
+- **A chunk too large to decode is refused when the object is opened, not after it is read.** The `.crbm` reader accepted
+  an index entry of up to 16 MiB, while every chunk is decoded under a 1 MiB cap, so a corrupt or hostile object could
+  make each slot of a read window hold up to 16 MiB that was then refused. The reader's cap is now the decode cap
+  (1 MiB), plus the 28 bytes of nonce and tag on an encrypted object, so an entry the decoder would refuse is refused at
+  open as an `IntegrityError` naming the chunk and the cap, before any payload is read. What a read window holds for
+  such an object is bounded by the window times 1 MiB per operand, where it was the window times 16 MiB. One oversized
+  entry now makes the whole object refuse to open: a read or an erasure of another chunk of it fails at open too, and
+  `checkConsistency` reports it as an integrity error. No object written by the codec is affected: a chunk it writes
+  serializes to at most about 8.2 KiB. A caller who raises `maxBitmapBytes` above 1 MiB (a custom codec) must also set
+  `maxPayloadBytes` on the chunk source, or the object is refused at open.
 
 ## [0.12.0] — 2026-10-03
 
