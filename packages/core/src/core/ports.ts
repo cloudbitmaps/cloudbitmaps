@@ -58,12 +58,6 @@ export interface ChunkRead {
   readonly key: number;
   readonly bytes: Uint8Array | null;
   readonly version: string | null;
-  /**
-   * Set on the first chunk read out of each range request, and only there: what that request moved (`bytes`, the gaps
-   * between the chunks it carried included) and how long it took (`ms`, retries included; 0 when the source has no
-   * clock). It is how a caller counts requests, since several chunks can share one.
-   */
-  readonly request?: { readonly bytes: number; readonly ms: number };
 }
 
 /** Options of {@link StorageChunkSource.getChunks}. */
@@ -85,6 +79,14 @@ export interface ReadChunksOptions {
    * has asked for little.
    */
   readonly ramp?: boolean;
+  /**
+   * Called once for every range request the stream sends, when it settles: a request the consumer took, one that was
+   * still in flight when the consumer stopped, and one that failed. `bytes` is what the request moved, the gaps between
+   * the chunks it carried included (0 when it failed), and `ms` how long it took, retries included (0 when the source
+   * has no clock). It is how a caller counts what it is billed for, since several chunks can share a request and
+   * a stopped stream leaves some in flight. A throw from it is ignored.
+   */
+  readonly onRequest?: (request: { readonly bytes: number; readonly ms: number }) => void;
 }
 
 /** Per-chunk read view of the immutable Storage tier (implemented by the `.crbm` reader). */

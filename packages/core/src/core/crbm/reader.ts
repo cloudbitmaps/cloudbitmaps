@@ -21,7 +21,7 @@ import { IntegrityError, isIntegrityError, UnsupportedError, ValidationError } f
 import type { BlobReader } from '../blob';
 import type { CrbmCrypto } from '../crypto';
 import { MAX_METADATA_BYTES, metadataFromBytes } from '../metadata';
-import type { ChunkRead, GenerationMetadata } from '../ports';
+import type { ChunkRead, GenerationMetadata, ReadChunksOptions } from '../ports';
 import { crc32c } from './crc32c';
 import { ChunkWindow } from '../chunk-window';
 import { validateChunkKeyOrder } from '../validate';
@@ -595,16 +595,13 @@ export class CrbmReader {
     cur: { range: LandedRange | undefined; at: number },
     slot: number,
     key: number,
-    first: boolean,
   ): Omit<ChunkRead, 'version'> {
     const range = cur.range!;
     const chunk = range.read.chunks[cur.at++]!;
     if (cur.at === range.read.chunks.length) cur.range = undefined;
     const from = chunk.offset - range.read.offset;
     const bytes = this.openChunk(slot, chunk.key, range.bytes.subarray(from, from + chunk.length));
-    return first
-      ? { key, bytes, request: { bytes: range.read.length, ms: range.ms } }
-      : { key, bytes };
+    return { key, bytes };
   }
 
   /**
@@ -612,7 +609,7 @@ export class CrbmReader {
    * chunk. `chunkKeys` are in ascending order, a key may repeat, and anything else is a {@link ValidationError}. One
    * item comes out per position of `chunkKeys`, in order: the chunk's bytes, or `null` where this generation has none,
    * as {@link getChunk} answers for an absent key. A key given twice is read once and answered at both positions with
-   * the same view. The first chunk out of each range carries `request`, what that range cost.
+   * the same view.
    *
    * The whole key list is planned once, up front, against this one generation's index. The ranges then run through a
    * window of `options.concurrency` reads ({@link MAX_RANGES_IN_FLIGHT} by default) that counts a range until the
@@ -630,7 +627,9 @@ export class CrbmReader {
    * stream with that error when its turn comes, as a read of it alone would fail.
    *
    * `options.readRange`, when given, runs each range read, so a caller can retry one request without repeating the
-   * others; `options.now` times each request for `request.ms` (a reader has no clock of its own, so 0 without it).
+   * others; `options.now` times each request for `options.onRequest`, which hears of every range request that was sent, once, when
+   * it settles: taken, abandoned after the consumer stopped, or failed (a reader has no clock of its own, so `ms` is 0
+   * without one).
    * A plain chunk is a writable view into the range it was read in: copy a chunk to keep it.
    *
    * A stream that fails (a range that errors, a chunk that fails its check) raises at once and sends nothing further:
@@ -647,6 +646,7 @@ export class CrbmReader {
       readonly ramp?: boolean;
       readonly readRange?: <T>(read: () => Promise<T>) => Promise<T>;
       readonly now?: () => number;
+      readonly onRequest?: ReadChunksOptions['onRequest'];
     } = {},
   ): ChunkStream {
     const open: { window: { settle(): Promise<void> } | undefined } = { window: undefined };
@@ -663,6 +663,7 @@ export class CrbmReader {
       readonly ramp?: boolean;
       readonly readRange?: <T>(read: () => Promise<T>) => Promise<T>;
       readonly now?: () => number;
+      readonly onRequest?: ReadChunksOptions['onRequest'];
     },
     open: { window: { settle(): Promise<void> } | undefined },
   ): AsyncGenerator<Omit<ChunkRead, 'version'>> {
@@ -684,23 +685,39 @@ export class CrbmReader {
     }));
     const reads = planChunkReads(extents, { start: PAYLOAD_START, end: this.payloadEnd });
     let closed = false;
-    const window = new ChunkWindow<{ bytes: Uint8Array; ms: number }>(
+    const report = (bytes: number, ms: number): void => {
+      try {
+        options.onRequest?.({ bytes, ms });
+      } catch {
+        // A sink that throws must not fail a read, or a range nobody is waiting for.
+      }
+    };
+    const window = new ChunkWindow<{ bytes: Uint8Array }>(
       reads.map((_, i) => i),
       async (i) => {
         const read = reads[i]!;
         const startedAt = now();
-        // Checked before each attempt, so a stream that was abandoned does not go on retrying: an attempt already
-        // sent finishes, and nothing further is sent.
-        const bytes = await readRange(() => {
-          if (closed) throw new StreamClosed();
-          return this.blob.getRange(read.offset, read.length);
-        });
-        if (bytes.length !== read.length) {
-          throw new IntegrityError(
-            `.crbm range [${read.offset}, +${read.length}) read short (${bytes.length} bytes)`,
-          );
+        let sent = false;
+        let moved = 0;
+        try {
+          // Checked before each attempt, so a stream that was abandoned does not go on retrying: an attempt already
+          // sent finishes, and nothing further is sent.
+          const bytes = await readRange(() => {
+            if (closed) throw new StreamClosed();
+            sent = true;
+            return this.blob.getRange(read.offset, read.length);
+          });
+          moved = bytes.length;
+          if (bytes.length !== read.length) {
+            throw new IntegrityError(
+              `.crbm range [${read.offset}, +${read.length}) read short (${bytes.length} bytes)`,
+            );
+          }
+          return { bytes };
+        } finally {
+          // Every request that was sent is reported, whoever is left to want it.
+          if (sent) report(moved, Math.max(0, now() - startedAt));
         }
-        return { bytes, ms: Math.max(0, now() - startedAt) };
       },
       width,
       options.ramp === true,
@@ -722,21 +739,19 @@ export class CrbmReader {
           if (chunkKeys[i + 1] !== key) last = undefined;
           continue;
         }
-        let first = false;
         if (cur.range === undefined) {
           // No local names the landed range: a binding of this loop body lives as long as the generator's frame, and
           // would keep the range just consumed alive while the next one is awaited.
           cur.range = { read: reads[next++]!, ...(await window.take()) };
           cur.at = 0;
-          first = true;
         }
         // Built by a call of its own and handed straight out, so no local of this loop keeps the chunk, or the range
         // it is a view into, alive while the consumer is slow.
         if (chunkKeys[i + 1] === key) {
-          last = this.nextChunk(cur, slots[i]!, key, first);
+          last = this.nextChunk(cur, slots[i]!, key);
           yield last;
         } else {
-          yield this.nextChunk(cur, slots[i]!, key, first);
+          yield this.nextChunk(cur, slots[i]!, key);
         }
       }
     } finally {
@@ -757,7 +772,6 @@ export type ChunkStream = AsyncGenerator<Omit<ChunkRead, 'version'>> & {
 interface LandedRange {
   readonly read: PlannedRead;
   readonly bytes: Uint8Array;
-  readonly ms: number;
 }
 
 /** Raised inside a range read of a stream that was abandoned or failed, so a retrying runner stops. Never surfaces. */

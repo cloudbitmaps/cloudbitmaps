@@ -427,11 +427,33 @@ describe('CrbmStorageChunkSource.getChunks: a stream across waves', () => {
     storage.beforeRange = async () => {
       clock.advance(7);
     };
-    const got = await read(source, REF, [0, 44]);
-    const requests = got.items.flatMap((i) => (i.request === undefined ? [] : [i.request]));
+    const requests: { bytes: number; ms: number }[] = [];
+    await collect(source.getChunks!(REF, [0, 44], { onRequest: (r) => requests.push(r) }));
     expect(requests).toHaveLength(storage.ranges.length);
-    expect(requests.map((r) => r.bytes)).toEqual(storage.ranges.map((r) => r.length));
+    expect(requests.map((r) => r.bytes).sort()).toEqual(storage.ranges.map((r) => r.length).sort());
     for (const r of requests) expect(r.ms).toBeGreaterThanOrEqual(7);
+  });
+
+  it('reports every range request it sent to onRequest, those a consumer that stopped left in flight included, through the retrying wrapper too', async () => {
+    const { source, storage } = await world();
+    const retrying = new RetryingStorageChunkSource(source, {
+      clock: manualClock(),
+      rng: { next: () => 0.5 },
+    });
+    storage.beforeRange = () => new Promise((r) => setTimeout(r, 5));
+    for (const reading of [source, retrying]) {
+      storage.ranges.length = 0;
+      const requests: { bytes: number }[] = [];
+      const stream = reading.getChunks!(REF, [0, 36, 40, 44], {
+        concurrency: 4,
+        onRequest: (r) => requests.push(r),
+      })[Symbol.asyncIterator]();
+      await stream.next();
+      await stream.return?.();
+      await new Promise((r) => setTimeout(r, 40));
+      expect(storage.ranges.length).toBeGreaterThan(1);
+      expect(requests).toHaveLength(storage.ranges.length);
+    }
   });
 
   it('a stream that stops early leaves no unhandled failure behind', async () => {
