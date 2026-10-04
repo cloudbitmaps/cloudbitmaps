@@ -64,6 +64,26 @@ function resolveSize(raw, fallback, label) {
   return n;
 }
 
+/** The largest socket limit a run may ask for: beyond a process's usual file-descriptor limit (1,024 on Lambda, say). */
+const MAX_SOCKETS_BOUND = 1024;
+
+/**
+ * The socket limit of the workload's client, from `CR_CALIBRATE_MAX_SOCKETS`: a positive integer, `fallback` when unset
+ * or empty. Anything else is refused, since a limit of 0 or of "many" would be recorded as what the run had.
+ */
+function resolveMaxSockets(raw, fallback) {
+  if (raw === undefined || String(raw).trim() === '') return fallback;
+  const text = String(raw).trim();
+  const n = Number(text);
+  if (!/^\d+$/.test(text) || !Number.isSafeInteger(n) || n < 1 || n > MAX_SOCKETS_BOUND) {
+    throw new Error(
+      `CR_CALIBRATE_MAX_SOCKETS is "${raw}"; expected a positive integer of at most ${MAX_SOCKETS_BOUND}, ` +
+        "since more sockets than a process's usual file-descriptor limit (1,024 on Lambda, for one) cannot be held",
+    );
+  }
+  return n;
+}
+
 /**
  * Decide whether a probe result means "this resource does not exist".
  *
@@ -709,6 +729,8 @@ module.exports = {
   DEFAULT_LAYOUT,
   parseCeiling,
   resolveSize,
+  resolveMaxSockets,
+  MAX_SOCKETS_BOUND,
   probeMeansAbsent,
   projectOps,
   firstLoads,

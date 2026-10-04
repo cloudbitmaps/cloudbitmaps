@@ -148,9 +148,13 @@ and no chunk is larger than the reader's cap of 1 MiB, [SECURITY](../../SECURITY
 bytes per segment and `concurrency` times that for `eraseSubject`, 32 MiB plus 224 bytes at the default 8; a segment
 smaller than that is held whole. A well-formed segment of chunks of about 8 KiB reads ahead up to 4 MiB, where a read
 of one chunk at a time held about 256 KiB. `eraseSubject` erases up to `concurrency` segments at once (8 by default),
-so it can have up to `concurrency × 4` range requests open together, 32 by default, each one range and not one chunk,
-which fits both the 128 sockets of the client the store builds and the 50 of the SDK's default on a client you pass, so
-it needs no `maxSockets` ([production](production.md)).
+so its rewrites can have up to `concurrency × 4` range requests open together, 32 by default, each one range and not
+one chunk. Each segment's search of the other generations for a holder, before and after its rewrite, reads up to 4
+generations at once (up to 8 object requests, and up to 4 chunk payloads held, no more than 4 MiB for a corrupt one),
+so `eraseSubject` has at most `concurrency × 8` requests open, 64 by default: within the 128 sockets of the client the
+store builds, while on a client you pass with the SDK's default of 50 the requests past 50 wait for a socket unless you
+raise `maxSockets` ([production](production.md)). `eraseNamespace` shreds 8 segments at once, a registry read and write
+each, with nothing held but the rows.
 
 **Every generation that holds the id goes, not only the current one.** A re-seed that drops someone leaves their bit
 in the generation `keep` retains. A `store.rollback` leaves the generations it rolled back from above the pointer,
