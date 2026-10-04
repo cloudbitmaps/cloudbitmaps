@@ -1152,7 +1152,7 @@ function render() {
     `The in-region run of ${latestRun.runId.slice(0, 10)} measured ${measuredRounds.toFixed(1)} request times for this shape, ` +
     `${measuredChain.p50ms.toFixed(2)} ms at the median, ${against} the derived ${int(chain)}, with a mean of ` +
     `${measuredChain.medianMeanInFlight.toFixed(1)} requests in flight against its client's ` +
-    `${int(latestRun.measured.maxSockets)} sockets. It did not vary the socket count, so it does not say what part of ` +
+    `${latestRun.measured.maxSockets === null ? 'unreadable number of' : int(latestRun.measured.maxSockets)} sockets. It did not vary the socket count, so it does not say what part of ` +
     'any gap is socket wait.';
   const depth =
     `A cold intersect of two segments sharing ${int(SHARED_CHUNKS)} chunks waits on a chain of requests, derived from the engine's constants, ` +
