@@ -29,8 +29,8 @@ handful you care about:
 
 | Event | Carries | Fired |
 | --- | --- | --- |
-| `storage.get` | `segment`, `namespace?`, `bytes`, `ms` | one chunk read from Storage (a cache miss) |
-| `cache` | `hit` | every cache lookup |
+| `storage.get` | `segment`, `namespace?`, `bytes`, `ms` | one chunk request to Storage — the number of GETs, one per request however many callers were waiting on it |
+| `cache` | `hit` | every cache lookup, when a cache is configured. A miss is a lookup that found no cached chunk; it is counted even when the caller then waits on a read another caller already has open, so misses can exceed `storage.get` events |
 | `retry` | `reason: 'transient'`, `attempt`, `delayMs` | before each transient-retry backoff wait |
 | `intersect` | `op` (`intersect` / `union` / `andNot`), `operands`, `fetchedChunks`, `skippedChunks` | per combine — `skippedChunks` is the chunk-skipping saving (distinct keys never fetched) |
 | `op` | `name` (`has` / `count` / `intersectInto` / `unionInto` / `andNotInto`), `ms` | per timed segment op |

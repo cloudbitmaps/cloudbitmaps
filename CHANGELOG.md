@@ -13,6 +13,17 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **Concurrent cold reads of one chunk make one storage request.** Callers that missed the cache on the same chunk of
+  the same generation at the same time each made their own request: 50 concurrent cold `has()` of one chunk made 50
+  GETs, and every caller made one after each publish or cache eviction. They now wait on the one request already
+  open, with or without a `cache`, and a failure is delivered to every caller waiting on it (the next call reads
+  again). A different generation of the chunk is a different request. `andNot(a, [a])` and any combine that names a
+  segment as both include and exclude no longer read each of its chunks twice (6 GETs for 3 chunks, now 3; measured
+  locally on the in-memory driver). Opening a segment's reader was already shared between concurrent first reads
+  (one registry read and one tail read for 50 concurrent cold `has()`, measured locally). A warm `has()` is
+  unchanged at about 0.40 µs through the engine (measured locally, before and after). Metrics: one `storage.get`
+  per request; a caller that waits on an open read still counts a `cache` miss, so `misses` can exceed the
+  `storage.get` count, which is the number of requests.
 - **Erasing an id reads ahead through a window of 32 chunks instead of one at a time.** The erasure rewrite
   (`eraseSubject`, `eraseIdFromSegment`) used to read each chunk of the generation after the one before it, so a
   segment of `n` chunks took `n` request times. It now keeps up to 32 reads open ahead of the writer and takes them in
