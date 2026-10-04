@@ -87,6 +87,7 @@ import {
   verifyGeneration,
   writeCrbmGenerationStream,
 } from './crbm-storage-source';
+import { DEFAULT_MAX_BITMAP_BYTES } from './crbm/format';
 import type { CrbmReader } from './crbm/reader';
 import { aadFor } from './crypto';
 import type { Aead, CrbmCrypto, IKeystore } from './crypto';
@@ -112,8 +113,6 @@ import { type ReadRetry, retryRead } from './retry';
 import { metadataToCarry, summaryOf, usableSummary } from './summary';
 import { validateUserRef } from './validate';
 
-const DEFAULT_MAX_BITMAP_BYTES = 1 << 20;
-
 /** What {@link eraseIdFromSegment} needs: the objects, the pointer, the codec, and the key material if encrypted. */
 export interface EraseIdDeps {
   readonly storage: IStorageDriver;
@@ -138,7 +137,7 @@ export interface EraseIdDeps {
    * source is used if it has one, and otherwise each wait is its bound.
    */
   readonly rng?: Rng;
-  /** Per-chunk decode ceiling (invariant 5); defaults to 1 MiB. */
+  /** Per-chunk decode ceiling (invariant 5); defaults to 1 MiB. The `.crbm` reader refuses an entry above its own `maxPayloadBytes` (1 MiB, plus 28 bytes when encrypted) at open, so raise that on the chunk source too. */
   readonly maxBitmapBytes?: number;
   /**
    * The store's read retry, for the reads the rewrite makes along the way: the generation it rewrites and each of its

@@ -56,6 +56,19 @@ so, and so do the module headers in the code.
   then the rounds a window that opens 8 wide and widens to 32 takes, stepped from the engine's constants. A run of
   0.12.0 or earlier is read against the fixed window of 8 it ran with.
 
+### Fixed
+
+- **A chunk too large to decode is refused when the object is opened, not after it is read.** The `.crbm` reader accepted
+  an index entry of up to 16 MiB, while every chunk is decoded under a 1 MiB cap, so a corrupt or hostile object could
+  make each slot of a read window hold up to 16 MiB that was then refused. The reader's cap is now the decode cap
+  (1 MiB), plus the 28 bytes of nonce and tag on an encrypted object, so an entry the decoder would refuse is refused at
+  open as an `IntegrityError` naming the chunk and the cap, before any payload is read. What a read window holds for
+  such an object is bounded by the window times 1 MiB per operand, where it was the window times 16 MiB. One oversized
+  entry now makes the whole object refuse to open: a read or an erasure of another chunk of it fails at open too, and
+  `checkConsistency` reports it as an integrity error. No object written by the codec is affected: a chunk it writes
+  serializes to at most about 8.2 KiB. A caller who raises `maxBitmapBytes` above 1 MiB (a custom codec) must also set
+  `maxPayloadBytes` on the chunk source, or the object is refused at open.
+
 ## [0.12.0] — 2026-10-03
 
 ### Breaking
