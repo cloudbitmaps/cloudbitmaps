@@ -76,7 +76,7 @@ export type {
   IStorageDriver,
   StorageCaps,
   ChunkRef,
-  ChunksRead,
+  ChunkRead,
   ReadChunksOptions,
   SegmentRef,
   GenKey,

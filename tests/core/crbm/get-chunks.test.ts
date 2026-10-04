@@ -12,24 +12,20 @@ import { IntegrityError, ValidationError } from '@/core/errors';
 import {
   MAX_COALESCE_GAP_BYTES,
   MAX_COALESCED_READ_BYTES,
-  MAX_GET_CHUNKS_BYTES,
   MAX_RANGES_IN_FLIGHT,
 } from '@/core/crbm/plan-reads';
+import { collect, expectSameBytes } from '../../helpers/chunk-stream';
 
-/**
- * Two byte arrays are equal, compared natively: the framework's deep equality walks a 100 KiB buffer element by
- * element, which takes seconds over a test's worth of chunks.
- */
-function expectSameBytes(
-  got: Uint8Array | null | undefined,
-  want: Uint8Array | null | undefined,
-): void {
-  expect(got, 'a chunk is missing').toBeTruthy();
-  expect(want, 'the expected chunk is missing').toBeTruthy();
-  const a = Buffer.from(got!.buffer, got!.byteOffset, got!.byteLength);
-  const b = Buffer.from(want!.buffer, want!.byteOffset, want!.byteLength);
-  expect(a.length, 'chunk length').toBe(b.length);
-  expect(a.equals(b), 'chunk bytes').toBe(true);
+/** The bytes of each chunk a stream yields, in order: what an array-returning read would have answered. */
+async function getChunks(
+  reader: CrbmReader,
+  keys: readonly number[],
+  readRange?: <T>(read: () => Promise<T>) => Promise<T>,
+): Promise<(Uint8Array | null)[]> {
+  const items = await collect(
+    reader.readChunks(keys, readRange === undefined ? {} : { readRange }),
+  );
+  return items.map((item) => item.bytes);
 }
 
 const KIB = 1024;
@@ -82,7 +78,7 @@ const variants = [
   { name: 'encrypted', encrypted: true, crypto: cryptoFor(dek) },
 ] as const;
 
-describe.each(variants)('CrbmReader.getChunks ($name)', ({ encrypted, crypto }) => {
+describe.each(variants)('CrbmReader.readChunks ($name)', ({ encrypted, crypto }) => {
   const open = async (bytes: Uint8Array, spy = new Spy(new BufferReader(bytes))) => {
     const reader = await CrbmReader.open(spy, crypto ? { crypto } : {});
     spy.ranges.length = 0; // count the chunk reads, not the open
@@ -92,7 +88,7 @@ describe.each(variants)('CrbmReader.getChunks ($name)', ({ encrypted, crypto }) 
   it('returns, for each key, the bytes a read of that chunk alone returns', async () => {
     const { reader, spy } = await open(await build(crypto));
     const keys = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 20];
-    const got = await reader.getChunks(keys);
+    const got = await getChunks(reader, keys);
     for (const [i, key] of keys.entries()) {
       expectSameBytes(got[i]!, PAYLOADS.get(key)!);
       expectSameBytes(got[i]!, (await reader.getChunk(key))!);
@@ -104,7 +100,7 @@ describe.each(variants)('CrbmReader.getChunks ($name)', ({ encrypted, crypto }) 
     const { reader, spy } = await open(await build(crypto));
     const len = stored(0, encrypted).length;
     // Keys 0-2 are adjacent, 4 is 100 KiB past 2: one read. 9 is 400 KiB past 4: its own. 20 follows 9 at once.
-    await reader.getChunks([0, 1, 2, 4, 9, 20]);
+    await getChunks(reader, [0, 1, 2, 4, 9, 20]);
     expect(spy.ranges).toEqual([
       { offset: stored(0, encrypted).offset, length: 5 * len },
       { offset: stored(9, encrypted).offset, length: 2 * len },
@@ -114,10 +110,10 @@ describe.each(variants)('CrbmReader.getChunks ($name)', ({ encrypted, crypto }) 
   it('reads one range when the gap is exactly 256 KiB and two when it is a byte more', async () => {
     // Chunks of this layout are 100 KiB (+28), so a gap of 2 chunks is ~200 KiB (merges) and 3 is ~300 KiB (splits).
     const { reader, spy } = await open(await build(crypto));
-    await reader.getChunks([0, 3]);
+    await getChunks(reader, [0, 3]);
     expect(spy.ranges).toHaveLength(1);
     spy.ranges.length = 0;
-    await reader.getChunks([0, 4]);
+    await getChunks(reader, [0, 4]);
     expect(spy.ranges).toHaveLength(2);
     expect(MAX_COALESCE_GAP_BYTES).toBe(256 * KIB);
     expect(MAX_COALESCED_READ_BYTES).toBe(1024 * KIB);
@@ -125,19 +121,19 @@ describe.each(variants)('CrbmReader.getChunks ($name)', ({ encrypted, crypto }) 
 
   it('answers in the order asked, once for a repeated key, and null for an absent one', async () => {
     const { reader, spy } = await open(await build(crypto));
-    const got = await reader.getChunks([9, 2, 9, 15, 0, 65_535]);
+    const got = await getChunks(reader, [0, 2, 9, 9, 15, 65_535]);
     const same = (i: number, key: number | null) =>
       key === null ? expect(got[i]).toBeNull() : expectSameBytes(got[i]!, PAYLOADS.get(key)!);
-    same(0, 9);
+    same(0, 0);
     same(1, 2);
     same(2, 9);
-    same(3, null);
-    same(4, 0);
+    same(3, 9);
+    same(4, null);
     same(5, null);
     // 0 and 2 are one read, 9 another (7 chunks apart); 9 asked twice is read once.
     expect(spy.ranges).toHaveLength(2);
-    expect(await reader.getChunks([])).toEqual([]);
-    expect(await reader.getChunks([15, 16])).toEqual([null, null]);
+    expect(await getChunks(reader, [])).toEqual([]);
+    expect(await getChunks(reader, [15, 16])).toEqual([null, null]);
     expect(spy.ranges).toHaveLength(2);
   });
 
@@ -148,12 +144,12 @@ describe.each(variants)('CrbmReader.getChunks ($name)', ({ encrypted, crypto }) 
     bad[hit] = bad[hit]! ^ 0xff;
     const { reader } = await open(bad);
     const alone = await reader.getChunk(1).catch((e: unknown) => e);
-    const together = await reader.getChunks([0, 1, 2]).catch((e: unknown) => e);
+    const together = await getChunks(reader, [0, 1, 2]).catch((e: unknown) => e);
     expect(alone).toBeInstanceOf(IntegrityError);
     expect(together).toBeInstanceOf(IntegrityError);
     expect((together as Error).message).toBe((alone as Error).message);
     // The chunks around it are fine alone.
-    expect(await reader.getChunks([0, 2])).toHaveLength(2);
+    expect(await getChunks(reader, [0, 2])).toHaveLength(2);
   });
 
   it('does not read a corrupted byte in a gap: only the chunks asked for are checked', async () => {
@@ -164,11 +160,11 @@ describe.each(variants)('CrbmReader.getChunks ($name)', ({ encrypted, crypto }) 
       bad[at] = bad[at]! ^ 0xff;
     }
     const { reader, spy } = await open(bad);
-    const got = await reader.getChunks([0, 3]); // 1 and 2 lie between them, inside the one range
+    const got = await getChunks(reader, [0, 3]); // 1 and 2 lie between them, inside the one range
     expect(spy.ranges).toHaveLength(1);
     expectSameBytes(got[0]!, PAYLOADS.get(0)!);
     expectSameBytes(got[1]!, PAYLOADS.get(3)!);
-    await expect(reader.getChunks([0, 1, 3])).rejects.toBeInstanceOf(IntegrityError);
+    await expect(getChunks(reader, [0, 1, 3])).rejects.toBeInstanceOf(IntegrityError);
   });
 
   it('treats a range that comes back short as an error', async () => {
@@ -177,13 +173,13 @@ describe.each(variants)('CrbmReader.getChunks ($name)', ({ encrypted, crypto }) 
       bytes,
       new Spy(new BufferReader(bytes), (b) => b.subarray(0, b.length - 1)),
     );
-    await expect(reader.getChunks([0, 1])).rejects.toThrow(/read short/);
+    await expect(getChunks(reader, [0, 1])).rejects.toThrow(/read short/);
   });
 
   it('never reads outside the chunk region, even for every chunk', async () => {
     const bytes = await build(crypto);
     const { reader, spy } = await open(bytes);
-    await reader.getChunks(KEYS);
+    await getChunks(reader, KEYS);
     const end = stored(20, encrypted).offset + stored(20, encrypted).length;
     expect(spy.ranges.length).toBeGreaterThan(1); // the 1 MiB bound splits the run
     for (const r of spy.ranges) {
@@ -198,19 +194,19 @@ describe.each(variants)('CrbmReader.getChunks ($name)', ({ encrypted, crypto }) 
 
   it('hands back writable views that share the range they were read in, and one view for a repeated key', async () => {
     const { reader } = await open(await build(crypto));
-    const got = await reader.getChunks([0, 1, 0]);
-    expect(got[0]).toBe(got[2]);
+    const got = await getChunks(reader, [0, 0, 1]);
+    expect(got[0]).toBe(got[1]);
     if (!encrypted) {
       // Documented: a plain chunk is a view into its range, so a caller that keeps one copies it.
       expect(got[0]!.buffer.byteLength).toBeGreaterThan(got[0]!.byteLength);
-      expect(got[0]!.buffer).toBe(got[1]!.buffer);
+      expect(got[0]!.buffer).toBe(got[2]!.buffer);
     }
   });
 
   it('runs every range read through the retry runner it is given', async () => {
     const { reader, spy } = await open(await build(crypto));
     let runs = 0;
-    await reader.getChunks([0, 9], (read) => {
+    await getChunks(reader, [0, 9], (read) => {
       runs++;
       return read();
     });
@@ -219,7 +215,7 @@ describe.each(variants)('CrbmReader.getChunks ($name)', ({ encrypted, crypto }) 
   });
 });
 
-describe('CrbmReader.getChunks: payload cap and associated data', () => {
+describe('CrbmReader.readChunks: payload cap and associated data', () => {
   it('still refuses an index entry over the payload cap when the object is opened', async () => {
     const sink = new BufferSink();
     const writer = new CrbmWriter(sink, { generation: 1 });
@@ -242,7 +238,7 @@ describe('CrbmReader.getChunks: payload cap and associated data', () => {
     };
     const reader = await CrbmReader.open(new BufferReader(bytes), { crypto: spying });
     asked.length = 0;
-    await reader.getChunks([0, 1, 2]);
+    await getChunks(reader, [0, 1, 2]);
     expect(asked).toEqual([0, 1, 2]);
 
     // A reader whose associated data for chunk 1 is chunk 2's cannot open chunk 1, however it was fetched.
@@ -251,8 +247,8 @@ describe('CrbmReader.getChunks: payload cap and associated data', () => {
       aadFor: (scope) => aadFor(SEG, 3, scope === 1 ? 2 : scope),
     };
     const other = await CrbmReader.open(new BufferReader(bytes), { crypto: crossed });
-    await expect(other.getChunks([0, 1, 2])).rejects.toBeInstanceOf(IntegrityError);
-    expect(await other.getChunks([0, 2])).toHaveLength(2);
+    await expect(getChunks(other, [0, 1, 2])).rejects.toBeInstanceOf(IntegrityError);
+    expect(await getChunks(other, [0, 2])).toHaveLength(2);
   });
 
   it('refuses two chunks whose bytes were swapped, plain or encrypted', async () => {
@@ -264,23 +260,27 @@ describe('CrbmReader.getChunks: payload cap and associated data', () => {
       swapped.set(bytes.subarray(b.offset, b.offset + b.length), a.offset);
       swapped.set(bytes.subarray(a.offset, a.offset + a.length), b.offset);
       const reader = await CrbmReader.open(new BufferReader(swapped), crypto ? { crypto } : {});
-      await expect(reader.getChunks([1, 2])).rejects.toBeInstanceOf(IntegrityError);
+      await expect(getChunks(reader, [1, 2])).rejects.toBeInstanceOf(IntegrityError);
     }
   });
 });
 
-/** A blob parking each range read until released, to see how many are in flight at once. */
+/** A blob that counts the range reads in flight, the requests made and the bytes asked for, and can fail some. */
 class Parking implements BlobReader {
   inFlight = 0;
   peak = 0;
   requests = 0;
+  bytesAsked = 0;
+  failFrom: number | undefined;
   constructor(private readonly inner: BlobReader) {}
   async getRange(offset: number, length: number): Promise<Uint8Array> {
-    this.requests++;
+    const n = ++this.requests;
+    this.bytesAsked += length;
     this.inFlight++;
     this.peak = Math.max(this.peak, this.inFlight);
     await new Promise((r) => setTimeout(r, 5));
     this.inFlight--;
+    if (this.failFrom !== undefined && n >= this.failFrom) throw new Error(`range ${n} failed`);
     return this.inner.getRange(offset, length);
   }
   getTail(maxBytes: number) {
@@ -288,56 +288,77 @@ class Parking implements BlobReader {
   }
 }
 
-describe('CrbmReader.getChunks: the bytes one call may plan', () => {
-  const MIB = 1024 * KIB;
-  /** `sizes.length` chunks of the given sizes, keys 0 up, each its own range when sizes are a full MiB. */
-  async function object(sizes: readonly number[]): Promise<Uint8Array> {
-    const sink = new BufferSink();
-    const writer = new CrbmWriter(sink, { generation: 1 });
-    const payload = new Uint8Array(randomBytes(MIB));
-    for (const [key, size] of sizes.entries()) {
-      await writer.addChunk(key, payload.subarray(0, size), 1);
-    }
-    await writer.finish();
-    return sink.bytes();
+const MIB = 1024 * KIB;
+
+/** `sizes.length` chunks of the given sizes, keys 0 up, each its own range when sizes are a full MiB. */
+async function object(sizes: readonly number[], crypto?: CrbmCrypto): Promise<Uint8Array> {
+  const sink = new BufferSink();
+  const writer = new CrbmWriter(sink, { generation: 1, ...(crypto ? { crypto } : {}) });
+  const payload = new Uint8Array(randomBytes(MIB));
+  for (const [key, size] of sizes.entries()) {
+    await writer.addChunk(key, payload.subarray(0, size), 1);
   }
-  const keysOf = (n: number): number[] => Array.from({ length: n }, (_, i) => i);
+  await writer.finish();
+  return sink.bytes();
+}
+const keysOf = (n: number): number[] => Array.from({ length: n }, (_, i) => i);
+const tick = (ms = 20): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-  it('reads exactly the cap and refuses one byte over it, before sending any request', async () => {
-    expect(MAX_GET_CHUNKS_BYTES).toBe(32 * MIB);
-    const atCap = Array.from({ length: 32 }, () => MIB);
-    const parking = new Parking(new BufferReader(await object(atCap)));
+describe('CrbmReader.readChunks: what a stream holds and has in flight', () => {
+  it.each([
+    { name: 'plain', crypto: undefined, extra: 0 },
+    { name: 'encrypted', crypto: cryptoFor(dek), extra: AEAD_NONCE_BYTES + AEAD_TAG_BYTES },
+  ])(
+    'never holds more than `concurrency` ranges, in flight or landed and not taken, however slowly it is read ($name)',
+    async ({ crypto, extra }) => {
+      // 70 chunks of a full MiB, each its own range: the worst object a stream can be given.
+      const stored = MIB + extra;
+      const bytes = await object(
+        Array.from({ length: 70 }, () => MIB),
+        crypto,
+      );
+      for (const width of [1, 4, 32, 64]) {
+        const parking = new Parking(new BufferReader(bytes));
+        const reader = await CrbmReader.open(parking, crypto ? { crypto } : {});
+        parking.requests = 0;
+        parking.bytesAsked = 0;
+        parking.peak = 0;
+        let taken = 0;
+        for await (const item of reader.readChunks(keysOf(70), { concurrency: width })) {
+          expect(item.bytes!.length).toBe(MIB);
+          taken++;
+          await tick(2); // a slow consumer: the stream must not run on without it
+          // ranges requested but not yet consumed, at most the width, so at most width x the largest range held
+          expect(parking.requests - taken).toBeLessThanOrEqual(width);
+          expect(parking.bytesAsked - taken * stored).toBeLessThanOrEqual(width * stored);
+        }
+        expect(taken).toBe(70);
+        expect(parking.requests).toBe(70);
+        expect(parking.peak).toBeLessThanOrEqual(width);
+      }
+    },
+    60_000,
+  );
+
+  it('runs as many ranges together as the width allows, and the default width is 32', async () => {
+    const parking = new Parking(
+      new BufferReader(await object(Array.from({ length: 40 }, () => MIB))),
+    );
     const reader = await CrbmReader.open(parking);
-    parking.requests = 0;
-    expect(await reader.getChunks(keysOf(32))).toHaveLength(32);
-    expect(parking.requests).toBe(32);
-
-    const over = new Parking(new BufferReader(await object([...atCap, 1])));
-    const overReader = await CrbmReader.open(over);
-    over.requests = 0;
-    const err = await overReader.getChunks(keysOf(33)).catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(ValidationError);
-    expect((err as Error).message).toContain(String(MAX_GET_CHUNKS_BYTES));
-    expect((err as Error).message).toContain(String(32 * MIB + 1));
-    expect(over.requests).toBe(0);
-    // The same object is read in two calls under the cap.
-    expect(await overReader.getChunks(keysOf(32))).toHaveLength(32);
+    parking.peak = 0;
+    await collect(reader.readChunks(keysOf(40)));
+    expect(MAX_RANGES_IN_FLIGHT).toBe(32);
+    expect(parking.peak).toBe(32);
+    parking.peak = 0;
+    await collect(reader.readChunks(keysOf(40), { concurrency: 8 }));
+    expect(parking.peak).toBe(8);
+    // No clamp: a caller that asks for more gets more.
+    parking.peak = 0;
+    await collect(reader.readChunks(keysOf(40), { concurrency: 40 }));
+    expect(parking.peak).toBe(40);
   });
 
-  it('counts the gaps a merged read carries, not only the chunks asked for', async () => {
-    // 30 chunks of a MiB, then two merged reads of exactly a MiB each (512 KiB, an unwanted 256 KiB, 256 KiB), then
-    // one byte. The chunks asked for add up to under 32 MiB; the bytes read, gaps included, are one over the cap.
-    const sizes = [
-      ...Array.from({ length: 30 }, () => MIB),
-      ...[512 * KIB, 256 * KIB, 256 * KIB, 512 * KIB, 256 * KIB, 256 * KIB, 1],
-    ];
-    const reader = await CrbmReader.open(new BufferReader(await object(sizes)));
-    const asked = [...keysOf(30), 30, 32, 33, 35];
-    expect(await reader.getChunks(asked)).toHaveLength(asked.length);
-    await expect(reader.getChunks([...asked, 36])).rejects.toBeInstanceOf(ValidationError);
-  });
-
-  it('issues a sparse plan of many tiny ranges in waves of at most 32, and returns every chunk', async () => {
+  it('issues a sparse plan of many tiny ranges through the window, and yields every chunk', async () => {
     // 100 needed chunks of 100 bytes, each followed by a 300 KiB chunk nobody asked for: 100 ranges of their own.
     const sink = new BufferSink();
     const writer = new CrbmWriter(sink, { generation: 1 });
@@ -351,27 +372,116 @@ describe('CrbmReader.getChunks: the bytes one call may plan', () => {
     const reader = await CrbmReader.open(parking);
     parking.requests = 0;
     parking.peak = 0;
-    const keys = Array.from({ length: 100 }, (_, i) => 2 * i);
-    const got = await reader.getChunks(keys);
+    const got = await getChunks(
+      reader,
+      Array.from({ length: 100 }, (_, i) => 2 * i),
+    );
     expect(parking.requests).toBe(100);
     expect(parking.peak).toBeGreaterThan(1);
     expect(parking.peak).toBeLessThanOrEqual(MAX_RANGES_IN_FLIGHT);
     expect(got.every((c) => c !== null && c.length === 100)).toBe(true);
-    expect(MAX_RANGES_IN_FLIGHT).toBe(32);
   });
 
-  it('keeps no more ranges in flight than the cap allows, and does run them together', async () => {
-    const parking = new Parking(
-      new BufferReader(await object(Array.from({ length: 32 }, () => MIB))),
-    );
+  it('reads nothing until the first chunk is asked for', async () => {
+    const parking = new Parking(new BufferReader(await object(keysOf(5).map(() => MIB))));
     const reader = await CrbmReader.open(parking);
-    parking.peak = 0;
-    await reader.getChunks(keysOf(32));
-    expect(parking.peak).toBe(32);
+    parking.requests = 0;
+    const stream = reader.readChunks(keysOf(5));
+    await tick();
+    expect(parking.requests).toBe(0);
+    await stream.next();
+    expect(parking.requests).toBeGreaterThan(0);
+    await stream.return(undefined);
+  });
+
+  it('opens its window 1, 2, 4 ranges wide with `ramp`, so a reader that stops early has asked for little', async () => {
+    const parking = new Parking(new BufferReader(await object(keysOf(40).map(() => MIB))));
+    const reader = await CrbmReader.open(parking);
+    parking.requests = 0;
+    const stream = reader.readChunks(keysOf(40), { ramp: true });
+    await stream.next();
+    expect(parking.requests).toBe(1);
+    await stream.next();
+    expect(parking.requests).toBe(3);
+    await stream.next();
+    expect(parking.requests).toBe(6); // 1, then 2 ahead of the one taken, then 4
+    await stream.return(undefined);
+  });
+
+  it('stops launching ranges when the consumer stops, and a range that fails afterwards is never raised', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const parking = new Parking(new BufferReader(await object(keysOf(70).map(() => MIB))));
+      const reader = await CrbmReader.open(parking);
+      parking.requests = 0;
+      parking.failFrom = 2; // every range after the first fails, when it lands
+      for await (const item of reader.readChunks(keysOf(70), { concurrency: 4 })) {
+        expect(item.key).toBe(0);
+        break;
+      }
+      await tick(60);
+      expect(parking.requests).toBe(4); // the window the first take opened, and no more
+      expect(parking.inFlight).toBe(0);
+      await tick(20);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+    expect(unhandled).toEqual([]);
+  });
+
+  it('yields the chunks before a bad one, then ends with its error when its turn comes', async () => {
+    const bytes = await object(keysOf(6).map(() => MIB));
+    const reader = await CrbmReader.open(new BufferReader(bytes));
+    const bad = bytes.slice();
+    const at = PAYLOAD_START + 3 * MIB + 9; // chunk 3
+    bad[at] = bad[at]! ^ 0xff;
+    const damaged = await CrbmReader.open(new BufferReader(bad));
+    const seen: number[] = [];
+    let thrown: unknown;
+    try {
+      for await (const item of damaged.readChunks(keysOf(6))) seen.push(item.key);
+    } catch (err) {
+      thrown = err;
+    }
+    expect(seen).toEqual([0, 1, 2]);
+    expect(thrown).toBeInstanceOf(IntegrityError);
+    expect(await getChunks(reader, keysOf(6))).toHaveLength(6);
+  });
+
+  it('marks the first chunk of each range with what the request moved and how long it took', async () => {
+    const reader = await CrbmReader.open(new BufferReader(await build()));
+    let t = 0;
+    const items = await collect(
+      reader.readChunks([0, 1, 2, 4, 9, 20], {
+        // one reading when a range starts and one when it lands: each takes 7
+        now: () => (t += 7),
+      }),
+    );
+    const requests = items.flatMap((i) => (i.request === undefined ? [] : [[i.key, i.request]]));
+    expect(requests.map(([key]) => key)).toEqual([0, 9]);
+    expect(requests.map(([, r]) => (r as { bytes: number }).bytes)).toEqual([5 * SIZE, 2 * SIZE]);
+    for (const [, r] of requests) expect((r as { ms: number }).ms).toBeGreaterThan(0);
+    // An absent key carries none, and a repeated key does not count its request twice.
+    const again = await collect(reader.readChunks([0, 0, 15]));
+    expect(again.filter((i) => i.request !== undefined)).toHaveLength(1);
+  });
+
+  it('refuses keys out of ascending order and a width that is not a positive integer', async () => {
+    const reader = await CrbmReader.open(new BufferReader(await build()));
+    await expect(collect(reader.readChunks([2, 1]))).rejects.toBeInstanceOf(ValidationError);
+    for (const concurrency of [0, -1, 1.5, Number.NaN]) {
+      await expect(collect(reader.readChunks([0], { concurrency }))).rejects.toBeInstanceOf(
+        ValidationError,
+      );
+    }
   });
 });
 
-describe('CrbmReader.getChunks: an object with the metadata extension block', () => {
+describe('CrbmReader.readChunks: an object with the metadata extension block', () => {
   it('reads every chunk and no byte past the last of them', async () => {
     const sink = new BufferSink();
     const writer = new CrbmWriter(sink, { generation: 3, metadata: { source: 'test' } });
@@ -382,7 +492,7 @@ describe('CrbmReader.getChunks: an object with the metadata extension block', ()
     const reader = await CrbmReader.open(spy);
     expect(reader.metadata).toEqual({ source: 'test' });
     spy.ranges.length = 0;
-    const got = await reader.getChunks(KEYS);
+    const got = await getChunks(reader, KEYS);
     for (const [i, k] of KEYS.entries()) {
       expectSameBytes(got[i]!, PAYLOADS.get(k)!);
     }

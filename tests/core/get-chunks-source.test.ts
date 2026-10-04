@@ -1,6 +1,6 @@
 /**
- * `getChunks` on the storage chunk source: several chunks of one generation, in as few requests as the planner makes
- * them, with the generation they came from. Each case counts the range requests the driver saw, and reads the
+ * `getChunks` on the storage chunk source: a stream of several chunks of one generation, in as few requests as the
+ * planner makes them, each with the generation it came from. Each case counts the range requests the driver saw, and reads the
  * bytes back, since a count says nothing about which generation answered.
  */
 import { randomBytes } from 'node:crypto';
@@ -15,21 +15,20 @@ import type { PinnedAt } from '@/core/pinned-storage-source';
 import { segmentKey } from '@/core/keys';
 import { SafeBitmap } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { collect, expectSameBytes } from '../helpers/chunk-stream';
+import type { ChunkRead, ReadChunksOptions, StorageChunkSource } from '@/core/ports';
 
-/**
- * Two byte arrays are equal, compared natively: the framework's deep equality walks a 100 KiB buffer element by
- * element, which takes seconds over a test's worth of chunks.
- */
-function expectSameBytes(
-  got: Uint8Array | null | undefined,
-  want: Uint8Array | null | undefined,
-): void {
-  expect(got, 'a chunk is missing').toBeTruthy();
-  expect(want, 'the expected chunk is missing').toBeTruthy();
-  const a = Buffer.from(got!.buffer, got!.byteOffset, got!.byteLength);
-  const b = Buffer.from(want!.buffer, want!.byteOffset, want!.byteLength);
-  expect(a.length, 'chunk length').toBe(b.length);
-  expect(a.equals(b), 'chunk bytes').toBe(true);
+/** What a stream yields, gathered: the chunks lined up with the keys, and the version each one was read from. */
+async function read(
+  source: StorageChunkSource,
+  ref: SegmentRef,
+  keys: readonly number[],
+  options?: ReadChunksOptions,
+): Promise<{ version: string | null; chunks: (Uint8Array | null)[]; items: ChunkRead[] }> {
+  const items = await collect(source.getChunks!(ref, keys, options));
+  const versions = new Set(items.map((i) => i.version));
+  expect(versions.size, 'one stream, one generation').toBeLessThanOrEqual(1);
+  return { version: items[0]?.version ?? null, chunks: items.map((i) => i.bytes), items };
 }
 
 const REF: SegmentRef = { segment: 's' };
@@ -70,10 +69,18 @@ class CountingStorage extends MemoryStorageDriver {
     await this.beforeTail?.();
     return super.getTail(key, maxBytes);
   }
+  inFlight = 0;
+  peak = 0;
   override async getRange(key: GenKey, offset: number, length: number): Promise<Uint8Array> {
     this.ranges.push({ generation: key.generation, offset, length });
-    await this.beforeRange?.(this.ranges.length);
-    return super.getRange(key, offset, length);
+    this.inFlight++;
+    this.peak = Math.max(this.peak, this.inFlight);
+    try {
+      await this.beforeRange?.(this.ranges.length);
+      return await super.getRange(key, offset, length);
+    } finally {
+      this.inFlight--;
+    }
   }
 }
 
@@ -107,7 +114,7 @@ async function world(options: { keystore?: InProcessKeystore } = {}) {
 describe('CrbmStorageChunkSource.getChunks', () => {
   it('returns the chunks with the version of the generation, in the requests the planner makes', async () => {
     const { source, storage } = await world();
-    const got = await source.getChunks(REF, [0, 1, 2, 44]);
+    const got = await read(source, REF, [0, 1, 2, 44]);
     expect(storage.ranges).toHaveLength(2);
     expect(got.version).toBe(await source.currentVersion(REF));
     for (const [i, key] of [0, 1, 2, 44].entries()) {
@@ -119,24 +126,25 @@ describe('CrbmStorageChunkSource.getChunks', () => {
   it('reads an encrypted segment, each chunk under its own associated data', async () => {
     const keystore = new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
     const { source } = await world({ keystore });
-    const got = await source.getChunks(REF, [3, 40]);
+    const got = await read(source, REF, [3, 40]);
     expect(remaindersOf(got.chunks[0]!)[0]).toBe(0);
     expectSameBytes(got.chunks[1]!, (await source.getChunk({ ...REF, chunkKey: 40 }))!);
   });
 
   it('answers null for an absent key and for a segment with no generation', async () => {
     const { source } = await world();
-    expect((await source.getChunks(REF, [0, 500])).chunks[1]).toBeNull();
-    expect(await source.getChunks({ segment: 'nobody' }, [0, 1])).toEqual({
-      version: null,
-      chunks: [null, null],
-    });
+    expect((await read(source, REF, [0, 500])).chunks[1]).toBeNull();
+    const none = await read(source, { segment: 'nobody' }, [0, 1]);
+    expect(none.items).toEqual([
+      { key: 0, bytes: null, version: null },
+      { key: 1, bytes: null, version: null },
+    ]);
   });
 
   it('refuses a key that is not a chunk key', async () => {
     const { source } = await world();
-    await expect(source.getChunks(REF, [0, 65_536])).rejects.toThrow(/chunkKey/);
-    await expect(source.getChunks(REF, [-1])).rejects.toThrow(/chunkKey/);
+    await expect(read(source, REF, [0, 65_536])).rejects.toThrow(/chunkKey/);
+    await expect(read(source, REF, [-1])).rejects.toThrow(/chunkKey/);
   });
 
   it('reads one generation for the whole call, though a publish lands and the pointer refreshes between its requests', async () => {
@@ -146,13 +154,13 @@ describe('CrbmStorageChunkSource.getChunks', () => {
       await publishGen1();
       clock.advance(TTL + 1);
     };
-    const first = await source.getChunks(REF, [0, 44]);
+    const first = await read(source, REF, [0, 44]);
     expect(storage.ranges).toHaveLength(2);
     expect(storage.ranges.every((r) => r.generation === 0)).toBe(true);
     expect(first.chunks.map(parityOf)).toEqual([0, 0]);
     expect(first.version).toMatch(/^0:/);
     // The next call resolves the pointer afresh, and reads, and reports, the new generation.
-    const next = await source.getChunks(REF, [0, 44]);
+    const next = await read(source, REF, [0, 44]);
     expect(next.chunks.map(parityOf)).toEqual([1, 1]);
     expect(next.version).toMatch(/^1:/);
   });
@@ -171,7 +179,7 @@ describe('CrbmStorageChunkSource.getChunks', () => {
         throw new TransientError('throttled');
       }
     };
-    const got = await retrying.getChunks!(REF, [0, 44]);
+    const got = await read(retrying, REF, [0, 44]);
     expect(got.chunks.map(parityOf)).toEqual([0, 0]);
     // Two merged reads and one repeat of the second: three requests, not four.
     expect(storage.ranges).toHaveLength(3);
@@ -193,7 +201,7 @@ describe('CrbmStorageChunkSource.getChunks', () => {
       clock: manualClock(),
       rng: { next: () => 0.5 },
     });
-    const got = await retrying.getChunks!(REF, [0, 1]);
+    const got = await read(retrying, REF, [0, 1]);
     expect(got.chunks.map(parityOf)).toEqual([0, 0]);
     expect(failures).toBeLessThan(0);
   });
@@ -206,7 +214,7 @@ describe('CrbmStorageChunkSource.getChunks', () => {
       policy: { maxAttempts: 2, baseDelayMs: 1, maxDelayMs: 4, backoffFactor: 2, jitter: 'none' },
     });
     storage.beforeRange = () => Promise.reject(new TransientError('down'));
-    await expect(retrying.getChunks!(REF, [0, 44])).rejects.toBeInstanceOf(TransientError);
+    await expect(read(retrying, REF, [0, 44])).rejects.toBeInstanceOf(TransientError);
     expect(storage.ranges).toHaveLength(4); // two requests, two attempts each
   });
 });
@@ -225,7 +233,7 @@ describe('CrbmStorageChunkSource.getChunks: the call stays on one generation thr
       await publishGen1();
       await storage.delete({ ...REF, generation: 0 });
     };
-    const got = await source.getChunks(REF, [0, 44]);
+    const got = await read(source, REF, [0, 44]);
     expect(got.chunks.map(parityOf)).toEqual([1, 1]);
     expect(got.version).toMatch(/^1:/);
   });
@@ -234,7 +242,7 @@ describe('CrbmStorageChunkSource.getChunks: the call stays on one generation thr
     const { source, storage } = await world();
     const swapped = replaceGen0(storage);
     storage.beforeRange = () => swapped; // every request waits for the swap, as one that lands after it would
-    const got = await source.getChunks(REF, [0, 44]);
+    const got = await read(source, REF, [0, 44]);
     expect(got.chunks.map(parityOf)).toEqual([1, 1]);
   });
 
@@ -245,10 +253,10 @@ describe('CrbmStorageChunkSource.getChunks: the call stays on one generation thr
       await publishGen1();
       source.invalidate(REF);
     };
-    const got = await source.getChunks(REF, [0, 44]);
+    const got = await read(source, REF, [0, 44]);
     expect(got.chunks.map(parityOf)).toEqual([0, 0]);
     expect(got.version).toMatch(/^0:/);
-    expect((await source.getChunks(REF, [0])).version).toMatch(/^1:/);
+    expect((await read(source, REF, [0])).version).toMatch(/^1:/);
   });
 
   it('retries a transient fault in the check that the object was replaced', async () => {
@@ -268,7 +276,7 @@ describe('CrbmStorageChunkSource.getChunks: the call stays on one generation thr
         throw new TransientError('throttled');
       };
     };
-    const got = await retrying.getChunks!(REF, [0, 44]);
+    const got = await read(retrying, REF, [0, 44]);
     expect(failures).toBe(1);
     expect(got.chunks.map(parityOf)).toEqual([1, 1]);
   });
@@ -280,13 +288,144 @@ describe('CrbmStorageChunkSource.getChunks: the call stays on one generation thr
       rng: { next: () => 0.5 },
     });
     let outer = 0;
-    await inner.getChunks!(REF, [0, 44], {
+    await read(inner, REF, [0, 44], {
       retry: (request) => {
         outer++;
         return request();
       },
     });
     expect(outer).toBeGreaterThanOrEqual(2); // the resolution and each range
+  });
+});
+
+describe('CrbmStorageChunkSource.getChunks: a stream across waves', () => {
+  it('reads nothing, and resolves nothing, until the first chunk is asked for', async () => {
+    const { source, storage } = await world();
+    const stream = source.getChunks!(REF, [0, 44]);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(storage.ranges).toHaveLength(0);
+    const it = stream[Symbol.asyncIterator]();
+    await it.next();
+    expect(storage.ranges.length).toBeGreaterThan(0);
+    await it.return!(undefined);
+  });
+
+  it('keeps to the generation it opened when a publish and a TTL lapse land between its ranges', async () => {
+    const { source, storage, clock, publishGen1 } = await world();
+    const it = source.getChunks!(REF, [0, 44], { concurrency: 1 })[Symbol.asyncIterator]();
+    const first = await it.next();
+    await publishGen1();
+    clock.advance(TTL + 1); // the pointer is stale now, and a fresh resolution would see generation 1
+    const second = await it.next();
+    expect([first.value, second.value].map((c: ChunkRead) => parityOf(c.bytes))).toEqual([0, 0]);
+    expect(storage.ranges.every((r) => r.generation === 0)).toBe(true);
+    expect(first.value.version).toBe(second.value.version);
+  });
+
+  it('heals forward between ranges: chunks already yielded stay, the rest come from the generation now current', async () => {
+    const { source, storage, publishGen1 } = await world();
+    storage.beforeRange = async (n) => {
+      if (n !== 2) return;
+      await publishGen1();
+      await storage.delete({ ...REF, generation: 0 });
+    };
+    // Not `read`, which holds a stream to one generation: this is the case where a stream describes two.
+    const items = await collect(source.getChunks!(REF, [0, 44], { concurrency: 1 }));
+    expect(items.map((i) => i.key)).toEqual([0, 44]);
+    expect(items.map((i) => parityOf(i.bytes))).toEqual([0, 1]);
+    expect(items[0]!.version).toMatch(/^0:/);
+    expect(items[1]!.version).toMatch(/^1:/);
+  });
+
+  it('counts positions, not keys, when it heals: a repeated key is not read or yielded twice over', async () => {
+    const { source, storage, publishGen1 } = await world();
+    storage.beforeRange = async (n) => {
+      if (n !== 2) return;
+      await publishGen1();
+      await storage.delete({ ...REF, generation: 0 });
+    };
+    const items = await collect(source.getChunks!(REF, [0, 0, 44], { concurrency: 1 }));
+    expect(items.map((i) => i.key)).toEqual([0, 0, 44]);
+    expect(items.map((i) => parityOf(i.bytes))).toEqual([0, 0, 1]);
+  });
+
+  it('heals again once it has made progress since the last heal', async () => {
+    const { source, storage, registry, publishGen1 } = await world();
+    storage.beforeRange = async (n) => {
+      if (n === 1) {
+        await publishGen1();
+        await storage.delete({ ...REF, generation: 0 });
+      }
+      if (n === 3) {
+        // The first range of the healed read has landed and been yielded; now the generation it read is swept too.
+        await bulkLoadCrbmGeneration(storage, { ...REF, generation: 2 }, idsOf(0), { registry });
+        await storage.delete({ ...REF, generation: 1 });
+      }
+    };
+    const items = await collect(source.getChunks!(REF, [0, 44], { concurrency: 1 }));
+    expect(items.map((i) => i.key)).toEqual([0, 44]);
+    expect(items.map((i) => i.version)).toEqual([
+      expect.stringMatching(/^1:/),
+      expect.stringMatching(/^2:/),
+    ]);
+  });
+
+  it('gives up on a second failure with no chunk yielded in between', async () => {
+    const { source, storage } = await world();
+    storage.beforeRange = () => Promise.reject(new NotFoundError('gone'));
+    await expect(read(source, REF, [0, 44])).rejects.toBeInstanceOf(NotFoundError);
+    // The first try and one heal: each issues its two ranges, and nothing goes on after.
+    expect(storage.ranges.length).toBeLessThanOrEqual(4);
+  });
+
+  it('bounds the requests in flight by `concurrency`, through the retrying wrapper too', async () => {
+    const { source, storage } = await world();
+    const retrying = new RetryingStorageChunkSource(source, {
+      clock: manualClock(),
+      rng: { next: () => 0.5 },
+    });
+    storage.beforeRange = () => new Promise((r) => setTimeout(r, 5));
+    // Chunks 0, 6, 12, … are a gap past 256 KiB apart: each is its own range.
+    const keys = [0, 36, 40, 44];
+    await collect(retrying.getChunks!(REF, keys, { concurrency: 1 }));
+    expect(storage.peak).toBe(1);
+    storage.peak = 0;
+    await collect(source.getChunks!(REF, [0, 44], { concurrency: 2 }));
+    expect(storage.peak).toBe(2);
+  });
+
+  it('times each range request with the source clock, and says how many bytes it moved', async () => {
+    const { source, storage, clock } = await world();
+    storage.beforeRange = async () => {
+      clock.advance(7);
+    };
+    const got = await read(source, REF, [0, 44]);
+    const requests = got.items.flatMap((i) => (i.request === undefined ? [] : [i.request]));
+    expect(requests).toHaveLength(storage.ranges.length);
+    expect(requests.map((r) => r.bytes)).toEqual(storage.ranges.map((r) => r.length));
+    for (const r of requests) expect(r.ms).toBeGreaterThanOrEqual(7);
+  });
+
+  it('a stream that stops early leaves no unhandled failure behind', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const { source, storage } = await world();
+      storage.beforeRange = async (n) => {
+        if (n > 1) throw new TransientError('down');
+      };
+      for await (const chunk of source.getChunks!(REF, [0, 40, 44])) {
+        expect(chunk.key).toBe(0);
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 40));
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+    expect(unhandled).toEqual([]);
   });
 });
 
@@ -303,9 +442,9 @@ describe('PinnedStorageChunkSource.getChunks', () => {
     const { wrapper, source, storage, clock, publishGen1 } = await pinned();
     await publishGen1();
     clock.advance(TTL + 1);
-    expect((await source.getChunks(REF, [0])).chunks.map(parityOf)).toEqual([1]);
+    expect((await read(source, REF, [0])).chunks.map(parityOf)).toEqual([1]);
     storage.ranges = [];
-    const got = await wrapper.getChunks(REF, [0, 1, 44]);
+    const got = await read(wrapper, REF, [0, 1, 44]);
     expect(got.chunks.map(parityOf)).toEqual([0, 0, 0]);
     expect(storage.ranges.every((r) => r.generation === 0)).toBe(true);
     expect(got.version).toBe(await wrapper.currentVersion(REF));
@@ -314,13 +453,22 @@ describe('PinnedStorageChunkSource.getChunks', () => {
 
   it('refuses a pin whose object was replaced, whether the reader was open before or not', async () => {
     const warm = await pinned();
-    await warm.wrapper.getChunks(REF, [0]); // the pin's reader is open and remembered
+    await read(warm.wrapper, REF, [0]); // the pin's reader is open and remembered
     await replaceGen0(warm.storage);
-    await expect(warm.wrapper.getChunks(REF, [0, 44])).rejects.toBeInstanceOf(NotFoundError);
+    await expect(read(warm.wrapper, REF, [0, 44])).rejects.toBeInstanceOf(NotFoundError);
 
     const cold = await pinned();
     await replaceGen0(cold.storage);
-    await expect(cold.wrapper.getChunks(REF, [0, 44])).rejects.toBeInstanceOf(NotFoundError);
+    await expect(read(cold.wrapper, REF, [0, 44])).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it('never moves to another generation: a pinned generation that was swept fails', async () => {
+    const { wrapper, storage, publishGen1 } = await pinned();
+    await publishGen1();
+    storage.beforeRange = async (n) => {
+      if (n === 1) await storage.delete({ ...REF, generation: 0 });
+    };
+    await expect(read(wrapper, REF, [0, 44])).rejects.toBeInstanceOf(NotFoundError);
   });
 
   it('passes an unpinned segment to the live source, with the live version', async () => {
@@ -328,7 +476,7 @@ describe('PinnedStorageChunkSource.getChunks', () => {
     await bulkLoadCrbmGeneration(storage, { segment: 'other', generation: 0 }, idsOf(1), {
       registry,
     });
-    const got = await wrapper.getChunks({ segment: 'other' }, [0]);
+    const got = await read(wrapper, { segment: 'other' }, [0]);
     expect(got.chunks.map(parityOf)).toEqual([1]);
     expect(got.version).toBe(await source.currentVersion({ segment: 'other' }));
   });
@@ -339,6 +487,10 @@ describe('PinnedStorageChunkSource.getChunks', () => {
       source,
       new Map([[segmentKey(REF), { generation: null, version: null }]]),
     );
-    expect(await wrapper.getChunks(REF, [0, 1])).toEqual({ version: null, chunks: [null, null] });
+    const none = await read(wrapper, REF, [0, 1]);
+    expect(none.items).toEqual([
+      { key: 0, bytes: null, version: null },
+      { key: 1, bytes: null, version: null },
+    ]);
   });
 });

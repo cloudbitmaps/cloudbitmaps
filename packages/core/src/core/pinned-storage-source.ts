@@ -23,7 +23,7 @@
  */
 import type {
   ChunkRef,
-  ChunksRead,
+  ChunkRead,
   ReadChunksOptions,
   GenerationSummary,
   StorageChunkSource,
@@ -95,16 +95,36 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
    * A pinned segment's chunks come from the pinned generation alone, under the version a pinned read keys by
    * ({@link currentVersion}); another segment's go to the live source, which answers with its own.
    */
-  async getChunks(
+  getChunks(
     ref: SegmentRef,
     keys: readonly number[],
     options?: ReadChunksOptions,
-  ): Promise<ChunksRead> {
+  ): AsyncIterable<ChunkRead> {
     const pin = this.pinFor(ref);
     if (pin === undefined) return this.inner.getChunks(ref, keys, options);
-    if (pin.generation === null) return { version: null, chunks: keys.map(() => null) };
-    const chunks = await this.inner.getChunksAt(ref, pin.generation, keys, heldBy(pin), options);
-    return { version: await this.currentVersion(ref), chunks };
+    return this.pinnedChunks(ref, pin, keys, options);
+  }
+
+  private async *pinnedChunks(
+    ref: SegmentRef,
+    pin: PinnedAt,
+    keys: readonly number[],
+    options: ReadChunksOptions | undefined,
+  ): AsyncGenerator<ChunkRead> {
+    if (pin.generation === null) {
+      for (const key of keys) yield { key, bytes: null, version: null };
+      return;
+    }
+    const version = await this.currentVersion(ref);
+    for await (const chunk of this.inner.getChunksAt(
+      ref,
+      pin.generation,
+      keys,
+      heldBy(pin),
+      options,
+    )) {
+      yield { ...chunk, version };
+    }
   }
 
   listChunkKeys(ref: SegmentRef): Promise<number[]> {

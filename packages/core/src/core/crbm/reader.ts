@@ -21,10 +21,10 @@ import { IntegrityError, isIntegrityError, UnsupportedError, ValidationError } f
 import type { BlobReader } from '../blob';
 import type { CrbmCrypto } from '../crypto';
 import { MAX_METADATA_BYTES, metadataFromBytes } from '../metadata';
-import type { GenerationMetadata } from '../ports';
+import type { ChunkRead, GenerationMetadata } from '../ports';
 import { crc32c } from './crc32c';
-import { mapWithConcurrency } from '../concurrency';
-import { MAX_GET_CHUNKS_BYTES, MAX_RANGES_IN_FLIGHT, planChunkReads } from './plan-reads';
+import { ChunkWindow } from '../chunk-window';
+import { MAX_RANGES_IN_FLIGHT, planChunkReads } from './plan-reads';
 import type { ChunkExtent } from './plan-reads';
 import { readVarint } from './varint';
 import {
@@ -587,64 +587,109 @@ export class CrbmReader {
   }
 
   /**
-   * Read several chunks, one storage request per merged range ({@link planChunkReads}) rather than one per chunk. The
-   * answer lines up with `chunkKeys`: the chunk at each position, or `null` where this generation has none, as
-   * {@link getChunk} answers for an absent key. A key given twice is read once and answered at both positions.
+   * Read several chunks as a stream, one storage request per merged range ({@link planChunkReads}) rather than one per
+   * chunk. `chunkKeys` are in ascending order, a key may repeat, and anything else is a {@link ValidationError}. One
+   * item comes out per position of `chunkKeys`, in order: the chunk's bytes, or `null` where this generation has none,
+   * as {@link getChunk} answers for an absent key. A key given twice is read once and answered at both positions with
+   * the same view. The first chunk out of each range carries `request`, what that range cost.
+   *
+   * The whole key list is planned once, up front, against this one generation's index. The ranges then run through a
+   * window of `options.concurrency` reads ({@link MAX_RANGES_IN_FLIGHT} by default) that counts a range until the
+   * consumer has taken it, so a stream never holds more than that many ranges, in flight or landed, however many keys
+   * it was given or how slowly it is read; with `options.ramp` the window opens 1, 2, 4 … wide. A range is at most 1 MiB
+   * unless it is one chunk, which is at most the payload cap, so the bound is that many times the per-chunk cap
+   * (1 MiB, and 28 bytes more for an encrypted chunk). Nothing is read until the first item is asked for, and a
+   * consumer that stops launches no more: ranges already in flight finish and are dropped, and a failure of one of
+   * those is never raised.
    *
    * Every chunk is held to the check a read of it alone gets: its slice of the range must match its index entry's
    * CRC32C, and on an encrypted object it opens under its own associated data, so a chunk moved to another place in
    * the object, or another key's bytes, is refused. The bytes in a gap between needed chunks are never parsed. A
-   * range that comes back shorter than asked is an {@link IntegrityError}, and any chunk that fails its check fails
-   * the call, as a read of that chunk alone would.
+   * range that comes back shorter than asked is an {@link IntegrityError}, and a chunk that fails its check ends the
+   * stream with that error when its turn comes, as a read of it alone would fail.
    *
-   * A call plans at most {@link MAX_GET_CHUNKS_BYTES} of reads, gaps included, and a call that would plan more is
-   * refused with a {@link ValidationError} before any range request is sent. That bounds the ranges in flight and the bytes
-   * the call holds, which it does until the caller drops what it returns. At most {@link MAX_RANGES_IN_FLIGHT}
-   * ranges are in flight at once, and the rest of the plan follows as they finish.
-   *
-   * `readRange`, when given, runs each range read, so a caller can retry one request without repeating the others.
-   * A plain chunk is a writable view into the range it was read in, which may be up to 1 MiB shared with its
-   * neighbours, and a key given twice gets the same view at both positions: copy a chunk to keep it. An empty list of
-   * keys reads nothing.
+   * `options.readRange`, when given, runs each range read, so a caller can retry one request without repeating the
+   * others; `options.now` times each request for `request.ms` (a reader has no clock of its own, so 0 without it).
+   * A plain chunk is a writable view into the range it was read in: copy a chunk to keep it.
    */
-  async getChunks(
+  async *readChunks(
     chunkKeys: readonly number[],
-    readRange: <T>(read: () => Promise<T>) => Promise<T> = (read) => read(),
-  ): Promise<(Uint8Array | null)[]> {
+    options: {
+      readonly concurrency?: number;
+      readonly ramp?: boolean;
+      readonly readRange?: <T>(read: () => Promise<T>) => Promise<T>;
+      readonly now?: () => number;
+    } = {},
+  ): AsyncGenerator<Omit<ChunkRead, 'version'>> {
+    const width = options.concurrency ?? MAX_RANGES_IN_FLIGHT;
+    if (!Number.isInteger(width) || width < 1) {
+      throw new ValidationError(
+        `concurrency must be a positive integer; got ${options.concurrency}`,
+      );
+    }
+    for (let i = 1; i < chunkKeys.length; i++) {
+      if (!(chunkKeys[i]! >= chunkKeys[i - 1]!)) {
+        throw new ValidationError('chunk keys must be in ascending order');
+      }
+    }
+    const readRange = options.readRange ?? (<T>(read: () => Promise<T>): Promise<T> => read());
+    const now = options.now ?? ((): number => 0);
     const slots = chunkKeys.map((key) => this.slotOf(key));
-    const needed = [...new Set(slots.filter((slot) => slot >= 0))].sort((a, b) => a - b);
+    const needed = [...new Set(slots.filter((slot) => slot >= 0))];
     const extents: ChunkExtent[] = needed.map((slot) => ({
       key: this.index.keys[slot]!,
       offset: this.index.offsets[slot]!,
       length: this.index.lengths[slot]!,
     }));
     const reads = planChunkReads(extents, { start: PAYLOAD_START, end: this.payloadEnd });
-    const planned = reads.reduce((sum, read) => sum + read.length, 0);
-    if (planned > MAX_GET_CHUNKS_BYTES) {
-      throw new ValidationError(
-        `${chunkKeys.length} chunk keys plan ${planned} bytes of reads, over the ${MAX_GET_CHUNKS_BYTES} a call may ` +
-          'plan: ask for fewer chunks at once',
+    const window = new ChunkWindow<{ bytes: Uint8Array; ms: number }>(
+      reads.map((_, i) => i),
+      async (i) => {
+        const read = reads[i]!;
+        const startedAt = now();
+        const bytes = await readRange(() => this.blob.getRange(read.offset, read.length));
+        if (bytes.length !== read.length) {
+          throw new IntegrityError(
+            `.crbm range [${read.offset}, +${read.length}) read short (${bytes.length} bytes)`,
+          );
+        }
+        return { bytes, ms: Math.max(0, now() - startedAt) };
+      },
+      width,
+      options.ramp === true,
+    );
+    let next = 0; // the next range to take
+    let range: { read: (typeof reads)[number]; bytes: Uint8Array; ms: number } | undefined;
+    let inRange = 0; // the next chunk of `range` to hand out
+    let last: { key: number; bytes: Uint8Array } | undefined;
+    for (const [i, key] of chunkKeys.entries()) {
+      if (slots[i]! < 0) {
+        yield { key, bytes: null };
+        continue;
+      }
+      if (last !== undefined && last.key === key) {
+        yield { key, bytes: last.bytes };
+        continue;
+      }
+      let first = false;
+      if (range === undefined || inRange === range.read.chunks.length) {
+        const taken = await window.take();
+        range = { read: reads[next++]!, ...taken };
+        inRange = 0;
+        first = true;
+      }
+      const chunk = range.read.chunks[inRange++]!;
+      const from = chunk.offset - range.read.offset;
+      const bytes = this.openChunk(
+        slots[i]!,
+        chunk.key,
+        range.bytes.subarray(from, from + chunk.length),
       );
+      last = { key, bytes };
+      yield first
+        ? { key, bytes, request: { bytes: range.read.length, ms: range.ms } }
+        : { key, bytes };
     }
-    const opened = new Map<number, Uint8Array>();
-    // At most a window of ranges is in flight; the rest follow as these finish.
-    await mapWithConcurrency(reads, MAX_RANGES_IN_FLIGHT, async (read) => {
-      const bytes = await readRange(() => this.blob.getRange(read.offset, read.length));
-      if (bytes.length !== read.length) {
-        throw new IntegrityError(
-          `.crbm range [${read.offset}, +${read.length}) read short (${bytes.length} bytes)`,
-        );
-      }
-      for (const chunk of read.chunks) {
-        const from = chunk.offset - read.offset;
-        const slot = this.slotOf(chunk.key);
-        opened.set(
-          chunk.key,
-          this.openChunk(slot, chunk.key, bytes.subarray(from, from + chunk.length)),
-        );
-      }
-    });
-    return slots.map((slot, i) => (slot < 0 ? null : opened.get(chunkKeys[i]!)!));
   }
 }
 

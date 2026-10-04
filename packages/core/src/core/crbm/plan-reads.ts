@@ -3,7 +3,7 @@
  * ranges of one `.crbm` object that cover them, each read in one storage request.
  *
  * Pure format arithmetic over numbers: no I/O, no clock, no randomness, and no parsing of the bytes it plans reads
- * for. The reader that executes a plan ({@link CrbmReader.getChunks}) slices each needed chunk out of the bytes a
+ * for. The reader that executes a plan ({@link CrbmReader.readChunks}) slices each needed chunk out of the bytes a
  * range returns and checks it exactly as a read of that chunk alone is checked; the bytes in a gap between two
  * needed chunks are fetched and never looked at.
  *
@@ -28,15 +28,10 @@ export const MAX_COALESCE_GAP_BYTES = 256 * 1024;
 export const MAX_COALESCED_READ_BYTES: number = DEFAULT_MAX_BITMAP_BYTES;
 
 /**
- * The most bytes one `getChunks` call may plan, gaps included: the default `concurrency` of 32 times the largest
- * read. A call that would plan more is refused before any request goes out, so what a call holds, and how many
- * ranges it has in flight, is bounded whatever keys it is given.
- */
-export const MAX_GET_CHUNKS_BYTES: number = 32 * MAX_COALESCED_READ_BYTES;
-
-/**
- * The most range reads one `getChunks` call has in flight at once; the rest of a call's plan follows in waves as these
- * finish. It is the default `concurrency`, so a call opens no more connections than a window of single-chunk reads.
+ * The default number of range reads a chunk stream holds ahead of its consumer, in flight or landed and not yet taken;
+ * the rest of the plan follows as the consumer takes them. A range is at most {@link MAX_COALESCED_READ_BYTES} unless
+ * it is one chunk, so a stream holds at most this many times the per-chunk decode cap, whatever the key list and the
+ * object: the memory bound a window of single-chunk reads has, and no more connections than it opens.
  */
 export const MAX_RANGES_IN_FLIGHT = 32;
 

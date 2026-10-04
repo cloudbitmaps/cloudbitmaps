@@ -49,14 +49,21 @@ export interface SegmentSize {
 }
 
 /**
- * What {@link StorageChunkSource.getChunks} answers: the chunks, aligned with the keys asked for (`null` where the
- * generation has none), and the version of the one generation they were all read from, or `null` when the segment
- * has no generation. The version is what {@link StorageChunkSource.currentVersion} reports for that generation,
- * so a caller can key what it keeps by the generation the bytes came from rather than the one it resolved earlier.
+ * One chunk of a {@link StorageChunkSource.getChunks} stream: the key asked for, its bytes (`null` where the generation
+ * holds none), and the version of the generation the bytes were read from, or `null` when the segment has no
+ * generation. The version is what {@link StorageChunkSource.currentVersion} reports for that generation, so a caller
+ * can key what it keeps by the generation the bytes came from rather than the one it resolved earlier.
  */
-export interface ChunksRead {
+export interface ChunkRead {
+  readonly key: number;
+  readonly bytes: Uint8Array | null;
   readonly version: string | null;
-  readonly chunks: readonly (Uint8Array | null)[];
+  /**
+   * Set on the first chunk read out of each range request, and only there: what that request moved (`bytes`, the gaps
+   * between the chunks it carried included) and how long it took (`ms`, retries included; 0 when the source has no
+   * clock). It is how a caller counts requests, since several chunks can share one.
+   */
+  readonly request?: { readonly bytes: number; readonly ms: number };
 }
 
 /** Options of {@link StorageChunkSource.getChunks}. */
@@ -67,6 +74,17 @@ export interface ReadChunksOptions {
    * Absent, each request runs once.
    */
   readonly retry?: <T>(request: () => Promise<T>) => Promise<T>;
+  /**
+   * How many range requests the stream holds ahead of its consumer, in flight or landed and not yet taken: a positive
+   * integer, 32 by default. It bounds the requests in flight, and the memory the stream holds, at this many times the
+   * largest range (1 MiB, 1 MiB + 28 B for one encrypted chunk).
+   */
+  readonly concurrency?: number;
+  /**
+   * Open the window 1, 2, 4 … ranges wide up to `concurrency` instead of at full width, so a reader that stops early
+   * has asked for little.
+   */
+  readonly ramp?: boolean;
 }
 
 /** Per-chunk read view of the immutable Storage tier (implemented by the `.crbm` reader). */
@@ -75,17 +93,23 @@ export interface StorageChunkSource {
   getChunk(ref: ChunkRef): Promise<Uint8Array | null>;
   listChunkKeys(ref: SegmentRef): Promise<number[]>;
   /**
-   * Optional: several chunks of one segment in one call, answered **from one generation**, with fewer storage
-   * requests than one per chunk where the chunks sit near each other in the object. `keys` are chunk keys; the
-   * answer lines up with them ({@link ChunksRead}), and a key the generation does not hold answers `null`, as
-   * {@link StorageChunkSource.getChunk} does. Each chunk is checked as a read of it alone is.
+   * Optional: several chunks of one segment as a stream, read **from one generation** with fewer storage requests than
+   * one per chunk where the chunks sit near each other in the object. `keys` are chunk keys in ascending order (a key
+   * may repeat; any other order is a `ValidationError`). The stream yields one {@link ChunkRead} per position of
+   * `keys`, in that order, as the requests that carry them land; a key the generation does not hold yields `null`
+   * bytes, as {@link StorageChunkSource.getChunk} answers. Each chunk is checked as a read of it alone is.
    *
-   * **A call holds every chunk it returns until the caller drops them.** It may plan at most 32 MiB of reads, the
-   * gaps between the chunks it needs included: a call that would plan more is refused with a `ValidationError`
-   * before any range request is sent, and at most 32 of its range requests are in flight at once. A plain chunk may
-   * be a view into a buffer of up to 1 MiB that it shares with its neighbours (and the same view at two positions
-   * for a key asked twice), so do not write to it, and copy a chunk to keep it. An empty list of keys still
-   * resolves the segment.
+   * **Nothing is resolved or read until the first chunk is asked for**, and the source holds at most
+   * {@link ReadChunksOptions.concurrency} ranges at a time (in flight, or landed and not yet taken), however many keys
+   * there are: a consumer that is slow holds the stream back, and one that stops early (`break`, or `return()`) stops
+   * the reads, so at most that many requests it had already started still finish and are dropped. A plain chunk may
+   * be a view into a buffer of up to 1 MiB that it shares with its neighbours (and the same view at two positions for
+   * a key asked twice), so do not write to it, and copy a chunk to keep it.
+   *
+   * One stream reads one generation. If that generation is swept, or its object replaced, while the stream runs, a
+   * source may re-resolve the segment and continue with the keys not yet yielded from the generation that is current
+   * then; each chunk says which version it came from, and each is whole and verified either way. A source that reads
+   * a pinned generation never does.
    *
    * A source that cannot read a range of an object omits this, and a caller reads chunk by chunk; the `.crbm`
    * source, which is what the stores the library ships read through, implements it.
@@ -94,7 +118,7 @@ export interface StorageChunkSource {
     ref: SegmentRef,
     keys: readonly number[],
     options?: ReadChunksOptions,
-  ): Promise<ChunksRead>;
+  ): AsyncIterable<ChunkRead>;
   /**
    * Optional: the current generation's grounded size, cheaply (from the already-parsed `.crbm` index — no
    * payload reads), or `null` if the segment has no Storage generation. Powers the grounded `costReport()`.

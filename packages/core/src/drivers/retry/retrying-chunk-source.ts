@@ -25,7 +25,7 @@ import { isTransientError } from '../../core/errors';
 import type { RetryPolicy } from '../../core/retry';
 import type {
   ChunkRef,
-  ChunksRead,
+  ChunkRead,
   ReadChunksOptions,
   GenerationSummary,
   StorageChunkSource,
@@ -76,7 +76,7 @@ export class RetryingStorageChunkSource implements StorageChunkSource {
     ref: SegmentRef,
     keys: readonly number[],
     options?: ReadChunksOptions,
-  ) => Promise<ChunksRead>;
+  ) => AsyncIterable<ChunkRead>;
   readonly cardinalities?: (ref: SegmentRef) => Promise<ReadonlyMap<number, number> | null>;
   readonly summary?: (ref: SegmentRef) => Promise<GenerationSummary | null>;
   readonly currentGeneration?: (ref: SegmentRef) => Promise<number | null>;
@@ -108,6 +108,7 @@ export class RetryingStorageChunkSource implements StorageChunkSource {
       this.getChunks = (ref, keys, options) => {
         const outer = options?.retry;
         return innerGetChunks.call(inner, ref, keys, {
+          ...options,
           retry: (request) =>
             withRetry(outer === undefined ? request : () => outer(request), this.policy, this.deps),
         });
