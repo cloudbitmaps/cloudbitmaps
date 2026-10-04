@@ -102,7 +102,7 @@ export interface StorageChunkSource {
    * **Nothing is resolved or read until the first chunk is asked for**, and the source holds at most
    * {@link ReadChunksOptions.concurrency} ranges at a time (in flight, or landed and not yet taken), however many keys
    * there are: a consumer that is slow holds the stream back, and one that stops early (`break`, or `return()`) stops
-   * the reads, so at most that many requests it had already started still finish and are dropped. A plain chunk may
+   * the reads, so the requests it had already started (at most that many) finish and are dropped, and are not retried. A stream that fails waits for those before it raises, so a caller that goes on to read again does not have two windows open at once. A plain chunk may
    * be a view into a buffer of up to 1 MiB that it shares with its neighbours (and the same view at two positions for
    * a key asked twice), so do not write to it, and copy a chunk to keep it.
    *

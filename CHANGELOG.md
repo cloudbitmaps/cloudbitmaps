@@ -20,7 +20,7 @@ so, and so do the module headers in the code.
   each chunk exactly as a read of it alone is checked; a custom source that cannot read a range omits it. The stream
   holds at most `options.concurrency` ranges at once (32 by default), in flight or landed and not yet taken, however
   many keys it is given, so its memory is that many times the largest range; a consumer that stops early stops the
-  reads. Nothing is read until the first chunk is asked for. If the generation is swept, or its object replaced, while
+  reads (the requests in flight finish and are not retried). Nothing is read until the first chunk is asked for. If the generation is swept, or its object replaced, while
   the stream runs, it carries on with the keys not yet yielded from the generation that is current, and each chunk
   says which version it came from. A plain chunk may be a view sharing a buffer of up to 1 MiB with its neighbours, so
   do not write to it, and copy one to keep it. Nothing in the library's reads calls it yet, so no request count

@@ -5,7 +5,7 @@
  */
 import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { CrbmStorageChunkSource, NotFoundError, TransientError } from '@/index';
+import { CrbmStorageChunkSource, NotFoundError, TransientError, ValidationError } from '@/index';
 import { RetryingStorageChunkSource } from '@/drivers/retry/retrying-chunk-source';
 import type { Clock, GenKey, SegmentRef } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
@@ -38,9 +38,9 @@ const TTL = 10;
 const CHUNKS = 45;
 
 /** Every even remainder of each chunk, or every odd one: the two generations differ in every chunk. */
-const idsOf = (parity: 0 | 1): number[] =>
+const idsOf = (parity: 0 | 1, chunks = CHUNKS): number[] =>
   Array.from(
-    { length: CHUNKS * (K / 2) },
+    { length: chunks * (K / 2) },
     (_, i) => Math.floor(i / (K / 2)) * K + 2 * (i % (K / 2)) + parity,
   );
 
@@ -65,7 +65,9 @@ class CountingStorage extends MemoryStorageDriver {
   beforeRange: ((n: number) => Promise<void>) | undefined;
   /** Runs before each tail read, which is how an object's footer is read. */
   beforeTail: (() => Promise<void>) | undefined;
+  tails = 0;
   override async getTail(key: GenKey, maxBytes: number) {
+    this.tails++;
     await this.beforeTail?.();
     return super.getTail(key, maxBytes);
   }
@@ -84,12 +86,13 @@ class CountingStorage extends MemoryStorageDriver {
   }
 }
 
-async function world(options: { keystore?: InProcessKeystore } = {}) {
+async function world(options: { keystore?: InProcessKeystore; chunks?: number } = {}) {
+  const chunks = options.chunks ?? CHUNKS;
   const storage = new CountingStorage();
   const registry = new MemoryRegistryDriver();
   const clock = manualClock();
   const { keystore } = options;
-  await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, idsOf(0), {
+  await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, idsOf(0, chunks), {
     registry,
     keystore,
   });
@@ -100,7 +103,7 @@ async function world(options: { keystore?: InProcessKeystore } = {}) {
     keystore,
   });
   const publishGen1 = async (): Promise<void> => {
-    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 1 }, idsOf(1), {
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 1 }, idsOf(1, chunks), {
       registry,
       keystore,
     });
@@ -372,7 +375,9 @@ describe('CrbmStorageChunkSource.getChunks: a stream across waves', () => {
 
   it('gives up on a second failure with no chunk yielded in between', async () => {
     const { source, storage } = await world();
-    storage.beforeRange = () => Promise.reject(new NotFoundError('gone'));
+    storage.beforeRange = (n) =>
+      // A runaway heal loop ends in a different error, rather than spinning for ever.
+      Promise.reject(n > 20 ? new Error('runaway heal loop') : new NotFoundError('gone'));
     await expect(read(source, REF, [0, 44])).rejects.toBeInstanceOf(NotFoundError);
     // The first try and one heal: each issues its two ranges, and nothing goes on after.
     expect(storage.ranges.length).toBeLessThanOrEqual(4);
@@ -426,6 +431,76 @@ describe('CrbmStorageChunkSource.getChunks: a stream across waves', () => {
       process.off('unhandledRejection', onUnhandled);
     }
     expect(unhandled).toEqual([]);
+  });
+});
+
+/** Twelve ranges of their own: every 34th of 400 chunks is asked for, each 33 chunks (past 256 KiB) from the next. */
+const SPREAD = Array.from({ length: 12 }, (_, i) => i * 34);
+
+describe('CrbmStorageChunkSource.getChunks: what a stream bounds, and what it refuses before it reads', () => {
+  it.each([4, 8])(
+    'never has more than `concurrency` (%i) requests in flight, across a heal either',
+    async (width) => {
+      const { source, storage, publishGen1 } = await world({ chunks: 400 });
+      let swept: Promise<void> = Promise.resolve();
+      storage.beforeRange = async (n) => {
+        const generation = storage.ranges[n - 1]!.generation;
+        if (generation === 0 && n === 4) {
+          // The fourth range finds the object swept...
+          swept = (async () => {
+            await publishGen1();
+            await storage.delete({ ...REF, generation: 0 });
+          })();
+          await swept;
+        } else if (generation === 0 && n > 4) {
+          // ...and the ones after it are slow: still in flight when the stream heals.
+          await new Promise((r) => setTimeout(r, 5));
+          await swept;
+          await new Promise((r) => setTimeout(r, 150));
+        }
+      };
+      const items = await collect(source.getChunks!(REF, SPREAD, { concurrency: width }));
+      expect(items.map((i) => i.key)).toEqual(SPREAD);
+      expect(items[11]!.version).toMatch(/^1:/);
+      expect(storage.peak).toBeLessThanOrEqual(width);
+    },
+  );
+
+  it('refuses keys out of order before it resolves or reads anything, at the source, the pin and the pinned read', async () => {
+    const { source, storage, registry, clock } = await world();
+    const bad = [5, 3];
+    const pin = (await source.pinGeneration(REF))!;
+    // A source that has opened nothing: a refusal that came after resolving or opening would show as a request.
+    const cold = new CrbmStorageChunkSource(storage, { registry, clock, currentGenTtlMs: TTL });
+    storage.ranges = [];
+    storage.tails = 0;
+    await expect(read(cold, REF, bad)).rejects.toBeInstanceOf(ValidationError);
+    await expect(collect(cold.getChunksAt(REF, 0, bad, pin))).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    const wrapper = new PinnedStorageChunkSource(cold, new Map([[segmentKey(REF), pin]]));
+    await expect(read(wrapper, REF, bad)).rejects.toBeInstanceOf(ValidationError);
+    expect(storage.ranges).toHaveLength(0);
+    expect(storage.tails).toBe(0);
+    // A repeated key is fine.
+    expect((await read(source, REF, [3, 3, 5])).chunks).toHaveLength(3);
+  });
+
+  it('stops retrying the ranges of a stream that was abandoned: nothing is sent after the break but what was in flight', async () => {
+    const { source, storage } = await world({ chunks: 400 });
+    const retrying = new RetryingStorageChunkSource(source, {
+      clock: { ...manualClock(), sleep: () => new Promise((r) => setTimeout(r, 15)) },
+      rng: { next: () => 0.5 },
+    });
+    storage.beforeRange = async (n) => {
+      if (n > 1) throw new TransientError('down');
+    };
+    for await (const chunk of retrying.getChunks!(REF, SPREAD, { concurrency: 4 })) {
+      expect(chunk.key).toBe(0);
+      break;
+    }
+    await new Promise((r) => setTimeout(r, 300));
+    expect(storage.ranges).toHaveLength(4); // the four the window opened with, each tried once
   });
 });
 

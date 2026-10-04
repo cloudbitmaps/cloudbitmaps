@@ -38,7 +38,7 @@ import { splitId } from './bit-route';
 import { segmentKey } from './keys';
 import { aadFor } from './crypto';
 import type { Aead, CrbmCrypto, IKeystore, WrappedDek } from './crypto';
-import { validateChunkRef, validateUserRef } from './validate';
+import { validateChunkKeyOrder, validateChunkRef, validateUserRef } from './validate';
 import type {
   ChunkRef,
   ChunkRead,
@@ -1157,6 +1157,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   ): AsyncGenerator<ChunkRead> {
     validateUserRef(ref);
     for (const chunkKey of keys) validateChunkRef({ ...ref, chunkKey });
+    validateChunkKeyOrder(keys);
     const retry = options?.retry;
     let yielded = 0;
     let healed = false; // a heal since the last chunk yielded
@@ -1183,6 +1184,9 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
           }
           return;
         }
+        // A version is the generation number and the row's token, which is how the reader cache and the chunk cache
+        // already tell generations apart: an object replaced under the same number and the same token reads under
+        // the same version on both sides of a heal.
         const version = versionOf(reader.generation, reader.lineage);
         const chunks = reader.readChunks(keys.slice(yielded), {
           ...(options?.concurrency === undefined ? {} : { concurrency: options.concurrency }),
@@ -1197,7 +1201,8 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         }
         return;
       } catch (err) {
-        // The two misses that are recoverable, as for a single chunk: a generation swept from under the snapshot, and
+        // Each heal needs a chunk yielded since the last, so a stream heals at most once per range it reads (a
+        // heal plans the keys that remain again). The two misses that are recoverable, as for a single chunk: a generation swept from under the snapshot, and
         // one whose object was replaced under the same number. Anything else propagates, and so does a second miss
         // with no chunk in between.
         if (healed) throw err;
@@ -1223,6 +1228,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   ): AsyncGenerator<Omit<ChunkRead, 'version'>> {
     validateUserRef(ref);
     for (const chunkKey of keys) validateChunkRef({ ...ref, chunkKey });
+    validateChunkKeyOrder(keys);
     const retry = options?.retry;
     const open = (): Promise<CrbmReader | null> =>
       this.readerAt(ref, generation, held?.version, held?.fingerprint);

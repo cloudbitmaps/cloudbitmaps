@@ -22,6 +22,11 @@ export class ChunkWindow<T> {
     private readonly ramp: boolean,
   ) {}
 
+  /** Resolves once every read launched and not yet taken has settled; it never rejects, as the reads never do. */
+  async settle(): Promise<void> {
+    await Promise.all(this.open);
+  }
+
   /** The next read's result in key order, or the error that read raised. */
   async take(): Promise<T> {
     const width = this.ramp ? Math.min(this.max, 2 ** Math.min(this.taken, 30)) : this.max;

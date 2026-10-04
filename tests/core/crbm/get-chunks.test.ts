@@ -1,4 +1,6 @@
 import { randomBytes } from 'node:crypto';
+import { setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { BufferReader, BufferSink } from '@/core/blob';
 import type { BlobReader } from '@/core/blob';
@@ -335,6 +337,71 @@ describe('CrbmReader.readChunks: what a stream holds and has in flight', () => {
         expect(taken).toBe(70);
         expect(parking.requests).toBe(70);
         expect(parking.peak).toBeLessThanOrEqual(width);
+      }
+    },
+    60_000,
+  );
+
+  it.each([
+    { name: 'plain', crypto: undefined },
+    { name: 'encrypted', crypto: cryptoFor(dek) },
+  ])(
+    'holds no more than `concurrency` range buffers while the consumer waits, and none of the chunk it was just given ($name)',
+    async ({ crypto }) => {
+      setFlagsFromString('--expose-gc');
+      const gc = runInNewContext('gc') as () => void;
+      const collected = async (): Promise<void> => {
+        for (let i = 0; i < 3; i++) {
+          await new Promise((r) => setImmediate(r));
+          gc();
+        }
+      };
+      const bytes = await object(
+        Array.from({ length: 40 }, () => MIB),
+        crypto,
+      );
+      // Each range read answers a buffer of its own, and each decrypted chunk is a buffer of its own: watch them.
+      const ranges: WeakRef<ArrayBufferLike>[] = [];
+      const plains: WeakRef<ArrayBufferLike>[] = [];
+      const inner = new BufferReader(bytes);
+      const blob: BlobReader = {
+        getRange: async (offset, length) => {
+          const copy = new Uint8Array(await inner.getRange(offset, length));
+          ranges.push(new WeakRef(copy.buffer));
+          return copy;
+        },
+        getTail: (max) => inner.getTail(max),
+      };
+      const watching: CrbmCrypto | undefined = crypto && {
+        aadFor: crypto.aadFor,
+        aead: {
+          seal: (p, a) => crypto.aead.seal(p, a),
+          open: (sealed, aad) => {
+            const out = crypto.aead.open(sealed, aad);
+            plains.push(new WeakRef(out.buffer));
+            return out;
+          },
+        },
+      };
+      const live = (refs: WeakRef<ArrayBufferLike>[]): number =>
+        refs.filter((r) => r.deref() !== undefined).length;
+      for (const width of [1, 4, 8]) {
+        ranges.length = 0;
+        plains.length = 0;
+        const reader = await CrbmReader.open(blob, watching ? { crypto: watching } : {});
+        ranges.length = 0;
+        plains.length = 0; // opening the object decrypted its index: not a chunk
+        const it = reader.readChunks(keysOf(40), { concurrency: width });
+        for (let k = 0; k < 20; k++) {
+          // the chunk is dropped as soon as its key is read
+          const key = await it.next().then((r) => (r.value as { key: number }).key);
+          expect(key).toBe(k);
+          await tick(2);
+          await collected();
+          expect(live(ranges), `width ${width}, after chunk ${k}`).toBeLessThanOrEqual(width);
+          expect(live(plains), `width ${width}, after chunk ${k}`).toBe(0);
+        }
+        await it.return(undefined);
       }
     },
     60_000,
