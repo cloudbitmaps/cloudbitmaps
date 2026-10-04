@@ -127,11 +127,17 @@ describe('an erasure while a read is open', () => {
             // Every chunk is in this store's decoded-chunk cache when the read opens.
             for await (const id of w.store.segment('s', { namespace: 'ns' }).iterate()) void id;
           }
-          const victim = victimChunk * CHUNK + 1 + 1; // the first id of the chunk
+          const victim = victimChunk * CHUNK + 1; // the first id of the chunk, which generation 0 holds
+          const seg = (store: CloudRoaring) => store.segment('s', { namespace: 'ns' });
+          // Controls that must hit: the victim is in the segment before the erasure (asked of another store, so this
+          // one's cache is not warmed by it), and is gone after it.
+          expect(await seg(w.open()).has(victim)).toBe(true);
           const got = await reach(w.store, verb, async () => {
-            await w.store.eraseSubject(victim, { namespace: 'ns' });
+            const ledger = await w.store.eraseSubject(victim, { namespace: 'ns' });
+            expect(ledger.erasedFrom[0]).toMatchObject({ erased: true });
           });
           expect(got.error).toBeNull();
+          expect(await seg(w.open()).has(victim)).toBe(false);
           leaks[mode][victimChunk] = got.after.includes(victim);
         }
       }
