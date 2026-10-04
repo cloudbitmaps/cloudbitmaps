@@ -286,6 +286,11 @@ const atRestExact = results.atRest.monthlyUSD; // 0.0276
 const atRestShown = atRestExact.toFixed(2); // "0.03"
 if (Number(atRestShown) === 0) fail(`atRest.monthlyUSD (${atRestExact}) rounds to $0.00 at 2dp`);
 
+// The engine's cold reads are EXPECTED, not measured: its request counts are what the engine makes, counted by
+// running it (bench/range-counts.json), and a dollar figure is a count at the default list prices. The module that
+// derives them also writes the labels, so a page cannot state one without a count behind it.
+const expectedEngine = require('../bench/lib/expected-figures.cjs').expectedFigures(); // the committed JSON: no build needed
+
 const anchors = [
   ['at rest, monthly', `$${atRestShown}`],
   ['at rest, size', `${results.atRest.sizeGiB} GiB`],
@@ -329,6 +334,17 @@ const anchors = [
     ? []
     : [['single-bucket · 1M first store.load()s', singleBucketFigure(LOAD_ANCHORS.first)]]),
   ['single-bucket · the whole run', singleBucketFigure('the run')],
+  // The engine's cold reads, expected: owned by /benchmarks, quoted by the pages that say what a cold read costs.
+  ['expected · cold intersect GETs', expectedEngine.coldIntersect.getsText],
+  ['expected · 1M cold intersects', expectedEngine.coldIntersect.perMillion],
+  ['expected · andNot GETs', expectedEngine.andNot.getsText],
+  ['expected · 1M andNot', expectedEngine.andNot.perMillion],
+  [
+    'expected · the Redis line, in cold intersects a second',
+    `${expectedEngine.redisLineIntersectsPerSec} /s`,
+  ],
+  ['expected · iterate GETs', expectedEngine.iterate.getsText],
+  ['expected · 1M iterate', expectedEngine.iterate.perMillion],
 ];
 
 // ── the inverse check covers HOME as well as /benchmarks ───────────────────────────────────────────────────
@@ -351,26 +367,25 @@ const anchors = [
 // quoted verbatim by an assistant, the root and npm READMEs are the most-read pages the project has, and the roadmap
 // quotes the calibration's figures where it says what is measured; each quotes the published cost figures, and
 // nothing else checks them.
-const MEASURED_1M = 'per million cold intersects, measured';
-const EXPECTED_1M = 'per million cold intersects with each pointer read once';
+const EXPECTED_1M = 'expected · 1M cold intersects';
 const WRITE_1M = LOAD_ANCHORS.single;
 const PAGES = [
   // `mustState` names the latest run's figures a page quotes, so that replacing one — a load row that turns into
   // a per-PUT $5, say — fails even where the replacement is a value some source accounts for.
   { rel: 'site/benchmarks.html', requireAll: true },
-  { rel: 'site/index.html', requireAll: false, mustState: [MEASURED_1M, WRITE_1M] },
+  { rel: 'site/index.html', requireAll: false, mustState: [EXPECTED_1M, WRITE_1M] },
   { rel: 'site/architecture.html', requireAll: false, mustState: [WRITE_1M] },
   { rel: 'site/usage.html', requireAll: false },
-  { rel: 'site/flavors.html', requireAll: false, mustState: [MEASURED_1M, WRITE_1M] },
+  { rel: 'site/flavors.html', requireAll: false, mustState: [EXPECTED_1M, WRITE_1M] },
   { rel: 'site/flavors/roaring.html', requireAll: false },
-  { rel: 'site/llms.txt', requireAll: false, mustState: [MEASURED_1M, EXPECTED_1M, WRITE_1M] },
-  { rel: 'README.md', requireAll: false, mustState: [MEASURED_1M, EXPECTED_1M, WRITE_1M] },
+  { rel: 'site/llms.txt', requireAll: false, mustState: [EXPECTED_1M, WRITE_1M] },
+  { rel: 'README.md', requireAll: false, mustState: [EXPECTED_1M, WRITE_1M] },
   {
     rel: 'packages/roaring/README.md',
     requireAll: false,
-    mustState: [MEASURED_1M, EXPECTED_1M, WRITE_1M],
+    mustState: [EXPECTED_1M, WRITE_1M],
   },
-  { rel: 'docs/ROADMAP.md', requireAll: false, mustState: [MEASURED_1M, EXPECTED_1M, WRITE_1M] },
+  { rel: 'docs/ROADMAP.md', requireAll: false, mustState: [EXPECTED_1M, WRITE_1M] },
   // The benchmarks doc states money too, and a wrong figure in it would otherwise be the one thing nothing reads.
   { rel: 'docs/benchmarks.md', requireAll: false },
 ];
@@ -538,7 +553,9 @@ for (const page of PAGES) {
 
   // 1 · every anchor must be stated — on /benchmarks, which is the page that owns them — and each page's own
   for (const name of page.mustState ?? []) {
-    const want = singleBucketFigure(name);
+    const want = name.startsWith('expected · ')
+      ? (anchors.find(([n]) => n === name)?.[1] ?? null)
+      : singleBucketFigure(name);
     if (want !== null && !calibration.statesFigure(visible, want)) {
       fail(`${page.rel} no longer states ${name} (${want}), which it quotes from the latest run`);
     }
@@ -556,6 +573,10 @@ for (const page of PAGES) {
   // deliberate act rather than a silent widening.
   const alsoAllowed = new Set([
     '$0.03', // at-rest, the rounded form
+    // What one expected cold intersect, andNot and iterate cost, a count at the list price: owned by /benchmarks.
+    expectedEngine.coldIntersect.each,
+    expectedEngine.andNot.each,
+    expectedEngine.iterate.each,
     // Home only. "$0" is the standing charge — the ABSENCE of a charge, which is the whole pitch of layer 03.
     // There is no source that could "account for" zero, and demanding one would be the check misfiring on the
     // one figure that needs no evidence.
@@ -591,7 +612,11 @@ for (const page of PAGES) {
     const values = calibration.mergeValues(
       singleBucket.pageValues,
       calibration.valuesFromFigures([...otherSources, ...alsoAllowed], {
-        perSecond: [results.readCrossoverPerSec, results.referenceRedis.readCrossoverPerSec],
+        perSecond: [
+          results.readCrossoverPerSec,
+          results.referenceRedis.readCrossoverPerSec,
+          Number(expectedEngine.redisLineIntersectsPerSec),
+        ],
       }),
     );
     for (const block of blocksOf(html, isHtml, metas, page.rel)) {

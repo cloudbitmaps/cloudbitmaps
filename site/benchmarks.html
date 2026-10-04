@@ -19,7 +19,7 @@
     <title>CloudBitmaps benchmarks — what it costs, and where it stops paying</title>
     <meta
       name="description"
-      content="Real S3, in-region: 290.06 ms and $81.60 per million cold intersects sharing 100 chunks, $11.60 per million store.load() calls. Past 329.15 GETs/s, 1.6 such intersects/s, Redis is cheaper."
+      content="Expected, counted from the engine and not yet measured on S3: 6 GETs and $2.40 per million cold intersects sharing 100 chunks. Measured in-region: a segment's first store.load() is $11.60 per million. Past 329.15 GETs/s, 54.9 such intersects/s, Redis is cheaper."
     />
     <link rel="stylesheet" href="cloudbitmaps.css" />
     <meta name="google-site-verification" content="UpdnyEE0wCiY5rHqUovfc-lRkEa9ZN9M-F67eTRNKhE" />
@@ -119,12 +119,12 @@
               <span>1.2 GiB at rest, no traffic</span><span class="is-live">$0.03 /mo</span>
             </p>
             <p class="panel-row is-pair"><span>Share of the $346 cluster</span><span>0.008%</span></p>
-            <p class="panel-row is-pair"><span>1M cold A&nbsp;∩&nbsp;B, 100 chunks shared</span><span>$81.60</span></p>
+            <p class="panel-row is-pair"><span>1M cold A&nbsp;∩&nbsp;B, 100 chunks shared · expected</span><span>$2.40</span></p>
             <p class="panel-row is-pair">
               <span>1M single-part loads · <span class="m">store.load()</span>, pointer included</span><span>$11.60</span>
             </p>
             <p class="panel-row is-pair"><span>Crossover, in GETs</span><span>329.15 /s</span></p>
-            <p class="panel-row is-pair"><span>…as cold A&nbsp;∩&nbsp;B, 204 GETs each</span><span>1.6 /s</span></p>
+            <p class="panel-row is-pair"><span>…as cold A&nbsp;∩&nbsp;B, 6 GETs each · expected</span><span>54.9 /s</span></p>
             <p class="link-row"><a href="usage.html#estimate">Estimate your own rates →</a></p>
           </aside>
         </div>
@@ -183,14 +183,15 @@
                   <td><span class="status is-shipped">Win big</span></td>
                 </tr>
                 <tr>
-                  <td>1M cold A&nbsp;∩&nbsp;B on real S3</td>
-                  <td class="num">$81.60</td>
+                  <td>1M cold A&nbsp;∩&nbsp;B</td>
+                  <td class="num">$2.40</td>
                   <td class="from">
-                    Metered on real S3, from inside the region: two 500,000-id segments sharing 100 of 1,999 chunks, 204 GETs at the
-                    median — a pointer read and a tail read
-                    per operand, and the shared chunks — in 290.06 ms (run of 2026-10-04, 50 sockets). Priced by the chunks the two share, not by their
-                    size, while each index fits the 256 KiB tail read. Every one cold, and every one exact. Its
-                    crossover is the last row. <a href="#single-bucket">The single-bucket run</a>.
+                    <strong>Expected</strong>, not measured: counted by running the engine on two 500,000-id segments of about 2,000 chunks sharing
+                    100 that lie together — 6 GETs, a pointer read and a tail read per operand and one range each — at list
+                    prices. A combine reads each operand's chunks as ranges, so the requests follow the bytes the shared chunks span, not how many
+                    there are; spread over each segment they are 6 GETs too, and most of each object is read. An <span class="m">andNot</span>
+                    of a segment of about 2,000 chunks against ten excludes is 33 GETs, $13.20 per million, and an
+                    <span class="m">iterate</span> of it 3 GETs, $1.20. No run on S3 has measured this engine, so no latency is published for it.
                   </td>
                   <td><span class="status is-shipped">Win</span></td>
                 </tr>
@@ -214,12 +215,13 @@
                      DIFFERENT colour, never a quieter one. Relabelling it does not demote it. -->
                 <tr>
                   <td>Sustained read throughput above</td>
-                  <td class="num">329.15 /s<br />1.6 A&nbsp;∩&nbsp;B/s</td>
+                  <td class="num">329.15 /s<br />54.9 A&nbsp;∩&nbsp;B/s</td>
                   <td class="from">
                     Modelled by <span class="m">estimateCost()</span>: object GETs with the cache off — the
                     pessimal posture, chosen deliberately — against a standing three-node Redis-HA cluster at
-                    $346 /mo. The same line, for cold intersects of the run's shape at
-                    204 GETs each, is 1.6 a second. <a href="#crossover">What moves this line</a>.
+                    $346 /mo. The same line, for cold intersects of the run's shape, is 54.9 a second at the requests the engine
+                    is expected to make.
+                    <a href="#crossover">What moves this line</a>.
                   </td>
                   <td><span class="status is-counter">Use a flat tier</span></td>
                 </tr>
@@ -677,7 +679,7 @@
              share. -->
         <div class="tpanel" id="single-bucket">
           <div class="tpanel-head">
-            <span class="label" id="single-bucket-title">The in-region run's bill · measured, and expected where marked</span>
+            <span class="label" id="single-bucket-title">The in-region run's bill, of the engine before coalesced reads · measured, and expected where marked</span>
             <span class="label">2026-10-04 · us-east-1 · run 2026-10-04-73668</span>
           </div>
           <div class="tscroll">
@@ -752,8 +754,8 @@
             <span class="rl-what">One shape, one client, one day</span>
             <span class="rl-fig">a single run</span>
             <span class="rl-note">
-              The latency on this page is one in-region run from AWS CloudShell: two operands at one overlap, plus a
-              sweep. It is not a guarantee for other shapes or other clients — <a href="#owed">what is still owed</a>.
+              The latency on this page is one in-region run from AWS CloudShell, of the engine before coalesced reads: two operands at one overlap, plus a
+              sweep. No latency is published for the engine since. It is not a guarantee for other shapes or other clients — <a href="#owed">what is still owed</a>.
             </span>
           </li>
           <li>
@@ -772,7 +774,7 @@
             <span class="rl-fig">2 &times; 32 payloads, any segment size</span>
             <span class="rl-note">
               The window is bounded two ways: a per-commit test counts the chunk payloads actually in flight and holds them at
-              <strong>concurrency &times; operands</strong> &mdash; <strong>8&times; the chunks gives the same
+              <strong>concurrency &times; operands</strong> range requests &mdash; <strong>8&times; the chunks gives the same
               peak</strong>, which is the claim that matters, since it is residency not scaling with segment
               size that makes a 2,000-chunk intersection fit in a small runtime. And the long-running soak
               issues combines: <strong>7262</strong> of them over 90 s, alongside <strong>2908</strong>

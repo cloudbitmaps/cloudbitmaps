@@ -32,7 +32,7 @@ const report = CloudRoaring.estimateCost({
     readsPerSec: 200, // point reads; each cache miss is at most one GET
     cacheHitRate: 0.8, // hits are free
     intersectsPerSec: 1, // priced cold: each operand's pointer and index are read too
-    chunksPerIntersect: 20, // the chunks it fetches: 2 operands × 10 shared chunks
+    chunksPerIntersect: 20, // the range requests it makes for its chunks: 2 operands × 10
     loadsPerMonth: 30, // one store.load() a day, single-part
     hotSegments: 2, // segments a long-lived reader keeps reading: each refreshes its pointer every 2 s
   },
@@ -73,7 +73,7 @@ Every shard is a primary and two replicas, AWS's best practice, and each node ke
 <!-- SIZING:COMPARES:END -->
 
 <!-- SIZING:GUIDE_LEANINGS:START -->
-It is the cheapest cluster of one kind, not the least Redis could cost, and its choices lean both ways. Toward Redis: the data is held at its compressed size, where a native Redis bitmap is sized by its highest id, so sparse ids take more memory than this; among node types the cheapest fit wins; a data-tiering node counts its SSD in full, though ElastiCache [moves no item larger than 128 MiB](https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/data-tiering.html) to it; and every node keeps back only the 25% reserved by default, where AWS [advises 30% on small nodes and 50% on micro ones](https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/redis-memory-management.html) in production. Toward CloudBitmaps: the nodes are on-demand, every shard has two replicas, the engine is Redis OSS, and burstable `t4g` nodes are priced only as one shard. Reserved nodes, fewer replicas, or [ElastiCache for Valkey](https://aws.amazon.com/elasticache/pricing/), which AWS prices 20% lower a node, each cost less, and against them the saving is smaller: bought all three ways, on three years paid upfront, the Redis of [the medium and large deployments](why-cloudbitmaps.md#the-short-answer) costs less than CloudBitmaps. So does the Redis of the planning example above: bought all three ways, it costs $51.39 a month on one year with nothing upfront, and $34.27 a month on three years paid upfront, where CloudBitmaps costs $68.35. It prices nodes, not quotas: a cluster of more than 90 nodes needs AWS to raise ElastiCache's [default quota](https://docs.aws.amazon.com/general/latest/gr/elasticache-service.html#limits_elasticache), which it [raises to at most 500 nodes a cluster](https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/Shards.html) on Redis OSS 5.0.6 to 7.1 or Valkey 7.2 and later, and data that needs more is several clusters, at the same price a node.
+It is the cheapest cluster of one kind, not the least Redis could cost, and its choices lean both ways. Toward Redis: the data is held at its compressed size, where a native Redis bitmap is sized by its highest id, so sparse ids take more memory than this; among node types the cheapest fit wins; a data-tiering node counts its SSD in full, though ElastiCache [moves no item larger than 128 MiB](https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/data-tiering.html) to it; and every node keeps back only the 25% reserved by default, where AWS [advises 30% on small nodes and 50% on micro ones](https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/redis-memory-management.html) in production. Toward CloudBitmaps: the nodes are on-demand, every shard has two replicas, the engine is Redis OSS, and burstable `t4g` nodes are priced only as one shard. Reserved nodes, fewer replicas, or [ElastiCache for Valkey](https://aws.amazon.com/elasticache/pricing/), which AWS prices 20% lower a node, each cost less, and against them the saving is smaller. So does the Redis of the planning example above: bought all three ways, it costs $51.39 a month on one year with nothing upfront, and $34.27 a month on three years paid upfront, where CloudBitmaps costs $68.35. It prices nodes, not quotas: a cluster of more than 90 nodes needs AWS to raise ElastiCache's [default quota](https://docs.aws.amazon.com/general/latest/gr/elasticache-service.html#limits_elasticache), which it [raises to at most 500 nodes a cluster](https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/Shards.html) on Redis OSS 5.0.6 to 7.1 or Valkey 7.2 and later, and data that needs more is several clusters, at the same price a node.
 <!-- SIZING:GUIDE_LEANINGS:END -->
 
 A report on one segment sizes its Redis to that segment alone, so the baselines of a store's segments do not add up
@@ -106,9 +106,15 @@ it is a property of three inputs, and of the data size, which sets the Redis:
 ### What each term counts
 
 - **An intersection is priced cold**: 2 reads for each operand (`operandsPerIntersect`, 2 by default, `exclude`
-  operands included), its pointer and then its index in one read of the object's tail, before the chunks it
-  fetches (`chunksPerIntersect`). Two segments sharing k chunks make 4 + 2k GETs: $81.60 per million for k = 100 at
-  the default GET price. An operand whose index outgrows the reader's 256 KiB tail read makes one more GET, to read
+  operands included), its pointer and then its index in one read of the object's tail, before the chunk range requests it
+  makes (`chunksPerIntersect`). `chunksPerIntersect` counts chunk range requests, not chunks: chunks that lie within 256 KiB of each other are read in
+  one request. Two segments whose shared chunks each need r range requests make 4 + 2r GETs: 6 GETs, $2.40 per million
+  at the default GET price, when the 100 shared chunks lie together and take one range each (expected, not yet measured). **The requests saved are
+  not the whole bill.** A layout that spreads the shared chunks over an object reads most of the object to get them: the
+  requests fall and the bytes read rise. Inside the bucket's region S3 Standard bills no bytes read; across regions it
+  bills them, and that can cost more than the requests saved. There is no setting for it: run readers in the bucket's
+  region, and size `chunksPerIntersect` from the requests you expect, which the
+  [sizing guide's overlap tables](sizing.md#how-much-the-overlap-matters) show for both layouts. An operand whose index outgrows the reader's 256 KiB tail read makes one more GET, to read
   it whole, and an intersect slow enough to outlive `cache.genTtlMs` reads its pointers again; add either to
   `chunksPerIntersect`. `cacheHitRate` does not apply to intersections, so a long-lived reader that answers
   repeats from its cache pays less than the report says, and pays the pointer refresh instead.
@@ -180,11 +186,11 @@ headers carry the version beside the bytes. **A tail read needs the object's siz
 suffix-range GET whose `Content-Range` carries the size; Azure Blob takes no suffix range, so there it is two requests,
 the properties and then the bytes. The pricing profile prices the two apart: `storage.requestsPerPointerRead` (1 by
 default) for each pointer read, and `storage.requestsPerSizedRead` (1 by default) for each tail read. For Azure Blob,
-set `storage.requestsPerSizedRead: 2` and leave `requestsPerPointerRead` at 1; chunk reads stay one request each, and
+set `storage.requestsPerSizedRead: 2` and leave `requestsPerPointerRead` at 1; a range request of chunks and a point read of one chunk are one request each, and
 S3 and GCS keep both defaults. Each count above is held to the engine by a test that counts its requests, on S3's
 request shape, and each backend's own tests pin the requests it makes (a pointer read in one everywhere; a tail read in
 one on GCS and two on Azure Blob), so the model moves when the engine does. The
-[benchmarks page](../benchmarks.md#the-in-region-run--run-2026-10-04-73668) has the request shapes measured
+[benchmarks page](../benchmarks.md#the-in-region-run-of-the-engine-before-coalesced-reads--run-2026-10-04-73668) has the request shapes measured
 on real S3.
 
 **See it at three sizes.** [What it costs at your size](sizing.md) prices a small, a medium and a large deployment

@@ -122,7 +122,7 @@ after it returns, and re-run any erasure a rollback interrupted.
 Erasure and crypto-shred are **immediate in storage and immediate in the store whose verb performed them**, for
 every read that starts after the verb returns. A read already in progress in that store can still yield an erased id
 from a chunk it had requested before the verb ran: up to 32 chunks for `iterate` and `count`, and up to `concurrency`
-keys (32 by default) for a combine. They are not immediate in any *other* store, in the same process or another, and this library ships nothing that could
+keys (32 by default) for a combine. A combine or `iterate` reads ranges of the object, and resolves the segment again before it serves each chunk, as a read of that chunk alone does, so the ranges it had already requested are dropped, not served. They are not immediate in any *other* store, in the same process or another, and this library ships nothing that could
 make them so — there is no daemon, no bus, and no connection between two stores that happen to point at the same
 bucket.
 

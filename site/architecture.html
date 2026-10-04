@@ -219,7 +219,7 @@
             <span class="rl-fig">3,000 bytes</span>
             <span class="rl-note">
               The payload in flight is bounded by
-              <span class="m">concurrency × operands × chunk</span> — the window, not the segment size. The
+              <span class="m">concurrency × operands × the 1 MiB a range may be</span> — the window, not the segment size. The
               store holds two more things under caps you set: up to <span class="m">cache.maxChunks</span>
               decoded chunks in its cache, and the open segments' indices, up to
               <span class="m">cache.readerMaxBytes</span>. The call itself holds each operand's chunk keys, at

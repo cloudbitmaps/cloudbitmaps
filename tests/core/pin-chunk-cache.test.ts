@@ -20,6 +20,7 @@ import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { setSegmentRetention } from '@cloudbitmaps/core';
 import { brandAsBackend } from '@/core/ports';
+import { withoutRangedReads } from '../helpers/no-ranged-reads';
 
 /**
  * A pinned handle must only ever be handed chunks of the generation it pinned.
@@ -47,6 +48,15 @@ import { brandAsBackend } from '@/core/ports';
  * Every case but the sweep ends with the same check: dropping the store's derived state (`invalidate`) leaves the
  * pin reading correctly, since the bytes in the bucket were never wrong — only the cache entry was.
  */
+/**
+ * Every case here but the last describe reads chunk by chunk: the library's own sources are made to answer as a source
+ * that cannot read a range does, since a chunk-by-chunk read can describe two generations and so is the one the pin must be kept
+ * from (a stream of coalesced ranges describes two in the same places, and the last describe holds it to the same). A custom source without `getChunks` is read this way.
+ */
+const perKey = withoutRangedReads();
+beforeEach(perKey.off);
+afterEach(perKey.restore);
+
 const REF: SegmentRef = { segment: 's' };
 const TTL = 10;
 const C = 65_536; // ids per chunk: `C + r` lives in chunk 1, `2 * C + r` in chunk 2
@@ -2073,3 +2083,142 @@ describe('what a pin found out about its object, and how it forgets', () => {
     expect(calls).toEqual(['storage.getRange']);
   });
 });
+
+describe('a stream of coalesced ranges moves to the current generation where a read of one chunk would, and a pin is never handed its chunks', () => {
+  beforeEach(perKey.restore); // the library's own sources read ranges again
+
+  it('iterate: a publish and a TTL lapse mid-read move the rest of the read to generation 1', async () => {
+    const w = await world({ cache: { genTtlMs: TTL } });
+    const snap = await w.store.segment('s').pin();
+    const live: number[] = [];
+    for await (const id of w.store.segment('s').iterate()) {
+      live.push(id);
+      if (live.length === 1) {
+        await w.publishGen1();
+        w.clock.advance(TTL);
+      }
+    }
+    expect(live).toEqual([1, 2, 3, C + 20, C + 21, C + 22, 2 * C + 40, 2 * C + 41, 2 * C + 42]);
+    expect(await pinnedViews(w.store, snap)).toEqual({
+      pinned: PINNED_AT_GEN0,
+      afterInvalidate: PINNED_AT_GEN0,
+    });
+  });
+
+  it('iterate: a reader-cache eviction mid-read moves the rest of the read to generation 1 too', async () => {
+    const w = await world({ cache: { genTtlMs: 0, readerMax: 1 } });
+    await bulkLoadCrbmGeneration(w.storage, { segment: 'other', generation: 0 }, [7], {
+      registry: w.registry,
+    });
+    const snap = await w.store.segment('s').pin();
+    const live: number[] = [];
+    for await (const id of w.store.segment('s').iterate()) {
+      live.push(id);
+      if (live.length === 1) {
+        await w.publishGen1();
+        expect(await w.store.segment('other').has(7)).toBe(true); // evicts this segment's reader
+      }
+    }
+    expect(live).toEqual([1, 2, 3, C + 20, C + 21, C + 22, 2 * C + 40, 2 * C + 41, 2 * C + 42]);
+    expect(await pinnedViews(w.store, snap)).toEqual({
+      pinned: PINNED_AT_GEN0,
+      afterInvalidate: PINNED_AT_GEN0,
+    });
+  });
+
+  it("iterate: the store's own load, which invalidates the segment mid-read, moves the rest of the read to generation 1", async () => {
+    const w = await world({ cache: { genTtlMs: 0 } });
+    const snap = await w.store.segment('s').pin();
+    const live: number[] = [];
+    for await (const id of w.store.segment('s').iterate()) {
+      live.push(id);
+      if (live.length === 1) await w.store.load(REF, GEN1);
+    }
+    expect(live).toEqual([1, 2, 3, C + 20, C + 21, C + 22, 2 * C + 40, 2 * C + 41, 2 * C + 42]);
+    expect(await pinnedViews(w.store, snap)).toEqual({
+      pinned: PINNED_AT_GEN0,
+      afterInvalidate: PINNED_AT_GEN0,
+    });
+  });
+
+  it('intersect: a publish and a TTL lapse mid-read move the rest of the read to generation 1', async () => {
+    const w = await world({ cache: { genTtlMs: TTL } });
+    await bulkLoadCrbmGeneration(
+      w.storage,
+      { segment: 'other', generation: 0 },
+      [...GEN0, ...GEN1],
+      {
+        registry: w.registry,
+      },
+    );
+    const snap = await w.store.segment('s').pin();
+    const live: number[] = [];
+    for await (const id of w.store
+      .segment('s')
+      .intersect([w.store.segment('other')], { concurrency: 1 })) {
+      live.push(id);
+      if (live.length === 1) {
+        await w.publishGen1();
+        w.clock.advance(TTL);
+      }
+    }
+    // Chunk 1 was already taken by the read's window of one key when the publish landed, as in a read of it alone.
+    expect(live).toEqual([1, 2, 3, C + 10, C + 11, 2 * C + 40, 2 * C + 41, 2 * C + 42]);
+    expect(await pinnedViews(w.store, snap)).toEqual({
+      pinned: PINNED_AT_GEN0,
+      afterInvalidate: PINNED_AT_GEN0,
+    });
+  });
+
+  it('a live read that opens after the TTL lapses reads the new generation, and the pin still reads its own', async () => {
+    const w = await world({ cache: { genTtlMs: TTL } });
+    const snap = await w.store.segment('s').pin();
+    await w.publishGen1();
+    w.clock.advance(TTL);
+    expect(await collectIds(w.store.segment('s').iterate())).toEqual(GEN1);
+    expect(await pinnedViews(w.store, snap)).toEqual({
+      pinned: PINNED_AT_GEN0,
+      afterInvalidate: PINNED_AT_GEN0,
+    });
+  });
+
+  it('a read planned after the store learned of a publish reads and caches generation 1, and the pin keeps its own', async () => {
+    // The live resolve says generation 0; by the time the source answers the generation is 1. The newer chunks must
+    // not sit under the older version\'s key, where a pin of generation 0 would find them.
+    const w = await world({ cache: { genTtlMs: TTL } });
+    const snap = await w.store.segment('s').pin();
+    const live = w.store.segment('s');
+    expect(await live.has(1)).toBe(true); // resolves generation 0 on this store
+    await w.publishGen1();
+    w.store.invalidate(REF); // a store that learned of the change; a read now plans under generation 1
+    expect(await collectIds(live.iterate())).toEqual(GEN1);
+    expect(await pinnedViews(w.store, snap)).toEqual({
+      pinned: PINNED_AT_GEN0,
+      afterInvalidate: PINNED_AT_GEN0,
+    });
+  });
+
+  it('a generation swept after the stream has its range changes nothing for the read, and the pin fails rather than answer from the next', async () => {
+    const w = await world({ cache: { genTtlMs: TTL }, ...{} });
+    const snap = await w.store.segment('s').pin();
+    const live: number[] = [];
+    let swept = false;
+    for await (const id of w.store.segment('s').iterate()) {
+      live.push(id);
+      if (!swept && live.length === 1) {
+        swept = true;
+        await w.publishGen1();
+        await gcOrphanGenerations(REF, { storage: w.storage, registry: w.registry }, { keep: 0 });
+      }
+    }
+    // The chunks are one range, already read: the stream finishes on generation 0 without needing the object again.
+    expect(live).toEqual(GEN0);
+    await expect(snap.has(2 * C + 30)).rejects.toBeInstanceOf(NotFoundError);
+  });
+});
+
+async function collectIds(stream: AsyncIterable<number>): Promise<number[]> {
+  const out: number[] = [];
+  for await (const id of stream) out.push(id);
+  return out;
+}

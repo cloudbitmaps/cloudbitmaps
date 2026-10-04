@@ -312,13 +312,23 @@ function derive(run, src) {
       `(${layout.chunksPerSegment}, ${layout.sharedChunks})`,
   );
   const operandReads = 2 * it.runs;
+  // A run of the engine since coalesced reads records the range requests it made of each operand, a range holding
+  // every chunk within the gap of the one before; a file from the engine before records one request per chunk.
+  const ranged = it.rangesPerOperand !== undefined;
+  const readsPerOperand = ranged ? it.rangesPerOperand : it.chunksFetchedPerOperand;
   // The meter files every ranged read as a chunk read. This harness's layouts keep each index inside the tail read,
   // so every ranged read here is a chunk; a layout whose index outgrew the tail would add an index read per operand
   // to this count, and the check would refuse the file until the meter told the two apart.
   check(
-    rd.range.n === operandReads * it.chunksFetchedPerOperand &&
-      it.chunksFetchedPerOperand === w.sharedChunks,
-    `its chunk reads (${rd.range.n}) are not ${w.sharedChunks} per operand of ${it.runs} intersects`,
+    rd.range.n === operandReads * readsPerOperand &&
+      (ranged
+        ? Number.isInteger(readsPerOperand) &&
+          readsPerOperand >= 1 &&
+          readsPerOperand <= w.sharedChunks
+        : readsPerOperand === w.sharedChunks),
+    ranged
+      ? `its chunk range requests (${rd.range.n}) are not between 1 and ${w.sharedChunks} per operand of ${it.runs} intersects`
+      : `its chunk reads (${rd.range.n}) are not ${w.sharedChunks} per operand of ${it.runs} intersects`,
   );
   check(
     rd.suffix.n === operandReads &&
@@ -562,7 +572,7 @@ function derive(run, src) {
   const putsPerMultipart = storeLoadRun
     ? medianOf(ofKind('multipart').map((l) => l.put))
     : 2 + partsPerMultipart + 1; // create, the parts, complete — then the pointer
-  const chunksPerOperand = it.chunksFetchedPerOperand;
+  const chunksPerOperand = readsPerOperand;
   const tailPerOperand = rd.suffix.n / operandReads;
   // Expected, from measured parts: each operand's pointer read once, as the library does when an intersect ends
   // inside its pointer refresh (`genTtlMs`) — which one inside the region does, and which the harness's timed store
