@@ -677,8 +677,9 @@ const REWRITE_READ_AHEAD = 32;
  * instead of being copied forward — and the writer skips a chunk the removal emptied. Reads run ahead of the writer
  * through a window of {@link REWRITE_READ_AHEAD} chunks, in key order, so the erasure costs a few round trips
  * rather than one per chunk; each chunk is decoded only as the writer reaches it, so a corrupt one still stops the
- * rewrite naming that chunk and not a later one. At most that many raw chunk payloads (about 8 KiB each
- * serialized) are held ahead of the writer, plus the one being decoded.
+ * rewrite naming that chunk and not a later one. At most that many raw chunk payloads are held ahead of the writer,
+ * plus the one being decoded: about 8 KiB each serialized for a well-formed segment, and never more than the reader's
+ * per-chunk payload cap, which refuses a longer index entry when the object is opened.
  *
  * Both halves of **invariant 5** apply, including the remainder range: a chunk of a 16-bit-keyed segment cannot
  * hold a value above `MAX_REMAINDER`, and one that does was not written by this codec. Carrying it forward would
