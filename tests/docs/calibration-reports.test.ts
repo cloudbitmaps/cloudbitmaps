@@ -131,7 +131,11 @@ function evidenceCommits(file: string, cwd: string = ROOT): string[] {
     const [hash, ...rest] = block.trim().split('\n');
     commits.push(hash ?? '');
     const moved = rest.map((l) => l.split('\t')).find((c) => /^[RC]\d+$/.test(c[0] ?? ''));
-    if (moved !== undefined && !(moved[1] ?? '').startsWith('bench/calibration/')) break;
+    // A copy is a new file that resembles another, whose source still has its own history: the copy's starts here.
+    // A move carries the file's history with it, unless it came from outside the evidence directory.
+    const copied = (moved?.[0] ?? '').startsWith('C');
+    if (moved !== undefined && (copied || !(moved[1] ?? '').startsWith('bench/calibration/')))
+      break;
   }
   return commits;
 }
@@ -340,6 +344,26 @@ describe('calibration reports are held to their evidence', () => {
         writeFileSync(join(dir, file), `${body}\n`);
         commit(dir, 'edit');
         expect(evidenceCommits(file, dir)).toHaveLength(2);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('counts a new run that resembles an earlier run once, and the earlier run still once', () => {
+      // Two runs of one harness share their shape, so git reports the second as a copy of the first. A copy's
+      // source still exists with its own history, so the copy's history starts at the commit that made it.
+      const dir = repo();
+      try {
+        writeFileSync(join(dir, 'bench', 'calibration', 'first.json'), `${body}\n`);
+        commit(dir, 'first run');
+        const second = 'bench/calibration/second.json';
+        writeFileSync(join(dir, second), `${body.replace('line 3"', 'line 3b"')}\n`);
+        commit(dir, 'second run');
+        expect(evidenceCommits(second, dir)).toHaveLength(1);
+        expect(evidenceCommits('bench/calibration/first.json', dir)).toHaveLength(1);
+        writeFileSync(join(dir, second), `${body}\n`);
+        commit(dir, 'edit');
+        expect(evidenceCommits(second, dir)).toHaveLength(2);
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
