@@ -438,6 +438,27 @@ export class SegmentEngine {
   }
 
   /**
+   * The chunks of `seg` at `chunkKeys`, taken in ascending key order by a read that may stop at any point: one stream of
+   * coalesced ranges when the source has `getChunks`, opening 1, 2, 4 … ranges wide up to {@link DEFAULT_INTERSECT_CONCURRENCY},
+   * else the chunk-by-chunk window of that many reads. `close` stops what is left of it.
+   */
+  private chunkSequence(
+    seg: SegmentRef,
+    chunkKeys: readonly number[],
+    gen: string | number | null | undefined,
+  ): { take(chunkKey: number): Promise<CodecBitmap | null>; close(): void } {
+    const streamed = this.openStreamed(seg, chunkKeys, gen, DEFAULT_INTERSECT_CONCURRENCY, 1);
+    if (streamed !== undefined) {
+      return {
+        take: (chunkKey) => this.streamedChunk(streamed, chunkKey),
+        close: () => streamed.stream?.close(),
+      };
+    }
+    const window = this.chunkWindow(seg, chunkKeys, gen, true);
+    return { take: () => window.take(), close: () => undefined };
+  }
+
+  /**
    * Every id, ascending, reading ahead through a window of up to 32 chunk fetches that opens 1, 2, 4 … 32 wide, so a
    * read that stops early has fetched only a handful of chunks past the one it stopped in; with `range`, only the ids in `(after, through]`, fetching only the
    * chunks the range overlaps (see {@link IdRange}).
@@ -454,12 +475,16 @@ export class SegmentEngine {
     const chunkKeys = await this.chunkKeys(seg);
     checkBudget(this.budget, chunkKeys.length, 'iterate'); // one storage fetch per chunk (before fan-out)
     const gen = await this.cacheVersion(seg); // after the shape read — see `combine`
-    const window = this.chunkWindow(seg, chunkKeys, gen, true);
-    for (const chunkKey of chunkKeys) {
-      const chunk = await window.take();
-      if (chunk === null) continue;
-      // Read straight off the (possibly cached) instance: iteration does not mutate it.
-      for (const remainder of chunk) yield joinId(chunkKey, remainder);
+    const chunks = this.chunkSequence(seg, chunkKeys, gen);
+    try {
+      for (const chunkKey of chunkKeys) {
+        const chunk = await chunks.take(chunkKey);
+        if (chunk === null) continue;
+        // Read straight off the (possibly cached) instance: iteration does not mutate it.
+        for (const remainder of chunk) yield joinId(chunkKey, remainder);
+      }
+    } finally {
+      chunks.close();
     }
   }
 
@@ -469,15 +494,19 @@ export class SegmentEngine {
     const chunkKeys = keysWithin(await this.chunkKeys(seg), w);
     checkBudget(this.budget, chunkKeys.length, 'iterate'); // one storage fetch per chunk (before fan-out)
     const gen = await this.cacheVersion(seg); // after the shape read — see `combine`
-    const window = this.chunkWindow(seg, chunkKeys, gen, true);
-    for (const chunkKey of chunkKeys) {
-      const chunk = await window.take();
-      if (chunk === null) continue;
-      if (isEdge(chunkKey, w)) {
-        for (const id of edgeIds(chunk, chunkKey, w)) yield id;
-      } else {
-        for (const remainder of chunk) yield joinId(chunkKey, remainder);
+    const chunks = this.chunkSequence(seg, chunkKeys, gen);
+    try {
+      for (const chunkKey of chunkKeys) {
+        const chunk = await chunks.take(chunkKey);
+        if (chunk === null) continue;
+        if (isEdge(chunkKey, w)) {
+          for (const id of edgeIds(chunk, chunkKey, w)) yield id;
+        } else {
+          for (const remainder of chunk) yield joinId(chunkKey, remainder);
+        }
       }
+    } finally {
+      chunks.close();
     }
   }
 
@@ -494,12 +523,16 @@ export class SegmentEngine {
       w === null ? await this.chunkKeys(seg) : keysWithin(await this.chunkKeys(seg), w);
     checkBudget(this.budget, chunkKeys.length, 'iterate'); // one storage fetch per chunk (before fan-out)
     const gen = await this.cacheVersion(seg); // after the shape read — see `combine`
-    const window = this.chunkWindow(seg, chunkKeys, gen, true);
-    for (const chunkKey of chunkKeys) {
-      const chunk = await window.take();
-      if (chunk === null) continue;
-      const ids = chunkIds(chunk, chunkKey, w);
-      if (ids.length > 0) yield ids;
+    const chunks = this.chunkSequence(seg, chunkKeys, gen);
+    try {
+      for (const chunkKey of chunkKeys) {
+        const chunk = await chunks.take(chunkKey);
+        if (chunk === null) continue;
+        const ids = chunkIds(chunk, chunkKey, w);
+        if (ids.length > 0) yield ids;
+      }
+    } finally {
+      chunks.close();
     }
   }
 
