@@ -48,11 +48,44 @@ export interface SegmentSize {
   readonly sizeBytes: number;
 }
 
+/**
+ * What {@link StorageChunkSource.getChunks} answers: the chunks, aligned with the keys asked for (`null` where the
+ * generation has none), and the version of the one generation they were all read from, or `null` when the segment
+ * has no generation. The version is what {@link StorageChunkSource.currentVersion} reports for that generation,
+ * so a caller can key what it keeps by the generation the bytes came from rather than the one it resolved earlier.
+ */
+export interface ChunksRead {
+  readonly version: string | null;
+  readonly chunks: readonly (Uint8Array | null)[];
+}
+
+/** Options of {@link StorageChunkSource.getChunks}. */
+export interface ReadChunksOptions {
+  /**
+   * Runs one storage request, and may run it again if it fails. A source passes each request it makes through
+   * this, so a caller that retries transient faults repeats the one request that failed, not the ones that landed.
+   * Absent, each request runs once.
+   */
+  readonly retry?: <T>(request: () => Promise<T>) => Promise<T>;
+}
+
 /** Per-chunk read view of the immutable Storage tier (implemented by the `.crbm` reader). */
 export interface StorageChunkSource {
   /** Read-only bytes for the chunk, or `null` if absent. Callers must not mutate the buffer. */
   getChunk(ref: ChunkRef): Promise<Uint8Array | null>;
   listChunkKeys(ref: SegmentRef): Promise<number[]>;
+  /**
+   * Optional: several chunks of one segment in one call, answered **from one generation**, with fewer storage
+   * requests than one per chunk where the chunks sit near each other in the object. `keys` are chunk keys; the
+   * answer lines up with them ({@link ChunksRead}), and a key the generation does not hold answers `null`, as
+   * {@link StorageChunkSource.getChunk} does. Each chunk is checked as a read of it alone is. A source that cannot
+   * read a range of an object (the in-memory source) omits this, and a caller reads chunk by chunk.
+   */
+  getChunks?(
+    ref: SegmentRef,
+    keys: readonly number[],
+    options?: ReadChunksOptions,
+  ): Promise<ChunksRead>;
   /**
    * Optional: the current generation's grounded size, cheaply (from the already-parsed `.crbm` index — no
    * payload reads), or `null` if the segment has no Storage generation. Powers the grounded `costReport()`.

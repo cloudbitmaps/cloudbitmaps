@@ -41,6 +41,8 @@ import type { Aead, CrbmCrypto, IKeystore, WrappedDek } from './crypto';
 import { validateChunkRef, validateUserRef } from './validate';
 import type {
   ChunkRef,
+  ChunksRead,
+  ReadChunksOptions,
   StorageChunkSource,
   GenerationMetadata,
   GenerationSummary,
@@ -1139,6 +1141,68 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     return this.withFreshSnapshot(ref, (reader) => reader.getChunk(ref.chunkKey), null);
   }
 
+  /**
+   * Several chunks of one generation, in as few storage requests as {@link CrbmReader.getChunks} can make them. The
+   * whole call is served from one resolved generation, whose version comes back with the chunks; a generation swept
+   * or replaced from under it re-resolves once and reads again, so the chunks are never a mix of two. `options.retry`
+   * runs the resolution and each range request, so a transient fault repeats that step alone.
+   */
+  async getChunks(
+    ref: SegmentRef,
+    keys: readonly number[],
+    options?: ReadChunksOptions,
+  ): Promise<ChunksRead> {
+    validateUserRef(ref);
+    for (const chunkKey of keys) validateChunkRef({ ...ref, chunkKey });
+    const retry = options?.retry;
+    return this.withFreshSnapshot<ChunksRead>(
+      ref,
+      async (reader) => ({
+        version: versionOf(reader.generation, reader.lineage),
+        chunks: await reader.getChunks(keys, retry),
+      }),
+      { version: null, chunks: keys.map(() => null) },
+      retry,
+    );
+  }
+
+  /**
+   * {@link getChunks} of a specific generation, the pinned shape read, answering with the version it was given.
+   * `held` as for {@link getChunkAt}.
+   */
+  async getChunksAt(
+    ref: SegmentRef,
+    generation: number,
+    keys: readonly number[],
+    held?: PinnedObject,
+    options?: ReadChunksOptions,
+  ): Promise<(Uint8Array | null)[]> {
+    validateUserRef(ref);
+    for (const chunkKey of keys) validateChunkRef({ ...ref, chunkKey });
+    const retry = options?.retry;
+    const open = (): Promise<CrbmReader | null> =>
+      this.readerAt(ref, generation, held?.version, held?.fingerprint);
+    const reader = await (retry === undefined ? open() : retry(open));
+    if (reader === null) return keys.map(() => null);
+    const fingerprint = held?.fingerprint;
+    if (
+      held !== undefined &&
+      fingerprint !== undefined &&
+      this.replacedPins.get(this.heldKey(ref, held.version, fingerprint)) !== undefined
+    )
+      throw notThePinned(ref, generation);
+    try {
+      return await reader.getChunks(keys, retry);
+    } catch (err) {
+      // As for a single chunk ({@link getChunkAt}): a pin's reader outlives its object when the name is purged and
+      // loaded again, and its index then points into bytes that are not its own.
+      if (held === undefined || fingerprint === undefined) throw err;
+      if (!(isIntegrityError(err) || isValidationError(err))) throw err;
+      await this.throwIfReplaced(ref, generation, held.version, fingerprint);
+      throw err;
+    }
+  }
+
   async listChunkKeys(ref: SegmentRef): Promise<number[]> {
     validateUserRef(ref);
     return this.withFreshSnapshot(ref, (reader) => reader.chunkKeys(), []);
@@ -1244,12 +1308,25 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     ref: SegmentRef,
     read: (reader: CrbmReader) => T | Promise<T>,
     ifGone: T,
+    retry?: <R>(request: () => Promise<R>) => Promise<R>,
   ): Promise<T> {
     for (let attempt = 0; attempt < 2; attempt++) {
-      const snap = this.liveSnapshot(ref);
-      const pending = snap.reader;
+      let snap = this.liveSnapshot(ref);
+      let pending = snap.reader;
       try {
-        const reader = await pending;
+        // A caller that retries has the resolution and open run through it; a failed one forgets itself, so each
+        // try resolves anew.
+        let tried = false;
+        const reader = await (retry === undefined
+          ? pending
+          : retry(() => {
+              if (tried) {
+                snap = this.liveSnapshot(ref);
+                pending = snap.reader;
+              }
+              tried = true;
+              return pending;
+            }));
         if (reader === null) return ifGone;
         return await read(reader);
       } catch (err) {

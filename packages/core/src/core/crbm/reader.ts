@@ -23,6 +23,8 @@ import type { CrbmCrypto } from '../crypto';
 import { MAX_METADATA_BYTES, metadataFromBytes } from '../metadata';
 import type { GenerationMetadata } from '../ports';
 import { crc32c } from './crc32c';
+import { planChunkReads } from './plan-reads';
+import type { ChunkExtent } from './plan-reads';
 import { readVarint } from './varint';
 import {
   AEAD_NONCE_BYTES,
@@ -213,6 +215,8 @@ export class CrbmReader {
     readonly metadata: GenerationMetadata | undefined,
     /** What that metadata adds to {@link retainedBytes}; 0 when there is none. */
     private readonly metadataWeight: number,
+    /** Where the chunk payloads end: the extension block's start when there is one, else the index's. */
+    private readonly payloadEnd: number,
   ) {}
 
   /**
@@ -505,6 +509,7 @@ export class CrbmReader {
         ? 0
         : RETAINED_BYTES_PER_METADATA_BYTE * metadataLength +
             RETAINED_BYTES_PER_METADATA_KEY * Object.keys(metadata).length,
+      payloadEnd,
     );
   }
 
@@ -552,7 +557,15 @@ export class CrbmReader {
     if (offset < PAYLOAD_START || offset + length > this.objectSize - FOOTER_BYTES) {
       throw new IntegrityError(`chunk ${chunkKey} payload out of bounds`);
     }
-    const bytes = await this.blob.getRange(offset, length);
+    return this.openChunk(slot, chunkKey, await this.blob.getRange(offset, length));
+  }
+
+  /**
+   * Check one chunk's stored bytes against the index, and open them: the CRC32C first, then, on an encrypted object,
+   * the AEAD with the chunk's own associated data. The one check every read of a chunk goes through, whether the
+   * bytes came from a range of their own or from a slice of a larger one.
+   */
+  private openChunk(slot: number, chunkKey: number, bytes: Uint8Array): Uint8Array {
     if (crc32c(bytes) !== this.index.crcs[slot]) {
       throw new IntegrityError(`chunk ${chunkKey} payload CRC mismatch`);
     }
@@ -570,6 +583,55 @@ export class CrbmReader {
       },
       this.crypto.aadFor(chunkKey),
     );
+  }
+
+  /**
+   * Read several chunks, one storage request per merged range ({@link planChunkReads}) rather than one per chunk. The
+   * answer lines up with `chunkKeys`: the chunk at each position, or `null` where this generation has none, as
+   * {@link getChunk} answers for an absent key. A key given twice is read once and answered at both positions.
+   *
+   * Every chunk is held to the check a read of it alone gets: its slice of the range must match its index entry's
+   * CRC32C, and on an encrypted object it opens under its own associated data, so a chunk moved to another place in
+   * the object, or another key's bytes, is refused. The bytes in a gap between needed chunks are never parsed. A
+   * range that comes back shorter than asked is an {@link IntegrityError}, and any chunk that fails its check fails
+   * the call, as a read of that chunk alone would.
+   *
+   * `readRange`, when given, runs each range read, so a caller can retry one request without repeating the others.
+   * The buffers returned are read-only views, and a plain chunk's shares the range it was read in.
+   */
+  async getChunks(
+    chunkKeys: readonly number[],
+    readRange: <T>(read: () => Promise<T>) => Promise<T> = (read) => read(),
+  ): Promise<(Uint8Array | null)[]> {
+    const slots = chunkKeys.map((key) => this.slotOf(key));
+    const needed = [...new Set(slots.filter((slot) => slot >= 0))].sort((a, b) => a - b);
+    const extents: ChunkExtent[] = needed.map((slot) => ({
+      key: this.index.keys[slot]!,
+      offset: this.index.offsets[slot]!,
+      length: this.index.lengths[slot]!,
+    }));
+    const reads = planChunkReads(extents, { start: PAYLOAD_START, end: this.payloadEnd });
+    const opened = new Map<number, Uint8Array>();
+    // The reads are issued together; the caller bounds how many chunks it asks for at once.
+    await Promise.all(
+      reads.map(async (read) => {
+        const bytes = await readRange(() => this.blob.getRange(read.offset, read.length));
+        if (bytes.length !== read.length) {
+          throw new IntegrityError(
+            `.crbm range [${read.offset}, +${read.length}) read short (${bytes.length} bytes)`,
+          );
+        }
+        for (const chunk of read.chunks) {
+          const from = chunk.offset - read.offset;
+          const slot = this.slotOf(chunk.key);
+          opened.set(
+            chunk.key,
+            this.openChunk(slot, chunk.key, bytes.subarray(from, from + chunk.length)),
+          );
+        }
+      }),
+    );
+    return slots.map((slot, i) => (slot < 0 ? null : opened.get(chunkKeys[i]!)!));
   }
 }
 

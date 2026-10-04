@@ -23,6 +23,8 @@
  */
 import type {
   ChunkRef,
+  ChunksRead,
+  ReadChunksOptions,
   GenerationSummary,
   StorageChunkSource,
   SegmentRef,
@@ -87,6 +89,22 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
     return pin.generation === null
       ? Promise.resolve(null)
       : this.inner.getChunkAt(ref, pin.generation, heldBy(pin));
+  }
+
+  /**
+   * A pinned segment's chunks come from the pinned generation alone, under the version a pinned read keys by
+   * ({@link currentVersion}); another segment's go to the live source, which answers with its own.
+   */
+  async getChunks(
+    ref: SegmentRef,
+    keys: readonly number[],
+    options?: ReadChunksOptions,
+  ): Promise<ChunksRead> {
+    const pin = this.pinFor(ref);
+    if (pin === undefined) return this.inner.getChunks(ref, keys, options);
+    if (pin.generation === null) return { version: null, chunks: keys.map(() => null) };
+    const chunks = await this.inner.getChunksAt(ref, pin.generation, keys, heldBy(pin), options);
+    return { version: await this.currentVersion(ref), chunks };
   }
 
   listChunkKeys(ref: SegmentRef): Promise<number[]> {

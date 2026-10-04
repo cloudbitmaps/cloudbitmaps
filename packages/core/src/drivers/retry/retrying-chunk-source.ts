@@ -25,6 +25,8 @@ import { isTransientError } from '../../core/errors';
 import type { RetryPolicy } from '../../core/retry';
 import type {
   ChunkRef,
+  ChunksRead,
+  ReadChunksOptions,
   GenerationSummary,
   StorageChunkSource,
   SegmentRef,
@@ -70,6 +72,11 @@ export class RetryingStorageChunkSource implements StorageChunkSource {
   private readonly deps: ReturnType<typeof toRetry>['deps'];
   /** Present only when the inner source supports it — so capability detection stays honest. */
   readonly sizeOf?: (ref: SegmentRef) => Promise<SegmentSize | null>;
+  readonly getChunks?: (
+    ref: SegmentRef,
+    keys: readonly number[],
+    options?: ReadChunksOptions,
+  ) => Promise<ChunksRead>;
   readonly cardinalities?: (ref: SegmentRef) => Promise<ReadonlyMap<number, number> | null>;
   readonly summary?: (ref: SegmentRef) => Promise<GenerationSummary | null>;
   readonly currentGeneration?: (ref: SegmentRef) => Promise<number | null>;
@@ -93,6 +100,18 @@ export class RetryingStorageChunkSource implements StorageChunkSource {
     const innerSizeOf = inner.sizeOf;
     if (innerSizeOf) {
       this.sizeOf = (ref) => withRetry(() => innerSizeOf.call(inner, ref), this.policy, this.deps);
+    }
+    // Retried a request at a time, not as a whole: the source runs each request it makes through the runner it is
+    // handed, so a fault repeats the one request that failed and the ones that landed are not read again.
+    const innerGetChunks = inner.getChunks;
+    if (innerGetChunks) {
+      this.getChunks = (ref, keys, options) => {
+        const outer = options?.retry;
+        return innerGetChunks.call(inner, ref, keys, {
+          retry: (request) =>
+            withRetry(outer === undefined ? request : () => outer(request), this.policy, this.deps),
+        });
+      };
     }
     const innerCardinalities = inner.cardinalities;
     if (innerCardinalities) {
