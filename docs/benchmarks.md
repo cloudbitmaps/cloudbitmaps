@@ -98,6 +98,9 @@ and a load cost, and how long they take.
   bytes a second; a multipart load of a 12.6 MB segment at 11.3 million ids a second, 11,339,268 bytes a second.
 - **`andNot`** of a 1,999-chunk segment against ten excludes took 8,687.10 ms at the median and 3,021 GETs.
 
+**Every latency above was measured on 0.12.0, whose combine kept a window of 8 chunk keys**, and the current release
+widens it to 32; the [section below](#the-window-of-32--derived-not-measured) gives what that is expected to do.
+
 | Operation | Requests | One | Per million | Label |
 | --- | --- | --- | --- | --- |
 | Cold intersect, two 500,000-id segments sharing 100 of 1,999 chunks, the median measured | 204 GET | $0.0000816 | **$81.60** | derived |
@@ -126,6 +129,31 @@ instead for the pointer refresh: at most one GET per segment every 2 s while the
 this run's intersect at 204 GETs; what `store.load()` adds to its object's write; and the pointer
 refresh, for the segments a long-lived reader keeps reading. The
 [guide](guide/cost.md#what-each-term-counts) says what each term counts.
+
+### The window of 32 — derived, not measured
+
+**The run above was on 0.12.0, whose combine kept a window of 8 chunk keys.** A read of `n` chunks
+then took about `n / 8` request times in sequence, and that window, not the network, set how long a long read took:
+the `andNot` ran at a mean of 10.3 requests in flight, over about 250 rounds of about 27 ms. The current release
+opens a combine's window 8 keys wide and widens it to 32 as keys are taken, and `andNot` and `union` read an exclude's
+chunk in the same round trip as the include's, so the same requests are expected to be answered in fewer rounds. No
+run has measured that yet; the figures below are **derived** from a model, and the next in-region run is the
+measurement. The model draws each GET's latency from a lognormal distribution with a median of 26 ms and caps the
+open requests at 50, as the S3 SDK's default sockets do. It sends the same requests in the old and the new engine:
+
+| Shape | 0.12.0's window of 8 | Window of 8 widening to 32 | Requests (both) |
+| --- | --- | --- | --- |
+| `andNot`, a 1,999-chunk include against 10 excludes on 100 shared chunks | 13.1 s | 3.7 s | 2,999 |
+| `andNot` against one opt-out list holding every chunk | 18.2 s | 3.9 s | 3,998 |
+| `intersect`, 16 shared chunks | 129 ms | 129 ms | 32 |
+| `intersect`, 128 shared chunks | 866 ms | 338 ms | 256 |
+| `intersect`, 1,000 shared chunks | 6.3 s | 2.1 s | 2,000 |
+| `iterate` over a 1,999-chunk segment | 10.8 s | 3.6 s | 1,999 |
+| `intersect` page that stops after 50 ids (25 keys) | 178 ms | 117 ms | 66 to 114 |
+| `iterate` page that stops after 50 ids (10 chunks) | 102 ms | 103 ms | 17 to 41 |
+
+Both columns are modelled, not measured on S3. The last two rows are the cost: a read that stops early has requested
+up to 32 keys per operand ahead, where 0.12.0 had requested up to 8. Pass `concurrency` to bound that.
 
 ## At scale — measured (1K → 10K → 100K segments)
 

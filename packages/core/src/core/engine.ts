@@ -84,7 +84,13 @@ export interface IdRange {
 
 /** Options common to the chunk-aligned combines. */
 export interface CombineOptions extends IdRange {
-  /** Max chunk keys resolved concurrently — bounds the Storage footprint. A positive integer. */
+  /**
+   * Max chunk keys resolved concurrently — bounds the Storage footprint (about `concurrency × operands` chunks in
+   * flight). A positive integer; default 32. The window opens 8 keys wide (or `concurrency`, if lower) and widens
+   * as keys are taken, so a read that stops early fetches no more than a few keys ahead; one that runs to the end
+   * spends nearly all of its round trips at the full width. A read that stops early has requested up to
+   * `concurrency` keys per operand past the last one it used.
+   */
   readonly concurrency?: number;
   /** Override the store's per-op budget for this call (`false` lifts it). */
   readonly budget?: BudgetOption;

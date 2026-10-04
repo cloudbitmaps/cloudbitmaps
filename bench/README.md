@@ -102,9 +102,11 @@ the whole request and the 256 KiB tail is without its body). Each cold intersect
 afresh and records `peakInFlight`, `meanInFlight` (the summed request time over the wall time) and `rounds`: its
 requests times its wall time over the summed request time, which is how many it waited for one after another. The stage
 record carries their medians as `medianPeakInFlight`, `medianMeanInFlight` and `medianRounds`, beside `modelRounds`, the
-engine's model of 2 + ⌈k / 8⌉ for a pointer, a tail and a window of 8 chunks at a time. A peak of 16 is the window,
-8 chunks each read from both operands; rounds above the model with a mean in flight under 16 is a slow request holding
-the window. In flight counts requests the library issued, including any waiting for a free socket.
+engine's model of 2 + the rounds a window that opens 8 chunks wide and widens to 32 takes over k chunks (`windowRounds`
+in `lib/calibrate-stages.cjs`, stepped at an even latency from the engine's two constants), for a pointer, a tail and
+the window. A peak of 64 is the full window, 32 chunks each read from both operands; rounds above the model with a
+mean in flight well under that is a slow request holding the window. A run on 0.12.0 or earlier ran a fixed window of 8
+chunks, a model of 2 + ⌈k / 8⌉ and a peak of 16, and its figures are read against that. In flight counts requests the library issued, including any waiting for a free socket.
 
 `andNot` reads every chunk of the segment it filters, since any of them can survive, and each exclude only where it
 overlaps, so what it costs scales with the include operand and not with the size of the exclude list.
@@ -317,8 +319,8 @@ hang-up on a real pseudo-terminal that is then closed, and the whole path by int
 - **The SDK that sent the requests.** `measured.sdk` holds the versions of `@aws-sdk/client-s3` and of the HTTP handler
   under it, read from what is installed (a CloudShell run installs the latest and deletes the scratch directory once the
   results are copied out), with `maxSockets: 50`, the handler's default, which the harness does not set. It bounds how many
-  requests can really be in flight: an `andNot` keeps 8 keys in flight and fetches every exclude of a key at once, so on its
-  first shared keys it wants more than 50, and its latency is read against that.
+  requests can really be in flight: an `andNot` widens its window from 8 keys to 32 and fetches every exclude of a key in the same round as its include, so
+  on its first shared keys it can want more than 50, and its latency is read against that.
 - **What it measured.** The package version, the harness commit (marked `-dirty` when the harness had uncommitted
   edits, since the commit alone would name a harness that did not run), the Node version, and how the timed stores
   were built.

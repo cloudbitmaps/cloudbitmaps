@@ -46,6 +46,33 @@ const path = require('node:path');
 
 const { classify } = require('./aws-meter.cjs');
 const { planLayout, DEFAULT_LAYOUT, EVIDENCE_DIR, CHUNK_SPAN } = require('./calibrate-guards.cjs');
+const { windowRounds } = require('./calibrate-stages.cjs');
+
+/**
+ * The last release whose engine held a combine's window at a fixed 8 keys. A run's depth is the depth of the engine
+ * that ran, so a run of that release or an earlier one is read against 8 keys, whatever the engine here does now; a
+ * later release is read against the window the engine's source names.
+ */
+const FIXED_WINDOW_THROUGH = Object.freeze({ version: [0, 12, 0], keys: 8 });
+
+/** `0.12.0` as numbers; null for anything else, which is read as the current engine. */
+function releaseOf(version) {
+  const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(String(version));
+  return m === null ? null : [Number(m[1]), Number(m[2]), Number(m[3])];
+}
+
+/** The window the engine of `packageVersion` ran with: how wide it opened and the most it held. */
+function windowOfRun(packageVersion, src) {
+  const release = releaseOf(packageVersion);
+  if (release !== null) {
+    const [a, b, c] = FIXED_WINDOW_THROUGH.version;
+    const through =
+      release[0] < a ||
+      (release[0] === a && (release[1] < b || (release[1] === b && release[2] <= c)));
+    if (through) return { limit: FIXED_WINDOW_THROUGH.keys, start: FIXED_WINDOW_THROUGH.keys };
+  }
+  return { limit: src.intersectConcurrency, start: src.combineWindowStart };
+}
 const { STAGES, sampleBounds } = require('./calibrate-stages.cjs');
 const {
   keptRequests,
@@ -131,6 +158,7 @@ function readSources(root) {
     engine,
     'DEFAULT_INTERSECT_CONCURRENCY',
   );
+  const windowStart = need(/const COMBINE_WINDOW_START = (\d+);/, engine, 'COMBINE_WINDOW_START');
   return {
     pricing: {
       name: profile[1],
@@ -145,6 +173,7 @@ function readSources(root) {
     preambleBytes: Number(preamble[1]),
     genTtlMs: Number(ttl[1]),
     intersectConcurrency: Number(fanOut[1]),
+    combineWindowStart: Number(windowStart[1]),
   };
 }
 
@@ -543,7 +572,8 @@ function derive(run, src) {
   // once. So its requests queue this many deep. A pointer refresh part-way through holds every chunk read that
   // starts while it is in flight, so each one the median intersect made adds one more.
   const refreshes = (measuredGets - expectedGets) / 2;
-  const requestsDeepPinned = 2 + Math.ceil(chunksPerOperand / src.intersectConcurrency);
+  const window = windowOfRun(run.measured.packageVersion, src);
+  const requestsDeepPinned = 2 + windowRounds(chunksPerOperand, window.limit, window.start);
   const requestsDeep = requestsDeepPinned + refreshes;
 
   // ── bytes ───────────────────────────────────────────────────────────────────────────────────────────────────
@@ -646,7 +676,7 @@ function derive(run, src) {
     refreshes,
     requestsDeep,
     requestsDeepPinned,
-    intersectConcurrency: src.intersectConcurrency,
+    intersectConcurrency: window.limit,
     projected: { ...run.projected },
     // `store.load()` when the loads were priced from their own recorded requests; null when they were the write and
     // publish, priced from the run's totals.

@@ -160,7 +160,7 @@ A dashboard running 100 cold intersects a second over 5 GB costs **$21,445** a m
 **Latency.** Redis answers from memory. A cold intersect waits on object storage, request after request:
 
 <!-- SIZING:DEPTH:START -->
-A cold intersect of two segments sharing 100 chunks waits on a chain of requests **15 deep**: both operands' pointers, then both indexes, then the shared chunks, 8 at a time, each read from both operands together, so 16 requests are in flight, and the next chunk starts as the oldest finishes. At an even latency that is 15 request times end to end. A slow request holds up those queued behind it, so what the chain takes is for a measurement to say. A repeat served from the chunk cache makes no request within `cache.genTtlMs`, and one round of pointer reads after it.
+A cold intersect of two segments sharing 100 chunks is expected to wait on a chain of requests **6 deep**: both operands' pointers, then both indexes, then the shared chunks, opening 8 at a time and widening to 32, each read from both operands together, so up to 64 requests are in flight, and the next chunk starts as the oldest finishes. At an even latency that is 6 request times end to end. A slow request holds up those queued behind it, so what the chain takes is for a measurement to say. A repeat served from the chunk cache makes no request within `cache.genTtlMs`, and one round of pointer reads after it.
 <!-- SIZING:DEPTH:END -->
 
 The in-region run timed one shape of cold intersect, and a cold `count()`; the [benchmarks page](../benchmarks.md#real-cloud-calibration--aws) has the figures, and the other shapes are not timed.

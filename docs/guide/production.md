@@ -290,7 +290,14 @@ const client = new S3Client({
 });
 ```
 
-Raise it too on a link too slow to deliver a read inside the timeout, since such a read fails on every attempt. The
+A combine keeps up to `concurrency` chunk keys in flight (32 by default once its window has widened), and it reads
+every operand of a key at once: an `intersect` of two segments has up to 64 reads open, and an `andNot` against
+excludes up to 32 times the include plus the excludes that hold each key. That can exceed the S3 SDK's default of 50
+sockets. The reads past the 50th are not refused: they wait for a socket, and the wait counts against
+`readTimeoutMs`, so a deployment that sets one should raise the client's `maxSockets` to match (200 above covers four
+concurrent two-operand combines), or pass a lower `concurrency` to the combine.
+
+Raise `readTimeoutMs` too on a link too slow to deliver a read inside the timeout, since such a read fails on every attempt. The
 timer is set on each request rather than on the client, so a `client` you pass gets it without being changed. On a
 client built with `cacheMiddleware: true`, a timed read resolves its middleware each time, since the SDK reuses a
 cached handler only for a request sent with no options.

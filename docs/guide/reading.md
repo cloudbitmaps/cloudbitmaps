@@ -134,8 +134,8 @@ resolved once, before any chunk is fetched, and every chunk is a whole, checksum
 load landing mid-call never tears a chunk. But a long call can read the chunks it requests after one of these from
 another generation: if it straddles a TTL boundary, if the reader cache evicts the segment mid-call, if a sweep
 collects the generation it was reading, or if the store invalidates the segment. And because a read requests ahead of
-the chunk it is on, the chunks it had already requested are still the earlier generation's: up to 8, the one it is on
-included, for `iterate` and `count`, and up to `concurrency` keys for a combine. Its answer then describes two
+the chunk it is on, the chunks it had already requested are still the earlier generation's: up to 32, the one it is on
+included, for `iterate` and `count`, and up to `concurrency` keys (32 by default) for a combine. Its answer then describes two
 instants. `dropSegment` and `retireExpired` invalidate too: a read of a segment that then no longer resolves ends rather than moves on, and a read of one `retireExpired` lists but leaves live moves on. [Pin the segment](#read-one-fixed-point-in-time)
 when that matters.
 
@@ -250,12 +250,17 @@ so a cursor that reaches the end of its window needs no special case.
 
 **Cost.** The per-op budget is charged once, before the first fetch, for every chunk in the range, so a page with
 `after` alone is charged to the end of the segment however early it stops. A combine also fetches ahead: it starts
-`concurrency` chunk keys at once (8 by default), and one more each time it yields a key's ids, on every segment it
-reads. A page that stops early has already fetched up to `concurrency` keys past the one holding its last id. Those
-chunks land in the chunk cache, where the next page usually finds them. `iterate` reads ahead too, through a window
-that opens 1, 2, 4, then 8 fetches wide: a page that stops in its first chunk has fetched that chunk alone, and one
-that stops later has fetched at most 7 chunks past the one it stopped in. A full read keeps 8 fetches open where it
-kept one, so a cold segment reads up to about 8 times faster when the storage round trip dominates; the number of
-requests is the same. A fetch already started is not cancelled when the caller stops: it finishes, lands in the chunk
+8 chunk keys at once (or `concurrency`, if that is lower), widens by one more per key it takes until the window is
+`concurrency` wide (32 by default), and starts one more each time it yields a key's ids, on every segment it reads.
+A page that stops early has already fetched up to `concurrency` keys past the one holding its last id: up to 32 keys
+per operand by default, and fewer when it stops in its first keys, since the window opens narrow. Those chunks land
+in the chunk cache, where the next page usually finds them. Pass a lower `concurrency` to fetch less ahead, at the
+price of more round trips on a long read. `iterate` reads ahead too, through a window that opens 1, 2, 4 and on up
+to 32 fetches wide: a page that stops in its first chunk has fetched that chunk alone, and one that stops later has
+fetched at most 31 chunks past the one it stopped in. A full read keeps up to 32 fetches open where it kept one, so a
+cold segment reads many times faster when the storage round trip dominates (a read of `n` chunks takes about
+`n / 32` round trips in sequence); the number of requests is the same. An `andNot`, and a `union` with `exclude`,
+also read an exclude's chunk in the same round trip as the include's, where an `intersect` of two segments reads it
+only once the intersection of that chunk is known to be non-empty. A fetch already started is not cancelled when the caller stops: it finishes, lands in the chunk
 cache and is metered, and on a source that retries a transient failure, its retries run to their limit after the
 caller has gone.
