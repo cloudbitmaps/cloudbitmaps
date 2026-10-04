@@ -23,7 +23,7 @@ import type { CrbmCrypto } from '../crypto';
 import { MAX_METADATA_BYTES, metadataFromBytes } from '../metadata';
 import type { GenerationMetadata } from '../ports';
 import { crc32c } from './crc32c';
-import { planChunkReads } from './plan-reads';
+import { MAX_GET_CHUNKS_BYTES, planChunkReads } from './plan-reads';
 import type { ChunkExtent } from './plan-reads';
 import { readVarint } from './varint';
 import {
@@ -596,8 +596,14 @@ export class CrbmReader {
    * range that comes back shorter than asked is an {@link IntegrityError}, and any chunk that fails its check fails
    * the call, as a read of that chunk alone would.
    *
+   * A call plans at most {@link MAX_GET_CHUNKS_BYTES} of reads, gaps included, and a call that would plan more is
+   * refused with a {@link ValidationError} before any request is sent. That bounds the ranges in flight and the bytes
+   * the call holds, which it does until the caller drops what it returns.
+   *
    * `readRange`, when given, runs each range read, so a caller can retry one request without repeating the others.
-   * The buffers returned are read-only views, and a plain chunk's shares the range it was read in.
+   * A plain chunk is a writable view into the range it was read in, which may be up to 1 MiB shared with its
+   * neighbours, and a key given twice gets the same view at both positions: copy a chunk to keep it. An empty list of
+   * keys reads nothing.
    */
   async getChunks(
     chunkKeys: readonly number[],
@@ -611,8 +617,15 @@ export class CrbmReader {
       length: this.index.lengths[slot]!,
     }));
     const reads = planChunkReads(extents, { start: PAYLOAD_START, end: this.payloadEnd });
+    const planned = reads.reduce((sum, read) => sum + read.length, 0);
+    if (planned > MAX_GET_CHUNKS_BYTES) {
+      throw new ValidationError(
+        `${chunkKeys.length} chunk keys plan ${planned} bytes of reads, over the ${MAX_GET_CHUNKS_BYTES} a call may ` +
+          'plan: ask for fewer chunks at once',
+      );
+    }
     const opened = new Map<number, Uint8Array>();
-    // The reads are issued together; the caller bounds how many chunks it asks for at once.
+    // The reads go out together, which the cap on the planned bytes bounds to about 32 ranges.
     await Promise.all(
       reads.map(async (read) => {
         const bytes = await readRange(() => this.blob.getRange(read.offset, read.length));

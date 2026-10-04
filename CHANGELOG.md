@@ -15,9 +15,13 @@ so, and so do the module headers in the code.
 
 - **`StorageChunkSource.getChunks(ref, keys, options?)`, optional, for the authors of a chunk source.** It reads several
   chunks of one segment from one generation and answers the chunks, lined up with the keys, with the version of the
-  generation they came from (`ChunksRead`). `CrbmStorageChunkSource` implements it by merging chunks that sit within
-  256 KiB of each other into one range read, up to 1 MiB, and checks each chunk exactly as a read of it alone is
-  checked; the in-memory source omits it. Nothing in the library's reads calls it yet, so no request count changes.
+  generation they came from (`ChunksRead`). `CrbmStorageChunkSource`, which the stores the library ships read through,
+  implements it by merging chunks that sit within 256 KiB of each other into one range read, up to 1 MiB, and checks
+  each chunk exactly as a read of it alone is checked; a custom source that cannot read a range omits it. A call holds
+  every chunk it returns until the caller drops them: ask for at most a window's worth, since a call that would read
+  more than 32 MiB, gaps included, is refused with a `ValidationError` before any request is sent, and a plain chunk may
+  be a view sharing a buffer of up to 1 MiB with its neighbours. Nothing in the library's reads calls it yet, so no
+  request count changes.
 
 ## [0.14.0] — 2026-10-04
 

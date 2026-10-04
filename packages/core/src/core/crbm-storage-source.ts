@@ -1145,7 +1145,8 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * Several chunks of one generation, in as few storage requests as {@link CrbmReader.getChunks} can make them. The
    * whole call is served from one resolved generation, whose version comes back with the chunks; a generation swept
    * or replaced from under it re-resolves once and reads again, so the chunks are never a mix of two. `options.retry`
-   * runs the resolution and each range request, so a transient fault repeats that step alone.
+   * runs the resolution, each range request and the check that a failed read's object was replaced, so a transient
+   * fault repeats that step alone. An empty list of keys still resolves the segment.
    */
   async getChunks(
     ref: SegmentRef,
@@ -1198,7 +1199,9 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       // loaded again, and its index then points into bytes that are not its own.
       if (held === undefined || fingerprint === undefined) throw err;
       if (!(isIntegrityError(err) || isValidationError(err))) throw err;
-      await this.throwIfReplaced(ref, generation, held.version, fingerprint);
+      const check = (): Promise<void> =>
+        this.throwIfReplaced(ref, generation, held.version, fingerprint);
+      await (retry === undefined ? check() : retry(check));
       throw err;
     }
   }
@@ -1334,7 +1337,8 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         // and one whose object was replaced under the same number (see `replacedUnder`). Anything else
         // (corruption, a real second miss) propagates.
         if (attempt === 1) throw err;
-        if (!isNotFoundError(err) && !(await this.replacedUnder(ref, pending, err))) throw err;
+        if (!isNotFoundError(err) && !(await this.replacedUnder(ref, pending, err, retry)))
+          throw err;
         this.dropStale(segmentKey(ref), snap); // lazily: the happy path never needs the key
       }
     }
@@ -1355,6 +1359,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     ref: SegmentRef,
     pending: Promise<CrbmReader | null>,
     err: unknown,
+    retry?: <R>(request: () => Promise<R>) => Promise<R>,
   ): Promise<boolean> {
     if (!(isIntegrityError(err) || isValidationError(err))) return false;
     let reader: CrbmReader | null;
@@ -1370,7 +1375,9 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       generation: reader.generation,
     };
     try {
-      return !(await CrbmReader.sameObject(storageBlobReader(this.driver, at), reader.fingerprint));
+      const check = (): Promise<boolean> =>
+        CrbmReader.sameObject(storageBlobReader(this.driver, at), reader.fingerprint);
+      return !(await (retry === undefined ? check() : retry(check)));
     } catch (checkErr) {
       if (isNotFoundError(checkErr)) return true;
       if (isTransientError(checkErr)) throw checkErr;

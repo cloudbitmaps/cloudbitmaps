@@ -784,7 +784,11 @@ chunks }`, what the optional `getChunks(ref, keys, options?)` answers: the chunk
 version of the one generation they were all read from) · `ReadChunksOptions` (`{ retry? }`, a runner for each storage
 request the call makes, so a caller that retries repeats the one request that failed). A source that implements
 `getChunks` reads several chunks of one segment from one generation in fewer requests; one that omits it is read
-chunk by chunk, as before
+chunk by chunk, as before. A call holds every chunk it returns until the caller drops them: ask for at most a
+window's worth, since a call that would read more than 32 MiB (the gaps between the chunks it needs included) is
+refused with a `ValidationError` before any request is sent. A plain chunk may be a writable view into a buffer of up
+to 1 MiB shared with its neighbours, and a key asked twice gets the same view, so copy a chunk to keep it. An empty
+list of keys still resolves the segment
 
 ---
 

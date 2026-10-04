@@ -27,6 +27,13 @@ export const MAX_COALESCE_GAP_BYTES = 256 * 1024;
  */
 export const MAX_COALESCED_READ_BYTES: number = DEFAULT_MAX_BITMAP_BYTES;
 
+/**
+ * The most bytes one `getChunks` call may plan, gaps included: the default `concurrency` of 32 times the largest
+ * read. A call that would plan more is refused before any request goes out, so what a call holds, and how many
+ * ranges it has in flight, is bounded whatever keys it is given.
+ */
+export const MAX_GET_CHUNKS_BYTES: number = 32 * MAX_COALESCED_READ_BYTES;
+
 /** One needed chunk, as its index entry places it in the object. */
 export interface ChunkExtent {
   readonly key: number;
@@ -52,7 +59,8 @@ export interface ChunkRegion {
  * order, which is object order), each at least a byte long, none overlapping another. The reads come back
  * ascending and disjoint, each covering one or more of the chunks, every chunk in exactly one read.
  *
- * Throws {@link IntegrityError} for an extent outside `region`, or out of order, or overlapping the one before it:
+ * Throws {@link IntegrityError} for an extent that is not a pair of safe integers, or is outside `region`, or out of
+ * order, or overlapping the one before it:
  * the index a plan is made from is untrusted bytes, and a read is never planned outside the chunk region.
  */
 export function planChunkReads(
@@ -70,7 +78,14 @@ export function planChunkReads(
   let previousEnd = region.start;
   for (const extent of extents) {
     const extentEnd = extent.offset + extent.length;
-    if (extent.length < 1 || extent.offset < previousEnd || extentEnd > region.end) {
+    // Written so that a NaN, a fraction or an unsafe integer fails the test rather than slipping past a comparison.
+    if (!(
+      Number.isSafeInteger(extent.offset) &&
+      Number.isSafeInteger(extent.length) &&
+      extent.length >= 1 &&
+      extent.offset >= previousEnd &&
+      extentEnd <= region.end
+    )) {
       throw new IntegrityError(`chunk ${extent.key} is not inside the chunk region, in order`);
     }
     previousEnd = extentEnd;
