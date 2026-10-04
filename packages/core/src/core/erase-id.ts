@@ -355,13 +355,26 @@ export async function eraseIdFromSegment(
     generations: readonly number[],
     stopAtHolder: boolean,
   ): Promise<{ generation: number; held: boolean | null }[]> => {
-    const settled = await mapWithConcurrency(generations, HOLDS_CONCURRENCY, async (generation) => {
-      try {
-        return { generation, held: await holds(generation), fault: undefined };
-      } catch (fault) {
-        return { generation, held: null, fault: { error: fault } };
-      }
-    });
+    // The lowest index that holds the id so far. A generation past it can never be reached by the in-order walk
+    // below, so a worker that would start one skips it: the reads wasted past the first holder are only those
+    // already in flight when it was found, fewer than the bound.
+    let firstHolder = Infinity;
+    const settled = await mapWithConcurrency(
+      generations,
+      HOLDS_CONCURRENCY,
+      async (generation, index) => {
+        if (stopAtHolder && index > firstHolder) {
+          return { generation, held: null, fault: undefined };
+        }
+        try {
+          const held = await holds(generation);
+          if (held === true && index < firstHolder) firstHolder = index;
+          return { generation, held, fault: undefined };
+        } catch (fault) {
+          return { generation, held: null, fault: { error: fault } };
+        }
+      },
+    );
     const outcomes: { generation: number; held: boolean | null }[] = [];
     for (const { generation, held, fault } of settled) {
       if (fault !== undefined) throw fault.error;
@@ -447,8 +460,8 @@ export async function eraseIdFromSegment(
    * other generations at all — true of any store that collects with `keep: 0`, and of a segment loaded once —
    * nothing else is read. Then per generation, the index is opened and the chunk is fetched only if the index
    * says that chunk exists: every generation above the pointer, since each holder there must be found; and below
-   * it only until the first holder, since `keep: 0` takes the rest regardless — and not at all once a holder was
-   * found above. `eraseSubject` fans this out across every registered segment, so the filter is what keeps a
+   * it only until the first holder, since `keep: 0` takes the rest regardless (a few reads already in flight when it
+   * is found may land past it, fewer than the scan's bound) — and not at all once a holder was found above. `eraseSubject` fans this out across every registered segment, so the filter is what keeps a
    * fleet-wide subject scan from doubling its reads on segments that never held the id.
    */
   const notInCurrent = async (): Promise<EraseIdResult> => {

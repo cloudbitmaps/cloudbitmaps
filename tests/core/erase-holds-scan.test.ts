@@ -25,6 +25,8 @@ interface Layout {
   /** The pointer: the generation the row names (generations above it were never published). */
   readonly from: number;
   readonly delays: readonly number[];
+  /** Which generations fault when read (never the pointer's own). */
+  readonly fails?: readonly boolean[];
 }
 
 interface Probe {
@@ -92,27 +94,103 @@ const layoutArb = fc.integer({ min: 1, max: 9 }).chain((n) =>
     holds: fc.array(fc.boolean(), { minLength: n, maxLength: n }),
     from: fc.integer({ min: 0, max: n - 1 }),
     delays: fc.array(fc.integer({ min: 0, max: 6 }), { minLength: n, maxLength: n }),
+    fails: fc.array(
+      fc.integer({ min: 0, max: 5 }).map((x) => x === 0),
+      {
+        minLength: n,
+        maxLength: n,
+      },
+    ),
   }),
 );
 
+/**
+ * The one-at-a-time scan the parallel one must equal: every generation above the pointer newest first (all of them,
+ * since each holder there must be found), then, only if none held, the ones below newest first up to the first
+ * holder. A fault surfaces where the walk reaches it. Returns the generation that holds the newest copy, `'none'`
+ * when nothing holds the id, or the faulting generation.
+ */
+function serialOracle(layout: Layout): { newest: number | 'none' } | { fault: number } {
+  const n = layout.holds.length;
+  const above = Array.from({ length: n }, (_, g) => n - 1 - g).filter((g) => g > layout.from);
+  const below = Array.from({ length: n }, (_, g) => n - 1 - g).filter((g) => g < layout.from);
+  const holdersAbove: number[] = [];
+  for (const g of above) {
+    if (layout.fails?.[g]) return { fault: g };
+    if (layout.holds[g]) holdersAbove.push(g);
+  }
+  if (holdersAbove.length > 0) return { newest: holdersAbove[0]! };
+  for (const g of below) {
+    if (layout.fails?.[g]) return { fault: g };
+    if (layout.holds[g]) return { newest: g };
+  }
+  return { newest: 'none' };
+}
+
 describe('the erasure scan for the generations holding the id', () => {
-  it('equals the serial scan for every layout: the newest holder, and nothing left behind', async () => {
+  it('equals the serial scan for every layout, faults included, and leaves no holder behind', async () => {
     await fc.assert(
-      fc.asyncProperty(layoutArb, async (layout) => {
-        const p = await build(layout);
+      fc.asyncProperty(layoutArb, async (raw) => {
+        const layout: Layout = {
+          ...raw,
+          holds: raw.holds.map((h, g) => (g === raw.from ? false : h)),
+          fails: raw.fails.map((f, g) => (g === raw.from ? false : f)),
+        };
+        const p = await build(layout, {
+          fail: (g) => (layout.fails?.[g] ? new Error(`boom ${g}`) : undefined),
+        });
+        const expected = serialOracle(layout);
+        if ('fault' in expected) {
+          await expect(erase(p)).rejects.toThrow(`boom ${expected.fault}`);
+          return;
+        }
         const res = await erase(p);
-        const held = layout.holds.flatMap((h, g) => (h ? [g] : []));
-        expect(p.stats.peak).toBeLessThanOrEqual(HOLDS_BOUND + 1); // the rewrite's own read may overlap one
-        if (held.length === 0) {
+        if (expected.newest === 'none') {
           expect(res).toMatchObject({ erased: false, reason: 'not-member' });
         } else {
-          expect(res.erased).toBe(true);
-          if (!layout.holds[layout.from]) expect(res.fromGeneration).toBe(Math.max(...held));
+          expect(res).toMatchObject({ erased: true, fromGeneration: expected.newest });
         }
         expect(await holdersLeft(p)).toEqual([]);
       }),
-      { numRuns: 80 },
+      { numRuns: 200 },
     );
+  });
+
+  it.each([
+    { generations: 40, holder: 38 },
+    { generations: 60, holder: 58 },
+    { generations: 40, holder: 30 },
+  ])(
+    'stops reading past the first holder: $generations generations, newest holder $holder',
+    async ({ generations, holder }) => {
+      const from = generations - 1;
+      const layout: Layout = {
+        holds: Array.from({ length: generations }, (_, g) => g <= holder),
+        from,
+        delays: Array(generations).fill(2),
+      };
+      const p = await build(layout);
+      const res = await erase(p);
+      expect(res).toMatchObject({ erased: true, fromGeneration: holder });
+      // Newest first below the pointer, the holder is this far in; only reads already in flight may land past it.
+      const index = from - 1 - holder;
+      const below = new Set(p.stats.opened.filter((g) => g < from));
+      expect(below.size).toBeLessThanOrEqual(index + HOLDS_BOUND);
+    },
+  );
+
+  it('throws the first fault in newest-first order when a holder sits above the pointer', async () => {
+    const layout: Layout = {
+      holds: [false, false, true, true, true, true],
+      from: 1,
+      delays: [1, 1, 1, 9, 1, 1],
+    };
+    // Generations 5, 4, 3 and 2 are all read, since every holder above the pointer must be found; 4 faults first in
+    // newest-first order even though 3 faults too and answers later.
+    const p = await build(layout, {
+      fail: (g) => (g === 4 || g === 3 ? new Error(`boom ${g}`) : undefined),
+    });
+    await expect(erase(p)).rejects.toThrow('boom 4');
   });
 
   it('reads several generations at once, never above the bound', async () => {

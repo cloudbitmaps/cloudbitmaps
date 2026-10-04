@@ -146,6 +146,9 @@ well-formed segment and no more than the reader's cap of 1 MiB each ([SECURITY](
 `eraseSubject` erases up to `concurrency` segments at once (8 by default), so it can have up to `concurrency × 32` range
 reads open together, 256 by default. On S3 that is more than the 128 sockets the client the store builds allows (50 on a client you pass, by the SDK's
 default): the reads past the limit wait for a socket, unless you set `maxSockets: 256` ([production](production.md)).
+On top of that, each segment's search of the other generations for a holder reads up to 4 generations at once (up to 8
+object requests, and up to 4 chunk payloads held, no more than 4 MiB for a corrupt one), and `eraseNamespace` shreds 8
+segments at once, a registry read and write each, with nothing held but the rows.
 
 **Every generation that holds the id goes, not only the current one.** A re-seed that drops someone leaves their bit
 in the generation `keep` retains. A `store.rollback` leaves the generations it rolled back from above the pointer,
