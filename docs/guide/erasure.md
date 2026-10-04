@@ -140,17 +140,23 @@ tombstone, so `eraseSubject` does what every other write in the library does. Fo
 member of, it streams the current generation through, with every chunk decoded and re-encoded and the one holding the
 id with that bit cleared. It verifies the new object, publishes it fenced on the generation it streamed, and then
 deletes the generation that held the bit (a collection with `keep: 0`). The bit is physically gone from the bucket
-when the call returns. It reads ahead through a window of 32 chunk reads, in key order, so a segment of `n` chunks
-takes about `n / 32` request times in sequence rather than `n`; the requests are the same ones. Memory is bounded by
-the window, never the segment: up to 32 raw chunk payloads are held ahead of the writer, about 8 KiB each for a
-well-formed segment and no more than the reader's cap of 1 MiB each ([SECURITY](../../SECURITY.md)) for a corrupt one,
-32 MiB per segment and `concurrency` × 32 MiB for `eraseSubject`.
-`eraseSubject` erases up to `concurrency` segments at once (8 by default), so it can have up to `concurrency × 32` range
-reads open together, 256 by default. On S3 that is more than the 128 sockets the client the store builds allows (50 on a client you pass, by the SDK's
-default): the reads past the limit wait for a socket, unless you set `maxSockets: 256` ([production](production.md)).
-On top of that, each segment's search of the other generations for a holder reads up to 4 generations at once (up to 8
-object requests, and up to 4 chunk payloads held, no more than 4 MiB for a corrupt one), and `eraseNamespace` shreds 8
-segments at once, a registry read and write each, with nothing held but the rows.
+when the call returns. It reads the generation through the reader's coalesced chunk stream, in key order: chunks that sit within 256 KiB of
+each other are fetched in one range request of at most 1 MiB, so a segment of 2,000 chunks of about 8 KiB takes about
+16 range requests rather than 2,000 (expected, from the test that counts them), and the ranges go out 4 at a time. Every
+chunk is checked exactly as a read of it alone is checked: its CRC32C, its AEAD on an encrypted segment, and the
+payload cap. Memory is bounded by the stream, never the segment: it holds at most 4 ranges at once, in flight or
+landed and not yet taken by the writer, each at most 1 MiB plus 28 bytes (a range is larger only when one chunk is,
+and no chunk is larger than the reader's cap of 1 MiB, [SECURITY](../../SECURITY.md)). That is at most 4 MiB plus 112
+bytes per segment and `concurrency` times that for `eraseSubject`, 32 MiB plus 224 bytes at the default 8; a segment
+smaller than that is held whole. A well-formed segment of chunks of about 8 KiB reads ahead up to 4 MiB, where a read
+of one chunk at a time held about 256 KiB. `eraseSubject` erases up to `concurrency` segments at once (8 by default),
+so its rewrites can have up to `concurrency × 4` range requests open together, 32 by default, each one range and not
+one chunk. Each segment's search of the other generations for a holder, before and after its rewrite, reads up to 4
+generations at once (up to 8 object requests, and up to 4 chunk payloads held, no more than 4 MiB for a corrupt one),
+so `eraseSubject` has at most `concurrency × 8` requests open, 64 by default: within the 128 sockets of the client the
+store builds, while on a client you pass with the SDK's default of 50 the requests past 50 wait for a socket unless you
+raise `maxSockets` ([production](production.md)). `eraseNamespace` shreds 8 segments at once, a registry read and write
+each, with nothing held but the rows.
 
 **Every generation that holds the id goes, not only the current one.** A re-seed that drops someone leaves their bit
 in the generation `keep` retains. A `store.rollback` leaves the generations it rolled back from above the pointer,

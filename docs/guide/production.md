@@ -311,11 +311,13 @@ request each. The client the store builds allows 128
 sockets, which covers one two-operand combine with room to spare; a client you pass keeps the SDK's default of 50, and
 its reads past the 50th are not refused: they wait for a socket, and the wait counts against `readTimeoutMs`. Raise
 `maxSockets` (on the store, or on your own client) to match your concurrent combines (256 covers four two-operand
-combines or one `eraseSubject`), or pass a lower `concurrency` to the combine.
+combines), or pass a lower `concurrency` to the combine.
 
-`eraseSubject` has up to `concurrency × 32` range reads open (256 by default, since it erases 8 segments at once, each
-with a window of 32 chunk reads), and `iterate` reads up to 32 ranges ahead (a source that reads chunk by chunk, and the
-storage-path `count`, up to 32 keys). Its 256 needs `maxSockets: 256`, or a lower `concurrency`.
+`eraseSubject` has up to `concurrency × 8` requests open (64 by default, since it erases 8 segments at once, each
+reading its segment through a stream of at most 4 ranges, each up to 1 MiB, and searching its other generations for a
+holder 4 at a time, two requests each), and `iterate` reads up to 32 ranges ahead (a source that reads chunk by chunk,
+and the storage-path `count`, up to 32 keys). Its 64 fit the client the store builds (128 sockets); on a client you
+pass with the SDK's default of 50, the requests past 50 wait for a socket unless you raise `maxSockets`.
 
 ### Reading ranges: the bytes between chunks
 
