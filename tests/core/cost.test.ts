@@ -261,7 +261,8 @@ describe('Redis sized to the data', () => {
   });
 
   it('is what the verdict, the rationale and the crossover are measured against', () => {
-    // The medium deployment of the sizing guide: 20 GB, one cold intersect a second, and the rest.
+    // A deployment of 20 GB, one cold intersect a second, and the rest: shaped like the sizing guide's medium one, with
+    // numbers of its own.
     const r = estimateCost({
       segments: [{ sizeBytes: 4_000_000, count: 5_000 }],
       workload: {

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { MAX_RANGES_IN_FLIGHT } from '@/core/crbm/plan-reads';
+import { DEFAULT_INTERSECT_CONCURRENCY } from '@/core/engine';
 
 /**
  * The privacy note and the erasure guide promise the same bound on what a read already in progress can still yield
@@ -14,7 +15,7 @@ import { MAX_RANGES_IN_FLIGHT } from '@/core/crbm/plan-reads';
  *   up to N chunks for `iterate` and `count`, and up to `concurrency` keys (M by default) for a combine
  *
  * and the gate reads that sentence out of each document, with its line breaks undone, and holds every copy to the
- * same N and M, and both to the library's own default window.
+ * same N and M, and both to the library's own default windows (the engine's, and the chunk stream's, which must agree).
  *
  * KNOWN LIMIT. The gate reads the one sentence's numbers. It cannot tell that a paragraph around it contradicts it in
  * words, which is what the review of a change to this promise is for.
@@ -34,7 +35,9 @@ describe('the in-flight bound after an erasure', () => {
   it.each(DOCS)('%s states it once, and it is the library default window', (rel) => {
     const found = boundsIn(readFileSync(join(ROOT, rel), 'utf8'));
     expect(found, `${rel} must state the bound in the one sentence shape`).toHaveLength(1);
-    expect(found[0]).toEqual([MAX_RANGES_IN_FLIGHT, MAX_RANGES_IN_FLIGHT]);
+    // the iterate and count window, and the combine's default `concurrency`: the engine's, and the reader's own
+    expect(found[0]).toEqual([DEFAULT_INTERSECT_CONCURRENCY, DEFAULT_INTERSECT_CONCURRENCY]);
+    expect(DEFAULT_INTERSECT_CONCURRENCY).toBe(MAX_RANGES_IN_FLIGHT);
   });
 
   it('is the same in every document that makes the promise', () => {

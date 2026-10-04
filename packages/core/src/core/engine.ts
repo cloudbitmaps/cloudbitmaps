@@ -35,7 +35,7 @@ import type {
  * one range of a source's stream takes about one sequential round trip per this many ranges, so this, not the network,
  * is what sets how long a long read takes.
  */
-const DEFAULT_INTERSECT_CONCURRENCY = 32;
+export const DEFAULT_INTERSECT_CONCURRENCY = 32;
 /** A combine's window opens this many keys wide (or `concurrency` wide, if that is less) and doubles per key taken. */
 const COMBINE_WINDOW_START = 8;
 /** A combine's chunk streams open this many ranges wide (or `concurrency` wide, if that is less) and double per range taken. */

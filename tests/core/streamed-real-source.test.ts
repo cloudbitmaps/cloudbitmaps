@@ -174,6 +174,22 @@ describe('storage.get reports every range request that was sent', () => {
   );
 });
 
+describe('an iterate that stops after its first range', () => {
+  it('reports the ranges it had read ahead too: launched ranges are reported, and there are more than the one taken', async () => {
+    const w = await twoSegments(upTo(CHUNKS));
+    const store = w.reader();
+    let seen = 0;
+    // Past the first one-MiB range (about 128 chunks of 4,000 ids), so the window has opened wider and read ahead.
+    for await (const id of store.segment('a').iterate()) {
+      void id;
+      if (++seen > 140 * PER_CHUNK) break;
+    }
+    await tick(60); // what was in flight has landed
+    expect(w.calls.launched).toBeGreaterThanOrEqual(3);
+    expect(w.metrics.snapshot().storage.gets).toBe(w.calls.launched);
+  }, 60_000);
+});
+
 describe('metrics for a range that holds bytes nobody asked for', () => {
   it('counts one storage.get per range, with the range`s bytes, gap chunks included', async () => {
     const w = slow();
