@@ -515,7 +515,8 @@ A `WriteConflictError` from an `*Into` means the destination changed underneath 
 mean nothing was published. The same error covers a pointer that moved, a row rewritten by something that is not a
 supersession at all (a `setRetention`), a purge, and the collection pass that runs after a successful publish. Re-read
 the destination and decide; do not treat it as "the write did not happen". A call that involves an expired handle is
-refused earlier and harder, with `ValidationError`.
+refused earlier and harder, with `ValidationError`. An `*Into` publishes with the fences a load does: see
+[which fence a publish carries](#how-it-stays-correct).
 
 To suppress the result of an intersection, pass `exclude` to `intersectInto` instead of writing a temporary segment and
 then calling `andNotInto`. The suppression folds into the same chunk-aligned pass, and each exclude is read only where
@@ -568,7 +569,21 @@ changed since its load read it, or finds a row where its load read none, and is 
 still be refused by its guard. The one exception is a segment with no row yet, loaded with `allowEmpty: true` and no
 `guard.minRetained`: neither load read anything to fence on, so each is a forward-only publish. If the lower
 generation number lands first, both land and the higher stays current. If the higher lands first, the lower is
-refused as `superseded`, because a publish never moves the pointer back.
+refused as `superseded`, because a publish never moves the pointer back. Publishing the generation that is already current is a
+no-op that reports success, unless the publish is fenced (below), in which case it is refused.
+
+**Which fence a publish carries.** Forward-only is right for a writer whose content does not depend on what was
+current: a load's ids come from upstream, so winning a race loses nothing it knew about. It is wrong for a writer that
+derived its content from a particular generation, and such a writer publishes with `expectFrom` and `expectToken`.
+The publish then lands only while the pointer is still exactly there, on the same row, and reports `superseded`
+otherwise, so the caller can re-derive. Every load that finds a row fences its publish on the row's token. A guarded
+load (the default, since the empty refusal needs the size of the current generation) also fences on the pointer it
+judged, and one that found no row fences on that absence, so a row that appeared meanwhile refuses it. Only an
+unguarded load onto a segment with no row publishes bare forward-only, which is right for it: there was nothing to
+judge, and its ids come from upstream. An [`*Into`](#write-a-result-into-another-segment-the-into-verbs) is a load and
+publishes the same way. Forward-only would be wrong for the erasure rewrite, whose object is one generation minus a
+bit and which is numbered above everything in the bucket: a forward-only publish would out-rank a concurrent publish
+and then delete it, so the rewrite fences on its source generation and the row's token instead.
 
 **A crash never moves the pointer.** If the process dies mid-write, the object never completes (every storage driver
 commits atomically: a hard link, a conditional PUT, a multipart complete) and the pointer still names the previous
@@ -637,3 +652,13 @@ If the segment changed underneath the pass, the call throws `WriteConflictError`
 part-way through may already have deleted objects it will now never report. One more consequence of the reconcile:
 `keep` counts distinct generations, not listing entries, so a listing that enumerates the same generation twice cannot
 eat the grace window.
+
+**A list is not a receipt, so verify the bucket.** A collection pass that returns an empty list may have found nothing
+to collect, and one that returns a name may have been beaten to it by a concurrent collector, which is the outcome and
+not a failure. A caller that needs a receipt, as the erasure rewrite does, therefore checks that the generation is gone
+from the bucket, not that it is a member of the returned list. A by-name pass's list is no receipt either, since it
+names the generation it asked to delete whether or not it was there.
+
+**`g < currentGen` is a safe bound only against a pointer read after the listing.** A pointer read before it can be
+higher than the one a purge and re-creation or a rollback leaves behind, which is why the ordinary branch above takes
+the lower of the two.

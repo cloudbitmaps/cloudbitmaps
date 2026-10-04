@@ -120,6 +120,8 @@ bound is stated; other pages link here.
   store's own `load`, `rollback`, `eraseSubject` or `*Into` writes, or by `store.invalidate(ref)`. Another process's
   load then reaches it with no bound at all. Use `0` only for a store that never needs to see another process's
   loads.
+- **An eviction re-resolves early.** When the reader cache evicts a segment's reader, the next read re-resolves the
+  segment even if `cache.genTtlMs` has not elapsed.
 - **An outage of the registry stretches the bound.** A refresh that fails with a transient fault (throttling, a 5xx, a
   dropped connection) keeps serving the generation the reader holds, and retries 500 ms later (or after the TTL, if
   that is shorter). The store converges within one retry of the registry answering. A refresh that fails with anything
