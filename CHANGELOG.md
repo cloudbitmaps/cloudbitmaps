@@ -19,7 +19,7 @@ so, and so do the module headers in the code.
   same ids in the same order, a range cut at its edges the same way, no empty arrays. It reads the same chunks, charges
   the same budget and stops the same way on `break`; each array is at most 65,536 ids (256 KiB) and is the caller's to
   keep. Measured locally, on an in-memory segment of 10 million ids, the per-id stream ran at about 6 million ids per
-  second and `.batches()` at about 90 million; an `andNot` of a tenth of it ran at about 5.5 and 85 million. The per-id
+  second and `.batches()` at about 90 million; an `andNot` of a tenth of it ran at about 5.7 and 90 million. The per-id
   throughput is unchanged. `CodecBitmap` gains an optional `toUint32Array()`, which the roaring codec implements; a
   codec without it is read through its iterator. See [Read a chunk at a time](docs/guide/reading.md#read-a-chunk-at-a-time-batches).
 
