@@ -4,7 +4,7 @@
  * bytes back, since a count says nothing about which generation answered.
  */
 import { randomBytes } from 'node:crypto';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { CrbmStorageChunkSource, NotFoundError, TransientError, ValidationError } from '@/index';
 import { RetryingStorageChunkSource } from '@/drivers/retry/retrying-chunk-source';
 import type { Clock, GenKey, SegmentRef } from '@/index';
@@ -32,6 +32,9 @@ async function read(
   expect(versions.size, 'one stream, one generation').toBeLessThanOrEqual(1);
   return { version: items[0]?.version ?? null, chunks: items.map((i) => i.bytes), items };
 }
+
+// Building a 400-chunk object takes seconds under the load of the whole suite, before a case starts.
+vi.setConfig({ testTimeout: 30_000 });
 
 const REF: SegmentRef = { segment: 's' };
 const K = 65_536;
