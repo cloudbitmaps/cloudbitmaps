@@ -820,32 +820,6 @@ export class SegmentEngine {
     };
   }
 
-  /**
-   * What every combine read shares: the plan, then each key's non-empty result in ascending key order, with the range
-   * window it was planned under. The per-id read, the batch read and the chunk read differ only in what they make of
-   * a chunk.
-   */
-  private async *combinedChunks(
-    segs: readonly SegmentRef[],
-    excludeSegs: readonly SegmentRef[],
-    mode: 'all' | 'any',
-    op: 'intersect' | 'union' | 'andNot',
-    options?: Omit<CombineOptions, 'exclude'>,
-  ): AsyncGenerator<{ chunkKey: number; bitmap: CodecBitmap; w: IdWindow | null }> {
-    const plan = await this.combinePlan(segs, excludeSegs, mode, op, options);
-    if (plan === null) return;
-    const { w, window } = plan;
-    try {
-      for (let slot = await window.next(); slot !== undefined; slot = await window.next()) {
-        if (slot.result && !slot.result.isEmpty) {
-          yield { chunkKey: slot.key, bitmap: slot.result, w };
-        }
-      }
-    } finally {
-      for (const stream of plan.streams) this.closeStreamed(stream);
-    }
-  }
-
   private async *combine(
     segs: readonly SegmentRef[],
     excludeSegs: readonly SegmentRef[],
@@ -853,18 +827,21 @@ export class SegmentEngine {
     op: 'intersect' | 'union' | 'andNot',
     options?: Omit<CombineOptions, 'exclude'>,
   ): AsyncGenerator<number> {
-    for await (const { chunkKey, bitmap, w } of this.combinedChunks(
-      segs,
-      excludeSegs,
-      mode,
-      op,
-      options,
-    )) {
-      if (w !== null && isEdge(chunkKey, w)) {
-        for (const id of edgeIds(bitmap, chunkKey, w)) yield id;
-      } else {
-        for (const remainder of bitmap) yield joinId(chunkKey, remainder);
+    const plan = await this.combinePlan(segs, excludeSegs, mode, op, options);
+    if (plan === null) return;
+    const { w, window } = plan;
+    try {
+      for (let slot = await window.next(); slot !== undefined; slot = await window.next()) {
+        if (slot.result && !slot.result.isEmpty) {
+          if (w !== null && isEdge(slot.key, w)) {
+            for (const id of edgeIds(slot.result, slot.key, w)) yield id;
+          } else {
+            for (const remainder of slot.result) yield joinId(slot.key, remainder);
+          }
+        }
       }
+    } finally {
+      for (const stream of plan.streams) this.closeStreamed(stream);
     }
   }
 
@@ -875,18 +852,22 @@ export class SegmentEngine {
     op: 'intersect' | 'union' | 'andNot',
     options?: Omit<CombineOptions, 'exclude'>,
   ): AsyncGenerator<Uint32Array> {
-    for await (const { chunkKey, bitmap, w } of this.combinedChunks(
-      segs,
-      excludeSegs,
-      mode,
-      op,
-      options,
-    )) {
-      const ids = chunkIds(bitmap, chunkKey, w);
-      if (ids.length > 0) yield ids;
+    const plan = await this.combinePlan(segs, excludeSegs, mode, op, options);
+    if (plan === null) return;
+    const { w, window } = plan;
+    try {
+      for (let slot = await window.next(); slot !== undefined; slot = await window.next()) {
+        if (slot.result) {
+          const ids = chunkIds(slot.result, slot.key, w);
+          if (ids.length > 0) yield ids;
+        }
+      }
+    } finally {
+      for (const stream of plan.streams) this.closeStreamed(stream);
     }
   }
 
+  /** The chunk read: the plan every combine shares, then each key's result, cut to the range at its edges. */
   private async *combineChunks(
     segs: readonly SegmentRef[],
     excludeSegs: readonly SegmentRef[],
@@ -894,16 +875,20 @@ export class SegmentEngine {
     op: 'intersect' | 'union' | 'andNot',
     options?: Omit<CombineOptions, 'exclude'>,
   ): AsyncGenerator<CombinedChunk> {
-    for await (const { chunkKey, bitmap, w } of this.combinedChunks(
-      segs,
-      excludeSegs,
-      mode,
-      op,
-      options,
-    )) {
-      const kept =
-        w !== null && isEdge(chunkKey, w) ? this.cutToWindow(bitmap, chunkKey, w) : bitmap;
-      if (!kept.isEmpty) yield { chunkKey, bitmap: kept };
+    const plan = await this.combinePlan(segs, excludeSegs, mode, op, options);
+    if (plan === null) return;
+    const { w, window } = plan;
+    try {
+      for (let slot = await window.next(); slot !== undefined; slot = await window.next()) {
+        if (!slot.result || slot.result.isEmpty) continue;
+        const bitmap =
+          w !== null && isEdge(slot.key, w)
+            ? this.cutToWindow(slot.result, slot.key, w)
+            : slot.result;
+        if (!bitmap.isEmpty) yield { chunkKey: slot.key, bitmap };
+      }
+    } finally {
+      for (const stream of plan.streams) this.closeStreamed(stream);
     }
   }
 

@@ -33,11 +33,11 @@ so, and so do the module headers in the code.
 
 - **`intersectInto`, `unionInto` and `andNotInto` write the combine's chunks straight into the new generation.** The
   combine hands over each chunk's result as the bitmap it already is, in ascending key order, and the load encodes it as it
-  is, so no id is split out of a bitmap, streamed and put back into another. The generation is byte for byte what the ids
+  is, so no id is built for a value. The generation is byte for byte what the ids
   would write (a cleartext object; an encrypted one holds the same chunks, each under its own nonce), and the requests,
   metric events, audit events, return values and refusals are unchanged: a budget refusal still throws before anything is
   written, and a read that fails part-way writes nothing. The write holds the result's chunks until the object is written,
-  as a load of ids does. `intersect`, `union` and `andNot` stream ids as before.
+  as a load of ids does.
 
 - **Combines and `iterate` read each operand's chunks as coalesced ranges, so a cold read makes far fewer requests.**
   `intersect`, `union` and `andNot`, their `.batches()` forms, `iterate` and the `*Into` verbs that read them now open one

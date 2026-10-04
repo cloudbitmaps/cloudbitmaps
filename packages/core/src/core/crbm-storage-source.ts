@@ -2411,8 +2411,8 @@ export async function bulkLoadCrbmGeneration(
 
 /**
  * Take a combine's chunks as they come, checking each as an id's chunk is checked: the key a u16 and above the last,
- * the values 16-bit (`maximum()`, one call per chunk), and an empty bitmap left out, as no empty chunk is stored. The
- * writer checks the cardinality when it adds the chunk.
+ * the values 16-bit (`maximum()`, one call per chunk). An empty bitmap is left out where the chunks are encoded, as for
+ * ids, and the writer checks the cardinality when it adds a chunk.
  */
 async function collectChunks(
   input: ChunkLoadInput,
@@ -2436,7 +2436,7 @@ async function collectChunks(
         `chunk ${chunkKey} holds ${max}, outside the 16-bit range [0, ${MAX_REMAINDER}]`,
       );
     }
-    if (!bitmap.isEmpty) chunks.push({ chunkKey, bitmap });
+    chunks.push({ chunkKey, bitmap });
     const pause = tick();
     if (pause !== null) await pause;
   }

@@ -319,6 +319,25 @@ describe('the operands are what they were, and so is the cache', () => {
   );
 });
 
+describe('the chunk read yields only chunks that hold something', () => {
+  it('a range that cuts an edge chunk empty yields no chunk for it', async () => {
+    const w = await makeWorld({
+      data: { a: merged(span(1, 3), span(70_000, 70_005)), b: span(0, 3) },
+    });
+    const engine = (w.store as unknown as { engine: SegmentEngine }).engine;
+    const keys: number[] = [];
+    // Chunk 0 holds 1 and 2, below the range's start, so the cut leaves it empty; chunk 1 is whole.
+    for await (const chunk of engine.unionChunks([{ segment: 'a' }, { segment: 'b' }], {
+      after: 10,
+      through: 100_000,
+    })) {
+      expect(chunk.bitmap.isEmpty).toBe(false);
+      keys.push(chunk.chunkKey);
+    }
+    expect(keys).toEqual([1]);
+  });
+});
+
 describe('the verbs read their combine as chunks, never as ids', () => {
   it.each([
     ['intersect', 'intersectInto'],
