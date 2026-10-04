@@ -14,13 +14,15 @@ so, and so do the module headers in the code.
 ### Added
 
 - **`StorageChunkSource.getChunks(ref, keys, options?)`, optional, for the authors of a chunk source.** It reads several
-  chunks of one segment from one generation and answers the chunks, lined up with the keys, with the version of the
-  generation they came from (`ChunksRead`). `CrbmStorageChunkSource`, which the stores the library ships read through,
+  chunks of one segment from one generation as a stream, in key order, and yields each chunk with the version of the
+  generation it came from (`ChunkRead`). `CrbmStorageChunkSource`, which the stores the library ships read through,
   implements it by merging chunks that sit within 256 KiB of each other into one range read, up to 1 MiB, and checks
-  each chunk exactly as a read of it alone is checked; a custom source that cannot read a range omits it. A call holds
-  every chunk it returns until the caller drops them. It may plan at most 32 MiB of reads, gaps included: a call that
-  would plan more is refused with a `ValidationError` before any range request is sent. At most 32 of its range
-  requests are in flight at once. A plain chunk may be a view sharing a buffer of up to 1 MiB with its neighbours, so
+  each chunk exactly as a read of it alone is checked; a custom source that cannot read a range omits it. The stream
+  holds at most `options.concurrency` ranges at once (32 by default), in flight or landed and not yet taken, however
+  many keys it is given, so its memory is that many times the largest range; a consumer that stops early stops the
+  reads. Nothing is read until the first chunk is asked for. If the generation is swept, or its object replaced, while
+  the stream runs, it carries on with the keys not yet yielded from the generation that is current, and each chunk
+  says which version it came from. A plain chunk may be a view sharing a buffer of up to 1 MiB with its neighbours, so
   do not write to it, and copy one to keep it. Nothing in the library's reads calls it yet, so no request count
   changes.
 

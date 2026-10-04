@@ -6,4 +6,4 @@
 '@cloudbitmaps/azure-blob': minor
 ---
 
-`StorageChunkSource` gains an optional `getChunks(ref, keys, options?)`, which reads several chunks of one segment from one generation in as few range requests as their layout allows and answers them with the version they were read from; `CrbmStorageChunkSource` implements it, and `ChunksRead` and `ReadChunksOptions` are exported from `@cloudbitmaps/core`. The library's own reads do not call it yet.
+`StorageChunkSource` gains an optional `getChunks(ref, keys, options?)`, which streams several chunks of one segment, read from one generation in as few range requests as their layout allows, each with the version it was read from; `CrbmStorageChunkSource` implements it, and `ChunkRead` and `ReadChunksOptions` are exported from `@cloudbitmaps/core`. The stream holds at most `concurrency` ranges at a time whatever the key list. The library's own reads do not call it yet.

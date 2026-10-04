@@ -779,16 +779,7 @@ otherwise throws the registry's `TransientError` and deletes nothing.
 (`ClearRegistrySummary` `{ generation, cardinality, metadata? }` or `SealedRegistrySummary` `{ generation, sealed }`,
 the row's cached description of its current generation) · `GenerationMetadata` (string keys, string or finite-number
 values, at most 1 KiB as canonical JSON) · `GenerationSummary` (`{ generation, cardinality, metadata? }`, what a
-`StorageChunkSource`'s optional `summary()` answers for a segment's current generation) · `ChunksRead` (`{ version,
-chunks }`, what the optional `getChunks(ref, keys, options?)` answers: the chunks, lined up with the keys, and the
-version of the one generation they were all read from) · `ReadChunksOptions` (`{ retry? }`, a runner for each storage
-request the call makes, so a caller that retries repeats the one request that failed). A source that implements
-`getChunks` reads several chunks of one segment from one generation in fewer requests; one that omits it is read
-chunk by chunk, as before. A call holds every chunk it returns until the caller drops them. It may plan at most
-32 MiB of reads, the gaps between the chunks it needs included: a call that would plan more is refused with a
-`ValidationError` before any range request is sent, and at most 32 of its range requests are in flight at once. A
-plain chunk may be a view into a buffer of up to 1 MiB shared with its neighbours, and a key asked twice gets the
-same view, so do not write to it, and copy a chunk to keep it. An empty list of keys still resolves the segment
+`StorageChunkSource`'s optional `summary()` answers for a segment's current generation) · `ChunkRead` (`{ key, bytes, version, request? }`, one chunk of the stream the optional `getChunks(ref, keys, options?)` answers: the key, its bytes or `null`, and the version of the generation it was read from; `request` is set on the first chunk read out of each range request and says what that request moved and how long it took) · `ReadChunksOptions` (`{ retry?, concurrency?, ramp? }`: `retry` is a runner for each storage request the call makes, so a caller that retries repeats the one request that failed; `concurrency` is how many range requests the stream holds ahead of its consumer, 32 by default; `ramp` opens that window 1, 2, 4 … wide). A source that implements `getChunks` reads several chunks of one segment from one generation in fewer requests, as a stream in key order (ascending, a key may repeat); one that omits it is read chunk by chunk, as before. Nothing is resolved or read until the first chunk is asked for. However many keys the stream is given, it holds at most `concurrency` ranges at once, in flight or landed and not yet taken, each at most 1 MiB (one chunk, at most the payload cap, when it is larger), and a consumer that stops early stops the reads: the requests already in flight finish and are dropped. One stream reads one generation; if that generation is swept or its object replaced while the stream runs, the `.crbm` source re-resolves the segment and carries on with the keys not yet yielded, and each chunk says which version it came from. A plain chunk may be a view into a buffer of up to 1 MiB shared with its neighbours, and a key asked twice gets the same view, so do not write to it, and copy a chunk to keep it
 
 ---
 
@@ -907,7 +898,7 @@ Values: `SegmentEngine` · `BoundedLru` · `safeMetrics` · `NOOP_METRICS` · `g
 `setSegmentRetention` · `getSegmentRetention` · `clearSegmentRetention` · `retireExpired` · `estimateCost`
 
 Types: `EngineDeps` · `EngineCombineOptions` · `RetryDeps` · `RetryingOptions` · `LoadDeps` ·
-`GenerationListDeps` · `GenerationSummary` · `ChunksRead` · `ReadChunksOptions` · `EraseIdDeps` · `EraseIdResult` · `RetentionDeps` · `DropDeps` · `Entropy`
+`GenerationListDeps` · `GenerationSummary` · `ChunkRead` · `ReadChunksOptions` · `EraseIdDeps` · `EraseIdResult` · `RetentionDeps` · `DropDeps` · `Entropy`
 
 ### `@cloudbitmaps/core/driver-kit`
 
