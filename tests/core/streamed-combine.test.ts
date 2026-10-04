@@ -76,13 +76,19 @@ describe('which operands stream', () => {
   });
 
   it('an exclude that waits on an AND of two includes is read per key, only where the AND is not empty', async () => {
-    const { storage, engine } = setup({ a: ids([1, 2]), b: ids([2, 3, 1]), s: ids([1, 2]) });
+    const { storage, engine, metrics } = setup({
+      a: ids([1, 2]),
+      b: ids([2, 3, 1]),
+      s: ids([1, 2]),
+    });
     // `a` and `b` share keys 1 and 2; key 1's chunks are disjoint ids, so the AND is empty there.
     seedSegment(storage, 'a', [joinId(1, 10), ...ids([2])]);
     seedSegment(storage, 'b', [joinId(1, 11), ...ids([2, 3])]);
     await collect(engine.intersect([ref('a'), ref('b')], { exclude: [ref('s')] }));
     expect(opened(storage).sort()).toEqual(['a:1,2', 'b:1,2']);
     expect(storage.singles).toEqual(['s:2']); // key 1 emptied the AND: its exclude chunk was never read
+    // Four chunks of the includes and the one exclude chunk looked up: no lookup for an exclude chunk that is never read.
+    expect(metrics.snapshot().cache.misses).toBe(5);
   });
 
   it('a source with no getChunks is read chunk by chunk, as before', async () => {
@@ -209,6 +215,26 @@ describe('metrics', () => {
 });
 
 describe('a read that stops', () => {
+  it('does not cache a chunk whose source gave it no version', async () => {
+    const { storage, engine, cache } = setup({ a: ids([1, 2, 3]) });
+    storage.readVersion = () => null;
+    expect(await collect(engine.union([ref('a')]))).toEqual(ids([1, 2, 3]));
+    expect(cache!.size).toBe(0);
+    await collect(engine.union([ref('a')]));
+    expect(opened(storage)).toEqual(['a:1,2,3', 'a:1,2,3']); // read again, not served from the cache
+  });
+
+  it('stops an iterate stream that its consumer leaves early', async () => {
+    const { storage, engine } = setup({ a: ids([1, 2, 3, 4, 5, 6]) });
+    for await (const id of engine.iterate(ref('a'))) {
+      void id;
+      break;
+    }
+    await new Promise((r) => setTimeout(r, 10));
+    expect(storage.opened).toHaveLength(1);
+    expect(storage.opened[0]!.closedEarly).toBe(true);
+  });
+
   it('closes the streams it opened, early or on an error', async () => {
     const { storage, engine } = setup({ a: ids([1, 2, 3, 4, 5, 6]), b: ids([1, 2, 3, 4, 5, 6]) });
     for await (const id of engine.intersect([ref('a'), ref('b')])) {
