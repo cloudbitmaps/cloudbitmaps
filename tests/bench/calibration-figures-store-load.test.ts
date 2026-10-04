@@ -710,3 +710,42 @@ describe('a run that discarded a sample after a transient fault', () => {
     );
   });
 });
+
+describe('a run of the engine that reads chunks as ranges', () => {
+  const refused = (run: Run): string => {
+    try {
+      figures.derive(run, SOURCES);
+    } catch (err) {
+      return (err as Error).message;
+    }
+    return '';
+  };
+  /** The fixture's intersect stage as the harness now records it: the requests made of each operand, not its chunks. */
+  const asRanged = (rangesPerOperand: number): Run => {
+    const run = asRealRun();
+    const it = run.phases.intersect as Record<string, unknown>;
+    delete it.chunksFetchedPerOperand;
+    it.rangesPerOperand = rangesPerOperand;
+    return run;
+  };
+  const chunks = (fixture.phases.intersect as unknown as { chunksFetchedPerOperand: number })
+    .chunksFetchedPerOperand;
+
+  it('is accepted when its range requests are what the ledger counted, however many chunks they held', () => {
+    expect(() => figures.derive(asRanged(chunks), SOURCES)).not.toThrow();
+  });
+
+  it('is refused when its range requests are not what the ledger counted, or are none, or exceed the chunks it needed', () => {
+    expect(refused(asRanged(chunks - 1))).toMatch(/chunk range requests .* are not between 1 and/);
+    expect(refused(asRanged(0))).toMatch(/chunk range requests/);
+    expect(refused(asRanged(chunks + 1))).toMatch(/chunk range requests/);
+  });
+
+  it('keeps holding a file from the engine before to one request for every chunk', () => {
+    const before = asRealRun();
+    (
+      before.phases.intersect as unknown as { chunksFetchedPerOperand: number }
+    ).chunksFetchedPerOperand = chunks - 1;
+    expect(refused(before)).toMatch(/chunk reads .* are not/);
+  });
+});

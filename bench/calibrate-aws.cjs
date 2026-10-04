@@ -1274,7 +1274,9 @@ async function main() {
         p50ms: q(ms, 0.5),
         p95ms: q(ms, 0.95),
         p99ms: q(ms, 0.99),
-        chunksFetchedPerOperand: median(reads.map((r) => r.chunkReads)) / 2,
+        // The chunk range requests made of each operand: a range holds every chunk within the gap of the one before
+        // it, so this is not the number of chunks the intersect needed (`sharedChunks`).
+        rangesPerOperand: median(reads.map((r) => r.chunkReads)) / 2,
         chunksPerSegment,
         // The published claim: payload bytes fetched as a share of the two objects. The tail read is NOT in it.
         ...(withPayload
@@ -1307,7 +1309,7 @@ async function main() {
       if (it.runs > 0) {
         log(
           `  ${it.runs} cold, all exact — p50 ${it.p50ms.toFixed(1)} ms, p99 ${it.p99ms.toFixed(1)} ms; ` +
-            `${it.chunksFetchedPerOperand} of ${it.chunksPerSegment} chunks per operand, median ${it.medianGets} GETs`,
+            `${it.rangesPerOperand} range request(s) per operand of ${it.chunksPerSegment} chunks, median ${it.medianGets} GETs`,
         );
       }
       return it;
