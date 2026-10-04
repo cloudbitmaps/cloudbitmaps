@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import {
   existsSync,
@@ -929,6 +930,52 @@ describe('a rehearsal cannot be committed as the evidence', () => {
       }
     }
   });
+
+  // The wiring in `main`: what a rehearsal's log line says about the workload client's sockets. The harness is stopped with an
+  // interrupt as soon as it starts creating its bucket, so the run is short whether or not the MinIO a rehearsal talks
+  // to is up. The evidence the run writes is checked by the rehearsal in tests/integration: the results file is one
+  // shared path, so two lanes of this file would overwrite each other's.
+  it("logs the limit the workload client's agents held, and honours the override", async () => {
+    const runId = `${new Date().toISOString().slice(0, 10)}-sk-${randomUUID().slice(0, 8)}`;
+    const child = spawn(
+      process.execPath,
+      [join(ROOT, 'bench', 'calibrate-aws.cjs'), '--rehearse'],
+      {
+        env: {
+          PATH: process.env.PATH ?? '',
+          HOME: OFFLINE_HOME,
+          AWS_CONFIG_FILE: join(OFFLINE_HOME, 'no-config'),
+          AWS_SHARED_CREDENTIALS_FILE: join(OFFLINE_HOME, 'no-credentials'),
+          AWS_EC2_METADATA_DISABLED: 'true',
+          CR_CALIBRATE_RUN_ID: runId,
+          CR_CALIBRATE_MAX_SOCKETS: '7',
+          CR_CALIBRATE_SEGMENTS: '4',
+          CR_CALIBRATE_IDS: '125000',
+          CR_CALIBRATE_LARGE: '1',
+          CR_CALIBRATE_READS: '4',
+          CR_CALIBRATE_SPREAD_SEGMENTS: '0',
+          CR_CALIBRATE_SPREAD_READS: '0',
+          CR_CALIBRATE_SWEEP: 'none',
+          CR_CALIBRATE_POINT_SEGMENTS: '2',
+          CR_CALIBRATE_ANDNOT_CALLS: '2',
+          CR_CALIBRATE_ANDNOT_EXCLUDES: '1',
+        },
+      },
+    );
+    let stdout = '';
+    let stopped = false;
+    child.stdout.on('data', (d: Buffer) => {
+      stdout += d.toString();
+      if (!stopped && /calibrate: creating /.test(stdout)) {
+        stopped = true;
+        child.kill('SIGINT');
+      }
+    });
+    const killer = setTimeout(() => child.kill('SIGKILL'), 60_000);
+    await new Promise((done) => child.on('close', done));
+    clearTimeout(killer);
+    expect(stdout).toMatch(/workload client: 7 sockets \(read back from its agents\)/);
+  }, 90_000);
 
   // The large segments count: a workload of 499 and 2 leaves 1,002 versions, past the first listing.
   it('counts the large segments against the workload bound, before it imports anything', () => {
