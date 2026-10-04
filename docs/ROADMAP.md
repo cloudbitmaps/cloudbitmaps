@@ -42,6 +42,7 @@ with the release it is to ship in, and sits under `[Unreleased]` in the [changel
 | | Status |
 | --- | --- |
 | Loads, reads, chunk-skipping combines, `*Into` materialization, subject erasure as a rewrite, crypto-shred, disposal, retention, the DR check, export | **shipped** — [below](#shipped-today) |
+| Wider read windows (`concurrency` 32), concurrent cold reads of one chunk sharing one request, erasure read-ahead, `andNot` excludes read in the same round trip, and an oversized index entry refused at open | **shipped in 0.13.0** (unreleased) — see the [changelog](../CHANGELOG.md#unreleased); the speed-ups are derived from a model, not yet measured on S3 |
 | Loaded-store benchmarks — load throughput, intersect latency | **partly owed**: the rest is below. What is measured, on S3 in-region by run `2026-10-03-e13c7` from AWS CloudShell in `us-east-1`: the median cold intersect of two 500,000-id segments sharing 100 of 1,999 chunks took 492.69 ms (on 0.12.0, whose combine window held 8 chunk keys; the current window opens 8 wide and widens to 32, and its effect is derived, not yet measured) and made 204 GETs, $81.60 per million at list prices; a segment's first single-part `store.load()` is 2 PUT + 4 GET, $11.60 per million, and ran at 2.86 million ids a second — the [benchmarks page](benchmarks.md#the-in-region-run--run-2026-10-03-e13c7) publishes it, and the [report](../bench/calibration/2026-10-03-e13c7.md) explains every figure. Still owed: Lambda cold start, the `*Into` verbs, other combine shapes, and in-region GCS and Azure runs. The **RSS ceiling** is measured and published — it needs no cloud account, because a cgroup limit is enforceable locally |
 | `load()` with the empty guard and `guard: { minCardinality, minRetained }` | **shipped** — `store.load(ref, ids)` is the write path in one call: next generation → write → guard → publish → collect. A refusal is reported (`published: false` + `reason`), not thrown, and deletes the object it wrote while the segment's row is unchanged or gone; once another write has changed the row, it leaves the object for collection. It reads the segment's row once, checks that its next number is free instead of listing for it, and with the default `keep` collects by name, deleting the one generation its publish pushed out of the window and listing the segment only every 16th generation: a steady load on S3 is 8 requests |
 | A load from a bitmap — `{ bitmap }`, `{ serialized }` | **shipped** — a caller holding the result as an in-memory Roaring bitmap loads it as one: the bytes are checked before anything is written, the chunks are cut from the bitmap's own containers with no per-id work, and the generation is byte for byte the one its ids write. Its time against the id path is measured by `pnpm bench:load-input`, whose figures are not recorded yet |
@@ -131,7 +132,7 @@ is a dependency of both and is never installed directly. The storage drivers are
   local-file drivers over counting stores, random sequences of loads, materialisations, rollbacks, erasures and
   retention writes, and each emulator, with every decision mutation-checked.
 - **Chunk-skipping intersection** — `intersect` aligns on chunk keys and fetches only the chunks present in
-  *every* operand, with bounded read concurrency and a bounded streaming window.
+  *every* operand, with bounded read concurrency (32 chunk keys by default from 0.13.0, which also shares one request among concurrent cold reads of a chunk) and a bounded streaming window.
 - **Id-range reads for keyset paging** —
   `iterate`, and every combine, take `after` / `through` and yield only the ids in `(after, through]`, fetching
   only the chunks the range overlaps, on a live or a pinned handle.
@@ -174,7 +175,7 @@ is a dependency of both and is never installed directly. The storage drivers are
   `(namespace, segment, generation, chunk)`, KEK rotation, and an offline recovery KEK. Keys stay in your
   process; no cloud KMS dependency is forced on you.
 - **Subject erasure as a rewrite.** `eraseSubject` finds every registered segment an id is in, rewrites each
-  one's current generation without the id (a window of 32 chunk reads ahead of the writer, one bit cleared), publishes it fenced on the generation it streamed,
+  one's current generation without the id (0.13.0: a window of 32 chunk reads ahead of the writer, one bit cleared), publishes it fenced on the generation it streamed,
   and deletes every generation that held the bit before returning, above the pointer as well as below it —
   **physical deletion on return**, with a
   per-segment ledger and a `segment.rewrite` audit event. `subjectReport` is the read side (access). What a

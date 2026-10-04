@@ -1140,7 +1140,7 @@ function render() {
   const peakInFlight =
     OPERANDS * windowPeak(SHARED_CHUNKS, INTERSECT_CONCURRENCY, COMBINE_WINDOW_START);
   const depth =
-    `A cold intersect of two segments sharing ${int(SHARED_CHUNKS)} chunks is expected to wait on a chain of requests ` +
+    `A cold intersect of two segments sharing ${int(SHARED_CHUNKS)} chunks waits on a chain of requests, derived from the engine's constants and not measured, ` +
     `**${int(chain)} deep**: both operands' pointers, then both indexes, then the shared chunks, opening ` +
     `${int(COMBINE_WINDOW_START)} at a time and widening to ${int(INTERSECT_CONCURRENCY)}, each read from both ` +
     `operands together, so up to ${int(peakInFlight)} requests are in flight, and the next chunk starts as the oldest ` +
