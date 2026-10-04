@@ -256,7 +256,10 @@ describe('a pin is never handed a chunk a live read fetched across a change of g
         w.clock.advance(TTL);
       }
     }
-    expect(live).toEqual([1, 2, 3, C + 10, C + 11, 2 * C + 40, 2 * C + 41, 2 * C + 42]);
+    // Each operand is read as one stream of one generation, so a publish and a TTL lapse mid-read move nothing: every
+    // chunk is generation 0's. A read that is served chunk by chunk (a custom source) can straddle, which the
+    // iterate cases above still cover; the pin is handed nothing the live read fetched either way.
+    expect(live).toEqual(GEN0);
 
     expect(await pinnedViews(w.store, snap)).toEqual({
       pinned: PINNED_AT_GEN0,

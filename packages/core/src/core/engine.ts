@@ -12,6 +12,7 @@ import { splitId, joinId, CHUNK_COUNT, MAX_REMAINDER, U32_MAX } from './bit-rout
 import type { CodecBitmap, CodecInterface } from './codec';
 import { checkBudget, DEFAULT_BUDGET, resolvePerOpBudget } from './budget';
 import type { Budget, BudgetOption } from './budget';
+import { ChunkStream } from './chunk-stream';
 import { ChunkWindow } from './chunk-window';
 import type { Clock } from './determinism';
 import { IntegrityError, ValidationError } from './errors';
@@ -36,6 +37,8 @@ import type {
 const DEFAULT_INTERSECT_CONCURRENCY = 32;
 /** A combine's window opens this many keys wide (or `concurrency` wide, if that is less) and doubles per key taken. */
 const COMBINE_WINDOW_START = 8;
+/** A combine's chunk streams open this many ranges wide (or `concurrency` wide, if that is less) and double per range taken. */
+const COMBINE_RANGE_START = 4;
 
 /** A clock that always reads 0 — used when nothing is injected, so the `storage.get` latency metric reports 0 ms. */
 const ZERO_CLOCK: Pick<Clock, 'now'> = { now: () => 0 };
@@ -115,6 +118,23 @@ interface Operand {
   readonly chunkless: boolean;
   /** The cache-key component — a `currentVersion` string, a generation number, or absent. */
   readonly gen: string | number | null | undefined;
+  /** The operand's chunks as a coalesced stream, when it is read that way; else each chunk is read on its own. */
+  streamed?: StreamedChunks;
+}
+
+/**
+ * An operand's chunks read as one stream of coalesced ranges, in key order: the chunks already decoded in the cache
+ * when the read opened (taken from there), and a stream over the rest. The stream is opened lazily, by the first
+ * chunk asked of it, and holds at most `concurrency` ranges whatever the segment.
+ */
+interface StreamedChunks {
+  readonly seg: SegmentRef;
+  /** The version the read planned under; a chunk is cached under the version it was read from, which may be newer. */
+  readonly gen: string | number | undefined;
+  readonly cached: Map<number, CodecBitmap>;
+  readonly stream: ChunkStream | undefined;
+  /** {@link SegmentEngine.invalidations} when the read opened: a chunk delivered after it moved is not cached. */
+  readonly epoch: number;
 }
 
 /** A validated {@link IdRange}: inclusive id bounds, and the chunk key and remainder at each end. */
@@ -197,6 +217,8 @@ function keysWithin(keys: readonly number[], w: IdWindow): number[] {
 interface CombinePlan {
   readonly w: IdWindow | null;
   readonly window: CombineWindow;
+  /** The operands' chunk streams, closed when the read ends or stops. */
+  readonly streams: readonly ChunkStream[];
 }
 
 /** One key's combined chunk, or the error its read raised, held until the key's turn comes. */
@@ -688,11 +710,30 @@ export class SegmentEngine {
       });
     }
 
+    // Each include is read as a stream of coalesced ranges, and so is each exclude that is read with the includes (one
+    // include, or a union): their key lists are fixed here. An exclude that waits on an AND of two or more includes
+    // stays per key, since an emptied AND never needs its chunk.
+    const streams: ChunkStream[] = [];
+    const streamExcludes = mode === 'any' || operands.length === 1;
+    const open = (o: Operand, wanted: (key: number) => boolean): void => {
+      o.streamed = this.openStreamed(
+        o.seg,
+        common.filter(wanted),
+        o.gen,
+        limit,
+        COMBINE_RANGE_START,
+      );
+      if (o.streamed?.stream) streams.push(o.streamed.stream);
+    };
+    for (const o of operands) open(o, mode === 'all' ? () => true : (k) => o.keys.has(k));
+    if (streamExcludes) for (const e of excludes) open(e, (k) => e.keys.has(k));
+
     return {
       w,
       window: new CombineWindow(common, limit, (key) =>
         this.combineChunk(operands, excludes, mode, key),
       ),
+      streams,
     };
   }
 
@@ -706,14 +747,18 @@ export class SegmentEngine {
     const plan = await this.combinePlan(segs, excludeSegs, mode, op, options);
     if (plan === null) return;
     const { w, window } = plan;
-    for (let slot = await window.next(); slot !== undefined; slot = await window.next()) {
-      if (slot.result && !slot.result.isEmpty) {
-        if (w !== null && isEdge(slot.key, w)) {
-          for (const id of edgeIds(slot.result, slot.key, w)) yield id;
-        } else {
-          for (const remainder of slot.result) yield joinId(slot.key, remainder);
+    try {
+      for (let slot = await window.next(); slot !== undefined; slot = await window.next()) {
+        if (slot.result && !slot.result.isEmpty) {
+          if (w !== null && isEdge(slot.key, w)) {
+            for (const id of edgeIds(slot.result, slot.key, w)) yield id;
+          } else {
+            for (const remainder of slot.result) yield joinId(slot.key, remainder);
+          }
         }
       }
+    } finally {
+      for (const stream of plan.streams) stream.close();
     }
   }
 
@@ -727,11 +772,15 @@ export class SegmentEngine {
     const plan = await this.combinePlan(segs, excludeSegs, mode, op, options);
     if (plan === null) return;
     const { w, window } = plan;
-    for (let slot = await window.next(); slot !== undefined; slot = await window.next()) {
-      if (slot.result) {
-        const ids = chunkIds(slot.result, slot.key, w);
-        if (ids.length > 0) yield ids;
+    try {
+      for (let slot = await window.next(); slot !== undefined; slot = await window.next()) {
+        if (slot.result) {
+          const ids = chunkIds(slot.result, slot.key, w);
+          if (ids.length > 0) yield ids;
+        }
       }
+    } finally {
+      for (const stream of plan.streams) stream.close();
     }
   }
 
@@ -761,9 +810,7 @@ export class SegmentEngine {
     const relevant = excludes.filter((e) => e.keys.has(chunkKey));
     const together = relevant.length > 0 && (mode === 'any' || present.length === 1);
     const reads = together ? [...present, ...relevant] : present;
-    const fetched = await Promise.all(
-      reads.map((op) => this.storageChunk({ ...op.seg, chunkKey }, op.gen)),
-    );
+    const fetched = await Promise.all(reads.map((op) => this.operandChunk(op, chunkKey)));
     const chunks = together ? fetched.slice(0, present.length) : fetched;
     // A key the index lists but the source cannot produce bytes for reads as empty — and under AND an empty
     // operand empties the result.
@@ -794,6 +841,87 @@ export class SegmentEngine {
       }
     }
     return acc;
+  }
+
+  /**
+   * One operand's chunk at `key`: from its stream when it has one, else a read of that chunk on its own. Not `async`,
+   * so a stream's take is made before anything is awaited: concurrent takes of one stream must be made in key order.
+   */
+  private operandChunk(op: Operand, chunkKey: number): Promise<CodecBitmap | null> {
+    return op.streamed === undefined
+      ? this.storageChunk({ ...op.seg, chunkKey }, op.gen)
+      : this.streamedChunk(op.streamed, chunkKey);
+  }
+
+  /**
+   * Open `keys` of `seg` as a stream of coalesced ranges, or `undefined` when the read is per key: a source with no
+   * `getChunks`, a segment with no generation, or nothing to read. The chunks already decoded in the cache are taken out
+   * of the key list first and served from there, so a repeat read asks the source for nothing it holds. Nothing is
+   * requested until the first chunk is asked for.
+   */
+  private openStreamed(
+    seg: SegmentRef,
+    keys: readonly number[],
+    gen: string | number | null | undefined,
+    concurrency: number,
+    rampStart: number,
+  ): StreamedChunks | undefined {
+    const getChunks = this.storage.getChunks;
+    if (getChunks === undefined || gen === null || keys.length === 0) return undefined;
+    const cached = new Map<number, CodecBitmap>();
+    let wanted: readonly number[] = keys;
+    if (this.cache) {
+      const misses: number[] = [];
+      wanted = misses;
+      for (const chunkKey of keys) {
+        const hit = this.cache.get(this.chunkCacheKey({ ...seg, chunkKey }, gen));
+        if (hit) cached.set(chunkKey, hit);
+        else misses.push(chunkKey);
+        if (this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: hit !== undefined });
+      }
+    }
+    const stream =
+      wanted.length === 0
+        ? undefined
+        : new ChunkStream(
+            getChunks.call(this.storage, seg, wanted, { concurrency, ramp: rampStart }),
+          );
+    return { seg, gen, cached, stream, epoch: this.invalidations };
+  }
+
+  /** The decoded chunk at `chunkKey` of a streamed read: the cached instance, or the next chunk of its stream. */
+  private streamedChunk(streamed: StreamedChunks, chunkKey: number): Promise<CodecBitmap | null> {
+    const hit = streamed.cached.get(chunkKey);
+    if (hit) return Promise.resolve(hit);
+    return streamed.stream!.take(chunkKey).then((read) => {
+      const { request } = read;
+      if (request !== undefined && this.metricsOn) {
+        this.metrics.onEvent({
+          kind: 'storage.get',
+          namespace: streamed.seg.namespace,
+          segment: streamed.seg.segment,
+          bytes: request.bytes,
+          ms: request.ms,
+        });
+      }
+      if (read.bytes === null) return null;
+      const bitmap = this.decodeChunk(read.bytes, chunkKey);
+      // Cached under the version the bytes came from, not the one the read planned under: a source that re-resolved
+      // mid-read answers newer bytes, and those must not sit under the older version's key. Not cached at all if the
+      // segment was invalidated while the read ran.
+      if (this.cache && this.invalidations === streamed.epoch) {
+        const version = streamed.gen === undefined ? undefined : read.version;
+        if (version !== null) {
+          this.cache.set(this.chunkCacheKey({ ...streamed.seg, chunkKey }, version), bitmap);
+        }
+      }
+      return bitmap;
+    });
+  }
+
+  /** The cache key of a chunk: by the version it was read under, or by segment and key alone for a source with none. */
+  private chunkCacheKey(ref: ChunkRef, version: string | number | undefined): string {
+    return version === undefined ? chunkRefKey(ref) : chunkGenKey(ref, version);
   }
 
   /** The segment's chunk keys, ascending — a shape read off the index, no payload. Keys are untrusted (invariant 5). */
@@ -956,7 +1084,7 @@ export class SegmentEngine {
     gen: string | number | null | undefined,
   ): Promise<CodecBitmap | null> {
     if (gen === null) return null;
-    const cacheKey = gen === undefined ? chunkRefKey(ref) : chunkGenKey(ref, gen);
+    const cacheKey = this.chunkCacheKey(ref, gen);
     if (this.cache) {
       const cached = this.cache.get(cacheKey);
       if (cached) {

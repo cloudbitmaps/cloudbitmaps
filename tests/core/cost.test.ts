@@ -20,6 +20,7 @@ import { estimateCost } from '@cloudbitmaps/core';
 import { RETENTION_SWEEP_REQUESTS } from '@/core/cost';
 import { brandAsBackend, type GenKey } from '@/core/ports';
 import { MemoryStorageDriver } from '@/drivers/memory';
+import { chunkReads } from '../helpers/chunk-reads';
 
 /**
  * The cost model of a loaded store. There is no per-id write term — data arrives only as a generation, so the
@@ -1328,6 +1329,10 @@ describe('requests per pointer read and per sized read', () => {
 // $1,000, so `1000 × PUTs + GETs` has one reading while there are fewer than a thousand GETs.
 // ---------------------------------------------------------------------------------------------------
 describe('the estimator counts the requests the engine makes', () => {
+  const reads = chunkReads();
+  beforeEach(reads.start);
+  afterEach(reads.stop);
+
   const COUNTING: PricingProfile = {
     name: 'one-dollar-get',
     storage: { getPerMillion: 1e6, putPerMillion: 1e9, storagePerGiBMonth: 0 },
@@ -1414,6 +1419,7 @@ describe('the estimator counts the requests the engine makes', () => {
       }
 
       reset();
+      reads.reset();
       const cold = open(); // a fresh store: nothing cached, every pointer and index read from storage
       const [first, ...rest] = names.map((n) => cold.segment(n));
       const ids: number[] = [];
@@ -1423,8 +1429,12 @@ describe('the estimator counts the requests the engine makes', () => {
       // Every storage request the intersect made is a read the model knows about: nothing uncounted.
       expect(requestsIn(calls)).toEqual(['getRange', 'getTail']);
       expect(pointer.writes).toBe(0);
+      // Chunk-skipping: the shared chunks, from each operand, and only those (the engine asked for 3 chunks of each
+      // operand). They sit side by side in each object, so each operand reads them in one range request: the model's
+      // `chunksPerIntersect` is the chunk range requests, not the chunks.
+      expect(reads.total()).toBe(names.length * shared.length);
       const chunkReads = calls.getRange ?? 0;
-      expect(chunkReads).toBe(names.length * shared.length); // chunk-skipping: the shared chunks, from each operand
+      expect(chunkReads).toBe(names.length);
       const engineGets = pointer.reads + (calls.getTail ?? 0) + chunkReads;
 
       const workload = {

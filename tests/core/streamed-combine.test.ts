@@ -1,0 +1,310 @@
+/**
+ * A combine reads each include operand, and each exclude read with it, as one stream of coalesced ranges. These cases
+ * hold the engine's side of that to account against a source that records every stream it is asked to open: which
+ * operands stream and which do not, what the budget does before anything opens, how the decoded-chunk cache is
+ * used and keyed, what a stopped read leaves behind, and that every answer equals the per-key read's.
+ */
+import fc from 'fast-check';
+import { describe, expect, it } from 'vitest';
+import { SegmentEngine, BoundedLru, CountingMetricsSink } from '@cloudbitmaps/core';
+import type { CodecBitmap } from '@cloudbitmaps/core';
+import { BudgetExceededError, IntegrityError, ValidationError } from '@/core/errors';
+import { chunkGenKey } from '@/core/keys';
+import { roaringCodec } from '@/roaring-codec';
+import { joinId } from '@/core/bit-route';
+import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
+import { StreamChunkSource } from '../helpers/stream-chunk-source';
+import { collect, seedSegment } from '../helpers/loaded';
+
+const clock = { now: () => 0 };
+const ids = (chunks: readonly number[], per = 3): number[] =>
+  chunks.flatMap((c) => Array.from({ length: per }, (_, i) => joinId(c, i + 1)));
+
+function setup(
+  segments: Record<string, number[]>,
+  options: { cache?: boolean; budget?: number } = {},
+) {
+  const storage = new StreamChunkSource();
+  for (const [name, set] of Object.entries(segments)) seedSegment(storage, name, set);
+  const cache =
+    options.cache === false
+      ? undefined
+      : new BoundedLru<string, CodecBitmap>({ maxEntries: 1_000, clock });
+  const metrics = new CountingMetricsSink();
+  const engine = new SegmentEngine({
+    storage,
+    codec: roaringCodec,
+    ...(cache ? { cache } : {}),
+    metrics,
+    ...(options.budget === undefined ? {} : { budget: { maxRequests: options.budget } }),
+  });
+  return { storage, engine, cache, metrics };
+}
+const ref = (segment: string) => ({ segment });
+const opened = (s: StreamChunkSource) => s.opened.map((o) => `${o.segment}:${o.keys.join(',')}`);
+
+describe('which operands stream', () => {
+  const A = ids([1, 2, 3, 4]);
+  const B = ids([2, 3, 4, 9]);
+  const S = ids([3, 4, 7]);
+
+  it('an intersect streams each include, over the keys they share, with the combine ramp and concurrency', async () => {
+    const { storage, engine } = setup({ a: A, b: B });
+    await collect(engine.intersect([ref('a'), ref('b')], { concurrency: 16 }));
+    expect(opened(storage).sort()).toEqual(['a:2,3,4', 'b:2,3,4']);
+    expect(storage.opened[0]!.options).toEqual({ concurrency: 16, ramp: 4 });
+    expect(storage.singles).toEqual([]);
+  });
+
+  it('a union streams each include over its own keys', async () => {
+    const { storage, engine } = setup({ a: A, b: B });
+    await collect(engine.union([ref('a'), ref('b')]));
+    expect(opened(storage).sort()).toEqual(['a:1,2,3,4', 'b:2,3,4,9']);
+  });
+
+  it('an andNot streams its one include and the keys of each exclude it overlaps, in the same round', async () => {
+    const { storage, engine } = setup({ a: A, s: S });
+    await collect(engine.andNot(ref('a'), [ref('s')]));
+    expect(opened(storage).sort()).toEqual(['a:1,2,3,4', 's:3,4']);
+    expect(storage.singles).toEqual([]);
+  });
+
+  it('a union with an exclude streams the exclude too', async () => {
+    const { storage, engine } = setup({ a: A, b: B, s: S });
+    await collect(engine.union([ref('a'), ref('b')], { exclude: [ref('s')] }));
+    expect(opened(storage).sort()).toEqual(['a:1,2,3,4', 'b:2,3,4,9', 's:3,4']);
+  });
+
+  it('an exclude that waits on an AND of two includes is read per key, only where the AND is not empty', async () => {
+    const { storage, engine } = setup({ a: ids([1, 2]), b: ids([2, 3, 1]), s: ids([1, 2]) });
+    // `a` and `b` share keys 1 and 2; key 1's chunks are disjoint ids, so the AND is empty there.
+    seedSegment(storage, 'a', [joinId(1, 10), ...ids([2])]);
+    seedSegment(storage, 'b', [joinId(1, 11), ...ids([2, 3])]);
+    await collect(engine.intersect([ref('a'), ref('b')], { exclude: [ref('s')] }));
+    expect(opened(storage).sort()).toEqual(['a:1,2', 'b:1,2']);
+    expect(storage.singles).toEqual(['s:2']); // key 1 emptied the AND: its exclude chunk was never read
+  });
+
+  it('a source with no getChunks is read chunk by chunk, as before', async () => {
+    const plain = new MemoryStorageChunkSource();
+    seedSegment(plain, 'a', A);
+    seedSegment(plain, 'b', B);
+    const engine = new SegmentEngine({ storage: plain, codec: roaringCodec });
+    expect(await collect(engine.intersect([ref('a'), ref('b')]))).toEqual(ids([2, 3, 4]));
+  });
+
+  it('a segment the source says has no generation is not streamed', async () => {
+    const { storage, engine } = setup({ a: A });
+    storage.version = null;
+    expect(await collect(engine.union([ref('a')]))).toEqual([]);
+    expect(storage.opened).toEqual([]);
+  });
+
+  it('a stream is not opened, and nothing is read, until the read is iterated', async () => {
+    const { storage, engine } = setup({ a: A, b: B });
+    const stream = engine.intersect([ref('a'), ref('b')]);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(storage.opened).toEqual([]);
+    await stream.next();
+    expect(storage.opened.length).toBeGreaterThan(0);
+    await stream.return(undefined);
+  });
+});
+
+describe('the budget is checked before any stream opens', () => {
+  it('a refusal opens nothing and reads nothing, and the units are the chunk reads', async () => {
+    const A = ids([1, 2, 3, 4]);
+    const S = ids([3, 4]);
+    const { storage, engine } = setup({ a: A, s: S }, { budget: 5 });
+    await expect(collect(engine.andNot(ref('a'), [ref('s')]))).rejects.toThrow(BudgetExceededError);
+    expect(storage.opened).toEqual([]);
+    expect(storage.singles).toEqual([]);
+    // 4 chunks of the include and 2 of the exclude: six reads fit a budget of six, not five.
+    const fits = setup({ a: A, s: S }, { budget: 6 });
+    await collect(fits.engine.andNot(ref('a'), [ref('s')]));
+  });
+});
+
+describe('the decoded-chunk cache', () => {
+  const A = ids([1, 2, 3, 4]);
+  const B = ids([1, 2, 3, 4]);
+
+  it('serves a repeat read from the cache: no stream is opened for chunks it holds', async () => {
+    const { storage, engine } = setup({ a: A, b: B });
+    await collect(engine.intersect([ref('a'), ref('b')]));
+    storage.opened.length = 0;
+    expect(await collect(engine.intersect([ref('a'), ref('b')]))).toEqual(ids([1, 2, 3, 4]));
+    expect(storage.opened).toEqual([]);
+  });
+
+  it('asks only for the chunks it does not hold, and still answers in order', async () => {
+    const { storage, engine } = setup({ a: A, b: B });
+    await collect(
+      engine.intersect([ref('a'), ref('b')], { after: joinId(2, 3), through: joinId(3, 3) }),
+    );
+    storage.opened.length = 0;
+    expect(await collect(engine.intersect([ref('a'), ref('b')]))).toEqual(ids([1, 2, 3, 4]));
+    expect(storage.opened.map((o) => o.keys.join(',')).sort()).toEqual(['1,4', '1,4']);
+  });
+
+  it('caches a chunk under the version it was read from, not the version the read planned under', async () => {
+    const { storage, engine, cache } = setup({ a: A });
+    storage.readVersion = () => 'v2'; // the source answers a newer generation than `currentVersion` said
+    await collect(engine.union([ref('a')]));
+    const a = ref('a');
+    expect(cache!.peek(chunkGenKey({ ...a, chunkKey: 1 }, 'v2'))).toBeDefined();
+    expect(cache!.peek(chunkGenKey({ ...a, chunkKey: 1 }, 'v1'))).toBeUndefined();
+  });
+
+  it('does not cache what a stream delivers after the segment was invalidated', async () => {
+    const { storage, engine, cache } = setup({ a: A });
+    storage.beforeYield = (stream, key) => {
+      if (key === 3) engine.invalidate(ref('a')); // a destructive verb lands mid-read
+      void stream;
+    };
+    await collect(engine.union([ref('a')]));
+    const a = ref('a');
+    for (const key of [1, 2, 3, 4]) {
+      // 1 and 2 were delivered before it and were dropped by the invalidation itself; 3 and 4 came after it.
+      expect(cache!.peek(chunkGenKey({ ...a, chunkKey: key }, 'v1')), `key ${key}`).toBeUndefined();
+    }
+  });
+
+  it('a cache that is smaller than the read still answers correctly', async () => {
+    const storage = new StreamChunkSource();
+    seedSegment(storage, 'a', ids([1, 2, 3, 4, 5, 6]));
+    const cache = new BoundedLru<string, CodecBitmap>({ maxEntries: 2, clock });
+    const engine = new SegmentEngine({ storage, codec: roaringCodec, cache });
+    expect(await collect(engine.union([ref('a')]))).toEqual(ids([1, 2, 3, 4, 5, 6]));
+    expect(await collect(engine.union([ref('a')]))).toEqual(ids([1, 2, 3, 4, 5, 6]));
+  });
+
+  it('works with no cache at all', async () => {
+    const { engine } = setup({ a: A, b: B }, { cache: false });
+    expect(await collect(engine.intersect([ref('a'), ref('b')]))).toEqual(ids([1, 2, 3, 4]));
+  });
+
+  it('a source with no version keys the cache by segment and chunk alone', async () => {
+    const { storage, engine, cache } = setup({ a: A });
+    (storage as { currentVersion?: unknown }).currentVersion = undefined;
+    storage.readVersion = () => 'ignored';
+    await collect(engine.union([ref('a')]));
+    expect(cache!.peek(`${'a'}\u0000${1}`)).toBeUndefined(); // not the versioned key
+    storage.opened.length = 0;
+    await collect(engine.union([ref('a')]));
+    expect(storage.opened).toEqual([]); // but cached under the key a versionless source uses
+  });
+});
+
+describe('metrics', () => {
+  it('reports one storage.get per range request, with its bytes, and a cache event per lookup', async () => {
+    const { storage, engine, metrics } = setup({ a: ids([1, 2, 3, 4, 5, 6]) });
+    storage.perRequest = 3; // two requests for six chunks
+    await collect(engine.union([ref('a')]));
+    const snap = metrics.snapshot();
+    expect(snap.storage.gets).toBe(2);
+    expect(snap.cache.misses).toBe(6);
+    expect(snap.cache.hits).toBe(0);
+  });
+});
+
+describe('a read that stops', () => {
+  it('closes the streams it opened, early or on an error', async () => {
+    const { storage, engine } = setup({ a: ids([1, 2, 3, 4, 5, 6]), b: ids([1, 2, 3, 4, 5, 6]) });
+    for await (const id of engine.intersect([ref('a'), ref('b')])) {
+      void id;
+      break;
+    }
+    await new Promise((r) => setTimeout(r, 10));
+    expect(storage.opened.every((o) => o.closedEarly)).toBe(true);
+
+    const failing = setup({ a: ids([1, 2, 3]) });
+    failing.storage.beforeYield = (_, key) => {
+      if (key === 2) throw new Error('boom');
+    };
+    await expect(collect(failing.engine.union([ref('a')]))).rejects.toThrow('boom');
+  });
+
+  it('surfaces a stream that answers the wrong key, or ends early, as IntegrityError', async () => {
+    const wrong = setup({ a: ids([1, 2, 3]) });
+    wrong.storage.misalign = (_, key) => (key === 2 ? 3 : key);
+    await expect(collect(wrong.engine.union([ref('a')]))).rejects.toBeInstanceOf(IntegrityError);
+
+    const short = setup({ a: ids([1, 2, 3]) });
+    const original = short.storage.getChunks.bind(short.storage);
+    short.storage.getChunks = (r, keys, o) => original(r, keys.slice(0, 2), o);
+    await expect(collect(short.engine.union([ref('a')]))).rejects.toBeInstanceOf(IntegrityError);
+  });
+});
+
+describe('single-flight', () => {
+  it('is not applied across streams: two concurrent cold combines each read, while per-key reads still share', async () => {
+    const { storage, engine } = setup({ a: ids([1, 2, 3]) });
+    await Promise.all([collect(engine.union([ref('a')])), collect(engine.union([ref('a')]))]);
+    expect(storage.opened).toHaveLength(2);
+
+    const solo = setup({ a: ids([1]) });
+    await Promise.all([engine_has(solo.engine), engine_has(solo.engine)]);
+    expect(solo.storage.singles).toHaveLength(1);
+  });
+});
+const engine_has = (engine: SegmentEngine): Promise<boolean> => engine.has(ref('a'), joinId(1, 1));
+
+describe('the streamed read equals the per-key read', () => {
+  const key = fc.integer({ min: 0, max: 9 });
+  const set = fc.uniqueArray(key, { maxLength: 8 });
+  const ID = fc.integer({ min: 0, max: 10 * 65_536 - 1 });
+  const range = fc.record(
+    { after: fc.option(ID, { nil: undefined }), through: fc.option(ID, { nil: undefined }) },
+    { requiredKeys: [] },
+  );
+
+  it('for random operands, excludes, ranges and concurrency, on intersect, union and andNot', async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        fc.tuple(set, set, set),
+        range,
+        fc.integer({ min: 1, max: 40 }),
+        fc.integer({ min: 1, max: 5 }),
+        async ([a, b, s], r, concurrency, perRequest) => {
+          const make = (streams: boolean) => {
+            const storage = streams ? new StreamChunkSource() : new MemoryStorageChunkSource();
+            if (streams) (storage as StreamChunkSource).perRequest = perRequest;
+            for (const [n, c] of [
+              ['a', a],
+              ['b', b],
+              ['s', s],
+            ] as const)
+              seedSegment(storage, n, ids(c, 2));
+            return new SegmentEngine({ storage, codec: roaringCodec });
+          };
+          const options = { ...r, concurrency };
+          const reads = (e: SegmentEngine) => [
+            () => e.intersect([ref('a'), ref('b')], options),
+            () => e.intersect([ref('a'), ref('b')], { ...options, exclude: [ref('s')] }),
+            () => e.union([ref('a'), ref('b')], options),
+            () => e.union([ref('a'), ref('b')], { ...options, exclude: [ref('s')] }),
+            () => e.andNot(ref('a'), [ref('s')], options),
+            () => e.andNot(ref('a'), [ref('s'), ref('b')], options),
+          ];
+          const streamed = reads(make(true));
+          const perKey = reads(make(false));
+          for (const [i, read] of streamed.entries()) {
+            // A segment with no chunks is an absent operand: a refusal both ways, equally.
+            const want = await collect(perKey[i]!()).catch((e: unknown) => (e as Error).name);
+            const got = await collect(read()).catch((e: unknown) => (e as Error).name);
+            expect(got).toEqual(want);
+          }
+        },
+      ),
+      { numRuns: 60 },
+    );
+  });
+
+  it('refuses a bad concurrency as it always has', async () => {
+    const { engine } = setup({ a: ids([1]) });
+    await expect(collect(engine.union([ref('a')], { concurrency: 0 }))).rejects.toThrow(
+      ValidationError,
+    );
+  });
+});
