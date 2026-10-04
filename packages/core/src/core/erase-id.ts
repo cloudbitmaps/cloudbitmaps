@@ -89,6 +89,7 @@ import {
 } from './crbm-storage-source';
 import { DEFAULT_MAX_BITMAP_BYTES } from './crbm/format';
 import type { CrbmReader } from './crbm/reader';
+import { mapWithConcurrency } from './concurrency';
 import { aadFor } from './crypto';
 import type { Aead, CrbmCrypto, IKeystore } from './crypto';
 import {
@@ -112,6 +113,9 @@ import type {
 import { type ReadRetry, retryRead } from './retry';
 import { metadataToCarry, summaryOf, usableSummary } from './summary';
 import { validateUserRef } from './validate';
+
+/** Generations whose index and chunk are read at once while looking for a holder of the id; the keep window is small. */
+const HOLDS_CONCURRENCY = 4;
 
 /** What {@link eraseIdFromSegment} needs: the objects, the pointer, the codec, and the key material if encrypted. */
 export interface EraseIdDeps {
@@ -342,6 +346,32 @@ export async function eraseIdFromSegment(
   };
 
   /**
+   * `holds` over `generations`, read a few at a time, with the outcomes the serial scan would have produced: they
+   * come back in the order given, ending at the first holder when `stopAtHolder` is set (a generation read beyond
+   * it is read for nothing and dropped), and the first fault in that order is the one thrown, so a fault past a
+   * holder never surfaces, as it never did.
+   */
+  const holdsEach = async (
+    generations: readonly number[],
+    stopAtHolder: boolean,
+  ): Promise<{ generation: number; held: boolean | null }[]> => {
+    const settled = await mapWithConcurrency(generations, HOLDS_CONCURRENCY, async (generation) => {
+      try {
+        return { generation, held: await holds(generation), fault: undefined };
+      } catch (fault) {
+        return { generation, held: null, fault: { error: fault } };
+      }
+    });
+    const outcomes: { generation: number; held: boolean | null }[] = [];
+    for (const { generation, held, fault } of settled) {
+      if (fault !== undefined) throw fault.error;
+      outcomes.push({ generation, held });
+      if (stopAtHolder && held === true) break;
+    }
+    return outcomes;
+  };
+
+  /**
    * The receipt check, and the one place `erased: true` is decided: the newest generation still in the bucket that
    * holds the id, or `undefined` when none does. `clean` names the generations this call has already read or
    * written without the id; every other generation present is read now.
@@ -363,10 +393,10 @@ export async function eraseIdFromSegment(
   const holderLeft = async (clean: ReadonlySet<number>): Promise<number | undefined> => {
     const present = new Set<number>();
     for await (const key of deps.storage.list(ref)) present.add(key.generation);
-    for (const generation of [...present].sort((a, b) => b - a)) {
-      if (!clean.has(generation) && (await holds(generation)) === true) return generation;
-    }
-    return undefined;
+    const toRead = [...present]
+      .sort((a, b) => b - a)
+      .filter((generation) => !clean.has(generation));
+    return (await holdsEach(toRead, true)).find((outcome) => outcome.held === true)?.generation;
   };
 
   const cannotRemove = (generation: number): WriteConflictError =>
@@ -438,20 +468,21 @@ export async function eraseIdFromSegment(
 
     const clean = new Set<number>([from]);
     const holdersAbove: number[] = []; // newest first
-    for (const generation of newestFirst.filter((g) => g > from)) {
-      const held = await holds(generation);
+    for (const { generation, held } of await holdsEach(
+      newestFirst.filter((g) => g > from),
+      false,
+    )) {
       if (held === true) holdersAbove.push(generation);
       else if (held === false) clean.add(generation);
     }
     let holderBelow: number | undefined;
     if (holdersAbove.length === 0) {
-      for (const generation of newestFirst.filter((g) => g < from)) {
-        const held = await holds(generation);
-        if (held === true) {
-          holderBelow = generation;
-          break;
-        }
-        if (held === false) clean.add(generation);
+      for (const { generation, held } of await holdsEach(
+        newestFirst.filter((g) => g < from),
+        true,
+      )) {
+        if (held === true) holderBelow = generation;
+        else if (held === false) clean.add(generation);
       }
     }
     const newest = holdersAbove[0] ?? holderBelow;
