@@ -59,6 +59,31 @@ class Exit extends Error {
 }
 
 /**
+ * Assert that reading `build(100_000)` takes time that grows with its size, not faster. The page is read at an eighth of
+ * the size and at the full size, in this process, so a slow or busy machine slows both alike: a scan that is linear in
+ * the page takes eight times as long on eight times the text, one that rescans for each match takes sixty-four, and the
+ * margin of three keeps a linear one from failing. A reading is the best of three, and a floor keeps a scan too quick
+ * to time from failing at all.
+ */
+function expectLinearTime(build: (size: number) => Record<string, string>): void {
+  const best = (size: number): number => {
+    const pages = build(size);
+    let least = Infinity;
+    for (let run = 0; run < 3; run++) {
+      const started = performance.now();
+      sizingCheck(pages);
+      least = Math.min(least, performance.now() - started);
+    }
+    return least;
+  };
+  const small = best(12_500);
+  const big = best(100_000);
+  expect(big, `${small.toFixed(1)} ms at 12,500, ${big.toFixed(1)} ms at 100,000`).toBeLessThan(
+    3 * 8 * Math.max(small, 20),
+  );
+}
+
+/**
  * Run `node bench/sizing.cjs --check` with `pages` (repo-relative path → text) laid over the tree, and the files in
  * `missing` taken out of it; with `write`, run `pnpm bench:sizing` instead, whose writes land in `pages` rather than
  * on disk.
@@ -459,10 +484,10 @@ describe('bench:sizing:check fails what it exists to catch', () => {
         ['[^', '[^'],
         ['[^a', '[^a'],
         ['](', ']('],
-      ])('reads 100 KB of %s well inside 2 s', (_what, unit) => {
-        const started = performance.now();
-        sizingCheck({ [WHY]: intoWhy(` ${unit.repeat(Math.ceil(100_000 / unit.length))}`) });
-        expect(performance.now() - started).toBeLessThan(2000);
+      ])('reads 100 KB of %s in time that grows with its size', (_what, unit) => {
+        expectLinearTime((size) => ({
+          [WHY]: intoWhy(` ${unit.repeat(Math.ceil(size / unit.length))}`),
+        }));
       });
 
       it.each([
@@ -547,12 +572,9 @@ describe('bench:sizing:check fails what it exists to catch', () => {
         expect(sizingCheck({ [README]: edited }).out).not.toMatch(/shows nothing/);
       });
 
-      it('reads 100 KB of digits, or of an unclosed tag, in the rest of the README well inside 2 s', () => {
-        for (const text of ['1'.repeat(100_000), '<h2 '.repeat(25_000)]) {
-          const started = performance.now();
-          sizingCheck({ [README]: intoRest(text) });
-          expect(performance.now() - started).toBeLessThan(2000);
-        }
+      it('reads 100 KB of digits, or of an unclosed tag, in the rest of the README in time that grows with its size', () => {
+        expectLinearTime((size) => ({ [README]: intoRest('1'.repeat(size)) }));
+        expectLinearTime((size) => ({ [README]: intoRest('<h2 '.repeat(size / 4)) }));
       });
 
       it('passes "times out" after a number word in the rest of the README, where number words are words', () => {

@@ -26,6 +26,24 @@ so, and so do the module headers in the code.
   fails or is refused (never for a crypto-shredded row). Nothing is written or published in any of these cases, and an
   abandoned check or unwrap leaves no unhandled rejection. A load that throws may have consumed its input, so retry
   with a fresh source.
+- **`eraseNamespace` shreds eight segments at a time instead of one.** Each segment keeps its own read and
+  compare-and-swap, a fault in one is recorded against it and stops no other, and `destroyed` comes back in the
+  listing's order. The `segment.erase` events are now emitted as each segment finishes, so their order is no longer the
+  listing's; `namespace.erase` is still last, with the same count.
+- **A registry listing reads 48 rows at a time instead of 16** on the S3, GCS and Azure Blob registries. A full scan
+  of a large fleet takes about a third of the round trips in sequence; 48 stays under the 50 sockets an SDK client has
+  by default. `checkConsistency`'s own default of 8 is unchanged.
+- **The erasure of one id looks through the other generations for a holder a few at a time.** The answer is the same as
+  the one-at-a-time scan's: the newest holder, and the first fault in newest-first order, with none from past a holder.
+
+### Fixed
+
+- **A GCS read that is refused or let go mid-body no longer prints `MaxListenersExceededWarning`.** A read of a response
+  that was still arriving when the driver refused it (an advertised or actual length past the cap) or let it go printed
+  "11 error listeners added to [PassThrough]" and the same for `close` on stderr. It was not a leak: the SDK and its HTTP
+  layer each run a pipeline over the one response body, which holds eleven or twelve listeners while it is in flight, one
+  past Node's default of ten, and every attempt has a body of its own, so the count never grew with retries or reads. The
+  limit is raised on that one body, and nothing else.
 
 ## [0.14.0] — 2026-10-04
 

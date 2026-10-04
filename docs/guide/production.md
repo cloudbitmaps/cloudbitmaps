@@ -278,7 +278,7 @@ concurrent `has()` calls with `readTimeoutMs: 2_000` lost most of their reads to
 busy too: Node runs a due timer before it reads a socket, so a synchronous stretch longer than the timeout fails the
 reads in flight even when their responses have arrived. Size `readTimeoutMs` above the
 worst queueing your concurrency implies, which is about the concurrent reads divided by the sockets, times what one
-read takes (8,000 ÷ 50 × 50 ms is 8 s on a client with 50 sockets; derived), or raise `maxSockets`. The client the store builds takes it
+read takes (8,000 ÷ 50 × 50 ms is 8 s on a client with 50 sockets; derived), or raise `maxSockets`. A registry listing keeps up to 48 row reads open at once, so on a client you pass, at the SDK's 50 sockets, your own concurrent reads may wait for a socket while a listing runs, and that wait counts toward `readTimeoutMs`; the client the store builds has 128. The client the store builds takes it
 as an option; a client you pass is yours to set:
 
 ```ts

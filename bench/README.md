@@ -109,7 +109,7 @@ in `lib/calibrate-stages.cjs`, stepped at an even latency from the engine's two 
 the window. A peak of 64 is the full window, 32 chunks each read from both operands; rounds above the model with a
 mean in flight well under that is a slow request holding the window. A run made before the window widened ran a fixed window of 8
 chunks, a model of 2 + ⌈k / 8⌉ and a peak of 16, and its figures are read against that. In flight counts requests the library issued, including any waiting for a free socket, so a mean or a peak above the
-client's sockets (`maxSockets`, which the record carries; 50 is the SDK's default) means requests queued, a wait the rounds model, which assumes no limit, does not count.
+client's sockets (`maxSockets`, which the record carries: 50 for runs up to the one of 2026-10-04, which kept the SDK's default; runs from this harness on record what their client held, 128 by default, as the library's built client has) means requests queued, a wait the rounds model, which assumes no limit, does not count.
 The run of 2026-10-04 held an `andNot` mean of 80.6 in flight against 50 sockets, and its rounds sit above the model.
 
 `andNot` reads every chunk of the segment it filters, since any of them can survive, and each exclude only where it
@@ -322,9 +322,13 @@ hang-up on a real pseudo-terminal that is then closed, and the whole path by int
   the tail read is a fixed cost per operand, and a single "fraction fetched" would describe neither.
 - **The SDK that sent the requests.** `measured.sdk` holds the versions of `@aws-sdk/client-s3` and of the HTTP handler
   under it, read from what is installed (a CloudShell run installs the latest and deletes the scratch directory once the
-  results are copied out), with `maxSockets: 50`, the handler's default, which the harness does not set. It bounds how many
-  requests can really be in flight: an `andNot` widens its window from 8 keys to 32 and fetches every exclude of a key in the same round as its include, so
-  on its first shared keys it can want more than 50, and its latency is read against that.
+  results are copied out), with `maxSockets`, the socket limit the workload's client had, read back from its agents after
+  the run, and `maxSocketsSource`, which says where it came from. The harness gives that client 128, the limit the library
+  gives the client it builds (`CR_CALIBRATE_MAX_SOCKETS` overrides it: a positive integer of at most 1024; the run is refused before anything is created if the handler does not take the limit), by setting `maxSockets` on the
+  SDK handler's own agents and changing nothing else about it; teardown's client keeps the SDK's default of 50. A value that
+  could not be read back is `null`. Runs before the harness set it (up to 2026-10-04) record 50, the SDK's default, as they
+  ran with. The limit bounds how many requests can really be in flight: an `andNot` widens its window from 8 keys to 32 and fetches every exclude of a key in the same round as its include, so
+  on its first shared keys it can want more than the limit, and its latency is read against that.
 - **What it measured.** The package version, the harness commit (marked `-dirty` when the harness had uncommitted
   edits, since the commit alone would name a harness that did not run), the Node version, and how the timed stores
   were built.
@@ -336,6 +340,9 @@ hang-up on a real pseudo-terminal that is then closed, and the whole path by int
 git clone https://github.com/cloudbitmaps/cloudbitmaps && cd cloudbitmaps
 CR_CALIBRATE_CONFIRM=yes-spend-money CR_CALIBRATE_MAX_USD=0.05 bash bench/calibrate-cloudshell.sh
 ```
+
+The workload's client has 128 sockets, as the library's built client does; `CR_CALIBRATE_MAX_SOCKETS=<n>` sets another
+limit, and the script echoes the one asked for before it installs anything.
 
 Before it installs anything the script refuses three things: a `CR_CALIBRATE_REHEARSE` that is not unset, empty, `0` or
 `1` (any other value would take the run that spends money); a shell with no `AWS_REGION`, which CloudShell exports; and a

@@ -13,6 +13,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse } from 'yaml';
+import { vi } from 'vitest';
 import { ROOT, jobs, packageScripts, readYaml, type Job, type Step } from '../helpers/workflows';
 
 /**
@@ -231,6 +232,12 @@ const PRUNE = `. ${HELPER} && docker_image_cache_prune`;
 const prune = PRUNE;
 const overrideOf = (file: string) =>
   (parse(readFileSync(file, 'utf8')) as { services: Record<string, { image: string }> }).services;
+
+// Nothing here reads a clock: `sleep`, `date` and `timeout` are stand-ins that return at once, so there is no timer to
+// fake. What costs time is the bash processes each case starts, up to a few hundred of them, and on a machine running
+// the whole suite that can pass the default 5 s of a case that takes under a second alone. So this file's cases get a
+// limit that only a hung script reaches.
+vi.setConfig({ testTimeout: 60_000 });
 
 describe('an image CI runs is kept in the Actions cache, and a registry is asked only when it must be', () => {
   let w: World;
