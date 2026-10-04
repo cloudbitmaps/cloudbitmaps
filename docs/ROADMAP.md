@@ -36,14 +36,14 @@ registry row per segment, no background process. Every roaring-based engine that
 into immutable segments rather than mutating a stored bitmap per call; that is the shape this library builds.
 Per-call freshness, if there is demand, would be immutable delta generations on the same bucket.
 
-Where each piece sits today. A bare **shipped** is in `0.13.0` or earlier; anything on `main` after it is marked
+Where each piece sits today. A bare **shipped** is in `0.14.0` or earlier; anything on `main` after it is marked
 with the release it is to ship in, and sits under `[Unreleased]` in the [changelog](../CHANGELOG.md#unreleased):
 
 | | Status |
 | --- | --- |
 | Loads, reads, chunk-skipping combines, `*Into` materialization, subject erasure as a rewrite, crypto-shred, disposal, retention, the DR check, export | **shipped** — [below](#shipped-today) |
-| Wider read windows (`concurrency` 32), concurrent cold reads of one chunk sharing one request, erasure read-ahead, `andNot` excludes read in the same round trip, and an oversized index entry refused at open | **shipped** — see the [changelog](../CHANGELOG.md#0130--2026-10-03); measured on S3 in-region by run `2026-10-04-73668`: the `andNot` against ten excludes took 3,335.85 ms and the cold intersect 290.06 ms, with the same requests as the previous release's run; the rounds sit a fifth to a half above the engine's rounds model, and the run does not say why, since it did not vary its client's 50 sockets ([the window, measured against its model](benchmarks.md#the-window-of-32--measured-against-the-model)) |
-| Loaded-store benchmarks — load throughput, intersect latency | **partly owed**: the rest is below. What is measured, on S3 in-region by run `2026-10-04-73668` from AWS CloudShell in `us-east-1`, on `0.13.0`: the median cold intersect of two 500,000-id segments sharing 100 of 1,999 chunks took 290.06 ms and made 204 GETs, $81.60 per million at list prices; a segment's first single-part `store.load()` is 2 PUT + 4 GET, $11.60 per million, and ran at 2.42 million ids a second — the [benchmarks page](benchmarks.md#the-in-region-run--run-2026-10-04-73668) publishes it, and the [report](../bench/calibration/2026-10-04-73668.md) explains every figure. Still owed: Lambda cold start, the `*Into` verbs, other combine shapes, and in-region GCS and Azure runs. The **RSS ceiling** is measured and published — it needs no cloud account, because a cgroup limit is enforceable locally |
+| Wider read windows (`concurrency` 32), concurrent cold reads of one chunk sharing one request, erasure read-ahead, `andNot` excludes read in the same round trip, and an oversized index entry refused at open | **shipped** — see the [changelog](../CHANGELOG.md#0130--2026-10-03); measured on S3 in-region by run `2026-10-04-73668`: the `andNot` against ten excludes took 3,335.85 ms and the cold intersect 290.06 ms, with the same requests as the previous release's run; the rounds sit a fifth to a half above the engine's rounds model, and the run does not say why, since it did not vary its 50 sockets ([the window, measured against its model](benchmarks.md#the-window-of-32--measured-against-the-model)) |
+| Loaded-store benchmarks — load throughput, intersect latency | **partly owed**: the rest is below. What is measured, on S3 in-region by run `2026-10-04-73668` from AWS CloudShell in `us-east-1`: the median cold intersect of two 500,000-id segments sharing 100 of 1,999 chunks took 290.06 ms and made 204 GETs, $81.60 per million at list prices; a segment's first single-part `store.load()` is 2 PUT + 4 GET, $11.60 per million, and ran at 2.42 million ids a second — the [benchmarks page](benchmarks.md#the-in-region-run--run-2026-10-04-73668) publishes it, and the [report](../bench/calibration/2026-10-04-73668.md) explains every figure. Still owed: Lambda cold start, the `*Into` verbs, other combine shapes, and in-region GCS and Azure runs. The **RSS ceiling** is measured and published — it needs no cloud account, because a cgroup limit is enforceable locally |
 | `load()` with the empty guard and `guard: { minCardinality, minRetained }` | **shipped** — `store.load(ref, ids)` is the write path in one call: next generation → write → guard → publish → collect. A refusal is reported (`published: false` + `reason`), not thrown, and deletes the object it wrote while the segment's row is unchanged or gone; once another write has changed the row, it leaves the object for collection. It reads the segment's row once, checks that its next number is free instead of listing for it, and with the default `keep` collects by name, deleting the one generation its publish pushed out of the window and listing the segment only every 16th generation: a steady load on S3 is 8 requests |
 | A load from a bitmap — `{ bitmap }`, `{ serialized }` | **shipped** — a caller holding the result as an in-memory Roaring bitmap loads it as one: the bytes are checked before anything is written, the chunks are cut from the bitmap's own containers with no per-id work, and the generation is byte for byte the one its ids write. Its time against the id path is measured by `pnpm bench:load-input`, whose figures are not recorded yet |
 | Registry rows at schema 2, and tokens no two writes share | **shipped** — a row carries an optional summary of its current generation, and a token with a random incarnation id and a random part for every write; a 0.11 process refuses a schema-2 row, so every 0.11 process stops before the first 0.12 write and there is no downgrade ([upgrade order](../CHANGELOG.md#0120--2026-10-03)) |
@@ -59,7 +59,9 @@ with the release it is to ship in, and sits under `[Unreleased]` in the [changel
 | A snapshot handle, so a long job reads one instant | **shipped** — `segment.pin()` resolves the generation once and holds it, so an export or a reconciliation describes a single instant. Only that segment is pinned; an ordinary handle still re-resolves on `cache.genTtlMs` |
 | Id-range reads for keyset paging — `iterate({ after, through })` and the same bounds on every combine | **shipped**. Yields only the ids in `(after, through]` and fetches only the chunks the range overlaps |
 | A public docs + site pass leading with the loaded store's strengths | **shipped** |
-| Deferred past `0.13.0` | **not built** — `generations({ describe: true })`, the chunk-level `*Into`, the tombstone reaper, an `op` metric for `store.load`, the compare-and-swap memo, an unscoped listing that skips the due index's pointers, one generation from parts built in several processes, and the reconcile for `rollback`, `setRetention`, shred and `eraseSubject` writes: [On the way to 1.0](#on-the-way-to-10), item 9, says what each is |
+| Reading a chunk at a time — `.batches()` on `iterate`, `intersect`, `union` and `andNot` | **shipped** — the same ids in the same order as one `Uint32Array` per chunk, reading the same chunks; see the [changelog](../CHANGELOG.md#0140--2026-10-04) and [Read a chunk at a time](guide/reading.md#read-a-chunk-at-a-time-batches) |
+| The built S3 client allows 128 sockets, and `maxSockets` sets it | **shipped** — up from the SDK's 50, so one two-operand `intersect` at the default `concurrency` no longer queues behind its own socket pool; see the [changelog](../CHANGELOG.md#0140--2026-10-04). The in-region run's figures were taken with 50 sockets, and the effect of 128 on them is not measured |
+| Deferred past `0.14.0` | **not built** — `generations({ describe: true })`, the chunk-level `*Into`, the tombstone reaper, an `op` metric for `store.load`, the compare-and-swap memo, an unscoped listing that skips the due index's pointers, one generation from parts built in several processes, and the reconcile for `rollback`, `setRetention`, shred and `eraseSubject` writes: [On the way to 1.0](#on-the-way-to-10), item 9, says what each is |
 | WASM CRoaring research | **after** the loaded store |
 
 **What is next:** a Lambda run, the `*Into` verbs and other combine shapes against a real store, and in-region GCS
@@ -274,12 +276,12 @@ are labelled as such.
 between here and there:
 
 1. **Real-cloud calibration — measured on S3, in-region.**
-   The [in-region run](benchmarks.md#the-in-region-run--run-2026-10-04-73668) of 2026-10-04, on `0.13.0`, is published: 40 of 40
+   The [in-region run](benchmarks.md#the-in-region-run--run-2026-10-04-73668) of 2026-10-04 is published: 40 of 40
    cold intersects exact, each fetching 100 of 1,999 chunks per segment; 204 GETs and 290.06 ms for the median cold
    intersect of that shape, **$81.60 per million** (204 GETs, $81.60, expected with each pointer read once);
    a segment's first single-part `store.load()` **$11.60 per million**, pointer included, at 2.42 million ids a second. Its
    [report](../bench/calibration/2026-10-04-73668.md) explains every figure, and a gate holds each one to the
-   run's committed results file. Its rounds sit a fifth to a half above the engine's rounds model, which assumes no socket limit; the run did not vary its client's 50 sockets, so it does not say why. An open change raises the built client's socket count, and no figure is claimed for it. What remains: a
+   run's committed results file. Its rounds sit a fifth to a half above the engine's rounds model, which assumes no socket limit; the run did not vary its client's 50 sockets, so it does not say why. The client this release builds allows 128 sockets, and the run's figures were taken with 50, so no figure is claimed for the effect of 128. What remains: a
    **Lambda** run for the serverless figure with cold-start and init included, which needs a run from inside a
    function; in-region **GCS** and **Azure** runs; and a **real-GCS run of the conditional-delete probe**
    (`tests/integration/real-cloud-conditional-delete.test.ts`, skipped unless a bucket is named). The probe shows
@@ -330,7 +332,7 @@ between here and there:
    sections, flagged in its footer (a reader skips a section type it does not know, and a reader before 0.12
    refuses the flag); a generation without metadata is the same bytes as before.
 8. **Adoption feedback** — real deployments finding the sharp edges that our own tests don't.
-9. **Closing the named deferrals.** None of these is in `0.13.0`:
+9. **Closing the named deferrals.** None of these is in `0.14.0`:
    - self-healing disaster recovery;
    - an exclusion predicate on the retention sweep (legal hold);
    - an automated reconcile of unstamped tombstones, and a cleanup of the tombstones a registry already holds (the
