@@ -171,7 +171,8 @@ another erasure, or an operator's `rollback`. Another erasure collects with `kee
 this rewrite was still streaming, or the object it had just written. Two erasures of different ids racing on one
 segment are safe: the loser's rewrite still holds the winner's id, and when it sits above the winner's pointer the
 loser deletes it before returning. The outcome is read off the registry row, so a segment whose row is tombstoned or
-purged mid-rewrite is left out of the ledger, as a fresh call would leave it out.
+purged mid-rewrite is left out of the ledger, as a fresh call would leave it out. The rewrite publishes fenced on the generation it streamed and the row's token, and
+not forward-only, for the reason given in [which fence a publish carries](loading.md#how-it-stays-correct).
 
 **A rollback during an erasure.** What the call reports depends on where the rollback lands:
 
