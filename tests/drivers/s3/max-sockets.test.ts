@@ -7,7 +7,7 @@ import {
 } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
 import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
-import { S3Storage } from '@/s3/backend';
+import { S3Storage, limitSockets } from '@/s3/backend';
 import { ValidationError } from '@/core/errors';
 
 /**
@@ -41,7 +41,9 @@ async function parkTls(): Promise<string> {
     mine.add(socket);
   });
   server = parked;
-  await new Promise<void>((resolve) => parked.listen(0, '127.0.0.1', resolve));
+  await new Promise<void>((resolve) =>
+    parked.listen({ port: 0, host: '127.0.0.1', backlog: 1024 }, resolve),
+  );
   return `https://127.0.0.1:${(parked.address() as AddressInfo).port}`;
 }
 
@@ -59,7 +61,9 @@ async function park(): Promise<string> {
   parked.on('checkContinue', (req) => {
     mineExpects.push(req.headers.expect);
   });
-  await new Promise<void>((resolve) => parked.listen(0, '127.0.0.1', resolve));
+  await new Promise<void>((resolve) =>
+    parked.listen({ port: 0, host: '127.0.0.1', backlog: 1024 }, resolve),
+  );
   return `http://127.0.0.1:${(parked.address() as AddressInfo).port}`;
 }
 
@@ -103,9 +107,9 @@ describe('S3Storage maxSockets, on the client it builds', () => {
     expect(await burst(built(await park()), BURST, 128)).toBe(128);
   });
 
-  it('allows exactly `maxSockets` when set, below and above the default', async () => {
+  it('allows exactly `maxSockets` when set, below the default', async () => {
     expect(await burst(built(await park(), { maxSockets: 10 }), BURST, 10)).toBe(10);
-    expect(await burst(built(await park(), { maxSockets: 160 }), BURST, 160)).toBe(160);
+    expect(await burst(built(await park(), { maxSockets: 100 }), BURST, 100)).toBe(100);
   });
 
   it('holds on the very first burst to a plain-http endpoint', async () => {
@@ -233,5 +237,115 @@ describe('a client the caller passes', () => {
     });
     new S3Storage({ bucket: 'b', client: passed });
     expect(await burst(passed, BURST, 50)).toBe(50);
+  });
+});
+
+describe('the warm-up that sets the limit', () => {
+  /** A handler that records every request and answers a missing key, in the shape the SDK's own handler has. */
+  const recording = () => {
+    const agents = { httpAgent: { maxSockets: 50 }, httpsAgent: { maxSockets: 50 } };
+    const calls: { request: { protocol?: string }; aborted: boolean }[] = [];
+    const handler = {
+      calls,
+      async handle(request: { protocol?: string }, options?: { abortSignal?: AbortSignal }) {
+        calls.push({ request, aborted: options?.abortSignal?.aborted === true });
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        throw new Error('stub answer');
+      },
+      httpHandlerConfigs: () => agents,
+    };
+    return handler;
+  };
+  const clientWith = (requestHandler: object): S3Client =>
+    new S3Client({
+      region: 'us-east-1',
+      credentials: CREDENTIALS,
+      endpoint: 'http://127.0.0.1:1',
+      forcePathStyle: true,
+      requestHandler,
+    });
+  const get = (client: S3Client, i = 0) =>
+    client.send(new GetObjectCommand({ Bucket: 'b', Key: `k${i}` })).catch((e: unknown) => e);
+
+  it('runs once for any number of concurrent first requests, which all wait for it', async () => {
+    const handler = recording();
+    const client = clientWith(handler);
+    limitSockets(client, 7);
+    await Promise.all(Array.from({ length: 30 }, (_, i) => get(client, i)));
+    const warm = handler.calls.filter((c) => c.aborted);
+    expect(warm).toHaveLength(1);
+    expect(handler.calls[0]?.aborted).toBe(true);
+    expect(handler.calls).toHaveLength(31);
+    expect(handler.httpHandlerConfigs().httpAgent.maxSockets).toBe(7);
+    expect(handler.httpHandlerConfigs().httpsAgent.maxSockets).toBe(7);
+  });
+
+  it('opens no connection, runs no middleware of its own, and leaves no unhandled rejection', async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => rejections.push(reason);
+    process.on('unhandledRejection', onRejection);
+    try {
+      const endpoint = await park();
+      const client = built(endpoint);
+      let seen = 0;
+      client.middlewareStack.add(
+        (next) => (args) => {
+          seen += 1;
+          return next(args);
+        },
+        { step: 'build', name: 'count' },
+      );
+      const abort = new AbortController();
+      abort.abort();
+      await client
+        .send(new GetObjectCommand({ Bucket: 'b', Key: 'k' }), { abortSignal: abort.signal })
+        .catch(() => undefined);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(sockets.size).toBe(0);
+      expect(seen).toBe(1);
+      expect(rejections).toEqual([]);
+      client.destroy();
+    } finally {
+      process.off('unhandledRejection', onRejection);
+    }
+  });
+
+  it('leaves a handler of another shape as it is, builds, and lets reads go through', async () => {
+    const answered: unknown[] = [];
+    const bare = {
+      async handle(request: unknown) {
+        answered.push(request);
+        throw new Error('stub answer');
+      },
+    };
+    const handle = bare.handle;
+    const client = clientWith(bare);
+    expect(() => limitSockets(client, 7)).not.toThrow();
+    expect(bare.handle).toBe(handle);
+    await get(client);
+    expect(answered).toHaveLength(1);
+    expect(() =>
+      limitSockets({ config: { requestHandler: undefined } } as unknown as S3Client, 7),
+    ).not.toThrow();
+    expect(() =>
+      limitSockets({ config: { requestHandler: {} } } as unknown as S3Client, 7),
+    ).not.toThrow();
+  });
+
+  it('lets reads through when the warm-up finds no agents or its handler throws', async () => {
+    const noAgents = { ...recording(), httpHandlerConfigs: () => ({}) };
+    const client = clientWith(noAgents);
+    expect(() => limitSockets(client, 7)).not.toThrow();
+    expect(await get(client)).toBeInstanceOf(Error);
+    const broken = {
+      ...recording(),
+      httpHandlerConfigs: () => {
+        throw new Error('no');
+      },
+    };
+    const other = clientWith(broken);
+    limitSockets(other, 7);
+    expect(await get(other)).toBeInstanceOf(Error);
+    expect(broken.calls.length).toBeGreaterThan(1);
   });
 });

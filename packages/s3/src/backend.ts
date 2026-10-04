@@ -58,7 +58,8 @@ export interface S3StorageOptions {
    * Most sockets the built client opens at once to one scheme, for `https` and for a plain-`http` endpoint alike
    * (default 128). The AWS SDK's own default is 50, which a window of 32 reads per operand outgrows on the first
    * two-operand `intersect`. Only this limit differs from the SDK's own client: its request handler, keep-alive,
-   * timeouts and retry are the SDK's. A positive safe integer. Release a built client's sockets with
+   * timeouts and retry are the SDK's. If a future SDK changes its handler, the built client keeps the SDK's own
+   * limit rather than failing to build. A positive safe integer. Release a built client's sockets with
    * `store.client.destroy()`. Refused beside `client`, which carries its own request handler. A deployment
    * that runs `eraseSubject`'s 256 reads at once needs `256`, or a lower `concurrency`.
    */
@@ -147,23 +148,26 @@ interface PooledHandler {
  * pool each), so the first request first runs an aborted one through it, which makes them, then sets the limit on
  * the agents it made.
  */
-function limitSockets(client: S3Client, maxSockets: number): void {
+export function limitSockets(client: S3Client, maxSockets: number): void {
   const handler = client.config.requestHandler as unknown as PooledHandler;
-  if (typeof handler.handle !== 'function' || typeof handler.httpHandlerConfigs !== 'function') {
-    throw new ValidationError(
-      'the installed @aws-sdk/client-s3 has a request handler that cannot take a socket limit; update the SDK',
-    );
-  }
+  // A handler of another shape is left as it is: a tuning setting never stops the store from being built, and the
+  // client then keeps the SDK's own limit.
+  if (typeof handler?.handle !== 'function' || typeof handler.httpHandlerConfigs !== 'function')
+    return;
   const handle = handler.handle.bind(handler);
   const agents = handler.httpHandlerConfigs.bind(handler);
   let ready: Promise<void> | undefined;
   const warm = async (): Promise<void> => {
     const abort = new AbortController();
     abort.abort();
-    await handle({ protocol: 'http:' }, { abortSignal: abort.signal }).catch(() => undefined);
-    const { httpAgent, httpsAgent } = agents();
-    if (httpAgent) httpAgent.maxSockets = maxSockets;
-    if (httpsAgent) httpsAgent.maxSockets = maxSockets;
+    try {
+      await handle({ protocol: 'http:' }, { abortSignal: abort.signal }).catch(() => undefined);
+      const { httpAgent, httpsAgent } = agents();
+      if (httpAgent) httpAgent.maxSockets = maxSockets;
+      if (httpsAgent) httpsAgent.maxSockets = maxSockets;
+    } catch {
+      // The handler is not the shape this expects: the limit stays the SDK's own.
+    }
   };
   handler.handle = async (request, options) => {
     ready ??= warm();
