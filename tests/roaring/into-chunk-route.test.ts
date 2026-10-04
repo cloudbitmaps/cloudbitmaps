@@ -204,21 +204,24 @@ describe('the guard judges the result the chunks add up to', () => {
 });
 
 describe('a refusal and a failure write nothing, as on the id route', () => {
-  it('a budget refusal throws before anything is written, and asks for what the id route asks for', async () => {
-    const call: Call = {
-      verb: 'intersect',
-      others: ['b'],
-      options: { budget: { maxRequests: 1 } },
-    };
-    const { chunks, ids } = await bothRoutes(call, build({ dest: span(0, 10) }));
-    expect(chunks.outcome).toMatchObject({
-      error: expect.stringContaining('BudgetExceededError') as string,
-    });
-    expect(chunks.requests.some((r) => r.startsWith('storage.putImmutable'))).toBe(false);
-    expect(Object.keys(chunks.objects)).toEqual(['0']);
-    expect(chunks.pointer).toMatchObject({ currentGen: 0 });
-    expectSameRoutes(chunks, ids);
-  });
+  it.each(['intersect', 'union', 'andNot'] as const)(
+    '%s: a budget refusal throws before anything is written, and asks for what the id route asks for',
+    async (verb) => {
+      const call: Call = {
+        verb,
+        others: ['b'],
+        options: { budget: { maxRequests: 1 } },
+      };
+      const { chunks, ids } = await bothRoutes(call, build({ dest: span(0, 10) }));
+      expect(chunks.outcome).toMatchObject({
+        error: expect.stringContaining('BudgetExceededError') as string,
+      });
+      expect(chunks.requests.some((r) => r.startsWith('storage.putImmutable'))).toBe(false);
+      expect(Object.keys(chunks.objects)).toEqual(['0']);
+      expect(chunks.pointer).toMatchObject({ currentGen: 0 });
+      expectSameRoutes(chunks, ids);
+    },
+  );
 
   it('the refusal is the budget error itself', async () => {
     const w = await makeWorld();
