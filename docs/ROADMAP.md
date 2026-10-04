@@ -259,7 +259,7 @@ envelope**:
 | **Cost figures** | the **in-region run `2026-10-04-73668`** (`us-east-1`, from CloudShell: a cold intersect and a load, pointer included, and their latency) — published prices applied to wire-metered requests — plus the estimator, all with published methodology | the invoice itself; Lambda cold start; the `*Into` verbs and other combine shapes; and GCS and Azure on a real account |
 
 **Measured, not asserted — and measured on what.** The cloud figures on the [benchmarks page](benchmarks.md) are
-the requests the engine actually issued and the time they took, from the 2026-10-03 run in `us-east-1`, driven from
+the requests the engine actually issued and the time they took, from the 2026-10-04 run in `us-east-1`, driven from
 inside the region. It measured the topology that ships, with the pointer in the same bucket as the data: what a cold
 intersect and a load cost, pointer included, how long they take, and how fast a load runs. What is **not** yet
 measured is [what is still owed](benchmarks.md#what-is-still-owed): a Lambda's cold start, `*Into` latency, other
