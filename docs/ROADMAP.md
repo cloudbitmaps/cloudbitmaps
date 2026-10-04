@@ -36,7 +36,7 @@ registry row per segment, no background process. Every roaring-based engine that
 into immutable segments rather than mutating a stored bitmap per call; that is the shape this library builds.
 Per-call freshness, if there is demand, would be immutable delta generations on the same bucket.
 
-Where each piece sits today. A bare **shipped** is in `0.14.0` or earlier; anything on `main` after it is marked
+Where each piece sits today. A bare **shipped** is in `0.15.0` or earlier; anything on `main` after it is marked
 with the release it is to ship in, and sits under `[Unreleased]` in the [changelog](../CHANGELOG.md#unreleased):
 
 | | Status |
@@ -62,7 +62,7 @@ with the release it is to ship in, and sits under `[Unreleased]` in the [changel
 | A public docs + site pass leading with the loaded store's strengths | **shipped** |
 | Reading a chunk at a time — `.batches()` on `iterate`, `intersect`, `union` and `andNot` | **shipped** — the same ids in the same order as one `Uint32Array` per chunk, reading the same chunks; see the [changelog](../CHANGELOG.md#0140--2026-10-04) and [Read a chunk at a time](guide/reading.md#read-a-chunk-at-a-time-batches) |
 | The built S3 client allows 128 sockets, and `maxSockets` sets it | **shipped** — up from the SDK's 50, so one two-operand `intersect` at the default `concurrency` no longer queues behind its own socket pool; see the [changelog](../CHANGELOG.md#0140--2026-10-04). The in-region run's figures were taken with 50 sockets, and the effect of 128 on them is not measured |
-| Deferred past `0.14.0` | **not built** — `generations({ describe: true })`, the chunk-level `*Into`, the tombstone reaper, an `op` metric for `store.load`, the compare-and-swap memo, an unscoped listing that skips the due index's pointers, one generation from parts built in several processes, and the reconcile for `rollback`, `setRetention`, shred and `eraseSubject` writes: [On the way to 1.0](#on-the-way-to-10), item 9, says what each is |
+| Deferred past `0.15.0` | **not built** — `generations({ describe: true })`, the chunk-level `*Into`, the tombstone reaper, an `op` metric for `store.load`, the compare-and-swap memo, an unscoped listing that skips the due index's pointers, one generation from parts built in several processes, and the reconcile for `rollback`, `setRetention`, shred and `eraseSubject` writes: [On the way to 1.0](#on-the-way-to-10), item 9, says what each is |
 | WASM CRoaring research | **after** the loaded store |
 
 **What is next:** a Lambda run, the `*Into` verbs and other combine shapes against a real store, and in-region GCS
@@ -333,7 +333,7 @@ between here and there:
    sections, flagged in its footer (a reader skips a section type it does not know, and a reader before 0.12
    refuses the flag); a generation without metadata is the same bytes as before.
 8. **Adoption feedback** — real deployments finding the sharp edges that our own tests don't.
-9. **Closing the named deferrals.** None of these is in `0.14.0`:
+9. **Closing the named deferrals.** None of these is in `0.15.0`:
    - self-healing disaster recovery;
    - an exclusion predicate on the retention sweep (legal hold);
    - an automated reconcile of unstamped tombstones, and a cleanup of the tombstones a registry already holds (the
