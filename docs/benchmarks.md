@@ -74,7 +74,7 @@ and a load cost, and how long they take.
 ### The in-region run — run `2026-10-04-73668`
 
 > **Measured** against real S3 in `us-east-1` on 2026-10-04 (UTC), from AWS CloudShell in the same region, with the
-> published `0.13.0` packages: a round-trip floor of 5.01 ms. The run's report explains every figure:
+> packages published before this release, and a client of 50 sockets: a round-trip floor of 5.01 ms. The run's report explains every figure:
 > [`bench/calibration/2026-10-04-73668.md`](../bench/calibration/2026-10-04-73668.md). The evidence beside it is the
 > harness's own results file. [`tests/docs/calibration-reports.test.ts`](../tests/docs/calibration-reports.test.ts)
 > holds this section and the report to it in both directions: every dollar amount, percentage, duration, byte size
@@ -103,7 +103,7 @@ and a load cost, and how long they take.
   intersect and the sweeps averaged 29.1, 41.3 and 43.4. The run did not vary the socket count, so it does not say
   what part of the gap is socket wait, and no figure is claimed for any other count.
 
-**Every latency above was measured on `0.13.0`, whose combine window opens 8 keys wide and widens to 32**; the
+**Every latency above was measured on the engine whose combine window opens 8 keys wide and widens to 32, by a client of 50 sockets**; the
 [section below](#the-window-of-32--measured-against-the-model) sets it against the previous run's, and against the
 model that predicted it.
 
@@ -130,7 +130,7 @@ instead for the pointer refresh: at most one GET per segment every 2 s while the
 - **Other shapes**: more operands, other combine shapes, the `*Into` verbs.
 - **Other clouds.** GCS and Azure Blob have no in-region run.
 - **One client on one day.** The 36 to 41 ms GET round is this run's, not a guarantee.
-- **A wider client.** The run used 50 sockets; what a client with more would measure is not in it.
+- **A wider client.** The run used 50 sockets. The client this release builds allows 128; what that measures is not in the run.
 
 **`estimateCost()` counts what this run's bill counted**: each cold operand's pointer and tail read, which prices
 this run's intersect at 204 GETs; what `store.load()` adds to its object's write; and the pointer
@@ -139,7 +139,7 @@ refresh, for the segments a long-lived reader keeps reading. The
 
 ### The window of 32 — measured against the model
 
-**The release before this one kept a fixed window of 8 chunk keys; `0.13.0` opens a combine's window 8 keys wide and widens it to 32 as
+**The release before this one kept a fixed window of 8 chunk keys; the engine of the run of 2026-10-04 opens a combine's window 8 keys wide and widens it to 32 as
 keys are taken, and `andNot` and `union` read an exclude's chunk in the same round trip as the include's.** A read of
 `n` chunks took about `n / 8` request times in sequence, and that window, not the network, set how long a long read
 took. Before the run of 2026-10-04 the wider window was only **derived**, from a latency model that draws each GET's
@@ -150,7 +150,7 @@ to the request.
 
 **Measured, in region, on S3**, the median of each:
 
-| Shape | Previous release, window of 8 | `0.13.0`, window to 32 |
+| Shape | Previous run, window of 8 | The run of 2026-10-04, window to 32 |
 | --- | --- | --- |
 | cold intersect, 100 shared chunks | 492.69 ms · 18.3 rounds · mean 11.2 in flight, peak 16 | 290.06 ms · 7.1 rounds · mean 29.1 in flight, peak 64 |
 | cold intersect, 1,000 shared chunks | 4,238.82 ms · 160.4 rounds | 1,808.80 ms · 50.2 rounds · mean 41.3 in flight |
@@ -172,8 +172,8 @@ sockets. Only the `andNot` held more in flight than that, a mean of 80.6 and a s
 peak was 351); the cold intersect and the sweeps averaged 29.1, 41.3 and 43.4. A round took about 36 to 41 ms for the
 intersects and about 89 ms for the `andNot`, where the previous run's took about 26 to 29 ms. The run did not vary the
 socket count, so it does not say what part of the gap is socket wait: S3's own time to answer and the client's
-connection handling are other candidates. The built client's socket count is changing in a separate change, and
-**no figure is claimed for it here**.
+connection handling are other candidates. The client this release builds allows 128 sockets, and the run's figures were taken with 50, so
+**no figure is claimed here for the effect of 128**.
 
 **Still derived, not measured.** The rows below are the latency model's, for shapes the run did not time. It draws the
 requests in the old and the new engine alike:
@@ -192,7 +192,7 @@ up to 32 keys per operand ahead, where a window of 8 had requested up to 8. Pass
 
 ### The previous in-region run — run `2026-10-03-e13c7`
 
-> **Measured** on 2026-10-03 (UTC), from AWS CloudShell in `us-east-1`, with the packages published before `0.13.0`, whose
+> **Measured** on 2026-10-03 (UTC), from AWS CloudShell in `us-east-1`, with the packages published before the window widened, whose
 > combine kept a fixed window of 8 chunk keys: a round-trip floor of 5.07 ms. Its report is
 > [`bench/calibration/2026-10-03-e13c7.md`](../bench/calibration/2026-10-03-e13c7.md). It is kept here as what
 > [the run above](#the-window-of-32--measured-against-the-model) is measured against.

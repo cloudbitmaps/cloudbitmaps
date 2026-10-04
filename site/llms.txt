@@ -79,7 +79,7 @@ on every combine, yields only the ids in (after, through] and fetches only the c
 Benchmarked against real S3 in us-east-1 — not an emulator — with the request counts read off the AWS SDK layer.
 With the pointer in the same bucket as the data, the topology that ships: the median cold intersect of two
 500,000-id segments sharing 100 of their 1,999 chunks made 204 GETs as measured, $81.60 per million, requesting
-only the shared chunks, and took 290.06 ms at the median from inside the region, on 0.13.0 (run of 2026-10-04). Its rounds sit a fifth to a half above the engine's rounds model, which assumes no socket limit; the run did not vary its client's 50 sockets, so it does not say why. A segment's first store.load() is
+only the shared chunks, and took 290.06 ms at the median from inside the region (run of 2026-10-04, whose client had 50 sockets; the client this release builds allows 128, and its effect is not measured). Its rounds sit a fifth to a half above the engine's rounds model, which assumes no socket limit; the run did not vary its 50 sockets, so it does not say why. A segment's first store.load() is
 2 PUTs and 4 GETs, $11.60 per million. For comparison: an always-on
 Redis-HA line of $346/month standing, and a modelled $0.03/month for 1.2 GiB of segments at rest. The run was
 driven from AWS CloudShell inside the region. One crossover is published, in GETs: past 329.15
@@ -140,11 +140,11 @@ backend's registry rather than the store, so a store beside them is told with st
 If you need a sub-millisecond p99, use Redis. Our cache is in-process RAM, so on a hit there is nothing between
 us; the limit is the tail: a check that misses the cache costs a ranged GET against object storage, where an
 in-process RAM store costs a memory read. CloudBitmaps is for sets that are large, mostly read, and shouldn't
-cost $346/month to keep warm. The in-region run of 2026-10-04, on 0.13.0, measured a cold intersect of two segments at 290.06 ms and a cold count() at 27.82 ms.
+cost $346/month to keep warm. The in-region run of 2026-10-04 measured a cold intersect of two segments at 290.06 ms and a cold count() at 27.82 ms.
 
 ## Status
 
-v0.13.0, Apache-2.0, published tokenlessly with SLSA build provenance. Pre-1.0: breaking changes are possible in
+v0.14.0, Apache-2.0, published tokenlessly with SLSA build provenance. Pre-1.0: breaking changes are possible in
 a minor bump until the .crbm format freezes at 1.0.
 
 ## Links

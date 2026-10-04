@@ -11,6 +11,8 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-10-04
+
 ### Added
 
 - **`.batches()` on every streaming read: the same ids, one `Uint32Array` per chunk.** `iterate`, `intersect`, `union`

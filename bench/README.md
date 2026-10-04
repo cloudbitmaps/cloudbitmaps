@@ -67,11 +67,11 @@ publishes all three:
 
 1. **Load throughput** — ids/s and bytes/s into a bucket through `store.load()`, the whole write path, for
    objects that fit one PUT and objects large enough to upload multipart. **Paid** by the in-region run,
-   [`2026-10-03-e13c7`](calibration/2026-10-03-e13c7.md), from AWS CloudShell in `us-east-1`, on the release before `0.13.0`, and measured
-   again on `0.13.0` by [`2026-10-04-73668`](calibration/2026-10-04-73668.md).
+   [`2026-10-03-e13c7`](calibration/2026-10-03-e13c7.md), from AWS CloudShell in `us-east-1`, on the release before the one that widened the combine window, and measured
+   again on the engine that widens it by [`2026-10-04-73668`](calibration/2026-10-04-73668.md).
 2. **Cold intersect latency** — wall-clock for a chunk-skipping `A ∩ B` that has to fetch from the object store.
    **Paid** by the same in-region runs, [`2026-10-03-e13c7`](calibration/2026-10-03-e13c7.md) and, for the engine that
-   ships in `0.13.0`, [`2026-10-04-73668`](calibration/2026-10-04-73668.md).
+   widens the window, [`2026-10-04-73668`](calibration/2026-10-04-73668.md).
 3. **The single-bucket bill** — the registry pointer lives in the same bucket as the data, so resolving a
    generation costs an object GET and advancing one costs a conditional PUT. **Paid** by its own run,
    [`2026-09-23-94416`](calibration/2026-09-23-94416.md), from a laptop, and measured again in-region by
