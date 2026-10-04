@@ -23,12 +23,15 @@
  */
 import type {
   ChunkRef,
+  ChunkRead,
+  ReadChunksOptions,
   GenerationSummary,
   StorageChunkSource,
   SegmentRef,
   SegmentSize,
 } from './ports';
 import type { CrbmStorageChunkSource, PinnedObject } from './crbm-storage-source';
+import { ItemPull } from './item-pull';
 import { segmentKey } from './keys';
 
 /**
@@ -87,6 +90,42 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
     return pin.generation === null
       ? Promise.resolve(null)
       : this.inner.getChunkAt(ref, pin.generation, heldBy(pin));
+  }
+
+  /**
+   * A pinned segment's chunks come from the pinned generation alone, under the version a pinned read keys by
+   * ({@link currentVersion}); another segment's go to the live source, which answers with its own.
+   */
+  getChunks(
+    ref: SegmentRef,
+    keys: readonly number[],
+    options?: ReadChunksOptions,
+  ): AsyncIterable<ChunkRead> {
+    const pin = this.pinFor(ref);
+    if (pin === undefined) return this.inner.getChunks(ref, keys, options);
+    return this.pinnedChunks(ref, pin, keys, options);
+  }
+
+  private async *pinnedChunks(
+    ref: SegmentRef,
+    pin: PinnedAt,
+    keys: readonly number[],
+    options: ReadChunksOptions | undefined,
+  ): AsyncGenerator<ChunkRead> {
+    if (pin.generation === null) {
+      for (const key of keys) yield { key, bytes: null, version: null };
+      return;
+    }
+    const version = await this.currentVersion(ref);
+    // Pulled by hand: a `for await` binding would keep the chunk just yielded while the next is awaited.
+    const pull = new ItemPull(
+      this.inner.getChunksAt(ref, pin.generation, keys, heldBy(pin), options),
+    );
+    try {
+      while (await pull.advance()) yield pull.take((chunk) => ({ ...chunk, version }));
+    } finally {
+      await pull.close();
+    }
   }
 
   listChunkKeys(ref: SegmentRef): Promise<number[]> {

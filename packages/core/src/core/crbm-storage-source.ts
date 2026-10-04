@@ -38,9 +38,11 @@ import { splitId } from './bit-route';
 import { segmentKey } from './keys';
 import { aadFor } from './crypto';
 import type { Aead, CrbmCrypto, IKeystore, WrappedDek } from './crypto';
-import { validateChunkRef, validateUserRef } from './validate';
+import { validateChunkKeyOrder, validateChunkRef, validateUserRef } from './validate';
 import type {
   ChunkRef,
+  ChunkRead,
+  ReadChunksOptions,
   StorageChunkSource,
   GenerationMetadata,
   GenerationSummary,
@@ -55,7 +57,8 @@ import type {
 } from './ports';
 import { DEFAULT_TAIL_BYTES } from './crbm/format';
 import { CrbmReader, fingerprintFor, footerSaysEncrypted } from './crbm/reader';
-import type { CrbmReaderOptions } from './crbm/reader';
+import type { ChunkStream, CrbmReaderOptions } from './crbm/reader';
+import { ItemPull } from './item-pull';
 import { CrbmWriter } from './crbm/writer';
 import type { CodecBitmap, CodecInterface, EncodedChunk } from './codec';
 import { requireCodec } from './codec';
@@ -1139,6 +1142,152 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     return this.withFreshSnapshot(ref, (reader) => reader.getChunk(ref.chunkKey), null);
   }
 
+  /**
+   * Several chunks as a stream, in as few storage requests as {@link CrbmReader.readChunks} can make them (see
+   * {@link StorageChunkSource.getChunks}). The stream is served from one resolved generation, and every chunk says
+   * which version it came from. A generation swept, or an object replaced under its number, while the stream runs
+   * re-resolves the segment and carries on with the keys not yet yielded from whatever is current then, so each chunk
+   * is whole and from one generation and the stream may describe two; a second failure with no chunk yielded in between
+   * propagates. `options.retry` runs the resolution, each range request and the check that a failed read's object was
+   * replaced, so a transient fault repeats that step alone. Nothing is resolved until the first chunk is asked for.
+   */
+  async *getChunks(
+    ref: SegmentRef,
+    keys: readonly number[],
+    options?: ReadChunksOptions,
+  ): AsyncGenerator<ChunkRead> {
+    validateUserRef(ref);
+    for (const chunkKey of keys) validateChunkRef({ ...ref, chunkKey });
+    validateChunkKeyOrder(keys);
+    const retry = options?.retry;
+    let yielded = 0;
+    let healed = false; // a heal since the last chunk yielded
+    for (;;) {
+      let snap = this.liveSnapshot(ref);
+      let pending = snap.reader;
+      let chunks: ChunkStream | undefined;
+      try {
+        // A caller that retries has the resolution and open run through it; a failed one forgets itself, so each
+        // try resolves anew.
+        let tried = false;
+        const reader = await (retry === undefined
+          ? pending
+          : retry(() => {
+              if (tried) {
+                snap = this.liveSnapshot(ref);
+                pending = snap.reader;
+              }
+              tried = true;
+              return pending;
+            }));
+        if (reader === null) {
+          for (; yielded < keys.length; yielded++) {
+            yield { key: keys[yielded]!, bytes: null, version: null };
+          }
+          return;
+        }
+        // A version is the generation number and the row's token, which is how the reader cache and the chunk cache
+        // already tell generations apart: an object replaced under the same number and the same token reads under
+        // the same version on both sides of a heal.
+        const version = versionOf(reader.generation, reader.lineage);
+        chunks = reader.readChunks(keys.slice(yielded), {
+          ...(options?.concurrency === undefined ? {} : { concurrency: options.concurrency }),
+          ...(options?.ramp === undefined ? {} : { ramp: options.ramp }),
+          ...(retry === undefined ? {} : { readRange: retry }),
+          ...(options?.onRequest === undefined ? {} : { onRequest: options.onRequest }),
+          now: () => this.now(),
+        });
+        // Pulled by hand, not by `for await`: a loop binding would keep the chunk just yielded (a view into a range, or
+        // a decrypted chunk) alive while the next one is awaited.
+        const pull = new ItemPull(chunks);
+        try {
+          while (await pull.advance()) {
+            // Counted as it is handed out: the next thing to happen to the stream is the consumer asking for more.
+            yield pull.take((chunk) => {
+              yielded += 1;
+              healed = false;
+              return { ...chunk, version };
+            });
+          }
+        } finally {
+          await pull.close();
+        }
+        return;
+      } catch (err) {
+        // Each heal needs a chunk yielded since the last, so a stream heals at most once per range it reads (a heal
+        // plans the keys that remain again). The two misses that are recoverable, as for a single chunk: a
+        // generation swept from under the snapshot, and one whose object was replaced under the same number.
+        // Anything else propagates at once, and so does a second miss with no chunk in between.
+        if (healed) throw err;
+        if (!isNotFoundError(err) && !(await this.replacedUnder(ref, pending, err, retry)))
+          throw err;
+        // Only a heal waits: the ranges the failed stream still has in flight finish first, so the new stream's
+        // window does not open beside them.
+        await chunks?.settled();
+        this.dropStale(segmentKey(ref), snap);
+        healed = true;
+      }
+    }
+  }
+
+  /**
+   * {@link getChunks} of a specific generation, the pinned shape read. It yields the chunks without a version: the
+   * caller that pinned the generation knows it. It never moves to another generation; `held` as for
+   * {@link getChunkAt}.
+   */
+  async *getChunksAt(
+    ref: SegmentRef,
+    generation: number,
+    keys: readonly number[],
+    held?: PinnedObject,
+    options?: ReadChunksOptions,
+  ): AsyncGenerator<Omit<ChunkRead, 'version'>> {
+    validateUserRef(ref);
+    for (const chunkKey of keys) validateChunkRef({ ...ref, chunkKey });
+    validateChunkKeyOrder(keys);
+    const retry = options?.retry;
+    const open = (): Promise<CrbmReader | null> =>
+      this.readerAt(ref, generation, held?.version, held?.fingerprint);
+    const reader = await (retry === undefined ? open() : retry(open));
+    if (reader === null) {
+      for (const key of keys) yield { key, bytes: null };
+      return;
+    }
+    const fingerprint = held?.fingerprint;
+    if (
+      held !== undefined &&
+      fingerprint !== undefined &&
+      this.replacedPins.get(this.heldKey(ref, held.version, fingerprint)) !== undefined
+    )
+      throw notThePinned(ref, generation);
+    try {
+      // Pulled by hand, as in getChunks: `yield*` would keep the chunk just yielded while the next is awaited.
+      const pull = new ItemPull(
+        reader.readChunks(keys, {
+          ...(options?.concurrency === undefined ? {} : { concurrency: options.concurrency }),
+          ...(options?.ramp === undefined ? {} : { ramp: options.ramp }),
+          ...(retry === undefined ? {} : { readRange: retry }),
+          ...(options?.onRequest === undefined ? {} : { onRequest: options.onRequest }),
+          now: () => this.now(),
+        }),
+      );
+      try {
+        while (await pull.advance()) yield pull.take((chunk) => chunk);
+      } finally {
+        await pull.close();
+      }
+    } catch (err) {
+      // As for a single chunk ({@link getChunkAt}): a pin's reader outlives its object when the name is purged and
+      // loaded again, and its index then points into bytes that are not its own.
+      if (held === undefined || fingerprint === undefined) throw err;
+      if (!(isIntegrityError(err) || isValidationError(err))) throw err;
+      const check = (): Promise<void> =>
+        this.throwIfReplaced(ref, generation, held.version, fingerprint);
+      await (retry === undefined ? check() : retry(check));
+      throw err;
+    }
+  }
+
   async listChunkKeys(ref: SegmentRef): Promise<number[]> {
     validateUserRef(ref);
     return this.withFreshSnapshot(ref, (reader) => reader.chunkKeys(), []);
@@ -1244,12 +1393,25 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     ref: SegmentRef,
     read: (reader: CrbmReader) => T | Promise<T>,
     ifGone: T,
+    retry?: <R>(request: () => Promise<R>) => Promise<R>,
   ): Promise<T> {
     for (let attempt = 0; attempt < 2; attempt++) {
-      const snap = this.liveSnapshot(ref);
-      const pending = snap.reader;
+      let snap = this.liveSnapshot(ref);
+      let pending = snap.reader;
       try {
-        const reader = await pending;
+        // A caller that retries has the resolution and open run through it; a failed one forgets itself, so each
+        // try resolves anew.
+        let tried = false;
+        const reader = await (retry === undefined
+          ? pending
+          : retry(() => {
+              if (tried) {
+                snap = this.liveSnapshot(ref);
+                pending = snap.reader;
+              }
+              tried = true;
+              return pending;
+            }));
         if (reader === null) return ifGone;
         return await read(reader);
       } catch (err) {
@@ -1257,7 +1419,8 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         // and one whose object was replaced under the same number (see `replacedUnder`). Anything else
         // (corruption, a real second miss) propagates.
         if (attempt === 1) throw err;
-        if (!isNotFoundError(err) && !(await this.replacedUnder(ref, pending, err))) throw err;
+        if (!isNotFoundError(err) && !(await this.replacedUnder(ref, pending, err, retry)))
+          throw err;
         this.dropStale(segmentKey(ref), snap); // lazily: the happy path never needs the key
       }
     }
@@ -1278,6 +1441,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     ref: SegmentRef,
     pending: Promise<CrbmReader | null>,
     err: unknown,
+    retry?: <R>(request: () => Promise<R>) => Promise<R>,
   ): Promise<boolean> {
     if (!(isIntegrityError(err) || isValidationError(err))) return false;
     let reader: CrbmReader | null;
@@ -1293,7 +1457,9 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       generation: reader.generation,
     };
     try {
-      return !(await CrbmReader.sameObject(storageBlobReader(this.driver, at), reader.fingerprint));
+      const check = (): Promise<boolean> =>
+        CrbmReader.sameObject(storageBlobReader(this.driver, at), reader.fingerprint);
+      return !(await (retry === undefined ? check() : retry(check)));
     } catch (checkErr) {
       if (isNotFoundError(checkErr)) return true;
       if (isTransientError(checkErr)) throw checkErr;
