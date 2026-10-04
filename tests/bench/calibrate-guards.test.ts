@@ -169,7 +169,7 @@ const processLib = require_(join(ROOT, 'bench', 'lib', 'calibrate-process.cjs'))
   resultsJson: (results: unknown) => string;
   measuredVersion: (root: string) => string;
   measuredSdk: (root: string) => { clientS3: string; nodeHttpHandler: string };
-  SDK_DEFAULT_MAX_SOCKETS: number;
+  LIBRARY_MAX_SOCKETS: number;
   HARNESS_FILES: string[];
   failureOf: (err: unknown) => Fault | null;
   stopThenTearDown: (i: {
@@ -898,6 +898,38 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     expect(out.stderr).not.toContain(account);
   });
 
+  // A cleanup removes a paid bucket, so a stray socket setting must not block it: it reaches the identity check, past
+  // where a run applies the limit to its workload client.
+  it('does not let the socket setting refuse a cleanup', () => {
+    const out = runHarness(['--cleanup', '2026-09-23-gone'], {
+      CR_CALIBRATE_REGION: 'us-east-1',
+      CR_CALIBRATE_EXPECT_ACCOUNT: ['1234', '5678', '9012'].join(''),
+      CR_CALIBRATE_MAX_SOCKETS: 'abc',
+    });
+    expect(out.status).toBe(2);
+    expect(out.stderr).toMatch(/could not verify credentials/);
+    expect(out.stderr).not.toMatch(/CR_CALIBRATE_MAX_SOCKETS/);
+  });
+
+  // A bad socket limit is refused before the run id is even read, so before the library is imported, a client is built
+  // or anything is created, in every mode that makes a workload.
+  it('refuses a bad CR_CALIBRATE_MAX_SOCKETS first, in every mode that runs a workload', () => {
+    for (const [args, extra] of [
+      [[], {}],
+      [['--rehearse'], { CR_CALIBRATE_RUN_ID: 'not a legal id' }],
+      [['--rehearse'], {}],
+    ] as const) {
+      for (const bad of ['abc', '0', '1025']) {
+        const out = runHarness([...args], { ...extra, CR_CALIBRATE_MAX_SOCKETS: bad });
+        expect(out.status, `${args} ${bad}`).toBe(2);
+        expect(out.stderr).toMatch(
+          /CR_CALIBRATE_MAX_SOCKETS is .*positive integer of at most 1024/,
+        );
+        expect(out.stdout).not.toMatch(/creating|workload client|identity/);
+      }
+    }
+  });
+
   // The large segments count: a workload of 499 and 2 leaves 1,002 versions, past the first listing.
   it('counts the large segments against the workload bound, before it imports anything', () => {
     const out = runHarness([], { CR_CALIBRATE_SEGMENTS: '499', CR_CALIBRATE_LARGE: '2' });
@@ -1517,13 +1549,12 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-    // This checkout's own install resolves, and the cap is the SDK's default of 50.
+    // This checkout's own install resolves, and the workload client's cap is the library's 128.
     const real = processLib.measuredSdk(ROOT);
     expect(real.clientS3).toMatch(/^\d+\.\d+\.\d+/);
     expect(real.nodeHttpHandler).toMatch(/^\d+\.\d+\.\d+/);
-    expect(processLib.SDK_DEFAULT_MAX_SOCKETS).toBe(50);
+    expect(processLib.LIBRARY_MAX_SOCKETS).toBe(128);
     const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
-    expect(src).toContain('sdk,\n      maxSockets: SDK_DEFAULT_MAX_SOCKETS,');
     expect(src).toContain('sdk = measuredSdk(ROOT);');
   });
 

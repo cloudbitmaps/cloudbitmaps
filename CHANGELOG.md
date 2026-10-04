@@ -23,6 +23,15 @@ so, and so do the module headers in the code.
 - **The erasure of one id looks through the other generations for a holder a few at a time.** The answer is the same as
   the one-at-a-time scan's: the newest holder, and the first fault in newest-first order, with none from past a holder.
 
+### Fixed
+
+- **A GCS read that is refused or let go mid-body no longer prints `MaxListenersExceededWarning`.** A read of a response
+  that was still arriving when the driver refused it (an advertised or actual length past the cap) or let it go printed
+  "11 error listeners added to [PassThrough]" and the same for `close` on stderr. It was not a leak: the SDK and its HTTP
+  layer each run a pipeline over the one response body, which holds eleven or twelve listeners while it is in flight, one
+  past Node's default of ten, and every attempt has a body of its own, so the count never grew with retries or reads. The
+  limit is raised on that one body, and nothing else.
+
 ## [0.14.0] — 2026-10-04
 
 ### Added

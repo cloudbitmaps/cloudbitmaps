@@ -49,10 +49,21 @@ export interface ObjectRead {
   readonly bytes: Uint8Array;
 }
 
+/**
+ * The response the SDK announces. It is the HTTP layer's own body stream with the status and headers laid on it, and
+ * while that body is in flight the SDK and the HTTP layer each run a pipeline over it, which with its own listeners is
+ * eleven or twelve error and close listeners: one past Node's default limit of ten, so Node prints a possible-leak
+ * warning for every read that is still arriving when it is let go. Nothing grows with the number of attempts, because
+ * each attempt has a body of its own. The limit is raised on that one stream, to {@link BODY_LISTENER_LIMIT}.
+ */
 interface RawResponse {
   statusCode?: unknown;
   headers?: Record<string, string | string[] | undefined>;
+  setMaxListeners?: (n: number) => unknown;
 }
+
+/** Room for the listeners the SDK's and the HTTP layer's pipelines put on one response body, with a few to spare. */
+const BODY_LISTENER_LIMIT = 16;
 
 /** The value of a header that must appear once, or `undefined` when it is absent, repeated or empty. */
 export function singleHeader(headers: ObjectRead['headers'], name: string): string | undefined {
@@ -109,6 +120,7 @@ export function readOnce(
 
     stream.on('response', (res: RawResponse) => {
       responded = true;
+      res.setMaxListeners?.(BODY_LISTENER_LIMIT);
       if (settled) return release();
       status = typeof res.statusCode === 'number' ? res.statusCode : 0;
       headers = res.headers ?? {};

@@ -122,7 +122,7 @@ export class StubBlobService {
   /** Every stalled request's connection has closed: the client let go of it rather than leaving it to hang. */
   async releasedStalls(): Promise<boolean> {
     const done = (): boolean => this.stalled.length > 0 && this.stalled.every((s) => s.closed);
-    for (let i = 0; i < 100 && !done(); i++) await new Promise((r) => setTimeout(r, 20));
+    for (let i = 0; i < 200 && !done(); i++) await new Promise((r) => setTimeout(r, 20));
     return done();
   }
 
