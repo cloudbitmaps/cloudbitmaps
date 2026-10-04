@@ -11,6 +11,15 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Changed
+
+- **The published in-region latencies are now measured on `0.13.0`.** A run from AWS CloudShell in `us-east-1` on
+  2026-10-04 measured the wider combine window that the benchmarks page had only derived from a model: a cold
+  intersect of two segments sharing 100 chunks took 290.06 ms at the median, and an `andNot` against ten excludes
+  3,335.85 ms, with the same requests and the same bill as the previous release's run. The run's rounds sit a fifth to a half above the engine's rounds model, which assumes no socket limit; it did not vary its client's 50 sockets, so it
+  does not say why. The README, the
+  benchmarks page, the roadmap and the site quote it, and the benchmarks page sets the measurement against the model.
+
 ## [0.13.0] — 2026-10-03
 
 ### Breaking

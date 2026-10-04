@@ -150,8 +150,8 @@ explains these, S3's request rate and overlap, with the charts; [what it costs a
 
 ## What it costs on real AWS
 
-Run [`2026-10-03-e13c7`](bench/calibration/2026-10-03-e13c7.md), made on 2026-10-03 from AWS CloudShell in `us-east-1`,
-drove the packages published before this release against a real AWS account, with the pointer in
+Run [`2026-10-04-73668`](bench/calibration/2026-10-04-73668.md), made on 2026-10-04 from AWS CloudShell in `us-east-1`,
+drove the published `0.13.0` packages against a real AWS account, with the pointer in
 the same bucket as the data. What each operation costs:
 
 | Operation | Cost | Kind |
@@ -160,8 +160,8 @@ the same bucket as the data. What each operation costs:
 | The same, each pointer read once, as expected | $81.60 / million | expected |
 | A segment's first `store.load()`: 2 PUT + 4 GET, pointer included | **$11.60 / million** | measured requests at list prices |
 
-Run from inside the region by an engine whose combine window held 8 chunk keys (this release opens it 8 wide and widens it to 32, so it is expected to take fewer rounds; that is not yet measured), that cold intersect took 492.69 ms at the median, a cold `count()` is one request at
-27.48 ms, and a single-part load ran at 6,020,505 bytes a second. The
+Run from inside the region on `0.13.0`, that cold intersect took 290.06 ms at the median, a cold `count()` is one request at
+27.82 ms, and a single-part load ran at 5,100,414 bytes a second. Its rounds sit a fifth to a half above the engine's rounds model, which assumes no socket limit; the run did not vary its client's 50 sockets, so it does not say why. The
 [benchmarks page](docs/benchmarks.md#real-cloud-calibration--aws) says exactly what it did and did not measure.
 
 ## Your data stays yours

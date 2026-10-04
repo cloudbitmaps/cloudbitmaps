@@ -384,7 +384,7 @@
               Not just on hits. Our cache tier is in-process RAM, but a miss is a ranged
               <span class="m">GET</span> against object storage, where a resident set is a memory read.
               A sub-millisecond tail needs the whole set resident, which is a different machine — and an
-              S3 read from inside the region took about 26 to 27 ms in the one run that timed it.
+              S3 read from inside the region took about 26 ms at the median in the most recent run that timed it.
             </p>
             <p class="trade-title">The set changes one id at a time.</p>
             <p class="trade-body">
