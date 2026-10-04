@@ -302,6 +302,60 @@ describe('single-flight', () => {
 });
 const engine_has = (engine: SegmentEngine): Promise<boolean> => engine.has(ref('a'), joinId(1, 1));
 
+describe('a point read through a source with getChunks', () => {
+  it('is a one-key stream with no window options, and is reported once, from the request the source sent', async () => {
+    const { storage, engine, metrics } = setup({ a: ids([1, 2]) });
+    expect(await engine_has(engine)).toBe(true);
+    expect(storage.singles).toEqual(['a:1']);
+    expect(storage.opened).toEqual([]);
+    expect(metrics.snapshot().storage.gets).toBe(1);
+  });
+
+  it('reports nothing when the source sent no request for the chunk', async () => {
+    const { storage, engine, metrics } = setup({ a: ids([1]) });
+    storage.reportNone = true;
+    expect(await engine_has(engine)).toBe(true);
+    expect(metrics.snapshot().storage.gets).toBe(0);
+  });
+
+  it('caches the chunk under the version it was read from, not the one the read planned under', async () => {
+    const { storage, engine, cache } = setup({ a: ids([1]) });
+    storage.readVersion = () => 'v2';
+    await engine_has(engine);
+    expect(cache!.peek(chunkGenKey({ ...ref('a'), chunkKey: 1 }, 'v2'))).toBeDefined();
+    expect(cache!.peek(chunkGenKey({ ...ref('a'), chunkKey: 1 }, 'v1'))).toBeUndefined();
+  });
+
+  it('does not cache a chunk whose source gave it no version, and reads it again', async () => {
+    const { storage, engine, cache } = setup({ a: ids([1]) });
+    storage.readVersion = () => null;
+    expect(await engine_has(engine)).toBe(true);
+    expect(cache!.size).toBe(0);
+    await engine_has(engine);
+    expect(storage.singles).toHaveLength(2);
+  });
+
+  it('surfaces the typed error the stream raises, and reads again after it', async () => {
+    const { storage, engine } = setup({ a: ids([1]) });
+    storage.beforeYield = () => {
+      throw new IntegrityError('bad chunk');
+    };
+    await expect(engine_has(engine)).rejects.toBeInstanceOf(IntegrityError);
+    storage.beforeYield = undefined;
+    expect(await engine_has(engine)).toBe(true);
+  });
+
+  it('does not cache a read whose segment was invalidated while it ran', async () => {
+    const { storage, engine, cache } = setup({ a: ids([1]) });
+    storage.beforeYield = async () => {
+      await Promise.resolve(); // the read has been registered by now, as a call made while it runs
+      engine.invalidate(ref('a'));
+    };
+    await engine_has(engine);
+    expect(cache!.size).toBe(0);
+  });
+});
+
 describe('the streamed read equals the per-key read', () => {
   const key = fc.integer({ min: 0, max: 9 });
   const set = fc.uniqueArray(key, { maxLength: 8 });

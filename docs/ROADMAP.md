@@ -391,9 +391,9 @@ move it up.
     and check each chunk's checksum inside it, as today. A cold intersect's requests, and the chain they wait on,
     would stop growing with the chunks it shares where those lie together. Designed first and benchmarked on a layout that spreads the shared
     chunks, since the calibration run's puts them side by side, which flatters coalescing.
-  - **A reader cache sized by bytes, and small segments kept whole.** The chunk cache is bounded by count today, so
-    the same setting holds very different amounts of memory for sparse and dense chunks; bounding it by bytes, and
-    keeping what the index read already brought in, lets a repeat intersect read no chunks however small they are.
+  - **A chunk cache sized by bytes.** The chunk cache is bounded by count today, so the same setting holds very
+    different amounts of memory for sparse and dense chunks; bounding it by bytes lets a repeat intersect read no
+    chunks however small they are.
   - **A shared cache tier, by composition** — a port that a Valkey, Redis or local-disk adapter package implements,
     holding the hot set's immutable bytes for a fleet of stateless readers, with nothing added to a store that does
     not use it.

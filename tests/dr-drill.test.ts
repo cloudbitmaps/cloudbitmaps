@@ -1,4 +1,8 @@
 import { cpSync, mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+vi.mock('@/core/crbm/reader', async (original) =>
+  (await import('./helpers/chunks-not-kept')).withoutKeptChunks(await original()),
+);
+
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CloudRoaring, IntegrityError, NotFoundError } from '@/index';

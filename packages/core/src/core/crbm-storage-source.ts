@@ -56,7 +56,12 @@ import type {
   Token,
 } from './ports';
 import { DEFAULT_TAIL_BYTES } from './crbm/format';
-import { CrbmReader, fingerprintFor, footerSaysEncrypted } from './crbm/reader';
+import {
+  CrbmReader,
+  fingerprintFor,
+  footerSaysEncrypted,
+  openCrbmReaderKeeping,
+} from './crbm/reader';
 import type { ChunkStream, CrbmReaderOptions } from './crbm/reader';
 import { ItemPull } from './item-pull';
 import { CrbmWriter } from './crbm/writer';
@@ -114,12 +119,16 @@ export interface CrbmStorageChunkSourceOptions extends CrbmReaderOptions {
    */
   readonly maxOpenSegments?: number;
   /**
-   * Aggregate byte ceiling on the parsed `.crbm` indices resident in the reader cache (default 64 MiB) — the
+   * Aggregate byte ceiling on what the reader cache holds (default 64 MiB): the parsed `.crbm` indices, and the chunk bytes a
+   * reader keeps when its first read returned a whole small object (see below) — the
    * **second half of that memory bound**. `maxOpenSegments` alone bounds by *count*, but a wide/dense segment's
    * parsed index can reach about 1.3 MB, so 1024 wide indices could pin over a GB and blow a small heap (e.g. a 128 MB
    * Lambda) while the count is nominally "in bounds". This caps the summed {@link CrbmReader.retainedBytes} (the
-   * parsed index, and any metadata a generation carries) across cached readers; the least-recently-used reader is evicted once the total would exceed it — whichever
-   * of the count/byte bounds binds first. Lower it for memory-tight deployments with wide segments; a single
+   * parsed index, any metadata a generation carries, and any kept chunk bytes) across cached readers; the least-recently-used reader is evicted once the total would exceed it — whichever
+   * of the count/byte bounds binds first. A reader whose open read the whole object keeps a copy of its chunk region when
+   * that region is at most this ceiling divided by {@link maxOpenSegments} (64 KiB by default) — its fair share — so a small generation's
+   * chunks are served from memory with no further request, and a bigger one is read by range. Only a source with a timed
+   * pointer refresh ({@link currentGenTtlMs} above 0, a registry and a clock) keeps chunk bytes. Lower it for memory-tight deployments with wide segments; a single
    * segment whose index alone exceeds the budget is still cached (it can't be shrunk) but nothing else alongside.
    */
   readonly maxOpenIndexBytes?: number;
@@ -368,6 +377,8 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   private readonly keystore: IKeystore | undefined;
   private readonly requireEncryption: boolean;
   private readonly readerOptions: CrbmReaderOptions;
+  /** The most chunk bytes a reader keeps from its open: the reader cache's byte bound over its count bound, per reader; 0 without a timed pointer refresh. */
+  private readonly keepChunkBytesUpTo: number;
   private readonly clock: Pick<Clock, 'now'> | undefined;
   private readonly currentGenTtlMs: number;
 
@@ -402,6 +413,18 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     this.keystore = keystore;
     this.requireEncryption = requireEncryption ?? false;
     this.readerOptions = readerOptions;
+    // A kept chunk is never fetched, so a sweep of its generation is not met: only the timed pointer refresh moves the
+    // reader on. A source without one (no registry or clock, or a zero TTL) keeps nothing, and heals as any read does.
+    const refreshes =
+      registry !== undefined &&
+      clock !== undefined &&
+      (currentGenTtlMs ?? DEFAULT_CURRENT_GEN_TTL_MS) > 0;
+    this.keepChunkBytesUpTo = refreshes
+      ? Math.floor(
+          (maxOpenIndexBytes ?? DEFAULT_MAX_OPEN_INDEX_BYTES) /
+            (maxOpenSegments ?? DEFAULT_MAX_OPEN_SEGMENTS),
+        )
+      : 0;
     this.clock = clock;
     this.currentGenTtlMs = currentGenTtlMs ?? DEFAULT_CURRENT_GEN_TTL_MS;
     // Bound the reader cache by BOTH count and aggregate parsed-index bytes. No TTL on the LRU itself —
@@ -1019,11 +1042,12 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       segment: ref.segment,
       generation: target.generation,
     };
-    return openChecked(this.driver, genKey, {
-      ...this.readerOptions,
-      crypto,
-      lineage: target.lineage,
-    });
+    return openChecked(
+      this.driver,
+      genKey,
+      { ...this.readerOptions, crypto, lineage: target.lineage },
+      this.keepChunkBytesUpTo,
+    );
   }
 
   /**
@@ -2564,8 +2588,13 @@ async function openChecked(
   storage: IStorageDriver,
   key: GenKey,
   options: CrbmReaderOptions,
+  keepChunkBytesUpTo?: number,
 ): Promise<CrbmReader> {
-  const reader = await CrbmReader.open(storageBlobReader(storage, key), options);
+  const reader = await openCrbmReaderKeeping(
+    storageBlobReader(storage, key),
+    options,
+    keepChunkBytesUpTo,
+  );
   if (reader.generation !== key.generation) {
     throw new IntegrityError(
       `segment "${key.segment}" generation ${key.generation}: its footer says generation ${reader.generation}`,

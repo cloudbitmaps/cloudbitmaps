@@ -596,7 +596,9 @@ most `ceil(genTtlMs ÷ gap between publishes)` publishes can land under any snap
 pinned handle is the exception: it is never re-resolved, so its window is the length of the job it serves. So is a
 store with no timed refresh (no registry, `cache: { genTtlMs: 0 }`, or a pre-built `StorageChunkSource` built with no clock), whose
 snapshot lasts until an eviction, a read that finds its generation swept, or an invalidation moves it on, however long
-that takes. There no finite `keep` covers it, and the re-read above is the mechanism that keeps it correct.
+that takes. There no finite `keep` covers it, and the re-read above is the mechanism that keeps it correct. A store
+with a timed refresh serves a small generation's chunks from memory (its reader kept them), so a sweep of the
+generation is noticed there at the next refresh, within `cache.genTtlMs`, and not by the read.
 
 **What collection does, precisely.** A listing pass deletes generations strictly below `currentGen`, keeping the most
 recent `keep` of them, so a read still fetching from the just-superseded generation need not re-resolve mid-call. It

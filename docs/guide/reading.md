@@ -133,6 +133,12 @@ bound is stated; other pages link here.
   `dropSegment`, `retireExpired`) do this for themselves. Call it for what they cannot see: a `destroySegment` or
   `eraseNamespace` beside the store, or another process's publish, erasure or drop, when your own fan-out delivers
   the news.
+- **A small generation's chunks come with its reader.** When a reader's first read returned a whole object and its
+  chunks total at most the reader cache's share per reader (`cache.readerMaxBytes` over `cache.readerMax`, 64 KiB by
+  default), the reader keeps them and serves them from memory, so a sweep of that generation is not met by a read it
+  serves, as a chunk-cache hit does not meet one. Only a store with a timed refresh keeps them, and the refresh is what
+  moves the read on: a store with `cache.genTtlMs: 0`, or with no registry, keeps nothing and heals off a swept
+  generation as above.
 - **Without a registry** (a store built on a bare storage driver, `IStorageDriver`, instead of a backend, which is read-only and cleartext), a store finds the generation by
   listing the bucket when it opens a segment, and keeps it until the reader cache evicts the segment, a read finds it
   swept, or it is invalidated.
@@ -149,7 +155,7 @@ a read of one chunk would, so a range it had already requested of the earlier ge
 (a custom one) re-resolve the same way. What a read can still serve from the earlier generation is what it had already
 taken: up to `concurrency` keys per operand (32 by default) for a combine, up to 32 chunks for `iterate`, and up to 32
 chunk keys on a source that reads chunk by chunk and for `count` where it reads chunks. Its answer then describes two
-instants. A running combine or `iterate` holds the reader of the generation it is reading (its parsed index and, on an
+instants. A running combine or `iterate` holds the reader of the generation it is reading (its parsed index, any chunk bytes it kept, and, on an
 encrypted segment, the key it unwrapped) until it moves on or ends, outside the reader cache's `readerMax` and
 `readerMaxBytes`: one reader per streamed operand, for as long as the read runs. [Pin the segment](#read-one-fixed-point-in-time)
 when that matters.
@@ -172,7 +178,9 @@ for await (const id of audience.iterate()) {
 - **A pin is a hold, not a lease.** Nothing stops a collection (a load's `keep`, an erasure, the retention sweep) from
   deleting the generation underneath you. A pinned read deliberately does not heal forward, because silently serving
   a different generation is what a pin exists to prevent. It fails with `NotFoundError` instead, for any chunk it must
-  fetch from a generation that has since been collected. Chunks it already cached still answer.
+  fetch from a generation that has since been collected. Chunks it already cached still answer, and so does every chunk of
+  a small generation whose reader kept its chunks, for as long as the pin's reader stays in the reader cache; the reader's
+  reopen after an eviction then fails the same way.
 - **Size `keep` for your longest pinned job:** keep more generations than the loads that can land on the segment while
   the job runs. See [Generations and `keep`](loading.md#generations-and-keep). An erasure collects the generation it rewrote whatever
   `keep` says.
@@ -182,7 +190,8 @@ for await (const id of audience.iterate()) {
 - **A pin costs a generation number, not a retained index.** The pinned reader lives in the same bounded LRU as every
   other reader. Its decoded chunks share the store's chunk cache and its bound, under keys of their own that no live
   read writes. So a pin is never handed a chunk a live read fetched from another generation, and it pays one GET for a
-  chunk a live read of its generation already cached.
+  chunk a live read of its generation already cached. A small generation's reader also holds that generation's
+  chunk bytes, which count in the reader cache's byte bound.
 - **One call reads a segment at one generation.** A combine that holds the same segment at two generations is refused
   with `ValidationError` when it is read, as a combine's other errors are. That covers pins of two generations, pins of
   one generation number in two incarnations of its name, and a pin beside a live handle of the same segment.
@@ -204,7 +213,8 @@ for await (const id of audience.iterate()) {
   destroyed fails with `NotFoundError` once it must open its object again, rather than going empty part-way through a
   call.
 - **A pin answers from what it holds.** It keeps the key its reader unwrapped while that reader stays open, and
-  answers from the chunks it decoded while they stay cached. Its own store invalidates it on a `load`, a `rollback` or an `*Into` of its segment, and on a
+  answers from the chunks it decoded while they stay cached, and, for a small generation, from the chunk bytes its
+  reader kept while the reader stays open. Its own store invalidates it on a `load`, a `rollback` or an `*Into` of its segment, and on a
   `dropSegment` of its segment. It also invalidates it on a `retireExpired` whose ledger lists its segment, retired or
   not, and on an `eraseSubject` that scans its segment while it is not destroyed. A dry run of `dropSegment` or
   `retireExpired` invalidates nothing. An invalidated pin opens its
@@ -214,7 +224,7 @@ for await (const id of audience.iterate()) {
   through another store, in the same process or another, it answers from what it holds. That lasts until its store's
   reader cache evicts the pin's reader and the store's chunk cache evicts the chunks the pin decoded, or until
   `store.invalidate(ref)` is called on its store. Where the object it reads has been deleted, a chunk it has not cached
-  fails at once.
+  fails at once, unless its reader kept the generation's chunks, which it serves until the reader is evicted.
 - **It needs a `.crbm` reader**: a backend does, and so does a bare `IStorageDriver` or a pre-built
   `CrbmStorageChunkSource`. Any other pre-built `StorageChunkSource` throws `UnsupportedError`.
 

@@ -277,7 +277,7 @@ function ledgerOver(
 }
 
 const stride = guards.DEFAULT_LAYOUT.stride;
-const layout = guards.planLayout({ segments: 5, idsPerSegment: 20_000, overlap: 0.1, stride });
+const layout = guards.planLayout({ segments: 5, idsPerSegment: 40_000, overlap: 0.1, stride });
 const k = layout.sharedChunks;
 
 async function loaded(m: ReturnType<typeof meteredBackend>): Promise<void> {
