@@ -29,7 +29,7 @@ export type MetricEvent =
       readonly kind: 'storage.get';
       readonly namespace?: string;
       readonly segment: string;
-      /** Bytes returned (0 if the chunk was absent — a GET still happened). */
+      /** One event per request, however many callers were waiting on it. Bytes returned (0 if the chunk was absent — a GET still happened). */
       readonly bytes: number;
       /**
        * Elapsed wall time of the read — includes any transient-retry backoff on the storage call. From the
@@ -37,7 +37,16 @@ export type MetricEvent =
        */
       readonly ms: number;
     }
-  | { readonly kind: 'cache'; readonly hit: boolean }
+  | {
+      /**
+       * One decoded-chunk cache lookup (emitted only when a cache is configured). `hit: false` means the lookup found
+       * no cached chunk. A caller that missed while another caller's read of the same chunk was open waits on that
+       * read and adds no `storage.get`, so the misses can outnumber the `storage.get` events; the `storage.get`
+       * count is the number of requests.
+       */
+      readonly kind: 'cache';
+      readonly hit: boolean;
+    }
   | {
       readonly kind: 'retry';
       /** Infrastructure-fault backoff (throttling, 5xx, a dropped connection) — the one kind of retry the store does. */

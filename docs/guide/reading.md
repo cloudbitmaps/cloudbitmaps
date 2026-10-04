@@ -52,7 +52,9 @@ generation of another segment. See [Loading in depth](loading.md#write-a-result-
 - **`intersect` skips.** Two 2,000,000-id segments that share 100 of their 2,000 chunks intersect by fetching only the
   shared chunks. The [at-scale benchmark](../benchmarks.md#at-scale--measured-1k--10k--100k-segments) measured it at
   24.6 ms, on in-memory storage on an Apple M3 Pro, so that figure times the engine and not object storage.
-- **A `has()` that misses the cache is a ranged GET against object storage.** If you need sub-millisecond answers on
+- **A `has()` that misses the cache is a ranged GET against object storage.** Callers that miss the same chunk of the
+  same generation while a request for it is open wait on that request, with or without a cache, so fifty concurrent
+  cold `has()` calls of one chunk make one GET. If you need sub-millisecond answers on
   a working set that fits a bounded cache, an in-process store is the right tool.
 
 What a load costs is on the [benchmarks page](../benchmarks.md#real-cloud-calibration--aws), and
