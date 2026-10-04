@@ -108,7 +108,7 @@ means being an early user.
   by loading a new generation. If events arrive one at a time, collect them where they arrive (Redis is good at that)
   and load the set on a schedule. Removing one id everywhere is a compliance operation (`eraseSubject`), not a
   hot-path call.
-- You need sub-millisecond answers on a small working set. A read that misses the cache is a ranged GET against
+- You need sub-millisecond answers on a small working set. A read that misses the cache makes at most one ranged GET against
   object storage.
 - You want an addressable bit buffer. `BITPOS`, `BITFIELD` and `BITOP NOT` have no equivalent, and the stored bytes
   are not a flat bit array.
@@ -160,7 +160,7 @@ the same bucket as the data. What each operation costs:
 | The same, each pointer read once, as expected | $81.60 / million | expected |
 | A segment's first `store.load()`: 2 PUT + 4 GET, pointer included | **$11.60 / million** | measured requests at list prices |
 
-Run from inside the region on 0.12.0, whose combine window held 8 chunk keys (the current release opens it 8 wide and widens it to 32, so it is expected to take fewer rounds; that is not yet measured), that cold intersect took 492.69 ms at the median, a cold `count()` is one request at
+Run from inside the region on 0.12.0, whose combine window held 8 chunk keys (0.13.0, unreleased, opens it 8 wide and widens it to 32, so it is expected to take fewer rounds; that is not yet measured), that cold intersect took 492.69 ms at the median, a cold `count()` is one request at
 27.48 ms, and a single-part load ran at 6,020,505 bytes a second. The
 [benchmarks page](docs/benchmarks.md#real-cloud-calibration--aws) says exactly what it did and did not measure.
 

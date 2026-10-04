@@ -71,7 +71,7 @@ name.
 
 Measured against real S3 in `us-east-1`, from inside the region, with the pointer in the same bucket as the data: the median cold `intersect`
 of two 500,000-id segments sharing 100 of their 1,999 chunks made 204 GETs, **$81.60 per million**, requesting only
-the shared chunks, and took 492.69 ms from inside the region on 0.12.0, whose combine window held 8 chunk keys (the current release opens it 8 wide and widens it to 32, so fewer rounds are expected; not yet measured). A segment's first `store.load()`
+the shared chunks, and took 492.69 ms from inside the region on 0.12.0, whose combine window held 8 chunk keys (0.13.0, unreleased, opens it 8 wide and widens it to 32, so fewer rounds are expected; not yet measured). A segment's first `store.load()`
 is **$11.60 per million**, pointer included, from its measured requests at list prices. A cold `count()` is one pointer read: it reads no payload and no object.
 
 The trade is stated plainly. A membership check that misses the cache costs a ranged GET against object storage,

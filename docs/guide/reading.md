@@ -123,7 +123,9 @@ bound is stated; other pages link here.
   error, and the next read resolves the segment afresh.
 - **`store.invalidate(ref)` forgets what this store derived about a segment**: its open reader and the key that reader
   unwrapped, its decoded chunks, and those of every pin of the segment, so its next read resolves the current
-  generation afresh. It does no I/O. The store's own writes (`load`, `rollback`, the `*Into` verbs, `eraseSubject`,
+  generation afresh. It also drops the segment's open chunk reads: a caller already waiting on one still gets its
+  answer, a call made after the invalidation starts its own read, and the dropped read is not written to the cache.
+  It does no I/O. The store's own writes (`load`, `rollback`, the `*Into` verbs, `eraseSubject`,
   `dropSegment`, `retireExpired`) do this for themselves. Call it for what they cannot see: a `destroySegment` or
   `eraseNamespace` beside the store, or another process's publish, erasure or drop, when your own fan-out delivers
   the news.

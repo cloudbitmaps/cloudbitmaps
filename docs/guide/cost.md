@@ -29,7 +29,7 @@ import { CloudRoaring } from '@cloudbitmaps/roaring';
 const report = CloudRoaring.estimateCost({
   segments: [{ sizeBytes: 6e8, count: 2 }], // or { cardinality }
   workload: {
-    readsPerSec: 200, // point reads; each cache miss is one GET
+    readsPerSec: 200, // point reads; each cache miss is at most one GET
     cacheHitRate: 0.8, // hits are free
     intersectsPerSec: 1, // priced cold: each operand's pointer and index are read too
     chunksPerIntersect: 20, // the chunks it fetches: 2 operands × 10 shared chunks
