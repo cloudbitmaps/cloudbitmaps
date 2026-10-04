@@ -1183,6 +1183,40 @@ describe('site:figures reads every page of a tree', () => {
   });
 });
 
+/**
+ * A figure in milliseconds is a duration, so the every-page rate check does not read it as a crossover; a rate is
+ * never written with `ms`. Every other three-digit figure with two decimals is still a rate and must be published.
+ */
+describe('site:figures reads a duration apart from a rate on site-next/', () => {
+  const file = 'site-next/usage.html';
+  const plant = (text: string): { code: number; out: string } => {
+    const page = readFileSync(join(ROOT, file), 'utf8');
+    return siteFigures('site-next', {
+      [file]: page.replace('</main>', () => `<p>${text}</p></main>`),
+    });
+  };
+
+  it.each([
+    ['a wrong rate in GETs a second', 'Redis is cheaper past 330.15 GETs a second.'],
+    ['a wrong rate in reads a second', 'The crossover is 290.06 reads/s.'],
+    ['a wrong rate beside an unrelated unit', 'It crosses at 329.16 GETs/s.'],
+    ['a rate whose unit is only near an ms', 'Past 330.15 GETs a second, at 12 ms each.'],
+  ])('fails %s', (_name, text) => {
+    const r = plant(text);
+    expect(r.code, r.out).toBe(1);
+    expect(r.out).toContain(`${file} states the rate`);
+  });
+
+  it.each([
+    ['a duration with two decimals', 'The median took 290.06 ms.'],
+    ['a duration with no space before the unit', 'The median took 416.22ms.'],
+    ['a published crossover', 'Redis is cheaper past 329.15 GETs a second.'],
+  ])('passes %s', (_name, text) => {
+    const r = plant(text);
+    expect(r.out).not.toContain(`${file} states the rate`);
+  });
+});
+
 /** The reader's own pieces, called directly: what the ledger keeps apart, and what the browser pass is given. */
 describe('home-figures, piece by piece', () => {
   const home = requireFromScript('./lib/home-figures.cjs') as {
