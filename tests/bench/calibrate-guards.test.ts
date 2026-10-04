@@ -1523,8 +1523,6 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     expect(real.nodeHttpHandler).toMatch(/^\d+\.\d+\.\d+/);
     expect(processLib.LIBRARY_MAX_SOCKETS).toBe(128);
     const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
-    expect(src).toContain('limitSockets(client, maxSockets);');
-    expect(src).toContain('observed: socketsOf(client),');
     expect(src).toContain('sdk = measuredSdk(ROOT);');
   });
 

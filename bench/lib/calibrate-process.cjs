@@ -14,7 +14,7 @@ const { createRequire } = require('node:module');
 const { clearTimeout, setTimeout } = require('node:timers');
 const { AbortController } = globalThis;
 
-const { redact } = require('./calibrate-guards.cjs');
+const { redact, resolveMaxSockets } = require('./calibrate-guards.cjs');
 
 const INTERRUPTED = 'CalibrationInterrupted';
 
@@ -373,6 +373,48 @@ function socketsOf(client) {
 }
 
 /**
+ * The workload client's socket limit from the environment's `CR_CALIBRATE_MAX_SOCKETS` (`raw`): the library's 128 unless
+ * it gives another. Throws on a value `resolveMaxSockets` refuses, so a run can refuse it before anything is created.
+ */
+function resolveSocketLimit(raw) {
+  return {
+    maxSockets: resolveMaxSockets(raw, LIBRARY_MAX_SOCKETS),
+    overridden: raw !== undefined && String(raw).trim() !== '',
+  };
+}
+
+/**
+ * Give the workload's client its socket limit and prove it took, before anything is created or spent. Resolves the
+ * limit from `raw`, applies it, pushes one already-aborted request through the handler so that its agents exist (the
+ * handler sits below the metering and the gate, so that request is neither counted nor billed and is no fault), and
+ * requires the agents to hold the limit. A handler of a shape that does not take it throws, naming what was read back.
+ * Returns the limit read back, and `evidence()`, which reads the agents again and says where the limit came from.
+ */
+async function limitWorkloadSockets(client, raw) {
+  const { maxSockets, overridden } = resolveSocketLimit(raw);
+  limitSockets(client, maxSockets);
+  const abort = new AbortController();
+  abort.abort();
+  try {
+    await client.config.requestHandler.handle({ protocol: 'http:' }, { abortSignal: abort.signal });
+  } catch {
+    // An aborted request fails by design; what matters is what the agents hold afterwards.
+  }
+  const observed = socketsOf(client);
+  if (observed !== maxSockets) {
+    throw new Error(
+      `the workload client holds ${observed ?? 'an unreadable number of'} sockets, not ${maxSockets}: ` +
+        "the installed SDK's handler did not take the limit; nothing was created",
+    );
+  }
+  return {
+    observed,
+    evidence: () =>
+      socketEvidence({ observed: socketsOf(client), configured: maxSockets, overridden }),
+  };
+}
+
+/**
  * What the evidence says about the socket limit: the value read back from the client's agents, and where it came
  * from. `configured` is the number the run asked for and `overridden` whether the environment gave it; a limit
  * that was read back as something else says so, and one that could not be read is null, never the configured number.
@@ -464,6 +506,8 @@ module.exports = {
   limitSockets,
   socketsOf,
   socketEvidence,
+  resolveSocketLimit,
+  limitWorkloadSockets,
   interruptGate,
   isInterruption,
   failureOf,

@@ -17,6 +17,11 @@ const processLib = require_(join(ROOT, 'bench', 'lib', 'calibrate-process.cjs'))
   LIBRARY_MAX_SOCKETS: number;
   limitSockets: (client: unknown, maxSockets: number) => void;
   socketsOf: (client: unknown) => number | null;
+  resolveSocketLimit: (raw: string | undefined) => { maxSockets: number; overridden: boolean };
+  limitWorkloadSockets: (
+    client: unknown,
+    raw: string | undefined,
+  ) => Promise<{ observed: number; evidence: () => Evidence }>;
   socketEvidence: (i: {
     observed: number | null;
     configured: number;
@@ -93,19 +98,28 @@ describe('the workload client socket limit', () => {
     expect(guards.resolveMaxSockets('', 128)).toBe(128);
   });
 
-  it('takes a positive integer from the environment', () => {
+  it('takes a positive integer up to 1024 from the environment', () => {
+    expect(guards.resolveMaxSockets('1024', 128)).toBe(1024);
     expect(guards.resolveMaxSockets('64', 128)).toBe(64);
     expect(guards.resolveMaxSockets(' 7 ', 128)).toBe(7);
   });
 
-  it.each(['0', '-1', '1.5', 'many', '1e2', '0x10', '9007199254740993', 'NaN'])(
-    'refuses %j',
-    (raw) => {
-      expect(() => guards.resolveMaxSockets(raw, 128)).toThrow(
-        /CR_CALIBRATE_MAX_SOCKETS .*positive integer/,
-      );
-    },
-  );
+  it.each([
+    '0',
+    '-1',
+    '1.5',
+    'many',
+    '1e2',
+    '0x10',
+    '9007199254740993',
+    'NaN',
+    '1025',
+    '1000000000',
+  ])('refuses %j', (raw) => {
+    expect(() => guards.resolveMaxSockets(raw, 128)).toThrow(
+      /CR_CALIBRATE_MAX_SOCKETS .*positive integer/,
+    );
+  });
 
   it('holds on the workload client: a burst above the limit opens at most the limit', async () => {
     const { opened, observed } = await burst(workClient(await park(), 20), 80, 20);
@@ -177,5 +191,112 @@ describe('the socket evidence', () => {
     expect(processLib.socketsOf(client)).toBeNull();
     const { observed } = await burst(client, 20, 12);
     expect(observed).toBe(12);
+  });
+});
+
+/** The workload client as the harness builds it, with no limit yet: `limitWorkloadSockets` is what gives it one. */
+const plainWork = (endpoint: string): S3Client =>
+  new S3Client(
+    guards.clientConfigs({
+      endpoint,
+      region: 'us-east-1',
+      credentials: CREDENTIALS,
+      forcePathStyle: true,
+    }).work,
+  );
+
+type Handler = { httpHandlerConfigs?: unknown };
+const handlerOf = (client: S3Client): Handler =>
+  (client.config as unknown as { requestHandler: Handler }).requestHandler;
+
+describe('limitWorkloadSockets, the wiring the harness calls', () => {
+  it("gives the library's 128 when the environment says nothing, and reads it back", async () => {
+    const client = plainWork(await park());
+    const limit = await processLib.limitWorkloadSockets(client, undefined);
+    expect(limit.observed).toBe(128);
+    expect(limit.evidence().maxSockets).toBe(128);
+    expect(limit.evidence().maxSocketsSource).toMatch(/library's own client/);
+    client.destroy();
+  });
+
+  it('honours the environment: 7 opens 7 sockets, and the evidence names the variable', async () => {
+    const client = plainWork(await park());
+    const limit = await processLib.limitWorkloadSockets(client, '7');
+    const abort = new AbortController();
+    const reads = Array.from({ length: 40 }, (_, i) =>
+      client
+        .send(new GetObjectCommand({ Bucket: 'b', Key: `k${i}` }), { abortSignal: abort.signal })
+        .catch(() => undefined),
+    );
+    await new Promise((r) => setTimeout(r, 400));
+    expect(sockets.size).toBe(7);
+    abort.abort();
+    await Promise.all(reads);
+    const e = limit.evidence();
+    expect(e.maxSockets).toBe(7);
+    expect(e.maxSocketsSource).toMatch(/CR_CALIBRATE_MAX_SOCKETS/);
+    client.destroy();
+  });
+
+  it('records what the agents hold after the run, not what was configured', async () => {
+    const client = plainWork(await park());
+    const limit = await processLib.limitWorkloadSockets(client, '20');
+    const agents = (
+      handlerOf(client).httpHandlerConfigs as () => {
+        httpAgent: { maxSockets: number };
+        httpsAgent: { maxSockets: number };
+      }
+    )();
+    agents.httpAgent.maxSockets = 9;
+    agents.httpsAgent.maxSockets = 9;
+    const e = limit.evidence();
+    expect(e.maxSockets).toBe(9);
+    expect(e.maxSocketsSource).toMatch(/asked for 20/);
+    client.destroy();
+  });
+
+  it('records null when the agents can no longer be read', async () => {
+    const client = plainWork(await park());
+    const limit = await processLib.limitWorkloadSockets(client, undefined);
+    handlerOf(client).httpHandlerConfigs = undefined;
+    expect(limit.evidence().maxSockets).toBeNull();
+    client.destroy();
+  });
+
+  it('refuses a value the environment cannot give, before touching the client', async () => {
+    const client = plainWork(await park());
+    await expect(processLib.limitWorkloadSockets(client, '0')).rejects.toThrow(/positive integer/);
+    await expect(processLib.limitWorkloadSockets(client, '1025')).rejects.toThrow(/at most 1024/);
+    expect(() => processLib.resolveSocketLimit('many')).toThrow(/positive integer/);
+    client.destroy();
+  });
+
+  it('refuses when the handler has no agents to read, naming what was read back', async () => {
+    const client = plainWork(await park());
+    handlerOf(client).httpHandlerConfigs = undefined;
+    await expect(processLib.limitWorkloadSockets(client, undefined)).rejects.toThrow(
+      /holds an unreadable number of sockets, not 128.*nothing was created/,
+    );
+    client.destroy();
+  });
+
+  it('refuses when the agents ignore the limit', async () => {
+    const client = plainWork(await park());
+    handlerOf(client).httpHandlerConfigs = () => ({
+      httpAgent: { maxSockets: 50 },
+      httpsAgent: { maxSockets: 50 },
+    });
+    await expect(processLib.limitWorkloadSockets(client, undefined)).rejects.toThrow(
+      /holds 50 sockets, not 128/,
+    );
+    client.destroy();
+  });
+
+  it('sends nothing: the check opens no connection', async () => {
+    const client = plainWork(await park());
+    await processLib.limitWorkloadSockets(client, undefined);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(sockets.size).toBe(0);
+    client.destroy();
   });
 });
