@@ -82,6 +82,9 @@ export const ROUTED: readonly string[] = [
 
 /** Run under ids only, each with the reason routing would change what the file tests. */
 export const IDS_ONLY: Readonly<Record<string, string>> = {
+  'tests/core/erase-coalesced-reads.test.ts':
+    'its loads only seed fixtures for the erasure read path, whose range requests it counts; a second run under ' +
+    'the serialized input would repeat those counts and exercise no part of the load path',
   'tests/drivers/gcs/read-timeout.test.ts':
     'a GCS driver test: its one load builds a fixture generation in a memory store for the stub server to serve, ' +
     'so a second run under the serialized input would exercise no part of the load path',
