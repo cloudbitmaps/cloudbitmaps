@@ -14,6 +14,8 @@
 #
 # Optional: CR_CALIBRATE_EXPECT_ACCOUNT=<12-digit id> refuses to run anywhere else.
 #           CR_CALIBRATE_PACKAGE_VERSION=0.11.0 overrides the release measured (default: this clone's version).
+#           CR_CALIBRATE_MAX_SOCKETS=64 sets the workload client's socket limit (default 128, the limit the library gives
+#           the client it builds; the AWS SDK's own default is 50). A positive integer, refused otherwise.
 #           CR_CALIBRATE_REHEARSE=1 runs the same install path against local MinIO, to test this script. Any
 #           other value than unset, 0 or 1 is refused.
 set -euo pipefail
@@ -57,6 +59,8 @@ if [ -z "$PKG_VERSION" ]; then
   exit 2
 fi
 echo "cloudshell: measuring @cloudbitmaps/roaring and @cloudbitmaps/s3 at ${PKG_VERSION}"
+# The harness validates the number and records the limit it read back from the client; this line says what was asked.
+echo "cloudshell: the workload client's socket limit is ${CR_CALIBRATE_MAX_SOCKETS:-128 (the library's default)}"
 MODE_FLAG="--run"
 if [ "${CR_CALIBRATE_REHEARSE:-}" = "1" ]; then
   MODE_FLAG="--rehearse"

@@ -47,6 +47,7 @@ const {
   DEFAULT_LAYOUT,
   parseCeiling,
   resolveSize,
+  resolveMaxSockets,
   probeMeansAbsent,
   exceedsProjection,
   breached,
@@ -110,7 +111,10 @@ const {
   measuredSdk,
   sdkFaultClasses,
   describeFault,
-  SDK_DEFAULT_MAX_SOCKETS,
+  LIBRARY_MAX_SOCKETS,
+  limitSockets,
+  socketsOf,
+  socketEvidence,
 } = require('./lib/calibrate-process.cjs');
 
 const ROOT = resolve(__dirname, '..');
@@ -361,6 +365,17 @@ async function main() {
     refuse(err.message);
   }
 
+  // The workload client's socket limit: the library's own default unless the environment gives one.
+  let maxSockets = LIBRARY_MAX_SOCKETS;
+  try {
+    if (MODE !== 'cleanup') {
+      maxSockets = resolveMaxSockets(process.env.CR_CALIBRATE_MAX_SOCKETS, LIBRARY_MAX_SOCKETS);
+    }
+  } catch (err) {
+    refuse(err.message);
+  }
+  const socketsOverridden = (process.env.CR_CALIBRATE_MAX_SOCKETS ?? '').trim() !== '';
+
   // A rehearsal's test-only fault hook: refused in every other mode, before anything, since a real run must never fail
   // a request on purpose, and a projection would apply it to nothing.
   let faultGets = [];
@@ -546,6 +561,12 @@ async function main() {
   // `clientConfigs` says why, and the tests drive both against a server that fails on purpose.
   const configs = clientConfigs(clientOpts);
   const client = new s3.S3Client(configs.work);
+  // The workload's client has the socket limit the library gives the client it builds, so the run measures what a
+  // consumer gets by default; teardown's keeps the SDK's own, since it makes a few listings and deletes in turn.
+  limitSockets(client, maxSockets);
+  log(
+    `workload client: up to ${maxSockets} sockets${socketsOverridden ? ' (CR_CALIBRATE_MAX_SOCKETS)' : ", the library's default"}`,
+  );
   const tally = meter(client);
   // A rehearsal's injected faults, on the workload's client alone; refused above in every other mode.
   if (faultGets.length > 0) injectFaults(client, faultGets);
@@ -767,11 +788,10 @@ async function main() {
       packageVersion,
       harness: harnessRef(ROOT),
       node: process.version,
-      // The AWS SDK that sent every request, and the socket cap of its handler, which bounds how many a stage can have
-      // in flight. The cap is the SDK's own default and the harness does not set it.
+      // The AWS SDK that sent every request, and the socket cap of the workload client's handler, which bounds how many
+      // a stage can have in flight. The cap is set before the run and read back from the agents after it, in
+      // `writeResults`; a run cut short before then records what the agents held when it stopped.
       sdk,
-      maxSockets: SDK_DEFAULT_MAX_SOCKETS,
-      maxSocketsSource: 'the SDK default, not set by the harness',
     },
     pricing: pricing.name,
     workload: {
@@ -797,6 +817,15 @@ async function main() {
   };
   const writeResults = () => {
     results.elapsedMs = Date.now() - started;
+    // What the agents hold now, not what was asked for: null when they cannot be read.
+    Object.assign(
+      results.measured,
+      socketEvidence({
+        observed: socketsOf(client),
+        configured: maxSockets,
+        overridden: socketsOverridden,
+      }),
+    );
     // Only a run that finished is evidence. One that did not goes to the partial file, which the figures gates skip.
     const finished = results.partial === false && results.interrupted !== true;
     const file = finished ? out : outPartial;

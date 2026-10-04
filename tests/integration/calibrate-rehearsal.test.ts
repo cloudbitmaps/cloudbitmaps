@@ -53,6 +53,7 @@ type Stage = {
 };
 type Results = {
   runId: string;
+  measured: { maxSockets: number | null; maxSocketsSource: string };
   mode: string;
   target: string;
   partial: boolean;
@@ -164,7 +165,10 @@ const OFFLINE_HOME = mkdtempSync(join(tmpdir(), 'calib-rehearsal-'));
 afterAll(() => rmSync(OFFLINE_HOME, { recursive: true, force: true }));
 
 /** A rehearsal of the workload with `faults` injected, and the results file it wrote. */
-function rehearse(faults: string): { status: number | null; stderr: string; results: Results } {
+function rehearse(
+  faults: string,
+  extraEnv: Record<string, string> = {},
+): { status: number | null; stderr: string; results: Results } {
   const runId = `${new Date().toISOString().slice(0, 10)}-it-${randomUUID().slice(0, 8)}`;
   const out = spawnSync(process.execPath, [HARNESS, '--rehearse'], {
     cwd: ROOT,
@@ -177,6 +181,7 @@ function rehearse(faults: string): { status: number | null; stderr: string; resu
       CR_CALIBRATE_RUN_ID: runId,
       CR_CALIBRATE_FAULT_GETS: faults,
       ...WORKLOAD,
+      ...extraEnv,
     },
     encoding: 'utf8',
     timeout: 150_000,
@@ -235,6 +240,12 @@ describe('a calibration rehearsal that meets transient faults', () => {
       { getObject: AT.andNot, as: 'reset' },
     ]);
     expect(run.results.discards).toEqual({ count: 3, perRun: 3, perStage: 2 });
+  });
+
+  it("records the socket limit the workload's client held, read back: the library's 128", () => {
+    expect(run.results.measured.maxSockets).toBe(128);
+    expect(run.results.measured.maxSocketsSource).toMatch(/library's own client.*read back/);
+    expect(run.stderr).toMatch(/workload client: up to 128 sockets, the library's default/);
   });
 
   it('records each discard beside its stage: the sample, the fault and the code beneath it, and its requests', () => {
@@ -345,6 +356,17 @@ describe('a calibration rehearsal that meets transient faults in the samples tha
         expect(samples.keptRequests(stage).get, name).toBe(stage.expectedGets);
     }
   });
+});
+
+describe('a calibration rehearsal given a socket limit', () => {
+  it('runs with it, and records the value read back from the client, not the one asked for', () => {
+    const { status, stderr, results } = rehearse(`${AT.intersect}`, {
+      CR_CALIBRATE_MAX_SOCKETS: '7',
+    });
+    expect(status, stderr).toBe(0);
+    expect(results.measured.maxSockets).toBe(7);
+    expect(results.measured.maxSocketsSource).toMatch(/CR_CALIBRATE_MAX_SOCKETS.*read back/);
+  }, 180_000);
 });
 
 describe('a calibration rehearsal that meets a fault it must not discard', () => {

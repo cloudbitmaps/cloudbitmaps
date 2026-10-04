@@ -65,6 +65,20 @@ function resolveSize(raw, fallback, label) {
 }
 
 /**
+ * The socket limit of the workload's client, from `CR_CALIBRATE_MAX_SOCKETS`: a positive integer, `fallback` when unset
+ * or empty. Anything else is refused, since a limit of 0 or of "many" would be recorded as what the run had.
+ */
+function resolveMaxSockets(raw, fallback) {
+  if (raw === undefined || String(raw).trim() === '') return fallback;
+  const text = String(raw).trim();
+  const n = Number(text);
+  if (!/^\d+$/.test(text) || !Number.isSafeInteger(n) || n < 1) {
+    throw new Error(`CR_CALIBRATE_MAX_SOCKETS is "${raw}"; expected a positive integer`);
+  }
+  return n;
+}
+
+/**
  * Decide whether a probe result means "this resource does not exist".
  *
  * THE BUG THIS EXISTS FOR, and it is the most dangerous one in the file. `HeadBucket` answers **403, not
@@ -709,6 +723,7 @@ module.exports = {
   DEFAULT_LAYOUT,
   parseCeiling,
   resolveSize,
+  resolveMaxSockets,
   probeMeansAbsent,
   projectOps,
   firstLoads,

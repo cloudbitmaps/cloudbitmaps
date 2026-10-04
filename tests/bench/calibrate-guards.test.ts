@@ -169,7 +169,7 @@ const processLib = require_(join(ROOT, 'bench', 'lib', 'calibrate-process.cjs'))
   resultsJson: (results: unknown) => string;
   measuredVersion: (root: string) => string;
   measuredSdk: (root: string) => { clientS3: string; nodeHttpHandler: string };
-  SDK_DEFAULT_MAX_SOCKETS: number;
+  LIBRARY_MAX_SOCKETS: number;
   HARNESS_FILES: string[];
   failureOf: (err: unknown) => Fault | null;
   stopThenTearDown: (i: {
@@ -1517,13 +1517,14 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-    // This checkout's own install resolves, and the cap is the SDK's default of 50.
+    // This checkout's own install resolves, and the workload client's cap is the library's 128.
     const real = processLib.measuredSdk(ROOT);
     expect(real.clientS3).toMatch(/^\d+\.\d+\.\d+/);
     expect(real.nodeHttpHandler).toMatch(/^\d+\.\d+\.\d+/);
-    expect(processLib.SDK_DEFAULT_MAX_SOCKETS).toBe(50);
+    expect(processLib.LIBRARY_MAX_SOCKETS).toBe(128);
     const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
-    expect(src).toContain('sdk,\n      maxSockets: SDK_DEFAULT_MAX_SOCKETS,');
+    expect(src).toContain('limitSockets(client, maxSockets);');
+    expect(src).toContain('observed: socketsOf(client),');
     expect(src).toContain('sdk = measuredSdk(ROOT);');
   });
 
