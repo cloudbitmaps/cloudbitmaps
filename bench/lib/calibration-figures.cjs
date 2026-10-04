@@ -657,7 +657,9 @@ function derive(run, src) {
   // One pointer read per segment per refresh window, while the segment is being read — a standing cost of the
   // default refresh that no single cold intersect shows. Expected, from the code's `genTtlMs`.
   const pointerRefreshUSD = (src.secondsPerMonth / (src.genTtlMs / 1000)) * getUSD;
-  const kRows = [1, 10, chunksPerOperand, 1000, w.chunksPerSegment].map((k) => ({
+  // A run that coalesced its reads makes one request of an operand's shared chunks that lie together, so its reads
+  // per operand can be one of the rows already listed; each row appears once.
+  const kRows = [...new Set([1, 10, chunksPerOperand, 1000, w.chunksPerSegment])].map((k) => ({
     k,
     gets: coldGets(k),
     usd: cost(coldGets(k)),
@@ -679,8 +681,11 @@ function derive(run, src) {
     intersects: it.runs,
     chunksPerOperand,
     chunksPerSegment: w.chunksPerSegment,
-    chunksSkipped: w.chunksPerSegment - chunksPerOperand,
-    shareFetched: chunksPerOperand / w.chunksPerSegment,
+    // The chunks fetched are the shared ones, however few requests carried them: a run that coalesced its reads
+    // fetched all of them in `chunksPerOperand` range requests, and a run that did not read one request a chunk.
+    chunksFetched: w.sharedChunks,
+    chunksSkipped: w.chunksPerSegment - w.sharedChunks,
+    shareFetched: w.sharedChunks / w.chunksPerSegment,
     payloadFraction: chunkBytes / objects,
     fixedGets,
     coldGets,
@@ -761,6 +766,12 @@ function derive(run, src) {
       indexPerChunk,
       tailPayloadBytes,
       chunkBytesPerOperand: rd.range.bytes / operandReads,
+      // What one range request of the spread layout returned: the chunks it needs and the bytes between them. Null
+      // for a run that did not record it.
+      spreadRangeBytesPerRead: (() => {
+        const range = run.phases.spread?.requests?.reads?.range;
+        return range === undefined || range.n === 0 ? null : range.bytes / range.n;
+      })(),
       arrayHeader: HEADER,
       arrayPerId: PER_ID,
       perIdSingle: object / w.idsPerSegment,
@@ -858,7 +869,7 @@ function anchorsOf(f) {
     ['package version', f.packageVersion],
     ['harness commit', f.harness],
     ['exact cold intersects', `${f.intersects} of ${f.intersects}`],
-    ['chunks fetched', `${f.chunksPerOperand} of ${int(f.chunksPerSegment)} chunks`],
+    ['chunks fetched', `${f.chunksFetched} of ${int(f.chunksPerSegment)} chunks`],
     ['chunks skipped', `${int(f.chunksSkipped)} chunks`],
     ['share fetched, by count', `${pct(f.shareFetched, 1)} of them by count`],
     ['share skipped, by count', `${pct(1 - f.shareFetched, 1)} of the chunks`],
@@ -1223,6 +1234,7 @@ function valuesOf(f, { withLatency }) {
       b.perIdMultipart,
       ...(withLatency ? f.stages.bytes : []),
       b.chunkBytesPerOperand,
+      ...(b.spreadRangeBytesPerRead === null ? [] : [b.spreadRangeBytesPerRead]),
       BITMAP_CONTAINER_BYTES,
       ...(withLatency ? [f.upload.singleBytesPerSec, f.upload.multipartBytesPerSec] : []),
       ...(b.index === null
@@ -1258,6 +1270,7 @@ function valuesOf(f, { withLatency }) {
       ],
       chunks: [
         f.chunksPerOperand,
+        f.chunksFetched,
         f.chunksSkipped,
         f.chunksPerSegment,
         f.workload.largeChunks,
@@ -1330,7 +1343,7 @@ function valuesOf(f, { withLatency }) {
       putObjects: [f.byCommand.PutObjectCommand, f.workload.segments, f.loads],
     },
     pairs: {
-      chunks: [[f.chunksPerOperand, f.chunksPerSegment]],
+      chunks: [[f.chunksFetched, f.chunksPerSegment]],
       intersects: [[f.intersects, f.intersects]],
     },
     shapes: f.shapes,

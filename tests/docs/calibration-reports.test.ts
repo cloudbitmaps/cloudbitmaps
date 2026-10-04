@@ -484,6 +484,31 @@ describe('calibration reports are held to their evidence', () => {
     });
   });
 
+  // A run that read each operand's shared chunks as one range fetched all of them in one request: its chunk figures
+  // count the chunks, and its table of cost counts the range reads, so a page can say "100 of 1,999 chunks" and cannot
+  // say that one chunk was fetched.
+  describe('a run that coalesced its reads', () => {
+    const evidence = EVIDENCE.find((e) => e.includes('2026-10-04-f3599'));
+    const run = evidence === undefined ? undefined : JSON.parse(read(evidence));
+    const f = run === undefined ? undefined : figures.derive(run, SOURCES);
+
+    it('fetched every shared chunk in the range reads it made', () => {
+      expect(f).toBeDefined();
+      if (f === undefined) return;
+      expect(f.anchors).toContainEqual(['chunks fetched', '100 of 1,999 chunks']);
+      expect(f.anchors).toContainEqual(['chunks skipped', '1,899 chunks']);
+      expect(
+        figures.unaccounted('It fetched 100 of 1,999 chunks, 5.0% of them.', f.values),
+      ).toEqual([]);
+      expect(figures.unaccounted('It fetched 1 of 1,999 chunks.', f.values)).not.toEqual([]);
+      expect(figures.unaccounted('It fetched 101 of 1,999 chunks.', f.values)).not.toEqual([]);
+    });
+
+    it('lists each range-read count once in its table of cost', () => {
+      expect(f?.kRows.map((r) => r.k)).toEqual([1, 10, 1000, 1999]);
+    });
+  });
+
   // A run whose measured and expected intersect make the same requests derives two rows with one figure. The bill
   // may state them as one row or as two, but not as none, and a pair that differs still needs both rows.
   describe('the bill table when the measured and the expected count agree', () => {
@@ -1070,7 +1095,11 @@ describe('calibration reports are held to their evidence', () => {
       it('its table of cost by overlap follows from the request shape the run measured', () => {
         expect(f).toBeDefined();
         if (f === undefined) return;
-        const rows = tableAfter(report, /^\|\s*chunks the two share\s*\|\s*GETs\s*\|/);
+        // A run that read each operand's shared chunks as ranges counts its table by the range reads an operand makes.
+        const rows = tableAfter(
+          report,
+          /^\|\s*(?:chunks the two share|range reads an operand makes)\s*\|\s*GETs\s*\|/,
+        );
         expect(rows.map((r) => leadingNumber(r[0] ?? ''))).toEqual(f.kRows.map((r) => r.k));
         for (const [row, want] of rows.map((r, i) => [r, f?.kRows[i]] as const)) {
           if (want === undefined) continue;
