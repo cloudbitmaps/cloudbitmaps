@@ -531,9 +531,9 @@ describe('a rewrite the writer abandons', () => {
       let decodes = 0;
       const codec = {
         ...stub(),
-        safeDeserialize: (b: Uint8Array, max: number) => {
+        safeDeserialize: (b: Uint8Array) => {
           if (++decodes === 2) throw new IntegrityError('chunk will not decode');
-          return stub().safeDeserialize(b, max);
+          return stub().safeDeserialize(b);
         },
       };
       await expect(
