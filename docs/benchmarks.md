@@ -98,7 +98,7 @@ and a load cost, and how long they take.
   bytes a second; a multipart load of a 12.6 MB segment at 11.3 million ids a second, 11,339,268 bytes a second.
 - **`andNot`** of a 1,999-chunk segment against ten excludes took 8,687.10 ms at the median and 3,021 GETs.
 
-**Every latency above was measured on 0.12.0, whose combine kept a window of 8 chunk keys**, and 0.13.0
+**Every latency above was measured on 0.12.0, whose combine kept a window of 8 chunk keys**, and the unreleased 0.13.0
 widens it to 32; the [section below](#the-window-of-32--derived-not-measured) gives what that is expected to do.
 
 | Operation | Requests | One | Per million | Label |
@@ -134,7 +134,7 @@ refresh, for the segments a long-lived reader keeps reading. The
 
 **The run above was on 0.12.0, whose combine kept a window of 8 chunk keys.** A read of `n` chunks
 then took about `n / 8` request times in sequence, and that window, not the network, set how long a long read took:
-the `andNot` ran at a mean of 10.3 requests in flight, over about 250 rounds of about 27 ms. 0.13.0
+the `andNot` ran at a mean of 10.3 requests in flight, over about 250 rounds of about 27 ms. The unreleased 0.13.0
 opens a combine's window 8 keys wide and widens it to 32 as keys are taken, and `andNot` and `union` read an exclude's
 chunk in the same round trip as the include's, so the same requests are expected to be answered in fewer rounds. No
 run has measured that yet; the figures below are **derived** from a model, and the next in-region run is the

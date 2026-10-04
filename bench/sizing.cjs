@@ -844,7 +844,7 @@ function render() {
     'const report = CloudRoaring.estimateCost({',
     `  segments: [{ sizeBytes: ${seg.sizeBytes.toExponential().replace('e+', 'e')}, count: ${seg.count} }], // or { cardinality }`,
     '  workload: {',
-    `    readsPerSec: ${w.readsPerSec}, // point reads; each cache miss is one GET`,
+    `    readsPerSec: ${w.readsPerSec}, // point reads; each cache miss is at most one GET`,
     `    cacheHitRate: ${w.cacheHitRate}, // hits are free`,
     `    intersectsPerSec: ${w.intersectsPerSec}, // priced cold: each operand's pointer and index are read too`,
     `    chunksPerIntersect: ${w.chunksPerIntersect}, // the chunks it fetches: ${OPERANDS} operands × ${w.chunksPerIntersect / OPERANDS} shared chunks`,

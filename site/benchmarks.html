@@ -188,7 +188,7 @@
                   <td class="from">
                     Metered on real S3, from inside the region: two 500,000-id segments sharing 100 of 1,999 chunks, 204 GETs at the
                     median — a pointer read and a tail read
-                    per operand, and the shared chunks — in 492.69 ms on 0.12.0, whose combine window held 8 chunk keys (0.13.0 widens it to 32; not yet measured). Priced by the chunks the two share, not by their
+                    per operand, and the shared chunks — in 492.69 ms on 0.12.0, whose combine window held 8 chunk keys (0.13.0, unreleased, widens it to 32; not yet measured). Priced by the chunks the two share, not by their
                     size, while each index fits the 256 KiB tail read. Every one cold, and every one exact. Its
                     crossover is the last row. <a href="#single-bucket">The single-bucket run</a>.
                   </td>
@@ -719,7 +719,7 @@
             cold intersects — each on a fresh store, with nothing cached — returned the planned ids, checked by
             count and by sum, and each requested 100 of 1,999 chunks per segment, the chunks the two share, and
             no other. Each also made one tail read per segment: its last 256 KiB, which holds the footer and the
-            index. The median took 492.69 ms from AWS CloudShell inside the region, on 0.12.0 with its combine window of 8 chunk keys (0.13.0 opens 8 wide and widens to 32, so fewer rounds are expected; not yet measured), a cold <span class="m">count()</span>
+            index. The median took 492.69 ms from AWS CloudShell inside the region, on 0.12.0 with its combine window of 8 chunk keys (0.13.0, unreleased, opens 8 wide and widens to 32, so fewer rounds are expected; not yet measured), a cold <span class="m">count()</span>
             27.48 ms, and a warm intersect 3.96 ms. PUT-class requests are the ones S3 bills at the PUT rate, listings included. The run's requests, teardown
             included, cost <strong>$0.0376350</strong>; there is no data-transfer charge inside the region.
             <a href="https://github.com/cloudbitmaps/cloudbitmaps/blob/main/bench/calibration/2026-10-03-e13c7.md" target="_blank" rel="noopener" aria-label="The run's report (opens in a new tab)">The run's report</a>
