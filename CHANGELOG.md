@@ -11,6 +11,18 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Changed
+
+- **A load starts its existence check and its key unwrap while it encodes, and asks the keystore for a segment's key
+  once.** The check that numbers the generation and the unwrap of an encrypted segment's key no longer wait for the
+  ids to be bucketed and encoded: they are sent first and joined where the write needs them, so their round trips
+  overlap the encoding. A guarded load of an encrypted segment used to unwrap the same key twice, once to read the
+  current generation and once to write; it now unwraps once, for that load only (nothing is kept between loads). The
+  requests a load makes are the same, and so is their order where a fence rests on it: the guard's row read comes first,
+  the row a first load or an encrypted segment reads again still comes after the ids, and the publish is still fenced on
+  the row the guard judged. A failure of the check or the unwrap fails the load as before, with nothing written or
+  published, and one abandoned because the encoding failed first leaves no unhandled rejection.
+
 ## [0.14.0] — 2026-10-04
 
 ### Added

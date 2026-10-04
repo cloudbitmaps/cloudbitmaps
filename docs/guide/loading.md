@@ -542,6 +542,13 @@ put to a number an object holds, and a load that loses that race reports `supers
 deleted can be taken again, so nothing identifies a generation by its number alone: caches key on the number and the
 row's token, and a reader that finds the object under its number replaced re-reads the segment.
 
+**A load overlaps its round trips with its encoding.** The existence check, and the keystore's unwrap of an encrypted
+segment's key, are sent before the ids are bucketed and encoded, and the write waits for their answers only when it
+needs them. The keystore is asked for the key once per load, and that one key serves both the guard's read of the
+current generation and the write. What a fence rests on keeps its order: the row the guard judges is read first, a
+first load or an encrypted segment reads the row again after the ids, and the publish is fenced on the row the guard
+judged. A check or an unwrap that fails fails the load, with nothing written.
+
 **Publish is forward-only, so a rerun is safe.** The object is written first. Only once it is durable does the load
 advance the registry pointer, with a compare-and-swap that never moves backwards. Run the same job twice and the second
 load is simply a newer identical generation. Run two loads of one segment at once and at most one of them lands; the
