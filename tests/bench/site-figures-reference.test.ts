@@ -183,8 +183,8 @@ describe("site:figures holds site-next/'s homepage to its sources", () => {
     ],
     [
       'a licence package.json does not have',
-      'CloudBitmaps · v0.10.0 · Apache-2.0',
-      'CloudBitmaps · v0.10.0 · MIT',
+      'CloudBitmaps · v0.14.0 · Apache-2.0',
+      'CloudBitmaps · v0.14.0 · MIT',
       'states the licence MIT',
     ],
     [
@@ -283,8 +283,8 @@ describe("site:figures holds site-next/'s homepage to its sources", () => {
     ],
     [
       "the previous release's version in the footer",
-      'CloudBitmaps · v0.10.0 · Apache-2.0',
-      'CloudBitmaps · v0.9.0 · Apache-2.0',
+      'CloudBitmaps · v0.14.0 · Apache-2.0',
+      'CloudBitmaps · v0.13.0 · Apache-2.0',
       'footer reads',
     ],
     [
@@ -452,7 +452,7 @@ describe("site:figures holds site-next/'s homepage to its sources", () => {
 
   it("does not read a check's element copied into the title, which no reader sees as markup", () => {
     const eyebrow =
-      '<p class="label">Distributed, cloud-native bitmaps · roaring shipped · <span class="u">v0.10.0</span></p>';
+      '<p class="label">Distributed, cloud-native bitmaps · roaring shipped · <span class="u">v0.14.0</span></p>';
     const r = siteFigures('site-next', {
       [PAGE]: html
         .replace(eyebrow, () => '<p class="label is-x">Distributed, cloud-native bitmaps</p>')

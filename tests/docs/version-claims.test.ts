@@ -390,8 +390,8 @@ describe('site version badges', () => {
   });
 
   it('reads a comment where the browser ends it, so `<!-->` hides nothing after it', () => {
-    expect(badgeVersions('<p><!-->v0.9.0 is out<!-- --></p>', new Map())).toEqual(['0.9.0']);
-    expect(badgeVersions('<p><!-- v0.9.0 is out --></p>', new Map())).toEqual([]);
+    expect(badgeVersions('<p><!-->v0.13.0 is out<!-- --></p>', new Map())).toEqual(['0.13.0']);
+    expect(badgeVersions('<p><!-- v0.13.0 is out --></p>', new Map())).toEqual([]);
   });
 
   it('every page carries the release at least once', () => {

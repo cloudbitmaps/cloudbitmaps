@@ -353,7 +353,7 @@ h3 {
   max-width: 62ch;
 }
 
-/* A unit or an identifier inside caps keeps its own case: "24.6 ms", "0–10 MiB", "v0.10.0", "us-east-1",
+/* A unit or an identifier inside caps keeps its own case: "24.6 ms", "0–10 MiB", "v0.14.0", "us-east-1",
    "quickstart.ts". The case is declared on the span itself, so it holds under any caps style around it, and the
    token is not broken at a hyphen. */
 .u {
