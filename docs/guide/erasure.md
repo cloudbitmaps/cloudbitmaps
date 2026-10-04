@@ -138,7 +138,9 @@ tombstone, so `eraseSubject` does what every other write in the library does. Fo
 member of, it streams the current generation through, with every chunk decoded and re-encoded and the one holding the
 id with that bit cleared. It verifies the new object, publishes it fenced on the generation it streamed, and then
 deletes the generation that held the bit (a collection with `keep: 0`). The bit is physically gone from the bucket
-when the call returns, in constant memory with one chunk in flight.
+when the call returns. It reads ahead through a window of 32 chunk reads, in key order, so a segment of `n` chunks
+takes about `n / 32` request times in sequence rather than `n`; the requests are the same ones. Memory is bounded by
+the window, never the segment: up to 32 raw chunk payloads (about 8 KiB each) are held ahead of the writer.
 
 **Every generation that holds the id goes, not only the current one.** A re-seed that drops someone leaves their bit
 in the generation `keep` retains. A `store.rollback` leaves the generations it rolled back from above the pointer,

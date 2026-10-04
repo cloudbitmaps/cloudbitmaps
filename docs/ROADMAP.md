@@ -174,7 +174,7 @@ is a dependency of both and is never installed directly. The storage drivers are
   `(namespace, segment, generation, chunk)`, KEK rotation, and an offline recovery KEK. Keys stay in your
   process; no cloud KMS dependency is forced on you.
 - **Subject erasure as a rewrite.** `eraseSubject` finds every registered segment an id is in, rewrites each
-  one's current generation without the id (one chunk in flight, one bit cleared), publishes it fenced on the generation it streamed,
+  one's current generation without the id (a window of 32 chunk reads ahead of the writer, one bit cleared), publishes it fenced on the generation it streamed,
   and deletes every generation that held the bit before returning, above the pointer as well as below it —
   **physical deletion on return**, with a
   per-segment ledger and a `segment.rewrite` audit event. `subjectReport` is the read side (access). What a
