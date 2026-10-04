@@ -216,8 +216,8 @@
           <div class="limit">
             <p class="label">Cost</p>
             <p>
-              <strong>$81.60</strong> per million cold intersects of two segments sharing 100 of 1,999 chunks,
-              from requests measured on S3, and <strong>$11.60</strong> per million <span class="m">store.load()</span> calls,
+              <strong>$2.40</strong> per million cold intersects of two segments sharing 100 of 1,999 chunks (6 GETs,
+              expected, not yet measured; the engine before made 204 GETs, <strong>$81.60</strong> per million, measured on S3), and <strong>$11.60</strong> per million <span class="m">store.load()</span> calls,
               pointer included, against
               <strong>$346/mo</strong> standing for a three-node Redis-HA cluster. Billed by the request either way — a codec
               changes bytes, not the pricing model.

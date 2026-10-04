@@ -532,7 +532,15 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
   },
   {
     claim: /chunksPerIntersect: 204\b/,
-    why: "chunksPerIntersect is the chunks an intersect fetches; the model adds each operand's pointer and tail read",
+    why: "chunksPerIntersect is the chunk range requests an intersect makes, not its chunks; the model adds each operand's pointer and tail read",
+  },
+  {
+    claim: new RegExp(g('Fetching neighbouring chunks together would cut'), 'i'),
+    why: 'combines and iterate read neighbouring chunks together as ranges',
+  },
+  {
+    claim: new RegExp(g('Nothing (?:in the engine )?calls (?:it|getChunks) yet'), 'i'),
+    why: 'combines and iterate read each operand through getChunks',
   },
   {
     claim: new RegExp(g('until it counts them itself'), 'i'),

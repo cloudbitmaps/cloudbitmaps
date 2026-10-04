@@ -118,6 +118,13 @@ async function coldAndNotIds(includeIds, excludeIds) {
   );
 }
 
+/** A cold iterate of the segment that holds the chunks `keys`: what its requests were. */
+async function coldIterate(keys, idsPerChunk) {
+  return coldRead([['a', [...idsOfChunks(keys, idsPerChunk)]]], (store) =>
+    store.segment('a').iterate(),
+  );
+}
+
 /** `n` consecutive integers from `from`. */
 const run = (from, n) => Array.from({ length: n }, (_, i) => from + i);
 
@@ -159,6 +166,7 @@ module.exports = {
   coldAndNot,
   coldIntersectIds,
   coldAndNotIds,
+  coldIterate,
   sharedLayout,
   run,
 };

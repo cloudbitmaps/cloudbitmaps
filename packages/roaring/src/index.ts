@@ -1877,11 +1877,14 @@ export class CloudRoaring {
  */
 export interface BaseCombineOptions extends IdRange {
   /**
-   * Max chunk keys resolved concurrently — bounds the Storage footprint (about `concurrency × operands` chunks in
-   * flight). A positive integer; default 32. The window opens 8 keys wide (or `concurrency`, if lower) and widens
-   * as keys are taken, so a read that stops early fetches no more than a few keys ahead; one that runs to the end
-   * spends nearly all of its round trips at the full width. A read that stops early has requested up to
-   * `concurrency` keys per operand past the last one it used.
+   * How far ahead each operand is read: a positive integer, default 32. The library's own stores read each operand as
+   * one stream of coalesced ranges (chunks that sit near each other are one request), and `concurrency` is how many
+   * range requests a stream holds ahead of the read, in flight or landed and not yet used. So about
+   * `concurrency × operands` requests are in flight at most, and, since a range is at most 1 MiB (one chunk, when a chunk
+   * is larger), about `concurrency × operands` MiB are held, whatever the segment's size. The stream opens 4 ranges wide
+   * (or `concurrency`, if lower) and widens as ranges are taken, so a read that stops early has asked for little past
+   * where it stopped, and a read that fits one range makes one request however many chunks it needs. A source that
+   * reads chunk by chunk (a custom one) is read as before: `concurrency` chunk keys at once, opening 8 wide.
    */
   readonly concurrency?: number;
   /** Override the store's per-op denial-of-wallet budget for this call (`false` lifts it). */
@@ -2448,8 +2451,9 @@ export class Segment {
   /**
    * Chunk-skipping intersection: stream the ids in **this** segment AND every segment in `others`, ascending.
    * Fetches only the Storage chunks present in *all* operands (a key absent from any operand contributes nothing
-   * and is never downloaded), streaming under a bounded in-flight window — so the Storage footprint stays small
-   * (Lambda-friendly) regardless of segment size. Pass `concurrency` to tune that window (a positive integer, 32 by default).
+   * and is never downloaded), reading each operand's as coalesced ranges under a bounded in-flight window — so the Storage
+   * footprint stays small (Lambda-friendly) regardless of segment size. Pass `concurrency` to tune that window (the range
+   * requests held ahead per operand: a positive integer, 32 by default).
    * AND is commutative, so `a.intersect([b])` and `b.intersect([a])` yield the same ids. Pass `budget` to
    * override the store's per-op denial-of-wallet budget for this call (or `false` to lift it).
    */

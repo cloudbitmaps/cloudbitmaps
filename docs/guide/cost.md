@@ -106,9 +106,16 @@ it is a property of three inputs, and of the data size, which sets the Redis:
 ### What each term counts
 
 - **An intersection is priced cold**: 2 reads for each operand (`operandsPerIntersect`, 2 by default, `exclude`
-  operands included), its pointer and then its index in one read of the object's tail, before the chunks it
-  fetches (`chunksPerIntersect`). Two segments sharing k chunks make 4 + 2k GETs: $81.60 per million for k = 100 at
-  the default GET price. An operand whose index outgrows the reader's 256 KiB tail read makes one more GET, to read
+  operands included), its pointer and then its index in one read of the object's tail, before the chunk range requests it
+  makes (`chunksPerIntersect`). `chunksPerIntersect` counts chunk range requests, not chunks: chunks that lie within 256 KiB of each other are read in
+  one request. Two segments whose shared chunks each need r range requests make 4 + 2r GETs: 6 GETs, $2.40 per million
+  at the default GET price, when the 100 shared chunks lie together and take one range each (expected, not yet measured;
+  the engine before coalesced reads made 4 + 2k GETs, $81.60 per million for k = 100, as measured). **The requests saved are
+  not the whole bill.** A layout that spreads the shared chunks over an object reads most of the object to get them: the
+  requests fall and the bytes read rise. Inside the bucket's region S3 Standard bills no bytes read; across regions it
+  bills them, and that can cost more than the requests saved. There is no setting for it: run readers in the bucket's
+  region, and size `chunksPerIntersect` from the requests you expect, which the
+  [sizing guide's overlap tables](sizing.md#how-much-the-overlap-matters) show for both layouts. An operand whose index outgrows the reader's 256 KiB tail read makes one more GET, to read
   it whole, and an intersect slow enough to outlive `cache.genTtlMs` reads its pointers again; add either to
   `chunksPerIntersect`. `cacheHitRate` does not apply to intersections, so a long-lived reader that answers
   repeats from its cache pays less than the report says, and pays the pointer refresh instead.
@@ -184,7 +191,7 @@ set `storage.requestsPerSizedRead: 2` and leave `requestsPerPointerRead` at 1; c
 S3 and GCS keep both defaults. Each count above is held to the engine by a test that counts its requests, on S3's
 request shape, and each backend's own tests pin the requests it makes (a pointer read in one everywhere; a tail read in
 one on GCS and two on Azure Blob), so the model moves when the engine does. The
-[benchmarks page](../benchmarks.md#the-in-region-run--run-2026-10-04-73668) has the request shapes measured
+[benchmarks page](../benchmarks.md#the-in-region-run-of-the-engine-before-coalesced-reads--run-2026-10-04-73668) has the request shapes measured
 on real S3.
 
 **See it at three sizes.** [What it costs at your size](sizing.md) prices a small, a medium and a large deployment

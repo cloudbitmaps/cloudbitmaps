@@ -192,20 +192,26 @@ export interface Workload {
   /** Cache hit rate in `[0, 1]` — hits are free; only misses cost. Default 0. */
   readonly cacheHitRate?: number;
   /**
-   * Storage chunks one intersection fetches, summed over its operands: the chunk-skipping survivors. Default 1.
-   * Two segments sharing `k` chunks fetch `2k`. The model adds each operand's pointer and index reads itself (see
-   * {@link Workload.operandsPerIntersect}), so count chunks only. One more GET per operand whose index outgrows
-   * the reader's tail read (256 KiB by default), which then reads the index whole, belongs here too, and so does a
-   * pointer re-read by an intersect slow enough to outlive {@link Workload.genTtlMs}.
+   * Range requests one intersection makes for its chunks, summed over its operands. Default 1. The engine reads each
+   * operand's needed chunks (the chunk-skipping survivors) as coalesced ranges: chunks within 256 KiB of each other
+   * are read in one request, up to 1 MiB, so this is the requests the chunks need, not the chunks. It follows the
+   * bytes the needed chunks span in each object: two segments sharing 100 chunks that sit side by side make one request
+   * of each, `2`; the same 100 spread over each object make as many as it takes to cover most of the object, a
+   * request per MiB, and read most of its bytes. Count it by running the engine over a layout of your own, as
+   * `bench/range-counts.cjs` does, or take it as one request per MiB the shared chunks span, per operand. (The field's
+   * name is from when each chunk was a request of its own.) The model adds each operand's pointer and index reads itself (see
+   * {@link Workload.operandsPerIntersect}), so count chunk requests only. One more GET per operand whose index
+   * outgrows the reader's tail read (256 KiB by default), which then reads the index whole, belongs here too, and so
+   * does a pointer re-read by an intersect slow enough to outlive {@link Workload.genTtlMs}.
    */
   readonly chunksPerIntersect?: number;
   /**
    * Segments each intersection reads, `exclude` operands included; at least 1. Default 2. An intersection is priced
    * **cold**: before its chunks, each operand's pointer is read, then its index, in one read of the object's tail —
-   * 2 GETs an operand on S3 and GCS, so a cold intersect of two segments sharing `k` chunks is `4 + 2k` GETs there,
+   * 2 GETs an operand on S3 and GCS, so a cold intersect that makes `r` range requests of each of two segments is `4 + 2r` GETs there,
    * and 3 on Azure Blob, whose tail read is two requests (see {@link PricingProfile}). `cacheHitRate`
    * does not apply to intersections, so a long-lived reader that answers a repeat from its cache pays less. Other
-   * combines read their operands the same way and can be priced here too, with the chunks they fetch.
+   * combines read their operands the same way and can be priced here too, with the chunk requests they make.
    */
   readonly operandsPerIntersect?: number;
   /**
@@ -840,7 +846,7 @@ function buildReport(input: {
       ? [
           `Intersections priced cold: ${intersectGets} GETs each, ` +
             `${getsPerColdOperand} for each of ${operandsPerIntersect} operand(s) plus ` +
-            `${chunksPerIntersect} chunk read(s); cacheHitRate does not apply.`,
+            `${chunksPerIntersect} chunk range request(s); cacheHitRate does not apply.`,
         ]
       : []),
     hotSegments > 0

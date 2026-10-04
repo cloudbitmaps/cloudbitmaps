@@ -286,6 +286,11 @@ const atRestExact = results.atRest.monthlyUSD; // 0.0276
 const atRestShown = atRestExact.toFixed(2); // "0.03"
 if (Number(atRestShown) === 0) fail(`atRest.monthlyUSD (${atRestExact}) rounds to $0.00 at 2dp`);
 
+// The engine since coalesced reads is EXPECTED, not measured: its request counts are what the engine makes, counted by
+// running it (bench/range-counts.json), and a dollar figure is a count at the default list prices. The module that
+// derives them also writes the labels, so a page cannot state one without a count behind it.
+const expectedEngine = require('../bench/lib/expected-figures.cjs').expectedFigures();
+
 const anchors = [
   ['at rest, monthly', `$${atRestShown}`],
   ['at rest, size', `${results.atRest.sizeGiB} GiB`],
@@ -329,6 +334,17 @@ const anchors = [
     ? []
     : [['single-bucket · 1M first store.load()s', singleBucketFigure(LOAD_ANCHORS.first)]]),
   ['single-bucket · the whole run', singleBucketFigure('the run')],
+  // The engine since coalesced reads, expected: owned by /benchmarks, quoted by the pages that say what a cold read costs.
+  ['expected · cold intersect GETs', expectedEngine.coldIntersect.getsText],
+  ['expected · 1M cold intersects', expectedEngine.coldIntersect.perMillion],
+  ['expected · andNot GETs', expectedEngine.andNot.getsText],
+  ['expected · 1M andNot', expectedEngine.andNot.perMillion],
+  [
+    'expected · the Redis line, in cold intersects a second',
+    `${expectedEngine.redisLineIntersectsPerSec} /s`,
+  ],
+  ['expected · iterate GETs', expectedEngine.iterate.getsText],
+  ['expected · 1M iterate', expectedEngine.iterate.perMillion],
 ];
 
 // ── the inverse check covers HOME as well as /benchmarks ───────────────────────────────────────────────────
@@ -556,6 +572,10 @@ for (const page of PAGES) {
   // deliberate act rather than a silent widening.
   const alsoAllowed = new Set([
     '$0.03', // at-rest, the rounded form
+    // What one expected cold intersect, andNot and iterate cost, a count at the list price: owned by /benchmarks.
+    expectedEngine.coldIntersect.each,
+    expectedEngine.andNot.each,
+    expectedEngine.iterate.each,
     // Home only. "$0" is the standing charge — the ABSENCE of a charge, which is the whole pitch of layer 03.
     // There is no source that could "account for" zero, and demanding one would be the check misfiring on the
     // one figure that needs no evidence.
@@ -591,7 +611,11 @@ for (const page of PAGES) {
     const values = calibration.mergeValues(
       singleBucket.pageValues,
       calibration.valuesFromFigures([...otherSources, ...alsoAllowed], {
-        perSecond: [results.readCrossoverPerSec, results.referenceRedis.readCrossoverPerSec],
+        perSecond: [
+          results.readCrossoverPerSec,
+          results.referenceRedis.readCrossoverPerSec,
+          Number(expectedEngine.redisLineIntersectsPerSec),
+        ],
       }),
     );
     for (const block of blocksOf(html, isHtml, metas, page.rel)) {

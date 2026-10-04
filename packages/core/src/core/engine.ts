@@ -30,9 +30,10 @@ import type {
 } from './ports';
 
 /**
- * Chunk keys a combine resolves at once by default, and how far `iterate` and `count` read ahead — bounds memory and
- * concurrent reads (invariant 6). A read of `n` chunks takes about `n / 32` sequential round trips, so this, not the
- * network, is what sets how long a long read takes.
+ * Range requests a stream holds ahead of a combine or `iterate` by default (chunk keys, on a source that reads chunk by
+ * chunk, and for `count`'s fallback) — bounds memory and concurrent reads (invariant 6). A read that does not fit
+ * one range of a source's stream takes about one sequential round trip per this many ranges, so this, not the network,
+ * is what sets how long a long read takes.
  */
 const DEFAULT_INTERSECT_CONCURRENCY = 32;
 /** A combine's window opens this many keys wide (or `concurrency` wide, if that is less) and doubles per key taken. */
@@ -90,11 +91,14 @@ export interface IdRange {
 /** Options common to the chunk-aligned combines. */
 export interface CombineOptions extends IdRange {
   /**
-   * Max chunk keys resolved concurrently — bounds the Storage footprint (about `concurrency × operands` chunks in
-   * flight). A positive integer; default 32. The window opens 8 keys wide (or `concurrency`, if lower) and widens
-   * as keys are taken, so a read that stops early fetches no more than a few keys ahead; one that runs to the end
-   * spends nearly all of its round trips at the full width. A read that stops early has requested up to
-   * `concurrency` keys per operand past the last one it used.
+   * How far ahead each operand is read: a positive integer, default 32. The library's own stores read each operand as
+   * one stream of coalesced ranges (chunks that sit near each other are one request), and `concurrency` is how many
+   * range requests a stream holds ahead of the read, in flight or landed and not yet used. So about
+   * `concurrency × operands` requests are in flight at most, and, since a range is at most 1 MiB (one chunk, when a chunk
+   * is larger), about `concurrency × operands` MiB are held, whatever the segment's size. The stream opens 4 ranges wide
+   * (or `concurrency`, if lower) and widens as ranges are taken, so a read that stops early has asked for little past
+   * where it stopped, and a read that fits one range makes one request however many chunks it needs. A source that
+   * reads chunk by chunk (a custom one) is read as before: `concurrency` chunk keys at once, opening 8 wide.
    */
   readonly concurrency?: number;
   /** Override the store's per-op budget for this call (`false` lifts it). */
@@ -459,9 +463,11 @@ export class SegmentEngine {
   }
 
   /**
-   * Every id, ascending, reading ahead through a window of up to 32 chunk fetches that opens 1, 2, 4 … 32 wide, so a
-   * read that stops early has fetched only a handful of chunks past the one it stopped in; with `range`, only the ids in `(after, through]`, fetching only the
-   * chunks the range overlaps (see {@link IdRange}).
+   * Every id, ascending, reading the chunks as one stream of coalesced ranges (chunks that sit near each other are one
+   * request) that opens 1, 2, 4 … 32 ranges wide, so a read that stops early has asked for only a few ranges past the
+   * one it stopped in (each at most 1 MiB); with `range`, only the ids in `(after, through]`, fetching only the
+   * chunks the range overlaps (see {@link IdRange}). A source that reads chunk by chunk is read through a window of up to
+   * 32 chunk fetches that opens 1, 2, 4 … 32 wide.
    *
    * Two generators, not one with a branch: a second `yield` site in the full read's generator grows its frame, and
    * every id of a read that asked for no range paid for it (measured at about 5% per id). The full read keeps the
@@ -550,11 +556,11 @@ export class SegmentEngine {
    *
    * Chunk-skipping intersection. Aligns each segment's chunk-key set (read from the `.crbm` index, no payload),
    * keeps only keys present in **all** operands (a key missing from any operand can't contribute → its Storage
-   * chunks are never fetched — the core saving), then for each surviving key fetches the operands' chunks in
-   * parallel and hands them to the codec for the AND, streaming results through a bounded in-flight window.
+   * chunks are never fetched — the core saving), then reads each operand's surviving chunks as one stream of coalesced
+   * ranges and hands them, key by key, to the codec for the AND, streaming results through a bounded window.
    *
-   * **Memory:** the Storage payload footprint is bounded by the window (`concurrency × operands × chunk`), not by
-   * segment size — that's the Lambda-friendly property.
+   * **Memory:** the Storage payload footprint is bounded by the window (`concurrency × operands × chunk`, a range being
+   * at most a chunk's cap of 1 MiB), not by segment size — that's the Lambda-friendly property.
    *
    * Generation-consistent within the call (normal case): each operand's current generation is resolved **once**
    * up front (before the fan-out) and threaded into every chunk read, so a concurrent load can't corrupt or tear

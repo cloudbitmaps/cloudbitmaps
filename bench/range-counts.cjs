@@ -19,7 +19,13 @@
  */
 const fs = require('node:fs');
 const path = require('node:path');
-const { coldIntersect, coldAndNot, sharedLayout, run } = require('./lib/range-counts.cjs');
+const {
+  coldIntersect,
+  coldAndNot,
+  coldIterate,
+  sharedLayout,
+  run,
+} = require('./lib/range-counts.cjs');
 
 const FILE = path.join(__dirname, 'range-counts.json');
 const CHUNKS = 2_000;
@@ -70,6 +76,7 @@ async function count() {
     ...run(10_000 + i * 1_900, 1_899),
   ]);
   const a = await coldAndNot(include, excludes, ipc);
+  const it = await coldIterate(include, ipc);
   return {
     note: 'Counted by running the engine over the in-memory backend; not measured on a cloud. Rewritten by bench/range-counts.cjs.',
     chunksPerSegment: CHUNKS,
@@ -82,6 +89,14 @@ async function count() {
       getRange: a.getRange,
       getTail: a.getTail,
       pointer: a.pointer,
+    },
+    // An iterate of the same 1,999-chunk segment.
+    iterate: {
+      profile: 'small',
+      chunks: include.length,
+      getRange: it.getRange,
+      getTail: it.getTail,
+      pointer: it.pointer,
     },
   };
 }

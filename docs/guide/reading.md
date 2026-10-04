@@ -10,8 +10,11 @@ option of every verb is in the [segment verbs table](api-reference.md#the-segmen
 
 ## Combine segments: intersect, union, andNot
 
-`intersect`, `union` and `andNot` stream ids in ascending order, and each holds only a small window of chunks in
-memory. What each one has to read is a property of the set operation, not of the implementation:
+`intersect`, `union` and `andNot` stream ids in ascending order, and each holds only a small window of ranges in
+memory. What each one has to read is a property of the set operation, not of the implementation; how many requests it
+takes to read it is not. Each operand's chunks are read as ranges of the object: chunks that sit within 256 KiB of each
+other come in one request, up to 1 MiB, so two segments sharing 100 chunks that lie together are read in one request
+each, where a request for every chunk would take a hundred:
 
 | | chunks read | can skip? |
 | --- | --- | --- |
@@ -135,11 +138,16 @@ bound is stated; other pages link here.
 
 **A long call can describe two instants.** Within one read, such as one `count` or one `intersect`, the generation is
 resolved once, before any chunk is fetched, and every chunk is a whole, checksum-verified chunk of one generation. A
-load landing mid-call never tears a chunk. But a long call can read the chunks it requests after one of these from
-another generation: if it straddles a TTL boundary, if the reader cache evicts the segment mid-call, if a sweep
-collects the generation it was reading, or if the store invalidates the segment. And because a read requests ahead of
-the chunk it is on, the chunks it had already requested are still the earlier generation's: up to 32, the one it is on
-included, for `iterate` and `count`, and up to `concurrency` keys (32 by default) for a combine. Its answer then describes two
+load landing mid-call never tears a chunk. A combine or `iterate` reads each operand as one stream of ranges of the
+generation it opened on, so a `cache.genTtlMs` boundary, the reader cache evicting the segment and the store
+invalidating it do not move a stream that is running. A sweep that collects the generation it was reading, or an object
+replaced under its number, does: the stream goes on from the generation that is current then, and the chunks it had
+already read stay the earlier generation's. The reads that are not part of a stream still re-resolve for each of those
+four: an `exclude` read after an AND of two or more includes, a point read, and every read of a source that reads chunk
+by chunk (a custom one). And because a read requests ahead of the chunk it is on, the chunks it had already requested
+are still the earlier generation's: up to `concurrency` ranges per operand (32 by default, each holding every chunk the
+read needs from a stretch of the object) for a combine, up to 32 for `iterate`, and up to 32 chunk keys on a source
+that reads chunk by chunk and for `count` where it reads chunks. Its answer then describes two
 instants. `dropSegment` and `retireExpired` invalidate too: a read of a segment that then no longer resolves ends rather than moves on, and a read of one `retireExpired` lists but leaves live moves on. [Pin the segment](#read-one-fixed-point-in-time)
 when that matters.
 
@@ -287,18 +295,22 @@ integer in `0..4294967295`, or the stream throws `ValidationError` when first re
 so a cursor that reaches the end of its window needs no special case.
 
 **Cost.** The per-op budget is charged once, before the first fetch, for every chunk in the range, so a page with
-`after` alone is charged to the end of the segment however early it stops. A combine also fetches ahead: it starts
-8 chunk keys at once (or `concurrency`, if that is lower), doubles with each key it takes until the window is
-`concurrency` wide (32 by default), and starts one more each time it yields a key's ids, on every segment it reads.
-A page that stops early has already fetched up to `concurrency` keys past the one holding its last id: up to 32 keys
-per operand by default, and fewer when it stops in its first keys, since the window opens narrow. Those chunks land
-in the chunk cache, where the next page usually finds them. Pass a lower `concurrency` to fetch less ahead, at the
-price of more round trips on a long read. `iterate` reads ahead too, through a window that opens 1, 2, 4 and on up
-to 32 fetches wide: a page that stops in its first chunk has fetched that chunk alone, and one that stops later has
-fetched at most 31 chunks past the one it stopped in. A full read keeps up to 32 fetches open where it kept one, so a
-cold segment reads many times faster when the storage round trip dominates (a read of `n` chunks takes about
-`n / 32` round trips in sequence); the number of requests is the same. An `andNot`, and a `union` with `exclude`,
-also read an exclude's chunk in the same round trip as the include's, where an `intersect` of two segments reads it
-only once the intersection of that chunk is known to be non-empty. A fetch already started is not cancelled when the caller stops: it finishes, lands in the chunk
-cache and is metered, and on a source that retries a transient failure, its retries run to their limit after the
-caller has gone.
+`after` alone is charged to the end of the segment however early it stops. It counts chunk reads, which is an upper
+bound on the requests a read makes: chunks that sit near each other are read in one range request, so the requests are
+fewer. A combine reads each operand as a stream of ranges and fetches ahead: it starts 4 ranges at once (or
+`concurrency`, if that is lower), doubles with each range it takes until the window is `concurrency` wide (32 by
+default), on every segment it reads. A page that stops early has already requested up to `concurrency` ranges per
+operand past the one holding its last id: fewer when it stops in its first ranges, since the window opens narrow. Each is
+up to 1 MiB, so a small page of a large segment can read up to a MiB where a request for its one chunk read a few hundred
+bytes: free inside the region, transfer billed outside it. The chunks of those ranges that the read needed land in
+the chunk cache, where the next page usually finds them. Pass a lower `concurrency` to ask for less ahead, at the price
+of more round trips on a long read. `iterate` reads ahead too, through a stream that opens 1, 2, 4 and on up to 32 ranges
+wide: a page that stops in its first range has requested that range alone. A full read keeps up to 32 ranges open, so a
+segment too large for one range reads many times faster when the storage round trip dominates (a read that needs `n`
+ranges of each operand takes about `n / 32` round trips in sequence), and a read that fits one range, as the calibration
+shape does, is one round trip. An `andNot`, and a `union` with `exclude`, also read an exclude's chunks in the same round
+as the include's, where an `intersect` of two or more segments reads an exclude's chunk only once the intersection of
+that chunk is known to be non-empty. A range already requested is not cancelled when the caller stops: it finishes and
+is billed, what it carries is dropped, and it is not retried, and the store reports a `storage.get` only for the ranges a
+read took. On a source that reads chunk by chunk, a fetch already started finishes, lands in the chunk cache and is metered, and on one
+that retries a transient failure, its retries run to their limit after the caller has gone.

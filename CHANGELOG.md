@@ -23,8 +23,42 @@ so, and so do the module headers in the code.
   reads (the requests in flight finish and are not retried). Nothing is read until the first chunk is asked for. If the generation is swept, or its object replaced, while
   the stream runs, it carries on with the keys not yet yielded from the generation that is current, and each chunk
   says which version it came from. A plain chunk may be a view sharing a buffer of up to 1 MiB with its neighbours, so
-  do not write to it, and copy one to keep it. Nothing in the library's reads calls it yet, so no request count
-  changes.
+  do not write to it, and copy one to keep it. `ReadChunksOptions.ramp` may be a number, the width the window opens at.
+
+### Changed
+
+- **Combines and `iterate` read each operand's chunks as coalesced ranges, so a cold read makes far fewer requests.**
+  `intersect`, `union` and `andNot`, their `.batches()` forms, `iterate` and the `*Into` verbs that read them now open one
+  stream per operand through `getChunks` (every store the library ships reads through a source that has it), over the
+  chunks they need that the chunk cache does not hold. Chunks that sit within 256 KiB of each other are one request, up to
+  1 MiB, and each is checked exactly as before. A cold intersect of two segments of about 2,000 chunks that share 100 lying together is
+  6 requests (a pointer and a tail read an operand, and one range each) where it was 204; an `andNot` of one such
+  segment against ten that share 100 of its chunks is 33 where it was 3,021; an `iterate` of 1,999 chunks is 3 where it was
+  2,001. These are counts from running the engine, expected and not measured on a cloud. An `exclude` that waits on an AND of two or more
+  includes, a point read, `count`, erasure and a source with no `getChunks` are read chunk by chunk, as before.
+- **A read of chunks spread over an object reads most of it.** The bytes between two chunks within 256 KiB are read and never
+  looked at, so chunks that are spread over a segment can be read in a few requests that together cover most of its
+  object. In the bucket's region S3 Standard does not bill the bytes; across regions and to the internet it does, and the
+  transfer can cost more than the requests saved. There is no setting for the 256 KiB or the 1 MiB; run readers in the
+  bucket's region, and see [the sizing guide](docs/guide/sizing.md#how-much-the-overlap-matters).
+- **`concurrency` counts range requests held ahead per operand, not chunk keys.** Its default (32) and its type are
+  unchanged, and so is the bound on memory (`concurrency × operands × chunk`: a range is at most the 1 MiB a chunk may be);
+  on a source that reads chunk by chunk it still means chunk keys. A combine's stream opens 4 ranges wide and `iterate`'s 1,
+  doubling as ranges are taken, so a read that stops early has asked for little past where it stopped, though a range is up
+  to 1 MiB where a chunk was a few hundred bytes.
+- **A stream keeps to the generation it opened on.** A `cache.genTtlMs` boundary, the reader cache evicting the segment and
+  an invalidation no longer move a combine or `iterate` between its ranges; a sweep of its generation, or an object replaced
+  under its number, still does, and the read goes on from the generation then current. A read that straddled a publish
+  and read both generations before may now read one.
+- **A combine's or `iterate`'s requests for chunks are not shared with another read that needs the same chunks.** Two point
+  reads of one chunk still share one request. Two cold combines that need the same chunks each make their own few range requests.
+- **`storage.get` is one event per request for chunks**, a range of a combine or `iterate` or the one chunk of a point read;
+  `bytes` is the range's, gaps between its chunks included. A range already requested when a read stops is billed and is not
+  reported. The per-op budget still counts chunk reads, which is an upper bound on the requests a coalesced read makes.
+- **The cost model's `chunksPerIntersect` is the chunk range requests of an intersect**, not the chunks it needs; the field
+  keeps its name. `bench/range-counts.cjs` counts them from the engine, and the sizing and cost pages, their charts and the
+  calibration harness's expected counts are derived from that. The published measurements of the previous engine stay as
+  they were, labelled as its, and the figures for this one are expected until a calibration run measures them.
 
 ## [0.14.0] — 2026-10-04
 

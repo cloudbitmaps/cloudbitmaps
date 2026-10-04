@@ -69,13 +69,50 @@ Every number above is turned into a **deterministic, build-breaking CI assertion
 
 One run of the loaded store against real S3 in `us-east-1` is published here, driven from AWS CloudShell inside the
 region. It measured the topology that ships, with the pointer in the same bucket as the data: what a cold intersect
-and a load cost, and how long they take.
+and a load cost, and how long they take. **It measured the engine before coalesced reads**, which read every shared chunk
+as a request of its own; the engine since then makes far fewer requests for the same reads, and **no run has measured
+it yet**. [The first section below](#the-engine-since-coalesced-reads--expected-not-yet-measured) is what that engine is
+expected to make, from running it; the sections after it are measurements of the engine before.
 
-### The in-region run — run `2026-10-04-73668`
+### The engine since coalesced reads — expected, not yet measured
+
+> **Expected**, not measured. The counts are what the engine makes, taken by running it over the in-memory backend on the
+> calibration's layouts ([`bench/range-counts.json`](../bench/range-counts.json), written by
+> [`bench/range-counts.cjs`](../bench/range-counts.cjs) and held to the engine in CI); each dollar figure is a count at the
+> `aws-us-east-1-ondemand` list prices. No latency is published for this engine: a cold intersect of this shape took
+> 290.06 ms at the median on the engine before, from a client of 50 sockets, and the requests the new engine makes are
+> not the ones that was measured on.
+
+A combine or `iterate` reads each operand's needed chunks as ranges: chunks within 256 KiB of each other are one request,
+up to 1 MiB, and each chunk is checked exactly as before. For the shapes the calibration measured:
+
+| Operation | Requests | One | Per million | Label |
+| --- | --- | --- | --- | --- |
+| Cold intersect, two 500,000-id segments sharing 100 of 1,999 chunks that lie together | 6 GETs: a pointer and a tail read an operand, and one range each | $0.0000024 | **$2.40** | expected |
+| The same, the 100 shared chunks spread over each segment | 6 GETs, and 971 KB read from each operand to fetch 49 KB of chunks | $0.0000024 | $2.40 | expected |
+| `andNot` of a 1,999-chunk segment against ten that share 100 of its chunks | 33 GETs: eleven operands' pointer and tail, and a range each | $0.0000132 | **$13.20** | expected |
+| `iterate` over a 1,999-chunk segment | 3 GETs | $0.0000012 | $1.20 | expected |
+
+The same cold intersect was 204 GETs, the `andNot` 3,021 and the `iterate` 2,001 (derived from its chunk reads) on the engine before. Two
+segments sharing 1,000 or 2,000 chunks make 6 GETs too, where they made 2,004 and 4,004. The request count follows the bytes
+the shared chunks span in each object, not how many there are, so it grows with the overlap only past a MiB: for the
+sizing guide's medium and large deployments, whose chunks are larger, it is [counted for each overlap and
+layout](guide/sizing.md#how-much-the-overlap-matters). A cold intersect waits on 3 requests in line, a pointer, a tail and
+a range, where the same one waited on 7.1 as measured on the engine before.
+
+**What it does not establish.** Latency: the range of a cold intersect is up to 1 MiB, and how long S3 takes to answer
+that, from inside the region and from outside it, is not measured. **Bytes**: a range reads the chunks it needs and the
+bytes between them, so chunks spread over an object can read most of it. Inside the region S3 Standard does not bill the
+bytes, and across regions and to the internet it does, where the transfer can cost more than the requests saved
+([production](guide/production.md#reading-ranges-the-bytes-between-chunks)). The layouts are the calibration's, of about
+500-byte chunks; real ids are often denser, and the guide counts larger chunks. And **no run on S3 has measured any of it**:
+the harness expects these counts, so the next run asserts them.
+
+### The in-region run of the engine before coalesced reads — run `2026-10-04-73668`
 
 > **Measured** against real S3 in `us-east-1` on 2026-10-04 (UTC), from AWS CloudShell in the same region, with the
-> packages published before this release, and a client of 50 sockets: a round-trip floor of 5.01 ms. The run's report explains every figure:
-> [`bench/calibration/2026-10-04-73668.md`](../bench/calibration/2026-10-04-73668.md). The evidence beside it is the
+> packages of the engine before coalesced reads (the engine that opens a combine's window 8 keys wide and reads each shared chunk as a request), and a client of 50 sockets: a round-trip floor of 5.01 ms. The run's report explains every figure:
+> [`bench/calibration/2026-10-04-73668.md`](../bench/calibration/2026-10-04-73668.md). **The figures below are that engine's, not this release's.** The evidence beside it is the
 > harness's own results file. [`tests/docs/calibration-reports.test.ts`](../tests/docs/calibration-reports.test.ts)
 > holds this section and the report to it in both directions: every dollar amount, percentage, duration, byte size
 > and ratio, every number written before the request, chunk, id or load it counts, and the bill below, row by row.
@@ -340,9 +377,12 @@ inside the region and not from a laptop.
 
 ## What is still owed
 
-The [in-region run](#the-in-region-run--run-2026-10-04-73668) measured the loaded store's latency and load
-throughput on S3. These are not published yet:
+The [in-region run](#the-in-region-run-of-the-engine-before-coalesced-reads--run-2026-10-04-73668) measured the loaded store's latency and load
+throughput on S3, on the engine before coalesced reads. These are not published yet:
 
+- **A run of the engine since coalesced reads.** Its request counts are [expected, not measured](#the-engine-since-coalesced-reads--expected-not-yet-measured):
+  the latency of a range read of up to 1 MiB, the cold intersect's and the `andNot`'s times with 3 requests in line,
+  the bytes read of spread layouts, and the cost of those bytes outside the region.
 - **A Lambda figure** — a function's cold start and initialisation against a real store, from inside one.
 - **The `*Into` verbs** — materialising a combine's result back into a segment, against a real object store.
 - **Other combine shapes** — more than two operands, and other overlaps than the sweep's, against a real object store.

@@ -154,8 +154,9 @@ big lines have a lever:
 - **The cold intersects**, which are priced as if every one started from an empty cache. A reader that serves a
   repeat intersect from memory reads almost nothing, so a deployment whose queries repeat pays less than this table
   says — if its chunk cache is large enough to hold what repeats. By how much is not measured yet; a warm stage in a
-  future calibration run would measure it. Fetching neighbouring chunks together would cut the chunk reads, which
-  are nearly all of a cold intersect's requests; that changes the hot path, so it needs a design before code.
+  future calibration run would measure it. Neighbouring chunks are read together as ranges, which cuts a cold intersect's
+  requests where the shared chunks lie together; where they are spread it reads more bytes, which costs nothing inside
+  the bucket's region and is billed across regions.
 
 ## Where a standing cache still wins
 

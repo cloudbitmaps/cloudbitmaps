@@ -257,7 +257,7 @@ npm audit signatures</code></pre>
                     <span class="m">iterate()</span><br /><span class="m">iterate({ after, through })</span>
                   </td>
                   <td class="from">
-                    Every id, ascending, reading up to 32 chunks ahead. With a range, only the ids in
+                    Every id, ascending, reading ahead as ranges: one request at first, widening to up to 32 in flight. With a range, only the ids in
                     <span class="m">(after, through]</span>, fetching only the chunks it overlaps — keyset
                     paging — and every combine takes the same two options. Each of these streams has
                     <span class="m">.batches()</span>, which yields the same ids one
@@ -268,8 +268,8 @@ npm audit signatures</code></pre>
                 <tr>
                   <td><span class="m">intersect(others, { exclude })</span></td>
                   <td class="from">
-                    Async-iterates the intersection. Compares chunk keys first and requests only shared chunks;
-                    the payload in flight is bounded by <span class="m">concurrency × operands × chunk</span>.
+                    Async-iterates the intersection. Compares chunk keys first and requests only shared chunks, neighbouring chunks together in one range request;
+                    the payload in flight is bounded by <span class="m">concurrency × operands × the 1 MiB a range may be</span>.
                     <span class="m">exclude</span> subtracts suppression segments in the same pass.
                     <span class="m">union</span> takes the same options and reads every chunk of every operand;
                     <span class="m">andNot</span> takes all of them but <span class="m">exclude</span>, since its
@@ -602,7 +602,7 @@ npm audit signatures</code></pre>
           rates in and get your own crossover — the site's modelled figures call this same function, so they
           cannot drift ahead of the library. It counts the pointer too — the object beside your data that says
           which generation is current — and each operand's index, so pass
-          <span class="m">chunksPerIntersect</span> as the chunks your intersects fetch, summed over their operands,
+          <span class="m">chunksPerIntersect</span> as the chunk range requests your intersects make, summed over their operands,
           and <span class="m">hotSegments</span> for the segments each long-lived reader keeps reading, with
           <span class="m">readerProcesses</span> for how many readers: each re-reads a segment's pointer at
           most once per <span class="m">genTtlMs</span>, which the estimate takes as the store's default of

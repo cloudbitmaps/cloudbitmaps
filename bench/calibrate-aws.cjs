@@ -1263,10 +1263,7 @@ async function main() {
       return reads;
     };
     // The figures of a set of cold intersects. Two operands, so per-operand figures are half the per-intersect ones.
-    const describeReads = (
-      reads,
-      { sharedChunks, rangesPerOperand, chunksPerSegment, withPayload = false },
-    ) => {
+    const describeReads = (reads, { rangesPerOperand, chunksPerSegment, withPayload = false }) => {
       if (reads.length === 0) return { runs: 0 };
       const ms = reads.map((r) => r.ms);
       const expectedGets = coldIntersectGets(rangesPerOperand);

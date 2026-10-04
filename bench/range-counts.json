@@ -140,5 +140,12 @@
     "getRange": 11,
     "getTail": 11,
     "pointer": 11
+  },
+  "iterate": {
+    "profile": "small",
+    "chunks": 1999,
+    "getRange": 1,
+    "getTail": 1,
+    "pointer": 1
   }
 }

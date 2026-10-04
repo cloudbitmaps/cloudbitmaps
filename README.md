@@ -151,13 +151,14 @@ explains these, S3's request rate and overlap, with the charts; [what it costs a
 ## What it costs on real AWS
 
 Run [`2026-10-04-73668`](bench/calibration/2026-10-04-73668.md), made on 2026-10-04 from AWS CloudShell in `us-east-1`,
-drove the packages published before this release against a real AWS account, with the pointer in
+drove the packages published before coalesced reads against a real AWS account, with the pointer in
 the same bucket as the data. What each operation costs:
 
 | Operation | Cost | Kind |
 |---|---|---|
-| Cold `intersect` of two 500,000-id segments sharing 100 of 1,999 chunks: 204 GETs at the median | **$81.60 / million** | measured requests at list prices |
-| The same, each pointer read once, as expected | $81.60 / million | expected |
+| Cold `intersect` of two 500,000-id segments sharing 100 of 1,999 chunks, in this release: 6 GETs | **$2.40 / million** | expected, not yet measured |
+| The same on the engine before coalesced reads: 204 GETs at the median | $81.60 / million | measured requests at list prices |
+| The same on the engine before, each pointer read once | $81.60 / million | expected |
 | A segment's first `store.load()`: 2 PUT + 4 GET, pointer included | **$11.60 / million** | measured requests at list prices |
 
 Run from inside the region with a client of 50 sockets (the client this release builds allows 128, and its effect on these figures is not measured), that cold intersect took 290.06 ms at the median, a cold `count()` is one request at

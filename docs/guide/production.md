@@ -303,17 +303,32 @@ const client = new S3Client({
 });
 ```
 
-A combine keeps up to `concurrency` chunk keys in flight (32 by default once its window has widened), and it reads
-every operand of a key at once: an `intersect` of two segments has up to 64 reads open, and an `andNot` against
-excludes up to 32 times the include plus the excludes that hold each key. The client the store builds allows 128
+A combine reads each operand as a stream of ranges and keeps up to `concurrency` range requests per operand in flight
+(32 by default once its window has widened; it opens 4 wide): an `intersect` of two segments has up to 64 reads open,
+and an `andNot` against excludes up to 32 for the include plus 32 for each exclude read in the same round. Most reads need
+far fewer: chunks that sit near each other are one range, so two segments whose shared chunks lie together are one
+request each. The client the store builds allows 128
 sockets, which covers one two-operand combine with room to spare; a client you pass keeps the SDK's default of 50, and
 its reads past the 50th are not refused: they wait for a socket, and the wait counts against `readTimeoutMs`. Raise
 `maxSockets` (on the store, or on your own client) to match your concurrent combines (256 covers four two-operand
 combines or one `eraseSubject`), or pass a lower `concurrency` to the combine.
 
 `eraseSubject` has up to `concurrency × 32` range reads open (256 by default, since it erases 8 segments at once, each
-with a window of 32 chunk reads), and `iterate` and the storage-path `count` read up to 32 keys ahead. Its 256 needs
-`maxSockets: 256`, or a lower `concurrency`.
+with a window of 32 chunk reads), and `iterate` reads up to 32 ranges ahead (a source that reads chunk by chunk, and the
+storage-path `count`, up to 32 keys). Its 256 needs `maxSockets: 256`, or a lower `concurrency`.
+
+### Reading ranges: the bytes between chunks
+
+A combine or `iterate` reads the chunks it needs from an object as ranges: chunks that sit within 256 KiB of each other
+are read in one request, up to 1 MiB, and the bytes between them are read and never looked at. That is what turns a
+request for every chunk into a request for a stretch of the object. It also means a read of chunks that are spread over
+an object can cover most of it: the requests fall, and the bytes read rise toward the object's size. Inside the bucket's
+region S3 Standard does not bill bytes read, so the extra bytes cost a few milliseconds of transfer and nothing else (S3
+Express One Zone bills them). **Across
+regions, and out to the internet, S3 bills the bytes**, and reading most of an object to get a few of its chunks can cost
+more in transfer than the requests it saved: run readers in the bucket's region, or measure with
+[the sizing guide's overlap tables](sizing.md#how-much-the-overlap-matters), which show the requests and the bytes read
+for chunks that lie together and for chunks that are spread. There is no setting for the 256 KiB or the 1 MiB.
 
 Raise `readTimeoutMs` too on a link too slow to deliver a read inside the timeout, since such a read fails on every attempt. The
 timer is set on each request rather than on the client, so a `client` you pass gets it without being changed. On a
@@ -389,7 +404,7 @@ Two separate limits protect you. It helps to know which one you hit.
 
 | | `budget` | the memory ceilings |
 | --- | --- | --- |
-| bounds | **cost**: backend requests a single operation may fan out into | **memory**: what a process holds resident, whatever the segments' size |
+| bounds | **cost**: chunk reads a single operation may fan out into, an upper bound on its backend requests (neighbouring chunks share one) | **memory**: what a process holds resident, whatever the segments' size |
 | knobs | `budget: { maxRequests }`; `false` disables it | `cache.maxChunks` (decoded cached chunks, default 1024) · `cache.readerMax` / `cache.readerMaxBytes` (open `.crbm` indices, default 1024 / 64 MiB) · the combines' `concurrency` window · the per-chunk decode cap. **`budget: false` lifts none of them.** |
 | covers | `count` · `iterate` · the combines · `subjectReport` · `eraseSubject` | every read, on every backend |
 
@@ -446,7 +461,7 @@ on. Re-run with a higher `budget` to finish those segments. The ledger of the er
 ### The memory ceilings
 
 `intersect`'s budget is a product (surviving keys times operands), while its memory is a window
-(`concurrency × operands × chunk`) that does not depend on segment size. A request budget cannot express a memory
+(`concurrency × operands × the 1 MiB a range may be`, which is the chunk cap) that does not depend on segment size. A request budget cannot express a memory
 bound, and `budget: false` ("I know my fan-out") must not silently also mean "unbounded RAM". A wide segment's parsed
 index can reach about 1.3 MB (65,536 entries at 20 B), which is why the reader cache is bounded by bytes as well as by count. Lower
 `cache.readerMaxBytes` for a memory-tight deployment, such as a 128 MB Lambda that reads across many wide segments.

@@ -69,7 +69,9 @@ name.
 
 ## What it costs
 
-Measured against real S3 in `us-east-1`, from inside the region, with the pointer in the same bucket as the data: the median cold `intersect`
+This release reads each operand's chunks as ranges: the same cold `intersect` is expected, and not yet measured, to make 6 GETs, **$2.40 per million**. On a spread layout it reads more bytes than it needs, which cross-region can cost more than the requests it saves.
+
+Measured against real S3 in `us-east-1`, from inside the region, with the pointer in the same bucket as the data, on the engine before coalesced reads: the median cold `intersect`
 of two 500,000-id segments sharing 100 of their 1,999 chunks made 204 GETs, **$81.60 per million**, requesting only
 the shared chunks, and took 290.06 ms at the median from inside the region (run of 2026-10-04, whose client had 50 sockets; the client this release builds allows 128, and its effect is not measured). A segment's first `store.load()`
 is **$11.60 per million**, pointer included, from its measured requests at list prices. A cold `count()` is one pointer read: it reads no payload and no object.

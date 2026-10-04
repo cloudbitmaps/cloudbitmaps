@@ -1194,7 +1194,7 @@ describe('requests per pointer read and per sized read', () => {
       6,
     );
     expect(r.assumptions.notes).toContain(
-      'Intersections priced cold: 216 GETs each, 8 for each of 2 operand(s) plus 200 chunk read(s); ' +
+      'Intersections priced cold: 216 GETs each, 8 for each of 2 operand(s) plus 200 chunk range request(s); ' +
         'cacheHitRate does not apply.',
     );
     const three = estimateCost({
