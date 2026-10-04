@@ -86,7 +86,7 @@ async function peakFor(chunks: number, concurrency?: number) {
 }
 
 const OPERANDS = 2;
-const DEFAULT_WINDOW = 8; // engine.ts DEFAULT_INTERSECT_CONCURRENCY
+const DEFAULT_WINDOW = 32; // engine.ts DEFAULT_INTERSECT_CONCURRENCY
 
 describe('intersection window is bounded (memory, not just fetch count)', () => {
   it('holds at most `concurrency × operands` chunk payloads in flight', async () => {

@@ -90,6 +90,11 @@ const INTERSECT_CONCURRENCY = sourceConstant(
   'packages/core/src/core/engine.ts',
   'DEFAULT_INTERSECT_CONCURRENCY',
 );
+const COMBINE_WINDOW_START = sourceConstant(
+  'packages/core/src/core/engine.ts',
+  'COMBINE_WINDOW_START',
+);
+const { windowRounds, windowPeak } = require('./lib/calibrate-stages.cjs');
 const { esc, logChart } = require('./lib/log-chart.cjs');
 const { markersOf, regionsOf, withRegions } = require('./lib/sizing-markers.cjs');
 /** The estimator's month, read from it: AWS's 730 hours, of 3,600 seconds. */
@@ -1128,17 +1133,20 @@ function render() {
     "for its pointer reads, once each `cache.genTtlMs`; one that ranges over more than a reader's cache holds is " +
     "Redis's ground, or a cache's in front of CloudBitmaps.";
 
-  // The engine keeps a window of INTERSECT_CONCURRENCY chunks in flight and starts the next as the OLDEST finishes, so
-  // at an even latency the shared chunks take ceil(shared ÷ window) request times, after the pointers and indexes.
-  const chain = 2 + Math.ceil(SHARED_CHUNKS / INTERSECT_CONCURRENCY);
+  // The engine opens a window of COMBINE_WINDOW_START chunk keys and widens it, as keys are taken, to
+  // INTERSECT_CONCURRENCY, starting the next as the OLDEST finishes, so at an even latency the shared chunks take
+  // windowRounds request times, after the pointers and indexes.
+  const chain = 2 + windowRounds(SHARED_CHUNKS, INTERSECT_CONCURRENCY, COMBINE_WINDOW_START);
+  const peakInFlight =
+    OPERANDS * windowPeak(SHARED_CHUNKS, INTERSECT_CONCURRENCY, COMBINE_WINDOW_START);
   const depth =
-    `A cold intersect of two segments sharing ${int(SHARED_CHUNKS)} chunks waits on a chain of requests ` +
-    `**${int(chain)} deep**: both operands' pointers, then both indexes, then the shared chunks, ` +
-    `${int(INTERSECT_CONCURRENCY)} at a time, each read from both operands together, so ` +
-    `${int(OPERANDS * INTERSECT_CONCURRENCY)} requests are in flight, and the next chunk starts as the oldest finishes. At an ` +
-    `even latency that is ${int(chain)} request times end to end. A slow request holds up those queued behind it, ` +
-    'so what the chain takes is for a measurement to say. A repeat served from the chunk cache makes no request ' +
-    'within `cache.genTtlMs`, and one round of pointer reads after it.';
+    `A cold intersect of two segments sharing ${int(SHARED_CHUNKS)} chunks is expected to wait on a chain of requests ` +
+    `**${int(chain)} deep**: both operands' pointers, then both indexes, then the shared chunks, opening ` +
+    `${int(COMBINE_WINDOW_START)} at a time and widening to ${int(INTERSECT_CONCURRENCY)}, each read from both ` +
+    `operands together, so up to ${int(peakInFlight)} requests are in flight, and the next chunk starts as the oldest ` +
+    `finishes. At an even latency that is ${int(chain)} request times end to end. A slow request holds up those queued ` +
+    'behind it, so what the chain takes is for a measurement to say. A repeat served from the chunk cache makes no ' +
+    'request within `cache.genTtlMs`, and one round of pointer reads after it.';
 
   const whyPrefix =
     `AWS documents [at least ${int(S3_PREFIX_GETS_PER_SEC)} GET requests a second per partitioned prefix]` +

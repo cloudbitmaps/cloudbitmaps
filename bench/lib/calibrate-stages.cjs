@@ -29,15 +29,80 @@ const STAGES = Object.freeze([
   'andNot',
 ]);
 
-/**
- * How many shared chunks the engine keeps in flight at once, `DEFAULT_INTERSECT_CONCURRENCY` in the engine, each read
- * from both operands: so 2 x this many requests are in flight, and a cold intersect is expected to be this many
- * requests deep per window of chunks. A test reads the number out of the engine's source.
+/*
+ * How many requests one after another a combine's window of chunk keys takes, at an even latency.
+ *
+ * The engine opens its window `start` keys wide (or `limit`, if that is lower) and, each time the oldest key is
+ * taken, starts keys until the window holds `min(limit, max(start, 2 ** taken))`. At an even latency every request
+ * takes one unit, and a key started when another is taken is answered a unit later. This steps that, and reports the
+ * unit the last key is answered in: the number of requests a read waited on, one after another, for its chunks.
  */
-const ENGINE_WINDOW = 8;
 
-/** The depth the engine is expected to make a cold intersect of `k` shared chunks: a pointer, a tail, then windows. */
-const modelRounds = (k) => 2 + Math.ceil(k / ENGINE_WINDOW);
+/** The unit in which the last of `keys` keys is answered, for a window opening `start` wide and at most `limit`. */
+function windowRounds(keys, limit, start) {
+  if (!(keys >= 0) || !(limit >= 1) || !(start >= 1))
+    throw new RangeError('windowRounds: bad arguments');
+  if (keys === 0) return 0;
+  const inFlight = []; // the unit each open key is answered in, oldest first
+  let next = 0;
+  let taken = 0;
+  let now = 0;
+  const fill = () => {
+    const width = Math.min(limit, Math.max(start, 2 ** Math.min(taken, 30)));
+    while (next < keys && inFlight.length < width) {
+      inFlight.push(now + 1);
+      next += 1;
+    }
+  };
+  fill();
+  let last = 0;
+  while (inFlight.length > 0) {
+    last = inFlight.shift();
+    now = last;
+    taken += 1;
+    fill();
+  }
+  return last;
+}
+
+/** The most keys open at once, for a read of `keys` keys on the same window. */
+function windowPeak(keys, limit, start) {
+  let peak = 0;
+  const inFlight = [];
+  let next = 0;
+  let taken = 0;
+  const fill = () => {
+    const width = Math.min(limit, Math.max(start, 2 ** Math.min(taken, 30)));
+    while (next < keys && inFlight.length < width) {
+      inFlight.push(1);
+      next += 1;
+    }
+    peak = Math.max(peak, inFlight.length);
+  };
+  fill();
+  while (inFlight.length > 0) {
+    inFlight.shift();
+    taken += 1;
+    fill();
+  }
+  return peak;
+}
+
+/**
+ * How many shared chunks the engine keeps in flight at once at most, `DEFAULT_INTERSECT_CONCURRENCY` in the engine,
+ * each read from both operands: so up to 2 x this many requests are in flight. A test reads the number out of the
+ * engine's source, since this harness runs where that source is not.
+ */
+const ENGINE_WINDOW = 32;
+
+/** How many keys the engine's window opens with, `COMBINE_WINDOW_START` in the engine; it widens from there. */
+const ENGINE_WINDOW_START = 8;
+
+/**
+ * The depth the engine is expected to make a cold intersect of `k` shared chunks: a pointer, a tail, then the window,
+ * which opens `ENGINE_WINDOW_START` wide and widens as keys are taken.
+ */
+const modelRounds = (k) => 2 + windowRounds(k, ENGINE_WINDOW, ENGINE_WINDOW_START);
 
 /** The sweep over how many chunks two segments share, when none is asked for: k and how many intersects at each. */
 const DEFAULT_SWEEP = Object.freeze([
@@ -217,6 +282,9 @@ const firstLoadRequests = (parts) =>
 module.exports = {
   STAGES,
   ENGINE_WINDOW,
+  ENGINE_WINDOW_START,
+  windowRounds,
+  windowPeak,
   modelRounds,
   DEFAULT_SWEEP,
   parseSweep,

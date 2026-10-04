@@ -27,8 +27,14 @@ import type {
   SegmentSize,
 } from './ports';
 
-/** Max overlapping-chunk intersections in flight — bounds memory + concurrent reads (invariant 6). */
-const DEFAULT_INTERSECT_CONCURRENCY = 8;
+/**
+ * Chunk keys a combine resolves at once by default, and how far `iterate` and `count` read ahead — bounds memory and
+ * concurrent reads (invariant 6). A read of `n` chunks takes about `n / 32` sequential round trips, so this, not the
+ * network, is what sets how long a long read takes.
+ */
+const DEFAULT_INTERSECT_CONCURRENCY = 32;
+/** A combine's window opens this many keys wide (or `concurrency` wide, if that is less) and doubles per key taken. */
+const COMBINE_WINDOW_START = 8;
 
 /** A clock that always reads 0 — used when nothing is injected, so the `storage.get` latency metric reports 0 ms. */
 const ZERO_CLOCK: Pick<Clock, 'now'> = { now: () => 0 };
@@ -79,7 +85,13 @@ export interface IdRange {
 
 /** Options common to the chunk-aligned combines. */
 export interface CombineOptions extends IdRange {
-  /** Max chunk keys resolved concurrently — bounds the Storage footprint. A positive integer. */
+  /**
+   * Max chunk keys resolved concurrently — bounds the Storage footprint (about `concurrency × operands` chunks in
+   * flight). A positive integer; default 32. The window opens 8 keys wide (or `concurrency`, if lower) and widens
+   * as keys are taken, so a read that stops early fetches no more than a few keys ahead; one that runs to the end
+   * spends nearly all of its round trips at the full width. A read that stops early has requested up to
+   * `concurrency` keys per operand past the last one it used.
+   */
   readonly concurrency?: number;
   /** Override the store's per-op budget for this call (`false` lifts it). */
   readonly budget?: BudgetOption;
@@ -182,8 +194,8 @@ function keysWithin(keys: readonly number[], w: IdWindow): number[] {
 
 /**
  * An ordered window of chunk reads: up to `max` reads open ahead of the one being consumed, handed back in key
- * order. With `ramp`, the window opens 1, 2, 4, 8 wide instead of `max` at once, so a read that stops after a few
- * ids has fetched a handful of chunks, not a full window.
+ * order. With `ramp`, the window opens 1, 2, 4 … wide up to `max` instead of `max` at once, so a read that stops
+ * after a few ids has fetched a handful of chunks, not a full window.
  *
  * Each read is wrapped to resolve and never reject, so a read nobody consumes (the consumer stopped, or an
  * earlier chunk failed) cannot raise an unhandled rejection; its error surfaces from {@link take} only if the
@@ -332,7 +344,7 @@ export class SegmentEngine {
   }
 
   /**
-   * Every id, ascending, reading ahead through a window of up to 8 chunk fetches that opens 1, 2, 4, 8 wide, so a
+   * Every id, ascending, reading ahead through a window of up to 32 chunk fetches that opens 1, 2, 4 … 32 wide, so a
    * read that stops early has fetched only a handful of chunks past the one it stopped in; with `range`, only the ids in `(after, through]`, fetching only the
    * chunks the range overlaps (see {@link IdRange}).
    *
@@ -559,6 +571,10 @@ export class SegmentEngine {
     // `limit` keys concurrently, yield each key's ids before priming far ahead (bounded Storage footprint).
     // Each task resolves to a value (never rejects) so an error on one key can't leave the other in-flight
     // promises unhandled — we surface it, in key order, when its slot is drained.
+    //
+    // The window opens COMBINE_WINDOW_START keys wide and doubles with each key taken until it is `limit` wide,
+    // so a read that stops after its first few keys has fetched no further ahead than that, while a long one
+    // spends nearly all of its round trips at the full width.
     type Slot = { key: number; result: CodecBitmap | null; error?: unknown };
     const startAt = (key: number): Promise<Slot> =>
       this.combineChunk(operands, excludes, mode, key).then(
@@ -568,10 +584,17 @@ export class SegmentEngine {
 
     const inFlight: Array<Promise<Slot>> = [];
     let next = 0;
-    while (next < common.length && inFlight.length < limit) inFlight.push(startAt(common[next++]!));
+    let taken = 0;
+    const fill = (): void => {
+      const width = Math.min(limit, Math.max(COMBINE_WINDOW_START, 2 ** Math.min(taken, 30)));
+      while (next < common.length && inFlight.length < width)
+        inFlight.push(startAt(common[next++]!));
+    };
+    fill();
     while (inFlight.length > 0) {
       const slot = await inFlight.shift()!; // FIFO over ascending keys ⇒ ascending output
-      if (next < common.length) inFlight.push(startAt(common[next++]!));
+      taken += 1;
+      fill();
       if (slot.error !== undefined) throw slot.error;
       if (slot.result && !slot.result.isEmpty) {
         if (w !== null && isEdge(slot.key, w)) {
@@ -602,9 +625,17 @@ export class SegmentEngine {
     // chunk. Under 'all' every include holds every candidate key by construction, so the filter is a no-op.
     const present = mode === 'all' ? operands : operands.filter((o) => o.keys.has(chunkKey));
     if (present.length === 0) return null;
-    const chunks = await Promise.all(
-      present.map((op) => this.storageChunk({ ...op.seg, chunkKey }, op.gen)),
+    // Only excludes that actually hold this key are fetched — this is where a large global opt-out list stops
+    // being expensive. An AND of two or more includes can come out empty, leaving nothing to suppress, so their
+    // excludes wait for it. One include, or an OR, cannot (every key here is one an include holds), so waiting
+    // would only cost a round trip: those excludes are read in the same round as the includes.
+    const relevant = excludes.filter((e) => e.keys.has(chunkKey));
+    const together = relevant.length > 0 && (mode === 'any' || present.length === 1);
+    const reads = together ? [...present, ...relevant] : present;
+    const fetched = await Promise.all(
+      reads.map((op) => this.storageChunk({ ...op.seg, chunkKey }, op.gen)),
     );
+    const chunks = together ? fetched.slice(0, present.length) : fetched;
     // A key the index lists but the source cannot produce bytes for reads as empty — and under AND an empty
     // operand empties the result.
     if (mode === 'all' && chunks.some((c) => c === null)) return null;
@@ -622,14 +653,11 @@ export class SegmentEngine {
     }
     if (acc.isEmpty) return null;
 
-    // Suppression, folded into the same pass. Only excludes that actually hold this key are fetched — this is
-    // where a large global opt-out list stops being expensive. Fetched lazily rather than alongside the
-    // includes above, because an AND that collapsed to empty means there is nothing left to suppress.
-    const relevant = excludes.filter((e) => e.keys.has(chunkKey));
+    // Suppression, folded into the same pass.
     if (relevant.length > 0) {
-      const cuts = await Promise.all(
-        relevant.map((e) => this.storageChunk({ ...e.seg, chunkKey }, e.gen)),
-      );
+      const cuts = together
+        ? fetched.slice(present.length)
+        : await Promise.all(relevant.map((e) => this.storageChunk({ ...e.seg, chunkKey }, e.gen)));
       for (const cut of cuts) {
         if (cut === null) continue;
         acc.andNotInPlace(cut);

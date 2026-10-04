@@ -11,6 +11,40 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Changed
+
+- **A long combine or `iterate` takes far fewer round trips: the default `concurrency` is 32, up from 8.** The
+  default `concurrency` of `intersect`, `union` and `andNot` (and of the `*Into` reads that run through them) is 32
+  chunk keys, and so is the most `iterate` and the storage-path `count` read ahead. A read of `n` chunks takes about
+  `n / 32` request times in sequence where it took `n / 8`; the requests themselves are the same, so the cost and the
+  per-op budget are unchanged. A combine's window opens 8 keys wide (or `concurrency` wide, if that is lower) and
+  doubles with each key taken until it is `concurrency` wide, so a combine that stops in its first few keys fetches no
+  further ahead than it did, and `concurrency: 8` is the window the previous release had. `iterate` and `count` keep
+  their ramp, 1, 2, 4 and on up to 32. The cost is a read that stops early: it has requested up to 32 keys per operand
+  past the last one it used, where it had requested up to 8 (a page of 50 ids from an `intersect` is modelled at 66 to
+  114 requests, and from `iterate` at 17 to 41). Pass a lower `concurrency` to a combine to bound it. Memory is still
+  bounded by `concurrency × operands × chunk`, now 4 times larger by default, and a two-operand combine can hold up to
+  64 reads open against the S3 SDK's default of 50 sockets; on S3 the extra wait for a socket counts against `readTimeoutMs`
+  (see [production](docs/guide/production.md)). The chunks a read had already requested when its segment re-resolved
+  are the earlier generation's: up to 32 for `iterate` and `count`, up to `concurrency` for a combine.
+- **`andNot`, and `union` with `exclude`, read an exclude's chunk in the same round trip as the include's.** Where the
+  include side cannot come out empty, which is one include or a union, the excludes that hold the key no longer wait
+  for the includes. An `intersect` of two or more includes still reads its excludes only after the AND, which may be
+  empty, and then no exclude is read. The requests are the same, one round trip fewer for each key.
+
+  **Measured on 0.12.0:** `andNot` of a 1,999-chunk segment against ten excludes took 8,687.10 ms at the median, with
+  3,021 GETs (1,999 include chunks, 100 shared chunks times ten excludes, and 22 index reads) at a mean of 10.3
+  requests in flight. That was bounded by the window of 8 keys, about 250 rounds of about 27 ms, and not by the
+  network. **Derived, not measured on S3:** a model with lognormal GET latency (median 26 ms) and 50 sockets, sending
+  the same requests, puts the same `andNot` at 13.1 s with a window of 8 and 3.7 s with this release's; `andNot`
+  against one opt-out list that holds every chunk at 18.2 s and 3.9 s; an `intersect` sharing 128 chunks at 866 ms and
+  338 ms, and 1,000 chunks at 6.3 s and 2.1 s; `iterate` over 1,999 chunks at 10.8 s and 3.6 s. A run in region
+  measures the release.
+
+- **The calibration harness models the new window.** The expected depth of a cold intersect is a pointer, a tail and
+  then the rounds a window that opens 8 wide and widens to 32 takes, stepped from the engine's constants. A run of
+  0.12.0 or earlier is read against the fixed window of 8 it ran with.
+
 ### Fixed
 
 - **A chunk too large to decode is refused when the object is opened, not after it is read.** The `.crbm` reader accepted

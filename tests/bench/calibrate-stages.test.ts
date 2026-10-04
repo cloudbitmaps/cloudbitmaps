@@ -34,6 +34,9 @@ const stages = require_(join(ROOT, 'bench', 'lib', 'calibrate-stages.cjs')) as {
   DEFAULT_SWEEP: { k: number; intersects: number }[];
   parseSweep: (raw: unknown) => { k: number; intersects: number }[];
   ENGINE_WINDOW: number;
+  ENGINE_WINDOW_START: number;
+  windowRounds: (keys: number, limit: number, start: number) => number;
+  windowPeak: (keys: number, limit: number, start: number) => number;
   modelRounds: (k: number) => number;
   coldIntersectGets: (k: number) => number;
   coldIntersectBound: (k: number) => number;
@@ -226,14 +229,31 @@ describe('the stage table', () => {
 
 describe('the depth the harness measures', () => {
   // The window is the engine's, so it is read out of the engine's source and not retyped.
-  it('models the engine: a window of eight chunks, a pointer and a tail first', () => {
+  it('models the engine: a pointer and a tail first, then a window that opens at 8 and widens to 32', () => {
     const src = readFileSync(join(ROOT, 'packages', 'core', 'src', 'core', 'engine.ts'), 'utf8');
     const window = /const DEFAULT_INTERSECT_CONCURRENCY = (\d+);/.exec(src);
     expect(window, 'the engine no longer names its window this way').not.toBeNull();
     expect(stages.ENGINE_WINDOW).toBe(Number(window?.[1]));
-    expect(stages.modelRounds(100)).toBe(2 + 13);
-    expect(stages.modelRounds(1_000)).toBe(2 + 125);
-    expect(stages.modelRounds(2_000)).toBe(2 + 250);
+    const start = /const COMBINE_WINDOW_START = (\d+);/.exec(src);
+    expect(start, 'the engine no longer names its opening window this way').not.toBeNull();
+    expect(stages.ENGINE_WINDOW_START).toBe(Number(start?.[1]));
+    // Stepped at an even latency: 8 keys at once, widening to 16 then 32 as keys are taken.
+    expect(stages.modelRounds(1)).toBe(2 + 1);
+    expect(stages.modelRounds(8)).toBe(2 + 1);
+    expect(stages.modelRounds(100)).toBe(2 + 4);
+    expect(stages.modelRounds(1_000)).toBe(2 + 32);
+    expect(stages.modelRounds(2_000)).toBe(2 + 64);
+  });
+
+  it('steps a fixed window as ceil(k / window), and a widening one in fewer rounds', () => {
+    for (const k of [0, 1, 7, 8, 9, 100, 1_000]) {
+      expect(stages.windowRounds(k, 8, 8)).toBe(Math.ceil(k / 8)); // the window of 8 the model once was
+    }
+    expect(stages.windowRounds(100, 32, 8)).toBeLessThan(stages.windowRounds(100, 8, 8));
+    expect(stages.windowRounds(1_000, 32, 8)).toBe(32); // nearly all at the full width
+    expect(stages.windowPeak(1_000, 32, 8)).toBe(32);
+    expect(stages.windowPeak(1_000, 8, 8)).toBe(8);
+    expect(stages.windowPeak(5, 32, 8)).toBe(5);
   });
 
   it('records peak requests in flight, their summed time and the rounds, for every cold read', () => {
