@@ -541,22 +541,91 @@ describe('CrbmReader.readChunks: what a stream holds and has in flight', () => {
     expect(await getChunks(reader, keysOf(6))).toHaveLength(6);
   });
 
-  it('marks the first chunk of each range with what the request moved and how long it took', async () => {
+  it('tells onRequest of each range it sends, once, with what the request moved and how long it took', async () => {
     const reader = await CrbmReader.open(new BufferReader(await build()));
     let t = 0;
-    const items = await collect(
+    const requests: { bytes: number; ms: number }[] = [];
+    await collect(
       reader.readChunks([0, 1, 2, 4, 9, 20], {
         // one reading when a range starts and one when it lands: each takes 7
         now: () => (t += 7),
+        onRequest: (r) => requests.push(r),
       }),
     );
-    const requests = items.flatMap((i) => (i.request === undefined ? [] : [[i.key, i.request]]));
-    expect(requests.map(([key]) => key)).toEqual([0, 9]);
-    expect(requests.map(([, r]) => (r as { bytes: number }).bytes)).toEqual([5 * SIZE, 2 * SIZE]);
-    for (const [, r] of requests) expect((r as { ms: number }).ms).toBeGreaterThan(0);
-    // An absent key carries none, and a repeated key does not count its request twice.
-    const again = await collect(reader.readChunks([0, 0, 15]));
-    expect(again.filter((i) => i.request !== undefined)).toHaveLength(1);
+    expect(requests.map((r) => r.bytes).sort()).toEqual([2 * SIZE, 5 * SIZE].sort());
+    for (const r of requests) expect(r.ms).toBeGreaterThan(0);
+    // An absent key sends none, and a repeated key does not count its request twice.
+    const again: unknown[] = [];
+    await collect(reader.readChunks([0, 0, 15], { onRequest: (r) => again.push(r) }));
+    expect(again).toHaveLength(1);
+  });
+
+  it('tells onRequest of a range nobody took: every request launched is reported, before and after the stop', async () => {
+    const parking = new Parking(new BufferReader(await object(keysOf(40).map(() => MIB))));
+    const reader = await CrbmReader.open(parking);
+    parking.requests = 0;
+    const reported: { bytes: number }[] = [];
+    const stream = reader.readChunks(keysOf(40), {
+      concurrency: 8,
+      onRequest: (r) => reported.push(r),
+    });
+    await stream.next();
+    await stream.return(undefined);
+    await tick(40);
+    expect(parking.requests).toBeGreaterThan(1);
+    expect(reported).toHaveLength(parking.requests);
+    expect(reported.every((r) => r.bytes === MIB)).toBe(true);
+    const launched = parking.requests;
+    await tick(40);
+    expect(parking.requests).toBe(launched); // nothing more after the stop, and nothing more reported
+    expect(reported).toHaveLength(launched);
+  });
+
+  it('reports a range that failed with no bytes, and ignores a sink that throws', async () => {
+    const parking = new Parking(new BufferReader(await object(keysOf(6).map(() => MIB))));
+    const reader = await CrbmReader.open(parking);
+    parking.requests = 0;
+    parking.failFrom = 3;
+    const reported: { bytes: number }[] = [];
+    await expect(
+      collect(reader.readChunks(keysOf(6), { concurrency: 6, onRequest: (r) => reported.push(r) })),
+    ).rejects.toThrow(/range 3 failed/);
+    await tick(40);
+    expect(reported).toHaveLength(parking.requests);
+    expect(reported.filter((r) => r.bytes === 0).length).toBeGreaterThan(0);
+    expect(reported.filter((r) => r.bytes === MIB).length).toBeGreaterThan(0);
+
+    parking.failFrom = undefined;
+    parking.requests = 0;
+    const got = await collect(
+      reader.readChunks(keysOf(3), {
+        onRequest: () => {
+          throw new Error('a sink that throws');
+        },
+      }),
+    );
+    expect(got).toHaveLength(3);
+  });
+
+  it('reports a retried range once, when it settles', async () => {
+    const reader = await CrbmReader.open(new BufferReader(await build()));
+    const reported: { bytes: number }[] = [];
+    let attempts = 0;
+    await collect(
+      reader.readChunks([0, 1], {
+        readRange: async (read) => {
+          attempts++;
+          try {
+            return await read();
+          } catch {
+            return read();
+          }
+        },
+        onRequest: (r) => reported.push(r),
+      }),
+    );
+    expect(attempts).toBe(1);
+    expect(reported).toHaveLength(1);
   });
 
   it('refuses keys out of ascending order and a width that is not a positive integer', async () => {

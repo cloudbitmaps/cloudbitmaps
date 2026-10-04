@@ -1194,6 +1194,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
           ...(options?.concurrency === undefined ? {} : { concurrency: options.concurrency }),
           ...(options?.ramp === undefined ? {} : { ramp: options.ramp }),
           ...(retry === undefined ? {} : { readRange: retry }),
+          ...(options?.onRequest === undefined ? {} : { onRequest: options.onRequest }),
           now: () => this.now(),
         });
         // Pulled by hand, not by `for await`: a loop binding would keep the chunk just yielded (a view into a range, or
@@ -1266,6 +1267,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
           ...(options?.concurrency === undefined ? {} : { concurrency: options.concurrency }),
           ...(options?.ramp === undefined ? {} : { ramp: options.ramp }),
           ...(retry === undefined ? {} : { readRange: retry }),
+          ...(options?.onRequest === undefined ? {} : { onRequest: options.onRequest }),
           now: () => this.now(),
         }),
       );
