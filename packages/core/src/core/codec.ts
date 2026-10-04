@@ -56,6 +56,14 @@ export interface CodecBitmap {
   [Symbol.iterator](): IterableIterator<number>;
   toArray(): number[];
   /**
+   * The set's values as one ascending `Uint32Array` the caller owns: what a batch read converts a chunk with, in one
+   * native step instead of one iterator step per value.
+   *
+   * **Optional.** A codec without it is read through its iterator, which is correct and slower. It must return a
+   * fresh array each call (the engine rewrites it in place) holding exactly what the iterator yields.
+   */
+  toUint32Array?(): Uint32Array;
+  /**
    * The largest value in the set, or `undefined` when empty.
    *
    * **Optional, and deliberately so.** The engine uses it for one thing: asserting that a payload it is about

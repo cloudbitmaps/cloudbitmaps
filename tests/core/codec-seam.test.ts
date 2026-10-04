@@ -133,4 +133,42 @@ describe('bitmap-codec seam: the engine runs on a non-roaring codec', () => {
     const engine = new SegmentEngine({ storage, codec: setCodec, maxBitmapBytes: 1 });
     await expect(engine.has(seg, 1)).rejects.toThrow(IntegrityError);
   });
+
+  it('batch reads work through a codec with no array export, by its iterator', async () => {
+    // `toUint32Array` is optional on the seam: this codec has none, so every chunk is converted from its iterator.
+    const storage = new MemoryStorageChunkSource();
+    seed(storage, 'a', 0, [1, 3, 5]);
+    seed(storage, 'a', 1, [7, 70_000 & 0xffff]);
+    seed(storage, 'a', 40_000, [2, 65_535]); // a key past 32767, where `<< 16` would wrap negative
+    seed(storage, 'sup', 0, [3]);
+    const engine = new SegmentEngine({ storage, codec: setCodec });
+    const a = { segment: 'a' };
+    const batches = async (it: AsyncIterable<Uint32Array>): Promise<number[][]> => {
+      const out: number[][] = [];
+      for await (const b of it) out.push([...b]);
+      return out;
+    };
+
+    expect(await batches(engine.iterateBatches(a))).toEqual([
+      [1, 3, 5],
+      [65_536 + 7, 65_536 + 4_464],
+      [40_000 * 65_536 + 2, 40_000 * 65_536 + 65_535],
+    ]);
+    expect(await batches(engine.andNotBatches(a, [{ segment: 'sup' }]))).toEqual([
+      [1, 5],
+      [65_536 + 7, 65_536 + 4_464],
+      [40_000 * 65_536 + 2, 40_000 * 65_536 + 65_535],
+    ]);
+  });
+
+  it('a value past 16 bits from a codec that cannot report its maximum is joined as the per-id stream joins it', async () => {
+    // Without `maximum()` the engine cannot refuse the payload, so the ids must still agree between the two reads.
+    const storage = new MemoryStorageChunkSource();
+    seed(storage, 'a', 1, [3, 70_000]);
+    const engine = new SegmentEngine({ storage, codec: setCodec });
+    const a = { segment: 'a' };
+    const flat: number[] = [];
+    for await (const b of engine.iterateBatches(a)) flat.push(...b);
+    expect(flat).toEqual(await collect(engine.iterate(a)));
+  });
 });
