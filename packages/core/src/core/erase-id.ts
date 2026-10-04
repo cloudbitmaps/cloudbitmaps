@@ -6,8 +6,8 @@
  * is what every other write in this library is: a new generation. The current generation is streamed chunk by
  * chunk through the ascending writer — every chunk decoded, range-checked and re-encoded, the one holding the id
  * with that bit cleared — then published fenced on the generation it streamed, and that generation is collected immediately
- * (`keep: 0`), so the bit is **physically gone from the bucket when this returns**. Constant memory: one chunk in
- * flight, never the whole segment.
+ * (`keep: 0`), so the bit is **physically gone from the bucket when this returns**. Bounded memory: a window of 32
+ * chunk reads ahead of the writer, never the whole segment.
  *
  * The rewrite is the same generation without one id, so it keeps everything else: the new object carries the source's
  * metadata as it is, and the row's summary of it, built from what was written, counts one id fewer and holds the same
@@ -74,6 +74,7 @@
  */
 import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
 import { MAX_REMAINDER, splitId } from './bit-route';
+import { ChunkWindow } from './chunk-window';
 import type { CodecBitmap, CodecInterface } from './codec';
 import { requireCodec } from './codec';
 import type { Yielder } from './cooperative';
@@ -665,13 +666,19 @@ export async function eraseIdFromSegment(
   return { ...base, erased: true, fromGeneration: from, generation, collected };
 }
 
+/** How many chunk reads the erasure rewrite keeps open ahead of the writer. */
+const REWRITE_READ_AHEAD = 32;
+
 /**
  * The new generation's chunks, ascending: every chunk of the old generation decoded and passed through, except
  * `chunkKey`, which is replaced by `replacement` (already missing the id). Decoding rather than copying bytes is
  * deliberate — it puts every chunk through the **safe** deserializer and the size cap on the one path that
  * rewrites a whole segment, so a chunk that is not decodable, or is larger than the cap, stops the rewrite
- * instead of being copied forward — and the writer skips a chunk the removal emptied. One chunk is live at a
- * time.
+ * instead of being copied forward — and the writer skips a chunk the removal emptied. Reads run ahead of the writer
+ * through a window of {@link REWRITE_READ_AHEAD} chunks, in key order, so the erasure costs a few round trips
+ * rather than one per chunk; each chunk is decoded only as the writer reaches it, so a corrupt one still stops the
+ * rewrite naming that chunk and not a later one. At most that many raw chunk payloads (about 8 KiB each
+ * serialized) are held ahead of the writer, plus the one being decoded.
  *
  * Both halves of **invariant 5** apply, including the remainder range: a chunk of a 16-bit-keyed segment cannot
  * hold a value above `MAX_REMAINDER`, and one that does was not written by this codec. Carrying it forward would
@@ -691,12 +698,20 @@ async function* rewrite(
   read: <T>(op: () => Promise<T>) => Promise<T>,
 ): AsyncGenerator<{ chunkKey: number; bitmap: CodecBitmap }> {
   const keys = [...reader.chunkKeys()].sort((a, b) => a - b);
+  // The replaced chunk is never read: it is already in hand. Every other chunk is read, so the window opens at its
+  // full width at once; a ramp would only add round trips here, since nothing stops this read early.
+  const window = new ChunkWindow<Uint8Array | null>(
+    keys.filter((k) => k !== chunkKey),
+    (k) => read(() => reader.getChunk(k)),
+    REWRITE_READ_AHEAD,
+    false,
+  );
   for (const k of keys) {
     if (k === chunkKey) {
       yield { chunkKey: k, bitmap: replacement };
       continue;
     }
-    const bytes = await read(() => reader.getChunk(k));
+    const bytes = await window.take();
     if (bytes === null) continue; // listed but absent: nothing to carry forward
     const bitmap = codec.safeDeserialize(bytes, maxBytes);
     assertRemaindersInRange(bitmap, k);
