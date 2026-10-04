@@ -75,6 +75,7 @@ export const ROUTED: readonly string[] = [
   'tests/drivers/s3/throttled-write.test.ts',
   'tests/engine.property.test.ts',
   'tests/flows.test.ts',
+  'tests/roaring/id-stream-batches.test.ts',
   'tests/roaring/segment-handle.test.ts',
   'tests/roaring/store-load-binding.test.ts',
 ];

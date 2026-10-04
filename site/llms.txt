@@ -71,7 +71,7 @@ else one ranged GET once the segment's pointer and index are read), count (exact
 one request when cold, else summed from the .crbm index, with zero payload reads), iterate, and the composites — intersect and andNot, which skip every chunk that cannot
 contribute, and union, which reads every chunk of every operand — with `exclude` suppression folded into the
 same pass. A combine refuses an operand that names no segment (`ValidationError`) rather than reading it as
-empty, unless `allowAbsentOperands: true`. An id-range read, `iterate({ after, through })` and the same options
+empty, unless `allowAbsentOperands: true`. `iterate`, `intersect`, `union` and `andNot` return a stream you `for await` one id at a time, or call `.batches()` on for one `Uint32Array` per chunk (the same ids, ascending). An id-range read, `iterate({ after, through })` and the same options
 on every combine, yields only the ids in (after, through] and fetches only the chunks the range overlaps.
 
 ## Measured, expected and modelled
