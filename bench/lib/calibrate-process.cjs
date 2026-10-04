@@ -12,6 +12,7 @@ const { mkdirSync, readFileSync, writeFileSync } = require('node:fs');
 const { dirname, join } = require('node:path');
 const { createRequire } = require('node:module');
 const { clearTimeout, setTimeout } = require('node:timers');
+const { AbortController } = globalThis;
 
 const { redact } = require('./calibrate-guards.cjs');
 
