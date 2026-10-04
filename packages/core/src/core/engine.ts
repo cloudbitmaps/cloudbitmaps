@@ -202,6 +202,12 @@ export class SegmentEngine {
   private readonly metricsOn: boolean;
   /** Resolved per-op budget (null = disabled); undefined deps ⇒ the generous default. */
   private readonly budget: Budget | null;
+  /**
+   * The chunk reads open right now, by cache key: a caller that misses the cache and finds its key here awaits that
+   * read instead of making its own. An entry lives from the request until it settles, so the map holds at most one
+   * promise per distinct key in flight.
+   */
+  private readonly openReads = new Map<string, Promise<CodecBitmap | null>>();
 
   constructor(deps: EngineDeps) {
     this.storage = deps.storage;
@@ -737,6 +743,8 @@ export class SegmentEngine {
   invalidate(ref: SegmentRef): void {
     const prefix = segmentPrefix(ref);
     this.cache?.deleteWhere((key) => key.startsWith(prefix));
+    // A read already open was asked for before this call, so a caller after it must not join it.
+    for (const key of this.openReads.keys()) if (key.startsWith(prefix)) this.openReads.delete(key);
     this.storage.invalidate?.(ref);
   }
 
@@ -771,7 +779,13 @@ export class SegmentEngine {
    * `gen === undefined` ⇒ the source can't report a generation (it only ever serves one) ⇒ the key stays
    * generation-free. Superseded-generation entries age out under the LRU ceiling — no active purge.
    *
-   * The returned instance is **shared** (it may be the cached one): callers read it or clone it, never mutate it.
+   * Concurrent misses of one key share **one** request, with or without a cache: the first caller starts the read,
+   * later ones await it, and the entry goes when the read settles, so a failure is every waiting caller's and the
+   * next call reads again. The key carries the version exactly as the cache's does, so two versions of one chunk
+   * are two reads, never one.
+   *
+   * The returned instance is **shared** (it may be the cached one, and every caller that joined a read gets the same
+   * one): callers read it or clone it, never mutate it.
    */
   private async storageChunk(
     ref: ChunkRef,
@@ -787,6 +801,22 @@ export class SegmentEngine {
       }
       if (this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: false });
     }
+    const open = this.openReads.get(cacheKey);
+    if (open) return open;
+    const read: Promise<CodecBitmap | null> = (async () => {
+      try {
+        return await this.fetchChunk(ref, cacheKey);
+      } finally {
+        // An invalidation may have dropped this entry and a newer read taken the key: leave that one.
+        if (this.openReads.get(cacheKey) === read) this.openReads.delete(cacheKey);
+      }
+    })();
+    this.openReads.set(cacheKey, read);
+    return read;
+  }
+
+  /** One request for one chunk, decoded, range-checked and cached. */
+  private async fetchChunk(ref: ChunkRef, cacheKey: string): Promise<CodecBitmap | null> {
     const startedAt = this.metricsOn ? this.clock.now() : 0;
     const bytes = await this.storage.getChunk(ref);
     if (this.metricsOn) {
