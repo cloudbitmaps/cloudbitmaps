@@ -196,10 +196,131 @@ describe('the decoded-chunk cache', () => {
         engine.invalidate(ref('a'));
       }
     }
-    // Chunk 1 was already in hand; chunks 2 to 6 were looked up when asked for, found gone, and read from the source.
+    // Chunk 1 was already in hand; chunks 2 to 6 were looked up when asked for, found gone, and read from the source,
+    // as one stream over the chunks that were not there.
     expect(seen.slice(0, 3)).toEqual([joinId(1, 1), joinId(1, 2), joinId(1, 3)]);
     expect(seen.slice(3)).toEqual([2, 3, 4, 5, 6].flatMap((c) => [joinId(c, 10), joinId(c, 11)]));
-    expect(storage.singles.length).toBe(5);
+    expect(opened(storage)).toEqual(['a:2,3,4,5,6']);
+  });
+
+  it('a chunk the LRU dropped between two cached chunks is read afresh, and the rest stay served from the cache', async () => {
+    const { storage, engine, cache } = setup({ a: ids([1, 2, 3, 4, 5]) });
+    await collect(engine.union([ref('a')]));
+    storage.opened.length = 0;
+    const seen: number[] = [];
+    for await (const id of engine.iterate(ref('a'))) {
+      seen.push(id);
+      if (seen.length === 1) cache!.delete(chunkGenKey({ ...ref('a'), chunkKey: 3 }, 'v1'));
+    }
+    expect(seen).toEqual(ids([1, 2, 3, 4, 5]));
+    // Chunk 3 was the first chunk the cache no longer held, so the stream opens there; chunks 4 and 5 were looked up again.
+    expect(opened(storage)).toEqual(['a:3']);
+  });
+
+  it('a chunk that was cached when the stream opened and is gone when asked for is read on its own', async () => {
+    const { storage, engine, cache } = setup({ a: ids([1, 2, 3, 4, 5]) });
+    await collect(engine.union([ref('a')]));
+    cache!.delete(chunkGenKey({ ...ref('a'), chunkKey: 2 }, 'v1')); // the stream opens at chunk 2
+    storage.opened.length = 0;
+    const seen: number[] = [];
+    for await (const id of engine.iterate(ref('a'))) {
+      seen.push(id);
+      if (seen.length === 4) cache!.delete(chunkGenKey({ ...ref('a'), chunkKey: 4 }, 'v1'));
+    }
+    expect(seen).toEqual(ids([1, 2, 3, 4, 5]));
+    expect(opened(storage)).toEqual(['a:2']);
+    expect(storage.singles).toEqual(['a:4']);
+  });
+
+  describe('a warm read opens no stream', () => {
+    const A = ids([1, 2, 3, 4]);
+    const B = ids([2, 3, 4, 9]);
+    const S = ids([3, 4, 7]);
+
+    /** Counts every `getChunks` call (a stream, or the one-key stream of a read of one chunk). */
+    function counted(storage: StreamChunkSource): { calls: number } {
+      const count = { calls: 0 };
+      const original = storage.getChunks.bind(storage);
+      storage.getChunks = (...args: Parameters<typeof original>) => {
+        count.calls += 1;
+        return original(...args);
+      };
+      return count;
+    }
+    const reads: Record<string, (e: SegmentEngine) => AsyncIterable<unknown>> = {
+      intersect: (e) => e.intersect([ref('a'), ref('b')]),
+      union: (e) => e.union([ref('a'), ref('b')]),
+      andNot: (e) => e.andNot(ref('a'), [ref('s')]),
+      'intersect batches': (e) => e.intersectBatches([ref('a'), ref('b')]),
+      'union with an exclude': (e) => e.union([ref('a'), ref('b')], { exclude: [ref('s')] }),
+      iterate: (e) => e.iterate(ref('a')),
+      'iterate batches': (e) => e.iterateBatches(ref('a')),
+    };
+
+    for (const [name, read] of Object.entries(reads)) {
+      it(`${name}: every chunk cached, so getChunks is not called`, async () => {
+        const { storage, engine, metrics } = setup({ a: A, b: B, s: S });
+        const first = await collect(read(engine) as AsyncGenerator<number | Uint32Array>);
+        const calls = counted(storage);
+        const before = metrics.snapshot();
+        const again = await collect(read(engine) as AsyncGenerator<number | Uint32Array>);
+        expect(again).toEqual(first);
+        expect(calls.calls).toBe(0);
+        // Each chunk is one lookup and counted once, as a hit.
+        const after = metrics.snapshot();
+        expect(after.cache.misses).toBe(before.cache.misses);
+        expect(after.cache.hits).toBeGreaterThan(before.cache.hits);
+      });
+    }
+
+    it('counts one hit per chunk looked up', async () => {
+      const { engine, metrics } = setup({ a: A, b: B });
+      await collect(engine.intersect([ref('a'), ref('b')]));
+      const before = metrics.snapshot().cache;
+      await collect(engine.intersect([ref('a'), ref('b')]));
+      const after = metrics.snapshot().cache;
+      expect(after.hits - before.hits).toBe(6); // chunks 2, 3, 4 of each operand
+      expect(after.misses).toBe(before.misses);
+    });
+  });
+
+  describe('an operand that is partly cached streams only the chunks that are not', () => {
+    const A = ids([1, 2, 3, 4, 5, 6]);
+
+    it('the first chunks cached: the stream opens at the first miss', async () => {
+      const { storage, engine } = setup({ a: A });
+      await collect(engine.union([ref('a')], { after: joinId(0, 0), through: joinId(2, 3) }));
+      storage.opened.length = 0;
+      expect(await collect(engine.union([ref('a')]))).toEqual(A);
+      expect(opened(storage)).toEqual(['a:3,4,5,6']);
+    });
+
+    it('the last chunks (4 to 6) cached: the stream carries the chunks before them only', async () => {
+      const { storage, engine } = setup({ a: A });
+      await collect(engine.union([ref('a')], { after: joinId(4, 3) }));
+      storage.opened.length = 0;
+      expect(await collect(engine.union([ref('a')]))).toEqual(A);
+      expect(opened(storage)).toEqual(['a:1,2,3']);
+    });
+
+    it('chunks cached on either side of the misses are not asked of the source', async () => {
+      const { storage, engine, cache } = setup({ a: A });
+      await collect(engine.union([ref('a')]));
+      for (const key of [2, 5]) cache!.delete(chunkGenKey({ ...ref('a'), chunkKey: key }, 'v1'));
+      storage.opened.length = 0;
+      expect(await collect(engine.iterate(ref('a')))).toEqual(A);
+      expect(opened(storage)).toEqual(['a:2,5']);
+    });
+
+    it('an include and an exclude are each opened over their own misses', async () => {
+      const { storage, engine, cache } = setup({ a: A, s: ids([2, 3]) });
+      await collect(engine.andNot(ref('a'), [ref('s')]));
+      cache!.delete(chunkGenKey({ ...ref('a'), chunkKey: 6 }, 'v1'));
+      cache!.delete(chunkGenKey({ ...ref('s'), chunkKey: 3 }, 'v1'));
+      storage.opened.length = 0;
+      expect(await collect(engine.andNot(ref('a'), [ref('s')]))).toEqual(ids([1, 4, 5, 6]));
+      expect(opened(storage).sort()).toEqual(['a:6', 's:3']);
+    });
   });
 
   it('a cache that is smaller than the read still answers correctly', async () => {
