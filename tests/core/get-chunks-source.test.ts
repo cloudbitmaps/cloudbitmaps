@@ -4,11 +4,12 @@
  * bytes back, since a count says nothing about which generation answered.
  */
 import { randomBytes } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { CrbmStorageChunkSource, NotFoundError, TransientError, ValidationError } from '@/index';
 import { RetryingStorageChunkSource } from '@/drivers/retry/retrying-chunk-source';
 import type { Clock, GenKey, SegmentRef } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
+import type { Aead } from '@/core/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { PinnedStorageChunkSource } from '@/core/pinned-storage-source';
 import type { PinnedAt } from '@/core/pinned-storage-source';
@@ -16,6 +17,7 @@ import { segmentKey } from '@/core/keys';
 import { SafeBitmap } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { collect, expectSameBytes } from '../helpers/chunk-stream';
+import { Gate, Watched, tick, worstWhileWaiting } from '../helpers/live-buffers';
 import type { ChunkRead, ReadChunksOptions, StorageChunkSource } from '@/core/ports';
 
 /** What a stream yields, gathered: the chunks lined up with the keys, and the version each one was read from. */
@@ -30,6 +32,9 @@ async function read(
   expect(versions.size, 'one stream, one generation').toBeLessThanOrEqual(1);
   return { version: items[0]?.version ?? null, chunks: items.map((i) => i.bytes), items };
 }
+
+// Building a 400-chunk object takes seconds under the load of the whole suite, before a case starts.
+vi.setConfig({ testTimeout: 30_000 });
 
 const REF: SegmentRef = { segment: 's' };
 const K = 65_536;
@@ -73,16 +78,34 @@ class CountingStorage extends MemoryStorageDriver {
   }
   inFlight = 0;
   peak = 0;
+  /** When set, each range read answers a buffer of its own, registered here, and waits on the gate once it has it. */
+  watch: { ranges: Watched; gate: Gate } | undefined;
   override async getRange(key: GenKey, offset: number, length: number): Promise<Uint8Array> {
     this.ranges.push({ generation: key.generation, offset, length });
     this.inFlight++;
     this.peak = Math.max(this.peak, this.inFlight);
     try {
       await this.beforeRange?.(this.ranges.length);
-      return await super.getRange(key, offset, length);
+      const bytes = await super.getRange(key, offset, length);
+      if (this.watch === undefined) return bytes;
+      const copy = this.watch.ranges.track(new Uint8Array(bytes));
+      await this.watch.gate.wait();
+      return copy;
     } finally {
       this.inFlight--;
     }
+  }
+}
+
+/** A keystore whose every opened chunk is a buffer of its own, registered. */
+class WatchingKeystore extends InProcessKeystore {
+  readonly plains = new Watched(true);
+  override async openDek(wrapped: Parameters<InProcessKeystore['openDek']>[0]): Promise<Aead> {
+    const aead = await super.openDek(wrapped);
+    return {
+      seal: (plain, aad) => aead.seal(plain, aad),
+      open: (sealed, aad) => this.plains.track(aead.open(sealed, aad)),
+    };
   }
 }
 
@@ -404,11 +427,33 @@ describe('CrbmStorageChunkSource.getChunks: a stream across waves', () => {
     storage.beforeRange = async () => {
       clock.advance(7);
     };
-    const got = await read(source, REF, [0, 44]);
-    const requests = got.items.flatMap((i) => (i.request === undefined ? [] : [i.request]));
+    const requests: { bytes: number; ms: number }[] = [];
+    await collect(source.getChunks!(REF, [0, 44], { onRequest: (r) => requests.push(r) }));
     expect(requests).toHaveLength(storage.ranges.length);
-    expect(requests.map((r) => r.bytes)).toEqual(storage.ranges.map((r) => r.length));
+    expect(requests.map((r) => r.bytes).sort()).toEqual(storage.ranges.map((r) => r.length).sort());
     for (const r of requests) expect(r.ms).toBeGreaterThanOrEqual(7);
+  });
+
+  it('reports every range request it sent to onRequest, those a consumer that stopped left in flight included, through the retrying wrapper too', async () => {
+    const { source, storage } = await world();
+    const retrying = new RetryingStorageChunkSource(source, {
+      clock: manualClock(),
+      rng: { next: () => 0.5 },
+    });
+    storage.beforeRange = () => new Promise((r) => setTimeout(r, 5));
+    for (const reading of [source, retrying]) {
+      storage.ranges.length = 0;
+      const requests: { bytes: number }[] = [];
+      const stream = reading.getChunks!(REF, [0, 36, 40, 44], {
+        concurrency: 4,
+        onRequest: (r) => requests.push(r),
+      })[Symbol.asyncIterator]();
+      await stream.next();
+      await stream.return?.();
+      await new Promise((r) => setTimeout(r, 40));
+      expect(storage.ranges.length).toBeGreaterThan(1);
+      expect(requests).toHaveLength(storage.ranges.length);
+    }
   });
 
   it('a stream that stops early leaves no unhandled failure behind', async () => {
@@ -501,6 +546,163 @@ describe('CrbmStorageChunkSource.getChunks: what a stream bounds, and what it re
     }
     await new Promise((r) => setTimeout(r, 300));
     expect(storage.ranges).toHaveLength(4); // the four the window opened with, each tried once
+  });
+});
+
+describe('CrbmStorageChunkSource.getChunks: a consumer that waits holds at most `concurrency` ranges and no chunk', () => {
+  /** Sixteen ranges of their own, each a chunk of 8 KiB (every 34th of 560 chunks). */
+  const KEYS = Array.from({ length: 16 }, (_, i) => i * 34);
+  const modes = ['getChunks', 'getChunksAt', 'the pinned wrapper', 'the retrying wrapper'] as const;
+
+  describe.each([
+    { name: 'plain', encrypted: false },
+    { name: 'encrypted', encrypted: true },
+  ])('$name', ({ encrypted }) => {
+    const keystore = encrypted
+      ? new WatchingKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' })
+      : undefined;
+    let shared!: Awaited<ReturnType<typeof world>>;
+    beforeAll(async () => {
+      shared = await world({ chunks: 560, keystore });
+    }, 60_000);
+
+    it.each(modes.flatMap((mode) => [1, 4].map((width) => ({ mode, width }))))(
+      '$mode at width $width',
+      async ({ mode, width }) => {
+        const { source, storage, clock } = shared;
+        const ranges = new Watched();
+        const gate = new Gate();
+        const pin = (await source.pinGeneration(REF))!;
+        const options = { concurrency: width };
+        let stream: AsyncIterable<unknown>;
+        if (mode === 'getChunks') stream = source.getChunks(REF, KEYS, options);
+        else if (mode === 'getChunksAt') stream = source.getChunksAt(REF, 0, KEYS, pin, options);
+        else if (mode === 'the pinned wrapper') {
+          const wrapper = new PinnedStorageChunkSource(source, new Map([[segmentKey(REF), pin]]));
+          stream = wrapper.getChunks!(REF, KEYS, options);
+        } else {
+          const retrying = new RetryingStorageChunkSource(source, {
+            clock,
+            rng: { next: () => 0.5 },
+          });
+          stream = retrying.getChunks!(REF, KEYS, options);
+        }
+        const it = stream[Symbol.asyncIterator]();
+        await it.next().then(() => undefined); // resolves and opens; the reads from here on are watched
+        storage.watch = { ranges, gate };
+        ranges.reset();
+        keystore?.plains.reset();
+        const { worst, waits } = await worstWhileWaiting(
+          () => it.next(),
+          gate,
+          async () => [await ranges.live(), (await keystore?.plains.live()) ?? 0],
+          3,
+        );
+        await it.return!(undefined);
+        expect(waits, 'the stream was caught waiting').toBeGreaterThanOrEqual(2);
+        expect(worst[0]!, 'range buffers held').toBeLessThanOrEqual(width);
+        expect(worst[1]!, 'decrypted chunks held').toBe(0);
+      },
+      60_000,
+    );
+  });
+});
+
+describe('CrbmStorageChunkSource.getChunks: a consumer that stops sends nothing more, on every path', () => {
+  it.each(['getChunks', 'getChunksAt', 'the pinned wrapper'] as const)(
+    'through %s, the requests in flight finish and are not tried again',
+    async (mode) => {
+      const { source, storage } = await world({ chunks: 400 });
+      const pin = (await source.pinGeneration(REF))!;
+      // A caller's runner that sends a request again after a transient fault, as a retrying caller would.
+      const retry = async <T>(request: () => Promise<T>): Promise<T> => {
+        for (let attempt = 0; ; attempt++) {
+          try {
+            return await request();
+          } catch (err) {
+            if (!(err instanceof TransientError) || attempt >= 20) throw err;
+            await tick(3);
+          }
+        }
+      };
+      storage.beforeRange = async (n) => {
+        if (n > 1) throw new TransientError('down');
+      };
+      const options = { concurrency: 4, retry };
+      let stream: AsyncIterable<{ key: number }>;
+      if (mode === 'getChunks') stream = source.getChunks!(REF, SPREAD, options);
+      else if (mode === 'getChunksAt') stream = source.getChunksAt(REF, 0, SPREAD, pin, options);
+      else {
+        const wrapper = new PinnedStorageChunkSource(source, new Map([[segmentKey(REF), pin]]));
+        stream = wrapper.getChunks!(REF, SPREAD, options);
+      }
+      for await (const chunk of stream) {
+        expect(chunk.key).toBe(0);
+        break;
+      }
+      await tick(250);
+      expect(storage.ranges).toHaveLength(4); // the four the window opened with, each tried once
+      expect(storage.inFlight).toBe(0);
+    },
+  );
+});
+
+describe('CrbmStorageChunkSource.getChunks: a stream that fails', () => {
+  it('raises at once when the failure is not one it heals, though a later read never answers', async () => {
+    const { source, storage } = await world({ chunks: 400 });
+    storage.beforeRange = async (n) => {
+      if (n === 2) throw new Error('boom2');
+      if (n === 3) await new Promise(() => {}); // a read that never answers
+    };
+    const outcome = (async () => {
+      try {
+        await collect(source.getChunks!(REF, SPREAD, { concurrency: 4 }));
+        return 'finished';
+      } catch (err) {
+        return (err as Error).message;
+      }
+    })();
+    // Counted in turns of the event loop, not in time: a stream that waited for read 3 would still be pending.
+    let turns = 0;
+    let result: string | undefined;
+    void outcome.then((r) => (result = r));
+    while (result === undefined && turns < 50) {
+      await new Promise((r) => setImmediate(r));
+      turns++;
+    }
+    expect(result).toBe('boom2');
+    expect(turns).toBeLessThan(50);
+  });
+
+  it('sends nothing more once it has failed, and the reads it left in flight never raise', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const { source, storage } = await world({ chunks: 400 });
+      const retrying = new RetryingStorageChunkSource(source, {
+        clock: { ...manualClock(), sleep: () => new Promise((r) => setTimeout(r, 10)) },
+        rng: { next: () => 0.5 },
+      });
+      storage.beforeRange = async (n) => {
+        if (n === 1) throw new Error('not transient');
+        await tick(20); // the others are slow, and then fail in a way that would be retried
+        throw new TransientError('down');
+      };
+      await expect(collect(retrying.getChunks!(REF, SPREAD, { concurrency: 4 }))).rejects.toThrow(
+        'not transient',
+      );
+      const sent = storage.ranges.length;
+      expect(sent).toBe(4); // the window the stream opened with, each tried once
+      await tick(300);
+      expect(storage.ranges.length, 'no attempt after the failure').toBe(sent);
+      expect(storage.inFlight).toBe(0);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+    expect(unhandled).toEqual([]);
   });
 });
 

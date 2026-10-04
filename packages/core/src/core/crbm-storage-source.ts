@@ -57,7 +57,8 @@ import type {
 } from './ports';
 import { DEFAULT_TAIL_BYTES } from './crbm/format';
 import { CrbmReader, fingerprintFor, footerSaysEncrypted } from './crbm/reader';
-import type { CrbmReaderOptions } from './crbm/reader';
+import type { ChunkStream, CrbmReaderOptions } from './crbm/reader';
+import { ItemPull } from './item-pull';
 import { CrbmWriter } from './crbm/writer';
 import type { CodecBitmap, CodecInterface, EncodedChunk } from './codec';
 import { requireCodec } from './codec';
@@ -1164,6 +1165,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     for (;;) {
       let snap = this.liveSnapshot(ref);
       let pending = snap.reader;
+      let chunks: ChunkStream | undefined;
       try {
         // A caller that retries has the resolution and open run through it; a failed one forgets itself, so each
         // try resolves anew.
@@ -1188,26 +1190,40 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         // already tell generations apart: an object replaced under the same number and the same token reads under
         // the same version on both sides of a heal.
         const version = versionOf(reader.generation, reader.lineage);
-        const chunks = reader.readChunks(keys.slice(yielded), {
+        chunks = reader.readChunks(keys.slice(yielded), {
           ...(options?.concurrency === undefined ? {} : { concurrency: options.concurrency }),
           ...(options?.ramp === undefined ? {} : { ramp: options.ramp }),
           ...(retry === undefined ? {} : { readRange: retry }),
+          ...(options?.onRequest === undefined ? {} : { onRequest: options.onRequest }),
           now: () => this.now(),
         });
-        for await (const chunk of chunks) {
-          yield { ...chunk, version };
-          yielded += 1;
-          healed = false;
+        // Pulled by hand, not by `for await`: a loop binding would keep the chunk just yielded (a view into a range, or
+        // a decrypted chunk) alive while the next one is awaited.
+        const pull = new ItemPull(chunks);
+        try {
+          while (await pull.advance()) {
+            // Counted as it is handed out: the next thing to happen to the stream is the consumer asking for more.
+            yield pull.take((chunk) => {
+              yielded += 1;
+              healed = false;
+              return { ...chunk, version };
+            });
+          }
+        } finally {
+          await pull.close();
         }
         return;
       } catch (err) {
-        // Each heal needs a chunk yielded since the last, so a stream heals at most once per range it reads (a
-        // heal plans the keys that remain again). The two misses that are recoverable, as for a single chunk: a generation swept from under the snapshot, and
-        // one whose object was replaced under the same number. Anything else propagates, and so does a second miss
-        // with no chunk in between.
+        // Each heal needs a chunk yielded since the last, so a stream heals at most once per range it reads (a heal
+        // plans the keys that remain again). The two misses that are recoverable, as for a single chunk: a
+        // generation swept from under the snapshot, and one whose object was replaced under the same number.
+        // Anything else propagates at once, and so does a second miss with no chunk in between.
         if (healed) throw err;
         if (!isNotFoundError(err) && !(await this.replacedUnder(ref, pending, err, retry)))
           throw err;
+        // Only a heal waits: the ranges the failed stream still has in flight finish first, so the new stream's
+        // window does not open beside them.
+        await chunks?.settled();
         this.dropStale(segmentKey(ref), snap);
         healed = true;
       }
@@ -1245,12 +1261,21 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     )
       throw notThePinned(ref, generation);
     try {
-      yield* reader.readChunks(keys, {
-        ...(options?.concurrency === undefined ? {} : { concurrency: options.concurrency }),
-        ...(options?.ramp === undefined ? {} : { ramp: options.ramp }),
-        ...(retry === undefined ? {} : { readRange: retry }),
-        now: () => this.now(),
-      });
+      // Pulled by hand, as in getChunks: `yield*` would keep the chunk just yielded while the next is awaited.
+      const pull = new ItemPull(
+        reader.readChunks(keys, {
+          ...(options?.concurrency === undefined ? {} : { concurrency: options.concurrency }),
+          ...(options?.ramp === undefined ? {} : { ramp: options.ramp }),
+          ...(retry === undefined ? {} : { readRange: retry }),
+          ...(options?.onRequest === undefined ? {} : { onRequest: options.onRequest }),
+          now: () => this.now(),
+        }),
+      );
+      try {
+        while (await pull.advance()) yield pull.take((chunk) => chunk);
+      } finally {
+        await pull.close();
+      }
     } catch (err) {
       // As for a single chunk ({@link getChunkAt}): a pin's reader outlives its object when the name is purged and
       // loaded again, and its index then points into bytes that are not its own.

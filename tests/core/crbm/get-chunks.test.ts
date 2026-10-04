@@ -1,6 +1,4 @@
 import { randomBytes } from 'node:crypto';
-import { setFlagsFromString } from 'node:v8';
-import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { BufferReader, BufferSink } from '@/core/blob';
 import type { BlobReader } from '@/core/blob';
@@ -17,6 +15,7 @@ import {
   MAX_RANGES_IN_FLIGHT,
 } from '@/core/crbm/plan-reads';
 import { collect, expectSameBytes } from '../../helpers/chunk-stream';
+import { Gate, Watched, tick, worstWhileWaiting } from '../../helpers/live-buffers';
 
 /** The bytes of each chunk a stream yields, in order: what an array-returning read would have answered. */
 async function getChunks(
@@ -304,7 +303,6 @@ async function object(sizes: readonly number[], crypto?: CrbmCrypto): Promise<Ui
   return sink.bytes();
 }
 const keysOf = (n: number): number[] => Array.from({ length: n }, (_, i) => i);
-const tick = (ms = 20): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 describe('CrbmReader.readChunks: what a stream holds and has in flight', () => {
   it.each([
@@ -342,70 +340,94 @@ describe('CrbmReader.readChunks: what a stream holds and has in flight', () => {
     60_000,
   );
 
-  it.each([
+  /**
+   * A reader over `count` 1 MiB chunks whose every range read allocates a buffer of its own, and (encrypted) whose
+   * every decrypted chunk is a buffer of its own, both watched, with a gate the reads wait on once they have allocated.
+   */
+  async function watchedReader(crypto: CrbmCrypto | undefined, count: number) {
+    const ranges = new Watched();
+    const plains = new Watched(true);
+    const gate = new Gate();
+    const inner = new BufferReader(
+      await object(
+        Array.from({ length: count }, () => MIB),
+        crypto,
+      ),
+    );
+    const blob: BlobReader = {
+      getRange: async (offset, length) => {
+        const copy = ranges.track(new Uint8Array(await inner.getRange(offset, length)));
+        await gate.wait();
+        return copy;
+      },
+      getTail: (max) => inner.getTail(max),
+    };
+    const watching: CrbmCrypto | undefined = crypto && {
+      aadFor: crypto.aadFor,
+      aead: {
+        seal: (p, a) => crypto.aead.seal(p, a),
+        open: (sealed, aad) => plains.track(crypto.aead.open(sealed, aad)),
+      },
+    };
+    const reader = await CrbmReader.open(blob, watching ? { crypto: watching } : {});
+    ranges.reset();
+    plains.reset(); // opening the object decrypted its index: not a chunk
+    return { reader, ranges, plains, gate };
+  }
+
+  describe.each([
     { name: 'plain', crypto: undefined },
     { name: 'encrypted', crypto: cryptoFor(dek) },
-  ])(
-    'holds no more than `concurrency` range buffers while the consumer waits, and none of the chunk it was just given ($name)',
-    async ({ crypto }) => {
-      setFlagsFromString('--expose-gc');
-      const gc = runInNewContext('gc') as () => void;
-      const collected = async (): Promise<void> => {
-        for (let i = 0; i < 3; i++) {
-          await new Promise((r) => setImmediate(r));
-          gc();
-        }
-      };
-      const bytes = await object(
-        Array.from({ length: 40 }, () => MIB),
-        crypto,
-      );
-      // Each range read answers a buffer of its own, and each decrypted chunk is a buffer of its own: watch them.
-      const ranges: WeakRef<ArrayBufferLike>[] = [];
-      const plains: WeakRef<ArrayBufferLike>[] = [];
-      const inner = new BufferReader(bytes);
-      const blob: BlobReader = {
-        getRange: async (offset, length) => {
-          const copy = new Uint8Array(await inner.getRange(offset, length));
-          ranges.push(new WeakRef(copy.buffer));
-          return copy;
-        },
-        getTail: (max) => inner.getTail(max),
-      };
-      const watching: CrbmCrypto | undefined = crypto && {
-        aadFor: crypto.aadFor,
-        aead: {
-          seal: (p, a) => crypto.aead.seal(p, a),
-          open: (sealed, aad) => {
-            const out = crypto.aead.open(sealed, aad);
-            plains.push(new WeakRef(out.buffer));
-            return out;
-          },
-        },
-      };
-      const live = (refs: WeakRef<ArrayBufferLike>[]): number =>
-        refs.filter((r) => r.deref() !== undefined).length;
-      for (const width of [1, 4, 8]) {
-        ranges.length = 0;
-        plains.length = 0;
-        const reader = await CrbmReader.open(blob, watching ? { crypto: watching } : {});
-        ranges.length = 0;
-        plains.length = 0; // opening the object decrypted its index: not a chunk
-        const it = reader.readChunks(keysOf(40), { concurrency: width });
-        for (let k = 0; k < 20; k++) {
-          // the chunk is dropped as soon as its key is read
-          const key = await it.next().then((r) => (r.value as { key: number }).key);
-          expect(key).toBe(k);
-          await tick(2);
-          await collected();
-          expect(live(ranges), `width ${width}, after chunk ${k}`).toBeLessThanOrEqual(width);
-          expect(live(plains), `width ${width}, after chunk ${k}`).toBe(0);
-        }
+  ])('a consumer that waits inside the stream ($name)', ({ crypto }) => {
+    it.each([1, 4, 8])(
+      'holds at most `concurrency` range buffers and no decrypted chunk, at width %i',
+      async (width) => {
+        const { reader, ranges, plains, gate } = await watchedReader(crypto, 64);
+        const it = reader.readChunks(keysOf(64), { concurrency: width });
+        const { worst, waits } = await worstWhileWaiting(
+          () => it.next(),
+          gate,
+          async () => [await ranges.live(), await plains.live()],
+          4,
+        );
         await it.return(undefined);
-      }
-    },
-    60_000,
-  );
+        expect(waits, 'the stream was caught waiting').toBe(4);
+        expect(worst[0]!, 'range buffers held').toBeLessThanOrEqual(width);
+        expect(worst[1]!, 'decrypted chunks held').toBe(0);
+      },
+      60_000,
+    );
+
+    it.each([1, 4])(
+      'holds nothing of a key it answered several times once the last repeat is out, at width %i',
+      async (width) => {
+        const { reader, ranges, plains, gate } = await watchedReader(crypto, 64);
+        // Every key asked for one to three times over, so the stream waits for the next range just after a repeat.
+        const keys = keysOf(64).flatMap((key) => Array.from({ length: (key % 3) + 1 }, () => key));
+        const it = reader.readChunks(keys, { concurrency: width });
+        const { worst, waits } = await worstWhileWaiting(
+          () => it.next(),
+          gate,
+          async () => [await ranges.live(), await plains.live()],
+          6,
+        );
+        await it.return(undefined);
+        expect(waits).toBe(6);
+        expect(worst[0]!, 'range buffers held').toBeLessThanOrEqual(width);
+        expect(worst[1]!, 'decrypted chunks held').toBe(0);
+      },
+      60_000,
+    );
+
+    it('holds nothing once its last chunk is out and the consumer lets go of it', async () => {
+      const { reader, ranges, plains } = await watchedReader(crypto, 8);
+      const it = reader.readChunks([0, 3, 3, 3, 7, 7], { concurrency: 2 });
+      for (let n = 0; n < 6; n++) await it.next().then(() => undefined);
+      expect((await it.next()).done).toBe(true);
+      expect(await ranges.live()).toBe(0);
+      expect(await plains.live()).toBe(0);
+    });
+  });
 
   it('runs as many ranges together as the width allows, and the default width is 32', async () => {
     const parking = new Parking(
@@ -534,22 +556,91 @@ describe('CrbmReader.readChunks: what a stream holds and has in flight', () => {
     expect(await getChunks(reader, keysOf(6))).toHaveLength(6);
   });
 
-  it('marks the first chunk of each range with what the request moved and how long it took', async () => {
+  it('tells onRequest of each range it sends, once, with what the request moved and how long it took', async () => {
     const reader = await CrbmReader.open(new BufferReader(await build()));
     let t = 0;
-    const items = await collect(
+    const requests: { bytes: number; ms: number }[] = [];
+    await collect(
       reader.readChunks([0, 1, 2, 4, 9, 20], {
         // one reading when a range starts and one when it lands: each takes 7
         now: () => (t += 7),
+        onRequest: (r) => requests.push(r),
       }),
     );
-    const requests = items.flatMap((i) => (i.request === undefined ? [] : [[i.key, i.request]]));
-    expect(requests.map(([key]) => key)).toEqual([0, 9]);
-    expect(requests.map(([, r]) => (r as { bytes: number }).bytes)).toEqual([5 * SIZE, 2 * SIZE]);
-    for (const [, r] of requests) expect((r as { ms: number }).ms).toBeGreaterThan(0);
-    // An absent key carries none, and a repeated key does not count its request twice.
-    const again = await collect(reader.readChunks([0, 0, 15]));
-    expect(again.filter((i) => i.request !== undefined)).toHaveLength(1);
+    expect(requests.map((r) => r.bytes).sort()).toEqual([2 * SIZE, 5 * SIZE].sort());
+    for (const r of requests) expect(r.ms).toBeGreaterThan(0);
+    // An absent key sends none, and a repeated key does not count its request twice.
+    const again: unknown[] = [];
+    await collect(reader.readChunks([0, 0, 15], { onRequest: (r) => again.push(r) }));
+    expect(again).toHaveLength(1);
+  });
+
+  it('tells onRequest of a range nobody took: every request launched is reported, before and after the stop', async () => {
+    const parking = new Parking(new BufferReader(await object(keysOf(40).map(() => MIB))));
+    const reader = await CrbmReader.open(parking);
+    parking.requests = 0;
+    const reported: { bytes: number }[] = [];
+    const stream = reader.readChunks(keysOf(40), {
+      concurrency: 8,
+      onRequest: (r) => reported.push(r),
+    });
+    await stream.next();
+    await stream.return(undefined);
+    await tick(40);
+    expect(parking.requests).toBeGreaterThan(1);
+    expect(reported).toHaveLength(parking.requests);
+    expect(reported.every((r) => r.bytes === MIB)).toBe(true);
+    const launched = parking.requests;
+    await tick(40);
+    expect(parking.requests).toBe(launched); // nothing more after the stop, and nothing more reported
+    expect(reported).toHaveLength(launched);
+  });
+
+  it('reports a range that failed with no bytes, and ignores a sink that throws', async () => {
+    const parking = new Parking(new BufferReader(await object(keysOf(6).map(() => MIB))));
+    const reader = await CrbmReader.open(parking);
+    parking.requests = 0;
+    parking.failFrom = 3;
+    const reported: { bytes: number }[] = [];
+    await expect(
+      collect(reader.readChunks(keysOf(6), { concurrency: 6, onRequest: (r) => reported.push(r) })),
+    ).rejects.toThrow(/range 3 failed/);
+    await tick(40);
+    expect(reported).toHaveLength(parking.requests);
+    expect(reported.filter((r) => r.bytes === 0).length).toBeGreaterThan(0);
+    expect(reported.filter((r) => r.bytes === MIB).length).toBeGreaterThan(0);
+
+    parking.failFrom = undefined;
+    parking.requests = 0;
+    const got = await collect(
+      reader.readChunks(keysOf(3), {
+        onRequest: () => {
+          throw new Error('a sink that throws');
+        },
+      }),
+    );
+    expect(got).toHaveLength(3);
+  });
+
+  it('reports a retried range once, when it settles', async () => {
+    const reader = await CrbmReader.open(new BufferReader(await build()));
+    const reported: { bytes: number }[] = [];
+    let attempts = 0;
+    await collect(
+      reader.readChunks([0, 1], {
+        readRange: async (read) => {
+          attempts++;
+          try {
+            return await read();
+          } catch {
+            return read();
+          }
+        },
+        onRequest: (r) => reported.push(r),
+      }),
+    );
+    expect(attempts).toBe(1);
+    expect(reported).toHaveLength(1);
   });
 
   it('refuses keys out of ascending order and a width that is not a positive integer', async () => {
