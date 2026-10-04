@@ -122,6 +122,7 @@ describe('SystemClock.yieldNow', () => {
       // A few real loop turns: `setImmediate` is not faked, so a yield built on it settles in the first of them.
       for (let turn = 0; turn < 3; turn++) await new Promise((r) => setImmediate(r));
       expect(settled, 'yieldNow must settle on a loop turn, with every timer held back').toBe(20);
+      expect(vi.getTimerCount(), 'yieldNow must not leave a timer pending').toBe(0);
       await Promise.all(yields);
     } finally {
       vi.useRealTimers();

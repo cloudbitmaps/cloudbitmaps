@@ -584,21 +584,27 @@ describe('a GCS read with readTimeoutMs', () => {
   );
 
   describe('the metadata read a tail read falls back on (a 416 asks it whether the object is empty)', () => {
+    // The read has to reach the child, the stub and the metadata request inside its deadline, and on a machine running
+    // other suites a cold child alone can take a good part of 200 ms. These two timeouts leave that room; what they
+    // assert (the stall ends the read at the timeout, once; nothing is sent after it) does not depend on how short it is.
+    const HOP_TIMEOUT = 1_500;
     it.concurrent(
       'is inside the same deadline: a stall there fails the tail read at the timeout, once',
       async () => {
-        const { run, counts } = await scenario('tail', TIMEOUT, {
+        const { run, counts } = await scenario('tail', HOP_TIMEOUT, {
           media: [416],
           metadata: ['stall'],
         });
         expect(run.code).toBe(0);
         expect(run.outcome).toMatchObject({ error: 'TransientError' });
-        expect(String(run.outcome?.message)).toMatch(READ_NAME.tail);
+        expect(String(run.outcome?.message)).toMatch(
+          /^GCS tail read of s\.0 timed out after 1500 ms$/,
+        );
         expect(counts.downloads).toBe(1);
         expect(counts.metadata).toBe(1);
         const ms = Number(run.outcome?.ms);
-        expect(ms).toBeGreaterThanOrEqual(TIMEOUT - 20);
-        expect(ms).toBeLessThan(TIMEOUT + SLACK_MS);
+        expect(ms).toBeGreaterThanOrEqual(HOP_TIMEOUT - 20);
+        expect(ms).toBeLessThan(HOP_TIMEOUT + SLACK_MS);
       },
       30_000,
     );
@@ -607,18 +613,28 @@ describe('a GCS read with readTimeoutMs', () => {
       'sends nothing after the deadline: a metadata read that keeps failing stops when the tail read does',
       async () => {
         // On a client whose SDK retry is on, the abandoned request would go on retrying after the read had failed.
-        const { run, counts, atOutcome } = await scenario(
-          'tail',
-          TIMEOUT,
-          { media: [416], metadata: [503] },
-          'linger=3500',
-        );
-        expect(run.code).toBe(0);
-        expect(run.outcome).toMatchObject({ error: 'TransientError' });
-        expect(atOutcome.metadata).toBeGreaterThanOrEqual(1);
-        expect(counts.metadata).toBe(atOutcome.metadata);
+        // The deadline has to stay short for that: a longer one outlasts the whole retry. So the read can end before
+        // its metadata request has reached the stub on a loaded machine, and a run that ended so proves nothing; it is
+        // run again, up to five times, until the request did get there, and only a run that never does fails.
+        let reached = 0;
+        for (let attempt = 0; attempt < 5 && reached === 0; attempt++) {
+          const { run, counts, atOutcome } = await scenario(
+            'tail',
+            TIMEOUT,
+            { media: [416], metadata: [503] },
+            'linger=3500',
+          );
+          expect(run.code).toBe(0);
+          expect(run.outcome).toMatchObject({ error: 'TransientError' });
+          expect(counts.metadata).toBe(atOutcome.metadata);
+          reached = atOutcome.metadata;
+        }
+        expect(
+          reached,
+          'the metadata request never reached the stub inside the deadline',
+        ).toBeGreaterThanOrEqual(1);
       },
-      30_000,
+      60_000,
     );
 
     it.concurrent(

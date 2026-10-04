@@ -1667,9 +1667,11 @@ describe('no document claims behaviour this library does not have', () => {
       //
       // Judged by how the time grows, not by a wall-clock bound: each shape is read at a quarter of the length and at
       // the full length, in this process, so a loaded machine slows both alike. Four times the input is about four
-      // times the time for a single scan and sixteen for a scan per unit, and more for a pattern that tries each
-      // split. A reading is the least of three, so a pause in one run does not decide it; the full length must also
-      // take long enough (over 100 ms) to be told from noise before its growth counts against it.
+      // times the time for a single scan and sixteen for a scan per unit. A reading is the least of three, so a pause
+      // in one run does not decide it. The growth counts against a shape only when its full-length reading is over
+      // 100 ms, which is the floor that tells it from noise: so only a regression that takes a shape past 100 ms is
+      // caught. Several shapes read in a few milliseconds, and a regression that leaves one of them under the floor is
+      // not seen; what the test catches is a scan that goes quadratic or worse on 100 KB, as the old 2 s bound did.
       const FULL = 102_400;
       const timed = (line: string): number => {
         let least = Infinity;

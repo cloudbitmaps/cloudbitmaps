@@ -157,19 +157,66 @@ function releaseTags(): string[] {
 }
 
 /**
- * The baseline of each tagged release, or of its correcting commit when {@link CORRECTIONS} names one. A version is
- * left out when its tag does not carry the section: nothing then says what it released.
+ * The baseline of each release tag, or of its correcting commit when {@link CORRECTIONS} names one, and a message for
+ * each tag whose changelog has no section in the heading form (`## [x.y.z]`): nothing then says what it released, and a
+ * release that protects nothing must fail rather than pass. `show` reads a file at a git ref.
  */
-function baselines(): Map<string, string[]> {
-  const out = new Map<string, string[]>();
-  for (const tag of releaseTags()) {
+export function collectBaselines(
+  tags: readonly string[],
+  show: (ref: string) => string,
+): { baselines: Map<string, string[]>; missing: string[] } {
+  const baselines = new Map<string, string[]>();
+  const missing: string[] = [];
+  for (const tag of tags) {
     const version = tag.slice(1);
     const fixed = CORRECTIONS.find((c) => c.version === version);
     const source = fixed === undefined ? tag : fixed.commit;
-    const section = releasedSections(git('show', `${source}:CHANGELOG.md`)).get(version);
-    if (section !== undefined) out.set(version, section);
+    let text: string;
+    try {
+      text = show(source);
+    } catch {
+      missing.push(
+        `${tag} has no CHANGELOG.md at ${source}, so nothing says what ${version} released`,
+      );
+      continue;
+    }
+    const section = releasedSections(text).get(version);
+    if (section === undefined)
+      missing.push(
+        `${tag} has no \`## [${version}]\` section in its CHANGELOG.md (at ${source}), so nothing says what ${version} released`,
+      );
+    else baselines.set(version, section);
   }
-  return out;
+  return { baselines, missing };
+}
+
+const baselines = (): ReturnType<typeof collectBaselines> =>
+  collectBaselines(releaseTags(), (ref) => git('show', `${ref}:CHANGELOG.md`));
+
+/**
+ * The released sections that have no tag and may not. A version with no tag is the release being cut, and may be:
+ * - newer than every tag, or
+ * - the top released section of the file and the newest of its own minor line, tagged or not, which admits a backport
+ *   cut (a patch of an older line, cut while a newer line is already tagged) and nothing looser.
+ * `versions` is the file's released sections, top first.
+ */
+export function untaggedProblems(
+  versions: readonly string[],
+  tagged: ReadonlySet<string>,
+): string[] {
+  const latestTagged = [...tagged].sort(compare).pop() ?? '0.0.0';
+  const line = (v: string): string => v.split('.').slice(0, 2).join('.');
+  const all = [...new Set([...versions, ...tagged])];
+  return versions
+    .filter((v) => compare(v, FIRST_COVERED.join('.')) >= 0 && !tagged.has(v))
+    .filter((v) => compare(v, latestTagged) < 0)
+    .filter(
+      (v) => !(v === versions[0] && !all.some((o) => line(o) === line(v) && compare(o, v) > 0)),
+    )
+    .map(
+      (v) =>
+        `the section for ${v} has no tag, though a newer release is tagged, and it is not a backport cut at the top`,
+    );
 }
 
 const SAMPLE = [
@@ -208,18 +255,81 @@ describe('a released section of CHANGELOG.md is fixed', () => {
   });
 
   it('matches the section each release tag carries, in every line', () => {
-    const base = baselines();
+    const { baselines: base, missing } = baselines();
     expect(base.size, `the tags carry no sections to compare with: ${FETCH}`).toBeGreaterThan(0);
+    expect(missing).toEqual([]);
     expect(releasedDrift(readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8'), base)).toEqual([]);
   });
 
-  it('has a tag for every released section but the newest, which may be the release being cut', () => {
+  it('has a tag for every released section but a release being cut', () => {
     const tagged = new Set(releaseTags().map((t) => t.slice(1)));
-    const latestTagged = [...tagged].sort(compare).pop() ?? '0.0.0';
-    const untagged = [...releasedSections(readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8')).keys()]
-      .filter((v) => compare(v, FIRST_COVERED.join('.')) >= 0 && !tagged.has(v))
-      .filter((v) => compare(v, latestTagged) < 0);
-    expect(untagged, 'a section older than the latest tag with no tag of its own').toEqual([]);
+    const versions = [...releasedSections(readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8')).keys()];
+    expect(untaggedProblems(versions, tagged)).toEqual([]);
+  });
+
+  describe('as a check on the tags', () => {
+    const SECTION = (heading: string): string =>
+      `# Changelog\n\n## [Unreleased]\n\n${heading}\n\n- a thing\n`;
+    const show =
+      (files: Record<string, string>) =>
+      (ref: string): string => {
+        const text = files[ref];
+        if (text === undefined) throw new Error(`no ${ref}`);
+        return text;
+      };
+
+    it('reads a baseline for a tag whose changelog has its section', () => {
+      const { baselines: b, missing } = collectBaselines(
+        ['v0.15.0'],
+        show({ 'v0.15.0': SECTION('## [0.15.0] — 2026-10-05') }),
+      );
+      expect([...b.keys()]).toEqual(['0.15.0']);
+      expect(missing).toEqual([]);
+    });
+
+    it('fails a tag whose heading is not in the changelog form, naming the tag', () => {
+      const { baselines: b, missing } = collectBaselines(
+        ['v0.15.0'],
+        show({ 'v0.15.0': SECTION('## 0.15.0 (2026-10-05)') }),
+      );
+      expect(b.size).toBe(0);
+      expect(missing).toHaveLength(1);
+      expect(missing[0]).toContain('v0.15.0');
+    });
+
+    it('fails a tag whose changelog has no section for it at all', () => {
+      const { missing } = collectBaselines(
+        ['v0.16.0'],
+        show({ 'v0.16.0': SECTION('## [0.15.0] — 2026-10-05') }),
+      );
+      expect(missing).toHaveLength(1);
+      expect(missing[0]).toContain('v0.16.0');
+    });
+
+    it('fails a tag with no changelog file', () => {
+      expect(collectBaselines(['v0.16.0'], show({})).missing[0]).toContain('v0.16.0');
+    });
+
+    it('admits a release being cut that is newer than every tag', () => {
+      expect(untaggedProblems(['0.16.0', '0.15.0'], new Set(['0.15.0']))).toEqual([]);
+    });
+
+    it('admits a backport cut: the top section, the newest of its own line, while a newer line is tagged', () => {
+      expect(
+        untaggedProblems(['0.14.1', '0.15.0', '0.14.0'], new Set(['0.15.0', '0.14.0'])),
+      ).toEqual([]);
+    });
+
+    it('fails an untagged section that is not the top one, or not the newest of its line', () => {
+      const tagged = new Set(['0.15.0', '0.14.0']);
+      expect(untaggedProblems(['0.15.0', '0.14.1', '0.14.0'], tagged)).toHaveLength(1);
+      expect(
+        untaggedProblems(['0.14.1', '0.15.0', '0.14.0'], new Set(['0.15.0', '0.14.0', '0.14.2'])),
+      ).toHaveLength(1);
+      expect(
+        untaggedProblems(['0.15.0', '0.14.0', '0.13.0'], new Set(['0.15.0', '0.14.0'])),
+      ).toHaveLength(1);
+    });
   });
 
   it('names a correction only for a version the tags carry, with a commit that has it', () => {
