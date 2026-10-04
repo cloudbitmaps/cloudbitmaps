@@ -241,6 +241,7 @@ describe('no pointer the public cannot reach', () => {
       ).toBe(true);
     }
     expect(files.filter((f) => f.startsWith('site/')).length).toBeGreaterThanOrEqual(4);
+    expect(files.filter((f) => f.startsWith('site-next/')).length).toBeGreaterThanOrEqual(4);
     expect(files.length).toBeGreaterThan(150);
   });
 

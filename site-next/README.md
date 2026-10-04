@@ -87,7 +87,9 @@ The gates `site/` has, on this tree too:
   rest, in each colour scheme, printed and with scripts off, at the seven widths and one inside every band the
   sheet's media queries mark out, on a generated region that hides a run it renders, on a list marker, and on a
   figure Chrome and the figures gate count differently (`pnpm site:text-floor`, in CI).
-- The docs tests that read `site/` read this tree as well.
+- The docs tests that read `site/` read this tree as well, including the ones that refuse a claim of behaviour the
+  library does not have, refuse a pointer the public cannot follow, and hold a cold intersect's request count and
+  the calibration run's figures to the latest run's evidence.
 
 ## Comparing the two
 
@@ -113,4 +115,6 @@ they work locally.
   from `bench/run.cjs` and `bench/scale.cjs`, from the tests under `tests/docs/` and `tests/bench/` that read both
   trees, and from `.prettierignore`, `eslint.config.js`, `package.json`, CI and the READMEs that name it;
 - point `pnpm site:text-floor` at `site`, which fails it today and will not once this tree is `site/`;
+- drop the `site-next/` assertions in `tests/docs/superseded-behaviour-claims.test.ts` and
+  `tests/docs/internal-citations.test.ts` that this tree is scanned;
 - add the CHANGELOG entry, since that is the change that alters the published site.

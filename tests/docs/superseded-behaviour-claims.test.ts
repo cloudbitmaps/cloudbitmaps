@@ -822,6 +822,7 @@ describe('no document claims behaviour this library does not have', () => {
     expect(files).toContain(join('docs', 'ROADMAP.md'));
     expect(files).toContain(join('packages', 'roaring', 'src', 'index.ts'));
     expect(files.some((f) => f.startsWith('site/'))).toBe(true);
+    expect(files.some((f) => f.startsWith('site-next/'))).toBe(true);
     // The living pages are read, the history beside them is not.
     expect(files).toContain('CHANGELOG.md');
     expect(files).toContain(join('bench', 'calibration', 'README.md'));
