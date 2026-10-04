@@ -974,13 +974,25 @@ export class SegmentEngine {
       // mid-read answers newer bytes, and those must not sit under the older version's key. Not cached at all if the
       // segment was invalidated while the read ran.
       if (this.cache && !streamed.invalidated) {
-        const version = streamed.gen === undefined ? undefined : read.version;
+        const version = this.streamedVersion(streamed.gen, read.version);
         if (version !== null) {
           this.cache.set(this.chunkCacheKey({ ...streamed.seg, chunkKey }, version), bitmap);
         }
       }
       return bitmap;
     });
+  }
+
+  /**
+   * The version a streamed chunk is cached under, or `null` for one not to cache: the version its read reports when the
+   * source names versions as its lookups do (`currentVersion`), and otherwise the one the read planned under, since a
+   * lookup by generation number would never find a chunk cached under a stream's version.
+   */
+  private streamedVersion(
+    planned: string | number | null | undefined,
+    read: string | null,
+  ): string | number | null | undefined {
+    return planned === undefined || this.storage.currentVersion === undefined ? planned : read;
   }
 
   /** The cache key of a chunk: by the version it was read under, or by segment and key alone for a source with none. */
@@ -1230,12 +1242,10 @@ export class SegmentEngine {
       try {
         const read = await stream.take(ref.chunkKey);
         bytes = read.bytes;
-        // Under the version the bytes came from, as a stream's chunk is: a source that re-resolved mid-read answers
-        // newer bytes, which must not sit under the older version's key. None, and so not cached, when it names none.
-        if (gen !== undefined) {
-          if (read.version === null) key = '';
-          else key = this.chunkCacheKey(ref, read.version);
-        }
+        // Cached as a stream's chunk is: a source that re-resolved mid-read answers newer bytes, which must not sit
+        // under the older version's key.
+        const version = this.streamedVersion(gen, read.version);
+        key = version === null ? '' : this.chunkCacheKey(ref, version);
       } finally {
         stream.close();
       }
