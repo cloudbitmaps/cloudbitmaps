@@ -49,7 +49,7 @@ export interface DestroyResult {
 
 const MAX_CAS_ATTEMPTS = 8;
 /**
- * Storage deletes in flight at once. Erasure is a fan-out over *independent* keys, so serial would pay one
+ * Storage deletes (or, for a namespace erase, segment shreds) in flight at once. Erasure is a fan-out over *independent* keys, so serial would pay one
  * round-trip per generation for work that has no ordering between items; unbounded would be a self-inflicted
  * thundering herd against one bucket. Not configurable: an admin path called by a human or a nightly job.
  */
@@ -137,9 +137,12 @@ export async function eraseNamespace(
     segment: rec.segment,
   }));
   const audit = safeAudit(options.audit ?? NOOP_AUDIT);
-  const destroyed: DestroyResult[] = [];
   let segmentsShredded = 0;
-  for (const ref of refs) {
+  // Segments are shredded with bounded concurrency, each behind its own fence (a get and a compare-and-swap), and
+  // the ledger comes back in the listing's order whatever order they finish in. The `segment.erase` events are
+  // emitted as each segment finishes, so their order is no longer the listing's; the `namespace.erase` event
+  // still comes last.
+  const destroyed = await mapWithConcurrency(refs, ERASE_CONCURRENCY, async (ref) => {
     // Per-segment faults stay isolated so one failure cannot discard the ledger, mirroring `eraseSubject`'s
     // entries ("one failure never aborts the ledger") and for the same reason: on an erasure command the
     // caller's load-bearing question is *which segments are now destroyed*, and an exception thrown from the
@@ -167,14 +170,14 @@ export async function eraseNamespace(
           : `failed: ${err instanceof Error ? err.message : String(err)}`,
       };
     }
-    destroyed.push(result);
     // A per-segment record for each genuine crypto-shred, so the trail can prove *which* segments were
     // destroyed (each carries the namespace) — not just that the command ran.
     if (result.cryptoShredded) {
       segmentsShredded += 1;
       audit.onEvent({ kind: 'segment.erase', namespace: ref.namespace, segment: ref.segment });
     }
-  }
+    return result;
+  });
   // Plus one namespace-level record of the erasure command, carrying the honest count actually shredded
   // (may be 0 — e.g. an empty namespace, or all-cleartext without `allowCleartext`): the command ran, but
   // the count keeps the record from over-attesting a destruction that did not happen.

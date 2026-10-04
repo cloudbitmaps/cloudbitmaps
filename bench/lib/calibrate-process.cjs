@@ -12,8 +12,9 @@ const { mkdirSync, readFileSync, writeFileSync } = require('node:fs');
 const { dirname, join } = require('node:path');
 const { createRequire } = require('node:module');
 const { clearTimeout, setTimeout } = require('node:timers');
+const { AbortController } = globalThis;
 
-const { redact } = require('./calibrate-guards.cjs');
+const { redact, resolveMaxSockets } = require('./calibrate-guards.cjs');
 
 const INTERRUPTED = 'CalibrationInterrupted';
 
@@ -310,8 +311,132 @@ function measuredVersion(root) {
   );
 }
 
-/** How many sockets the SDK's HTTP handler opens to one host unless told otherwise. The harness does not set it. */
-const SDK_DEFAULT_MAX_SOCKETS = 50;
+/**
+ * The socket limit the library gives the client it builds itself, which the workload's client is given too so that a
+ * run measures what a consumer who lets the library build its client gets.
+ */
+const LIBRARY_MAX_SOCKETS = 128;
+
+/**
+ * Cap the sockets the SDK's own request handler opens, and change nothing else about it: the handler stays the SDK's
+ * default, with its defaults-mode connection timeout, keep-alive and 100-continue path. Only the `maxSockets` of its
+ * two pooled agents is set. The handler makes its agents on its first request (the http one later, per request), so
+ * the first request first runs an aborted one through it, which makes both, then sets the limit on the agents it made.
+ * This is the library's own mechanism, reproduced here because the published `@cloudbitmaps/s3` does not export it.
+ * A handler of another shape is left as it is, and `socketsOf` then reads back what it has.
+ */
+function limitSockets(client, maxSockets) {
+  const handler = client.config.requestHandler;
+  if (typeof handler?.handle !== 'function' || typeof handler.httpHandlerConfigs !== 'function') {
+    return;
+  }
+  const handle = handler.handle.bind(handler);
+  const agents = handler.httpHandlerConfigs.bind(handler);
+  let ready;
+  const warm = async () => {
+    const abort = new AbortController();
+    abort.abort();
+    try {
+      await handle({ protocol: 'http:' }, { abortSignal: abort.signal }).catch(() => undefined);
+      const { httpAgent, httpsAgent } = agents();
+      if (httpAgent) httpAgent.maxSockets = maxSockets;
+      if (httpsAgent) httpsAgent.maxSockets = maxSockets;
+    } catch {
+      // Not the shape this expects: the limit stays the SDK's own, and `socketsOf` reports what the agents hold.
+    }
+  };
+  handler.handle = async (request, options) => {
+    ready ??= warm();
+    await ready;
+    return handle(request, options);
+  };
+}
+
+/**
+ * The socket limit the client's agents hold now, read from them, or null when it cannot be observed: a handler that
+ * does not expose its agents, no agent made yet, or two agents that disagree. Call it after the run, since the agents
+ * exist only once a request has gone out.
+ */
+function socketsOf(client) {
+  try {
+    const { httpAgent, httpsAgent } = client.config.requestHandler.httpHandlerConfigs();
+    const limits = [httpAgent, httpsAgent]
+      .filter((a) => a !== undefined && a !== null)
+      .map((a) => a.maxSockets);
+    if (limits.length === 0 || !limits.every((n) => Number.isSafeInteger(n) && n === limits[0])) {
+      return null;
+    }
+    return limits[0];
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The workload client's socket limit from the environment's `CR_CALIBRATE_MAX_SOCKETS` (`raw`): the library's 128 unless
+ * it gives another. Throws on a value `resolveMaxSockets` refuses, so a run can refuse it before anything is created.
+ */
+function resolveSocketLimit(raw) {
+  return {
+    maxSockets: resolveMaxSockets(raw, LIBRARY_MAX_SOCKETS),
+    overridden: raw !== undefined && String(raw).trim() !== '',
+  };
+}
+
+/**
+ * Give the workload's client its socket limit and prove it took, before anything is created or spent. Resolves the
+ * limit from `raw`, applies it, pushes one already-aborted request through the handler so that its agents exist (the
+ * handler sits below the metering and the gate, so that request is neither counted nor billed and is no fault), and
+ * requires the agents to hold the limit. A handler of a shape that does not take it throws, naming what was read back.
+ * Returns the limit read back, and `evidence()`, which reads the agents again and says where the limit came from.
+ */
+async function limitWorkloadSockets(client, raw) {
+  const { maxSockets, overridden } = resolveSocketLimit(raw);
+  limitSockets(client, maxSockets);
+  const abort = new AbortController();
+  abort.abort();
+  try {
+    await client.config.requestHandler.handle({ protocol: 'http:' }, { abortSignal: abort.signal });
+  } catch {
+    // An aborted request fails by design; what matters is what the agents hold afterwards.
+  }
+  const observed = socketsOf(client);
+  if (observed !== maxSockets) {
+    throw new Error(
+      `the workload client holds ${observed ?? 'an unreadable number of'} sockets, not ${maxSockets}: ` +
+        "the installed SDK's handler did not take the limit; nothing was created",
+    );
+  }
+  return {
+    observed,
+    evidence: () =>
+      socketEvidence({ observed: socketsOf(client), configured: maxSockets, overridden }),
+  };
+}
+
+/**
+ * What the evidence says about the socket limit: the value read back from the client's agents, and where it came
+ * from. `configured` is the number the run asked for and `overridden` whether the environment gave it; a limit
+ * that was read back as something else says so, and one that could not be read is null, never the configured number.
+ */
+function socketEvidence({ observed, configured, overridden }) {
+  if (observed === null) {
+    return {
+      maxSockets: null,
+      maxSocketsSource: "not observed: the client's agents could not be read after the run",
+    };
+  }
+  const how = overridden
+    ? 'set by the harness from CR_CALIBRATE_MAX_SOCKETS'
+    : "set by the harness to match the library's own client";
+  return {
+    maxSockets: observed,
+    maxSocketsSource:
+      observed === configured
+        ? `${how}, read back from the client's agents after the run`
+        : `read back from the client's agents after the run; the harness asked for ${configured} (${how})`,
+  };
+}
 
 /**
  * The versions of the AWS SDK client and of the HTTP handler under it that a run used, read from what is installed
@@ -377,7 +502,12 @@ module.exports = {
   chainOf,
   faultOf,
   describeFault,
-  SDK_DEFAULT_MAX_SOCKETS,
+  LIBRARY_MAX_SOCKETS,
+  limitSockets,
+  socketsOf,
+  socketEvidence,
+  resolveSocketLimit,
+  limitWorkloadSockets,
   interruptGate,
   isInterruption,
   failureOf,

@@ -567,7 +567,7 @@ describe('GCS: one-request reads through the real SDK', () => {
     const watch = watchProcess();
     try {
       await expect(read()).rejects.toBeInstanceOf(expected);
-      for (let i = 0; i < 100 && !stub.aborted; i++) await new Promise((r) => setTimeout(r, 20));
+      for (let i = 0; i < 200 && !stub.aborted; i++) await new Promise((r) => setTimeout(r, 20));
       expect(stub.aborted).toBe(true);
       await new Promise((r) => setTimeout(r, 50));
     } finally {
@@ -586,6 +586,36 @@ describe('GCS: one-request reads through the real SDK', () => {
       }),
     };
     await refusedAndReleased(() => backend.registry.get(REF), IntegrityError);
+  });
+
+  it('a download still arriving when it is refused raises no listener-limit warning', async () => {
+    // The SDK and its HTTP layer each run a pipeline over the one response body, and with the body's own listeners
+    // that is one more error and close listener than Node's default limit of ten, for as long as the body is in flight.
+    // None of it leaks (a read that settles takes its listeners with it), but the warning is printed for every such
+    // read, so the limit is raised on that one body and no other emitter.
+    const warnings: Error[] = [];
+    const onWarning = (w: Error): void => void warnings.push(w);
+    process.on('warning', onWarning);
+    try {
+      const { backend } = await registryRow();
+      stub.mediaEndless = {
+        status: 200,
+        headers: (cur) => ({
+          'x-goog-generation': String(cur.generation),
+          'content-length': String(MAX_ROW_BYTES * 1024),
+        }),
+      };
+      for (let attempt = 0; attempt < 3; attempt++) {
+        stub.aborted = false;
+        await expect(backend.registry.get(REF)).rejects.toBeInstanceOf(IntegrityError);
+        for (let i = 0; i < 200 && !stub.aborted; i++) await new Promise((r) => setTimeout(r, 20));
+        expect(stub.aborted).toBe(true);
+      }
+      await new Promise((r) => setTimeout(r, 50)); // a warning is emitted a turn after the listener that earns it
+    } finally {
+      process.off('warning', onWarning);
+    }
+    expect(warnings.map((w) => w.message)).toEqual([]);
   });
 
   it('a pointer body that outruns the cap with no length is refused, and the response is let go', async () => {

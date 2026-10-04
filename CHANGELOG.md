@@ -30,6 +30,40 @@ so, and so do the module headers in the code.
   a buffer of up to 1 MiB with its neighbours, so do not write to it, and copy one to keep it. Nothing in the
   library's reads calls it yet, so no request count changes.
 
+### Changed
+
+- **A load starts its existence check and its key unwrap while it encodes, and asks the keystore for a segment's key
+  once.** The check that numbers the generation and the unwrap of an encrypted segment's key no longer wait for the
+  ids to be bucketed and encoded: they are sent first and joined where the write needs them, so their round trips
+  overlap the encoding. A guarded load of an encrypted segment used to unwrap the same key twice, once to read the
+  current generation and once to write; it now unwraps once, for that load only (nothing is kept between loads). The
+  requests a load makes are the same on success, and so is their order where a fence rests on it: the guard's row read
+  comes first, the row a first load or an encrypted segment reads again still comes after the ids, and the publish is
+  still fenced on the row the guard judged. What changes is how a failure surfaces: a failed existence check (and its
+  listing fallback) is now raised after the ids are consumed, so the encoding's error or the second row read's refusal
+  can be raised instead, and a load of an existing encrypted segment asks the keystore for its key even when it then
+  fails or is refused (never for a crypto-shredded row). Nothing is written or published in any of these cases, and an
+  abandoned check or unwrap leaves no unhandled rejection. A load that throws may have consumed its input, so retry
+  with a fresh source.
+- **`eraseNamespace` shreds eight segments at a time instead of one.** Each segment keeps its own read and
+  compare-and-swap, a fault in one is recorded against it and stops no other, and `destroyed` comes back in the
+  listing's order. The `segment.erase` events are now emitted as each segment finishes, so their order is no longer the
+  listing's; `namespace.erase` is still last, with the same count.
+- **A registry listing reads 48 rows at a time instead of 16** on the S3, GCS and Azure Blob registries. A full scan
+  of a large fleet takes about a third of the round trips in sequence; 48 stays under the 50 sockets an SDK client has
+  by default. `checkConsistency`'s own default of 8 is unchanged.
+- **The erasure of one id looks through the other generations for a holder a few at a time.** The answer is the same as
+  the one-at-a-time scan's: the newest holder, and the first fault in newest-first order, with none from past a holder.
+
+### Fixed
+
+- **A GCS read that is refused or let go mid-body no longer prints `MaxListenersExceededWarning`.** A read of a response
+  that was still arriving when the driver refused it (an advertised or actual length past the cap) or let it go printed
+  "11 error listeners added to [PassThrough]" and the same for `close` on stderr. It was not a leak: the SDK and its HTTP
+  layer each run a pipeline over the one response body, which holds eleven or twelve listeners while it is in flight, one
+  past Node's default of ten, and every attempt has a body of its own, so the count never grew with retries or reads. The
+  limit is raised on that one body, and nothing else.
+
 ## [0.14.0] — 2026-10-04
 
 ### Added
