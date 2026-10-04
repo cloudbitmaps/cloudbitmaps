@@ -1,4 +1,4 @@
-import { isCloudRoaringError, DEFAULT_MAX_PAYLOAD_BYTES } from '../build/fuzz-core.js';
+import { isCloudRoaringError, DEFAULT_MAX_BITMAP_BYTES } from '../build/fuzz-core.js';
 import { SafeBitmap, assertConsistentDecode } from '../build/fuzz-codec.js';
 
 /*
@@ -23,7 +23,7 @@ export function fuzz(data) {
     // Walk every value of what was accepted, so a bad-but-accepted decode surfaces (`has(0)` would short-circuit
     // and check almost nothing). The walk is bounded to avoid a *false* finding: a run-container-heavy bitmap is
     // tiny on disk yet can expand to billions of ids.
-    assertConsistentDecode(SafeBitmap.safeDeserialize(data, DEFAULT_MAX_PAYLOAD_BYTES));
+    assertConsistentDecode(SafeBitmap.safeDeserialize(data, DEFAULT_MAX_BITMAP_BYTES));
   } catch (err) {
     if (isCloudRoaringError(err)) return; // typed rejection is the contract — not a finding
     throw err; // anything else escaped the boundary → a real finding
