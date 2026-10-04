@@ -291,7 +291,7 @@ describe('the erasure rewrite reads ahead through a bounded window', () => {
     await vi.waitFor(() => expect(p.held.length).toBe(1));
     p.held.shift()!();
     await vi.waitFor(() => expect(p.held.length).toBe(WINDOW));
-    const decodedTarget = decodes; // the target chunk, decoded before the rewrite starts
+    const decodedTarget = decodes; // the target chunk, decoded ahead of the window
     // Every read ahead resolves except the first one in key order, which the writer is waiting on.
     const first = p.held.shift()!;
     p.held.splice(0).forEach((r) => r());
