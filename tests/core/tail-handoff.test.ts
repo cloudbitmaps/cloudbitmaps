@@ -328,15 +328,18 @@ const OLD = [3, K + 3, 2 * K + 3];
 const NEW = [4, K + 4, 2 * K + 4];
 
 describe('a swept small generation, with keeping on', () => {
-  /** Another store loads `NEW` over `OLD` with `keep: 0`, which sweeps the old object. */
+  /** `NEW` is published over `OLD` beside the reading store, and the old object is swept. */
   async function swept(cache: { genTtlMs?: number }, bare = false) {
     const clock = manualClock();
     const w = await world({ s: OLD }, cache, undefined, clock);
     const reader = bare ? new CloudRoaring({ storage: w.storage }) : w.store;
-    const writer = new CloudRoaring({ storage: w.backend });
     // Open the segment and warm chunk 0 only: chunk 1 is not decoded anywhere yet.
     expect(await reader.segment('s').has(3)).toBe(true);
-    await writer.load({ segment: 's' }, NEW, { keep: 0 });
+    // Another process publishes `NEW` and sweeps the generation it replaced.
+    await bulkLoadCrbmGeneration(w.storage, { segment: 's', generation: 1 }, NEW, {
+      registry: w.registry,
+    });
+    await w.storage.delete({ segment: 's', generation: 0 });
     return { ...w, clock, reader };
   }
 
