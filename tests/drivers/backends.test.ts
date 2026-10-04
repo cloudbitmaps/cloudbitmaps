@@ -231,6 +231,7 @@ describe('a backend configures both halves from one place', () => {
       endpoint: 'http://127.0.0.1:9000',
       pathStyle: true,
       credentials: { accessKeyId: 'a', secretAccessKey: 's' },
+      maxSockets: 64,
     } as const;
     const gcsSettings = { projectId: 'p', apiEndpoint: 'http://127.0.0.1:4443' } as const;
     const s3Client = new S3Storage({ bucket: 'b' }).client;
@@ -266,7 +267,7 @@ describe('a backend configures both halves from one place', () => {
 
     it('several settings beside a client are all named', () => {
       expect(s3({ client: s3Client, ...s3Settings })).toThrow(
-        /with `region`, `endpoint`, `pathStyle`, `credentials`; the `client` already carries them/,
+        /with `region`, `endpoint`, `pathStyle`, `credentials`, `maxSockets`; the `client` already carries them/,
       );
       expect(s3({ client: s3Client, region: 'x', credentials: s3Settings.credentials })).toThrow(
         /with `region`, `credentials`;/,

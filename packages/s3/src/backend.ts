@@ -19,6 +19,8 @@ import type {
   IStorageDriver,
   StorageBackend,
 } from '@cloudbitmaps/core/driver-kit';
+import { Agent as HttpAgent } from 'node:http';
+import { Agent as HttpsAgent } from 'node:https';
 import { S3Client } from '@aws-sdk/client-s3';
 import { S3StorageDriver } from './storage';
 import { S3RegistryDriver } from './registry';
@@ -54,6 +56,14 @@ export interface S3StorageOptions {
     readonly sessionToken?: string;
   };
   /**
+   * Most sockets the built client opens at once to one scheme, for `https` and for a plain-`http` endpoint alike
+   * (default 128). The AWS SDK's own default is 50, which a window of 32 reads per operand outgrows on the first
+   * two-operand `intersect`; the rest of the built client keeps the SDK's defaults (keep-alive on, its timeouts and
+   * retry). A positive safe integer. Refused beside `client`, which carries its own request handler. A deployment
+   * that runs `eraseSubject`'s 256 reads at once needs `256`, or a lower `concurrency`.
+   */
+  readonly maxSockets?: number;
+  /**
    * Largest object the backend will write and advertise. Default = `partBytes × 10,000` (≈ 80 GiB at the default
    * 8 MiB part) — the honest ceiling reachable within S3's 10,000-part limit. Set it higher and `partBytes`
    * auto-grows so 10,000 parts still cover it (raising peak write memory to ~one part); up to the 5 TiB S3 max.
@@ -71,10 +81,10 @@ export interface S3StorageOptions {
    * 2 seconds. Must be a non-negative safe integer no larger than 2,147,483,647.
    *
    * The clock starts when the read is handed to the SDK, so it also counts the time the read waits for one of the
-   * client's sockets (50 by default) and the time spent fetching credentials, and under `retryMode: 'adaptive'` the
+   * client's sockets (128 by default, `maxSockets`) and the time spent fetching credentials, and under `retryMode: 'adaptive'` the
    * SDK's rate-limiter wait. A burst of concurrent reads larger than the socket pool can therefore time out with
-   * nothing slow on the wire: size the timeout above the worst queueing your concurrency implies, or raise the client's
-   * `maxSockets`. On a client built with `cacheMiddleware: true`, a timed read resolves its middleware each time.
+   * nothing slow on the wire: size the timeout above the worst queueing your concurrency implies, or raise
+   * `maxSockets` (the client you pass carries its own). On a client built with `cacheMiddleware: true`, a timed read resolves its middleware each time.
    *
    * Writes and listings are never timed: a write that hangs needs a timeout on the client (its `requestHandler`). The
    * timeout is applied per request, so a `client` you pass gets it without being changed.
@@ -105,6 +115,7 @@ export const S3_STORAGE_OPTION_KEYS = [
   'endpoint',
   'pathStyle',
   'credentials',
+  'maxSockets',
   'maxObjectBytes',
   'partBytes',
   'readTimeoutMs',
@@ -113,7 +124,10 @@ export const S3_STORAGE_OPTION_KEYS = [
 ] as const;
 
 /** The settings that build a client, which a supplied `client` already carries and so cannot be given beside. */
-const CLIENT_SETTINGS = ['region', 'endpoint', 'pathStyle', 'credentials'] as const;
+const CLIENT_SETTINGS = ['region', 'endpoint', 'pathStyle', 'credentials', 'maxSockets'] as const;
+
+/** Default socket limit of a client the store builds: two operands at the default window of 32 reads each, doubled. */
+const DEFAULT_MAX_SOCKETS = 128;
 
 /** Refuse an options bag that is not an object, or that holds a key not in `keys`, naming each such key. */
 function refuseUnknown(
@@ -146,6 +160,15 @@ export class S3Storage implements StorageBackend {
 
   constructor(options: S3StorageOptions) {
     refuseUnknown('S3Storage', options, S3_STORAGE_OPTION_KEYS, 'an S3 client goes in `client`');
+    const maxSockets = options.maxSockets ?? DEFAULT_MAX_SOCKETS;
+    if (
+      options.maxSockets !== undefined &&
+      (!Number.isSafeInteger(options.maxSockets) || options.maxSockets < 1)
+    ) {
+      throw new ValidationError(
+        `S3Storage \`maxSockets\` must be a positive integer — got ${String(options.maxSockets)}`,
+      );
+    }
     if (options.client !== undefined && options.client !== null) {
       // A supplied client already carries its region, endpoint, addressing style and credentials, so a setting
       // beside it is ignored, and ignoring it leaves the store talking to somewhere the caller did not mean:
@@ -166,6 +189,13 @@ export class S3Storage implements StorageBackend {
         ...(options.endpoint === undefined ? {} : { endpoint: options.endpoint }),
         ...(options.pathStyle === undefined ? {} : { forcePathStyle: options.pathStyle }),
         ...(options.credentials === undefined ? {} : { credentials: options.credentials }),
+        // The agents are made here, with the SDK's own keep-alive default and the one setting changed. Passing
+        // `{ maxSockets }` for the SDK to build from does not hold on a plain-http endpoint: it makes that agent
+        // on the first request, so a first burst gets one agent, and one pool, per request.
+        requestHandler: {
+          httpAgent: new HttpAgent({ keepAlive: true, maxSockets }),
+          httpsAgent: new HttpsAgent({ keepAlive: true, maxSockets }),
+        },
       });
     }
     const shared = {
