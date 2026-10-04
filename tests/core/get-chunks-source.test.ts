@@ -173,7 +173,7 @@ describe('CrbmStorageChunkSource.getChunks', () => {
     await expect(read(source, REF, [-1])).rejects.toThrow(/chunkKey/);
   });
 
-  it('reads one generation for the whole call, though a publish lands and the pointer refreshes between its requests', async () => {
+  it('serves nothing of a generation a publish and a pointer refresh have moved on from, even in ranges already requested', async () => {
     const { source, storage, clock, publishGen1 } = await world();
     storage.beforeRange = async (n) => {
       if (n !== 1) return;
@@ -181,14 +181,12 @@ describe('CrbmStorageChunkSource.getChunks', () => {
       clock.advance(TTL + 1);
     };
     const first = await read(source, REF, [0, 44]);
-    expect(storage.ranges).toHaveLength(2);
-    expect(storage.ranges.every((r) => r.generation === 0)).toBe(true);
-    expect(first.chunks.map(parityOf)).toEqual([0, 0]);
-    expect(first.version).toMatch(/^0:/);
-    // The next call resolves the pointer afresh, and reads, and reports, the new generation.
-    const next = await read(source, REF, [0, 44]);
-    expect(next.chunks.map(parityOf)).toEqual([1, 1]);
-    expect(next.version).toMatch(/^1:/);
+    // Both ranges were requested from generation 0, before the publish was seen; the stream resolves again before it
+    // serves a chunk, finds generation 1, drops them, and reads both afresh.
+    expect(storage.ranges.filter((r) => r.generation === 0)).toHaveLength(2);
+    expect(storage.ranges.filter((r) => r.generation === 1)).toHaveLength(2);
+    expect(first.chunks.map(parityOf)).toEqual([1, 1]);
+    expect(first.version).toMatch(/^1:/);
   });
 
   it('retries a request that fails transiently on its own, not the ones that landed', async () => {
@@ -251,7 +249,7 @@ async function replaceGen0(storage: CountingStorage): Promise<void> {
   await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, idsOf(1), {});
 }
 
-describe('CrbmStorageChunkSource.getChunks: the call stays on one generation through each way a segment moves', () => {
+describe('CrbmStorageChunkSource.getChunks: the call re-resolves the segment through each way it moves', () => {
   it('a sweep of the generation mid-call heals to the generation now current, whole', async () => {
     const { source, storage, publishGen1 } = await world();
     storage.beforeRange = async (n) => {
@@ -272,7 +270,7 @@ describe('CrbmStorageChunkSource.getChunks: the call stays on one generation thr
     expect(got.chunks.map(parityOf)).toEqual([1, 1]);
   });
 
-  it('an invalidation mid-call leaves the call on the reader it opened, whole and verified', async () => {
+  it('an invalidation mid-call re-resolves the segment before the next chunk is served, as a read of it alone would', async () => {
     const { source, storage, publishGen1 } = await world();
     storage.beforeRange = async (n) => {
       if (n !== 1) return;
@@ -280,9 +278,46 @@ describe('CrbmStorageChunkSource.getChunks: the call stays on one generation thr
       source.invalidate(REF);
     };
     const got = await read(source, REF, [0, 44]);
-    expect(got.chunks.map(parityOf)).toEqual([0, 0]);
-    expect(got.version).toMatch(/^0:/);
-    expect((await read(source, REF, [0])).version).toMatch(/^1:/);
+    expect(got.chunks.map(parityOf)).toEqual([1, 1]);
+    expect(got.version).toMatch(/^1:/);
+  });
+
+  it('an invalidation that finds the generation unchanged leaves the call on its stream: no range is read again', async () => {
+    const { source, storage } = await world();
+    const it = source.getChunks!(REF, [0, 44], { concurrency: 1 })[Symbol.asyncIterator]();
+    const first = await it.next();
+    source.invalidate(REF);
+    const second = await it.next();
+    expect([first.value, second.value].map((c: ChunkRead) => parityOf(c.bytes))).toEqual([0, 0]);
+    expect(storage.ranges).toHaveLength(2);
+    expect(first.value.version).toBe(second.value.version);
+  });
+
+  it('a pointer refresh that finds the generation unchanged leaves the call on its stream too', async () => {
+    const { source, storage, clock } = await world();
+    const it = source.getChunks!(REF, [0, 44], { concurrency: 1 })[Symbol.asyncIterator]();
+    await it.next();
+    clock.advance(TTL + 1);
+    const second = await it.next();
+    expect(parityOf(second.value.bytes)).toBe(0);
+    expect(storage.ranges).toHaveLength(2);
+  });
+
+  it('a segment the reader cache let go of is resolved again, and a stream whose generation is the same goes on', async () => {
+    const { source, storage } = await world();
+    const it = source.getChunks!(REF, [0, 44], { concurrency: 1 })[Symbol.asyncIterator]();
+    await it.next();
+    const tails = storage.tails;
+    // The reader cache's own eviction, as `invalidate` is the one way to reach it from outside.
+    const cache = (
+      source as unknown as { snapshots: { deleteWhere(p: (k: string) => boolean): void } }
+    ).snapshots;
+    cache.deleteWhere((k) => k.endsWith('s'));
+    const second = await it.next();
+    expect(parityOf(second.value.bytes)).toBe(0);
+    expect(storage.ranges).toHaveLength(2);
+    expect(storage.tails).toBeGreaterThan(tails); // it was resolved, and opened, again
+    await it.return!(undefined);
   });
 
   it('retries a transient fault in the check that the object was replaced', async () => {
@@ -336,16 +371,17 @@ describe('CrbmStorageChunkSource.getChunks: a stream across waves', () => {
     await it.return!(undefined);
   });
 
-  it('keeps to the generation it opened when a publish and a TTL lapse land between its ranges', async () => {
+  it('moves to the generation now current when a publish and a TTL lapse land between its ranges', async () => {
     const { source, storage, clock, publishGen1 } = await world();
     const it = source.getChunks!(REF, [0, 44], { concurrency: 1 })[Symbol.asyncIterator]();
     const first = await it.next();
     await publishGen1();
-    clock.advance(TTL + 1); // the pointer is stale now, and a fresh resolution would see generation 1
+    clock.advance(TTL + 1); // the pointer is stale now, and a fresh resolution sees generation 1
     const second = await it.next();
-    expect([first.value, second.value].map((c: ChunkRead) => parityOf(c.bytes))).toEqual([0, 0]);
-    expect(storage.ranges.every((r) => r.generation === 0)).toBe(true);
-    expect(first.value.version).toBe(second.value.version);
+    expect([first.value, second.value].map((c: ChunkRead) => parityOf(c.bytes))).toEqual([0, 1]);
+    expect(first.value.version).toMatch(/^0:/);
+    expect(second.value.version).toMatch(/^1:/);
+    expect(storage.ranges.filter((r) => r.generation === 1)).toHaveLength(1);
   });
 
   it('heals forward between ranges: chunks already yielded stay, the rest come from the generation now current', async () => {

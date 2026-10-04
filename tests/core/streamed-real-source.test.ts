@@ -146,6 +146,34 @@ describe('a read that stops launches nothing more', () => {
   });
 });
 
+describe('storage.get reports every range request that was sent', () => {
+  it.each(['intersect', 'union', 'iterate'] as const)(
+    '%s: after the consumer stops, the events are the ranges launched, those still in flight included',
+    async (verb) => {
+      const w = await twoSegments(upTo(CHUNKS));
+      const store = w.reader();
+      const a = store.segment('a');
+      const stream =
+        verb === 'iterate'
+          ? a.iterate()
+          : verb === 'union'
+            ? a.union([store.segment('b')], { concurrency: 4 })
+            : a.intersect([store.segment('b')], { concurrency: 4 });
+      for await (const id of stream) {
+        void id;
+        break;
+      }
+      await tick(60); // what was in flight has landed
+      const before = w.metrics.snapshot().storage;
+      expect(w.calls.launched).toBeGreaterThanOrEqual(verb === 'iterate' ? 1 : 2);
+      expect(before.gets).toBe(w.calls.launched);
+      expect(before.bytes).toBeGreaterThan(0);
+      await tick(40);
+      expect(w.metrics.snapshot().storage.gets).toBe(before.gets); // nothing more
+    },
+  );
+});
+
 describe('metrics for a range that holds bytes nobody asked for', () => {
   it('counts one storage.get per range, with the range`s bytes, gap chunks included', async () => {
     const w = slow();

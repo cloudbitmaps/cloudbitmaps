@@ -52,7 +52,7 @@ describe('which operands stream', () => {
     const { storage, engine } = setup({ a: A, b: B });
     await collect(engine.intersect([ref('a'), ref('b')], { concurrency: 16 }));
     expect(opened(storage).sort()).toEqual(['a:2,3,4', 'b:2,3,4']);
-    expect(storage.opened[0]!.options).toEqual({ concurrency: 16, ramp: 4 });
+    expect(storage.opened[0]!.options).toMatchObject({ concurrency: 16, ramp: 4 });
     expect(storage.singles).toEqual([]);
   });
 
@@ -121,10 +121,13 @@ describe('the budget is checked before any stream opens', () => {
   it('a refusal opens nothing and reads nothing, and the units are the chunk reads', async () => {
     const A = ids([1, 2, 3, 4]);
     const S = ids([3, 4]);
-    const { storage, engine } = setup({ a: A, s: S }, { budget: 5 });
+    const { storage, engine, metrics } = setup({ a: A, s: S }, { budget: 5 });
     await expect(collect(engine.andNot(ref('a'), [ref('s')]))).rejects.toThrow(BudgetExceededError);
     expect(storage.opened).toEqual([]);
     expect(storage.singles).toEqual([]);
+    // Nor does it report work it never did: no `intersect` event, no cache lookup for a chunk it will not read.
+    expect(metrics.snapshot().intersect.calls).toBe(0);
+    expect(metrics.snapshot().cache).toEqual({ hits: 0, misses: 0 });
     // 4 chunks of the include and 2 of the exclude: six reads fit a budget of six, not five.
     const fits = setup({ a: A, s: S }, { budget: 6 });
     await collect(fits.engine.andNot(ref('a'), [ref('s')]));
@@ -174,6 +177,29 @@ describe('the decoded-chunk cache', () => {
       // 1 and 2 were delivered before it and were dropped by the invalidation itself; 3 and 4 came after it.
       expect(cache!.peek(chunkGenKey({ ...a, chunkKey: key }, 'v1')), `key ${key}`).toBeUndefined();
     }
+  });
+
+  it('looks a chunk the cache held at open up again when it is asked for: an invalidation in between has it read afresh', async () => {
+    const { storage, engine } = setup({ a: ids([1, 2, 3, 4, 5, 6]) });
+    await collect(engine.union([ref('a')])); // every chunk is in the cache now
+    storage.opened.length = 0;
+    const seen: number[] = [];
+    for await (const id of engine.iterate(ref('a'))) {
+      seen.push(id);
+      if (seen.length === 1) {
+        // The segment changes under the store, and the store is told: its cached chunks are gone.
+        seedSegment(
+          storage,
+          'a',
+          [1, 2, 3, 4, 5, 6].flatMap((c) => [joinId(c, 10), joinId(c, 11)]),
+        );
+        engine.invalidate(ref('a'));
+      }
+    }
+    // Chunk 1 was already in hand; chunks 2 to 6 were looked up when asked for, found gone, and read from the source.
+    expect(seen.slice(0, 3)).toEqual([joinId(1, 1), joinId(1, 2), joinId(1, 3)]);
+    expect(seen.slice(3)).toEqual([2, 3, 4, 5, 6].flatMap((c) => [joinId(c, 10), joinId(c, 11)]));
+    expect(storage.singles.length).toBe(5);
   });
 
   it('a cache that is smaller than the read still answers correctly', async () => {

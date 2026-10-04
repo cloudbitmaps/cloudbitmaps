@@ -61,13 +61,14 @@ export class StreamChunkSource extends MemoryStorageChunkSource {
         await this.beforeYield?.(stream, key);
         const bytes = await super.getChunk({ ...ref, chunkKey: key });
         const version = this.readVersion ? this.readVersion(ref.segment, key) : this.version;
-        const first = i % this.perRequest === 0;
+        // One request per `perRequest` keys, reported as a source reports a request that settled.
+        if (i % this.perRequest === 0 && bytes !== null)
+          options?.onRequest?.({ bytes: bytes.length, ms: 3 });
         stream.yielded += 1;
         yield {
           key: this.misalign ? this.misalign(stream, key) : key,
           bytes,
           version,
-          ...(first && bytes !== null ? { request: { bytes: bytes.length, ms: 3 } } : {}),
         };
       }
       stream.finished = true;

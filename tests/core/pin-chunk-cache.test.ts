@@ -50,9 +50,8 @@ import { withoutRangedReads } from '../helpers/no-ranged-reads';
  */
 /**
  * Every case here but the last describe reads chunk by chunk: the library's own sources are made to answer as a source
- * that cannot read a range does, since a chunk-by-chunk read is the one that can describe two generations (a stream of
- * coalesced ranges keeps to the generation it opened on; see the last describe) and so the one the pin must be kept
- * from. A custom source without `getChunks` is read this way.
+ * that cannot read a range does, since a chunk-by-chunk read can describe two generations and so is the one the pin must be kept
+ * from (a stream of coalesced ranges describes two in the same places, and the last describe holds it to the same). A custom source without `getChunks` is read this way.
  */
 const perKey = withoutRangedReads();
 beforeEach(perKey.off);
@@ -2085,10 +2084,10 @@ describe('what a pin found out about its object, and how it forgets', () => {
   });
 });
 
-describe('a stream of coalesced ranges keeps to the generation it opened on, and a pin is never handed its chunks', () => {
+describe('a stream of coalesced ranges moves to the current generation where a read of one chunk would, and a pin is never handed its chunks', () => {
   beforeEach(perKey.restore); // the library's own sources read ranges again
 
-  it("iterate: a publish and a TTL lapse mid-read move nothing; every id is generation 0's", async () => {
+  it('iterate: a publish and a TTL lapse mid-read move the rest of the read to generation 1', async () => {
     const w = await world({ cache: { genTtlMs: TTL } });
     const snap = await w.store.segment('s').pin();
     const live: number[] = [];
@@ -2099,14 +2098,14 @@ describe('a stream of coalesced ranges keeps to the generation it opened on, and
         w.clock.advance(TTL);
       }
     }
-    expect(live).toEqual(GEN0);
+    expect(live).toEqual([1, 2, 3, C + 20, C + 21, C + 22, 2 * C + 40, 2 * C + 41, 2 * C + 42]);
     expect(await pinnedViews(w.store, snap)).toEqual({
       pinned: PINNED_AT_GEN0,
       afterInvalidate: PINNED_AT_GEN0,
     });
   });
 
-  it('iterate: a reader-cache eviction mid-read moves nothing either', async () => {
+  it('iterate: a reader-cache eviction mid-read moves the rest of the read to generation 1 too', async () => {
     const w = await world({ cache: { genTtlMs: 0, readerMax: 1 } });
     await bulkLoadCrbmGeneration(w.storage, { segment: 'other', generation: 0 }, [7], {
       registry: w.registry,
@@ -2120,14 +2119,14 @@ describe('a stream of coalesced ranges keeps to the generation it opened on, and
         expect(await w.store.segment('other').has(7)).toBe(true); // evicts this segment's reader
       }
     }
-    expect(live).toEqual(GEN0);
+    expect(live).toEqual([1, 2, 3, C + 20, C + 21, C + 22, 2 * C + 40, 2 * C + 41, 2 * C + 42]);
     expect(await pinnedViews(w.store, snap)).toEqual({
       pinned: PINNED_AT_GEN0,
       afterInvalidate: PINNED_AT_GEN0,
     });
   });
 
-  it("iterate: nor does the store's own load, which invalidates the segment mid-read", async () => {
+  it("iterate: the store's own load, which invalidates the segment mid-read, moves the rest of the read to generation 1", async () => {
     const w = await world({ cache: { genTtlMs: 0 } });
     const snap = await w.store.segment('s').pin();
     const live: number[] = [];
@@ -2135,14 +2134,14 @@ describe('a stream of coalesced ranges keeps to the generation it opened on, and
       live.push(id);
       if (live.length === 1) await w.store.load(REF, GEN1);
     }
-    expect(live).toEqual(GEN0);
+    expect(live).toEqual([1, 2, 3, C + 20, C + 21, C + 22, 2 * C + 40, 2 * C + 41, 2 * C + 42]);
     expect(await pinnedViews(w.store, snap)).toEqual({
       pinned: PINNED_AT_GEN0,
       afterInvalidate: PINNED_AT_GEN0,
     });
   });
 
-  it('intersect: a publish and a TTL lapse mid-read move nothing', async () => {
+  it('intersect: a publish and a TTL lapse mid-read move the rest of the read to generation 1', async () => {
     const w = await world({ cache: { genTtlMs: TTL } });
     await bulkLoadCrbmGeneration(
       w.storage,
@@ -2163,7 +2162,8 @@ describe('a stream of coalesced ranges keeps to the generation it opened on, and
         w.clock.advance(TTL);
       }
     }
-    expect(live).toEqual(GEN0);
+    // Chunk 1 was already taken by the read's window of one key when the publish landed, as in a read of it alone.
+    expect(live).toEqual([1, 2, 3, C + 10, C + 11, 2 * C + 40, 2 * C + 41, 2 * C + 42]);
     expect(await pinnedViews(w.store, snap)).toEqual({
       pinned: PINNED_AT_GEN0,
       afterInvalidate: PINNED_AT_GEN0,
