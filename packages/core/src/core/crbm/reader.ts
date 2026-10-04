@@ -600,8 +600,7 @@ export class CrbmReader {
    * (or nothing was kept). The bounds checks are defence on untrusted bytes: the index's validation at open keeps every
    * extent inside the region, so they do not fire for a reader that opened.
    *
-   * A cleartext chunk is returned as a copy, so a write to it changes nothing of the next read. An encrypted one is a
-   * view the AEAD only reads: it returns a fresh buffer and never the view.
+   * The range is returned as a copy, so nothing a caller or an AEAD does with it changes the next read.
    */
   private keptRange(offset: number, length: number): Uint8Array | undefined {
     const kept = this.kept;
@@ -613,9 +612,7 @@ export class CrbmReader {
       return undefined;
     }
     const from = offset - PAYLOAD_START;
-    return this.crypto === undefined
-      ? kept.slice(from, from + length)
-      : kept.subarray(from, from + length);
+    return kept.slice(from, from + length);
   }
 
   /**
