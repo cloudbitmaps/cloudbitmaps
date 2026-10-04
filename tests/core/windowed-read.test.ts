@@ -14,7 +14,7 @@ import { seedSegment } from '../helpers/loaded';
 import type { ChunkRef } from '@/core/ports';
 
 const K = 65_536;
-const WINDOW = 8;
+const WINDOW = 32;
 const IDS_PER_CHUNK = 3;
 
 /**
@@ -130,8 +130,8 @@ async function drive<T>(storage: HeldChunkSource, body: () => Promise<T>): Promi
 }
 
 describe('iterate fetches through a bounded, ordered window', () => {
-  it('keeps up to 8 reads open once the ramp is done, never more, and yields every id in order', async () => {
-    const { storage, engine, ids } = build(40);
+  it('keeps up to 32 reads open once the ramp is done, never more, and yields every id in order', async () => {
+    const { storage, engine, ids } = build(80);
     const got = await drive(storage, async () => {
       const out: number[] = [];
       for await (const id of engine.iterate({ segment: 'a' })) out.push(id);
@@ -139,11 +139,11 @@ describe('iterate fetches through a bounded, ordered window', () => {
     });
     expect(got).toEqual(ids);
     expect(storage.peak).toBe(WINDOW);
-    expect(storage.requested).toEqual([...Array(40).keys()]); // each chunk once, in key order
+    expect(storage.requested).toEqual([...Array(80).keys()]); // each chunk once, in key order
     expect(unhandled).toEqual([]);
   });
 
-  it('ramps 1, 2, 4, 8: a consumer that stops after its first id has fetched one chunk', async () => {
+  it('ramps 1, 2, 4 and on up to 32: a consumer that stops after its first id has fetched one chunk', async () => {
     const { storage, engine, ids } = build(40);
     const got = await drive(storage, async () => {
       const out: number[] = [];
@@ -259,10 +259,10 @@ describe('iterate fetches through a bounded, ordered window', () => {
 });
 
 describe('iterate over a range uses the same window', () => {
-  it('keeps up to 8 reads open over the chunks in range, and trims the edges', async () => {
-    const { storage, engine, ids } = build(40);
+  it('keeps up to 32 reads open over the chunks in range, and trims the edges', async () => {
+    const { storage, engine, ids } = build(80);
     const after = 5 * K + 50; // keeps the last two ids of chunk 5
-    const through = 30 * K + 150; // keeps the first two ids of chunk 30
+    const through = 60 * K + 150; // keeps the first two ids of chunk 60
     const got = await drive(storage, async () => {
       const out: number[] = [];
       for await (const id of engine.iterate({ segment: 'a' }, { after, through })) out.push(id);
@@ -270,7 +270,7 @@ describe('iterate over a range uses the same window', () => {
     });
     expect(got).toEqual(ids.filter((id) => id > after && id <= through));
     expect(storage.peak).toBe(WINDOW);
-    expect(storage.requested).toEqual(Array.from({ length: 26 }, (_, i) => 5 + i));
+    expect(storage.requested).toEqual(Array.from({ length: 56 }, (_, i) => 5 + i));
     expect(unhandled).toEqual([]);
   });
 
@@ -315,14 +315,14 @@ describe('iterate over a range uses the same window', () => {
   });
 });
 
-describe('count on the storage path uses a window of 8', () => {
-  it('keeps up to 8 reads open and returns the same total', async () => {
-    const { storage, engine, ids } = build(40);
+describe('count on the storage path uses a window of 32', () => {
+  it('keeps up to 32 reads open and returns the same total', async () => {
+    const { storage, engine, ids } = build(80);
     const total = await drive(storage, () => engine.count({ segment: 'a' }));
     expect(total).toBe(ids.length);
     expect(storage.peak).toBe(WINDOW);
-    expect(storage.requested).toHaveLength(40);
-    expect(new Set(storage.requested).size).toBe(40);
+    expect(storage.requested).toHaveLength(80);
+    expect(new Set(storage.requested).size).toBe(80);
     expect(storage.versionReads).toBe(1);
   });
 
