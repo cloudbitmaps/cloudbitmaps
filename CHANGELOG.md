@@ -1,25 +1,1130 @@
 # Changelog
 
 All notable, user-facing changes to CloudBitmaps are recorded here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project adopts
-[Semantic Versioning](https://semver.org/) from **v0.1.0**.
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
+Changes land under **[Unreleased]** and are cut into a version on release. For what is shipped and how far it is
+proven see [`docs/ROADMAP.md`](docs/ROADMAP.md); for *why* a change is shaped the way it is, the entries below say
+so, and so do the module headers in the code.
 
-> **SemVer starts here.** `0.1.0` is the first published release and the first versioned section below.
-> Everything before it accumulated as a running dev log; from now on changes land under **[Unreleased]** and
-> are cut into a version on release. For what is shipped and how far it is proven see
-> [`docs/ROADMAP.md`](docs/ROADMAP.md); for *why* a change is shaped the way it is, the entries below say so, and
-> so do the module headers in the code.
->
 > **Pre-1.0 means the format and API can still move.** Breaking changes are possible in a minor bump until
 > `1.0`, at which point the `.crbm` format freezes and normal SemVer guarantees apply.
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-10-04
+
+### Added
+
+- **`.batches()` on every streaming read: the same ids, one `Uint32Array` per chunk.** `iterate`, `intersect`, `union`
+  and `andNot` (a pinned handle's included) return an `IdStream`, which is still an `AsyncIterable<number>` that
+  `for await` reads one id at a time exactly as before (it is still the same single-use generator), and now has `.batches()`, yielding each chunk's ids as one ascending array: the
+  same ids in the same order, a range cut at its edges the same way, no empty arrays. It reads the same chunks, charges
+  the same budget and stops the same way on `break`; each array is at most 65,536 ids (256 KiB) and is the caller's to
+  keep. Measured locally, on an in-memory segment of 10 million ids, the per-id stream ran at about 6 million ids per
+  second and `.batches()` at about 90 million; an `andNot` of a tenth of it ran at about 5.7 and 90 million. The per-id
+  throughput is unchanged. `CodecBitmap` gains an optional `toUint32Array()`, which the roaring codec implements; a
+  codec without it is read through its iterator. See [Read a chunk at a time](docs/guide/reading.md#read-a-chunk-at-a-time-batches).
+
+### Changed
+
+- **The client `S3Storage` builds allows 128 sockets, up from the AWS SDK's default of 50, and a new `maxSockets`
+  option sets it.** At the library's default `concurrency` of 32, one two-operand `intersect` keeps up to 64 reads
+  open, so the built client queued the library behind its own socket pool; a many-exclude `andNot` ran 23% faster on
+  128 sockets (measured locally against a latency-modelled source). `maxSockets` is a positive integer, applies to
+  `https` and plain-`http` endpoints alike, and is refused beside `client`, as `region`, `endpoint`, `pathStyle` and
+  `credentials` are. Only the socket limit differs from the SDK's own client: its request handler, defaults-mode timeouts,
+  keep-alive, retry and the separate connection for a part of 2 MiB or more (`Expect: 100-continue`) are the SDK's, and
+  a client you pass is never changed: it keeps its own limit, so raise it there. Release a built client's sockets with
+  `store.client.destroy()`. `eraseSubject`'s 256 reads at once need `maxSockets: 256` or a
+  lower `concurrency`.
+
+- **The published in-region latencies are now measured on `0.13.0`.** A run from AWS CloudShell in `us-east-1` on
+  2026-10-04 measured the wider combine window that the benchmarks page had only derived from a model: a cold
+  intersect of two segments sharing 100 chunks took 290.06 ms at the median, and an `andNot` against ten excludes
+  3,335.85 ms, with the same requests and the same bill as the previous release's run. The run's rounds sit a fifth to a half above the engine's rounds model, which assumes no socket limit; it did not vary its client's 50 sockets, so it
+  does not say why. The README, the
+  benchmarks page, the roadmap and the site quote it, and the benchmarks page sets the measurement against the model.
+
+## [0.13.0] — 2026-10-03
+
 ### Breaking
 
-Each of these makes a call throw where it used to return, and each fixes a wrong answer: the entries under
-**Fixed** say what the call returned before.
+- **The default `concurrency` rises from 8 to 32, so a call can have four times as many reads open.** A two-operand
+  combine can hold up to 64 open, and `eraseSubject` up to 256 (`concurrency` segments at once, 8 by default, each
+  with a window of 32 chunk reads), against the S3 SDK's default of 50 sockets. On S3 the wait for a socket counts
+  against `readTimeoutMs`, so a deployment that sets `readTimeoutMs` should raise `maxSockets` (256 covers four
+  two-operand combines or one `eraseSubject`) or pass a lower `concurrency`. See the combine and erasure entries under
+  `Changed`.
 
+- **The reader refuses, when it opens an object, an index entry longer than the decode cap: 1 MiB, plus 28 bytes when
+  encrypted.** One oversized entry makes the whole object unreadable, and a custom codec that raises `maxBitmapBytes`
+  above 1 MiB must also set `maxPayloadBytes` on the chunk source. See the payload-cap entry under `Fixed`.
+
+### Changed
+
+- **Concurrent cold reads of one chunk make one storage request.** Callers that missed the cache on the same chunk of
+  the same generation at the same time each made their own request: 50 concurrent cold `has()` of one chunk made 50
+  GETs, and every caller made one after each publish or cache eviction. They now wait on the one request already
+  open, with or without a `cache`, and a failure is delivered to every caller waiting on it (the next call reads
+  again). A different generation of the chunk is a different request. `andNot(a, [a])` and any combine that names a
+  segment as both include and exclude no longer read each of its chunks twice (6 GETs for 3 chunks, now 3; measured
+  locally on the in-memory driver). `store.invalidate(ref)` also forgets the segment's open reads: a caller already
+  waiting on one still gets its answer, a call made after the invalidation starts its own read, and the read it
+  dropped is not written to the cache. Metrics: one `storage.get` per request; a caller that waits on an open read
+  still counts a `cache` miss, so `misses` can exceed the `storage.get` count, which is the number of requests.
+- **Erasing an id reads ahead through a window of 32 chunks instead of one at a time.** The erasure rewrite
+  (`eraseSubject`, `eraseIdFromSegment`) used to read each chunk of the generation after the one before it, so a
+  segment of `n` chunks took `n` request times. It now keeps up to 32 reads open ahead of the writer and takes them in
+  key order, so it takes about `n / 32`. Modelled at 26 ms per request, erasing one id from a segment of 50, 200 and
+  2,000 chunks takes about 1.4 s, 5.5 s and 54 s before and 0.14 s, 0.27 s and 1.9 s after (modelled, not measured
+  on S3). The requests are the same ones as before, so the request count and the cost are unchanged, and the order, the retry
+  of each read, the refusal of a chunk that is not decodable or holds a value above 65,535, and the chunk it names
+  are as before: each chunk is decoded as the writer reaches it. Memory is bounded by the window, not the segment:
+  up to 32 raw chunk payloads are held ahead of the writer, about 8 KiB each for a well-formed segment, and for a corrupt
+  object no more than the reader's cap of 1 MiB each, so 32 MiB per segment and `concurrency` × 32 MiB for
+  `eraseSubject`. `eraseSubject`, which erases up to `concurrency` segments at once (8 by default),
+  can have up to `concurrency × 32` range reads open together, 256 by default.
+- **A long combine or `iterate` takes far fewer round trips: the default `concurrency` is 32, up from 8.** The
+  default `concurrency` of `intersect`, `union` and `andNot` (and of the `*Into` reads that run through them) is 32
+  chunk keys, and so is the most `iterate` and the storage-path `count` read ahead. A read of `n` chunks takes about
+  `n / 32` request times in sequence where it took `n / 8`; the requests themselves are the same, apart from the duplicates the first entry removes, so the cost and the
+  per-op budget are unchanged. A combine's window opens 8 keys wide (or `concurrency` wide, if that is lower) and
+  doubles with each key taken until it is `concurrency` wide, so a combine that stops in its first few keys fetches no
+  further ahead than it did, and `concurrency: 8` is the window the previous release had. `iterate` and `count` keep
+  their ramp, 1, 2, 4 and on up to 32. The cost is a read that stops early: it has requested up to 32 keys per operand
+  past the last one it used, where it had requested up to 8 (a page of 50 ids from an `intersect` is modelled at 66 to
+  114 requests, and from `iterate` at 17 to 41). Pass a lower `concurrency` to a combine to bound it. Memory is still
+  bounded by `concurrency × operands × chunk`, now 4 times larger by default, and a two-operand combine can hold up to
+  64 reads open against the S3 SDK's default of 50 sockets; on S3 the extra wait for a socket counts against `readTimeoutMs`
+  (see [production](docs/guide/production.md)). The chunks a read had already requested when its segment re-resolved
+  are the earlier generation's: up to 32 for `iterate` and `count`, up to `concurrency` for a combine.
+- **`andNot`, and `union` with `exclude`, read an exclude's chunk in the same round trip as the include's.** Where the
+  include side cannot come out empty, which is one include or a union, the excludes that hold the key no longer wait
+  for the includes. An `intersect` of two or more includes still reads its excludes only after the AND, which may be
+  empty, and then no exclude is read. The requests are the same, apart from the duplicates the first entry removes, and each key takes one round trip
+  fewer.
+
+  **For the combine entry above and this one, measured on 0.12.0:** `andNot` of a 1,999-chunk segment against ten excludes took 8,687.10 ms at the median, with
+  3,021 GETs (1,999 include chunks, 100 shared chunks times ten excludes, and 22 index reads) at a mean of 10.3
+  requests in flight. That was bounded by the window of 8 keys, about 250 rounds of about 27 ms, and not by the
+  network. **Derived, not measured on S3:** a model with lognormal GET latency (median 26 ms) and 50 sockets, sending
+  the same requests, puts the same `andNot` at 13.1 s with a window of 8 and 3.7 s with this release's; `andNot`
+  against one opt-out list that holds every chunk at 18.2 s and 3.9 s; an `intersect` sharing 128 chunks at 866 ms and
+  338 ms, and 1,000 chunks at 6.3 s and 2.1 s; `iterate` over 1,999 chunks at 10.8 s and 3.6 s. A run in region
+  measures the release.
+
+- **The calibration harness models the new window.** The expected depth of a cold intersect is a pointer, a tail and
+  then the rounds a window that opens 8 wide and widens to 32 takes, stepped from the engine's constants. A run of
+  0.12.0 or earlier is read against the fixed window of 8 it ran with.
+
+### Fixed
+
+- **A chunk too large to decode is refused when the object is opened, not after it is read.** The `.crbm` reader accepted
+  an index entry of up to 16 MiB, while every chunk is decoded under a 1 MiB cap, so a corrupt or hostile object could
+  make each slot of a read window hold up to 16 MiB that was then refused. The reader's cap is now the decode cap
+  (1 MiB), plus the 28 bytes of nonce and tag on an encrypted object, so an entry the decoder would refuse is refused at
+  open as an `IntegrityError` naming the chunk and the cap, before any payload is read. What a read window holds for
+  such an object is bounded by the window times 1 MiB per operand, where it was the window times 16 MiB. One oversized
+  entry now makes the whole object refuse to open: a read or an erasure of another chunk of it fails at open too, and
+  `checkConsistency` reports it as an integrity error. No object written by the codec is affected: a chunk it writes
+  serializes to at most about 8.2 KiB. A caller who raises `maxBitmapBytes` above 1 MiB (a custom codec) must also set
+  `maxPayloadBytes` on the chunk source, or the object is refused at open.
+
+## [0.12.0] — 2026-10-03
+
+### Breaking
+
+- **`CostReport.monthlyUSD.byOp` gains the required `retention`**, so a `CostReport` you build yourself must carry it. It
+  is the retention sweep's cost, 0 unless `workload.retirementsPerMonth` or `purgesPerMonth` is set (see `Added`).
+
+- **A registry needs permission to delete under its own prefix: its deletes now remove rows.** Where the backend's
+  `conditionalDelete` is on (below), every registry delete of a row created by 0.12, the retention sweep's purge of a
+  tombstone among them, is a delete under a precondition, where it was an overwrite with a tombstone: `DeleteObject` on
+  S3, an object delete on GCS, Delete Blob on Azure. A policy that lets the backend delete only under the segments'
+  prefix makes each such delete fail with the provider's access error: a purge then leaves the row and reports the
+  error in its ledger entry, and the due index keeps a pointer it meant to remove. Grant `s3:DeleteObject`,
+  `storage.objects.delete` or a role that may delete blobs on `<prefix>registry/`, or set `conditionalDelete: false`
+  on the backend to keep writing tombstones. A refused purge does not hold the sweep up: see `purgeFaults`, below.
+
+- **A byte array passed as ids is refused: `store.load` and `loadSegment` throw `ValidationError` for a `Uint8Array`,
+  a `Uint8ClampedArray` or a `Buffer` where ids go**, before any request. A byte array is an iterable of numbers, so
+  until now each byte was loaded as an id: `store.load(ref, bitmap.serialize('portable'))` published the
+  serialization's byte values as the segment, with `published: true`. Pass portable Roaring bytes as
+  `{ serialized }` (below), and ids as a `Uint32Array` or an array of numbers; every other typed array is still ids.
+  An input that is neither ids nor one of the two bitmap forms now throws `ValidationError` too, where it threw a
+  `TypeError` from inside the load.
+
+- **A reader before 0.12 refuses an object written with `metadata`.** A generation that carries metadata has an
+  extension block its footer flags (`Added`, below), and a 0.11 reader does not know the flag, so it refuses the object
+  rather than read past what it cannot see. A load that passes no `metadata` writes the object it always wrote, which
+  every reader opens. Until every process that reads a segment is on 0.12, do not pass `metadata` to it.
+
+- **`CrbmReader.open` refuses a cleartext object when it is given a `crypto`.** It used to ignore the key and read the
+  object in the clear. Tooling that passes a `crypto` for every object it opens must pass it only for encrypted ones,
+  which an object's footer says (its `FLAG_ENCRYPTED` bit); nothing in the packages, the scripts or the CLI does. See
+  the `Fixed` entry on cleartext objects under an encrypted segment for why.
+
+- **Registry rows are schema 2, and there is no going back: stop every 0.11 process before the first 0.12 write.**
+  Every row a 0.12 registry writes, whether a create, a compare-and-swap or a tombstone, is stamped
+  `schemaVersion: 2`, whatever it holds, and 0.12 reads rows stamped 1 or 2. A 0.11 process refuses a schema-2 row
+  with `UnsupportedError`: a load, an `*Into`, a `rollback`, a `setRetention` or a drop of that row throws, and so does
+  every `list()` that reaches it, in its namespace and in every unscoped listing, so a single 0.12 write stops each
+  0.11 call that lists the registry: `retireExpired`, `eraseSubject`, `subjectReport`, `eraseNamespace`,
+  `checkConsistency`, `store.segments()` and the `export-segments` CLI. It fails closed and typed, and never misreads
+  a row. Upgrade in this order:
+  1. Upgrade the processes that only read to 0.12 first: those that call `count`, `has`, `iterate`, the combines or
+     `pin`, and those that list, `store.segments()` and `subjectReport`. 0.12 reads every row 0.11 wrote.
+  2. Stop every 0.11 process that writes, runs a retention sweep, erases, checks consistency or exports, then start
+     the 0.12 ones. A 0.11 `eraseSubject` cannot complete once a schema-2 row exists in a namespace it lists (every
+     namespace, for an unscoped run), so schedule erasure runs around the cut-over.
+  3. There is no downgrade. After the first 0.12 write, 0.11 cannot read the registry; the only way back is a
+     registry restore to a point before that write (the disaster-recovery guide), which loses every write since.
+
+  Schema 2 adds the record's optional `summary` and the new token form, both below. A row stamped 1 may hold only
+  what schema 1 could: a `summary` or a token with a write part on one is an `IntegrityError`.
+
+- **`@cloudbitmaps/s3` needs `@aws-sdk/client-s3` 3.700.0 or later, where it took 3.645.0.** Install it before upgrading if you pin the SDK; the reason is under `Fixed`.
+
+- **A registry token is now `<incarnation>.<counter>.<write>`, and no two writes under a name are given the same
+  one.** The incarnation is a 128-bit id as 32 lowercase hex digits, drawn from the platform's Web Crypto when a row
+  is created; the counter advances on every write and carries on across a tombstone; the write part is 64 bits as 16
+  lowercase hex digits, drawn for every write. Both random parts make the tokens unique with overwhelming probability, where a counter
+  alone was not: two incarnations of one name meet with probability 2^-128 for any pair (about n² / 2^129 among n of them), and two writes
+  at one counter after a restore with probability 2^-64:
+  - once a row's object was gone entirely (a tombstone removed by an object-store delete or a lifecycle rule), a
+    re-create restarted its counter at 0 and re-issued the earlier row's tokens. A warm store at the same generation
+    took the new row for the old one and kept serving the deleted ids; a publish fenced on a token read from the
+    earlier row (`expectToken`, as an erasure rewrite publishes) landed on the new one; and a collection pass over a
+    `destroyed` segment, which goes on only while the row's token is unchanged, took the new row for the old one and
+    deleted every generation, the new current included;
+  - after a registry restore from a backup, a row was back at an older counter, so its next writes were given the
+    tokens the writes after the backup had, and a store that skipped the restore's restart served the generation
+    the restore took away from its cache.
+
+  A row written before 0.12 keeps its bare decimal token (`"7"`) until its first 0.12 write, which gives it
+  `<counter>.<write>`; it gains no incarnation, since only a create starts one. No two of the three forms compare
+  equal. The library compares tokens only for equality; code of your own that read a shipped registry's token as a
+  number breaks. The in-memory backend's tokens take the same form, its counter still global to the backend.
+
+### Added
+
+- **The cost model prices the retention sweep.** `Workload` gains `retirementsPerMonth`, `purgesPerMonth` and
+  `conditionalDelete` (default `true`; a `GcsStorage` reports `false` unless its option is set), and `CostReport.monthlyUSD.byOp` gains `retention`. The requests are the ones a
+  store that counts its requests measured, per segment: with the registry's `conditionalDelete` on, a retirement is 9
+  reads, 3 writes and a delete, a purge is 4 reads and 2 deletes, and a later sweep reads nothing of a purged segment;
+  with it off, a retirement is 8 reads and 3 writes, a purge is 3 reads and a write, and every later full sweep reads
+  two objects for each purged segment, which the estimator leaves out, since how often you sweep is yours. Reads are
+  priced as GETs, writes as PUT-class requests, and a delete at nothing, as S3 bills none: at the default prices a
+  segment retired and purged costs $20.20 per million with the gate on and $24.40 per million with it off. The report's
+  notes say what it priced. The cost guide gives both, a sweep at fleet scale, and the cost of
+  `checkConsistency({ summaries: true })`, one tail read per segment on top of the listing the default check makes.
+
+- **A cold `count()` is one request, and `seg.stat()` says what the generation is.** The registry row records the
+  current generation's id count, so a count reads the pointer and nothing else: no read of the object, cleartext or
+  encrypted, and none however wide the index is (an index longer than the 256 KiB tail read took a third request). A
+  cold count on S3 and GCS makes 1 request where it made 2, and on Azure Blob 1 where it made 4 (derived from the
+  driver ports, held by a test that counts them; one wire request on each emulator in the integration lane). Within
+  `cache.genTtlMs` it makes none, and a refresh that finds the same generation under a changed row (a `setRetention`)
+  costs it no re-open. `seg.stat()` returns `{ generation, cardinality, metadata? }` from the same resolution:
+  the generation's number, its id count and the metadata it was loaded with, one request when cold and none when warm
+  or pinned (`pin().stat()`), and `{ generation: null, cardinality: 0 }` for a segment with no generation. The current
+  entry of `store.generations(ref)` carries `cardinality` and `metadata` from the row it already reads, with no extra
+  request (an encrypted segment's need a keystore that opens its key), and the other entries carry only their number.
+  A snapshot is now a resolved target with a reader opened on first use, so a `count` and the `has` after it read one
+  generation. **What a count trusts:** the row's summary, used only for the generation it names, on an active row, in the
+  shape the keys call for (a sealed one only if it opens under that generation's associated data), with
+  `requireEncryption` applied as it is to a read. It is not confirmed on the cold path, so a party who can write the
+  registry row can make a count wrong, as they can already repoint the generation. Whenever a read opens the object
+  anyway (a `has`, an `iterate`, a combine, a `pin()`), the store holds the row's count and metadata against the object
+  at no extra request; a disagreement, including a row with metadata over an object with none, stops that store using
+  that row's summary for that generation, and fails no read. A row with no summary it can use (written before rows
+  carried one, naming another generation, or sealed and not opening) sends the count to the index as before, with the
+  tail read. `checkConsistency({ summaries: true })` opens each current object (one tail read each) and reports
+  `summary-mismatch` where a row's summary disagrees with it; a sealed summary needs the store's keystore, and is counted
+  in `summariesUnchecked` without one. The default check lists only, as before. The cost model, calibration
+  expectations and the benchmark and cost pages state a cold count as one pointer read.
+
+- **`load` and the `*Into` verbs take `metadata`: a small record of your own, written with the generation and with the
+  pointer.** A flat object of string keys and string or finite-number values, at most 1,024 bytes as canonical JSON
+  and no key over 128 bytes: the record a definition's version, a landing time or a run id fits in. A record that
+  breaks a rule is a `ValidationError` before the load makes a request (nothing is read, nothing written), on a load of
+  ids, a load of a bitmap and each `*Into`; `undefined` and `{}` store nothing and write the object a load without
+  metadata writes. The record is copied when you call, so what is stored is what you passed whatever the load's id
+  source takes to run. It goes into the generation's object, and the write that moves the pointer carries the row's
+  summary of the generation, its id count and the metadata, in the same compare-and-swap, so a reader that sees
+  generation N as current sees N's metadata. It never changes: a new generation is how it does, and a load does not
+  inherit the last one's. A rollback writes its target's own into the row. It makes the one tail read it already makes to check the target (and
+  a range read when the index is longer than that read), and that read now also opens the target's index and metadata
+  when the store has the segment's key: a target whose index or metadata does not open is refused, where only a footer
+  that failed its own checks was. An encrypted target on a store with no keystore, or whose key it cannot open for any
+  reason (an unreachable key service included), still rolls back and leaves the row with no summary. The undo of a rollback whose
+  target was collected meanwhile puts back the summary the old row had, and an `allowForward` rollback re-reads its
+  target after the swap and puts the pointer back, with `NotFoundError`, when an erasure and a load replaced the object
+  under that number in between. An erasure's rewrite carries the source's
+  metadata into the new object as it is, and the row's summary of it, built from what was written, counts one id fewer;
+  it does not scan the metadata, so never put a subject's id in it. On an encrypted segment, a source with no metadata
+  block whose row's sealed summary has metadata is rewritten with the row's, since the block's presence is not
+  authenticated and the summary is; the erasure still goes through. A crypto-shred and a drop clear the summary, and a
+  retention policy or a sweep that finds a segment not yet due leaves it. On an encrypted segment the object's block
+  and the row's summary are sealed, the summary as a fixed-width 64-bit count then the metadata, bound to its
+  namespace, segment and generation under a scope of its own, so its length reveals only the metadata's size and a copy
+  moved to another generation's row does not open. Whether an encrypted object has the block is still not
+  authenticated, and the row's sealed summary is the copy that says there was one. `LoadOptions.metadata`,
+  `MaterializeOptions.metadata`; `GenerationListDeps.keystore` for `rollbackSegment`. `seg.stat()` and the current entry of `store.generations()`
+  read the metadata back (see the entry on a cold `count()`).
+
+- **The due index carries a pointer to each retirement's tombstone, so `scan: 'index'` purges as well as retires, on a
+  registry that reports `conditionalDelete`.** A retirement files it under the day the tombstone's grace ends, its
+  stamp plus `tombstoneGraceMs`; no field of the row records that day. An index scan reads it back with the expiry
+  pointers and hands the row to the same purge the fleet scan runs, which removes every pointer it read to the row,
+  once the row is gone, and never after a delete whose outcome is unknown. A registry that only tombstones files none,
+  since nothing it purges is removed for good: there the fleet scan purges, and what a retirement and a purge cost is
+  what it was. Per segment, counted with a store that counts requests: a retirement is 9 reads, 3 writes and a delete
+  with the pointer where it was 8 reads and 3 writes (one read and one delete more), and a purge is 4 reads and 2
+  deletes where it was 3 reads and a write (one read and two deletes more, a write fewer). On S3 a delete is not
+  billed and a tombstone's write is.
+
+- **`RegCaps.conditionalDelete`, and a `conditionalDelete` option on `S3Storage`, `GcsStorage` and
+  `AzureBlobStorage` and their registry drivers.** `true` says a registry's `delete` removes a row from its backend for
+  good, only while the row is still the version the delete read, so a full `list` no longer reads it; `false` or
+  absent, every delete leaves a tombstone. The cloud registries remove a row with `DeleteObject` under `If-Match` (sent
+  once, as a registry write is), a GCS delete under `ifGenerationMatch`, and Delete Blob under `ifMatch`, each set to the
+  version the registry read; a precondition that no longer holds, or an object already gone, is a
+  `WriteConflictError`, and the registry re-reads. The option defaults to `true` for Azure Blob and for an S3 client whose resolved host is an
+  AWS S3 host, and to `false` for GCS, the public endpoint included, and for an S3 client that sends anywhere else.
+  GCS is off because no run against real GCS has verified that it applies `ifGenerationMatch` to a delete; set `true`
+  to remove rows for good. MinIO and fake-gcs-server accept the precondition on a delete and ignore it, and on such a
+  store two sweepers and a re-create of the name could delete a live row. The S3 host is the one the SDK
+  resolves, so an endpoint set by `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL` or an `endpoint_url` in the shared config
+  file counts as a constructor `endpoint` does, and an AWS regional, FIPS, dual-stack or VPC interface host is AWS. It is
+  read from the client once, before the registry's first request, without sending one; until then
+  `capabilities().conditionalDelete` reads `false` unless the option is set. A value that is not a boolean is refused with
+  `ValidationError`. The in-memory and local-filesystem registries report `true`. For driver authors,
+  `ObjectRegistryStore` may implement `delete(key, { version })` and set `conditionalDelete: true` to say its backend
+  applies the precondition; with both, `ObjectStoreRegistry` removes rows rather than tombstoning them. Real S3 refuses a stale
+  precondition: `tests/integration/real-cloud-conditional-delete.test.ts` passed against AWS S3 on 2026-10-03, on an
+  unversioned and a versioned bucket. The same probe has not been run against real GCS, which is why GCS is off by
+  default; it is skipped unless a bucket is named.
+
+- **`readTimeoutMs` on `GcsStorage` cuts off a GCS read that stalls; it is off unless you set it.** A client's own
+  `timeout` does not bound a download on `@google-cloud/storage` 8.x, so a read whose server stops answering waited
+  for it forever. With `readTimeoutMs` set, one deadline bounds each read as a whole (a generation's tail with the
+  metadata read it falls back on for an empty object, a range of it, a registry row): every attempt the driver makes
+  and the backoff between them, timed from the call into the driver, so a credential fetch counts, to the end of the
+  body, so a stall after the headers is cut off too. When it passes, the read throws `TransientError` naming the read
+  and the timeout and no further attempt starts; the store's read retry runs it again, so at `2_000` a read that stalls
+  on every attempt fails after about 8.35 s (measured: 8.1 to 8.2 s). It counts time the process spends busy, so a
+  synchronous stretch longer than the timeout fails the reads in flight. Uploads, deletes, listings and the
+  conditional writes are not timed. `0`, the default, sets no timeout; a value that is not a non-negative safe integer
+  no larger than 2,147,483,647 is refused with `ValidationError`. The SDK cannot cancel a request whose response has
+  not begun, so a read that times out before its server answers leaves that connection open until the server answers
+  or closes it: one per read, up to four per call through the store's retry (on 7.x, checked on 7.22.0, a read cut off
+  after its response began keeps its connection open too). A 404 whose error body arrives after the deadline is a
+  `TransientError`, not `NotFoundError`. The GCS storage and registry drivers take the option too.
+
+- **`LoadDeps.collectByListing` makes `loadSegment` collect by listing whatever `keep` is.** Absent, a load that numbered
+  its generation with one existence check and keeps at most one generation deletes by name the one generation its
+  publish pushed out of the window (see Changed). Set, it lists the segment's objects after its publish instead and
+  deletes every generation below the new one beyond `keep`, as every load did. The `*Into` verbs set it, because their
+  `keep` is how an operator clears a destination that earlier materialisations kept in full. `store.load` does not
+  take it: its options are unchanged.
+
+- **A load takes a bitmap as well as ids: `store.load(ref, { bitmap })` and `store.load(ref, { serialized })`.**
+  `{ bitmap }` is anything with `serialize('portable')`, such as `roaring`'s `RoaringBitmap32`, and is loaded as
+  `{ serialized: bitmap.serialize('portable') }`, serialized once at the call, so changing the bitmap afterwards does
+  not change what is loaded. `{ serialized }` is one 32-bit bitmap in the portable Roaring format, the one the
+  `'roaring'` export writes. A bare `RoaringBitmap32` from the `roaring` this package uses, passed where ids go, is
+  loaded the same way.
+
+  Every bitmap input takes one path, all of it before the load's first request: the bytes are capped at
+  537,403,396 (more than any canonical 32-bit bitmap serializes to), must hold exactly one bitmap, are checked
+  structurally the way every stored chunk is, and are decoded by the safe deserializer. Malformed or oversized
+  bytes, and bytes after the bitmap's end (two serializations concatenated, say), throw `ValidationError`, and
+  nothing is read or written. The bytes are read through the typed array's own accessors, and a
+  `SharedArrayBuffer`'s are copied first; a `{ bitmap }` that can report its size is refused over the cap before it
+  serializes.
+
+  The chunks are then cut from the bitmap's own containers, per container and per byte and never per id, and the
+  generation is byte for byte the one the same ids write. A golden object written by the id path before this change
+  is reproduced by every input; a property test and a fixed corpus (run containers of 2 to 2,048 runs, the run
+  cookie at 65,536 containers) hold it over every container shape; and every existing test file that calls a load
+  runs a second time with its loads handed `{ serialized }`, the segments it seeds through the fixture loader included,
+  except the few that depend on when a load reads its ids (they inject races from inside the id stream, or count
+  the id path's own yields). Every guarantee of an id load holds: write-once, the fenced publish, `guard`, `keep`,
+  the empty refusal, encryption and the same `LoadResult`.
+
+  A test counts the per-id routes during a 12M-member load from a bitmap (iteration, building from values, the id
+  split) and finds none. Two whole-bitmap steps do not yield, each for a time that grows with the bytes: the input
+  check and the native decode at the call, and the re-encode before the write; at the cap they take about 400 ms or
+  more and about 250 ms (derived: twice a 256 MiB load of bitsets on an Apple M3 Pro). Around and after them the
+  load yields the event loop, and every 1,024 containers while it writes. As it writes, it checks every container
+  of the bitmap again, so a buffer another thread was still writing during the call (an unfinished `fs.read` into
+  it, say), which can decode into bytes the first check never saw, throws `IntegrityError` and publishes nothing.
+  `pnpm bench:load-input` measures the time, and its figures are not recorded yet. `loadSegment` takes the same
+  inputs (the trailing-byte refusal with a codec that honours `whole`, below); `LoadInput` and `PortableBitmap` are
+  the new types.
+
+  **For a codec author**, `CodecBitmap.encodeChunks?()` and `EncodedChunk`: a codec that implements it hands a load
+  its chunks as stored bytes, ascending, each exactly what `fromValues` of that chunk's low 16 bits, `optimize()` and
+  `serialize()` give, which is how a bitmap load writes without touching an id. Optional: a codec without it loads a
+  bitmap input through its ids. The roaring codec implements it. `CodecInterface.safeDeserialize` takes an optional
+  third argument, `{ whole }`, which a load passes for a caller's bytes: a codec must then refuse bytes after the
+  bitmap's end, since core cannot read the format, and one that ignores the option loads two concatenated bitmaps
+  as the first of them. A codec with the two-argument signature still type-checks.
+
+- **A `.crbm` generation can carry its metadata, in an extension block its footer flags.** The format stays 1.0. A
+  generation written with metadata gets one extension block between its last payload and its index, and its footer
+  sets a new flag bit, `FLAG_EXTENSION` (`1 << 3`); the block is found from a 12-byte trailer just before the index
+  (the sections' length, their CRC32C, and `CRBX`), and holds typed sections of a u32 length each.
+  Section 1 is the metadata's canonical JSON, at most 1 KiB, by the same rules and in the same form as a registry
+  summary's (`GenerationMetadata`): RFC 8785 for a flat object of strings and finite numbers, with vectors in
+  `tests/golden/metadata-canonical.json`, RFC 8785 Appendix B's number samples among them, for other languages to
+  check against. On an encrypted segment its content is
+  sealed under the segment's key like the index, bound to its namespace, segment and generation; that the block is
+  there is not, so whoever can write the object can remove it. A generation without metadata is written byte for
+  byte as before, flag clear, so every object written so far, and every one written without metadata, is unchanged.
+  A reader before 0.12 does not know the flag and refuses an object with metadata (see `Breaking`). This build reads the block in the request that reads the index (one more only when the tail read ends
+  inside the block). It refuses with `IntegrityError` a block whose
+  trailer, CRC, 4 KiB cap or sections do not hold, metadata that breaks a rule or is not exactly its canonical form,
+  a flag with no valid block, and a payload that runs into the block, and it skips a section type it does not know,
+  so a later build can add one. The reader cache's byte bound (`cache.readerMaxBytes`) counts a reader's metadata with its index. For
+  tooling: `CrbmReader`'s `metadata` is the generation's metadata, and `aadFor` takes the scope `'metadata'`; a
+  `CrbmCrypto` of your own must map that scope as `aadFor` does to open an encrypted object with metadata. `load` and the
+  `*Into` verbs take a `metadata` option that writes it (above).
+
+- **A registry record can carry a `summary` of its current generation** (`RegistryRecord.summary`, for driver
+  authors). In the clear on a cleartext segment, `{ generation, cardinality, metadata? }`, with `cardinality` an
+  integer from 0 to 2^32 and `metadata` string keys to string or finite-number values, at most 1 KiB as canonical
+  JSON (`GenerationMetadata`); sealed on an encrypted one, `{ generation, sealed }`, base64 of a nonce, the count
+  sealed as a fixed-width u64 with the metadata after it, and a tag, so its length reveals only the metadata's size.
+  Each shape is checked at both registry boundaries: `ValidationError` on a write, `IntegrityError` naming the row
+  on a read. It names the generation it describes and follows the pointer and the keys: a patch that moves
+  `currentGen`, or changes `wrappedDeks` so the shape no longer agrees, without mentioning it drops the old one, and
+  one a write gives must name the `currentGen` and agree with the keys (sealed with wrapped keys, clear without) the
+  row will have. A stored row that disagrees is still read, so one such row cannot stop every listing, and whatever
+  reads the summary must not use it then. The registry stores a frozen copy of the summary it was called with. A
+  crypto-shred clears it. Every write that moves a pointer writes one, a load's guard and a cold `count()` read it, and a row
+  without one is correct and is read from its object. Every
+  shipped registry round-trips it, and the registry conformance suite now requires a driver of your own to as well.
+  Types: `RegistrySummary`, `ClearRegistrySummary`, `SealedRegistrySummary`, `GenerationMetadata`.
+
+- **`Entropy`, the seam a registry draws its tokens' random parts from** (`(length) => Uint8Array`, from
+  `@cloudbitmaps/core`). `ObjectStoreRegistry` takes one as an optional fourth constructor argument and defaults to
+  Web Crypto. It is not the `Rng` seam, which is seedable for simulation: a seeded source hands every process the
+  same ids. Inject one only to make a test replayable. On a runtime with no Web Crypto a shipped registry still
+  reads and refuses every write with `UnsupportedError`.
+
+- **`RegCaps.canWrite`, an optional registry capability: `false` says the registry cannot write.** Absent means
+  writable, so an existing driver is unchanged. A shipped registry reports `false` on a runtime with no Web Crypto,
+  and a registry of your own may report it the same way. A load and an erasure rewrite check it before their first
+  request, so they refuse with `UnsupportedError` before they write an object.
+
+- **`AzureBlobStorage` can time each read: `readTimeoutMs`, off unless set.** With it set, every read request the
+  Azure Blob storage and registry drivers send, a range read, a tail read's properties and its ranged download, each
+  on its own, and a registry row's read, has `readTimeoutMs` to finish, the response body included, or it is aborted
+  and throws `TransientError` ("Azure Blob download timed out after 2000 ms"), which the store's read retry runs
+  again. No client setting bounds an Azure read whose body stalls: the SDK's per-try timer stops at the response
+  headers. The timer starts at the call into the SDK, so waiting for a socket or a credential's token counts; the
+  HTTP agent the SDK builds sets no socket limit. Writes, block commits, deletes and listings are not timed. `0`, the
+  default, turns it off, and a value that is not an integer from 0 to 2,147,483,647 is refused with
+  `ValidationError`. The drivers take it too (`AzureBlobStorageDriver`, `AzureBlobRegistryDriver`). The SDK's default
+  retry waits 4 s before its second retry of a 500 or 503, so a timeout below that cuts it off, and the read throws the
+  timeout instead of the 503 for the store's retry to run again. Tests run a real `@azure/storage-blob` client against
+  a stub that stalls before the headers, after them and mid-body, and a child process checks that a read leaves no
+  timer behind.
+
+- **`S3Storage` can time each read: `readTimeoutMs`, off unless you set it.** The default is `0`, no timeout, until
+  in-region measurements justify one. Set, it bounds every `GetObject` and `HeadObject` the S3 storage and registry
+  drivers send, from the moment the read is handed to the SDK until its body is read: a read still running after that
+  many ms is aborted, which releases its connection, and throws `TransientError` ("S3 GetObject timed out after
+  N ms"), which the store's read retry runs again. The AWS SDK sets no timeout by default, so an untimed read on a
+  connection that stops answering waits as long as the connection stays open. The clock counts the time a read waits
+  for one of the client's sockets (50 by default) and the time spent fetching credentials, and under
+  `retryMode: 'adaptive'` the SDK's rate-limiter wait, so a burst of concurrent reads larger than the socket pool can
+  time out with nothing slow on the wire: against a local stub answering each request in 50 ms, 8,000 concurrent
+  `has()` calls with `readTimeoutMs: 2_000` lost most of their reads. Size it above the worst queueing your concurrency
+  implies, or raise `maxSockets`. AWS's S3 guidance is to retry a GET of under 512 KB after about 2 seconds; with
+  `readTimeoutMs: 2_000` and the store's default retry, a read whose request stalls on every attempt fails after about
+  8.35 s (4 × 2,000 ms plus up to 350 ms of backoff, derived rather than measured). Writes, multipart uploads, deletes
+  and listings are never timed, and a `client` you pass gets the timeout without being changed. A value that is not
+  an integer from 0 to 2,147,483,647 is refused with `ValidationError` (a longer Node timer fires after 1 ms).
+
+- **`PricingProfile.storage.requestsPerPointerRead` prices a pointer read apart from a tail read.** It is the requests
+  one pointer read costs, 1 by default, and the cost model charges it for each operand of an intersection, for the
+  pointer reads a load makes and for each pointer refresh. `requestsPerSizedRead` keeps its name and its default
+  of 1, and now prices tail reads only: each operand's index read, since a load reads no index of its own. A pointer read is one
+  request on S3, GCS and Azure Blob alike, so every shipped backend leaves `requestsPerPointerRead` at 1; S3 and GCS
+  leave `requestsPerSizedRead` at 1 too, and an Azure Blob profile sets `requestsPerSizedRead: 2`, for its two-request
+  tail read. An Azure profile that already sets `requestsPerSizedRead: 2` is priced one request lower for each pointer
+  read, which is what an Azure pointer read now costs. A value that is not a finite number of at least 0 is refused
+  with `ValidationError`, as `requestsPerSizedRead` is.
+
+### Changed
+
+- **A cold `count()` of a torn restore answers instead of throwing.** A segment whose pointer names an object that is
+  gone (a registry restored ahead of its bucket, or an object a lifecycle rule removed) counts the number its row
+  records, which is true of the generation the row names, where the count opened the object and threw `NotFoundError`.
+  A `has`, an `iterate` or a combine still throws, so a count alone no longer shows the tear: `checkConsistency()` is
+  what finds it. `exists()` and `count()` say so in their documentation, as the disaster-recovery guide does.
+
+- **A steady `store.load()` is 8 requests, where 0.11.2 made 14.** A load reads its segment's row once, checks that its
+  next generation number is free instead of listing for it, sizes the current generation from the row's summary
+  instead of reading its index, and deletes by name the one generation its publish pushed out of the window, listing
+  only on every 16th generation.
+  - *The row is read once.* A load read its registry row four times before its publish. On a cleartext segment it now
+    reads it once, and the guard, the generation number, the write's refusal of a `destroyed` segment, and the
+    publish's first attempt all decide from that read. The publish is fenced on that row, on its token, on the pointer
+    a guarded load judged, or on its absence, so a row that changes in between makes the publish lose rather than land
+    on the stale read. A load that found no row, or found an encrypted one, reads it again after its ids and before its
+    write, so a first load still sees a row another writer created meanwhile, and an encrypted segment's key is
+    unwrapped only from a row read after the ids.
+  - *The number is checked, not listed.* It is `currentGen + 1` when one existence check finds no object holding it (a
+    zero-byte tail read: `HeadObject` on S3, the object's metadata on GCS, the blob's properties on Azure Blob, one
+    request on each). When the check meets an object, such as a crashed load's or the generations a rollback left
+    above the pointer, or cannot answer (silently: nothing records it), the load lists the segment and numbers above
+    everything in it. A load can therefore take a number below an object above the pointer, never one an object holds.
+  - *The guard's size comes from the row.* The guard needs how many ids the segment holds, and a row that carries a
+    summary for the generation it names gives it that, so the load opens no object for it. A row with none (one
+    written before rows carried it, a summary that names another generation, or a sealed one that does not open) is
+    read from the object's index, and its next load writes a summary. A load that takes the size from the summary also
+    opens nothing to learn that the current object is gone from the bucket, which is how it would find a segment whose
+    object a lifecycle rule or a partial restore removed, so a load with a `keep` of 1 that is about to delete by name
+    looks for the current object first with one zero-byte read (the check it already makes that the next number is
+    free) and lists unless it finds it. A load with a `keep` of 0 deletes the generation it supersedes, which is the
+    one in question, and a load that lists anyway, one the guard refuses or one with no guard makes no such look. A row
+    that names an object that is gone still remembers the size, so a repair load is judged against it, and a repair
+    smaller than `guard.minRetained` allows is refused. Repair without `minRetained`: `allowEmpty: true` does not lift
+    it. A guarded load over a current object that is present but corrupt, whose row has a summary, does not fail at the
+    guard, which does not open it: the look for the object proves it is there, not that it is intact, and a read of it
+    still fails closed.
+  - *Collection is by name.* A load that numbered its generation with one existence check, which found it free, and
+    keeps at most one generation, the default `keep: 1` or 0, deletes `generation - keep - 1` after re-reading the
+    row, and lists nothing. It lists the segment on every generation divisible by 16, whenever the check met an object
+    above the pointer or could not answer, whenever the current generation's object was found gone, and whenever
+    `keep` is 2 or more: a window of 2 or more counts the generations that are in the bucket, which a name cannot
+    know, since a refused load leaves a gap and deleting by name would take a generation the window promised to keep.
+    What the name-only loads leave behind is collected by the listing within 16 generations: the generations an
+    earlier, wider `keep` held, an object a refused load left below the pointer, a generation a rollback or an erasure
+    stranded. The count is of generation numbers, so a rollback starts it again from the generation it moves to. A
+    fault can break the premise that the object the row named is in the bucket (a lifecycle rule or a partial restore
+    removing it, or an erasure deleting the object of a load whose publish then landed), and the load that repairs the
+    segment lists, and keeps the older generation. A load with `allowEmpty` and no `minRetained` looks at nothing,
+    cannot tell, and deletes that older generation by name.
+
+    The safety rules are the listing pass's. The row is re-read before the delete. A row that is gone, or a pointer
+    that has fallen below the generation the load published (a rollback, or a name purged and re-created that has not
+    loaded as far), deletes nothing and returns `collected: []`: the publish already landed, so the load returns as
+    published. A fault, a registry read or a delete that throws, still rejects the load, after its publish landed and
+    with the pointer at the published generation. The generation deleted is always below the one published, so the
+    current generation is never touched. `LoadResult.collected` names the generation deleted by name, which may have
+    been gone already: a delete of an absent object succeeds on every backend and says nothing, so the list is not a
+    receipt, as a listing's is not either. Two things to know. A destination that `*Into` calls fed with the default
+    `keep`, which keeps every generation, and that `store.load` then loads, no longer has everything below the load's
+    pointer collected by that load: it deletes one generation, and the rest go at the destination's next generation
+    divisible by 16. An `*Into` given a `keep` still lists the destination and clears every generation below the new
+    one beyond it, however many earlier calls kept. And a `keep` at least the generation published collects nothing
+    and asks for nothing, so a default `*Into` makes no collection request.
+
+  Counts, measured against MinIO and counted at the driver ports (GCS and Azure Blob make the same requests; 0.11.2 made more on Azure Blob, where its pointer reads and tail read were two requests each; a check
+  being one request on each, derived from their drivers, which delete an absent object without failing as S3 does): a
+  steady single-part load on S3 is 2 PUT-class requests (the object, the row), 5 GET-class (three row reads, the check
+  that the next number is free, and the check that the current object is there) and a delete, 8 requests, where 0.11.2
+  made 4, 9 and a delete, 14. A segment's first load is 2 and 4 and deletes nothing, where it made 4 and 7, and its
+  second is 2 and 3, where it made 4 and 8. A load on every 16th generation lists, and is 3 and 6. `costReport()` and
+  `estimateCost()` price a load at those counts, averaged over the cadence, the checks at one request on every backend
+  whatever `requestsPerPointerRead` and `requestsPerSizedRead` say: $12.34 per million steady single-part loads at the
+  default prices, where it was $23.60, which is $12.00 when a load does not list and $17.40 when it lists (every 16th
+  generation), and $11.60 for a segment's first load, where it was $22.80, and $11.20 for its second. The average has
+  a sixteenth of a listing and two pointer reads, less a check, a load in it. `requestsPerSizedRead` no longer prices
+  a load. An encrypted segment's load reads its row once more, which the cost model leaves out: it prices a cleartext
+  segment's load, as its docs say. Collection by name relies on a delete of an absent key succeeding without touching
+  its neighbours, so the storage conformance suite gains a case that holds every driver to it (`'delete of an absent
+  key beside its neighbours'`, a new member of the exported `StorageDriverCase`), and holds a driver's zero-byte tail
+  read of a missing object to `NotFoundError`, as the port documents for every tail read.
+
+  What else moves with it:
+  - **A drop or a shred that lands while a load is consuming its ids.** A load that read a present cleartext row
+    before a `dropSegment` (or a retention sweep's drop) now writes its object, is refused at the publish
+    (`published: false`, `reason: 'superseded'`) and deletes that object itself, since every generation of a
+    `destroyed` segment is garbage; it threw `ValidationError` before writing. Only a load whose process stops
+    between its write and its refusal, or whose publish fails without a definite answer (a lost response, a
+    timeout), leaves the object behind, for a re-run of the drop. An encrypted segment, or a load that found no row,
+    is refused with `ValidationError` before it writes, as before. An `*Into` whose destination is dropped while it
+    runs now throws `WriteConflictError` ("Re-read the destination and re-run"), where it threw `ValidationError`; a
+    re-run gets the `ValidationError`.
+  - **A cleartext write is never published onto an encrypted row.** A load with no keystore that wrote cleartext
+    while another writer created the segment encrypted is refused at its publish with `KeyUnavailableError` and told
+    to re-run with the keystore; a keystore load that mints a key while another writer publishes first is refused with
+    `ValidationError`, whose message says to re-run the write, which then uses the segment's key. Nor does a cleartext
+    object stay in an encrypted segment's bucket: a definite refusal (a guard, a `false` from the fenced publish, or a
+    refusal the publish throws) deletes the load's object when the fresh row carries key material and the load wrote
+    cleartext, once the object's footer proves it the load's own (a re-created incarnation can have written its own
+    object under the same number), as when a cleartext segment is dropped, purged and re-created encrypted while a
+    load streams its ids. A thrown refusal reclaims the object on the same terms as a `false` one; a transient fault,
+    which may still land, leaves it.
+  - **A number whose object was deleted can be taken again.** A refused load's number could be, and a number an
+    erasure freed with nothing above it; now a load also numbers under an object that survives above the pointer,
+    after an erasure of the generations above a rolled-back pointer or a collection pass that stopped part-way. A live
+    reader that still holds the old object's index used to fail such a read with `IntegrityError`; on an
+    `IntegrityError` or a range `ValidationError` it now reads the object's footer, as a pin does, and when the object
+    is another one, or gone, it re-reads the segment and answers from the new object. Caches key on the number and the
+    row's token, and pins on the object's fingerprint.
+  - **Disaster recovery.** After a registry restore, re-running the load takes the number after the restored pointer
+    while no object holds it, so the first re-runs can number below the generations published after the restore point
+    and leave them above the pointer until a load's check meets one; the guide says to load until the pointer is above
+    them. The re-runs below the strays count toward `keep` too, so keeping the restored generation as a rollback
+    target takes a `keep` of at least the highest stray minus the restored pointer, plus one. A re-run load takes again
+    the numbers collection freed, but its writes are given tokens the row never had, so no cache takes a re-run's
+    generation for an earlier one under the same number; step 9's restart or invalidation of every store moves a store
+    that read the segment before the disaster onto the restored generation without waiting for its refresh.
+  - **The calibration harness** expects each load's counts: 2 PUT-class and 4 GET-class requests for a segment's first
+    load, 2 and 3 for a reload, 3 and 6 for a load that lists, and its rehearsal fixtures are re-captured. Its
+    projection of a load's GET-class requests is `5 + 2 × retryBound`, since a load whose check meets an object still
+    reads the pointer before and after its listing and before its delete. The default workload's expected bill falls
+    from 183 PUT-class and 92,948 GET-class requests, $0.038094, to 101 and 92,825, $0.037635.
+
+- **`retireExpired` counts the deletes the registry refuses, and a refused purge no longer holds the retirements behind
+  it.** `RetireExpiredResult` gains `purgeFaults`, the number of purges and due-index pointer removals refused for a
+  reason other than a lost race (a policy that denies delete, an Azure blob with a snapshot, which answers `409
+  SnapshotsPresent`, any raw provider error), and `firstPurgeFault`, the first one's ledger reason. A refused purge was
+  charged to `limit`, so with `limit` or more stuck tombstones ahead of them in scan order every call spent its whole
+  budget on purges that could not succeed and no expired segment was retired; one refused purge now costs nothing
+  against `limit`, and retirements go on. Purging stops for the rest of the call after three refused purges in a row, and
+  a purge that succeeds starts the count again, so a blanket refusal costs three attempts a call and a refusal particular
+  to one row holds nothing behind it. Its ledger entry stays `skipped`, with the provider's message, and the next call
+  tries again. A pointer removal the registry refuses is counted too, where it left no trace. A lost race (`failed: contended`) is not a fault, and is charged to
+  `limit` as before.
+
+- **The retention sweep removes a due-index pointer whose segment has no row**, where an index scan skipped it on every
+  scan that read its day and a fleet scan never could. An index scan removes it from the days it reads. An **unscoped**
+  fleet scan (no `namespace`) now keeps the pointers its listing already reads, and removes a pointer to nothing from
+  every day, and the purge removes every pointer it read to the row: a pointer survives a purge that ran with another
+  `tombstoneGraceMs` than the sweep that filed it, a delete that landed and lost its response, and a day older than
+  `lookbackBuckets`, and its key spells out the namespace and segment name. A removal re-reads the segment, is fenced
+  on the pointer's token, covers the sweep's own shards, never runs under `dryRun`, and is bounded: at most `limit`
+  pointers per call, each costing four reads and a delete from an index scan (the listing's read of the pointer
+  included) and two reads and a delete beyond the listing's from a fleet scan. A scan limited to a `namespace` lists no
+  pointers and removes none. A registry that only tombstones does none of this, since a removed pointer would stay as a
+  tombstone every scan reads.
+
+- **The retention sweep's purge removes a tombstone's row for good, where the registry reports
+  `conditionalDelete`.** It rewrote the row as a tombstone that every later full listing read, so a sweep of a
+  namespace that churns short-lived segments made one registry read for every name the namespace had ever held. It
+  now makes one for each segment that is live or inside its grace: after 10,000 segments are created, retired and
+  purged, a namespace-scoped or unscoped sweep makes one registry read, for the one live row, where it made 10,001 or
+  20,001. The delete is fenced on the token the purge judged and applied by the store only to the version it read, so
+  a write or a re-create of the name that lands first makes it fail (`failed: contended` in the ledger) and leaves the
+  newer row. A row written by a release before 0.12 is still tombstoned: its token is a bare counter, and a process on
+  that release re-creating the name over nothing would issue those counters again. Tombstones already in a bucket
+  stay. Every registry `delete` follows the same rule, so a due-index pointer a retirement or a `setRetention` removes
+  is removed for good too. The local-filesystem registry unlinks the row of one born with an incarnation id, under
+  the row's lock, and tombstones one a release before 0.12 wrote. A purge costs 4 reads and 2 deletes, and each later
+  sweep reads nothing of a purged segment; with the gate off, a purge rewrites the row as a tombstone.
+
+- **A write-once object that S3 or GCS throttles is sent again, and a registry write that gets no answer is settled by
+  reading the row, and sent again from it if nothing changed.** A load that met a throttle on its object, or a response
+  lost on its row, failed with `TransientError`, and a failure on the row left the caller guessing whether it had landed.
+  Now:
+  - *The object.* The S3 driver sends the write-once `PutObject`, or a multipart upload's `CompleteMultipartUpload`, again
+    after a `503 SlowDown` (or any `503`), and the GCS driver sends a single-request upload again after a `429` or
+    `503`: up to three more times, after a random wait under 500 ms, then 1 s, then 2 s. A lost response, a timeout and a
+    `500` are not sent again. Every S3 object now carries a random id in its user metadata (`x-amz-meta-cbwid`, set when a
+    multipart upload starts), and every GCS single-request upload carries one in its custom metadata, as a resumable
+    upload always has: a service does not promise that a request it throttled was not applied, so a precondition
+    failure on a re-send (or, for a completion, a `409` or an upload S3 no longer knows) reads the object back with one
+    request, and an object with this write's own id is a success, while any other, or one with no id, is a
+    `WriteConflictError`, as a collision always was. With nothing stored, a `409` or an unknown upload is an unknown
+    outcome, a `TransientError`: the first send may still be applying. Throttled on every send, the write throws
+    `TransientError`, and nothing is deleted; a multipart upload is aborted, which never tears an object, since S3
+    completes an upload atomically. Azure Blob is unchanged: its client already sends a write again after a
+    `503 ServerBusy` or a `500 OperationTimedOut`, and every write's id tells its replay apart. The in-memory and
+    local-filesystem drivers have nothing to throttle. A bare `429`, which AWS S3 does not send but some S3-compatible
+    services do, is not retried and is not classified transient on S3: it surfaces as the SDK's own error.
+  - *The row.* The drivers still send each row write once. When a `create` or compare-and-swap ends without an answer (a
+    throttle, a lost response, a timeout), the publish reads the row once and decides. A pointer at the load's number,
+    on the incarnation the write was made against, over the object the load wrote, proved by one footer read, is the
+    load's own landed write: `published: true`. The incarnation is the id in the row's token, so two incarnations
+    created in the same millisecond are told apart exactly; a row without an id (one 0.11 wrote, or a registry of your
+    own) is told by its creation stamp, and the footer proof decides the rest. A row still as the write found it means the write did not land or is on
+    its way, so the publish sends a **new** compare-and-swap from the version it just read, after a wait on the store's
+    clock: at most three, after under 500 ms, then 1 s, then 2 s (spread by the store's random source, whether or not its reads retry). It is a request
+    of its own, not a replay, carrying the version the first one did, so under the registry's fence at most one of the two
+    lands, and a request delayed past the fresh one is refused. Each is settled the same way, and still unanswered the
+    load throws the registry's own `TransientError`, with its object kept: no load deletes its object after an ambiguous
+    outcome, so a write that reaches the registry after the load returned always finds its object there. Any other row has
+    moved past what the write was conditioned on, so the write can never land, and the load goes on as after a lost race.
+    `load`, the `*Into` verbs, the erasure rewrite and a bulk load publish this way, and each proves its own object by its
+    footer, so an erasure whose write went unanswered cannot report `erased: true` over another incarnation's generation.
+    A caller that gives the publish no clock gets no fresh write: an unanswered write throws at once. On Azure Blob the
+    client's own retry policy runs under each fresh write, so a registry that never answers costs up to four times the
+    policy's tries (sixteen requests at its default) before the load throws: about 16 s per write at the SDK's default schedule (it waits 0, 4 s, then 12 s between tries), so about 64 s for the four writes, plus up to 3.5 s of the publish's own waits (derived from that schedule, not measured).
+  - *Audit and errors.* A `segment.load-refused` event that follows a registry write which went unanswered carries
+    `unanswered: true` (an optional field, absent otherwise): that write may have landed and the generation been current
+    for a while before another writer replaced it. The materialisation error no longer says the result never became
+    current: it says the generation was written and is not current.
+  - *A write that landed and was overwritten.* On Azure Blob a write the client sent again reads the blob back to tell
+    its replay from a conflict, and a row is overwritten by compare-and-swap, so another writer's write on top of the
+    load's own (a retention change, say) made it report `WriteConflictError`, and the load would have returned
+    `published: false`, `reason: 'superseded'` over a pointer that named its generation. The publish reads the row
+    after a conflict and recognises its own write by its effect, as it does after any unanswered write, so the load
+    returns `published: true`. Tests run a real `@azure/storage-blob` client against a stub that applies the write,
+    lands another on top, and then answers `503`.
+  - *Requests.* A throttle only adds requests. A publish that is not throttled sends the requests of a write with no
+    id (the write id travels in the object's own request), so `costReport()` and `estimateCost()` price a load at its
+    unthrottled counts. The
+    calibration harness treats a load that absorbed a transient fault on its pointer write as a missed expected count,
+    since it made more requests than a steady load, rather than as a clean sample; a fault on any other request of a
+    load still fails the run.
+
+- **The roaring codec's `optimize()` is canonical: `removeRunCompression()`, then `runOptimize()`.** Where a
+  container's run and array encodings are the same size (three values in one run, five in two, and so on), CRoaring's
+  `runOptimize()` alone keeps whichever kind the container already has, so the same chunk could be stored as two
+  different byte strings. Now a chunk's bytes depend on its members alone, which is what makes a load from a bitmap
+  byte-identical to one from ids. No load's bytes change, since a chunk built from ids has no run compression to
+  undo. The one place they can: an erasure that rewrites a stored run chunk down to a tie now stores it as the array a
+  load writes, the same members in a payload 7 bytes larger (a one-container bitmap's header is 16 bytes, against 9
+  under the run cookie).
+
+- **A registry row whose token is in no form the library writes is refused when it is read**, with an
+  `IntegrityError` naming the row's key, where it used to pass the read and fail at its next write. A row stamped 1
+  must hold a decimal counter, and one stamped 2 a token with a write part.
+
+- **Azure Blob reads a registry pointer in one request, where it made two.** A pointer read was the blob's
+  properties and then a download pinned to the ETag they named; it is now one GET of the whole blob, taking the ETag
+  (the version fence) and the length from the response that carries the bytes, so the pair describes one version and a
+  concurrent overwrite is seen as the older row or the newer one, never split between two requests. The response is
+  untrusted: one that is not a `200`, that has no ETag or an empty one, that has no length, or whose length is over the
+  1 MiB row cap is refused with `IntegrityError` before a byte of its body is read, and the body is counted as it
+  arrives and refused at the first byte past its length. A refused response is let go: the SDK throws on a response
+  with no ETag or no length and leaves its socket open, and the driver aborts the request, which closes it. The read
+  asks the SDK not to re-request the rest of a body cut off part-way, so the bytes come from one response or the read
+  fails, with a `TransientError` the store's read retry repeats. An answer from a host other than the container's own,
+  which is where a client set with `retryOptions.secondaryHost` sends a retried read, is refused as transient too, so
+  the registry never takes a geo-replica's older row for the current one. A `404` is still absence. Writes, listings and the tombstoning delete are unchanged, and a tail read stays two
+  requests, since Azure Blob takes no suffix range. Price an Azure deployment with `storage.requestsPerSizedRead: 2`
+  and `requestsPerPointerRead` at its default of 1.
+
+### Fixed
+
+- **`@cloudbitmaps/s3` requires `@aws-sdk/client-s3` 3.700.0 or later, where it took 3.645.0, and its registry checks
+  that the SDK sends the headers it relies on.** An SDK sends only the conditional headers it models and drops one it
+  does not, without an error. The registry's create sends `If-None-Match` and its compare-and-swap `If-Match` on
+  `PutObject`, and its conditional delete sends `If-Match` on `DeleteObject`. The published serializers of 3.645.0 to
+  3.699.0 omit `If-Match` on `PutObject`, so on those versions a compare-and-swap lands as a plain overwrite and a
+  concurrent writer's change is lost, with no error on either side, and a conditional delete removes whatever is there.
+  3.700.0 is the first version that sends it (and `DeleteObject`'s, from 3.698.0). `If-None-Match`, which write-once
+  relies on, is modelled from 3.641.0, as before. A fresh install already resolves far above the floor, but a `client`
+  the caller passes, or an SDK a package manager pins, can still be older. So before its first request the registry
+  serialises each of the three requests through a second client built from its configuration, sending nothing and
+  running none of the caller's own middleware, and refuses a write the SDK would send without its precondition
+  (`ValidationError` naming the header; upgrade `@aws-sdk/client-s3`), and leaves a row tombstoned when a `DeleteObject`
+  would go out without `If-Match`, whatever `conditionalDelete` says. A client it cannot read (a test double) is not
+  refused.
+
+- **A GCS download that fails part-way no longer resets the other requests in flight, uploads included.** When a
+  download's body was cut off, or the driver refused or cut off the response, the SDK destroyed the HTTP agent it went
+  out on, and its default agent is one keep-alive pool shared by every request in the process, so every other request
+  on it was reset: with no timeout set, a body the server cut off part-way failed a concurrent 64-byte upload and a
+  registry write on another backend with `ECONNRESET`, and a sent-once write so failed may or may not have landed.
+  Every download now goes out on Node's global agent, which the SDK never destroys, so a destroyed download closes its
+  own connection and nothing else. The cost: Node's global agent closes a connection idle for 5 seconds, where the
+  SDK's pool kept it, so a read after a longer pause opens a new connection, with its TCP and TLS handshake, and the
+  downloads share that agent with any other `http` or `https` request in the process. Raising
+  `https.globalAgent.options.timeout` keeps idle connections longer.
+
+- **A GCS range read buffers at most the bytes it asked for, and checks the response is those bytes.** It is one GET
+  through the same path as the tail read: a response longer than the range is refused as soon as its length shows,
+  where the whole response was downloaded before its length was checked, and a 206 must name the requested bytes in
+  `Content-Range`, while a 200 (a server that ignored the range) is accepted only for a range that starts at 0.
+
+- **A cleartext `.crbm` object under an encrypted segment is refused, not believed.** A read of a segment whose row
+  carries wrapped keys opened such an object as if it were the segment's: the footer's encrypted flag alone decided,
+  and the key the read was given went unused, so a cleartext object written over a generation by anyone able to
+  write the bucket, with no key, answered `count()` with whatever its index claimed. Such an object was never one of
+  the segment's generations: a publish never adds a key to a lineage that has generations, and now refuses a
+  cleartext object onto a row with a key (see the `Changed` entry on the requests of `store.load()`). So it is a
+  forgery, corruption, a cleartext write that never published (a store with no keystore that crashed between its
+  write and its publish, before the segment's first keyed load), or one an earlier release published while racing
+  that first keyed load. `CrbmReader.open` given a `crypto` now refuses an object that is not encrypted with
+  `IntegrityError` naming the generation, before it reads its index, and the live read, a pin and a load's guard all
+  open that way. The other paths that meet one:
+  - **An erasure** looks in it without the key, since it may hold the subject in the clear: it asks the object's
+    footer first, on that path alone, and deletes the object when it holds the id, as it deletes any holder, above
+    the pointer or below it. An id it does not hold is `not-member`, as before.
+  - **A `rollback`** onto it is refused with `IntegrityError` before the pointer moves, from one read of its footer,
+    and so is a rollback onto an encrypted object under a cleartext segment.
+  - **Its way out**: a load's collection takes it once it is below the pointer and outside `keep` (one load, or two
+    when it sits above the pointer), and `dropSegment`, an erasure of an id it holds, or deleting the object by hand
+    also remove it.
+
+  Tests forge a cleartext object in place of an encrypted segment's generation, erase ids from a cleartext write
+  that never published below and above an encrypted pointer, roll back onto one, race a cleartext load against a
+  first keyed load, and open cleartext objects with and without metadata with a key.
+
+- **An Azure Blob range or tail read that fails part-way is a `TransientError`, and lets go of a response the SDK
+  refuses.** When the connection drops part-way through the body, the SDK fails it with an `AbortError`, which reached
+  the caller as it was, so the store's read retry did not run it again and a `has()`, `count()` or erasure failed on one
+  dropped connection; the registry already read the same fault as transient. Tests drop the connection mid-body on a
+  range read and a tail read, with the timeout off and on, and through the store. The SDK refuses a download with no
+  ETag or no length by throwing a `RangeError`, and leaves the body unread with its socket open; the read now aborts
+  its request when it fails, which closes the socket, with or without a timeout.
+
+- **A calibration run survives a transient fault in a timed sample.** The workload's client makes one attempt per
+  request and every timed store runs with its own retry off, so a single transient fault anywhere in a run's requests
+  (up to ~94,600 GET-class and 364 PUT-class at the default workload) failed the whole run, and a partial run is not
+  evidence. One in-region run failed on a single transient connection fault after about 86,300 requests; at that rate
+  a run of this size would finish about a third of the time. A timed sample that meets a transient fault (a cold
+  intersect, a cold point read, an `andNot` call or the warm stage's priming pass) is now discarded whole and run again
+  from the start, from a state the failed attempt left nothing cached in: on a fresh store, except a first `count()`,
+  which runs again on its store once the store has forgotten the segment, and a `has()` on an open segment, which runs
+  again on the same store. At most three samples a run and two a stage are discarded; one more, or a fault in a load,
+  fails the run as before. A transient fault is the library's `TransientError` or anything the installed SDK's own
+  retry would retry. The harness waits for the failed sample's requests still in flight, counts them against it, and
+  records each discard beside its stage: the sample, the error's name, the transport code beneath it, the SDK's
+  attempt count, how long the attempt ran and the requests it made. Those requests are billed and stay in the stage's,
+  and each stage's expected count is held to what its kept samples made. The projection allows three discarded samples
+  at the costliest sample's bound, so the default workload's projected upper bound is 364 PUT-class and 106,624
+  GET-class requests, $0.044470, under the $0.05 ceiling the README's example sets (`CR_CALIBRATE_MAX_USD` has no
+  default, and `--run` refuses without one). `bench/lib/calibration-figures.cjs` treats a run with discards within the
+  harness's bounds as evidence and requires its report to state how many it discarded. Wherever the harness records an
+  error it now keeps the name, the code and the message: the SDK's HTTP handler renames `ECONNRESET`, `EPIPE` and
+  `ETIMEDOUT` alike to `TimeoutError`, so the name alone could not say which it was. `CR_CALIBRATE_FAULT_GETS` makes a
+  rehearsal fail the GetObject requests it lists, once each, as a reset socket or (`:denied`) as a 403 that is not
+  transient, and is refused in every other mode. A test in the integration lane runs the harness itself through such a
+  rehearsal against MinIO, so the integration job now builds the packages first. This is repository work on the
+  calibration harness, outside the packages.
+
+- **An S3 registry row refused for its size no longer holds its connection open.** A row whose response declares
+  more than the 1 MiB cap is refused with `IntegrityError` before a byte of its body is read, and the body was left
+  unread, so each refusal kept its socket until the server gave up on it. The driver now destroys the body on every
+  way out of the read that leaves it unread, which closes the connection, with or without `readTimeoutMs`. A test
+  refuses three such rows against a stub endpoint and checks that no connection is left open.
+
+- **An S3 registry read whose body is cut off part-way is a `TransientError`.** It reached the caller as the
+  SDK's raw connection error, which the store's read retry does not repeat; the storage driver already mapped the
+  same fault.
+
+- **One transient read fault no longer fails a whole load or erasure.** A load's guard read of the current
+  generation (of a row with no summary), and an erasure's reads (the generation it rewrites and each of its chunks, the read-back that verifies
+  the generation it wrote, and any other generation that may still hold the id) went to the raw driver once, so a
+  single throttle or reset there failed the call. They now run under the store's read retry (`retry`, on by default),
+  with its policy and `onRetry`; `loadSegment` and `eraseIdFromSegment` take it as an optional `readRetry` dep, and
+  without one each read is made once. This holds on every backend, with or without a
+  read timeout. Tests fault each of those reads once, transiently and otherwise.
+
+- **The production guide's S3 client-timeout sample set a timeout that only logs.** It built the client with
+  `NodeHttpHandler({ requestTimeout: 3_000 })`, and on `@smithy/node-http-handler` 4.12.1 `requestTimeout` on its own
+  logs a warning when it passes and leaves the request running; it ends the request only beside
+  `throwOnRequestTimeout: true`. The sample sets `socketTimeout`, which ends a request whose connection has carried
+  nothing for that long and leaves an upload that is still sending alone.
+
+## [0.11.2] — 2026-10-01
+
+**Upgrade if you read from GCS.** In 0.10.0 to 0.11.1, a GCS read that the SDK retried after a 408, 429 or 5xx could
+end the process with `ERR_STREAM_UNABLE_TO_PIPE`, whatever the caller wrapped around it. This release sends every
+GCS download once and retries it in the driver instead. It also makes a GCS pointer read and tail read one request
+each, holds a reader's parsed index in typed arrays whose memory is counted exactly, and has `iterate` fetch up to 8
+chunks at a time. No public API changes. The CloudShell entry is repository work on the calibration harness,
+outside the packages.
+
+### Changed
+
+- **GCS reads a registry pointer and a generation's tail in one request each, where it made two.** A pointer read was
+  a metadata request and then a download pinned to the generation it named; a tail read was a metadata request for the
+  size and then a ranged download. The pointer read is now one GET, taking the version fence from `x-goog-generation`
+  and capping the length before it buffers; the tail read is one suffix-range GET (`Range: bytes=-N`), taking the
+  object's size from `Content-Range`, and an object shorter than the range comes back whole. Both refuse a header that
+  is missing, malformed or at odds with the bytes received: a pointer read answers `IntegrityError` and a tail read
+  `ValidationError`, where before the driver trusted whatever the second request returned. An empty object's tail is
+  the exception to one request: GCS refuses a suffix of nothing with a `416`, and the metadata then confirms the object
+  is empty, so it takes two. A pointer read can no longer lose its generation to a concurrent write between its two
+  requests. The bytes returned and the registry's behaviour are unchanged. GCS now costs what S3 does per sized read, so `storage.requestsPerSizedRead: 2` in a pricing profile is
+  for Azure Blob alone; leave it at its default of 1 for GCS.
+- **`iterate` and the storage path of `count` fetch eight chunks at a time instead of one.** A cold full read of a
+  segment waited for each chunk's GET before it asked for the next, so a 2,000-chunk read was 2,000 round trips in a
+  row. `iterate` (with or without a range) now keeps up to 8 chunk fetches open ahead of the one it is yielding, and
+  still yields every id in ascending order. The window opens 1, 2, 4, 8 wide, so a read the caller stops after a few
+  ids has fetched a handful of chunks past where it stopped (none, if it stops in the first chunk), and an error in a
+  later chunk surfaces only when the read reaches that chunk. `count` takes the storage path only for a custom chunk
+  source that cannot serve cardinalities from an index; the shipped backends serve them, so their `count` reads no
+  payload and is unchanged. The request total, the per-op budget and the memory ceiling (at most 8 decoded chunks held
+  ahead) are unchanged, and there is no new option. A read still resolves one generation before it fetches, but a
+  segment that re-resolves mid-read (a TTL boundary, an eviction, a sweep, an invalidation such as the store's own
+  `eraseSubject`) now leaves up to 8 chunks already requested from the earlier generation, where a one-at-a-time read
+  left only the chunk it was on; `intersect` has always read ahead this way. A fetch started ahead is not cancelled
+  when the caller stops.
+  Measured against an in-memory source with 10 ms of added latency per chunk read, 500 chunks, load average about 6.5:
+  `iterate` 5.93 s to 0.77 s, `count` 5.92 s to 0.75 s; per-id cost on a warm segment is unchanged (about 180 ns an
+  id before and after).
+
+### Fixed
+
+- **The CloudShell calibration script no longer stops in silence while it installs Node.** CloudShell ships Node 20, so
+  the script installs Node 22 with nvm. nvm is not written for `set -eu`: sourcing `nvm.sh` returns 3 while no default
+  Node is installed, and the script's `set -e` ended it there after printing "installing Node 22 with nvm", every time.
+  It now runs nvm with those options off, restores them, and checks the result itself, stopping with a message if Node
+  22 is still missing, and with another if nvm itself cannot be downloaded. A test runs the script's own bootstrap under its own shell options against an `nvm.sh` that returns 3.
+- **A reader's memory bound counted less than its parsed index held.** `cache.readerMaxBytes` weighs each open
+  reader by a fixed size per index entry, 160 B, and a measurement of the heap found 186–200 B retained per entry,
+  so a cache could hold more index than its budget said. The reader now keeps its parsed index as typed arrays
+  (key, cardinality, length, CRC and offset at their own widths) and reports their byte length: 20 B per entry,
+  exact, and a test measures the retained memory against it. A 2,000-entry index also parses in about 45 µs where it
+  took about 185 µs (Node 24, Apple M3 Pro, both versions bundled and timed under plain Node; inside a test runner
+  the gap is nearer 1.7×). A chunk lookup is a binary search over
+  the sorted keys. Nothing a caller sees changes except that the same budget now holds about eight times as many
+  index entries; the sizing guide's reader table is regenerated at 20 B.
+- **A GCS read the SDK retried could crash the process.** With `@google-cloud/storage` 7.x and 8.x (checked on 7.22.0 and
+  8.1.0), when a download got any status the SDK retries (408, 429, 500, 502, 503 or 504) and the SDK's own retry then succeeded, the
+  SDK threw `ERR_STREAM_UNABLE_TO_PIPE` ("Cannot pipe to a closed or destroyed stream") outside any promise and Node
+  exited with code 1, whatever the caller wrapped around the call. It hit every read through `GcsStorage` on the client
+  it built itself (tail, range and registry reads), in 0.10.0 and later. `GcsStorage` now builds a second client with
+  the SDK's request retries off and sends every download through it, and the driver retries a download itself, up to
+  three more times with backoff, after a connection fault (refused, reset, timed out, a DNS failure, a body cut off) or a 408, 429, 500, 502, 503 or 504: what the SDK retried, and not a missing credentials file or a TLS
+  failure, which would fail the same way again. A store built with `retry: false` still gets it. What still fails is a `TransientError`. The client's other
+  requests (uploads, listings, metadata reads) keep the default retries. A `client` you pass is used as given: build it
+  with `retryOptions: { autoRetry: false }`, which also turns off the SDK's retries of listings, metadata reads and
+  resumable uploads on that client.
+
+## [0.11.1] — 2026-10-01
+
+The package READMEs on npm say how to install on npm 12. npm 12 runs a dependency's install script only where the
+project allows it, and `roaring`'s is the one that fetches its native binary, so a plain `npm i` installed a package
+whose first `import` throws. The code in every package is unchanged from 0.11.0: only each package's README and its
+version moved. Of the entries below, the install docs are the packages' change; the rest is repository work on the
+calibration harness, outside the packages.
+
+### Added
+
+- **The calibration figures refuse a run for what it reports as wrong itself.** A run that timed `store.load()` is
+  refused as evidence when teardown left anything behind, when it missed an expected count, when a stage's requests
+  are not the ones the stage table expected, or when the shell ran in another region than the bucket's. Its latency is
+  labelled in-region only when the round-trip floor is under the line and the shell's region is proven to be the
+  bucket's, since a floor under 30 ms keeps another continent out but not a neighbouring region.
+- **The calibration harness runs the stages an in-region run needs.** `pnpm calibrate:aws` now runs seven stages and
+  records each one's own requests by class and by kind of read: loads through `store.load()`, cold intersects over
+  the calibration layout, the same overlap with its shared chunks spread uniformly over each segment (a pure layout
+  from a fixed seed, `bench/lib/calibrate-spread.cjs`), a sweep over how many chunks the operands share
+  (`CR_CALIBRATE_SWEEP`, default 1,000 and 2,000), warm intersects, `count()` and `has()` as a first read, `has()` on a
+  segment already open, both again warm, and `andNot` of one segment against ten. A warm read that makes a request fails its stage. One table names the stages and bounds
+  each (`bench/lib/calibrate-stages.cjs`): the pre-flight projection prints every stage's bound, the finished run is
+  held to each, and a test fails when the harness runs a stage the table does not name. Each load records its own
+  requests, and `bench/lib/calibration-figures.cjs` prices a `store.load()` run from them and from each stage's own
+  counts, refusing a file whose stages do not add up to what was billed.
+- **The calibration harness measures how deep each cold read ran, and what it ran on.** Each cold intersect and each
+  `andNot` call records the requests in flight at their peak, the mean in flight, and how many it waited for one after
+  another, beside the engine's model of that, so a latency can be read against the number of round trips behind it.
+  Every run also records the AWS SDK and HTTP handler versions and the handler's socket cap.
+
+### Fixed
+
+- **The install docs said npm needs nothing extra; npm 12 blocks `roaring`'s install script.** On npm 12 a plain
+  `npm i @cloudbitmaps/roaring` exits 0 with the native binary missing, and the first `import` throws
+  `Cannot find module './build/Release/roaring.node'`, as pnpm 10 does. The README, the getting-started guide and
+  every package README now give one `package.json` block for both clients,
+  `{ "allowScripts": { "roaring": true }, "pnpm": { "onlyBuiltDependencies": ["roaring"] } }`, and say that npm 11
+  runs the script but warns until it is allowed the same way. The troubleshooting entry covers npm 12's
+  `npm install-scripts approve roaring`, which records the approval but runs nothing, so `npm rebuild roaring`
+  follows it.
+- **The calibration harness runs from the CloudShell script's scratch directory.** It read the version it measured from
+  `packages/roaring/package.json`, which a scratch directory that installed the published packages does not have, so
+  `bash bench/calibrate-cloudshell.sh` stopped with `ENOENT` before it did anything. It now reads the installed
+  package's version there and the checkout's own from a checkout, and a test runs the harness, in projection mode,
+  from a directory holding only the files the script copies.
+- **The CloudShell script installs a working `roaring` on npm 12, and refuses a run it cannot label.** npm 12 runs a
+  dependency's install script only where the project allows it, and `roaring`'s is the one that fetches its native
+  binary, so the scratch install exited 0 and the first import threw. The script now allows it, and stops before
+  creating anything if the addon still does not load. It also refuses a shell that does not say which region it runs in,
+  a requested region other than the shell's own, and a rehearse flag other than `1`, and it measures the release this
+  clone's expectations were written for unless `CR_CALIBRATE_PACKAGE_VERSION` names another.
+
+### Changed
+
+- **Calibration results files carry every fractional number to nine decimals.** That is below a nanosecond for a time
+  in milliseconds and a billionth of a dollar for a cost. A ratio's binary tail otherwise runs to 17 digits, and one of
+  exactly 12 is a run the leak scan refuses, so a file could not be committed by chance.
+- **The default calibration workload is 20 single-part and 5 multipart loads, and every segment is loaded once.** A
+  segment's first load is what the projection bounds, so the harness refuses to load a name twice.
+
+## [0.11.0] — 2026-10-01
+
+Reading by id range, and a store that refuses what it would otherwise get wrong. `iterate`, `intersect`, `union`,
+`andNot` and the `*Into` verbs read an id range `(after, through]` and fetch only the chunks it overlaps, so a large
+segment pages by keyset. The public surface is trimmed to what callers use, a backend class is the one way to build
+storage, and the store and the three cloud backends refuse every option key they do not take. Untrusted bytes get the
+full structural check, a conditional write is sent once or settled by reading it back, and a subject erasure reaches
+every generation that holds the id. Read the Breaking list before upgrading.
+
+### Breaking
+
+The first changes what two combines return, with no error. The next two narrow what an application sees: `@cloudbitmaps/roaring` exports a list of names in place of all of
+core's, and a `Segment` can no longer be constructed. The four after them remove exports: the first deletes names
+nothing in the library would still call, the second takes names off the public entries or moves them to the package
+that uses them, and the third and fourth remove the retrying driver wrappers and the bulk loader. The two after those
+make a backend class the one way an application builds its storage: the size settings move onto the backend options,
+and the separate storage and registry halves and `createBackend` are no longer exported. The tenth makes
+the collection refuse a `keep` it used to accept. The next twelve make a call throw where it used to return: seven of
+them fix a wrong answer, and the entries under **Fixed** say what the call returned before; one changes when a pin fails;
+three hold a call to a rule the rest of the library already kept; the last of the twelve refuses a namespace the library keeps for its own
+rows, and says in its own entry what the call returned before. The six after them hold the store, the backends and the registry to what the library itself takes and writes, stop
+checking for a local store's older directory layout, and give its errors the library's own brand. The two after them
+change what `estimateCost()` compares with and what a `CostReport` carries. The last holds `eraseSubject` to its
+budget for the generations it opens.
+
+- **An expired exclusion excludes nothing, in every shape of combine.** `a.intersect([b], { exclude: [stale] })` and
+  `a.union([b], { exclude: [stale] })` subtracted the ids of an `exclude` handle whose `expiresAt` had passed, and now
+  return what they would with that handle left out of `exclude`, as `a.andNot([stale])` and a `union` whose other
+  operands had all expired already did. The same holds with a range (`after`, `through`) and on pinned handles. An
+  expired exclusion is skipped without being read, so one that names a segment that does not exist is no longer
+  refused as an absent operand. Expiry treats an expired segment as gone, and an exclusion that is gone removes
+  nothing; the answer used to depend on how the combine was spelled. A result that used to leave out a lapsed
+  opt-out list's ids now includes them, so renew the list's `expiresAt`, or leave the deadline off it, where it
+  must keep suppressing. Unchanged: an expired `self` or include operand is empty or dropped, an absent operand is
+  refused unless `allowAbsentOperands` is set, and an `*Into` involving an expired handle, an exclusion included,
+  throws `ValidationError`.
+- **`@cloudbitmaps/roaring` exports an explicit list of names, not everything `@cloudbitmaps/core` exports.** An
+  application installs the flavor and sees the store, the errors, the types its signatures name, the backends'
+  shared types, and the constants and helpers a user calls. Every name below stays on `@cloudbitmaps/core`, which
+  flavor and driver authors still import, and core's main entry and `@cloudbitmaps/core/driver-kit` are unchanged.
+  - **Engine internals:** `SegmentEngine`, `EngineDeps`, `EngineCombineOptions` and `BoundedLru`. The engine was
+    reachable from the flavor only to build a `Segment`, which can no longer be built (next entry).
+  - **Metrics, budget and retry internals:** `safeMetrics`, `NOOP_METRICS`, `resolveBudget`, `resolvePerOpBudget`,
+    `collectWithinBudget`, `DEFAULT_BUDGET`, `checkBudget`, `withRetry`, `RetryDeps`, `RetryingStorageChunkSource`
+    and `RetryingOptions`. Omit `metrics` for the no-op sink, set `budget` and `retry` on the store, and retry a call
+    of your own with a loop that backs off while `isTransientError(err)` holds. `Budget` and `DEFAULT_RETRY_POLICY`
+    stay on the flavor.
+  - **Other internals:** `groundedReport` (use `seg.costReport()`), `splitId`, `mapWithConcurrency`, `segmentKey`
+    (use `seg.key()`), `isStorageBackend` and `PinnedStorageChunkSource` (use `seg.pin()`).
+  - **The standalone forms of store methods:** `listGenerations` (use `store.generations`), `rollbackSegment`
+    (`store.rollback`, which takes `allowForward`), `segmentExists` (`store.exists`), `listSegments`
+    (`store.segments`), `setSegmentRetention`, `getSegmentRetention` and `clearSegmentRetention`
+    (`store.setRetention`, `store.getRetention`, `store.clearRetention`), `runConsistencyCheck`
+    (`store.checkConsistency`), `runExport` (`store.exportSegments`), `dropSegment` (`store.dropSegment`),
+    `retireExpired` (`store.retireExpired`), `estimateCost` (`CloudRoaring.estimateCost`), `loadSegment`
+    (`store.load`), and the types `GenerationListDeps`, `RetentionDeps`, `DropDeps` and `LoadDeps`. The flavor's own
+    `loadSegment` and `runExport`, which bound the roaring codec, are deleted: core's versions take a `codec`, and the
+    flavor no longer exports one. An application writes through the store's methods, on a store built on a backend
+    class (`MemoryStorage`, `LocalFsStorage`, `S3Storage`, `GcsStorage` or `AzureBlobStorage`); composing a backend
+    from drivers of your own is a driver author's job, done with `brandAsBackend` from
+    `@cloudbitmaps/core/driver-kit`. Every result type these produce stays exported,
+    because a store method returns it.
+  - **Erasure:** `eraseIdFromSegment`, `EraseIdDeps` and `EraseIdResult`. `store.eraseSubject` is the one erasure
+    verb.
+  - **Still on the flavor:** `destroySegment` and `eraseNamespace`, which take only a registry and have no store
+    method, and every other name in `@cloudbitmaps/roaring`'s export index.
+- **A `Segment` has no public constructor.** It took the store's internals (a `SegmentEngine`, a metrics sink, and
+  the functions that wire it to the store's write path), so `new Segment(…)` could not build a working handle
+  outside the store. Get one from `store.segment(name, options)`, or from `seg.pin()`. `Segment` stays exported for
+  `instanceof` and to annotate a variable, and `new Segment(…)` from JavaScript throws `ValidationError`.
+  `seg.key()`, an opaque string naming the handle's segment that is equal across a live handle and its pins, is
+  documented in the API reference.
+- **`TimeoutError`, `AuditEventKind`, `VERSION` and `MemoryStorageChunkSource` are deleted.** Nothing in the
+  library would still call them.
+  - `TimeoutError` was never constructed or thrown by any package: a request timeout a shipped driver recognises
+    already reached you as a plain `TransientError`, which is what to catch, and a driver of your own throws that too,
+    with the cause attached.
+  - `AuditEventKind` was `AuditEvent['kind']`; write that.
+  - `VERSION`, which `@cloudbitmaps/roaring` exported, is gone: your lockfile and the installed package's
+    `package.json` say which version you run.
+  - `MemoryStorageChunkSource` was a test double that skipped `.crbm`, seeded chunk by chunk. Use a `MemoryStorage`
+    backend and fill it with `store.load()`; to hand a store a `StorageChunkSource` of your own, implement that
+    interface.
+- **Names are off the public entries, and `@cloudbitmaps/core/driver-kit` sheds the helpers nothing outside core
+  uses.** Each was a lower-level step that `store.load()` or the driver packages already take, a second spelling of
+  a name that stays, or a helper one package uses.
+  - `writeCrbmGeneration`, `publishGeneration`, `nextGeneration`, `gcOrphanGenerations` and `GenerationDeps` are no
+    longer exported, from `@cloudbitmaps/core` or `@cloudbitmaps/roaring`. `writeCrbmGeneration` was kept on purpose
+    until now. Load with `store.load(ref, ids, options)`, which takes the
+    generation number, writes the object, publishes and collects. Collect with `keep` on `load` and on the `*Into`
+    verbs, or retire a segment with `store.dropSegment()` or the retention sweep.
+  - `SafeBitmap` and `roaringCodec` are no longer exported from `@cloudbitmaps/roaring`. Every call that takes a
+    `codec` has it bound for you, so nothing needs them. An author of another flavor implements `CodecInterface`.
+  - `DEFAULT_PRICING` is no longer exported. It was another name for `AWS_US_EAST_1_ONDEMAND`, which stays: clone
+    and adjust that one.
+  - `registryPrefix`, `registryObjectKey`, `registryListPrefix` and `parseRegistryKey` are no longer exported from
+    `@cloudbitmaps/core/driver-kit`. No driver package calls them: `ObjectStoreRegistry` builds every registry key,
+    and a driver built on it needs nothing else.
+  - `errorName`, `httpStatus`, `isNetworkOrTimeout`, `isSdkRetryable` and `isServerSide` moved out of
+    `@cloudbitmaps/core/driver-kit` into `@cloudbitmaps/s3`, the only package that uses them, and are not exported
+    from it. A driver of your own classifies its SDK's errors itself.
+  - `encodeNameForPath` and `namespacePathPart` moved from `@cloudbitmaps/core` and `@cloudbitmaps/roaring` to
+    `@cloudbitmaps/core/driver-kit`, beside `encodeNameForKey` and `namespaceKeyPart`. Import them from there.
+  - `validateSegmentRef` is exported from `@cloudbitmaps/core/driver-kit` only. It was also on `@cloudbitmaps/core`
+    and `@cloudbitmaps/roaring`.
+- **`RetryingStorageDriver` and `RetryingRegistryDriver` are no longer exported**, from `@cloudbitmaps/core` or
+  `@cloudbitmaps/roaring`. Nothing in the library used them. The store's read retry is unchanged: the reads that
+  answer a query go through `RetryingStorageChunkSource`, which stays on `@cloudbitmaps/core`, with `RetryingOptions`
+  and `withRetry`, and the store's `retry` option and `DEFAULT_RETRY_POLICY` are unchanged. The two removed wrappers retried every call of the driver they
+  wrapped, writes included, and a retried conditional write can report a write that landed as a conflict: when a
+  write-once put or a compare-and-swap lands and its response is lost, the replay finds that write already there,
+  so the put throws `WriteConflictError` and a load reports `superseded`, for the caller's own write; a load whose
+  pointer write was replayed can report `superseded` while its own generation is current. Each also collected a whole
+  `list` before yielding any of it. To retry a write, re-run the call, passing the ids again through a fresh
+  iterator: a re-run `load` takes a fresh generation number and re-reads the row, so once the first attempt has
+  settled it publishes whenever that attempt would have, whether or not it landed. Each attempt whose object landed
+  takes a `keep` slot, so under the default `keep: 1` the re-run collects the generation the segment held before the
+  load; pass a `keep` one above the number of attempts that landed to keep it. To learn whether an attempt landed,
+  compare `store.generations(ref)` with what it listed before the call rather than replaying the request.
+- **`bulkLoadCrbmGeneration` and `BulkLoadResult` are no longer exported**, from `@cloudbitmaps/core` or
+  `@cloudbitmaps/roaring`. Load with `store.load(ref, ids, options)`, which
+  takes the next generation number itself and publishes, and returns a `LoadResult` whose `published` says whether the load took effect, where the removed result said `becameCurrent`.
+  Five more differences can change what a job does:
+  - **A load collects.** Once it publishes, it deletes the generations the publish superseded, keeping the newest
+    `keep` below the new pointer (default `1`). The removed loader deleted nothing, so a job that keeps older
+    generations as `rollback` targets passes the `keep` it needs.
+  - **An empty result over a non-empty segment is refused**, as `published: false` with `reason: 'empty'`. Pass
+    `allowEmpty: true` when emptying the segment is the point.
+  - **A load fences its publish on the row it read**, so a `setRetention`, a `rollback` or an erasure that lands
+    while it writes makes it report `reason: 'superseded'`, where the removed loader published forward regardless.
+  - **A load reads the current generation's size to guard it**, so a current object that will not open throws
+    `IntegrityError`. A load with `allowEmpty: true` and no `guard.minRetained` does not read it.
+  - **Neither can be told to write a generation without publishing it, to write one with no registry, or to take its
+    generation number from the caller.** Nothing exported can: `writeCrbmGeneration` and `publishGeneration`, which
+    could, are no longer exported either (see above).
+- **The size settings are options of the backend classes, where they were options of the separate storage halves.**
+  Set each one on the backend; a backend refuses the settings of another backend by name, as it refuses any key it
+  does not take, and a setting keeps the name and default it had. Each must be a positive safe integer, and a value
+  that is not throws `ValidationError` naming the option, from the backend's constructor. `S3Storage` and
+  `GcsStorage` used to accept `NaN`, zero, a negative or a fraction for these and size their writes from it.
+  - `S3Storage` takes `partBytes`, the multipart part size (default 8 MiB; a smaller value is raised to S3's 5 MiB
+    minimum, and the part size grows so 10,000 parts cover `maxObjectBytes`), and `maxObjectBytes`, the largest
+    object it writes and advertises (default `partBytes` × 10,000, about 80 GiB). They were options of
+    `S3StorageDriver`.
+  - `GcsStorage` takes `simpleUploadThresholdBytes`, the size up to which an object is one simple request (default
+    8 MiB), and `maxObjectBytes` (default 5 TiB, GCS's maximum). They were options of `GcsStorageDriver`.
+  - `AzureBlobStorage` takes `blockBytes`, the staged block size (default 8 MiB), and `maxObjectBytes` (default
+    `blockBytes` × 50,000, about 400 GiB). They were options of `AzureBlobStorageDriver`.
+  - `MemoryStorage` and `LocalFsStorage` had no size settings, and take none.
+- **The separate storage and registry halves, their options types and `createBackend` are no longer exported.** An
+  application gets both halves from one backend class and never names one. Removed from `@cloudbitmaps/core` and
+  `@cloudbitmaps/roaring`: `MemoryStorageDriver`, `MemoryRegistryDriver`, `MemoryRegistryDriverOptions`,
+  `LocalFsStorageDriver`, `LocalFsRegistryDriver`, `LocalFsRegistryDriverOptions` and `createBackend`. Removed from
+  `@cloudbitmaps/s3`: `S3StorageDriver`, `S3RegistryDriver`, `S3StorageDriverOptions` and `S3RegistryDriverOptions`;
+  from `@cloudbitmaps/gcs` and `@cloudbitmaps/azure-blob`, the same four with their own prefix.
+  - **Use a backend class instead:** `MemoryStorage`, `LocalFsStorage`, `S3Storage`, `GcsStorage` or
+    `AzureBlobStorage`. The size settings are options of those classes (previous entry). A backend's `.storage` and
+    `.registry` are typed as the `IStorageDriver` and `IRegistryDriver` ports, including on `MemoryStorage` and
+    `LocalFsStorage`, where they were typed as the concrete classes.
+  - **To wrap a backend's half, or to pair it with a registry of your own** (tenant scoping, auditing, a registry in a
+    database you already run), build the backend with `brandAsBackend({ storage, registry })` from
+    `@cloudbitmaps/core/driver-kit`, in place of `createBackend`. It takes a plain object and returns it, branded. It
+    now checks what `createBackend` checked: `storage` needs a `putImmutable` and `registry` a `compareAndSwap`, and
+    it throws `ValidationError` naming the half that has neither. A store that refuses a hand-assembled
+    `{ storage, registry }` now names the backend classes and `brandAsBackend`, where it named `createBackend`.
+
+- **The collection refuses a `keep` that is not a non-negative integer**, with `ValidationError`. `load` and the
+  `*Into` verbs already refused one before writing anything. The collection itself, which `gcOrphanGenerations`
+  exposed, read `NaN` as a window that keeps nothing, so it collected the whole grace window, and a negative
+  `keep` as `0`. A `keep` that is negative, fractional, `NaN` or infinite now throws on every path that takes one,
+  and deletes nothing. Pass a whole number of generations, `0` to keep none below the new pointer.
+- **On S3, and on GCS for the registry and for objects up to `simpleUploadThresholdBytes`, a conditional write that
+  fails transiently throws `TransientError`**, where the SDK used to send it again and the call could return: a
+  dropped connection, a timeout, a 5xx, throttling, and on S3 a signature refused for a clock minutes out, which the
+  SDK corrects before the next request. These writes are a generation's write-once put, which `store.load`, the
+  `*Into` verbs and an erasure's rewrite make, and the registry's create, compare-and-swap and delete, which writes a
+  tombstone, one of which every publish, `rollback`, `setRetention`, drop, crypto-shred and retention sweep makes. The write may or may not have landed: re-run the call, and
+  check what landed before treating the write as lost, since `store.generations(ref)` lists what the bucket holds with
+  the current generation marked. Every other request keeps the SDK's retry, and a client you pass keeps its
+  configuration.
 - **A pinned read of a segment whose row is gone or destroyed throws `NotFoundError`**, where it read empty,
   part-way through a call included. Catch it where a pin can outlive its segment: across a `dropSegment`, a
   `retireExpired` or a crypto-shred.
@@ -28,13 +1133,210 @@ Each of these makes a call throw where it used to return, and each fixes a wrong
   `live.intersect([snap])` with nothing moved since the pin. Materialise one side first, with
   `intersectInto(dest, [])`.
 - **`pin()` opens the generation it pins**, so it fails where the pin's first read used to: `NotFoundError` for a
-  pointer at a missing object, `IntegrityError` for a damaged one.
+  pointer at a missing object, `IntegrityError` for a damaged one. Handle both where you call `pin()`, as you did
+  around the pin's first read.
 - **An object whose footer names another generation is refused with `IntegrityError`** wherever it is opened, a pin
   included, so a default load onto a segment whose current generation is misfiled fails its guard. To move past it,
   roll the segment back to an earlier generation that opens, or load with `allowEmpty: true` and no
   `guard.minRetained`, which then does not read the current generation.
+- **A chunk payload that is not a well-formed roaring bitmap is refused with `IntegrityError`**, by every read and
+  every erasure that decodes it, and by `SafeBitmap.safeDeserialize` and `roaringCodec.safeDeserialize`, where the
+  native deserializer accepted it: containers or values out of order or listed twice, runs that overlap,
+  touch or run past their container, a run container with no runs, a bitset whose header cardinality disagrees with
+  its bits, and an offset header that disagrees with where the containers are. Nothing the library writes has any of
+  these shapes, so a segment it loaded reads as it did.
+- **An object whose index is not internally consistent is refused with `IntegrityError` when it is opened**, so
+  every call that opens it throws: `has`, `count`, `iterate`, every combine, a load's guard, a pin, an erasure and
+  `checkConsistency`. Two shapes were accepted and are now refused: an index entry whose payload runs past the end
+  of the payload region, into the index, and an encrypted object's entry whose payload is too short to hold its
+  nonce and tag. `count()` summed such an index and returned; a read of the chunk failed later, on its checksum or
+  its authentication tag. Nothing the library writes has either shape, so a segment it loaded reads as it did. To move
+  past one, roll the segment back to an earlier generation that opens, or load with `allowEmpty: true` and no
+  `guard.minRetained`, which then does not read the current generation; a default load fails its guard.
+- **A combine whose other operands have all expired checks its own segment as every combine does.**
+  `seg.union([expired])` and `seg.andNot([expired])` read `seg` alone, and now refuse a `seg` that names no segment
+  with `ValidationError`, as `seg.union([live])` already did, where they returned no ids; `allowAbsentOperands: true`
+  still reads it as empty. They also now take the call's `concurrency` and `budget`, so `concurrency: 0` throws and a
+  per-op budget too small for `seg` refuses the read. The error, the budget refusal and the `intersect` metrics event
+  of such an `andNot` name the verb `union`.
+- **A custom `StorageChunkSource` that lists one chunk key twice is refused with `IntegrityError`** by every read
+  that lists a segment's chunks: `iterate`, every combine, and a `count` with no index to sum. A combine used to drop
+  the duplicate. The sources the library ships never list a key twice; make a custom one's `listChunkKeys` return
+  each key once.
+- **A read whose pointer refresh fails with anything but a transient fault throws that error**, where it kept
+  serving. A `has`, `count`, `iterate` or combine, or a `costReport`'s size read, that finds its segment's pointer
+  due for a re-read (once `cache.genTtlMs` has passed) and gets an access denial, an `IntegrityError` for a row
+  that will not parse, or any other error that is not a `TransientError` now fails with it, and the reader's
+  snapshot is dropped, so the next read resolves the segment afresh. A transient fault is unchanged: the reader
+  keeps serving, now with a retry after 500 ms rather than after a whole `cache.genTtlMs`. A dropped or shredded
+  row, which the registry reports as no row, still reads empty. See **Fixed**.
+- **`eraseNamespace` throws `BudgetExceededError` for a namespace of more than 250,000 segments**, where it erased
+  it. It listed the whole namespace with no bound, holding every row resident, when every other fleet scan stops at
+  a ceiling. It now holds its listing to `DEFAULT_MAX_SCAN_SEGMENTS` (250,000), and the error tells you to raise
+  the new `maxScanSegments` option on the call when the namespace really is that large and the memory is there,
+  without the other scans' advice to narrow with a `namespace`, since the call already is one. The call lists the whole namespace before it destroys anything, so the refusal comes first and
+  nothing is erased. A `maxScanSegments` that is not a finite number of at least 1 throws `ValidationError`, also
+  before anything is destroyed. `eraseNamespace` is a free function over a registry, so no store method forwards
+  the option.
+- **A namespace starting with `cbm.due.` is refused with `ValidationError`**, in every segment ref and in every
+  `namespace` option: `store.segment`, `load`, `exists`, `generations`, `rollback`, `dropSegment`, `setRetention`,
+  `getRetention`, `clearRetention`, `invalidate`, `segments`, `retireExpired`, `checkConsistency`, `exportSegments`,
+  `subjectReport` and `eraseSubject`, and the free function `eraseNamespace`. The library
+  keeps its due index in `cbm.due.<day>`, and every fleet-wide scan skips a row there as bookkeeping, so a segment
+  of yours in a namespace such as `cbm.due.eu` was invisible to the calls that scan: `eraseSubject` and
+  `subjectReport` returned an empty ledger with `scannedSegments: 0` even with that namespace named, so an erasure
+  reported nothing to erase while the id was still in the segment; the unscoped `retireExpired` and
+  `checkConsistency` never saw it; `exportSegments` left it out and `segments()` did not list it. Only that exact
+  prefix is reserved: `cbm.dueX`, `cbm.due` and `cbmdue.eu` are ordinary namespaces, and a segment name is not
+  restricted. The library's own writes to the reserved namespace go through the drivers and are unchanged: a
+  driver takes the prefix, since `validateSegmentRef` on `@cloudbitmaps/core/driver-kit` checks the name rules
+  only. A segment that already sits in such a namespace stays where it is, but no call names it after the upgrade:
+  before upgrading, copy each into another namespace (`iterate()` its ids and `load` them there) and `dropSegment`
+  the old one.
+
+The first four of these make the library refuse what it used to ignore or accept, so that a wrong input fails
+where it is written. The fifth drops the check for a local store's older directory layout, and the sixth renames
+the error brands:
+
+- **`new CloudRoaring(options)` refuses every key it does not take**, at the top level and inside `cache`,
+  `encryption`, `retry`, `budget` and `seams`, with a `ValidationError` naming each one and the keys the store or
+  the group takes. It refused a fixed list of spellings before, and ignored any other key. A group that is not an
+  object is refused too — `null`, an array, a Map, a boxed primitive, `encryption: true` — and `false` is taken
+  only by `retry` and `budget`.
+- **`new S3Storage(options)`, `new GcsStorage(options)` and `new AzureBlobStorage(options)` refuse every key they do
+  not take** the same way, and an options bag that is not an object. `GcsStorage` refused only `storage` before,
+  and the other two ignored any key they did not take.
+- **`new S3Storage(options)` and `new GcsStorage(options)` refuse a connection setting given beside a `client`.**
+  `S3Storage` refuses `region`, `endpoint`, `pathStyle` and `credentials`, and `GcsStorage` refuses `projectId` and
+  `apiEndpoint`, with a `ValidationError` naming each one given. They were ignored before: a `client` carries its own
+  region, endpoint and credentials, so an `endpoint` meant for MinIO beside a client built for AWS sent the store's
+  traffic to AWS. Configure those settings on the client, or drop `client` and let the store build one from them.
+  `bucket`, `prefix`, `now` and the size settings (`maxObjectBytes`, `partBytes`, `simpleUploadThresholdBytes`) are still
+  taken beside a `client`, as is a setting set to `undefined`. A `client` of
+  `null` counts as none, so the settings build one; `AzureBlobStorage` reads a `containerClient` of `null` the same
+  way, which throws `ValidationError` at construction unless `connectionString` and `container` are given, where it
+  used to build a store that failed on its first read.
+- **`RegistryStatus` is `'active' | 'destroyed'`.** A stored registry row with another status, a field its record
+  or its envelope does not declare, or no `schemaVersion` is refused on read with `IntegrityError`, and so is every
+  `list()` of a registry that holds one, which the retention sweep, `checkConsistency` and subject erasure run. Every
+  row a store created at `0.10.0` or later writes passes. A row last written before `0.10.0` does not, nor does a
+  tombstone `0.10.0` wrote over one, since the tombstone keeps the row's fields, nor a row a caller set to
+  `compacting` or `erasing` through the registry driver: load such a store's segments into a new one from their
+  source. The registry drivers also refuse to write any status but `active` and `destroyed`, with `ValidationError`.
+- **`LocalFsStorage` does not look for a `cold/` directory.** A root keeps its generations in `storage/`, and one
+  that holds them anywhere else opens like any other with its generations missing: a read throws `NotFoundError`,
+  and `checkConsistency` reports `missing-storage-generation`. Move a root's generations before you upgrade, while
+  `<root>/storage` does not exist yet, with `mv <root>/cold <root>/storage`: the objects inside are unchanged, and until they move, that report is the path,
+  not a torn restore.
+- **The error brands are `Symbol.for('cloudbitmaps.error')` and `Symbol.for('cloudbitmaps.error.transient')`.**
+  Upgrade every `@cloudbitmaps` package together: a package from an earlier release brings its own copy of core,
+  and neither your error predicates nor the store's own error handling recognise that copy's errors.
+
+These two change what `estimateCost()` reports:
+
+- **`estimateCost()` compares with the Redis that would hold your data, not one $346 cluster.** The default
+  verdict, rationale and read crossover are now against the cheapest ElastiCache for Redis OSS cluster that holds
+  the report's stored bytes at their compressed size: enough shards, each a primary and two replicas, with 25%
+  of each node's memory reserved, at AWS's us-east-1 on-demand prices from its price list of 2026-09-14, and the
+  burstable `t4g` nodes priced only as one shard. One cluster was the wrong size in both directions: 200 MB fits
+  three `cache.t4g.micro` nodes at $35.04 a month, and 2 TB does not fit it at all — three `cache.r6gd.16xlarge`
+  data-tiering nodes hold it, at about $27,325. The report names what it priced in the new `redisBaseline`,
+  `{ basis: 'fixed', monthlyUSD }` or `{ basis: 'sized-to-data', monthlyUSD, cluster: { nodeType, shards, nodes,
+  dataTiering } }`, and in the last of its notes. It is the cheapest cluster of one kind, not the least Redis could
+  cost: the compressed size is a floor on the memory Redis needs, since a native Redis bitmap is sized by its
+  highest id, but reserved nodes, one replica a shard, or ElastiCache for Valkey all cost less than it prices.
+
+  **To keep the old comparison**, pass `pricing: { ...AWS_US_EAST_1_ONDEMAND, redis: ONE_REDIS_HA_CLUSTER }`.
+  `ONE_REDIS_HA_CLUSTER` is the $346 cluster the benchmarks page still charts. What else changes:
+
+  - A default report has a different baseline at every data size, so a different crossover, and it can have a
+    different verdict.
+  - `pricing.redis` must give exactly one of `{ monthlyUSD }` and `{ sizedToData: RedisSizing }`, and one giving
+    both is refused with a `ValidationError`, where a key set to `undefined` gives nothing. So is a spread of the
+    default's `redis` with a price, `{ ...AWS_US_EAST_1_ONDEMAND.redis, monthlyUSD: 500 }`, since the spread now
+    carries the default's `sizedToData` too; it is refused rather than read one way.
+  - JavaScript that reads `AWS_US_EAST_1_ONDEMAND.redis.monthlyUSD` gets `undefined`, and a ratio built on it is
+    `NaN`. Read `report.redisBaseline.monthlyUSD` instead, or `ONE_REDIS_HA_CLUSTER.monthlyUSD` for the one
+    cluster. TypeScript types it `number | undefined`, so under `strictNullChecks` a ratio built on it does not
+    compile.
+  - A hand-built `CostReport` must carry `redisBaseline`, which is required.
+  - `segment.costReport()` sizes the Redis to that one segment — $35.04 for any segment up to 384 MiB, a tenth of
+    $346 — so per-segment verdicts move toward the lose-zone, and the baselines of a store's segments do not add up
+    to the store's. To judge a store, price all its segments in one `estimateCost()`. To alarm, sum the segments'
+    totals and compare the sum with the Redis you would run for the store, as the cost gauge in the dashboards
+    guide now does: a per-segment verdict against that whole price fires only when one segment alone costs more than
+    all of it.
+  - The catalogue is `ELASTICACHE_REDIS_US_EAST_1_ONDEMAND`, with the types `RedisSizing` and `RedisNodeType`. It,
+    `ONE_REDIS_HA_CLUSTER` and the default profile are frozen, so a caller that changes one no longer changes every
+    other caller's estimates: the change throws in strict mode, as in every ES module, and is ignored in a
+    sloppy-mode script.
+  - A report with no bytes to size to — nothing stored, or a storage source that cannot measure — compares with the
+    catalogue's cheapest cluster, and its rationale and notes say that no bytes were counted.
+  - The benchmarks page's line is still drawn against the $346 cluster, and now says that this is 2.4 times the
+    $142.35 Redis the default prices for its 1.2 GiB reference set, against which the line would sit at 135.42 reads
+    a second. `pnpm bench:check` fails CI when the chart, the page or `bench/results.json` drifts from the
+    estimator.
+- **`CostReport.monthlyUSD.byOp` gains the required `pointerRefresh`**, so a `CostReport` you build yourself must
+  set it, and `estimateCost()` refuses an `operandsPerIntersect` below 1 with `ValidationError`. The rationale names
+  intersections, loads and the refresh in new words, and the notes gain lines for intersections, the refresh and a
+  hot set larger than the reader cache, and its loads line is reworded, so a check that matches either's text needs
+  its new wording. The entry
+  under **Fixed** says what the estimator counts now.
+This one changes what an erasure charges its budget for:
+
+- **`eraseSubject` charges its budget for the generations it opens, and reports a segment that runs it out.** A
+  segment whose current generation lacks the id is searched in every generation still in its bucket, which is one
+  open each and, with the keep-everything default of the `*Into` verbs, one for every generation the segment ever
+  had. The budget counted one unit for the segment, and the guide and the API reference said the call was
+  `O(registered segments)`. It now charges one unit per segment and one for each generation opened beyond the one
+  the segment's row names, so the call is `O(registered segments + superseded generations)`; a rewrite of a segment
+  that holds the id, and the read that verifies it, are not charged beyond the segment's unit. The default,
+  1,000,000, still covers a normal fleet. A segment that runs the budget out is listed with `erased: false` and
+  an `error:` note carrying the budget refusal's message, before it deletes anything (the one refusal that can come after a rewrite is
+  the last check for a generation a concurrent writer left behind), and the
+  scan goes on: the call does not throw for it, so the ledger of the erasures that did happen is not lost. A call
+  that listed nothing for such a segment, because the id was in none of its generations, therefore now lists an
+  error entry for it. Re-run with a higher `budget`, per call or per store, or `budget: false`.
 
 ### Added
+
+- **The guide is split into topic pages, and getting started is the 10-minute path.** The README leads with what the
+  library is, a plain definition of segment, generation and pointer, a first run on `MemoryStorage` that can be saved
+  and run, and a choice of backend. Getting started goes from install to a bucket, with a glossary. The detail moves
+  to new pages in `docs/guide/`: `production.md` (a before-production checklist, with the permissions the library
+  issues, the bucket lifecycle rules, and a timeout sample that passes the client to `S3Storage`), `loading.md`,
+  `reading.md`, `retention.md`, `encryption.md`, `erasure.md`, `observability.md`, `export.md` and `cost.md`. Each
+  page puts what a user does first and the mechanism last. The package READMEs share one template, and
+  `site/llms.txt` carries a worked example. The docs also say plainly that the `export-segments` command reads a
+  local-filesystem store only, and that an S3, GCS or Azure Blob store exports with `store.exportSegments(sink)`.
+- **`IRegistryDriver.delete` takes an optional expected token: `delete(ref, expected?)`.** Without it, nothing
+  changes: deleting an absent row is a no-op. With it, the delete lands only while the row still carries that
+  token, and otherwise (another token, or no live row) throws `WriteConflictError` and leaves the row, as a
+  compare-and-swap does. The memory, local-filesystem and `ObjectStoreRegistry` registries, and so the S3, GCS and
+  Azure Blob ones, implement it. **For a third-party registry driver the change is additive:** the parameter is
+  optional, so a driver that ignores it still compiles and keeps the unfenced delete. Implement it to make the library's own deletes safe against a concurrent re-create; the
+  registry conformance suite now holds every registry to it.
+- **The driver ports state the contracts callers rely on, and a conformance suite holds every storage driver to
+  them.** `IStorageDriver` and `IRegistryDriver` now say, in their doc comments, the driver kit's header and the
+  API reference: `putImmutable` is write-once and throws `WriteConflictError` on a collision; a missing object
+  makes `getRange` and `getTail` throw `NotFoundError`; an out-of-range read throws `ValidationError`; `getTail`
+  reports the true total size; `delete` is idempotent; `list` is strongly consistent, read-after-delete; a driver
+  never replays a conditional write without telling the replay apart, by sending it once or by recognising its
+  own write on the read-back; a transient fault is a `TransientError`. The new `storageDriverConformance` suite
+  runs each of these against the memory and local-filesystem drivers in the unit suite and the S3 (MinIO), GCS
+  (fake-gcs-server) and Azure Blob (Azurite) drivers in the integration suite. A registry fixture whose write lands
+  and then fails proves the registry reports that fault and neither retries the write nor reports a conflict.
+
+- **An id-range read: `iterate({ after, through })`, and the same two options on `intersect`, `union`, `andNot` and
+  the `*Into` verbs.** A read yields only the ids in `(after, through]`, ascending, and fetches only the chunks the
+  range overlaps, on every operand and every `exclude` of a combine, so a keyset page bounded by `through` costs the
+  chunks of its window rather than a walk from the first id. The per-op budget is charged once, before the first
+  fetch, for every chunk in the range, so with `after` alone it is charged to the end of the segment. Each bound is
+  optional and an integer in `0..4294967295`, or the read throws `ValidationError` when first read; `after >= through`
+  is an empty read, which fetches nothing. A pinned read fails with `NotFoundError` for any chunk it must fetch from a
+  generation that has since been collected, as a full pinned read does. `IdRange` (`{ after?, through? }`) is
+  exported, and `BaseCombineOptions` extends it. The `intersect` metrics event, which every combine emits, counts in
+  `fetchedChunks` and `skippedChunks` only the chunk keys inside the range.
 
 - **`PinnedAt` names the object a pin holds.** It gains an optional `fingerprint`: the pinned object's size and
   footer checksum, which `seg.pin()` records. `PinnedObject` (`{ version, fingerprint? }`) is exported beside it.
@@ -154,48 +1456,6 @@ Each of these makes a call throw where it used to return, and each fixes a wrong
 
 ### Changed
 
-- **BREAKING — `estimateCost()` compares with the Redis that would hold your data, not one $346 cluster.** The
-  default verdict, rationale and read crossover are now against the cheapest ElastiCache for Redis OSS cluster that
-  holds the report's stored bytes at their compressed size: enough shards, each a primary and two replicas, with 25%
-  of each node's memory reserved, at AWS's us-east-1 on-demand prices from its price list of 2026-09-14, and the
-  burstable `t4g` nodes priced only as one shard. One cluster was the wrong size in both directions: 200 MB fits
-  three `cache.t4g.micro` nodes at $35.04 a month, and 2 TB does not fit it at all — three `cache.r6gd.16xlarge`
-  data-tiering nodes hold it, at about $27,325. The report names what it priced in the new `redisBaseline`,
-  `{ basis: 'fixed', monthlyUSD }` or `{ basis: 'sized-to-data', monthlyUSD, cluster: { nodeType, shards, nodes,
-  dataTiering } }`, and in the last of its notes. It is the cheapest cluster of one kind, not the least Redis could
-  cost: the compressed size is a floor on the memory Redis needs, since a native Redis bitmap is sized by its
-  highest id, but reserved nodes, one replica a shard, or ElastiCache for Valkey all cost less than it prices.
-
-  **To keep the old comparison**, pass `pricing: { ...AWS_US_EAST_1_ONDEMAND, redis: ONE_REDIS_HA_CLUSTER }`.
-  `ONE_REDIS_HA_CLUSTER` is the $346 cluster the benchmarks page still charts. What else changes:
-
-  - A default report has a different baseline at every data size, so a different crossover, and it can have a
-    different verdict.
-  - `pricing.redis` must give exactly one of `{ monthlyUSD }` and `{ sizedToData: RedisSizing }`, and one giving
-    both is refused with a `ValidationError`, where a key set to `undefined` gives nothing. So is a spread of the
-    default's `redis` with a price, `{ ...AWS_US_EAST_1_ONDEMAND.redis, monthlyUSD: 500 }`, since the spread now
-    carries the default's `sizedToData` too; it is refused rather than read one way.
-  - JavaScript that reads `AWS_US_EAST_1_ONDEMAND.redis.monthlyUSD` gets `undefined`, and a ratio built on it is
-    `NaN`. Read `report.redisBaseline.monthlyUSD` instead, or `ONE_REDIS_HA_CLUSTER.monthlyUSD` for the one
-    cluster. TypeScript types it `number | undefined`, so under `strictNullChecks` a ratio built on it does not
-    compile.
-  - A hand-built `CostReport` must carry `redisBaseline`, which is required.
-  - `segment.costReport()` sizes the Redis to that one segment — $35.04 for any segment up to 384 MiB, a tenth of
-    $346 — so per-segment verdicts move toward the lose-zone, and the baselines of a store's segments do not add up
-    to the store's. To judge a store, price all its segments in one `estimateCost()`. To alarm, sum the segments'
-    totals and compare the sum with the Redis you would run for the store, as the cost gauge in the dashboards
-    guide now does: a per-segment verdict against that whole price fires only when one segment alone costs more than
-    all of it.
-  - The catalogue is `ELASTICACHE_REDIS_US_EAST_1_ONDEMAND`, with the types `RedisSizing` and `RedisNodeType`. It,
-    `ONE_REDIS_HA_CLUSTER` and the default profile are frozen, so a caller that changes one no longer changes every
-    other caller's estimates: the change throws in strict mode, as in every ES module, and is ignored in a
-    sloppy-mode script.
-  - A report with no bytes to size to — nothing stored, or a storage source that cannot measure — compares with the
-    catalogue's cheapest cluster, and its rationale and notes say that no bytes were counted.
-  - The benchmarks page's line is still drawn against the $346 cluster, and now says that this is 2.4 times the
-    $142.35 Redis the default prices for its 1.2 GiB reference set, against which the line would sit at 135.42 reads
-    a second. `pnpm bench:check` fails CI when the chart, the page or `bench/results.json` drifts from the
-    estimator.
 - **The calibration harness counts what the library does, not what the network does.** Each timed intersect now
   turns off its store's timed pointer refresh (`cache.genTtlMs: 0`). On the default 2 s refresh, an intersect slower than that reads
   each pointer again, so run `2026-09-23-94416` — 83 ms from the region — counted 206 GETs for its median
@@ -237,6 +1497,162 @@ Each of these makes a call throw where it used to return, and each fixes a wrong
   the bounded-memory invariant), and why the published figure is a ceiling rather than a reading.
 
 ### Fixed
+
+- **`count()` answers from the index, and an open did not check every rule the index must keep.** The per-chunk
+  cardinalities the `.crbm` index records are summed with no payload decoded, so a corrupt index changes the answer
+  where `iterate()` and the combines, which decode the payloads, return what the payloads hold. An open already refused a key that
+  repeats, falls out of order or passes `0xffff`, a cardinality outside `1..65536`, an empty or oversized payload,
+  and, on an unencrypted object, a footer chunk count or total that disagrees with the index. It now also refuses an
+  entry whose payload runs into the index rather than ending where the index starts, and an encrypted entry too short
+  for its nonce and tag (see **Breaking**), once per open and never per call. A corrupt index that is still
+  internally consistent still yields a wrong count, and that is now stated where `count()` is described: the guide,
+  the API reference, the README, `SECURITY.md` and the TSDoc. The same index feeds a load's `cardinalityBefore` and
+  the chunk keys an `intersect` plans from. `iterate()` the segment where the count must be confirmed against the
+  payloads.
+- **A rollback whose undo failed said the pointer "could NOT be put back", which it could not know.** When the
+  target generation was collected while the pointer moved, the rollback swaps the pointer back and throws. If
+  that swap threw, the message stated that the pointer still named the missing generation, but a swap that
+  applied and lost its response also throws, and then the pointer is already back. The message now says the pointer
+  *may* still name it, and the recovery guide says to check which generation is current before acting.
+- **An erasure whose sweep of the other generations found an object gone threw a bare `NotFoundError` where the
+  pointer had moved.** When the id was not in the current generation, the sweep's rejection bypassed the handler
+  that re-reads the row and reports `reason: 'superseded'`, so a storage driver that signals a missing object
+  from `delete` could turn a lost race into an error. It now reports `'superseded'`, and still throws when the
+  pointer has not moved, because the object is then genuinely absent.
+- **A throwing `retry.onRetry` hook replaced the read's error and stopped the retry.** The hook is observability,
+  so an error it throws is now swallowed: the retry goes on, and the read fails with its own error, as the option
+  documents.
+- **`subjectReport` could miss a load or an erasure made by another process.** The access report read through the
+  store's cached generation, which can be up to `cache.genTtlMs` behind the registry, and never catches up with
+  `genTtlMs: 0`. It now compares each listed segment's row (its generation and its token) with the version the
+  store holds, and re-resolves only a segment that differs, so a report sees another process's change at once,
+  including a segment retired, purged and loaded again from generation 0, and costs no extra read when nothing
+  moved.
+- **The retention sweep's row deletes could tombstone a row created after the sweep decided to delete.** The
+  tombstone purge decided from the row it scanned, which can be minutes old on a large fleet, and then deleted
+  whatever was under the name, so a segment purged and re-created in that window, which is live data, was tombstoned
+  and its name fenced. The purge now deletes with the scanned row's token and reports the entry as
+  `failed: contended` when the row has changed. The removal of the row of a segment that held nothing now reads the
+  row it tombstoned and deletes it only while it is still that `destroyed` row, at that token. A delete the row refuses leaves it, and the entry stays `retired`.
+- **A failed pointer refresh served the old generation, and the key it unwrapped, for as long as the registry
+  stayed unreadable.** A reader that could not re-read a segment's pointer kept its reader and stamped it fresh,
+  so during a registry outage, or after an access denial, a crypto-shredded or dropped segment could keep
+  answering well past the `cache.genTtlMs` that `PRIVACY.md` states. Only a transient fault is ridden out now, and
+  the bound has the shape the privacy note gives: while the registry cannot be read, a reader keeps serving the
+  generation it had, retrying the refresh after 500 ms (never longer than `cache.genTtlMs`) and at most once per
+  segment at a time; any other error reaches the reader. Reads inside the TTL, and the one registry read a refresh
+  makes, are unchanged.
+- **Two local-filesystem backends on one root in one process could both advance a registry row from the same
+  token.** The row's compare-and-swap was serialized by a lock each `LocalFsStorage` (or
+  `LocalFsRegistryDriver`) kept for itself, so two instances on one root, or a store and a CLI call in one
+  process, could both read token T, both pass the check and both return T+1 for different writes.
+  That broke the token's promise never to be reused and the erasure's `expectFrom` fence: an erasure's
+  collection with `keep: 0` could delete a generation whose load had reported `published: true`. The lock is
+  now one per row for the whole process, keyed by the row's resolved path, so a root reached through a symlink
+  or a relative path takes the same lock, and an entry lives only while an operation on its row is in flight.
+  A root is for one process: two processes on one root are still not fenced, and the guide and the API
+  reference now say so.
+- **`purgeTombstones: false` kept every tombstone but one.** The option's contract is that the sweep deletes no row
+  of a retirement it made, yet a retired segment that held nothing (a `setRetention` on a name that was never
+  loaded, or a mistyped one) had its row deleted in the same pass whatever the option said. With `false` that row
+  now stays, stamped like the sweep's other tombstones, so a later sweep with purging on deletes it once
+  `tombstoneGraceMs` has passed. While it stays it fences the name against every writer, as a kept tombstone does.
+  The ledger entry and the `segment.dispose` event are the same either way, and a later sweep with purging off
+  skips the row without re-processing it. The default, `purgeTombstones: true`, deletes the row as before. A
+  caller that passes `false` and relied on an empty segment's name being free again after the sweep must pass
+  `true` for the sweep that should free it.
+  With the default, an empty segment's row that the sweep could not delete (a registry fault) is stamped and kept
+  too, where it stayed unstamped, which no sweep would ever purge; a later sweep now deletes it after the grace period.
+- **A subject erasure could report `erased: true` while another generation of the segment still held the id.**
+  `PRIVACY.md` promises that an `erased: true` entry means the id is physically gone from every generation that
+  held it. Three cases broke that promise:
+  - **Several holders above the pointer, after a `rollback`.** The erasure searched the other generations newest
+    first, deleted the first one holding the id and stopped, so an older one stayed in the bucket, one
+    `rollback({ allowForward: true })` from being served again. It now reads every generation above the pointer
+    and deletes each one that holds the id, re-reading the row before each delete and stopping if the pointer has
+    moved. When the current generation does not hold the id, the generations up there that never held it stay as rollback targets.
+  - **A `rollback` onto a holder between a rewrite's publish and its collection.** Collection stopped at the lower
+    pointer, so the entry said `erased: true` while the segment served the id from the generation rolled back
+    onto. The call now throws `WriteConflictError`, which `eraseSubject` records as an `error: …` entry, and a
+    re-run erases the id.
+  - **Two erasures of different ids racing on one segment.** When the loser took its generation number after the
+    winner's object was in the bucket, its refused rewrite sat above the winner's pointer, still holding the
+    winner's id, because it was derived from the generation the winner replaced. The loser now deletes it before
+    it returns `superseded`.
+
+  An entry says `erased: true` only after the call has listed the bucket and read every generation it has not
+  already seen without the id. That adds one `list` to each erasure that succeeds, on the erasure path only;
+  reads are unchanged. A `rollback` that lands while the call deletes generations above the pointer is reported as
+  `reason: 'superseded'` (`note: 'superseded'` in the ledger). `EraseIdResult.collected` then lists every holder
+  the call deleted, and `fromGeneration` names the newest of them.
+- **A chunk payload listing its roaring containers out of order read as ids the segment does not hold.** The 16-bit
+  range check on a chunk reads `maximum()`, which roaring answers from the last container, and the native deserializer
+  accepts containers in any order. So a payload with container 1 before container 0 passed the check, and `iterate`
+  and every combine yielded container 1's values masked into the chunk: ids `has()` denied, and missing
+  from a range read over the same ids. The native deserializer bounds its reads and checks nothing else —
+  CRoaring leaves the rest to its caller, and `roaring` never does it — so the same gap took more shapes: values or
+  runs out of order, listed twice or overlapping, which `has()` denied and `size` counted twice; a run past the end of
+  its container, which wrapped `maximum()` past the range check the same way; a run container with no runs, which
+  crashed the process when iterated, intersected or unioned; and a bitset whose header understated its bits, whose
+  `remove()` overflowed the native heap. An erasure over such a chunk reported `erased: true` and carried the
+  corruption into the generation it wrote. `SafeBitmap.safeDeserialize` now checks the structure before the native
+  addon sees the bytes and refuses each of these with `IntegrityError` (see **Breaking**). The check runs once per
+  chunk fetched, never per id or on a cache hit, and costs a third to a half of the CRC32C the `.crbm` reader already
+  computes over the same payload: about 0.7 µs for a 2 KB chunk and 2.5 to 3.2 µs for an 8 KB one, measured on an M3
+  Pro.
+- **`store.checkConsistency` told a caller to raise an option it does not take.** Past its ceiling of 250,000
+  registry rows its `BudgetExceededError` said to raise `maxScanSegments`, which `store.checkConsistency` does not
+  take, though `runConsistencyCheck` does. It now names `runConsistencyCheck`, over the backend's `storage` and
+  `registry`, as the call that raises it, beside narrowing the scan with `namespace`.
+- **`store.rollback(ref, generation, { allowForward: true })` did not compile.** Its options type took `audit`
+  alone, though the call passed `allowForward` through to `rollbackSegment` and the docs showed it for undoing a
+  rollback. The type now takes `allowForward`, as `rollbackSegment`'s does.
+- **A conditional write that landed and lost its response was reported as a conflict, on S3 and on GCS.** Each SDK
+  sends a request again when its response does not arrive, after a timeout, a reset connection or a 5xx, and a
+  conditional write sent again meets the one that landed and fails its own precondition. So a load reported
+  `published: false, reason: 'superseded'` for a generation it had just made current, and collected nothing; an
+  `*Into` verb threw `WriteConflictError` for a generation that was current; a load whose write-once put landed
+  reported that nothing was written, and left the object above the pointer; `rollback` threw `WriteConflictError`
+  after moving the pointer; and a crypto-shred reported `cryptoShredded: false, reason: 'already'`, and emitted no
+  `segment.erase` event, for a shred that had happened. The S3 driver now sends each conditional write once: it
+  replaces the client's retry step for that one command, so a client you pass, whatever its retry strategy or
+  `maxAttempts`, is otherwise unchanged. The GCS driver uploads the registry's rows, and objects up to
+  `simpleUploadThresholdBytes`, as one request with no retry loop around it, where `file.save()` wrapped the same
+  request in one. Tests drive both drivers through the real SDK, over a stub transport that applies a write and then
+  drops its response; each failed before the fix. Azure Blob and a GCS object above the threshold have no per-request
+  switch, and the next entry says how they tell a replay from a lost race.
+- **On Azure Blob, and on GCS for an object above `simpleUploadThresholdBytes`, a conditional write that landed and lost
+  its response was reported as a conflict.** The Azure SDK takes its retry policy from the client, and a GCS
+  object above the threshold uploads as a resumable session that the SDK retries within, so neither has a
+  per-request switch to turn the retry off. The write sent again met the one that landed, and the answer, a 409
+  or 412, reached the same wrong outcomes as on S3: a load reporting `superseded` for a generation it had made
+  current, an `*Into` verb or `rollback` throwing `WriteConflictError` after the write, a crypto-shred reporting
+  `already`. Each such write now tags its blob or object with a random id in its metadata, outside the `.crbm` bytes and
+  outside the registry row's body, so neither format changes. When the write reports a conflict, the driver reads
+  the stored copy back, one metadata read, and reports success when it carries the write's own id and
+  `WriteConflictError` otherwise. The read is made only on a conflict, and it works with a client you pass. A
+  generation's `.crbm` object is never overwritten, so its read-back is definitive. A registry row is
+  overwritten by compare-and-swap, so a writer that swaps in over a write that landed, before the read-back, makes
+  that write report `WriteConflictError`. The callers re-read or report it, and none deletes a generation on it: a load's cleanup
+  removes its generation only while the row's token is still the one it started from, which the write it landed has advanced. A read-back that fails transiently throws `TransientError`, neither a success nor a
+  conflict.
+- **`PRIVACY.md` said subject erasure is physical on return for more segments than it is.** Its table row, and
+  the copy npm ships in `@cloudbitmaps/roaring`, said "on return" holds for every segment whose ledger entry is not
+  `error: …`. An entry can also say `erased: false, note: 'superseded'`, when a racing writer overtook the rewrite:
+  no error, and the id may still be in that segment. The row now says "on return" holds for every segment whose
+  entry says `erased: true`, as the detailed text further down already did. `eraseSubject`'s doc comment also said
+  that after a collection fault a re-run reports nothing for the segment, leaving the old generation to
+  `gcOrphanGenerations` or a sweep; a re-run searches the superseded generations and collects it, as
+  `SubjectErasureEntry.note` says.
+- **`LoadOptions.keep`'s doc said a wider window "buys nothing a pinned read would not do better".** A pin is never
+  re-resolved, so a pinned read fails with `NotFoundError` once its generation is collected, and for a job pinned
+  across loads `keep` is what keeps it readable. The doc now says so, and getting-started's "Sizing `keep`" table
+  has a row for a long job on a pinned handle: keep at least one generation for every one that can be written above
+  the pinned one while it runs, on every writer that loads the segment.
+- **A load that lost its generation number to another load emitted no audit event.** Every other refusal emits
+  `segment.load-refused`, and this one reported `reason: 'superseded'` to the caller alone, so an audit trail could
+  not tell the replacement it asked for had not happened. It now emits `segment.load-refused` with `reason:
+  'superseded'` and `cardinality: 0`, since it wrote nothing.
 
 - **A pinned handle could read chunks of another generation than the one it pinned.** A live read of the same
   segment on the same store cached each chunk it fetched under the version it had resolved when it began — but if,
@@ -330,11 +1746,10 @@ Each of these makes a call throw where it used to return, and each fixes a wrong
   generation its footer claimed, and the erasure rewrite republished its content. A default load onto a segment
   whose current generation is misfiled now fails in its guard: roll the segment back to an earlier generation that
   opens, or load with `allowEmpty: true` and no `guard.minRetained`, which then does not read the current
-  generation. The one way to write such an
-  object was `CrbmWriter`, public through 0.9.0, given one generation and stored under another, which was never a
-  valid object.
+  generation. Such an object was written under one generation and stored under another, and was never a valid
+  object.
 - **`estimateCost()` counts the pointer, the index and the pointer refresh, which it had left out.** On a
-  single-bucket store, the topology that ships, it under-quoted both operations it prices: a load as its object's
+  single-bucket store, the topology that ships, it under-quoted two of the operations it prices: a load as its object's
   PUT-class requests alone, and an intersect as its chunk reads alone.
   - **A load** now adds what `store.load()` makes around the object's write — two listings and the pointer's
     write, and nine GETs — so a single-part load prices at about $23.60 per million at the default rates, where it
@@ -344,3725 +1759,45 @@ Each of these makes a call throw where it used to return, and each fixes a wrong
   - **A new term prices the pointer refresh**: `hotSegments`, the segments each long-lived reader keeps reading,
     in each of `readerProcesses` readers, each re-reading its pointer at most every `genTtlMs` (the store's
     `cache.genTtlMs`, 2 s by default), and the term at most once a point read: about $0.53 a segment a month. It is
-    reported as `byOp.pointerRefresh`, disclosed in the notes when it is not modeled, and taken out of the read
+    reported as `byOp.pointerRefresh`, disclosed in the notes when a report prices point reads without it, and taken out of the read
     crossover's baseline when it is. `segment.costReport()` prices it at the store's own TTL.
   - **GCS and Azure Blob** read an object's metadata before its bytes, so a pointer read or a tail read is two
-    requests there, where it is one on S3. A pricing profile's new `storage.requestsPerSizedRead` (1 by default,
-    2 for those two) doubles those reads.
+    requests there, where it is one on S3. A pricing profile's new `storage.requestsPerSizedRead` (1 by default;
+    set it to 2 for those two) doubles those reads.
 
   `chunksPerIntersect` and `requestsPerLoad` keep the meaning they had in `0.10.0`, the chunks an intersect fetches
   and the object's own PUT-class requests: if you followed the docs' and the site's advice, between the
   single-bucket run's publication and this fix, to fold the pointer into them, pass the plain counts again. Each
-  count the estimator adds is held by a test to the requests the real engine makes. **Type and text changes:**
-  `CostReport.monthlyUSD.byOp` gains the required `pointerRefresh`, so a `CostReport` you build yourself must set
-  it; `operandsPerIntersect` below 1 is refused; the rationale names intersections, loads and the refresh in new
-  words; and the notes gain lines for intersections, the refresh and a hot set larger than the reader cache.
+  count the estimator adds is held by a test to the requests the real engine makes. What this changes in the
+  report's type and text is under **Breaking**.
 
 ## [0.10.0] — 2026-09-21
 
-> **Read [`MIGRATING.md`](MIGRATING.md) first if you are upgrading.** It is the authoritative, ordered
-> upgrade path from `0.9.x`, and it covers two changes that alter behaviour without raising anything.
->
-> The notes below summarise the release. The full **development log for the cycle** follows them, under its
-> own heading, for anyone tracing *why* a thing changed — entries there appear in the order they landed, so a
-> later one sometimes supersedes an earlier one, and a few describe **intermediate states that existed
-> between commits and never shipped in any release**. Where one does, it now says so. If anything there
-> disagrees with `MIGRATING.md`, the migration guide is right.
+The loaded store. A segment is a set of write-once `.crbm` generations in object storage behind one registry
+pointer. Data enters by loading a whole new generation, and a read resolves one generation and fetches only the
+chunks it needs.
 
-`0.10.0` is a breaking release. The short version:
-
-### Breaking
-
-- **The live (warm) tier is gone.** `warm` was a required option in `0.9.x`, so this touches every `0.9.x`
-  deployment. Data enters by loading a whole new generation; there is no per-id write. The removed code is
-  archived at the git tag `archive/live-warm-tier`, and `0.9.x` stays on npm.
-- **The cloud drivers are their own packages** — `@cloudbitmaps/s3`, `/gcs`, `/azure-blob`, each depending on
-  its SDK for real rather than as an optional peer. You install a codec and a storage.
-- **The DynamoDB registry is gone.** Every object store now hosts its own registry. **If your pointers live in
-  DynamoDB there is work to do on `0.9.x` before upgrading** — `0.10.0` cannot read those rows.
+- **Five packages, versioned together.** `@cloudbitmaps/roaring` is the codec and the `CloudRoaring` store;
+  `@cloudbitmaps/s3`, `@cloudbitmaps/gcs` and `@cloudbitmaps/azure-blob` are one storage service each, depending on
+  its SDK. `@cloudbitmaps/core` arrives transitively, and `@cloudbitmaps/core/driver-kit` is the contract a driver
+  package builds against.
+- **One backend per service, carrying both halves.** `MemoryStorage`, `LocalFsStorage`, `S3Storage`, `GcsStorage`
+  and `AzureBlobStorage` each keep the generations and the registry pointer in the same store, so a deployment needs
+  one bucket and no second database.
+- **Loading, `store.load()`.** It takes the next generation number, writes one immutable object, refuses an empty
+  result over a non-empty segment, publishes it, and collects the generations the publish superseded, keeping one
+  by default. The `*Into` verbs write through the same path and the same empty-result guard, but collect nothing
+  unless given `keep`. A subject erasure publishes only over the generation it read, and collects with `keep: 0`.
+- **Reads.** `has`, `count` (summed from the index, with no payload reads), `iterate`, chunk-skipping `intersect`
+  with `exclude`, `union` and `andNot`; and `intersectInto`, `unionInto` and `andNotInto`, which write their result
+  as a new generation of a destination, under the same empty-result guard as a load.
+- **`segment.pin()`** holds a segment at one generation for the life of a handle.
+- **Options** `storage`, `metrics` and `budget`, and four groups: `cache`, `encryption`, `retry` and `seams`.
+- **Lifecycle.** `rollback`, `generations`, `exists` and `segments`; retention with `setRetention` and the
+  `retireExpired` sweep; `dropSegment`; subject erasure with `eraseSubject` and `subjectReport`; `exportSegments`;
+  and `checkConsistency`.
+- **Encryption at rest** (AES-256-GCM, with envelope keys from a keystore you hold) and crypto-shred.
+- **Cost.** `CloudRoaring.estimateCost()` for planning, and `segment.costReport()` from a segment's real size.
 - **ESM only, Node ≥ 22.12.**
-- **A storage backend is built, not assembled** — one `storage` key carrying both halves.
-- **The flat options became four groups** — `cache`, `encryption`, `retry`, `seams`; `metrics` and `budget`
-  stay flat. Every removed spelling is refused by name rather than ignored.
-- **The `*Into` verbs replace their destination** where they used to append, and refuse an empty result. This
-  one changes behaviour without raising anything.
-- **`cold` → `storage` and `hot` → `cache`** throughout, including metric kinds, snapshot keys, pricing fields
-  and the `checkConsistency` issue string — none of which the type system checks.
-- **`@cloudbitmaps/core`'s main entry went from 89 exports to 82.**
 
-### Added
-
-- **GCS and Azure registries**, so a Google Cloud or Azure deployment needs no AWS account.
-- **`segment.pin()`** — hold a segment at one generation for the life of a handle.
-- **`load()` with an empty-result guard**, extended to the `*Into` verbs.
-- **`@cloudbitmaps/core/driver-kit`** — the contract a driver package builds against.
-
-### Fixed
-
-- **A name beginning with a byte-order mark decoded back as a different name**, so such a segment could be
-  written and then be invisible to every sweep over the bucket.
-- **The install instructions now cover pnpm 10, where the documented command produces a broken install.**
-  pnpm 10 does not run dependency build scripts unless you allow them, so `pnpm add @cloudbitmaps/roaring`
-  warns, **exits 0**, and leaves the `roaring` native addon undownloaded — the package then throws at
-  `import`. Every install site now names the one-line `onlyBuiltDependencies` allowlist, and the
-  troubleshooting entry no longer presents `--ignore-scripts` as the only way to get there. It also records
-  that `pnpm rebuild roaring` **without** that allowlist is a silent no-op: no output, exit 0, still broken.
-
-## Development log — 0.10.0
-
-Everything below landed during the `0.10.0` cycle, in the order it landed. It is kept for tracing *why* a
-thing changed; the notes above and [`MIGRATING.md`](MIGRATING.md) are what to read to upgrade.
-
-
-### Changed
-
-- **CI reliability, from an adversarial audit of every source of nondeterminism.** None of these changed
-  library behaviour; all of them changed whether a gate could be trusted.
-  - **A queued release could be silently cancelled.** `release.yml` grouped concurrency by workflow, with a
-    comment claiming two tags "queue rather than race". GitHub holds exactly one *pending* run per group and
-    cancels any earlier one — and this workflow parks in an environment awaiting a reviewer, so a tag pushed
-    (or a dry run dispatched) during that window evicted the queued release: tag present, nothing on npm, no
-    Release object, and a cancelled run nobody watches. Now grouped per ref.
-  - **Fuzz findings were discarded exactly when found.** The crash-reproducer upload ran `if: failure()`,
-    which is false when a job is *cancelled* — and this job is cancellable by `cancel-in-progress` (both crons
-    resolve to `main`, so the weekly soak cancels an overrunning nightly) and by its timeout, where a hung
-    input *is* the finding. Now `if: always()`. The corpus that produced a crash was also thrown away, because
-    `actions/cache` saves only on success; restore and save are now separate, with the save unconditional.
-  - **`fuzz/` was outside every gate.** It installs with `--ignore-workspace`, so the root
-    `--frozen-lockfile` never validated `fuzz/pnpm-lock.yaml`, and Dependabot's `directory: /` never reached
-    it — `@jazzer.js/core` was updated by nothing. PR CI now validates that lockfile (0.6s) and Dependabot
-    covers the directory; a new test derives the rule from the lockfiles on disk, so the next separate install
-    is covered the day it lands.
-  - **Every workflow job now declares `timeout-minutes`.** All eleven inherited GitHub's 360-minute default,
-    so a hang burned six hours per matrix leg. Sized from observed durations; the fuzz job is set to its work
-    rather than its siblings.
-  - **The container gate scripts retry the registry and show their errors.** `npm install` inside
-    `rss-gate` / `lambda-smoke` / `build-lambda-layer` used npm's default of two attempts, and two of the
-    three discarded output entirely — a registry blip red the gate with nothing to read. Retries raised, and a
-    failure now re-runs once with output, the same rule `scripts/lib/docker-pull.sh` already states.
-  - **The release job's bound is deliberately long, not tight.** Its execution is 2-3 minutes, but it waits
-    on a required reviewer first and a 104.8-minute approval wait has already happened here. Whether
-    `timeout-minutes` consumes that window is not something the docs state plainly, so the bound is set where
-    it is safe either way: too long costs idle minutes, too short kills a release mid-publish and leaves an
-    immutable half-published family.
-  - **The `dnf install` above each npm line got the same treatment**, having kept exactly the failure shape
-    being removed one line below it — suppressed, unretried, and producing zero bytes of diagnostic output
-    when an AL2023 mirror is throttled.
-  - A dispatched artifact build no longer shares a cancelling concurrency group with pushes to the same
-    branch, integration run keys include the run *attempt* (a re-run keeps the same run id), and
-    `fuzz/README.md` no longer documents an `--includes` path and checkout name that do not exist.
-
-### Fixed
-
-- **A name beginning with a byte-order mark decoded back as a DIFFERENT name.** `decodePercent` used
-  `TextDecoder` without `ignoreBOM`, which strips a leading U+FEFF — so `%EF%BB%BForders` decoded to
-  `orders`, an existing segment. The validator accepts U+FEFF, so this was reachable from any caller taking a
-  name from a spreadsheet export or a CSV read without BOM stripping. The visible symptom was worse than a
-  failed round-trip: each registry parser re-encodes what it decoded and refuses a spelling it cannot
-  reproduce, so such a segment could be **written and then silently skipped** by `list()`,
-  `checkConsistency`, `exportSegments`, the retention sweep and subject erasure — present in the bucket and
-  invisible to every sweep over it. Decode-only fix: `encode` is unchanged, no stored key moves, and the only
-  names whose decoding changes are ones those guards already rejected. An exhaustive sweep of all 1,112,064
-  code points now round-trips on both alphabets; before the fix, exactly one did not.
-
-### Changed
-
-- **CI: the native-addon checksum gate now runs `--strict`.** Without it an unknown key printed `RECORD …`
-  and exited 0 — and every key carries the roaring version, so a version bump made all six keys unknown and
-  all six platform jobs passed having verified nothing. Dependabot groups minor+patch monthly, which is
-  exactly how that bump arrives. `--strict` existed for this and had no callers.
-- **CI: `release.yml` now checks out with `fetch-depth: 0`.** The suite it runs includes a gate that reads the
-  previous release at its git tag, and a shallow checkout carries none — it would have failed on the first
-  real release. `ci.yml` has carried this since the gate was written.
-- **Integration: the suite is re-runnable, MinIO is pinned, and all three services declare healthchecks.**
-  Prefixes are namespaced per run, so a second run against live containers no longer replays write-once keys
-  (it failed 78 tests that read exactly like a real regression). MinIO was the one image on `:latest`, while
-  its two siblings carried a documented pin. No service declared health, so `--wait` returned while MinIO was
-  still refusing connections and `ci.yml`'s note about "a backend that never goes healthy" described a
-  condition that could not occur.
-- **Property failures are reproducible.** `tests/setup-fast-check.ts` configures all exploratory suites with
-  verbose counterexamples and an `FC_SEED` env var to replay a CI failure locally. The seed stays random by
-  default: the exploration is the value, and what was missing was the ability to act on a failure rather than
-  determinism. This bug took an archived CI log to diagnose because nothing recorded the counterexample.
-
-### Removed
-
-- **The last residue of the removed live (warm) tier, and four dead security overrides.** The `adm-zip`
-  `pnpm.overrides` entry reached the project only through `cassandra-driver`, a dependency of a tier deleted
-  two releases ago; `SECURITY.md` had labelled it "*nothing, now*" and it still sat in the manifest. Applying
-  the same test to the rest of the table condemned four more — `fast-uri` attributed to `ajv` (which is on v6
-  and uses `uri-js`), `js-yaml` and `qs` to toolchains that run through `pnpm dlx` and never enter this
-  lockfile, and a `brace-expansion@1` pin for a major no longer in the tree. All five are gone; the lockfile
-  diff added nothing, because nothing could bind to them. **`esbuild` was also being pinned below its own
-  declared range** — the unbounded `>=0.28.1` override replaced the manifest's `^0.28.2` and resolved to
-  0.28.1, one patch under the floor, on the toolchain that builds the published tarballs. Now
-  `>=0.28.2 <0.29`, which installs 0.28.2 and dedupes with the copy `vite` already pulls.
-  `tests/docs/override-hygiene.test.ts` now fails the build on an override that binds to no installed package,
-  on one with no `SECURITY.md` row, and on a row describing a pin that no longer exists.
-- **12 MB of stale tracked screenshots** under `.site-screenshots/`, last regenerated two releases ago and
-  still rendering the retired tier. Regenerable with `pnpm site:screenshots`, and now gitignored.
-- **Editorial archaeology in the public page source.** Nine HTML/CSS comments narrated the tier's removal
-  rather than explaining the current design, and they ship verbatim to anyone who views source. One of them
-  had lost a word to an earlier edit and read "a segment is immutable objects generations". Rewritten on
-  current terms. Two arch-test fixtures named symbols that have never existed in this repo
-  (`MemoryWarmDriver`, `LocalFsColdDriver`) — the boundary rule keys on the import path, so the identifiers
-  were never checked; an orphaned `.is-total` CSS rule went with them.
-
-  The upgrade guard is deliberately untouched: `MOVED_OPTIONS` still names `warm`, `warmReadConsistency`,
-  `maxWarmScanBytes`, `writeConcurrency` and `occBackoff`, because `warm` was **required** in `0.9.x` and
-  every upgrader passes one. So are `MIGRATING.md`'s before-column and the pointers to the
-  `archive/live-warm-tier` tag.
-
-### Changed
-
-- **BREAKING (fix) — the upgrade guard was keyed to option names that never shipped.**
-  `MOVED_OPTIONS` is what catches a `0.9.x` option and tells you where it went. It keyed on
-  `storageGenTtlMs`, `storageReaderCacheMax` and `storageReaderCacheMaxBytes` — three spellings that existed
-  only between two unreleased commits of this cycle. `0.9.0` had `coldGenTtlMs`, `coldReaderCacheMax` and
-  `coldReaderCacheMaxBytes`, and those were **accepted in silence.**
-
-  Silence is the failure this guard exists to prevent, and its own doc comment says so: an ignored
-  `requireEncryption` reads cleartext when the caller demanded encryption, and an ignored reader-cache
-  ceiling restores a 64 MiB default someone lowered deliberately for a small heap. Neither announces itself.
-
-  **Eight of the seventeen options `0.9.x` had and `0.10.0` does not were silently ignored** — the three
-  above plus `warm`, `warmReadConsistency`, `maxWarmScanBytes`, `writeConcurrency` and `occBackoff`. `warm`
-  is the one that matters most: it was **required**, so every `0.9.x` deployment passes one.
-
-  All eight are now rejected by name, and the message distinguishes an option that **moved** from one that was
-  **removed** — saying "moved into a group: `warm` → nothing" sends a reader looking for a group that will
-  never have it. The message also said six groups; there are four, and `metrics` and `budget` are unchanged.
-
-  `tests/core/moved-options-cover-the-old-release.test.ts` derives the set by diffing `CloudRoaringOptions`
-  at the `v0.9.0` tag against HEAD, so it cannot drift the way the hardcoded list did.
-
-- **BREAKING — `@cloudbitmaps/core`'s main entry is curated: 110 exports down to 82.** The entry had
-  accumulated the internals of whatever landed beside it, so a reader could not tell supported API from
-  plumbing that happened to be reachable. Everything below stays in the codebase and keeps working internally;
-  it simply stops being importable.
-
-  **Twelve of these removals were names `0.9.x` also published.** See
-  [`MIGRATING.md`](MIGRATING.md#7-core-exports-only-what-it-supports) for what to do about each:
-  `drainRegistry` · `validateMaxScanSegments` · `DEFAULT_MAX_SCAN_SEGMENTS` · `DEFAULT_RETIRE_LIMIT` ·
-  `DEFAULT_TOMBSTONE_GRACE_MS` · `CrbmWriter` · `CrbmWriterOptions` · `chunkRefKey` · `joinId` ·
-  `isTransient` · `NOOP_AUDIT` · `BufferSink`. Note `@cloudbitmaps/roaring` re-exports core wholesale, so
-  these left the flavor too — an import of one of them from the flavor is affected just as much.
-
-  **Three removals were reverted** after an adversarial review, each for the same reason: a public type or
-  field that only the removed symbol could produce or consume.
-
-  `aadFor` is the sharpest. `CrbmCrypto` is exported, requires an `aadFor` member, and is a parameter of both
-  `CrbmReader.open` and `writeCrbmGeneration` — which stayed public precisely so tooling can inspect an
-  archive. Removing its only producer meant an encrypted archive could not be read without re-deriving an
-  undocumented byte layout, where a mistake reads as `IntegrityError` (indistinguishable from real
-  corruption) and, on the write side, produces a generation this library can never read back.
-
-  `checkBudget` is the budget family's only O(1) enforcer, with every other member exported. Its `>`
-  threshold is load-bearing — a re-implementation that reaches for `>=` disagrees with `collectWithinBudget`
-  by exactly one unit.
-
-  `readRetentionPolicy` was on that list and was put back. It is a pure parser over a row the caller already
-  holds, and `RegistryRecord.retention` (a `GovernanceMeta`) is public — so cutting it left a public field
-  with no supported way to read it, and pushed a fleet sweep from one listing to a registry read per segment.
-  A parse people would then hand-roll, on the one code path whose three-way `null | 'invalid' | policy` answer
-  exists precisely so a single malformed row cannot abort a whole sweep.
-
-  Only one needs a real decision: **`isTransient` was `return isTransientError(err)` verbatim**, with a
-  `boolean` return where its twin has a type predicate. Use `isTransientError` — it narrows, and it matches
-  the `isValidationError` / `isWriteConflictError` / `isNotFoundError` family. `RetryDeps.isRetryable` now
-  defaults to it, which changes no behaviour.
-
-  The rest is what the library does *to* you rather than *for* you: the due-index scheduler, the bounded
-  registry drain beneath the supported enumeration, sweep and scan defaults already stated in prose, `.crbm`
-  construction, and object-key layout. (The AEAD associated data and the budget enforcer were on this list
-  and came back — see the reverts above.)
-
-  **This was the window for it.** `0.10.0` already breaks the import path, so the cost is one more entry in a
-  migration guide rather than a second breaking release. Re-exporting a name later is additive and not
-  breaking, so the bias is to cut now and restore deliberately — `CrbmWriter` and `joinId` in particular would
-  return, documented and tested, if the roadmap's raw bit-position import/export lands.
-
-- **The API reference guard now runs in both directions.** It checked that every export is documented; it now
-  also checks that every name in the "Complete export index" is still exported. The one-way version said in
-  its own comment to prune stale entries "in review" — this change would have left 29 of them behind, each
-  reading to a user like API that exists.
-
-- **BREAKING — the cloud drivers are their own packages.** `npm i @cloudbitmaps/roaring` plus the SDK becomes
-  `npm i @cloudbitmaps/roaring @cloudbitmaps/s3` — a codec and a storage — and the import moves with it:
-
-  ```diff
-  - import { S3Storage } from '@cloudbitmaps/roaring/s3';
-  + import { S3Storage } from '@cloudbitmaps/s3';
-  ```
-
-  ```diff
-  - import { GcsStorage } from '@cloudbitmaps/roaring/gcs';
-  + import { GcsStorage } from '@cloudbitmaps/gcs';
-
-  - import { AzureBlobStorage } from '@cloudbitmaps/roaring/azure';
-  + import { AzureBlobStorage } from '@cloudbitmaps/azure-blob';
-  ```
-
-  **Note the Azure package is `@cloudbitmaps/azure-blob`, not `@cloudbitmaps/azure`.** The other two renames
-  are mechanical — drop the prefix, keep the last segment — and Azure is the one that is not: the subpath was
-  named for the cloud, the package is named for the service, because "azure" is ambiguous across Blob, Table,
-  Files and Data Lake. A full old→new table is in [`MIGRATING.md`](MIGRATING.md). `@cloudbitmaps/core/s3` and
-  friends are gone too, and `@cloudbitmaps/core` stays transitive and is still never installed directly. The
-  constructors, options and behaviour of `S3Storage`, `GcsStorage` and `AzureBlobStorage` are unchanged, so a
-  migration is the two lines above per driver plus the install — **with one thing to check**: the cloud SDK
-  was an optional peer and is now a real dependency of the driver package, so if you had pinned, patched or
-  deliberately deduped it yourself, that pin now has to satisfy the driver's range. `@cloudbitmaps/s3`
-  requires **`@aws-sdk/client-s3` >= 3.645.0**: earlier versions do not model the conditional write this
-  library's write-once guarantee is built on, and 3.640.0 silently OVERWRITES an existing object instead of
-  refusing — measured against MinIO, not inferred from the changelog.
-
-  **Why.** Every driver lived in core behind an **optional peer** subpath, re-exported by a one-line barrel
-  per flavor — three barrels today, and three more for every codec added. Optional peers also bring the
-  "install the peer" error path and a pnpm strict-resolution hazard, since a consumer cannot import a package
-  they did not declare. One package per storage **service**, each depending on its SDK **for real**, removes
-  all of it: no optional peers anywhere in the repo, no barrels, and adding a codec costs nothing on the
-  driver axis.
-
-  Named by service rather than by cloud on purpose. An `@cloudbitmaps/aws` would have to carry both the S3 and
-  DynamoDB SDKs, and "azure" is ambiguous across Blob, Table, Files and Data Lake. `s3` rather than `aws-s3`
-  because S3 is a protocol as much as a product — one package serves AWS, R2, MinIO, Ceph, Wasabi and B2.
-
-  **What core gains.** It now contains no cloud SDK *at all*, rather than none outside three directories —
-  the boundary is a package name instead of a path prefix, which is why the eslint rule got simpler and
-  stronger at once. Core also publishes **`@cloudbitmaps/core/driver-kit`**, the declared contract a driver
-  package builds against: 36 symbols, every one of them imported by a driver today, documented in the API
-  reference. A third-party driver has exactly that surface.
-
-  **What the split did not touch:** `MemoryStorage` and `LocalFsStorage` stay in the flavor's main entry —
-  no SDK, so nothing to split out, and it keeps the first five minutes to one import.
-
-  Three places stopped hardcoding the driver list, which is what made the rest cheap: `scripts/build.mjs`
-  derives its entries from each package's own `exports` map, and so do the API-reference sync test and
-  `scripts/smoke.cjs`. A sixth package needs no edit to any of them.
-
-
-### Fixed
-
-- **BREAKING — an empty combine silently replaced the destination.** `intersectInto` / `unionInto` / `andNotInto` wrote
-  and published in one step, so a combine that came out empty — a typo'd operand, an `exclude` that swallowed
-  everything, an operand that had not loaded yet — published an empty generation over `dest` and reported a
-  fresh generation number. That is indistinguishable from a correct run, and it was reachable without passing
-  any option at all. `load()` has refused exactly this since it shipped; the `*Into` verbs now route through
-  the same path and inherit the whole guard:
-
-  ```ts
-  const res = await audience.intersectInto(dest, [eligible]);
-  if (!res.published) console.warn(res.reason, res.cardinalityBefore); // 'empty', 12000
-  ```
-
-  Pass `allowEmpty: true` when emptying the destination is the point, and
-  `guard: { minCardinality, minRetained }` for the same plausibility bounds `load()` takes, judged against
-  what `dest` held. A refusal is **reported, not thrown** — branch on `published`. A lost race still throws
-  `WriteConflictError`, unchanged, because a materialisation that silently did not take effect is the one
-  outcome a caller cannot detect on its own.
-
-  Routing through `loadSegment` rather than re-implementing the guard also brings the parts that are easy to
-  get wrong and were absent here: the publish is fenced with `expectFrom` so a concurrent write cannot void
-  the guard's premise, and a refused object is reclaimed **only** while the row is provably the same
-  incarnation — deleting it after a purge-and-recreate would put a live row over a missing generation.
-
-  `MaterializeResult` gains `published`, `reason`, `cardinalityBefore` and `collected`. A caller that only
-  read `generation`/`cardinality`/`chunkCount`/`size` is unaffected; one that deep-compares the object is not.
-
-- **A release cut with a new package in the tree would have published part of the family, immutably.** The
-  publish pipeline is tokenless — it authenticates by OIDC against a **Trusted Publisher**, which is a
-  per-package npm setting that cannot be bound to a name that has never been published. `pnpm -r publish`
-  walks the workspace topologically and stops at the first failure, so tagging with `@cloudbitmaps/s3`,
-  `/gcs` and `/azure-blob` brand new would have published `@cloudbitmaps/core` at the new version and then
-  died — leaving one package of five on the registry, outside the 72-hour unpublish window, with the
-  flagship never published at all. `release.yml` now probes the registry before anything irreversible
-  happens and refuses two shapes: a name that does not exist, and a version that already does. The second is
-  its own trap — `pnpm publish` **skips** a version already on the registry and exits **0**, so a re-run
-  reports a fully green release having published nothing for that package.
-
-- **`pnpm release:bootstrap` could not create a name in a family that was already published.** It modelled
-  exactly one situation, "first publish of everything", and refused outright if *any* name existed — so the
-  one guarded path for creating a package name was unusable in precisely the case that needs it. It now
-  publishes only the names the registry lacks and skips the rest, and it creates each one at a **throwaway
-  prerelease** derived from the family version (`0.10.0` → `0.10.0-rc.0`) rather than burning the real one,
-  restoring the manifests afterwards. Burning the real version would have been the worse failure: a hand
-  publish carries no provenance attestation, *and* the pipeline would then silently skip that package on the
-  tag.
-
-- **Bare internal citations shipped in published `.d.ts` files.** A short letter-and-digit id in a
-  parenthetical resolves to nothing a reader can reach, which is worse than saying less — it implies
-  checkable evidence and then withholds it. Twenty-two were in the tree and four were in shipped declaration
-  files, where they reach users on hover in an editor. The gate that exists to catch this only matched a
-  citation introduced by a naming word, which a bare id by definition does not carry. It now also matches
-  the *frames* such an id is written in — standing alone inside a parenthesis, closing one after a dash,
-  opening one before a noun, or sitting between a determiner and a noun — while exempting the handful of
-  product names that share the shape. Those exemptions are listed **by name, never by pattern**: an earlier
-  draft exempted a whole letter prefix to cover one JavaScript engine and silently excused three real
-  citations along with it. Every hit was replaced by the substance it stood for rather than deleted.
-
-- **`export-segments` did nothing when run as a command.** The CLI's run-guard compared `process.argv[1]`
-  against `import.meta.url`, and Node resolves only the second through symlinks. Every install puts a symlink
-  at `node_modules/.bin/export-segments`, which is the path `npx` and every npm script invoke — so the guard
-  was false and the process exited **0 having exported nothing**. Running the file by its real path worked,
-  which is how it went unnoticed; pnpm writes shell shims that exec the real path, so this repo's own package
-  manager hid it while npm and yarn-classic users got silence. The guard now accepts either path, and
-  `pnpm smoke` runs the built CLI through a symlink — plain and under `--preserve-symlinks-main`, which
-  inverts which half of the guard holds — and fails if it does not behave exactly as a direct run does. Since
-  this is the documented way to get data back out of the format, a silent no-op was the worst possible shape
-  for the bug to take.
-
-- **Releases were blocked by a false positive in the secret scanner.** `scripts/leak-scan-tarballs.cjs` is a
-  hard step in the release workflow, and it exited 1 on the S3 backend's spread of an optional
-  `credentials` option — a property read, not a hardcoded secret. Nothing else noticed, because neither
-  scanner runs in the ordinary CI lane: `pnpm test` and all 14 checks were green while `main` could not be
-  released.
-
-  The rule already rejected a value that is a CALL (`crypto.randomUUID()` had tripped it once before); it now
-  also rejects one that reads a property — **in JavaScript and TypeScript files only**. That scoping is the
-  substance of the fix rather than a detail. The exemption's premise is "a bare `a.b` value is a reference,
-  not a literal", which holds only where that is an expression; applied everywhere it read `,` and `;` as
-  expression terminators when in shell, `.env`, `.ini`, `.toml`, SQL, CSV, YAML flow and ADO.NET connection
-  strings they separate values — and `)`/`}` occur in ordinary prose. An adversarial review found 24 real
-  secret shapes an unscoped version stopped catching, including the canonical `Password=…;` connection
-  string, an `export DB_PASSWORD=…;` in a deploy script, and a token pasted inside a markdown link. Scoping
-  costs nothing, because in a JS/TS file an unquoted `a.b` value cannot be a secret at all — it is either a
-  reference or a syntax error. Both directions are pinned in `tests/scripts/leak-scan.test.ts`.
-
-  The second finding — an `@` in a test's list of now-legal segment names — was fixed the other way, by
-  renaming the collision rather than touching the email rule.
-
-
-### Changed
-
-- **BREAKING — the packages are ESM-only, and `engines` now requires Node >=22.12.** The CJS bundle is gone;
-  `dist/` ships one ES module per entry and the exports map offers a single `default` condition.
-
-  It was never honest packaging. The map declared one `"types"` for both conditions while the package is
-  `"type": "module"`, so a CommonJS consumer was handed an *ESM* declaration file to describe a CJS runtime —
-  `attw` calls it "masquerading as ESM", `publint` warns that "the types only work when dynamically importing
-  the package, even though the package exports CJS". The two honest options were to build a real `.d.cts`
-  tree or to stop shipping CJS. Shipping CJS bought little: Node has loaded ESM from `require()` since 22.12,
-  so a CommonJS codebase keeps working —
-
-  ```js
-  const { CloudRoaring } = require('@cloudbitmaps/roaring'); // still works, via require(esm)
-  ```
-
-  — and `import` is unaffected, as is bundling: esbuild bundles the package to **both** ESM and CommonJS
-  output, so a bundler targeting CJS consumes it fine.
-
-  **What breaks at runtime**, in two groups:
-
-  1. **A CommonJS consumer using Node's own `require`, on Node 22.0–22.11** — `require()` of an ES module
-     throws `ERR_REQUIRE_ESM` there. This is why the floor gained a minor rather than staying `>=22`:
-     measured, 22.11.0 throws, 22.12.0 loads, and AWS Lambda's `nodejs22.x` runs 22.23 — well clear, and the
-     release is proved against that image on every CI run. On 22.12 exactly, `require()` also prints an
-     `ExperimentalWarning` about loading ES modules; it is gone by Node 24.
-  2. **Any host that implements its own CommonJS loader, on any Node version.** Node's `require(esm)` does
-     not reach those. Two are worth naming because people will actually meet them, and both were measured
-     A/B — passing against the previous dual build, failing against this one, same project, same Node:
-     - **Jest** in its default configuration: `jest-runtime` has its own loader, so a test that `require()`s
-       this package fails with `Must use import to load ES Module`. Remedy: Jest's ESM support
-       (`--experimental-vm-modules`), or importing rather than requiring.
-     - **Yarn PnP** (`nodeLinker: pnp`): its runtime installs its own `require` and throws
-       `ERR_REQUIRE_ESM` — and unlike the Node-version case, this one does not go away on Node 24. Remedy:
-       `import`, or `nodeLinker: node-modules`.
-
-     Legacy `main`-field-only bundlers are the same class. Everything with a real ESM path is fine: esbuild,
-     webpack, rollup, Vite, ts-node, tsx, Bun and Deno were all verified, emitting CommonJS as well as ESM.
-
-  **One type-level caveat, which this release does not introduce and does not fix:** a *TypeScript* CommonJS
-  consumer on `module: node16` gets `TS1479` on a static import and needs `nodenext` (which understands
-  `require(esm)`) or a dynamic `import()`. That error fired identically before this change — verified against
-  a build that still had the CJS bundle — because the exports map has always offered a single ESM `"types"`.
-  What changes is the remedy rather than the symptom: it used to be a packaging gap that a `.d.cts` tree
-  would have closed, and it is now simply correct, because there is no CommonJS entry left to describe.
-
-  One thing gets *better* rather than merely simpler, for CommonJS consumers specifically. The
-  self-contained CJS bundle was the only reason `instanceof` failed **between the main entry and a driver
-  subpath of the same package**, so a CJS consumer who caught a driver-thrown error that way was silently
-  missing it; that is fixed. ESM consumers already had it working — the ESM output of this build is
-  byte-identical to the previous one, so nothing changed for them. Note this does **not** extend to
-  `@cloudbitmaps/core` vs `@cloudbitmaps/roaring`: the flavor package bundles its own copy of core, so
-  `instanceof` across the two never matches, on any install. That is unchanged, now documented in the API
-  reference, and asserted by the smoke test. (The `Symbol.for` predicates remain the right thing to catch with either way:
-  they also hold when two copies of the package are in play, which `instanceof` never will.)
-
-  The SDK-free gate was rewritten but **not** widened: it used to read the CJS bundle, which with no code
-  splitting inlined the entry's whole transitive closure, and it now walks that closure directly. Measured by
-  sourcemap, both cover the same 48 source modules. The gain is that the check no longer depends on a second
-  bundle format existing.
-
-  The floor is now **exercised**, not just declared: a CI job pins `node-version: 22.12` and runs the smoke
-  test, which `require()`s every entry through the published exports map. Every other job says `22`, which
-  resolves to the latest 22.x — eleven minors above the floor — so until now nothing had ever run the version
-  `engines` promises.
-
-### Fixed
-
-- **Published types now resolve under `node16`/`nodenext`.** The emitted `.d.ts` files named their relative
-  imports without an extension (`from './core/engine'`), which that resolution mode rejects — and the failure
-  is silent, because the near-universal `skipLibCheck: true` suppresses the diagnostic and TypeScript then
-  silently types **everything reaching you through a re-export as `any`** — which is the whole of
-  `@cloudbitmaps/core` and all six driver subpaths. Consumers on the modern Node ESM settings got no error
-  and no types for any of it: no autocomplete, and none of the compile-time guards that refuse a bad wiring.
-  Measured on a packed install, `new CloudRoaring({ storage: 123 })` compiled clean before this and errors
-  after, and 113 of the 115 runtime exports were `any`. (The two survivors are the handful of types declared
-  directly in `@cloudbitmaps/roaring`'s own entry rather than re-exported.) The build now appends the explicit `.js` (or `/index.js` for a directory), and the
-  smoke test fails the build if any extensionless relative specifier survives — or if one points at no file,
-  which would be just as unresolvable. Both halves share one scanner, so the check can never drift from the
-  fix, and it skips comments: a doc-comment showing a relative import is neither rewritten nor flagged.
-
-### Changed
-
-- **BREAKING — a `StorageBackend` must now be built, not assembled.** The port was structural, so any
-  `{ storage, registry }` object satisfied it — and that shape is also the free functions' deps object, which
-  made the wrong thing the easy thing. Concretely, this constructed happily and answered **`0`** for a segment
-  holding three ids:
-
-  ```ts
-  const a = new MemoryStorage(), b = new MemoryStorage();
-  await new CloudRoaring({ storage: a }).load({ segment: 'v' }, [1, 2, 3]);
-
-  // …and then, with halves from two unrelated stores:
-  new CloudRoaring({ storage: { storage: a.storage, registry: b.registry } });
-  //                           ^^^^^^^^^ data      ^^^^^^^^^^ pointer, read from somewhere else
-  ```
-
-  Data in one place, pointer in another; the store reads the pointer, finds nothing, and answers empty — which
-  is indistinguishable from "new segment". That is the exact silent-empty failure one-class-per-backend exists
-  to remove, reachable in five lines of public API. Backends now carry a brand only the classes set, so the
-  store's boundary is closed to the accident: the brand is stamped **non-enumerably**, so neither an object
-  literal nor `{ ...backend, registry: other }` carries it. It is not a security boundary — the symbol is
-  registered, so a determined caller can still write it — but that is deliberate effort equivalent to calling
-  `createBackend`, and the check exists for the accident.
-
-- **Added `createBackend({ storage, registry })`** — the deliberate door, for what a class cannot express: a
-  driver wrapped for auditing, metrics, tenant scoping or client-side encryption; a registry in a database you
-  already run; a fault-injecting double in a test. It validates each half. It **cannot** check that the two
-  agree — the driver interfaces expose no location — so calling it is you taking that on, which is the whole
-  difference between a decision and a mistake. Also exports `isStorageBackend`.
-
-- **A driver that wraps another driver now works instead of being refused.** Such a wrapper holds its inner
-  driver on `.storage`, which used to be indistinguishable from a backend; the store read straight through it
-  and the wrapper's own methods never ran, so an audit or metrics layer was silently removed while every
-  answer still looked right. With the brand it is unambiguously a driver and is actually used. To keep a
-  registry alongside an instrumented half, pass `createBackend({ storage: wrapper, registry })`.
-
-- `MemoryStorage.storage` / `.registry` and the `LocalFsStorage` pair are now typed as their concrete drivers
-  rather than the interfaces, so reading a half off a backend keeps the type a free function needs.
-
-### Documentation
-
-- **The docs now lead with `store.load(ref, ids)`, not `bulkLoadCrbmGeneration`.** The guide's §3 already
-  framed the primitive correctly as "the layer underneath" — but §1, §2, the README quick start, the npm
-  README and the site landing sample all still taught it first, so a reader met the primitive before the verb.
-  That was history, not design: `bulkLoadCrbmGeneration` shipped several phases before `store.load` existed,
-  and the surrounding prose was never re-centred.
-
-  It matters because the two are not equivalent. `store.load` is four steps — take the next generation number,
-  write the object, **run the empty/shrink guard**, move the pointer, **collect what the move superseded** —
-  and a bare `bulkLoadCrbmGeneration` does neither of the bold ones. Every reader who copied the old quick
-  start got a write path with no guard against an upstream query that returned too little, and generations
-  that accumulate until someone notices the bill.
-
-  It also explains why `registry` looked like something users configure. It is not: a backend derives it, and
-  in the re-centred docs it appears in no user-facing sample at all.
-
-  `bulkLoadCrbmGeneration` and the other free functions are unchanged and still exported, now described as
-  what they are — the lower level, for when you have no store to hold.
-
-### Changed
-
-- **BREAKING — the 14 flat constructor options become one required `storage` plus four groups.** Five of the
-  old keys were cache knobs distinguished only by a prefix (`cacheMaxChunks`, `cacheTtlMs`,
-  `storageGenTtlMs`, `storageReaderCacheMax`, `storageReaderCacheMaxBytes`), which is a naming convention
-  standing in for a structure. The groups are `cache` · `encryption` · `retry` · `seams`; `metrics` and
-  `budget` stay flat single options and are unchanged:
-
-  ```ts
-  // before
-  new CloudRoaring({
-    storage,
-    cacheMaxChunks: 512,
-    storageGenTtlMs: 0,
-    keystore,
-    requireEncryption: true,
-    clock,
-    onRetry,
-  });
-
-  // after
-  new CloudRoaring({
-    storage,
-    cache: { maxChunks: 512, genTtlMs: 0 },
-    encryption: { keystore, required: true },
-    retry: { onRetry },
-    seams: { clock },
-  });
-  ```
-
-  The "before" column is the shape **at the time of this change**, mid-cycle. If you are coming from the
-  published `0.9.x`, your names are `coldGenTtlMs` / `coldReaderCacheMax` / `coldReaderCacheMaxBytes` — the
-  `storage*` spellings below only ever existed between two unreleased commits. `MIGRATING.md` maps from
-  `0.9.x` directly and is the one to follow.
-
-  | before (mid-cycle) | after |
-  |---|---|
-  | `cacheMaxChunks` | `cache.maxChunks` |
-  | `cacheTtlMs` | `cache.ttlMs` |
-  | `storageGenTtlMs` | `cache.genTtlMs` |
-  | `storageReaderCacheMax` | `cache.readerMax` |
-  | `storageReaderCacheMaxBytes` | `cache.readerMaxBytes` |
-  | `keystore` | `encryption.keystore` |
-  | `requireEncryption` | `encryption.required` |
-  | `onRetry` | `retry.onRetry` |
-  | `clock` | `seams.clock` |
-  | `rng` | `seams.rng` |
-
-  **Every old spelling is refused with a `ValidationError` naming its new home, not ignored.** TypeScript
-  catches these at the call site for most callers, but not a plain-JS caller, a config that arrived as JSON, or
-  anything that reached the constructor through a spread or an `as` cast — and each of these knobs is one whose
-  absence is *silent*: a dropped `requireEncryption` reads cleartext when you demanded encryption, a dropped
-  `clock` makes a "deterministic" job non-deterministic, and a dropped `readerMaxBytes` restores a 64 MiB
-  ceiling someone had deliberately lowered for a small heap. None of those announces itself. (This is not
-  hypothetical — the guard caught a spread in this repo's own test suite that TypeScript had waved through,
-  along with a `keyId` key that has never been an option at all.)
-
-- **`retry` now takes a *partial* policy.** It was a whole `RetryPolicy`, so changing one field meant restating
-  all five, and `onRetry` was a sibling key that could not be given without one. `retry: { maxAttempts: 6 }`
-  and `retry: { onRetry }` are both legal now; anything omitted keeps its `DEFAULT_RETRY_POLICY` value.
-  `retry: false` is unchanged. A field that is **present with value `undefined`** — the shape you get from
-  `retry: { baseDelayMs: cfg.baseDelayMs }` when the config key is absent — also falls back to the default
-  rather than erasing it.
-
-### Added
-
-- `CacheOptions`, `EncryptionOptions`, `RetryOptions` and `SeamOptions` are exported, so a caller can name the
-  shape of a group it builds separately.
-- **`GcsRegistryDriver` and `AzureBlobRegistryDriver` — every object store can now host its own pointer.**
-  Before this, GCS and Azure were storage-only: the registry that says which generation is current had to live
-  in DynamoDB, so **a Google Cloud or Azure deployment needed an AWS account** to store a few hundred bytes
-  per segment. Now one bucket, or one container, is the whole deployment.
-
-  ```ts
-  // NOTE: this entry predates the package split later in this cycle. `@cloudbitmaps/roaring/gcs` no longer
-  // exists in 0.10.0 — the import is `@cloudbitmaps/gcs`. See MIGRATING.md change 2.
-  import { GcsStorage } from '@cloudbitmaps/gcs';
-
-  const store = new CloudRoaring({
-    storage: new GcsStorage({ bucket: 'bitmaps', prefix: 'cr' }),
-  });
-  ```
-
-  Both ride the same compare-and-swap primitive S3 uses, under each cloud's own name — GCS
-  `ifGenerationMatch: 0` to create and `ifGenerationMatch: <generation>` to swap; Azure `ifNoneMatch: '*'`
-  and `ifMatch: <etag>`. Both pass the **same `IRegistryDriver` conformance suite** as the memory, LocalFs,
-  S3 registries, run against fake-gcs-server and Azurite in the integration lane — **and a new
-  `registryConcurrency` suite that drives two registries at the same row at once.** That second suite is the
-  one that proves the fence: the shared class compares the OCC token in memory before it ever issues a
-  conditional write, so every *sequential* test is answered before the store is asked to fence anything. A
-  registry whose writes carried no precondition at all passed the sequential suite; it does not pass this
-  one.
-
-  The protocol they share — the ABA-safe OCC counter, the tombstoning delete, the bounded retry, the key
-  layout — now lives once in `ObjectStoreRegistry`, with each cloud supplying only three I/O calls. The S3
-  registry was moved onto it too, so the three cannot drift; its behaviour and public API are unchanged.
-
-  **A read that races a write re-reads, on every backend.** S3 serves bytes and `ETag` from one `GetObject`,
-  but GCS and Azure need two round trips — metadata for the version fence, then the bytes pinned to it — and
-  a writer landing in between retires the version that was pinned. The store port now names that case
-  explicitly instead of leaving each cloud to interpret it, because the three interpretations did not agree:
-  reporting it as absence makes a live row vanish from `get`, hand `delete` a false success and drop out of
-  `list`, while reporting it as a write conflict fails a read-only caller with a write error. Both are now
-  a single bounded re-read in the shared class.
-
-  **Prefix containment** additionally rejects `DEL`, backslash separators, and percent-encoded `..` — the
-  spellings `gsutil`, `s3fs`, `gcsfuse`, `azcopy` and ADLS Gen2 resolve on their way to a local path, which
-  the segment-name codec already guarded against but the prefix did not.
-
-  **Discovery is fail-closed.** An unreadable object under the `registry/` prefix aborts `list()` for every
-  namespace until an operator removes it (the error names the key). This is deliberate: `list()` is what
-  tells orphan generation collection which segments exist, so silently skipping an unparseable row would
-  make its cold generations look unreferenced and the next GC pass would delete them — a parse error turned
-  into data loss.
-
-  **Deployment note:** do not apply a lifecycle-expiration rule, retention policy or immutability lock to the
-  `registry/` prefix. `delete` tombstones by overwriting rather than removing, which is what keeps the OCC
-  token monotonic across a delete-then-recreate; a WORM policy would fail every tombstone, and an expiry rule
-  would let a recreate re-issue a stale token.
-
-
-### Breaking
-- **One backend object replaces two driver wirings, and the `registry` option is gone.**
-
-  ```ts
-  // before
-  const client = new S3Client({ region: 'us-east-1' });
-  new CloudRoaring({
-    cold: new S3ColdDriver({ client, bucket: 'bitmaps', prefix: 'cr' }),
-    registry: new S3RegistryDriver({ client, bucket: 'bitmaps', prefix: 'cr' }),
-  });
-  // after
-  new CloudRoaring({ storage: new S3Storage({ bucket: 'bitmaps', prefix: 'cr', region: 'us-east-1' }) });
-  ```
-
-  The bucket and prefix were written twice, and **mismatching them is the classic first-run bug**: the
-  registry points somewhere the objects never land, so the store reads as *empty* rather than as
-  *misconfigured*. "Empty" is indistinguishable from "new", which is why it costs an afternoon. Writing the
-  location once makes it unexpressible.
-
-  Five backends, each carrying both halves: **`MemoryStorage`** and **`LocalFsStorage`** from the main entry,
-  **`S3Storage`**, **`GcsStorage`** and **`AzureBlobStorage`** from their subpaths. The cloud three **build
-  their own SDK client** from the ambient credential chain; pass `client` for one the SDK cannot infer, or
-  `endpoint` + `pathStyle` + `credentials` for an S3-compatible store (MinIO, Ceph, R2).
-
-  Both halves stay reachable as `.storage` and `.registry`, and they are named that way on purpose: a backend
-  is *structurally* the `{ storage, registry }` deps object the free functions already take, so
-  `nextGeneration(ref, backend)` works with no destructuring.
-
-  **The `registry` option is removed rather than kept alongside.** It existed to let the pointer live somewhere
-  other than the objects, which was only ever necessary while object stores lacked a conditional write. They
-  all have one now, so the choice bought nothing and cost the mismatch above. A store built on a raw
-  `IStorageDriver` still works — it has no pointer, resolves generations by list-scan, and is therefore
-  **cleartext and read-only**, which was already true and is now the only way to express it.
-
-  **Migrating:** replace the two driver constructions with the backend for your cloud and drop the `registry`
-  key. If you genuinely want the halves apart — a registry in a database you already run, say — build one with
-  `createBackend({ storage, registry })`:
-
-  ```ts
-  const backend = createBackend({
-    storage: new S3StorageDriver({ bucket, prefix }),
-    registry: myRegistryDriver,
-  });
-  const store = new CloudRoaring({ storage: backend });
-  ```
-
-  Every driver is still exported.
-
-  **On S3, GCS and Azure nothing moves** — same bucket, same keys, same `.crbm` objects, because the backend
-  hands both halves exactly the client, bucket and prefix you used to pass twice.
-
-  **On the local filesystem the layout is now fixed.** `new LocalFsStorage(root)` reads `<root>/storage` and
-  `<root>/registry`, whereas a `0.9.x` store wrote its generations wherever you pointed `LocalFsColdDriver` —
-  `./.cloudbitmaps/cold` if you followed the guide. **Rename that directory to `<root>/storage` before
-  switching.** `LocalFsStorage` refuses a root that still looks like the old one and tells you the command,
-  because the alternative is much worse than an error: the registry half resolves a pointer the storage half
-  cannot satisfy, and the store reports `missing-storage-generation` — the signature of a **torn restore**,
-  whose documented remedy includes rolling `currentGen` back. Destructive, on a store that was never damaged.
-
-  **GCS: the client option is `client`, not `storage`.** `GcsStorageDriver` took the `@google-cloud/storage`
-  client as `storage`; `GcsStorage` takes it as `client`, and builds one for you if you omit it. A leftover
-  `storage:` key is rejected rather than ignored — silently dropping it would fall back to ambient credentials
-  and the public endpoint, which for anyone pointed at an emulator means talking to production.
-
-- **`cold` is now `storage`, everywhere.** Every cloud vendor uses "cold storage" to mean *archival* —
-  Glacier, Coldline, Azure Archive — and ours is the opposite: the primary durable tier that every read
-  hits. The word actively misled anyone arriving from AWS or GCP documentation, and it had leaked into the
-  type names, the option keys, the metric events, the cost model and the docs. This is a **rename only** —
-  no behaviour, no key layout and no on-disk format changes, and the `.crbm` objects in your bucket are
-  untouched.
-
-  The option every store needs:
-
-  ```ts
-  // before
-  new CloudRoaring({ cold: new S3ColdDriver({ client, bucket }), registry });
-  // after
-  new CloudRoaring({ storage: new S3Storage({ bucket }) });
-  ```
-
-  Types and classes — each is a pure rename, so a find-and-replace is the whole migration:
-
-  | before | after |
-  |---|---|
-  | `IColdDriver` | `IStorageDriver` |
-  | `ColdChunkSource` | `StorageChunkSource` |
-  | `ColdCaps` | `StorageCaps` |
-  | `MemoryColdDriver` | `MemoryStorageDriver` |
-  | `MemoryColdChunkSource` | `MemoryStorageChunkSource` |
-  | `LocalFsColdDriver` | `LocalFsStorageDriver` |
-  | `S3ColdDriver` | `S3StorageDriver` |
-  | `GcsColdDriver` | `GcsStorageDriver` |
-  | `AzureBlobColdDriver` | `AzureBlobStorageDriver` |
-  | `CrbmColdChunkSource` | `CrbmStorageChunkSource` |
-  | `PinnedColdChunkSource` | `PinnedStorageChunkSource` |
-  | `RetryingColdDriver` | `RetryingStorageDriver` |
-  | `RetryingColdChunkSource` | `RetryingStorageChunkSource` |
-
-  …and the matching `…Options` types (`S3ColdDriverOptions` → `S3StorageDriverOptions`, and so on).
-
-  Option keys: `cold` → `storage`, `coldGenTtlMs` → `storageGenTtlMs`, `coldReaderCacheMax` →
-  `storageReaderCacheMax`, `coldReaderCacheMaxBytes` → `storageReaderCacheMaxBytes`.
-
-  **The three `storage*` spellings never shipped.** They were renamed again later in this cycle, when the
-  flat options became groups: the `0.10.0` names are `cache.genTtlMs`, `cache.readerMax` and
-  `cache.readerMaxBytes`. A `0.9.x` upgrader has `coldGenTtlMs` and should go straight to those — see
-  MIGRATING.md change 5.
-
-  **Two renames reach past the type system**, so a find-and-replace over your source will not catch them:
-
-  - **The metrics event `kind` is now `'storage.get'`**, not `'cold.get'`. A sink that switches on the kind
-    string compiles fine and silently stops counting reads. The `CountingMetricsSink` snapshot key moved
-    with it (`snapshot().cold` → `snapshot().storage`).
-  - **The cost model's pricing key is now `pricing.storage`**, not `pricing.cold`, and `coldBytes` is
-    `storageBytes`. A hand-built pricing object keeps its old shape at runtime and silently prices at the
-    defaults.
-  - **`checkConsistency()` reports `issue: 'missing-storage-generation'`**, not `'missing-cold-generation'`.
-    TypeScript callers get a compile error, but a plain-JS caller — and every alert rule, dashboard filter and
-    runbook automation keyed to that string — keeps matching nothing, which reads exactly like "no torn
-    restores found".
-
-  Driver **subpaths are unchanged** (`/s3`, `/gcs`, `/azure`), and so is every wire-visible string: object
-  keys, the `.crbm` format, the registry row and its OCC token. Nothing in your bucket moves.
-
-  **The other tier is now the `cache`, not the `HOT` cache** — documentation and the site only; no identifier,
-  option or event name changes, because none of them ever said `hot` (the knobs were already `cacheMaxChunks`
-  and `cacheTtlMs`). `HOT` and `COLD` were a matched pair that explained each other; once `COLD` became
-  `STORAGE`, `HOT` was a temperature with nothing opposite it. **Cache** and **storage** are the pair a reader
-  resolves without being told: one is discardable, the other is the truth. `hot path`, `hot loop` and
-  `hot chunks/partitions` keep their own meaning — those are about what executes often, not about a tier.
-
-  **One on-disk path does change, and only for the `export-segments` CLI.** It reads a local-filesystem store
-  from `<CR_EXPORT_ROOT>/storage` now, not `<CR_EXPORT_ROOT>/cold`. Rename that directory before running it —
-  the objects inside are untouched.
-
-  The CLI **refuses to run** when it finds the old layout. Without that check it would not fail silently, but
-  it would fail with the wrong diagnosis: every segment lands in the manifest's `failed[]` with
-  `no such generation: <segment>.<gen>`, which is the signature of a **torn restore**. The runbook's answers
-  to that signal include rolling `currentGen` back — destructive, and aimed at a store that was never
-  damaged, by someone already reaching for the escape hatch because something has gone wrong.
-
-- **The DynamoDB registry is removed** — `DynamoDbRegistryDriver`, the `@cloudbitmaps/roaring/dynamodb` and
-  `@cloudbitmaps/core/dynamodb` subpaths, and the `@aws-sdk/client-dynamodb` optional peer dependency are all
-  gone. **Storage backends go from five to four**, and the library no longer has a non-object-store driver of
-  any kind.
-
-  It existed because the pointer needed a home with a conditional write, and object stores did not offer one
-  when this library started. They all do now — S3 `If-None-Match`/`If-Match`, GCS `ifGenerationMatch`, Azure
-  `If-None-Match`/`If-Match` — and with `GcsRegistryDriver` and `AzureBlobRegistryDriver` landing above, every
-  cloud can host its own pointer beside its own data. Keeping DynamoDB would mean maintaining a second
-  registry protocol, a second key layout, a second set of conformance wiring and a container in the
-  integration lane, to serve a topology whose only remaining advantage is faster pointer swaps on a workload
-  that publishes far more often than this library is designed for.
-
-  **Migrating. Do this on `0.9.x`, before you upgrade.** `0.9.x` is the only line in which the DynamoDB
-  driver and an object-store registry both exist, so it is the only place the library itself can read the old
-  rows and write the new ones. The cold `.crbm` objects are untouched either way.
-
-  On `0.9.x`, stand up an `S3RegistryDriver` against the bucket you already use for cold data, and for every
-  segment copy the row across **with every field it holds**, not just the pointer:
-
-  - `currentGen` — the generation pointer.
-  - `wrappedDeks` and `keyId` — **an encrypted segment whose wrapped keys you drop is unrecoverable.** They
-    exist nowhere else; losing them is a crypto-shred you performed on yourself.
-  - `status` — so a `destroyed` tombstone stays a tombstone rather than coming back `active` and un-fencing a
-    name that was erased on request.
-  - `retention` and `residency` — drop these and the retention sweep silently stops expiring anything.
-
-  Do it with writers quiesced: pointer identity is per-registry, and a publish landing in the old row during
-  the copy is lost. Verify with `checkConsistency()` before you upgrade.
-
-  **GCS and Azure users have no in-library bridge**, because their registry drivers arrive in this same
-  release, after DynamoDB is gone. Copy the rows out yourself while still on `0.9.x` — the old table's key
-  layout was `PK = ns#<namespace>|seg#<segment>`, `SK = reg#` — or migrate onto S3 first and move buckets
-  afterwards.
-
-  If you would rather keep the pointer off the object store entirely, implement `IRegistryDriver` against a
-  database you already run: six methods (`capabilities`, `get`, `create`, `compareAndSwap`, `list`,
-  `delete`), and the shared conformance suite is what tells you it is correct.
-
-- **A LocalFs store holding a segment or namespace whose name is a Windows device name or ends in a dot must
-  be migrated.** Affected names are exactly: a stem of `con`, `prn`, `aux`, `nul`, `com1`–`com9` or
-  `lpt1`–`lpt9`, with or without an extension (`con`, `CON`, `con.backup`); and any name ending in `.`
-  (`backup.`). All were legal under the old grammar; all are percent-escaped on the path now, because
-  unescaped they either address a device or silently alias — Windows strips a trailing dot, so `a.` and `a`
-  become one directory.
-
-  **The failure mode is silence, not an error.** The readers require a filename to round-trip through the
-  encoder, so a directory or row written under the old spelling is *skipped*: `get()` returns `null`, `list()`
-  omits it, and `checkConsistency`, the retention sweep and `eraseSubject` never see it. The `.crbm` bytes are
-  intact but unreferenced. Do **not** rely on the repair scan — it reads through the same parser.
-
-  **Detect** before upgrading: list the storage root and flag any entry whose stem matches
-  `/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i` or which ends in `.`. **Migrate** by exporting with
-  `export-segments` on 0.9 and re-loading on 0.10, or by renaming the directory/file to the escaped spelling
-  (`encodeNameForPath` gives it). Cloud backends are unaffected.
-
-### Changed
-- **A segment or namespace name is now any non-empty string.** There is no character allowlist. The old one
-  was `/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/`, and it rejected names for the storage layer's convenience —
-  which is this library's problem, not yours. `orders/2026`, `user@example.com`, `日本語`, `100%`, `ns#1|seg#2`
-  and `../etc/passwd` are all ordinary names now.
-
-  **Object-store keys are byte-identical** — every previously legal name encodes to itself on the key
-  alphabet, asserted by a property test over the whole old grammar, so S3, GCS and Azure stores need
-  no migration. **LocalFs is the exception; see Breaking below.**
-
-  Each physical boundary escapes what *it* cannot take literally, percent-encoded, with `%` escaping itself as
-  `%25` and encoded first — which is what makes the transform injective, so two distinct names can never claim
-  one key. Object keys escape `/`, `#`, `|` and control characters; filesystem paths escape those plus `:`,
-  plus three hazards that are properties of the whole component: `.`/`..` traversal, **Windows reserved device
-  names** and a **trailing dot or space**, which Windows silently strips so that `a.` and `a` would collide.
-
-  That second one is a bug fix, not just a widening: the old grammar **permitted** `con`, `nul`, `aux`,
-  `com1`–`com9` and `lpt1`–`lpt9`. `store.segment('con')` validated cleanly here and failed only on a user's
-  Windows machine.
-
-  **The one limit that stays is size**, because it is a real constraint rather than a taste: S3 caps an object
-  key at 1024 bytes and a name is only part of that key. The cap is 256 characters measured on the **encoded**
-  form — plain ASCII gets the full 256, while heavily non-ASCII text reaches it sooner (one emoji is twelve
-  encoded characters). The error reports both numbers.
-
-  `encodeNameForPath` and `namespacePathPart` are exported, for anyone writing their own filesystem
-  `ExportSink`. Their object-key twins `encodeNameForKey` and `namespaceKeyPart` are a driver concern and live
-  on `@cloudbitmaps/core/driver-kit`. The decoders stay internal: writing a dump needs the encoder, and a tool
-  that reads one back must verify the encoding round-trips rather than trust a decode.
-
-### Added
-- **`store.exists(ref)` and `store.segments({ namespace })` — ask the registry what is there.** The registry has
-  always known which segments exist; it is what `checkConsistency`, the retention sweep and `exportSegments`
-  each enumerate. Nothing exposed it, so the answer had to be inferred — and both available inferences are
-  wrong in a way that bites: `count()` returns `0` for a segment that was never loaded *and* for one loaded
-  with no ids, and `generations()` pays a bucket listing to answer a question the pointer alone settles. The
-  fallback people reach for is worse still: a hand-maintained list of segment names kept beside the store, a
-  second source of truth that drifts from the first the moment a load fails halfway.
-
-  `exists(ref)` is one registry point read, and answers *does the pointer resolve a generation* — so it is
-  `false` for a row minted ahead of its first load (`setRetention` does that) and for a `destroyed` tombstone,
-  because a read answers empty in both. It does not claim more than that: a torn restore has a live pointer and
-  no object, and reads there throw rather than answer empty — `checkConsistency` is the call for that question. `segments({ namespace })` streams the registry's own enumeration. It is
-  an **admin/discovery call, not a request-path one**: a `Scan` on DynamoDB, a paged LIST on an object-store
-  registry, so its cost tracks the fleet rather than the answer. Scope it to a namespace whenever you can,
-  though the saving differs by backend — an object-store registry narrows its LIST prefix, while DynamoDB
-  filters a `Scan` after reading. Stopping the iteration stops the scan, except behind `RetryingRegistryDriver`,
-  which buffers the enumeration to retry it as a unit.
-  It yields `destroyed` tombstones and rows with `currentGen: null` rather than filtering them, because an
-  enumeration that looks complete and is not is how a sweep ends up permanently skipping rows nobody can see;
-  internal bookkeeping rows are the one exclusion, and only on an unscoped scan. `segmentExists` and
-  `listSegments` are the unwired forms.
-
-  Neither is a lock — for an answer that must hold, the fences are `load`'s guard and `expectFrom`/`expectToken`.
-
-### Changed
-- **Segment and namespace names may contain `:`** — the grammar is now
-  `/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/`. `dedup:2026-08-01` and `sent:daily:2026-08-01` are how people
-  already name keys, and banning the colon meant a Redis user's first line threw. It was not a small
-  inconvenience: every dated-bucket example the retention docs published was **unrunnable**, written and
-  reviewed and merged without once being executed, because prose in a fenced block is not run by anything.
-  A colon is still barred from the first character (a leading `:` is an empty family, and a leading `_` stays
-  reserved for the `_default` namespace sentinel), and nothing else was widened — `%`, `/`, `\` and `..` are
-  refused as before.
-
-  **This is purely a widening: every name legal before is legal now**, and nothing on disk moves — the
-  encoding below is the identity on every previously legal name, so existing paths stay byte-identical and
-  no migration is needed. The S3, GCS and Azure drivers take a colon verbatim; the shared
-  conformance suite every driver must pass now carries a colon in its fixtures, so that is checked rather
-  than asserted.
-
-  Where a colon cannot go literally is a **filesystem path**: on Windows `dedup:2026-08-01.0.crbm` names an
-  NTFS alternate data stream on a file called `dedup` — a write that can *succeed* while `readdir` never
-  lists the result, which is worse than an error because nothing reports it. So every place that turns a
-  name into a path percent-encodes it as `%3A` and decodes on the way back: the LocalFs cold and registry
-  drivers, and the `export-segments` eject sink. The encoding is reversible precisely because `%` is not in
-  the grammar, and it is applied unconditionally — POSIX accepts the literal colon, so encoding only where
-  the OS forces it would pass every test on a Linux runner and lose data on Windows. `encodeNameForPath` is
-  exported so anyone writing their own filesystem `ExportSink` lands on the same spelling and their dump stays
-  diffable against the store.
-
-### Added
-- **`store.generations(ref)` and `store.rollback(ref, toGeneration)` — see what a segment has been, and put it
-  back.** Immutable generations mean the previous version of a segment is usually still in the bucket: the load
-  that replaced it wrote a new object and moved a pointer rather than overwriting anything. So recovering from a
-  bad load is moving the pointer back — and until now there was no way to, because every write path is
-  deliberately forward-only. That refusal is right for a *writer* (a load whose ids came from upstream loses
-  nothing by being out-raced, and regressing would let a slow loader silently undo a fast one) and wrong for an
-  *operator* who has looked at the segment and knows which generation they want. So `rollback` is the one call
-  that goes backwards, reachable only by name — no sweep, retry or reconciliation performs it — and audited as
-  the new `segment.rollback`, because every other pointer move can be reconstructed from "a load happened" and
-  this one cannot. It refuses rather than guesses: a generation not in the bucket throws `NotFoundError` naming
-  what *is* available, a crypto-shredded segment throws `ValidationError`, a target **above** the pointer needs
-  an explicit `{ allowForward: true }` (above the pointer is where objects live that were never published — a
-  load that wrote its object and died before the publish), and rolling to the generation already current is a
-  reported no-op. It deletes nothing, so the rollback is itself reversible. The target is verified **after** the
-  pointer moves, not before: until the pointer names it the target sits inside generation collection's range,
-  and a collector never writes the registry row, so no fence on the row can see it coming — if it vanishes in
-  that window the pointer is put back and the call throws.
-- **Generation collection re-proves the row before every delete, not every delete after the first.** Skipping the
-  first was sound only while the pointer could not fall: the window between the re-read and the first delete was
-  one where it could only rise, and a rising pointer only makes more things collectable. `rollback` ends that,
-  and reproduced it — a rollback landing in that window left the pass deleting the live generation.
-- **A subject erasure now reaches a holder ABOVE the pointer.** The superseded scan was bounded below the
-  current generation because, under forward-only, nothing above it could ever become current again. `rollback`
-  makes above-pointer objects reachable data, and the unbounded case was reproduced with no race at all: roll
-  back, then erase, and the erasure answered `'not-member'` — which filters the segment out of the subject
-  ledger entirely, a clean Art. 17 receipt — while the subject's bit sat one rollback away from being served.
-  The erasure now deletes such a holder outright, which costs a rollback target deliberately: a rollback point
-  containing data we were required to erase is not a rollback point.
-
-- **`store.load(ref, ids, { allowEmpty?, guard?, keep?, audit? })` — the write path as one call.** A load has always
-  been four steps: take the next generation number, write one immutable object, move the pointer, collect what
-  the move superseded. Composed by hand those are four functions and the one people leave out is the last, so
-  segments quietly accumulate superseded generations nobody notices and everybody pays for.
-  The other reason it is one call is the **guard**. A load *replaces*: whatever the stream contains is what the
-  segment contains afterwards, so an upstream query returning fewer rows than usual is a shrink nobody asked for
-  and an empty one is a wipe — and at the storage layer both are an ordinary successful write. So an empty result
-  over a non-empty segment is now **refused by default** (`allowEmpty` overrides), and `guard: { minCardinality,
-  minRetained }` says what else counts as implausible — a floor on what survives rather than a ceiling on the
-  loss, so `0` means "no bound" on both fields instead of meaning it on one and the opposite on the other. The checks run **between the write and the publish**, the
-  only moment where the new content is known and the old one is still authoritative.
-  A refusal is a normal outcome rather than a throw — `published: false` with a `reason`, in the same shape as a
-  success — and it **deletes the object it wrote**, because an unpublished generation sits above `currentGen`
-  where collection deliberately never looks, and nothing else would ever reclaim it. Emits `segment.publish` on
-  success and the new `segment.load-refused` on a refusal: a replacement that did *not* happen is exactly as
-  reconcilable a fact as one that did. `cardinalityBefore` on the result says what the segment held, so an alert
-  on a refusal is a diagnosis rather than a page. `loadSegment` is the free-function form.
-- **`bulkLoadCrbmGeneration` accepts `publish: false`**, and returns the `wrappedDeks` it minted. Both exist so a
-  caller can write now and publish later under a guard: the registry is still required for an encrypted segment
-  (it is where an existing key lives, and reusing it is not optional), and without the key on the result the
-  deferred publish would store none and make the generation it published unreadable.
-
-### Changed
-
-- **`@google-cloud/storage` 8 is now supported.** The optional peer range widens from `^7` to `^7 || ^8`, and the
-  dev dependency moves to 8.x so the version we claim is the version the suite and the fake-gcs-server
-  integration lane actually exercise. v8's headline change is dropping Node 18; this package has required Node 22
-  since 0.2.0, and the driver uses only `bucket`/`file`/`save`/`download`/`getFiles`/`delete`/`getMetadata`/
-  `createWriteStream`, none of which changed shape.
-- **The Discussions entry is gone from the issue-template config.** Discussions is not enabled on the repository,
-  so the link 404'd — a door that opens onto nothing is worse than no door. If it is ever enabled, the entry goes
-  back in the same change.
-
-### Documentation
-
-- **The registry-prefix lifecycle trap is now in `PRIVACY.md`, where operators will see it.** It was only ever in
-  a driver doc-comment. Deleting a registry row writes a **tombstone** whose counter only advances, and that is
-  what makes the row's token unique forever; expiring those tombstones lets a re-created name re-issue a token
-  that was already used. Since the token is the segment's *identity* — what a cached reader, a fenced publish and
-  a collection pass all compare — re-issuing one can serve a deleted incarnation's data or collect a live one's
-  objects. A few bytes per retired segment; treat it as permanent.
-
-### Changed
-
-- **Dependency refresh.** `pnpm/action-setup` to v6.1.0 across every workflow, and the minor/patch line of each
-  dev dependency: the AWS SDK clients, `fast-check`, `prettier`, `typescript-eslint`, `lint-staged` and `yaml`.
-  The `prettier` bump reformats one union type in `retention-sweep.ts`; no behaviour changes. `esbuild` is
-  deliberately left alone — it carries a security `override`, and the override, not the dependency range, is
-  what decides its version.
-  Three majors are deliberately **not** taken. `typescript` stays on 5.x because it is the primary compiler that
-  drives lint and the `.d.ts` build — TypeScript 7 is already exercised on every run through the
-  `typescript-next` alias, which tracks `^7` and currently resolves to 7.0.2, so the forward gate is not behind.
-  `@types/node` stays on 22.x to match the `engines.node >= 22` floor this package promises; typing against 26
-  would let code compile here that does not run on the oldest Node we support. `@google-cloud/storage` 8 is a
-  peer dependency declared `^7`, so taking it is a packaging decision rather than a refresh.
-
-### Added
-- **`segment.pin()` — hold a segment at the generation current right now.** An ordinary handle re-resolves on
-  `storageGenTtlMs`, so a publish part-way through an export, a reconciliation or a send means its second half
-  describes a different instant than its first — every chunk whole and verified, but the answer covering two
-  moments with nothing in the result saying so. A pinned handle does not move. **Only that segment is pinned**:
-  `snap.intersect([other])` reads `snap` at its pin and `other` live, so pin each segment to hold a whole query
-  — and a pinned handle passed as an *operand* is read at its pin too, never live, whichever handle the call
-  was made on. **A hold, not a lease**: nothing stops `gcOrphanGenerations` deleting the generation underneath
-  you, and a pinned read deliberately does *not* heal forward, because silently serving a different generation
-  is what a pin exists to prevent — so it fails instead. Size `keep` past your longest pinned job. A pin is a
-  generation *number*, so the reader behind it lives in the same bounded LRU as every other and can be evicted
-  freely; re-opening at the same number reproduces the same bytes, and a transient fault cannot poison the pin.
-  A segment with no current generation pins nothing and reads empty. A pin taken before a crypto-shred stops
-  reading when the shred lands — the row's `status` is re-checked every time the pinned reader opens, so a pin
-  cannot outlive the key it was using. Needs the `.crbm` cold source; `UnsupportedError` otherwise.
-
-### Fixed
-- **`gcOrphanGenerations` could delete the live object of a segment re-created while it was listing — on
-  either branch.** The row is read *before* the object listing and acted on *after*, a window seconds wide on a
-  paginated store, and every step of the sequence is an ordinary path: the retention sweep purges tombstone
-  rows, and nothing stops a loader re-creating a segment by that name afterwards. The result was an `active`
-  row pointing at a generation whose object had just been deleted — the forbidden `missing-cold-generation`
-  state, which the grace window cannot prevent because it is not a question of age.
-  - On a **tombstone**, the branch deletes every object it enumerated, `currentGen` included. It now re-reads
-    the row and proceeds only if the token is unchanged; tokens are never reused, so an unchanged one proves
-    the segment was not purged and re-created underneath the pass.
-  - On the **ordinary** branch, the old reasoning was that deleting strictly below the pointer it read is safe
-    because the pointer only moves forward. That holds within one incarnation, but `nextGeneration` restarts at
-    0 once a row is purged and the bucket emptied, so a retired-and-re-created name wears a *lower*
-    `currentGen` — the pointer goes backwards, and `g < current` then selects the new incarnation's live
-    object. The cutoff is now the **lower** of the pointers read before and after the listing, so a forward
-    publish landing mid-listing still collects exactly as before (refusing on any token change would make
-    routine GC useless on a busy segment) while a regressed pointer narrows the cutoff instead of widening it.
-  - The row is re-proved before **every** delete, not once after the listing. The deletes are one round trip
-    each, so the exposure is the whole loop rather than an instant — and the ordinary branch deletes
-    newest-first, which puts a restarted incarnation's generation 0 *last*, the worst ordering. Cost is one
-    registry read per object actually deleted, on a path that already spends one round trip per object and is
-    never on the read path.
-  - Generations are de-duplicated before the grace window is applied. `keep` counts generations, not listing
-    entries, and a listing spanning a purge-and-recreate can enumerate the same number twice — a duplicate
-    would consume the keep slot and evict a generation still inside the window, which a pinned read cannot
-    heal from.
-  - **Behaviour change for direct callers:** `gcOrphanGenerations` can now throw on a segment where it would
-    previously have returned an empty array and deleted nothing, so a bare
-    `for (const s of segs) await gcOrphanGenerations(s, deps)` aborts on the first segment that lost the race
-    instead of skipping it. Catch per segment if you sweep a fleet in a loop; the built-in retention sweep
-    already does.
-  - A refusal now **throws `WriteConflictError`** rather than returning an empty array, and
-    `eraseIdFromSegment` **verifies its own receipt** — the claim, not its own part in it: `erased: true` is
-    returned only once the generation that held the id is gone from the bucket, whether this call removed it or
-    a concurrent collector did. So `erased: true` with an empty `collected` is a correct outcome, not a
-    contradiction, and `collected` is evidence when it is non-empty rather than a complete proof of deletion. An empty array already meant "there was nothing to collect", and a
-    refused collect was reported as a clean Art. 17 receipt — reproduced: `erased: true` with `collected: []`
-    while every generation still holding the erased id sat in the bucket. The retention sweep already tolerated
-    a throw here and re-checks the storage itself, so it degrades to `tombstone-not-empty` and retries.
-  - `eraseSubject` invalidates this store's view of a segment **however the call ends**, not only when it
-    succeeds. A rewrite that published and then failed its collect is exactly the case where the cached view is
-    stale, and it was the one case that skipped the invalidation — the erasing store kept answering `true` for
-    the id it had just removed, out of RAM, with no storage read for any control to intercept.
-  - Corrected in the docs: what a re-run does for a segment whose erasure faulted *after* its rewrite
-    published. The prose flatly said a re-run "will not list the segment" and told operators to collect the
-    residual by hand; that describes behaviour from before the superseded-generation search landed. It has
-    three outcomes, not one, and they are now written down: usually `erased: true` against the superseded
-    generation it found the id in; nothing at all if a racing collector took that generation first (the bit is
-    gone, but no run holds a receipt for it); and — if the segment's registry row has since been purged — the
-    segment is not scanned at all, leaving orphaned objects for `checkConsistency`/`gcOrphanGenerations`. **An
-    empty ledger is not by itself proof the id is gone**, which is now said wherever the ledger is described.
-- **A retired, re-created segment name is no longer served as the same segment.** A generation number is not an
-  identity: `nextGeneration` returns `max(currentGen, highest object) + 1`, so it **restarts at 0** once a
-  registry row is purged and the bucket emptied. A long-lived store then could not tell a re-created name from
-  the one it already had open, at either layer it caches — the resolved snapshot compared generation *numbers*,
-  and the decoded-chunk cache keyed on `(segment, chunk, generation)`. Reproduced: after a retire-and-reload,
-  a warm store answered `has(1) === true` for an id belonging to the **deleted** incarnation and
-  `has(9) === false` for one the live segment really held, with `count()` reporting the old cardinality —
-  silently, with no error. For a name that had been dropped or crypto-shredded that is an erased id reappearing.
-  Both layers now key on the row's OCC token alongside the generation, which the port contract already
-  guarantees is never reused across incarnations. `StorageChunkSource` gains an optional `currentVersion(ref)`;
-  a source that omits it falls back to the generation alone, exactly as before. Note that putting the
-  incarnation in the *object key* would not have fixed this — a new incarnation still starts at generation 0, so
-  the cache key collides either way; the identity has to reach the cache.
-
-### Changed
-- **BREAKING (pre-1.0): a combine refuses an operand naming a segment that does not exist.** A mis-namespaced or
-  misspelled operand used to resolve to empty and contribute nothing, silently — and for an `exclude` that means
-  **suppressing nobody**: `andNot` returned the full audience and `intersectInto` reported the unsuppressed
-  cardinality, with no error and nothing in the metrics to distinguish it. The failure mode is mailing the people
-  who opted out. Reading an absent segment directly is **unchanged** — it still answers empty, which is right;
-  the ambiguity only matters for an operand, where "a suppression list nobody is on yet" and "a suppression list
-  you misspelled" must not look alike. A segment that **exists and is empty** (a row minted by `setRetention`
-  before the first load) is still accepted, because somebody created it deliberately. Pass
-  `allowAbsentOperands: true` to combine against a name that may not exist yet. Costs nothing on a normal
-  combine: existence is consulted only for an operand that resolved to zero chunks, so a segment with data is
-  never checked. `StorageChunkSource` gains an optional `exists(ref)`; a source that cannot answer it skips the
-  check rather than guessing.
-
-### Fixed
-- **An erasure now reaches an ex-member's bit in a retained generation.** `eraseIdFromSegment` tested membership
-  against `currentGen` only, so a subject who had simply been *dropped* from a re-seeded audience was reported
-  `'not-member'` — and `eraseSubject` filters that out, so the segment never appeared in the ledger at all. A
-  completely clean Art. 17 receipt over bytes still in the bucket. No race is involved: it is the documented
-  lifecycle, because `gcOrphanGenerations`' default `keep: 1` **retains** exactly the generation the subject was
-  dropped from, as the reader grace window. The guarantee held for current members and quietly did not for the
-  population most likely to be asking. Erasure now looks in the superseded generations and, if one holds the id,
-  collects with `keep: 0` — the only available remedy, since a non-current generation cannot be rewritten
-  without regressing the pointer, and everything below `currentGen` is permanently unreachable anyway. The
-  result is `erased: true` with `fromGeneration` naming the generation it was found in and no `generation`
-  (nothing was rewritten). **The cost is paid only where it is owed:** one `list` first, and a segment with no
-  superseded generations reads nothing extra — which is what keeps a fleet-wide `eraseSubject` from doubling its
-  reads on the segments that never held the id.
-
-### Added
-- **`store.invalidate(ref)` — tell a store to forget what it cached about a segment.** Needed when something
-  destroys or retires a segment through a path the store cannot see: `destroySegment` / `eraseNamespace` are
-  free functions over raw drivers, and another process's erasure is invisible to this one. `StorageChunkSource`
-  gains an optional `invalidate(ref)` to match, so a third-party source can participate.
-
-### Fixed
-- **Destructive verbs no longer leave this store answering from memory.** A store keeps a resolved snapshot per
-  segment (an open reader, plus the DEK it unwrapped) and decoded chunks keyed by generation. Both exist to
-  notice *a publish that advances `currentGen`* — the TTL re-resolves, the new generation misses the cache.
-  Neither notices an event that **destroys** what they were derived from, and every destructive verb went
-  straight to the raw drivers without telling them. Reproduced: the store that performed `eraseSubject` kept
-  answering `has(id) === true` for the id it had just reported erased, **with no backend read at all** — so no
-  bucket policy, lifecycle rule or object deletion could close the window — and `iterate()` returned a set
-  mixing a deleted generation with the live one. `subjectReport` (Art. 15) and `exportSegments` (Art. 20) read
-  through the same cache, so two compliance APIs on one object disagreed about the same subject. With
-  `storageGenTtlMs: 0` ("pin forever", a documented setting) none of it ever converged. `eraseSubject`,
-  `dropSegment` and `retireExpired` now invalidate what they touch, and `store.invalidate` covers the rest.
-- **A crypto-shred performed beside a store no longer leaves it able to decrypt.** `destroySegment` deletes the
-  wrapped DEK from the registry, but a store that had already opened the segment holds the **unwrapped** key
-  inside its reader — so it kept serving plaintext, including chunks it had never fetched before the shred
-  (verified: an id in a cold chunk, read and decrypted after `cryptoShredded: true` was returned). Calling
-  `store.invalidate(ref)` after an out-of-store shred drops the reader and the key with it. **Fleet note:** a
-  shred on one box still invalidates nothing on the others — each store bounds its own staleness by
-  `storageGenTtlMs`, and one built with no clock or `storageGenTtlMs: 0` never converges without an explicit signal.
-- **Expired data is no longer stranded when its deletes fail.** `retireExpired` purged the registry row whenever
-  `dropSegment` reported `generationsDeleted: []`, reading that as "the segment was empty". It is equally what a
-  segment whose every `cold.delete` threw produces — a 403, a bucket policy, a throttle — because the sweep loop
-  stops once a pass deletes nothing. With the row gone the expired objects stayed **readable and billed**, and
-  every path that could have reclaimed them was closed: `gcOrphanGenerations` returns `[]` with no row to
-  compare against, the next sweep cannot enumerate a name that has no row, and `dropSegment` takes its
-  `'absent'` path. The predicate now also requires `generationsRemaining` to be empty — the honest question,
-  which `dropSegment` already computes one field over. When something does remain the row keeps its tombstone,
-  so reads stay refused and the existing tombstone-purge pass re-sweeps and purges it once genuinely empty; the
-  residual is visible in the entry's `result.generationsRemaining` meanwhile. The original branch still does its
-  job: a name that really held nothing (`setRetention` mints a row for any name, including a typo'd one) has its
-  row removed rather than being fenced against every writer forever.
-- **An erasure can no longer republish a retired segment's content over a live one that reuses its name.**
-  `publishGeneration`'s `expectFrom` fence compares a generation *number*, and a generation number identifies a
-  generation only **within one incarnation of a name**: `nextGeneration` returns
-  `max(currentGen, highest object) + 1`, so it restarts at `0` once the registry row is purged and the bucket is
-  empty. A name that is retired and re-created therefore presents a *different* segment at the *same*
-  `currentGen` — and the fence matched it. Reproduced: an erasure rewrite derived from the retired incarnation
-  published its content over the live one, deleted the live objects with its `keep: 0` collection, and returned
-  `erased: true` with a `segment.rewrite` audit event. A successful Art. 17 receipt for an operation that
-  destroyed the live segment. The publish now also fences on the row's **OCC token** (`expectToken`), which the
-  port contract already guarantees is never reused across incarnations — *"a later `create` still gets a fresh,
-  greater token"* — so a derived publish lands only on the row it was derived from. The check is deliberately
-  conservative: a token also changes on writes that are not supersessions (a `setRetention`, a due-index
-  reindex), so one of those makes a derived publish report `'superseded'` and the caller re-derive. That costs a
-  re-run on a rare unrelated write; the alternative costs a segment.
-- **A writer that changes the row mid-rewrite is reported as a reason, not a bare `NotFoundError`.**
-  `eraseIdFromSegment` resolves the current generation and then reads it across three round trips — the reader
-  open, *every chunk* of the whole-segment rewrite, and the verify. A racing erasure collects with `keep: 0`,
-  taking every generation below its new pointer: the generation the loser is streaming, and (once it is below
-  that pointer) the object the loser had just written. The publish already reported that race as
-  `'superseded'`, but the read half threw instead, which through `eraseSubject` became `note: "error: …"` —
-  documented as ambiguous about which side of the publish it landed on, so an Art. 17 operator was told to
-  triage where the truth was to re-run. All three round trips now report a reason, and **which** reason is read
-  off the registry row rather than assumed: a moved pointer is `'superseded'`, a row tombstoned by a concurrent
-  `dropSegment` is `'destroyed'`, one purged by the retention sweep is `'absent'`, a row with no pointer is
-  `'no-generation'` — the same answers a fresh call gives, so a caller branching on `reason` never has to care
-  where in the call it was discovered. A pointer still naming the missing object is the forbidden
-  `missing-cold-generation` state and still **throws**, because no re-run fixes it; a faulting pointer re-read
-  rethrows that `NotFoundError` rather than replacing it with a transient-looking registry error, since it is
-  the only signal of that state. `generation` is now reported only once the object is durable — reporting it
-  from `nextGeneration` meant a purged row (where `nextGeneration` restarts at `0`) produced the
-  self-contradictory ledger entry `fromGeneration: 0 → generation: 0`. The pre-existing test for this
-  interleaving passed because its fixture was a **single chunk**, so the rewrite never re-read the swept
-  generation; the new coverage spans three.
-
-### Changed
-- **`'superseded'` is documented as "this call did not erase the id", not "the id is still there".** Two
-  concurrent erasures of the *same* id — the ordinary shape of a duplicated Art. 17 request — leave the loser
-  reporting `'superseded'` when the id is already physically gone. The re-run is still the correct action and
-  still settles it (it reports `'not-member'` and drops the segment from the ledger), but the stronger claim was
-  false, and it appeared in `PRIVACY.md`, the guide, the api-reference and the published type docs. `PRIVACY.md`
-  also now says plainly which ledger is the attestation for a subject, since a settled segment drops out of
-  later ones.
-- **A generation swept between resolving the pointer and opening its object no longer fails the read.**
-  Resolving `currentGen` and opening that generation's `.crbm` are two backend round trips, and the heal that
-  covers a vanished generation was wrapped around only the second one. So the window GC actually races — a
-  publish plus a sweep landing in the gap — surfaced a bare `NotFoundError` out of `has`, `count`, `iterate`
-  and `intersect` on the *first* attempt, not as the documented "retried once, then propagate". Reproduced
-  against a real driver; the reader open and the pointer resolve now sit inside the retry, and
-  `currentGeneration` — which the engine calls once per operation, before any chunk fetch, so an unhealed miss
-  there failed the whole operation — heals the same way. Most exposed with `keep: 0`, which every id erasure
-  passes and which sweeps microseconds after the publish. The retry is now **gated at exactly two
-  resolve-and-open round trips** by counting calls, because it re-reads the *registry* — the shared,
-  throttle-prone resource — and an N-way `intersect` pays it per operand; nothing had pinned that bound before,
-  and a mutation raising it to 1,000 left the whole suite green.
-
-### Changed
-- **`keep` is documented as the cost/latency trade it is, and a time floor on collection is refused.** The
-  guide gains [*Sizing `keep`*](docs/guide/getting-started.md#sizing-keep): a missed window is a re-read rather
-  than a failure; the exposure window is `storageGenTtlMs`, not the length of your call, so at the 2 s default one
-  retained generation covers any realistic publish cadence; and each retained generation is a whole billed copy
-  of the segment, so `keep: 3` over 40 GB holds 160 GB. It also states what `keep` cannot do: a long call can
-  re-resolve forward across a publish and describe two instants, and because that hop comes from
-  re-resolution rather than from collection, **retaining more generations does not affect it**. A snapshot
-  handle is the answer and is now an explicit [roadmap](docs/ROADMAP.md#on-the-way-to-10) item; a
-  `minAgeMs`-style time floor is [deliberately not planned](docs/ROADMAP.md#deliberately-not-planned), because
-  it would read as a durability guarantee and would not be one. Hard invariant 3 is corrected in the same pass:
-  every chunk is a whole, verified, immutable generation and a read is never torn, but a long call is not
-  promised a single instant — which the engine's own doc-comments already said.
-
-### Removed
-- **Every internal-tracker citation is gone, and a gate now keeps them gone.** 271 references — phase
-  numbers, audit-gap and review-finding ids, test-strategy and threat-model labels, decision-log entries —
-  pointed at a private corpus no reader can open. **71 were in `packages/*/src`**, which reach users on hover
-  in an editor and inside the published `.d.ts` and sourcemaps. Each is replaced by the **substance** it
-  stood for rather than deleted, so a reader gets the reasoning instead of a dead reference to it: the note
-  bounding the reader cache now says *why* a wide segment's parsed index, not its payloads, dominates the
-  footprint. An unresolvable id is worse than saying less, because it implies checkable evidence and then
-  withholds it. Ids a reader **can** follow are untouched — the seven hard invariants, sections of the public
-  guide, and issues or PRs on this repository. The rule is stated in
-  [`CONTRIBUTING.md`](CONTRIBUTING.md#documentation--keeping-it-current).
-- **The live write tier is gone: the warm tier, the write verbs, and compaction.** This line is a **loaded
-  store** — a segment is a set of write-once `.crbm` generations in object storage behind one registry pointer,
-  and data enters only by loading a new generation. The reason is a change of direction, not a defect: every
-  roaring-based engine that needs freshness meets it by micro-batching into immutable segments, never by mutating
-  a stored bitmap per call, and object storage is immutable-object storage — so REPLACE is the native verb and
-  MUTATE was the add-on we had backwards. Hot-path *reads* are what this library is for; hot-path *writes* belong
-  in RAM. A future live tier, if there is demand, will be built as immutable **delta generations** on the same
-  bucket. Everything removed here is archived intact at the git tag `archive/live-warm-tier`, and **`0.9.x` stays
-  on npm** with all of it.
-
-  Removed, in one list:
-
-  - **The warm tier.** `IWarmDriver`, `WarmRow`, `WarmReadOptions`, the `NO_ROW` create sentinel,
-    `MemoryWarmDriver`, `LocalFsWarmDriver`, `DynamoDbWarmDriver` and `RetryingWarmDriver`. The `/dynamodb`
-    subpath now exports the **registry** driver only. Warm rows in an existing table are inert — delete them
-    when you are done with `0.9.x`.
-  - **The write verbs.** `add`, `addMany`, `remove`, `removeMany` and `claimMany` on a segment handle, and the
-    optimistic-concurrency read-modify-write behind them (with `DEFAULT_OCC_BACKOFF` and the `occBackoff`,
-    `writeConcurrency`, `warmReadConsistency` and `maxWarmScanBytes` store options).
-  - **Compaction.** `compactSegment`, `runCompactionCycle`, `findCompactable`, `store.compact()`,
-    `validateCompactionOptions`, every `Compaction*` type, and the `owner` / lease options — plus the partition
-    leases (`runLeaseCycle` and family), the lifecycle cycle (`runLifecycleCycle`), the engine loop
-    (`createEngineLoop`) and the `compact-segments` CLI. `createEngineLoop` never shipped in a release; the CLI
-    did, as a published `bin` of `@cloudbitmaps/roaring` through `0.9.x`, so its removal is a breaking change
-    for anyone who scheduled it — see `MIGRATING.md`. There is
-    nothing left to compact: a generation is already the merged whole.
-  - **The five non-AWS warm drivers** — PostgreSQL, Redis, MongoDB, Cassandra/ScyllaDB and MySQL — and their
-    `/postgres` · `/redis` · `/mongodb` · `/cassandra` · `/mysql` subpaths. They shipped through `0.9.x`.
-  - **Registry bookkeeping the daemon needed:** `dirtyChunkCount`, `lastCompactedAt`, `consecutiveFailures`,
-    `leaseOwner` and `leaseExpiresAt` leave `RegistryRecord`, `NewRegistryRecord` and `RegistryPatch`. A row
-    written by an older build **still reads** — the fields are ignored and dropped on its next write.
-    `RegistryStatus` keeps its four values, with `'compacting'` / `'erasing'` now reserved and set by nothing.
-  - **Observability that described the removed path:** the `warm.read`, `warm.write` and `compaction` metric
-    events and their `MetricsSnapshot` counters, the `retry` event's `'occ'` reason, the `add`/`remove`/
-    `addMany`/`removeMany`/`claimMany` `op` names, and the `segment.compact` audit event.
-  - **The write half of the cost model** (see *Changed*), the export `candidates` option and its
-    `CR_EXPORT_SEGMENTS` environment variable, the fault-injecting write/compaction simulator
-    (`testing/simulator/*`) and the `IWarmDriver` conformance suite, and the bench harnesses that drove the
-    write path (`calibrate-aws`, `chaos-localstack`, `load-localstack`, `stress`, and the `chaos` / `load` /
-    `stress` / `calibrate:aws` package scripts).
-
-  If a pre-release engine ever wrote `cbm.leases` rows to your registry, they are harmless bookkeeping and can be
-  deleted. The due-index pointers are now the one reserved family, and `excludingReservedRows` remains the
-  exported filter for a fleet-wide pass you write yourself; the predicate it is built on is internal.
-
-### Added
-- **`tests/docs/internal-citations.test.ts`** — the gate for the above, scanning every tracked text file for
-  eight citation forms. This surface had drifted **twice**: a `0.9.x` release removed internal citations from
-  shipped code comments, and they came back. Nothing could see them in between — `leak-scan` checks
-  configured needles, the docs gates check that symbols and links resolve, and neither compares prose to the
-  rule. Verified by mutation: ten probes injected, ten caught, and six legitimate forms confirmed *not* to
-  trip it.
-
-- **Subject erasure is now a generation rewrite, and the deletion is physical on return.** New core function
-  `eraseIdFromSegment(ref, id, deps)` streams a segment's current generation through a fresh one with the single
-  bit cleared, verifies it, publishes it forward-only, and then collects the generation that held the bit — so
-  when it returns, the id is **gone from the bucket**, not masked by a tombstone. Constant memory (one chunk in
-  flight). `store.eraseSubject(id, …)` runs it across every registered segment the id is in and returns the
-  ledger; it no longer takes an `owner`, and each entry is
-  `{ segment, namespace?, erased, fromGeneration?, generation?, note? }`. A load that publishes mid-rewrite is
-  caught by the forward-only publish and reported as `note: 'superseded'` — re-run. Emits the new
-  `segment.rewrite` audit event (with both generation numbers) at the publish, before the old generation is
-  collected.
-
-- **`nextGeneration(ref, { cold, registry })` and a `generation-gc` module.** `nextGeneration` picks the number
-  for a segment's next object — one above the highest the registry *or* the bucket knows, so an object left by a
-  crashed load is skipped rather than collided with. `gcOrphanGenerations` moved here from the compaction module
-  unchanged (`keep` still defaults to 1; `keep: 0` is what makes the erasure rewrite's deletion immediate).
-
-- **`retireExpired` takes `shards` / `totalShards`.** It had no shard option, so N replicas each ran the full sweep
-  and contended over the same segments. It uses a stable hash of the segment key, so a worker owns the same slice
-  across restarts.
-
-- **Docs — a runbook for the one retention failure that does not self-heal.**
-  [disaster-recovery.md](docs/guide/disaster-recovery.md) gains *"an unstamped tombstone after a hard kill"*.
-  Retiring an expired segment is two round trips — the `destroyed` CAS, then the `retiredBySweepAt` attribution
-  — and a `SIGKILL` between them leaves a tombstone the sweep will never purge, with no ledger entry, no counter
-  and no metric to say so. The name is then fenced against publish, bulk-load and compaction while writes keep
-  landing in warm and nothing compacts them. The entry covers detection, how to tell an interrupted retirement
-  apart from a legitimate crypto-shred tombstone (they can look identical on the row — the audit trail is the
-  discriminator), the two repairs, and the deployment settings that keep the window shut. It ships now, ahead of
-  the automated reconcile, because a failure that needs a human cannot wait behind the code that automates it.
-
-- **`expiresAt` on `SegmentOptions` — lazy expiry, declared where the segment is named.**
-
-  ```ts
-  const daily = store.segment(`d-${today}`, { namespace: 'active', expiresAt: Date.now() + 30 * DAY });
-  ```
-
-  Every read through that handle checks the deadline first: past it, `has` is `false`, `count` is `0`, and
-  `iterate` yields nothing — **one integer compare against the injected clock, no I/O, on every backend**.
-  This is Redis's lazy-expiry mechanism, and it is what makes an expiry *correct* rather than *eventually
-  correct*: a deployment whose sweep is late, or which has no sweep at all (a Lambda-only reader), still stops
-  serving the data on time.
-
-  Set algebra stays coherent with `count()`, which is the part that would otherwise produce bug reports: an
-  expired operand makes an `intersect` empty, is dropped from a `union`, and excludes nothing in an `andNot`.
-
-  **Two things it deliberately does not do.** It does not reclaim the bytes — `retireExpired` does, and until it
-  runs the data is still stored and still billed, so `count()` reporting 0 while rows exist is the expected
-  state in that window. And it does not apply to *other* handles: the deadline lives on the handle, so record
-  the policy with `setRetention` to make it durable, fleet-visible and reclaimable.
-
-  A seconds-shaped value is refused **at the handle** rather than silently making the segment permanently empty.
-
-- **The due index — the structure that makes a retention cycle cost what is *expiring* rather than what the
-  fleet *holds*.** Entirely internal: `retireExpired` consults it for you, and a caller never builds a bucket
-  name or a synthetic row.
-
-  A sweep that drains `registry.list()` and filters reads the whole fleet every cycle even when nothing
-  expires. The index makes the day a segment expires into a **namespace**, so listing one due day yields exactly
-  the segments due that day. That shape is forced by the driver contract: `list()` filters by namespace and
-  nothing else — no cursor, no key range — so the only way to read a subset is to make the subset a namespace.
-
-  Buckets are **day indices**, not formatted dates: `core/` reads no ambient time, and a calendar would add a
-  timezone question for no benefit. Pointer names are **length-prefixed** (`${nsLength}.${ns}${segment}`) rather
-  than delimited, because every character the name grammar allows is legal *inside* a name, so no separator
-  could ever be unambiguous.
-
-  **It is a fast path, never the source of truth**, which is what makes a second index safe here: the sweep
-  re-reads the live segment row before acting, so a stale pointer is a wasted read and nothing worse; and the
-  full scan remains as a periodic **repair** pass, so a missing pointer — including a ref too long to encode —
-  means slower, never wrong.
-
-- **`retireExpired({ scan: 'index' })` — a sweep that reads what is *expiring*, not what the fleet *holds*.**
-  Reads only the due buckets (the current one plus `lookbackBuckets`, default 7, so a sweep that did not run
-  leaves nothing stranded), resolves each pointer, and **re-reads the live row** before deciding anything. That
-  re-read is why a second index is safe here: a stale pointer costs one read and retires nothing, and there is
-  no second eligibility path to keep in step with the first.
-
-  **`'index'` is the fast half of a pair, not a drop-in replacement.** A policy written before the index
-  existed, or one whose pointer write failed, has no pointer — so a deployment that *only* runs `'index'` will
-  never retire those. Run `'fleet'` periodically as the repair pass. **The default stays `'fleet'`**, so
-  upgrading changes nothing about what gets retired.
-
-  A retirement also forgets its own pointer, so a bucket cannot accumulate rows that every later lookback
-  re-reads — an index that grows monotonically would slowly undo its own purpose.
-
-- **The due index is maintained.** `setRetention` writes the pointer for the expiry's day, moves it when the
-  expiry moves, and `clearRetention` removes it. `SetRetentionResult` gains **`indexed`** — true when a fast
-  sweep will find this segment by reading only its expiry day instead of scanning the fleet.
-
-  `indexed: false` is a **degradation, not an error**, and the policy is committed either way: the ref is too
-  long to encode into one row name, or the pointer write failed. The full-scan repair pass still sees the
-  segment's own row. Alarm on a *sustained* run of `false`, never on one.
-
-  The new pointer is written **before** the old one is deleted: interrupted between the two, a segment is
-  reachable from both buckets (a duplicate the sweep resolves by re-reading the live row), where the reverse
-  order would leave a window in which it is reachable from neither.
-
-### Changed
-
-- **`roaring` is pinned to exactly `2.7.0`.** The one runtime dependency is a native addon fetched as a prebuilt
-  binary at install time, so its version is now a deliberate choice per release rather than a caret range; a
-  `scripts/verify-roaring-prebuilt.cjs` check records the binary's checksum per platform in CI.
-- **Type declarations ship as a tree under `dist/` mirroring `src/`** (one `.d.ts` per module) instead of one
-  bundled file per entry. The public types are unchanged; the `exports` map points at the same paths. The build is
-  now `scripts/build.mjs` (esbuild for the bundles, `tsc` for the declarations) rather than tsup.
-- Every unscoped fleet-wide enumeration skips **reserved bookkeeping rows** — the due-index pointers. One
-  internal predicate declares the families, rather than a comparison inlined at each call site: the
-  first cut inlined it and shipped with three sites missed, and the due index then leaked into the retention
-  sweep's own `scanned` count the moment it began writing pointers. A scan explicitly scoped to a reserved
-  namespace still sees its rows.
-
-- **`intersectInto` / `unionInto` / `andNotInto` publish a new generation of the destination.** They used to
-  `addMany` the result into `dest`, adding to whatever was there; now they write the result as one immutable
-  object and advance `dest`'s pointer to it — the same write-once-then-publish protocol as a load — and return
-  `{ generation, cardinality, chunkCount, size }` instead of `void`. So `dest` is **replaced, not appended to**,
-  a reader of `dest` sees either the old generation or the new one and never a partial result, and the operation
-  is no longer "not atomic across chunks". They need the store built with a raw cold driver and a registry.
-  An empty result publishes an empty generation (the general guard for that case lands with `load()`) — with one
-  exception: a call in which **any handle has expired** is now refused with a `ValidationError` naming the
-  segments, because an expired handle reads as empty and would otherwise turn a materialisation into a silent
-  wipe of the destination. The read verbs are unchanged: there, expiry still degrades to empty.
-
-- **`CloudRoaringOptions` takes `cold` alone as its required seam.** `warm` is gone, as are
-  `warmReadConsistency`, `writeConcurrency`, `maxWarmScanBytes` and `occBackoff`. `registry` stays optional for
-  reads but is required by every lifecycle helper and by the `*Into` verbs (they publish through it), and the
-  error naming that out now names the operation you called.
-
-- **The cost model covers the loaded store only.** `PricingProfile` loses its whole `warm` block (`rruPerMillion`,
-  `wruPerMillion`, `readUnitKiB`, `writeUnitKiB`, `stronglyConsistent`, warm storage); `Workload` loses
-  `writesPerSec`, `avgItemKiB` and the four compaction fields and gains **`loadsPerMonth`** and
-  **`requestsPerLoad`** (a multipart load bills `parts + 2` PUT-class requests); `CostReport.monthlyUSD.byOp` is
-  `{ reads, intersects, storage, loads }` with no `byTier`; `redisCrossover` keeps **`readsPerSec` only**; and
-  the `Topology` type, the `topology` input and the `batchable-writes` advisory (with `CostAdvisory` and
-  `CostReport.advisories`) are gone — there is no write axis to advise about. The published crossover is
-  therefore one number: at a cold cache, pay-per-use passes the $346/month always-on baseline at **~329 reads/s**.
-  `bench/results.json`, the crossover chart, `docs/benchmarks.md` and the CI anchor test drop the write axis with
-  it.
-
-- **`dropSegment`, `destroySegment`, `eraseNamespace` and `retireExpired` no longer touch a warm tier.**
-  `EraseDeps` is `{ registry }`, `DropDeps` is `{ registry, cold }`, and the retention sweep takes
-  `{ registry, cold }`. `DestroyResult` loses `warmRowsDeleted`; `DropResult` loses `warmRowsDeleted` and
-  `wouldDeleteWarmRows`, and its `reason` loses `'warm-only'` (the accumulator case it described cannot exist —
-  a segment with no generation has no data). The ordering contract is now **registry tombstone, then sweep the
-  objects**, still re-swept so an object a load was mid-write when the tombstone landed is collected.
-
-- **`SegmentEngine` is read-only** — `has`, `count`, `iterate`, `intersect`, `union`, `andNot` — and `EngineDeps`
-  is `{ cold, cache?, codec, clock?, metrics?, budget?, maxBitmapBytes? }`. `DEFAULT_WRITE_CONCURRENCY` and
-  `DEFAULT_MAX_WARM_SCAN_BYTES` are gone. A read resolves the generation once and every chunk comes from it, so
-  the engine no longer merges tiers per chunk; the hot cache stays generation-keyed, which is what makes a
-  freshly published generation miss it instead of serving stale bytes.
-
-- **`count()` is free on every loaded segment.** With no warm deltas there are no dirty chunks to merge, so the
-  cheap path is the only path: the cardinality is summed from the `.crbm` index with **zero payload reads**
-  whenever the cold source can report it.
-
-- **The seven hard correctness invariants are restated for this model** (write-once generations published
-  forward-only · immutable generation-keyed objects behind a CAS'd pointer · one generation per read · GC never
-  touches the current generation · untrusted tier bytes · bounded memory and cost · a storage- and
-  runtime-agnostic core). See `CLAUDE.md`.
-
-### Fixed
-- **Seven sentences left broken by the earlier removal pass**, found because this one read every site rather
-  than pattern-matching. Stripping a citation out of running prose leaves the punctuation that held it: an
-  empty inline code span where the reference had been, a sentence ending in a dash and a close-paren, a
-  parenthetical that lists one link and then the word "and", and a range whose second endpoint is gone. All
-  of them survived review, CI and a release, because no gate compares a sentence to whether it parses as
-  English. Removing a citation means re-reading the sentence around it.
-- **Two stale claims surfaced by the same pass**: an integration test still called the resumable-upload path
-  "the compaction write path" after compaction was removed, and two driver key-builders deferred work to a
-  package split that has already happened.
-
-Five defects found by this change's own adversarial review, none of which the suite could see. Each one now has a
-test that fails without its fix, verified by re-introducing the bug (`tests/core/publish-fences.test.ts`).
-
-- **The subject-erasure rewrite could discard a concurrent write, and attest an erasure that had been undone.**
-  `eraseIdFromSegment` derives its new generation from the current one — `from` minus one bit — but published it
-  *forward-only*, and `nextGeneration` deliberately picks a number above everything in the bucket. So the rewrite
-  always out-ranked a generation published while it was working, and the `keep: 0` collection then deleted that
-  generation's object. Two consequences, both reproduced: a load that landed mid-rewrite had its entire set
-  discarded silently (it returned a normal `BulkLoadResult` and emitted `segment.publish`), and two concurrent
-  erasures each returned `erased: true` with a `segment.rewrite` audit event while the second one's generation
-  put the first one's id **back** — a false Art. 17 receipt, which is the worst output that module can produce.
-  The tell was that both receipts named `fromGeneration: 0`.
-
-  `publishGeneration` now takes **`expectFrom`**, which makes a publish land only while the pointer is still
-  exactly where the caller derived its content from, and the rewrite passes it; anything else is reported as
-  `reason: 'superseded'`, `erased: false`, for the caller to re-run. The predecessor (`compactSegment`) had the
-  same fence as an explicit re-read and it was lost in the move to `nextGeneration`. A load still publishes
-  forward-only — its ids come from upstream, so it loses nothing by winning, and that asymmetry is the point.
-
-- **Encryption could not be turned on for an existing segment: it destroyed the data.** `bulkLoadCrbmGeneration`
-  minted a DEK whenever a keystore was supplied and the row carried none — including a row whose `currentGen` was
-  already set — and `publishGeneration`'s plain-advance branch did not carry `wrappedDeks`. The pointer therefore
-  advanced to a generation encrypted under a key that was never persisted: unrecoverable the moment the call
-  returned, and reported as a success. No race was needed, and it was reachable two ways — the documented "load
-  it again with a keystore wired" upgrade, and any `*Into` on a keystore-wired store whose destination already
-  had a cleartext generation.
-
-  **A segment's encryption is now decided at its first generation.** A keystore is wired on the *store*, so it is
-  in scope for segments deliberately left cleartext; the segment's own posture wins instead. A load onto an
-  existing cleartext lineage stays cleartext, and with `requireEncryption: true` it is refused with a
-  `ValidationError` naming the way forward (load into a new segment, drop the old one). `publishGeneration`
-  refuses new key material on an advance rather than dropping it — the alternative, carrying it, would make the
-  row advertise encryption over readable cleartext objects, which is what makes `destroySegment` emit
-  `segment.erase` ("unreadable everywhere, backups included") over plaintext.
-
-- **A union whose every operand had expired silently dropped `exclude`.** The all-expired shortcut returned the
-  base segment's `iterate()`, which takes no options, so the suppression list did not apply — on a library whose
-  headline is composable suppression, reached by nothing more exotic than a rolling segment handle passing its
-  deadline. `exclude` is not an operand of the union, it is a subtraction applied to the result, so it survives:
-  `(this ∪ nothing) \ exclude`.
-
-- **`MaterializeResult.generation` could name a generation that never became current.** `BulkLoadResult` did not
-  surface its publish outcome, so a `*Into` whose forward-only publish no-oped — a concurrent writer published a
-  higher generation of `dest` first — resolved successfully naming an orphan, while `dest` held the other
-  writer's content. `BulkLoadResult` now carries **`becameCurrent`** (absent with no registry, since there is
-  then no pointer), and the `*Into` verbs throw `WriteConflictError` rather than report a generation that is not
-  the destination's.
-
-- **The erasure rewrite could re-encode a corrupt chunk into a fresh generation.** It put every chunk through
-  the safe deserializer and the size cap but not the remainder-range half of invariant 5, so a chunk holding a
-  value above `MAX_REMAINDER` — one not written by this codec — was carried forward, `verifyGeneration` (chunk
-  keys and cardinality) did not see it, and the call reported `erased: true` over a segment that still could not
-  be read. It now refuses, naming the chunk: "this segment is corrupt" is what the operator needs to hear, and a
-  successful-looking erasure says nothing. One `maximum()` call per chunk, on a path that is re-encoding every
-  chunk anyway.
-
-- **A `*Into` publish left no audit record.** It is the one write path that could make a generation current
-  without a trace in the compliance trail: `materialize` never threaded an audit sink and the verbs exposed no
-  way to pass one. The combine options now take **`audit`**, read only by the `*Into` verbs (the streaming verbs
-  write nothing, so they emit nothing) and emitting `segment.publish` exactly as a load does.
-
-### Documentation
-
-- Corrections found by the same review, in code that pointed readers at machinery that no longer exists or made
-  a claim stronger than the code keeps: the erasure module documented a concurrency fence it did not have; its
-  rewrite generator claimed to re-validate "every chunk (invariant 5)" when it applied only half of it — which
-  turned out to be worth fixing in the code rather than the comment, see above; `UnsupportedError` still offered
-  `compact` as its example; `withRetry` and
-  the DynamoDB error classifier still deferred pointer conflicts to "the engine's read-modify-write / OCC loop".
-  The engine's generation-ordering comment now says how much that ordering actually buys under one storage tier
-  — it is the order that is correct for any source satisfying the port, rather than one a test can currently
-  distinguish — instead of restating a rationale that only held while a delta tier existed.
-- **Four places pointed readers at a design corpus this repository does not contain.** `docs/README.md` sent
-  contributors to an `internal/` tree that is not here, `README.md` claimed the specs and decision log "live
-  under `docs/`", and the API reference and this changelog deferred *why* to the decision log. Each now points at
-  where the reasoning actually is — the module headers, which lead with the decision they encode and what the
-  alternative cost, and the [hard correctness invariants](AGENTS.md#hard-correctness-invariants) — and
-  `docs/README.md` says plainly that the design corpus is maintained privately and that nothing here should send
-  you to it. A doc that promises a reader something the repo does not have is worse than one that says less.
-
-### Tests
-
-- **Three guards were being carried untested**, each found by mutating it and watching all 1,114 tests pass: the
-  erasure rewrite's `verifyGeneration` (the integrity gate on the one path that rewrites a whole segment for a
-  GDPR erasure), the chunk-key range check on the index-only `count()` path (invariant 5, on the headline read
-  verb — the existing out-of-range test exercises the fallback path instead), and the throw when a rewrite
-  published but could not collect (the branch that decides whether an erasure ledger over-attests).
-- **The property-test generators barely produced overlapping operands.** Drawing each operand independently from
-  `fc.integer({ max: 300_000 })`, one sample in 200 produced a non-empty two-way intersection, none produced
-  identical operands, an `exclude` that removed everything, or an id at a chunk boundary — so the intersect and
-  suppression properties were comparing `[]` against `[]` almost every run. Operands are now subsets of one
-  shared universe that includes the boundary ids explicitly (92 of 200 overlap, 114 touch a boundary, 28 are
-  fully suppressed), and the generator's **reach is itself asserted**, so it cannot silently go degenerate again.
-- **The TTL-boundary coalescing test is restored.** `CrbmStorageChunkSource` installs its in-flight refresh
-  synchronously so a burst of readers past the TTL shares one registry read; its only test went with
-  `live-invalidation.test.ts`, and nothing else in the suite counted registry reads, so awaiting before
-  installing the promise would have been invisible.
-
-## [0.9.0] — 2026-08-05
-
-### Added
-
-- **`store.setRetention(ref, { expiresAt })` — record when a segment becomes eligible for retirement**, plus
-  `getRetention` and `clearRetention` (and `setSegmentRetention` / `getSegmentRetention` /
-  `clearSegmentRetention` / `readRetentionPolicy` / `MIN_EXPIRES_AT_MS` as free functions for a scheduler that
-  holds only a registry driver).
-
-  This is **one registry write and nothing else**: nothing is deleted, and no timer starts. It moves the
-  retention *decision* from the sweeper — which otherwise has to know that `active-daily` keeps 30 days and
-  `dedup-wave` keeps 3 — to the writer, who is the only one who knows what the segment means.
-
-  `expiresAt` is an **absolute epoch-ms the caller computes**, not a duration the library derives. Every anchor
-  a derived TTL could use is wrong: `updatedAt` and `currentGen` are both rewritten by compaction, so "expire 30
-  days after the last write" would push a busy bucket's expiry forward on every cycle — the segment staying
-  alive precisely *because* the daemon was keeping it cheap.
-
-  **On an accumulator it mints the registry row** (`createdRow: true` in the result) with `currentGen: null`, so
-  a segment that existed only as Warm deltas becomes enumerable — and therefore sweepable — while every read
-  resolves exactly as before.
-
-  Two guards: a value that looks like epoch **seconds** is rejected rather than stored (`Date.now() / 1000 + …`
-  lands in 1970, i.e. already expired — a deletion on the next sweep, not an error), and `getRetention` returns
-  `'invalid'` rather than `null` for a present-but-unusable value, so a malformed policy is visible instead of
-  silently reading as "never expires". Cancelling is its own verb for the same reason — "never expire" as a magic
-  value passed to the setter is how a typo becomes a deletion.
-
-- **`store.retireExpired({ … })` — the retention sweep.** Enumerates the registry, selects the segments whose
-  `expiresAt` has passed, and retires each one **through `dropSegment`**, so the Warm → registry → Cold ordering,
-  the re-sweep for a generation staged by an in-flight compaction, and the `generationsRemaining` report come from
-  one implementation rather than two. Also available as the free function `retireExpired(deps, { now, … })` for a
-  worker that wires its own drivers, and as an opt-in phase of the `compact-segments` CLI (`CR_RETIRE=1`, plus
-  `CR_RETIRE_LIMIT` / `CR_RETIRE_DRY_RUN` / `CR_RETIRE_TOMBSTONE_GRACE_MS`).
-
-  **It is a call, not a daemon.** Nothing here schedules itself — the same code has to behave identically in a
-  Lambda, an edge isolate and a long-lived server, and a timer that only works in one of those is worse than none.
-  You run it from the heartbeat you already have (EventBridge, a `CronJob`, `cron`, a queue job); the guide's
-  §13.5 lists the shapes. Once a day is enough for daily buckets.
-
-  Three things make it safe to point at a fleet: **`dryRun`** at the sweep level (in a loop `dropSegment`'s
-  `confirmSegment` guard is the same variable twice, so it protects nothing), a per-cycle **`limit`** (default 100)
-  charged on **attempts** — not successes, because `dropSegment` deletes Warm and writes the tombstone *before*
-  sweeping Cold, so counting only successes let a partial cold outage march through an entire fleet with the cap
-  never engaging — and a **ledger** instead of an exception, because a throw from the middle of a fleet sweep leaves
-  the caller unable to say which segments were retired after having already retired some. `entries` names every
-  outcome: `invalid-policy` (that segment is *not* expiring and someone may believe it is), `policy-changed` (a
-  `clearRetention` landed mid-sweep — the sweep re-reads the authoritative row immediately before every deletion,
-  so cancelling an expiry works on a sweep already in flight), `tombstone-not-empty`, `failed: …`, and a
-  retirement that faulted *after* the tombstone is reported as `retired` with a `fault` rather than as skipped,
-  because that segment really is retired.
-
-  It also **purges the tombstone rows its own retirements leave**, which otherwise accumulate one dead row per
-  retired bucket forever — the same registry litter `dropSegment` already refuses to create for a row-less
-  accumulator. Attribution is a **positive marker the sweep stamps on its own retirements**, never an inference
-  from "destroyed + an expired policy": a crypto-shred leaves `retention` untouched, so the ordinary ordering (set
-  a 30-day policy, then a right-to-erasure request arrives mid-window and you `destroySegment`) produces a GDPR
-  tombstone carrying an expired policy, and deleting that row would destroy the local attestation for an Art. 17
-  execution and un-fence the name. Purging additionally waits out `tombstoneGraceMs` (default 24 h; `purgeTombstones:
-  false` keeps every tombstone) and requires Warm **and** Cold to be provably empty — collecting a straggler
-  generation itself first, since nothing else ever would for a tombstoned segment.
-
-  Retirement is deliberately **not** a phase of `runCompactionCycle`: compaction's job is to make a segment cheap
-  and retirement's is to delete it, and a destructive step running implicitly inside a maintenance cycle is the
-  wrong default for someone who just wanted their Warm tier drained.
-
-### Fixed
-
-- **A compaction worker that lost the generation-0 write race could make an encrypted segment permanently
-  unreadable — and delete the only readable copy.** Present in every release to date; found by an adversarial review
-  of the retention work and reproduced independently three times.
-
-  Two workers bootstrapping the same segment both mint a DEK, and generation 0 is write-once, so only one of them
-  writes the object. The loser then **skips `verifyGeneration`** (a full re-read of an object it did not write), so
-  it is *likely* to reach the registry first — and it published **its own** wrapped DEK. The winner subsequently
-  saw `currentGen: 0`, concluded its publish had landed, and purged the Warm rows that held the only readable copy.
-  Result: generation 0 encrypted under the winner's key while the row carries the loser's, reads failing
-  `AEAD authentication failed` under an **active** pointer, and `checkConsistency` unable to see it because the
-  object is present.
-
-  A worker that did not write the object no longer publishes key material at all (adopting a *cleartext* generation
-  stays allowed — there is no key to get wrong, and it is what keeps a crashed bootstrap's orphan object from
-  blocking the segment forever), and a worker only purges when the wrappings on the row are the ones it wrote.
-
-  **If you run more than one compaction worker against encrypted segments**, a segment whose reads now fail with
-  `IntegrityError` / `AEAD authentication failed` may be an instance. The generation is unrecoverable — its key was
-  never stored — so the remedy is to re-seed that segment from your source of truth.
-
-- **A bulk-load with a registry but no keystore wrote a cleartext generation onto an encrypted segment, and a later
-  crypto-shred then issued a false compliance receipt.** `destroySegment` decides `cryptoShredded` from the
-  *presence* of wrapped DEKs on the row, not from whether any generation is actually encrypted — so shredding such a
-  segment emitted `segment.erase`, the event documented as "these bytes are unreadable everywhere, backups
-  included", over bytes that are plaintext and remain readable from any copy. `bulkLoadCrbmGeneration` now fails
-  fast with `KeyUnavailableError`, matching the check compaction already performed. **If your audit trail contains
-  `segment.erase` events, they are only as strong as the encryption of the generations they cover** — worth a
-  spot-check if you have ever bulk-loaded without passing the keystore.
-
-### Changed
-
-- **`RegistryRecord.currentGen` is now `number | null`** — `null` meaning *this segment exists and has no Cold
-  generation yet*. Breaking **only if you implement or read `IRegistryDriver` yourself** (a custom registry
-  driver, or code that does arithmetic on `currentGen`); nothing in the store/segment API changes, and no
-  behaviour changes for any segment that has ever been bulk-loaded or compacted.
-
-  Why it had to move: a **warm-only accumulator** — a segment created by writing to it, never bulk-loaded, never
-  compacted — has no registry row at all, and the registry is what every fleet-wide operation enumerates. Those
-  segments are therefore invisible to `checkConsistency`, `eraseNamespace`, compaction discovery, and (next) any
-  retention sweep. Giving them a row is the fix, but the obvious row — `currentGen: 0` with no object behind it —
-  is the `missing-cold-generation` state the library exists to prevent, and it fails *per operation* rather than
-  cleanly: `has()` short-circuits on the Warm delta and keeps answering while `count()` resolves the generation
-  and throws `NotFoundError`. So the pointer needed a way to say "none yet".
-
-  A row with `currentGen: null` resolves down the same path as a segment with **no row**: Cold contributes the
-  empty set, the Warm delta alone produces the answer, and `currentGeneration()` reports `null`. Read behaviour is
-  unchanged by construction, and a test asserts read-for-read parity against the identical segment with no row.
-
-  Writers treat `null` as "no Cold data", never as generation 0: compaction takes its **bootstrap** path and
-  publishes gen 0 onto the existing row by CAS (preserving `createdAt` and the row's other fields);
-  `publishGeneration` advances the pointer and carries the wrapped DEK exactly like a first publish;
-  `gcOrphanGenerations` deletes nothing while the pointer is null (a bootstrap may be about to publish gen 0);
-  and `checkConsistency` reports it as healthy rather than as a torn restore.
-
-  **Custom registry drivers:** `null` must round-trip through create, CAS, `get` **and** `list`, and a patch that
-  omits `currentGen` must leave it alone while a patch that sets it to `null` must apply. The shared conformance
-  suite gates all of it — a driver that JSON-drops the field, coerces it to `0`, or merges the patch
-  with `patch.currentGen ?? previous` fails.
-
-### Documentation
-
-- **The npm package pages now describe retention** — `@cloudbitmaps/roaring` gains a section for the per-segment
-  expiry and the sweep (not just a row inside the Redis comparison table), and `@cloudbitmaps/core`'s engine
-  summary names the lifecycle machinery it carries. That file has now drifted **three times**: `0.7.0`'s Redis
-  mapping was reported as being on it when only the repo README had it, and `0.8.0` shipped `claimMany` and
-  `dropSegment` while the page mentioned neither. The gate added after the second drift
-  (`tests/docs/flavor-readme-sync.test.ts`) **could not have caught this one**: it derives the methods a Redis
-  reader must find from the live `SegmentHandle` prototype, and `setRetention` / `retireExpired` are *store*
-  methods, so it was watching the wrong object. It now derives from both prototypes, and that widening is itself
-  mutation-verified — reverting the README's `EXPIRE` row fails the gate by name, which it did not do before.
-
-- **The retention section of the guide no longer opens "There is no TTL."** It now distinguishes the two claims
-  that were being conflated: a *segment* can expire, an *id* cannot, and what you schedule is the sweep rather
-  than the policy. That paragraph is where a reader asking "does it support TTL?" stops reading, so it was the
-  single highest-value correction in this release.
-
-- **`reason: 'warm-only'` stops being returned once a segment carries a retention policy**, because the policy
-  mints a registry row and `dropSegment` then takes the ordinary tombstoned path. Stated in the guide, the API
-  reference and the `DropResult.reason` JSDoc — the guide had been coaching operators to key monitoring on
-  `reason`, so an alert written that way would have started firing the day retention was adopted. Branch on
-  `dropped`.
-
-- **`PRIVACY.md`** now describes retention as it is rather than as "the library does not age data out for you",
-  including what legal-hold exclusion actually requires today (a held segment must not carry a policy — the sweep
-  has no exclusion predicate), and the Art. 30 / DPIA rows no longer claim retention is enforced by scheduled
-  compaction, which was never true.
-
-- **`docs/guide/dashboards.md`** records that `segment.dispose` is now emitted for every retirement a sweep
-  performs, and — explicitly — that deleting a retired segment's tombstone **row** emits nothing at all. If your
-  controls treat the presence of a `destroyed` row as an attestation, run the sweep with `purgeTombstones: false`.
-
-- `IRegistryDriver.list`'s contract now *states* what two callers already depended on: a `destroyed` tombstone is
-  still a record and must be yielded, a null-generation row must be yielded, and `retention` must survive the
-  projection — a driver that drops it makes retention silently never fire. The shared conformance suite
-  gates it.
-
-- Plus the README admin table, `docs/ROADMAP.md` (retention moved to shipped; the sweep's scheduler and per-id TTL
-  moved to *deliberately not planned*, where a stated non-goal belongs), the API reference, the DR guide, and the
-  site (`usage.html`, `flavors/roaring.html`, `llms.txt`).
-
-## [0.8.2] — 2026-08-04
-
-### Fixed
-
-- **Retiring an accumulator segment reported failure while succeeding.** A segment created by writing to it —
-  never bulk-loaded, never compacted, so it has no registry row and no Cold objects — is the documented way to use
-  this as a runtime set (a dedup wave, a daily sent-list). `dropSegment` retires one correctly by deleting its Warm
-  rows, but reported `{ dropped: false, reason: 'absent' }` **with a non-zero `warmRowsDeleted`** — self-
-  contradictory, and `'absent'` was documented as "nothing happened". A retention cron written as the obvious
-  `if (!res.dropped) alert()` fired on **every successful retirement**.
-
-  `dropped` now answers the question callers actually ask — *is this segment empty as a result of this call, or was
-  it already?* — and `reason` says which route got there: **`'warm-only'`** for a retired accumulator (`dropped:
-  true`), `'already'` for an existing tombstone, and `'absent'` **only when nothing existed at all**, which is the
-  one value worth alerting on and almost always a mistyped name or an omitted `namespace`.
-
-  Still no tombstone for the warm-only case, deliberately: a `destroyed` row per retired daily bucket would be
-  registry litter, and would refuse that name if it were ever legitimately reused.
-
-  Found by the first real consumer, whose entire workload is this shape. It went unnoticed because **every**
-  existing `dropSegment` test seeded a Cold generation first — the accumulator lifecycle had no coverage at all.
-  It does now, including the full wave (`claimMany` → dedup a retry → retire), and both failure directions are
-  mutation-verified: reverting to the old under-report and over-correcting to "always claim success" each turn the
-  suite red.
-
-### Documentation
-
-- **The accumulator pattern is now documented** in the getting-started guide, with the result-shape table, the
-  reason an empty `bulkLoadCrbmGeneration(..., [])` seed is pointless (it writes a real object and a registry row
-  for a segment with no data), and a hard warning that a native Warm-table row TTL is **silent total data loss**
-  in this mode — everything you have is Warm, so expiring rows expires the dataset.
-
-## [0.8.1] — 2026-08-04
-
-### Documentation
-
-- **The npm package page did not mention either of `0.8.0`'s headline features.**
-  `packages/roaring/README.md` is a separate file from the repo-root `README.md`, and it is the one npm renders —
-  so it is at once the most-read surface and the easiest to forget. It shipped `0.8.0` without `claimMany` or
-  `dropSegment`, while still claiming Redis operations *"carry over one-for-one"* with no boundary. For a few
-  hours the package page was the least accurate surface in the project. It now carries both, the two limits
-  (no addressable-bit surface; do not port a per-id write loop), the pricing-model caveat, and the
-  no-seed/compaction-is-optional framing.
-
-- **A gate so it cannot drift a third time.** `tests/docs/flavor-readme-sync.test.ts` asserts the published flavor
-  README (a) mentions every `SegmentHandle` method the guide presents as the answer to a Redis command, (b) does not
-  claim Redis parity without stating a limit, and (c) warns against the per-id write loop. Both halves are
-  **derived** — from the live `SegmentHandle` prototype and from the guide's own Redis section — rather than from a
-  hand-maintained list, because a list you must remember to update is a check that cannot fire, and forgetting is
-  exactly what happened here. This is the second drift of this file: `0.7.0`'s Redis mapping was also reported as
-  being on the npm README when only the root README had it.
-
-No code changes. `@cloudbitmaps/core` is republished only to keep the two package versions in lockstep, which the
-publish workflow enforces.
-
-## [0.8.0] — 2026-08-04
-
-**Retention and dedup.** `dropSegment` closes a spec/implementation divergence that had sat since day one — there
-was no supported way to delete a segment and stop paying for it. `claimMany` closes the one Redis-bitmap capability
-we did not have. And `store.compact` stops leaking storage, which it had been doing silently since it shipped.
-
-**Read this before upgrading if you compact in-process.** `store.compact()` now deletes superseded Cold
-generations. Your S3/GCS/Azure object count for compacted segments will **drop** on the first compaction after
-upgrading — that is the fix, not a fault. It keeps the same one-generation grace window the daemon has always kept,
-so no reader loses a generation it could still be pinned to. If you were relying on old generations lingering for
-manual point-in-time recovery, that was never a documented guarantee and it is now gone: use
-`compactSegment` + your own `gcOrphanGenerations` schedule instead.
-
-### Added
-
-- **`seg.claimMany(ids)` — atomically claim ids: add them, and get back only the ones that were not already
-  there.** The durable analogue of Redis `SETBIT` returning the prior bit, which is what an exactly-once *"have I
-  already sent to / already processed this id?"* check needs. `has()` then `add()` cannot express it: two workers
-  both read absent and both proceed.
-
-  **It takes a batch, and that is the whole design.** A Warm write rewrites an entire 64K-id chunk bitmap, so
-  per-id claiming is the single most expensive way to use this library — measured at **5,000 writes / 23,762 KB**
-  for 5,000 ids claimed one at a time, against **1 write / 8 KB** for the same ids in one call. `claimMany` does
-  one OCC read-modify-write per distinct *chunk*: Redis's semantics without Redis's per-id cost shape.
-
-  Exactly-once holds **per id** — each id lives in one chunk and a chunk is one OCC row, so exactly one concurrent
-  claimer sees any given id as new (pinned by a 10-worker race test). Like `addMany` it is not atomic across
-  chunks; re-running is safe, because already-claimed ids simply come back as not-new. The presence test is the
-  full effective set `(cold ∪ adds) \ removes`, not the Warm delta alone — checking `adds` would report an id as
-  newly claimed after a compaction folded it into Cold, silently breaking exactly-once on any long-lived segment.
-
-- **`segment.dispose` audit event.** `dropSegment` now attests what it actually did. Previously a **cleartext**
-  drop emitted nothing at all: `segment.erase` could not be reused, because four documents define that event as
-  proof of an irreversible crypto-shred — bytes unreadable *everywhere*, backups included — and an object delete
-  is strictly weaker (a noncurrent version, a replica or a PITR snapshot still holds the cleartext). Emitting one
-  kind for both would make a compliance dashboard over-attest, which is the one failure an audit trail exists to
-  prevent.
-
-  So a cleartext drop emits `segment.dispose` (with `generationsDeleted`), and an **encrypted** drop emits
-  **both** — `segment.erase` for the key shred, then `segment.dispose` for the storage reclamation — because both
-  genuinely happened. See [dashboards.md](docs/guide/dashboards.md) for which one answers which question. An
-  absent no-op and a dry run emit nothing.
-
-- **`store.dropSegment(ref, { confirmSegment, dryRun? })` — retire a segment and actually reclaim its storage.**
-  Tombstones the registry row, deletes the Warm rows, deletes the Cold generations. Works on a cleartext
-  segment, and on an encrypted one it *also* discards the DEK, so it is a strict superset of crypto-shred there.
-  Afterwards the segment **reads as empty** rather than erroring — within `storageGenTtlMs` for a reader that has a
-  clock. `DropResult.generationsRemaining` is the field to check: non-empty means the storage was *not* fully
-  reclaimed and the drop should be re-run.
-
-  **This closes a real hole.** `destroySegment` crypto-shreds — the bytes become unreadable everywhere including
-  backups, which no object deletion can achieve — but it leaves the objects in your bucket, still billed, and it
-  *requires* encryption. `gcOrphanGenerations` only collects superseded generations. So until now there was no
-  supported way to delete a segment and stop paying for it, and the obvious workaround (an object-store lifecycle
-  rule on the prefix) deletes the bytes while the registry still points at them — the `missing-cold-generation`
-  torn state, presenting **intermittently** because a read consults the hot cache before Cold.
-
-  **The order is the contract, and it is why this is a library function rather than a recipe:** Warm rows first
-  (a tombstone with live Warm deltas would still answer `true`), then the registry pointer (after which nothing
-  resolves a generation), then the Cold objects, best-effort — so a partial failure leaks bytes rather than
-  correctness, and re-running collects the rest. Also `dryRun`, because `confirmSegment` guards a typed literal
-  and does nothing in the loop this function exists for; it previews `wouldDelete`, `wouldDeleteWarmRows` and
-  `wouldCryptoShred`.
-
-  **An adversarial review before merge found three defects in the first cut of this, all from ordinary
-  interleavings, and all invisible to a single-actor test suite.** They are fixed here, and the fix is worth
-  knowing because it shapes the contract:
-
-  - **The Cold sweep repeats.** A compaction already in flight when the tombstone lands still finishes *staging*
-    a generation from data it read beforehand — its commit fails on the voided lease, but the object survives and
-    holds the complete effective set including the Warm deltas just deleted. One list-then-delete missed it, and
-    nothing else would have collected it. `gcOrphanGenerations` now also takes **every** generation of a
-    tombstoned segment (previously only those below `currentGen`), so a running daemon collects any residual.
-  - **A segment with objects but no registry row now gets a tombstone before anything is deleted.** Objects
-    without a row is a real state — `bulkLoadCrbmGeneration` writes the object, *then* publishes. Deleting
-    without the tombstone produced either a dangling `active` pointer at no object (the very
-    `missing-cold-generation` state this function exists to prevent) or a full resurrection when the racing
-    writer published. A genuinely nonexistent segment still gets `reason: 'absent'` and no row, so a typo leaves
-    no litter.
-  - **A second Warm pass runs after the tombstone.** A Warm write landing after step 1 was *immortal*, because
-    compaction refuses to fold or purge a destroyed segment — a fresh reader would report the dropped segment as
-    non-empty forever.
-
-  The free function `dropSegment(ref, { registry, warm, cold }, …)` is exported for out-of-process callers.
-
-### Fixed
-
-- **`store.compact()` never reclaimed the generation it superseded** ([#47](https://github.com/cloudbitmaps/cloudbitmaps/issues/47)).
-  Cold generations are immutable and generation-keyed, so *every* compaction leaves its predecessor on disk.
-  `runCompactionCycle` (the daemon) has always collected them via `gcOrphanGenerations`; `compactSegment` never
-  did, and the facade's `store.compact` wraps `compactSegment` — so a deployment that compacted **in-process
-  without running the daemon grew its Cold footprint without bound, forever.** Reads stayed correct throughout
-  (`currentGen` always pointed at a real object), which is precisely why nothing ever surfaced it.
-
-  `store.compact` now calls `gcOrphanGenerations` best-effort after a successful commit, matching the daemon, with
-  its default `keep: 1` grace window so a reader pinned to the just-superseded generation is unaffected. Failure
-  is swallowed: GC is housekeeping, and a compaction that committed must not be reported as failed because cleanup
-  could not run — the next cycle collects what this one missed.
-
-  The free function **`compactSegment` is deliberately unchanged**, staying a single-responsibility primitive for
-  callers who schedule GC themselves. If you use it directly, call `gcOrphanGenerations` yourself.
-
-- **`destroySegment` / `eraseNamespace` could report `warmRowsDeleted: 0` after physically deleting every Warm
-  row.** The tally was declared *inside* the tombstone CAS retry loop, so only the final attempt's count
-  survived: one benign concurrent registry write (`findCompactable`'s change-guarded CAS, a failure-count bump, a
-  lease acquisition) made the first attempt conflict, and the second attempt re-listed an already-empty Warm set.
-  On a GDPR Art. 17 erasure record that is **under-attestation** — the same class of defect as over-attesting,
-  pointed the other way — and it has been present since crypto-shred shipped. The tally is now hoisted and
-  accumulated across attempts.
-
-- **`gcOrphanGenerations` now collects every generation of a `destroyed` segment**, not only those below
-  `currentGen`. A tombstoned segment resolves no generation, so no reader can be pinned to one and the grace
-  window is meaningless — while nothing else in the library would ever have collected them, because the reconcile
-  path that deletes generations above `currentGen` returns early on a destroyed row. Those objects were billed
-  forever. Behaviour on a live segment is unchanged.
-
-- **Error messages from a `dropSegment` call no longer name `destroySegment`.** They shared a helper, so a
-  contended Warm row during a drop produced "destroySegment: … the segment was NOT destroyed" — operator-facing
-  text on the one path where the operator has to act.
-
-- **`UnsupportedError` from `store.dropSegment` now names `dropSegment`.** It listed only
-  `compact`/`eraseSubject`/`checkConsistency`, so a caller following the documented requirement got an error
-  about three operations they had not called.
-
-### Documentation
-
-- **Retention, TTL and pruning are now documented — including a footgun that could lose data silently.**
-  There is no TTL and no per-id expiry (a bitmap stores ids, not `(id, timestamp)` pairs, so an expiry per id
-  costs more than the compression saves), and the guidance for what to do instead existed only in `PRIVACY.md` —
-  which is not where anyone asking *"does it support TTL?"* looks. New guide section, plus a note on `/usage`.
-
-  **The warning is the important part: never enable your backend's native row expiry on the Warm table.**
-  DynamoDB TTL, Redis `EXPIRE`, a MongoDB TTL index, a Postgres cleanup job — Warm rows are **un-compacted
-  deltas**, so expiring them discards adds/removes that were never folded into Cold, and the next read returns
-  the Cold generation without them. **No error is raised; the answer is quietly wrong.** "The Warm table is
-  growing, I'll put a TTL on it" is a reasonable instinct and a data-loss bug — the answer is to compact more
-  often. Nothing in the docs said so before.
-
-  Also corrected an overstatement: `PRIVACY.md` described dropping a segment as "an object delete or
-  crypto-shred", implying the first is available. It is not. `destroySegment` crypto-shreds — the Cold bytes
-  become unreadable everywhere including backups, but **they stay in your bucket and you keep paying for them** —
-  and it requires encryption at rest, since a cleartext segment has no key to discard. `gcOrphanGenerations`
-  collects only *superseded* generations. **No operation deletes a live segment's Cold objects**, so reclaiming
-  storage is out-of-band work (an S3 lifecycle rule on the key prefix). Segment-level retention is now on the
-  roadmap with that gap named as its first requirement.
-
-## [0.7.0] — 2026-08-01
-
-One narrowly breaking rename, and the docs a Redis-bitmap user needs to evaluate this at all.
-
-The rename is the reason this is a minor: `.crbm`'s footer field `roaring_serialization_id` is now
-`payload_codec_id`. **No stored bytes move** — same offset, same width, every generation ever written still
-reads, and the golden byte-layout corpus passes unmodified. What changes is what the field *means* and how it
-is checked. It had to happen before `1.0` freezes the format, because a field frozen under a codec-specific
-name cannot be reinterpreted afterwards without a major format version.
-
-If you have never set `CrbmWriterOptions.roaringSerializationId` — and almost nobody has, the facade never
-passes it — this release is docs and internals, and upgrading is a version bump.
-
-### Internal
-
-- **`core/` is now gated as runtime-agnostic, not just storage-agnostic.** `pnpm lint:arch` fails on any `node:*`
-  import under `packages/core/src/core` (`core-no-node-builtins`). Nothing changed in the code — the seam already
-  imported zero builtins, which is why the engine is portable to a V8 isolate at all — but the property was
-  asserted in the docs and enforced by nobody, so a single `import { createHash } from 'node:crypto'` in the seam
-  passed every gate in the repo. Drivers are unaffected and still hold every builtin import in the project.
-
-- **A dependency-free JavaScript reader for the portable Roaring format** (`packages/roaring/src/portable/`).
-  **Not exported and not wired into anything** — there is no user-visible change here, and nothing to call. It
-  is the first piece of edge-runtime membership: the engine seam is already portable, but `roaring` is a native
-  C++ addon that no V8 isolate can load, so reading a chunk without it is the prerequisite for everything else.
-  Read-only by design (`has` / `count`); writes and compaction stay on the native codec.
-
-  Correctness is differential rather than asserted: the native library generates both the bytes and the expected
-  answers across every container encoding, both header cookies, and 200 randomly-shaped bitmaps. Untrusted bytes
-  are bounds-checked at every header read, and non-ascending container keys are rejected rather than fed to a
-  binary search that would return silently wrong membership.
-
-### Changed
-
-- **The `.crbm` footer's codec field is generalized: `roaring_serialization_id` → `payload_codec_id`.** Same byte
-  offset, same width, **no layout change** — the golden byte-layout corpus passes unmodified, and every generation
-  ever written still reads. What changes is the field's meaning and how it is validated: it now says *which codec
-  produced the chunk payloads*, and the reader checks membership in a registry of ids it can decode rather than
-  equality with a single constant. `1` = roaring portable, unchanged and permanent.
-
-  **Why now, and why it could not wait.** `.crbm` is a shared container — the index, the CRC32Cs, the AEAD
-  framing and the generation model are all codec-independent, and only the payload bytes belong to a flavor. The
-  format **freezes at `1.0`**, and a field frozen under a codec-specific name cannot be reinterpreted afterwards
-  without a major format version. A second codec is genuinely expected, so this is a one-line registration later
-  instead of a format migration.
-
-  An unregistered id is rejected with a typed `UnsupportedError` naming both the id and what this build can read
-  — **fail-closed**, which is the safe direction: a store uses one codec throughout, so meeting a foreign
-  generation means misconfiguration, and a loud rejection beats decoding someone else's bytes as your own.
-
-  **Breaking, narrowly:** `CrbmWriterOptions.roaringSerializationId` is renamed to `payloadCodecId`. It is an
-  escape hatch on a lower-level writer that virtually nobody sets — the facade never passes it — but if you do,
-  rename the property. No stored data is affected.
-
-### Documentation
-
-- **"Coming from Redis bitmaps?" — a direct answer to the question the flavors table provokes.** Now that
-  `/flavors` lists a plain-bitset flavor as *Not planned*, a reader who runs Redis bitmaps today is entitled to
-  ask what they give up. The answer, on both `/flavors/roaring` and in the
-  [guide](docs/guide/getting-started.md), is a per-command mapping (`SETBIT`→`add`, `GETBIT`→`has`,
-  `BITCOUNT`→`count`, `BITOP AND`/`OR`/`DIFF`→`intersect`/`union`/`andNot`) plus the point that above 4,096 ids
-  in a chunk — 6.25% of it — roaring stores that chunk *as* a flat bit array, so the dense case is byte-for-byte
-  what they have now.
-
-  It also states plainly what does **not** port, because the rest is not credible without it: `BITFIELD`,
-  `BITPOS`, `BITOP NOT`/`ONE` and byte-range `BITCOUNT` have no equivalent, and nothing that reads a Redis
-  bitmap's raw string will read a `.crbm`. Raw bit-position import/export is unbuilt and explicitly demand-gated.
-
-- **Fixed: the README and the getting-started guide both advertised `0.1.1`** while the packages shipped
-  `0.6.0` — stale across five releases. The version gate only ever opened `site/**/*.html` and `llms.txt`, so
-  markdown was invisible to it; it now covers `README.md` and `docs/` (with `docs/ROADMAP.md` carved out, since
-  a release history naming old versions is correct). This is the third hole found in the same gate, and the
-  scope is now derived by walking the tree rather than enumerated, so a new doc is covered the day it is added.
-  Renamed `tests/docs/site-version.test.ts` → `tests/docs/version-claims.test.ts` to match what it guards.
-
-## [0.6.0] — 2026-07-30
-
-Two production-path fixes, one of them a large and entirely silent storage multiplier. Nothing here changes the
-`.crbm` format or an existing signature; the reason it is a minor rather than a patch is that the bytes written
-for a cold generation genuinely change shape, and `eraseNamespace` now returns a ledger where it used to throw.
-Read the `eraseNamespace` note before upgrading if you call it.
-
-### Added
-
-- **`pnpm bench:encoding`** — the measured evidence behind the site's structural claim ("the honest comparison is
-  not us versus Redis: it is Roaring versus a fixed representation"), which was the one layer of the argument
-  published on assertion alone. Compares one id set across roaring and the two fixed representations it chooses
-  between, over four workload shapes. Deterministic and seeded, with no wall-clock or RSS component, so unlike the
-  other benches it can be asserted rather than only recorded. It reports the shape where roaring LOSES as
-  prominently as the ones where it wins, because the claim being tested is adaptivity, not superiority.
-
-### Fixed
-
-- **`eraseNamespace` no longer discards its ledger when one segment cannot be erased.** It called
-  `shredSegment` per segment with no isolation, so a single failure aborted the loop: the caller got an exception,
-  no ledger, and no way to learn which segments had *already* been destroyed before the throw — the worst answer
-  available on an erasure command, because some data really was destroyed and the record of which is gone. Faults
-  are now isolated per segment, matching `eraseSubject`, whose entries already worked this way ("one failure never
-  aborts the ledger"). A failed segment appears in the result with `destroyed: false` and a `reason` —
-  `'contended'` for warm rows rewritten during every erase pass, `` `failed: <message>` `` otherwise.
-
-  **This trades loud-but-empty for quiet-but-complete, so entries must be inspected**: `destroyed: false` means
-  that segment still holds data. The `namespace.erase` audit event carries the honest `segmentsShredded` count,
-  which will be lower than the segment count, so an audit trail still shows the shortfall even if the return
-  value is ignored. Additive to `DestroyResult` — no field changed type, so nothing that compiled before stops
-  compiling.
-
-- **Cold generations were never run-encoded, costing up to 570× the bytes they should.** Roaring picks per
-  container between an array, a bitset and a **run** — but no implementation selects the run form on its own; it
-  takes an explicit `runOptimize()` pass, and nothing here was making it. Two of the three container types were
-  therefore ever used, and run-shaped ids paid list or bitmap prices. Measured on the shipped codec: a contiguous
-  1,000,000-id range serialized to **128.1 KiB where run-encoding needs 0.2 KiB (570×)**, and a 2,000-run shape
-  **536.5 KiB against 8.5 KiB (63×)**. Sequential and time-ordered ids — auto-increment keys, batch inserts — are
-  exactly the shapes this hits, so this was a large, quiet multiplier on cold storage, transfer and every read.
-
-  Fixed via a new optional `CodecBitmap.optimize?()`, called where an immutable cold generation is written.
-  Sparse ids come out byte-identical, so it is never a losing trade — roaring keeps whichever encoding is smaller
-  per container. Deliberately NOT called on the per-operation warm delta path: the hot path must not pay for it,
-  and warm rows are folded into a cold generation by compaction, where they are optimized then.
-
-  The `.crbm` envelope is unchanged (the golden byte-layout test passes untouched) and run containers are part of
-  the standard portable Roaring format, so this is a size change, not a format change.
-
-## [0.5.0] — 2026-07-30
-
-**A minor, not a patch, and deliberately so.** Everything below is a bug fix, but two of them turn a call that
-previously *returned* into a call that *throws*, and this project routes a behaviour change through a minor bump
-until `1.0` rather than hiding it in a patch. If you call `destroySegment` or `eraseNamespace`, check that it sits
-inside a `try`/`catch` before upgrading: a contended erasure that used to report success now raises
-`WriteConflictError`. That is the point of the fix — but it is a new exception on a path that did not throw.
-
-### Changed
-
-- **The planned plain-bitset flavor is renamed `@cloudbitmaps/bitset` (facade `CloudBitset`), from
-  `@cloudbitmaps/bitmap`.** Nothing is published under either name yet, so this costs nobody anything — which is
-  exactly why it is being done now rather than after. Three reasons: `bitmap` is the singular of its own scope
-  and so differentiates nothing (every flavor is a bitmap); putting `roaring` and `bitmap` side by side in a
-  picker implies Roaring is not a bitmap, when one of Roaring's three containers *is* a bitset and the real axis
-  is compressed vs uncompressed; and `bitset` is a term of art — `java.util.BitSet`, `std::bitset` — that means
-  precisely "an uncompressed array of bits", which is the actual differentiator. The tell was in our own copy:
-  the site's subtitle for `@cloudbitmaps/bitmap` read "Plain bitset — one bit per id", so the name needed the
-  word `bitset` to explain itself. It also gives the naming pattern that generalises —
-  `roaring`/`CloudRoaring`, `bitset`/`CloudBitset`, `soaring`/`CloudSoaring` — and avoids the `.bmp`
-  image-format collision in search. The generic term `bitmap` is retained where it is genuinely generic: npm
-  keywords, repo topics, the `CodecBitmap` type, `core/bitmap.ts`, and prose about the data structure.
-- **The site adopts a designed visual language, and gains a `/flavors` hub and a `/flavors/roaring` page.** One
-  engine, pluggable codecs — the hub is a single choose-one table (including a *cost of choosing it* column), and
-  the flavor page is also the template a second flavor fills in. The library itself is untouched.
-  - Two themes, both **designed**: light is not an inversion — the mark's cyan cannot hold 4.5:1 on paper, so
-    both accents are re-picked for their ground. The toggle is applied before first paint, so there is no flash.
-  - Three explainers move and nothing else does: the chunk-skipping centrepiece on `/architecture` (three views
-    of one statement — which chunks · from which tier · prove it) and one codec animation per flavor page. Every
-    one holds a readable final frame, so `prefers-reduced-motion` loses the motion and none of the information.
-  - The **counter-case is staged as a peer of the pitch** throughout — "Use Redis instead." sits in the same grid
-    row, bezel, padding and weight as the cost figure, and the two crossover rows where a flat Redis node is
-    simply cheaper are in the same table at the same weight as the four rows above them. No alert colour
-    anywhere.
-
-### Fixed
-
-- **`destroySegment` could report `destroyed: true` on a segment it had not finished erasing.** `eraseWarm`
-  retries rows that are rewritten mid-erase for a bounded number of passes, and when that bound ran out it
-  returned the count deleted so far and let the caller CAS the `destroyed` tombstone anyway. Warm rows are
-  **cleartext**, so a right-to-erasure command could attest to a destruction while the data was still readable,
-  and the result could not reveal it — `warmRowsDeleted` counts successes only. It now throws
-  `WriteConflictError` naming the number of rows still contended; because Warm is cleared *before* the tombstone
-  is written, the failure leaves the segment un-destroyed and safely retryable. Every other bounded retry in the
-  codebase already failed typed on exhaustion — this one function was the exception.
-- **A generation could be published onto a segment destroyed while that generation was being written.**
-  `bulkLoadCrbmGeneration` reads the registry once, refuses if the segment is already destroyed, and then spends
-  a KMS call and a whole object write before publishing — seconds to minutes on a large load. A `destroySegment`
-  landing inside that window was invisible to `publishGeneration`, which compares only `currentGen`, so the
-  pointer advanced on a destroyed record and left an object encrypted with the DEK destroy had just shredded:
-  unreadable, still stored, and attached to a segment the registry says was erased. `publishGeneration` now
-  refuses a destroyed record, using the record it had already re-read for its own CAS — so the check and the
-  write see the same state. This is the publish-step half of the coupling `erasure.ts` had noted as "a later
-  hardening".
-- **The retry wrapper leaked the inner scan whenever a warm enumeration was abandoned.**
-  `RetryingWarmDriver.listChunks` is the only wrapper that drives its inner iterator by hand — deliberately, so
-  that it does not buffer and defeat the engine's resident-memory bound — but it never closed that iterator when
-  its own consumer walked away. The engine abandons a scan *by design*, throwing `BudgetExceededError` from
-  inside its `for await` once `maxWarmScanBytes` is crossed, so the leak fired precisely when the memory ceiling
-  was protecting the process, leaving an open Mongo cursor or Cassandra stream behind each time. Now closed in a
-  `finally`. The other drivers were never affected: Postgres, MySQL and DynamoDB page statelessly, and Mongo and
-  Cassandra drive their cursors with `for await`, which closes on an abrupt exit by itself.
-
-### Changed
-
-- **Corrected three comments that promised retry behaviour the hot read path does not have.** The retry module's
-  header still described `listChunks` as buffering and re-enumerating from the start — true of the cold and
-  registry `list` wrappers, and true of `listChunks` only before its bound was fixed. The stale wording had been
-  copied into the Postgres and MySQL warm drivers. A mid-stream fault on a warm enumeration propagates; that is
-  the documented trade for bounded memory, and now all four places say so.
-
-- **The light theme's label colour failed WCAG AA.** `--cb-faint` — used for every label, caption and column
-  head, and the one token the design explicitly holds to AA *because it carries information* — shipped as
-  `#7A8393`, which gives **3.60:1** on the light ground where AA needs 4.5:1. Both the design bundle's
-  `tokens.css` and its README stated 4.6:1 for that value; measured, neither was right. Corrected to
-  `#666E7B` (**4.84:1**), the value in the design-language specimen, whose own stated contrast figures all
-  reproduce to two significant figures.
-- **The favicon's progressive bit reduction never reached a browser.** The mark's nine bits turn to mud below
-  64px, so the design ships simplified 32px (five bits) and 16px (three bits) art. Both files were in
-  `site/assets/` and neither was ever referenced — every page declared only the full 64px icon. Now declared
-  by size.
-- **The site's own logo mark rendered with no letterform in dark mode.** It was loaded via `<img src>`, and an
-  SVG referenced that way is an isolated document, so its `fill="currentColor"` resolved against *itself* —
-  i.e. to black — leaving only the coloured bits visible on the graphite ground. The mark is now inlined, so
-  `currentColor` and the bit tokens resolve against the page and one file serves both themes. Favicons, which
-  browser chrome always fetches standalone, carry their own `prefers-color-scheme` instead.
-- **`llms.txt` had been advertising `v0.1.0` for three releases.** The site-version gate only read `*.html`, so
-  nothing caught it. Gate widened to every file that carries a version string.
-- **The site's reveal-on-scroll script is gone.** It held whole sections at `opacity: 0` until an
-  IntersectionObserver fired — invisible to anyone with JavaScript disabled, and it left the new
-  `/architecture` centrepiece blank in every static render.
-
-## [0.4.1] - 2026-07-27
-
-A correctness release from a fourth review round — four independent adversarial review passes over the 0.4.0 diff
-(correctness, cost, test quality, docs fidelity). Every finding below survived my own mutation testing and was
-caught only by an outside pass; two of them are claims this project had already published as true.
-
-### Fixed
-
-- **`addMany`/`removeMany` could silently drop ids from a synchronous input.** *(Regression introduced in
-  0.4.0.)* An async function body runs synchronously to its first `await`, so a sync input had always been
-  effectively **snapshotted** at call time — a caller could pass a scratch buffer and immediately reuse it.
-  0.4.0's cooperative yield sat inside that loop and voided the guarantee: a 40,000-id buffer recycled before
-  the promise was awaited landed exactly **16,384 ids with no error thrown**. Size-dependent, so nothing under
-  the yield cadence would have shown it. The yield is removed from the sync path (it bought ~11 ms per 1M ids
-  against OCC round-trips that dominate the operation); the async path, which never promised a snapshot,
-  keeps it.
-
-- **The per-op budget did not bound memory in the default wiring.** `RetryingWarmDriver.listChunks` drained the
-  entire warm scan into an array before yielding its first row, so the engine's per-row ceiling — the whole
-  point of 0.3.0's bounding work — only saw rows *after* the segment was already resident. Measured on a
-  500-row segment under `budget: { maxRequests: 3 }`: **500 rows materialised with the default wiring, 4 with
-  `retry: false`.** Both threw the same `BudgetExceededError`, which is why no test caught it: the error was
-  never the distinguishing observable, the row count was. Present in **0.3.0 and 0.4.0**.
-  - The wrapper now retries only while *establishing* the scan (each attempt builds a fresh iterator, so no row
-    can be yielded twice) and streams from there. **Trade-off:** a transient fault *mid-stream* now propagates
-    instead of being retried. It cannot be retried honestly — rows are already with the consumer and the driver
-    interface exposes no resumption token — and bounded memory is a hard invariant where mid-scan retry is not.
-
-- **Compaction never actually yielded the event loop.** `writeCrbmGenerationStream` gained a `clock` in 0.4.0
-  and no caller passed one; `CompactionDeps.clock` was typed `Pick<Clock, 'now'>`, so callers *could not*. The
-  0.4.0 notes claimed compaction was covered. It now is: the clock type accepts optional `sleep`/`yieldNow`
-  (still only `now` required, so no caller breaks), it is threaded to both write sites, and the
-  `compact-segments` daemon supplies a real clock.
-
-- **`InstantClock` now declares its no-op yield explicitly** instead of silently falling back to a `sleep(1)`
-  that its own `sleep` resolves on a microtask.
-
-### Changed
-
-- **Docs corrected across the board.** The site said union and difference were "on the roadmap" on the same
-  page whose badge read v0.4.0; the guide's operations table omitted the new ops while the README called it
-  exhaustive; the exclude cost claim said "1 extra read" where the bound is one per *surviving key* (never
-  scaling with the suppression list's size); "strictly less memory" held only above the 1M staging cap; the
-  `writeConcurrency` sweep is now described as **modelled** (an in-process fake, not a real DynamoDB); the
-  three separate yield experiments are labelled so their baselines stop being spliced together; and
-  `intersect`'s memory/generation contract — orphaned into an unattached JSDoc block — is reattached.
-
-- **`fetchedChunks` documentation clarified** (the metric is unchanged): it counts distinct chunk **keys**, not
-  requests, which is why it reads lower than the budget's charge for the same call. Deliberately not redefined
-  — silently changing a published observability field in a patch release would break dashboards built on it.
-
-### Tests
-
-Five test files were hardened after an independent pass showed each had a **surviving mutation** — assertions
-that could not fail. Worst cases: the cooperative bulk-load file counted total loop turns against a bound of
-`> 20` when the real figure was ~119, so any *one* of its several yield sites satisfied the whole file; a
-"no cross-chunk bleed" test asserted an algebraic identity of `bit-route` and compared a call to itself,
-passing against a `union` that returned nothing; and a "no silent partial write" assertion was tautological
-because the fake incremented its counter *after* the throw it was measuring. Each is now pinned to a
-per-site or absolute observable, and every fix in this release ships with a regression that fails against the
-pre-fix code.
-
-## [0.4.0] - 2026-07-27
-
-The release the first real consumer asked for: **set composition** and **streaming batch writes**, plus the
-production-safety follow-through that 0.3.0 started. `bulkLoadCrbmGeneration` no longer blocks the event loop
-for the duration of a load, which was the last way this library could take an instance out of service.
-
-Both features arrived with a measurement that contradicted the obvious implementation — the async codec variants
-that looked like a free win are a **7x regression**, and the obvious way to accept a stream would have
-multiplied a caller's write bill by the length of their input. Neither shipped.
-
-### Added
-- **`union` / `andNot` and an `exclude` option on `intersect`** — set composition without materialising an
-  intermediate segment.
-
-  ```ts
-  // (audience ∩ in-market) minus every suppression list, in ONE chunk-aligned pass:
-  await audience.intersectInto(dest, [inMarket], { exclude: [optOut, churned] });
-
-  for await (const id of audience.union([lookalikes], { exclude: [optOut] })) { … }
-  for await (const id of audience.andNot([optOut])) { … }
-  ```
-
-  - **`exclude` is the part that delivers "suppression composes".** Chaining would not: `andNot` applied after
-    `intersectInto(tmp, …)` still writes `tmp`. Folding suppression into the intersect pass is what removes the
-    intermediate — so the two standalone operations alone would not have solved the request they came from.
-  - **The cost model is a property of the set operation, not of this implementation**, and the guide now states
-    it plainly:
-
-    | | chunks read | can skip? |
-    | --- | --- | --- |
-    | `intersect` | keys present in **every** operand | yes — the crown jewel |
-    | `andNot` (`a \ s`) | every chunk of `a`; `s` **only where it overlaps `a`** | partly |
-    | `union` | every chunk of **every** operand | no |
-
-  - An `exclude` operand can only subtract, never introduce a key, so candidate keys come from the includes
-    alone — and a suppression chunk is fetched only at keys that list actually holds. **The cost is bounded by
-    the surviving key count and never scales with the size of the suppression list:** subtracting a
-    61,000-chunk global opt-out list from a 40-chunk audience costs at most 40 extra reads, not 61,000.
-  - All three are charged against the same per-op budget, and only for chunks actually read, so a wide `union`
-    is refused rather than quietly billed while cheap suppression is not penalised.
-  - New: `unionInto` / `andNotInto`; exported option types `BaseCombineOptions`, `CombineOptions`,
-    `CombineIntoOptions`; `MetricOpName` gains `'unionInto'` / `'andNotInto'`; the `intersect` metric event
-    gains an optional `op` discriminator (absent ⇒ `'intersect'`, so existing consumers are unaffected).
-
-- **`addMany`/`removeMany` accept an `AsyncIterable`**, so a database cursor streams straight in —
-  `addMany(athenaCursor())` instead of hand-batching `page → addMany(page)`. `bulkLoadCrbmGeneration` already
-  did; this closes the gap.
-  - **Streaming is an input-shape choice, never a cost choice.** Each chunk is written **exactly once** however
-    long the stream, so a stream costs no more backend writes than the equivalent array.
-  - That property is the whole design problem, and the obvious implementation destroys it. "Buffer N ids, flush
-    to the backend, repeat" bounds memory and, because ids arrive in arbitrary order, makes every flush touch
-    nearly every chunk again — an 11M-id stream at a 1M-id buffer would issue **11x** the round-trips of a
-    single pass. Instead the staging buffer folds into per-chunk **compressed bitmaps** and the backend is
-    touched once at the end. Measured: 5M pending ids occupy **11 MB as bitmaps against 212 MB as JS numbers**,
-    which is what makes writing-once affordable. Above the 1M staging cap this holds less than the previous
-    sync-only path; below it the two are comparable — the guarantee is that a stream of *any* length stays
-    bounded, not that every call got smaller.
-  - This does not move the `addMany` ↔ `bulkLoad` crossover, and the guide now says so explicitly: both take a
-    stream, so the same cursor pipes into either, and streaming is exactly the situation in which it is easiest
-    to reach for the wrong one. Amending a segment is `addMany`; defining one is bulk-load.
-  - Internally a batch is now applied to a chunk's delta **set-wise** (`orInPlace`/`andNotInPlace`) rather than
-    id-by-id, so the adds/removes disjoint invariant is enforced by set algebra instead of by a loop.
-
-
-- **`Clock.yieldNow?()`** — an optional member on the determinism seam meaning "hand the event loop back once",
-  as distinct from `sleep(0)`, which is contractually a microtask and yields nothing. Optional, so every
-  existing `Clock` implementation stays valid; callers degrade to `sleep(1)`, which yields correctly at ~1 ms of
-  dead wall-clock apiece. Production wiring backs it with `setImmediate`; the simulator makes it a no-op so a
-  replayable run is not perturbed by what is purely a scheduling courtesy.
-
-- **`writeCrbmGeneration` and `writeCrbmGenerationStream` accept `clock`**, so a caller driving them directly
-  gets the same cooperative behaviour.
-
-### Changed
-- **`writeConcurrency` now defaults to 4 instead of 1.** The bounded flusher behind `addMany`/`removeMany` was
-  serial by default, so a 100-chunk batch against a backend with ~10 ms round-trips spent a full second doing
-  nothing but waiting — one round-trip at a time, on work with no ordering requirement between chunks. Distinct
-  chunks are independent OCC rows.
-  - **The bound exists for the backend, not for correctness.** A provisioned-capacity store answers a burst by
-    throttling, which is free only while the transient-retry path absorbs it. Swept against a **modelled**
-    backend — an in-process fake that throttles on concurrent requests in flight, not a real DynamoDB — that
-    throttles on concurrent requests in flight (64 chunks, 5 trials, a lost id or surfaced error counting as a
-    failure): 4, 8 and 16 were clean at every capacity tested; the first failures appeared at **32** against a
-    capacity-1 backend. 4 sits 8x below that, leaving the headroom for the multiplier a single-call sweep
-    cannot show — many concurrent `addMany` calls sharing one backend.
-  - Set `writeConcurrency: 1` to restore the previous strictly-serial behaviour. `addMany`/`removeMany` remain
-    non-atomic either way; concurrency changes only *how much* of a batch may already have landed when the
-    first error surfaces, since the flusher stops scheduling on first failure but in-flight writes still settle.
-  - Exported as `DEFAULT_WRITE_CONCURRENCY`.
-
-### Fixed
-- **Bulk-load no longer blocks the event loop for the whole load.** `bulkLoadCrbmGeneration` was a single
-  synchronous stretch: a 1M-id load (~62,000 chunks) measured **442 ms wall with 450 ms during which the event
-  loop did not turn once**. Wired into a request handler that stalls every other request on the instance —
-  health checks included — for the duration, which is the difference between a slow endpoint and one that looks
-  dead to its load balancer. The load now hands the loop back periodically: **worst stall 450 ms → 19 ms**.
-  - Applies to the four loops that dominate a load — id ingest, the per-chunk flush, the cardinality tally, and
-    the serialize/CRC/frame pass — plus `writeCrbmGenerationStream`, which compaction runs over whole segments.
-  - **The obvious fixes do not work, and this is worth knowing before you write your own.** Making the work
-    async is a **7x regression** (636 ms vs 92 ms): handing each chunk's insert to the threadpool costs ~9 µs of
-    dispatch against ~1.5 µs of work. And `await Promise.resolve()` — equivalently `Clock.sleep(0)` — yields
-    *nothing*, because microtasks drain before the loop advances a phase; measured at 555 ms of starvation
-    against a 568 ms unyielded baseline. The yield has to be a macrotask, and it has to be periodic.
-  - Users of `@cloudbitmaps/roaring` get this automatically — the flavor pre-binds a real clock, exactly as it
-    pre-binds the codec. Calling `@cloudbitmaps/core` directly with no `clock` keeps the old behaviour
-    unchanged, so this is purely additive.
-
-- **Bulk-load is 42% faster on sync input** (1M ids: **442 ms → 256 ms**), independent of the fix above. Both
-  sync and async sources were normalised through one async generator, which forces a microtask per id: 224 ms
-  against 11 ms for a plain `for..of` over the same array — 55% of a whole load spent on iteration protocol
-  rather than work. The two ingest paths are now separate.
-
-## [0.3.0] - 2026-07-27
-
-A production-safety release. An adversarial audit round found that the per-op budget bounded **fan-out** but
-not the **enumeration** that fed it — so the documented denial-of-wallet control could be exceeded in memory
-before it could refuse in requests. Every enumeration in the library is now bounded, and three hot paths got
-measurably faster along the way. No format change; two new options, both additive.
-
-### Added
-
-- **`checkConsistency` bounds its registry scan** via a new `maxScanSegments` option (default **250,000**, exported
-  as `DEFAULT_MAX_SCAN_SEGMENTS`). It was the last unbounded enumeration in the library: the function's own
-  comment said "fail fast before the (possibly huge) registry scan" and then drained that scan into an array
-  anyway, so memory scaled with total fleet size with no way for the caller to cap it. Operator-invoked rather
-  than request-reachable — which is why it was fixed after the GDPR paths — but "an operator runs it" is not a
-  bound, and a DR drill against a large fleet from a modest box is precisely the case that hurts. The default
-  sits comfortably above the 100K+ fleets the compaction docs target, so no real deployment should meet it.
-
-- **`maxWarmScanBytes` — a memory ceiling that is deliberately *not* the budget** (default **64 MiB**, exported
-  as `DEFAULT_MAX_WARM_SCAN_BYTES`). It caps the warm-delta bytes a single segment scan may hold resident, for
-  every read op, and — unlike `budget` — **stays in force when `budget: false`**.
-  - Two controls because there are two axes. `budget` bounds **cost** (backend requests); this bounds
-    **memory**. Treating one as the other is what allowed a segment to materialise ~12 MB before a
-    `maxRequests: 2` budget could refuse it, and then caused a first attempt at that fix to wrongly tighten
-    `intersect`.
-  - **It is the only bound `intersect` can have.** Its budget is `common keys × operands`, a product a single
-    wide operand can legitimately exceed in row count while remaining entirely within contract — so a request
-    budget cannot express a memory limit for it. `intersect` was the last unbounded read path; it no longer is.
-  - **Always on, and raisable.** A ceiling that `budget: false` switches off is missing exactly when it is
-    needed; one you cannot raise is a landmine for a legitimately large segment. Invalid values (including the
-    `NaN` you get from an unset `Number(process.env.X)`) are rejected at construction, not on the first read.
-
-### Changed
-
-- **Four development-only advisories are now fixed rather than tolerated**, via `pnpm.overrides`: `adm-zip`
-  (high, via `cassandra-driver`), `qs` (via Stryker), `uuid` (via `@google-cloud/storage`) and `esbuild`. The
-  production-scoped audit gate correctly ignored all four and CI was green, but "correctly ignored" is not
-  "fine". Upstream cannot resolve the first one — `cassandra-driver@4.9.0`, the latest, still pins
-  `adm-zip ~0.5.10`, a range that cannot reach the patched 0.6.0 — so an override is the only route. Verified
-  against the full nine-backend integration suite, since the `adm-zip` and `uuid` paths are ones the unit tests
-  never touch. **No consumer impact:** these are dev dependencies; `core` ships zero runtime dependencies.
-- **`dependency-cruiser` 16 → 18**, which requires `^22 || ^24` and was therefore blocked until the Node floor
-  moved in this release. Architecture lint still passes (120 modules, 389 dependencies cruised).
-
-### Fixed
-
-- **The per-op budget now bounds the enumeration, not just the fan-out it feeds.** Every affected call site
-  drained an async iterable in full and only then called `checkBudget(budget, items.length, op)`. That refuses
-  the fan-out, but only *after* materialising the list — so `budget.maxRequests`, the documented
-  denial-of-wallet control, provided **no memory protection at all**. Measured against the previous release: a
-  store configured with `budget: { maxRequests: 2 }` still buffered 3,000 warm chunk rows (~12 MB) before
-  `count()` threw, and `subjectReport` buffered 20,000 registry records. That contradicts the bounded-memory
-  invariant, and on a small container it is an OOM rather than a refusal.
-  - Fixed on the read path (`count`, `iterate`) and on the GDPR paths (`subjectReport`, `eraseSubject`), which
-    are reachable from ordinary end-user traffic. Resident memory during these scans is now `O(budget)` rather
-    than `O(segment)` / `O(fleet size)`.
-  - **`intersect` is deliberately unchanged.** Its budget is `common keys × operands`, a product — one wide
-    operand can legitimately hold far more warm rows than that product, so applying the row count as a ceiling
-    would refuse work the documented contract allows. An existing budget test caught exactly this. Bounding
-    `intersect`'s per-operand warm snapshot needs an explicit memory ceiling rather than a reinterpretation of
-    the budget, and is tracked separately.
-  - **`runConsistencyCheck` is also unchanged**: it accepts no `budget` option at all, so bounding it means
-    adding public API. It is operator-invoked rather than request-reachable, so it is tracked rather than
-    rushed.
-- **New: `collectWithinBudget`** — the shared helper the above is built on. Its error message deliberately says
-  "more than N" instead of an exact total, because an exact total requires finishing the scan, which is the
-  cost being refused.
-
-### Performance
-
-- **`bulkLoadCrbmGeneration` inserts per chunk instead of once per id — measured 1,344 ms → 879 ms for 1M ids**
-  (identical input, same harness; ~35% off). The old loop crossed the JS↔native boundary once per id, and did
-  it in one unbroken synchronous stretch: on Node's single thread that stalls every other request on the
-  instance, measured separately as a 0.7 ms health check taking 275 ms. Fewer, larger inserts cut both the
-  wall-clock and the length of that stall.
-  - The buffer is **capped** rather than accumulating the whole input. Bucketing everything first is faster
-    still, but holds every remainder as an uncompressed JS number across up to 65,536 chunks — unbounded in
-    exactly the way this library refuses to be. Flushing at a fixed pending count bounds the transient buffer
-    to ~8 MB regardless of input size or key distribution.
-  - Note this is a **35% improvement, not the 3–9× an isolated insert microbenchmark suggests**: end-to-end,
-    serialization, per-chunk CRC and driver writes account for the rest of the time.
-  - Bulk-load remains a **batch primitive** — it is still hundreds of milliseconds for large inputs and still
-    belongs in a job or worker, never a request handler. See the guide's event-loop section.
-
-- **CRC32C is now slicing-by-8 — ~1.5× faster, and it runs on every cold reader open.** The `.crbm` index is
-  checksummed in full when a reader opens, which happens on a cold-start, an LRU eviction, or a real generation
-  change. The byte-at-a-time implementation measured ~3.3 ms/MiB, so a maximally-sized 8 MiB index cost ~27 ms
-  of synchronous stall; it is now ~18 ms, and a typical wide segment's index drops from ~5.5 ms to ~3.7 ms.
-  (Not the 3–4× slicing-by-8 achieves in C — JS bounds-checking and the absence of native 32-bit loads take
-  most of that back.)
-  - **Byte-identical output, which is the only thing that matters here** — this is a wire-format checksum, and
-    a deviation would make every existing `.crbm` unreadable. Verified against the previous implementation over
-    6,001 cases: every length from 0 to 2,000 (covering all eight tail remainders and the empty input), 4,000
-    random buffers, non-zero seeds for the streaming path, and the published CRC-32C known-answer vector for
-    `"123456789"` (`0xe3069283`).
-  - Note this was **not** the audit's suggested fix. The proposal was to yield around the CRC or shrink the
-    index cap; making the checksum itself faster helps every caller instead, needs no new configuration, and
-    leaves the pure-core determinism seam untouched (a yield would have required a timer, which `core/`
-    lint-bans).
-
-### Documentation
-
-- **In-region latency is now measured, closing the last deferred claim on the benchmarks page.** A warm `has()`
-  runs at **p50 5.27 ms · p90 6.36 · p95 7.15 · p99 12.71** (n=2,000) from a client inside `us-east-1`, against
-  a North Star target of single-digit-to-~25 ms. The previously-published cost run measured from ~96 ms outside
-  the region — roughly 4× the entire latency budget — so it could neither confirm nor contradict the target;
-  that caveat is replaced with the figure rather than deleted. Two independent runs agree on every percentile to
-  within ~0.5 ms. Stated precisely: the claim is **p99 inside budget**, not *always* inside budget, since `max`
-  was 39.61 ms; **p999 is deliberately not published**, being ~2 samples deep at this sample size. Measured
-  against the **published package**, not a local build.
-
-## [0.2.0] - 2026-07-27
-
-**Minimum Node is now 22.** A minor bump rather than a patch, because dropping a runtime narrows the supported
-surface even when the dropped runtime is end-of-life. No format change; no API change.
-
-### Changed
-
-- **`engines.node` is now `>=22` (was `>=20`) on both published packages.** Node 20 reached **end-of-life on
-  2026-04-30**, so the packages were advertising support for a major that receives no security patches — and
-  that nobody was developing against: the repo's own version file already said `22`, and only the manifests
-  disagreed. Shipping an EOL runtime is a security liability and a tooling one; the toolchain is already moving
-  past it (dependency-cruiser 18 declares `^22 || ^24`).
-  - **If you are on Node 20:** stay on `0.1.3`, which is unaffected and remains installable, and upgrade Node
-    when you can. Node 20 receives no upstream security fixes, so this is worth doing regardless of this
-    package.
-  - The CI matrix moves to **22 + 24** — the active LTS plus the current release — so the floor is exercised
-    rather than merely declared, and the next major is tested before it becomes the floor.
-
-### Added
-
-- **A test pinning the runtime floor across all three places it is declared.** The floor lives in `engines`, the
-  version file, and the CI matrix, and it had already drifted: the version file said `22` while all three
-  manifests said `>=20`. Each file is individually plausible, so only the *disagreement* is wrong and no single
-  file can see it. It was noticed by accident — an unrelated AWS SDK warning during a latency run mentioned Node
-  20 — which is not a detection strategy. `tests/ci/runtime-version-policy.test.ts` now fails if the three
-  disagree, if a CI job pins a Node below the floor, or if the matrix stops exercising the floor.
-
-## [0.1.3] - 2026-07-27
-
-A correctness fix that closes the last gap in "all tier bytes are untrusted", plus release-pipeline and
-public-surface hardening from a three-agent audit sweep. No format change; no breaking API change.
-
-### Fixed
-
-- **Chunk payloads are now range-checked on read, closing the last gap in "all tier bytes are untrusted".**
-  A chunk payload holds 16-bit **remainders**, and nothing verified it. The size caps bound length, and
-  CRC/AEAD only prove the bytes are the bytes that were written — which anyone able to write your storage
-  satisfies. A value `>= 65536` then reached `joinId`, which masked it and emitted a **fabricated id belonging
-  to a different chunk's id space**: indistinguishable from real data, inflating `count()` and creating
-  spurious `intersect` matches. Compaction was the only path that already failed loudly, which merely turned
-  the same row into a permanently poison segment.
-  - Checked where a payload is interpreted **as a chunk** — the cold-chunk read and both halves of a warm
-    delta — **not** in the codec. The first attempt put it in `safeDeserialize` and broke two tests
-    immediately: that is the codec's *general* entry point, also used by full-segment export, where u32 values
-    are entirely legitimate.
-  - Costs **one check per chunk, not per id**. See the new `maximum()` below.
-
-### Added
-
-- **`CodecBitmap.maximum?()` — an optional method on the codec seam.** Returns the largest value, or
-  `undefined` when empty. The engine uses it for the range assertion above. **Optional by design:** a codec
-  that cannot answer in better than O(n) omits it and the engine skips the check, rather than walking every
-  value on the read path — the one thing this must never cost. Roaring answers it in O(1) from its container
-  index, so `@cloudbitmaps/roaring` implements it. Additive and backwards-compatible: an existing custom codec
-  keeps working untouched.
-
-### Security
-
-- **The release pipeline now scans the artifact it publishes, not just the source that produced it.** Every
-  package is packed, unpacked and leak-scanned before the publish
-  (`pnpm leak-scan:tarballs`). `dist/` is gitignored, so the existing source and git-history scans
-  structurally could not see the majority of the published bytes — and the sourcemaps carry every `src`
-  comment verbatim through `sourcesContent`. Verified against a planted string: the new gate catches a comment
-  that reaches the tarball *only* by that route.
-- **Every recoverable check now runs before the irreversible one.** An npm tarball is immutable outside a
-  72-hour window, so the release-notes extraction and the dependency audit moved ahead of `pnpm publish`
-  instead of after it (notes were previously only read by the `github-release` job, i.e. once nothing could be
-  done about a missing section). The audit specifically must re-run here because it is the one gate whose
-  verdict changes with no commit at all. `tests/ci/release-workflow.test.ts` now fails if any precondition is
-  ever moved after the publish.
-- **A release is never cancelled in flight** (`concurrency.cancel-in-progress: false`), so the two packages
-  cannot be left half-published; the npm upgrade the OIDC publish requires is pinned to a floor
-  (`npm@^11.5.1`) rather than `@latest`; and the `packages/*` guards fail closed if the glob ever matches
-  nothing instead of looping once over a literal path.
-
-### Documentation
-
-- **Private-doc citations removed from the surfaces consumers actually hit.** JSDoc references of the form
-  `DECISIONS #N` were rendered by tsup into the published `.d.ts` files — where an editor shows them on hover —
-  and embedded in the sourcemaps via `sourcesContent`. They pointed at a document that is not in this
-  repository, so there was nothing a reader could follow. Also removed: bare citations to numbered internal
-  design docs in the API reference and a CI comment, and a markdown link in `cost.ts` to a decision-log file
-  that does not exist in this repository at all. The `CHANGELOG` keeps its citations deliberately — it is a historical record and
-  the ids are stable.
-- **The example workload on the site is now written at the level of abstraction the rest of the project uses.**
-  The walkthrough's two maintenance modes are described as *batch rebuild* and *live update*, with neutral
-  example segment names and a generic SQL source. The technical content — which mode maps to which topology,
-  and why — is unchanged.
-
-## [0.1.2] - 2026-07-27
-
-Correctness fixes found by an adversarial audit of the shipped source, plus the documentation defects the same
-sweep turned up. No format change; no API change.
-
-### Fixed
-
-- **`withRetry` could skip the operation entirely and reject with `undefined`.** `Math.max(1, maxAttempts)`
-  guards `0` and negatives but **not `NaN`** — `Math.max(1, NaN)` is `NaN`, and `1 <= NaN` is `false`, so the
-  retry loop body never ran. The wrapped operation was **never invoked**, and the call rejected with the
-  literal `undefined` rather than an `Error`, so every typed-error branch in the caller's stack fell through.
-  With the retrying drivers on (the default), that means writes silently no-op **without ever touching the
-  backend**. Reachable from ordinary wiring: `retry: { maxAttempts: Number(process.env.X) }` is `NaN` when the
-  variable is unset. Now rejected with a `ValidationError` naming the value, and a fractional `maxAttempts` is
-  floored so it can no longer sleep toward an attempt that never happens.
-- **The DynamoDB registry enumerated segments with an eventually-consistent `Scan`** while `get()` on the same
-  table was strong. Every caller treats `list()` as the *complete* segment set, so a segment registered
-  moments earlier could be missing from: `eraseSubject`'s erasure ledger (**a GDPR Art. 17 miss, reported as
-  success**), `subjectReport`'s Art. 15 answer, and `runExport`'s manifest — where the segment lands in
-  neither the manifest nor `failed[]`, making "a manifest exists ⇒ the run finished" untrue. Now
-  `ConsistentRead: true`, matching `get()` and the warm driver's `listChunks`. Costs 2× RCU on that Scan,
-  which is the right trade for a correctness-critical enumeration.
-
-### Documentation
-
-- **`PRIVACY.md` — which ships inside the tarball — showed two calls that throw.** `subjectReport(id)` and
-  `eraseSubject(id, { owner })` both hit a tenancy guard requiring an explicit `namespace` (or an
-  `{ allNamespaces: true }` acknowledgement), because ids live in one global space shared across namespaces.
-  Installed users were reading a GDPR compliance document whose examples fail. Corrected there and in
-  `README.md`.
-- **`PRIVACY.md` credited `subjectReport` with returning the erasure ledger.** It returns membership only; the
-  ledger comes from `eraseSubject`. This sat in the Art. 30 accountability section.
-- **The README overstated the integrity guarantee.** It read "every object a SHA-256, verified before use".
-  The digest is computed at write and handed back to the caller — it is **not stored and never re-compared on
-  read**. The read-path guarantee is the CRC32C, which *is* verified before the bytes reach the deserializer.
-  Reworded to say exactly that, and to say what the SHA-256 is actually for.
-- **`api-reference` documented a `keep` option on `store.compact`** that `CompactionOptions` does not have;
-  `keep` exists only on `gcOrphanGenerations`/`runCompactionCycle`. Replaced with the real options.
-- **Status lines still said pre-publish** and told readers to use a local clone, two releases after publishing.
-
-## [0.1.1] - 2026-07-26
-
-Documentation-only. No runtime code changed — `dist/` is byte-identical in intent; only the prose that ships
-beside it differs.
-
-### Fixed
-
-- **The shipped docs still called the library CloudRoaring.** `PRIVACY.md` travels *inside* the published
-  tarball and named the old project in 11 places, so this was visible to anyone who had already installed
-  `0.1.0`. Renamed across the shipped `README.md` and `PRIVACY.md` (and 12 more files in the repo), along with
-  the crossover chart's baked-in SVG label.
-  - The rename is **context-aware, not a blunt substitution**: `CloudRoaring` is still the exported class, so
-    fenced blocks and inline code are untouched, and `CloudRoaringOptions`, `CloudRoaringError`,
-    `isCloudRoaringError` and `CloudRoaring.estimateCost()` are all preserved — 34 API references verified
-    individually. Possessives read "CloudBitmaps'", not "CloudBitmaps's".
-
-### Added
-
-- **The GitHub Release is cut by the pipeline**, not by hand, with notes lifted verbatim from this file — one
-  source of truth, so the release page and the changelog cannot drift.
-  [`scripts/changelog-section.cjs`](scripts/changelog-section.cjs) extracts the section and **fails loudly**
-  rather than emitting something plausible: a missing version, an empty section, or a body over GitHub's
-  125,000-character cap all stop the job. It also strips the trailing maintainer comments the last section
-  inevitably absorbs — invisible in rendered Markdown, so a leak there would never be caught by eye.
-  - It runs as a **separate job holding `contents: write`**, which the publish job deliberately does not get.
-    [SECURITY.md](SECURITY.md) promises the publish job carries only the OIDC `id-token` permission, and
-    creating a release needs write — so the write scope goes on a job that cannot publish. (Both sibling
-    projects let `changesets/action` do this inside the publish job; simpler, and it widens the blast radius
-    of the one job worth attacking.) `needs: publish` means a release object only appears for a version that
-    really published.
-
-## [0.1.0] - 2026-07-26
-
-First public release. Published as
-[`@cloudbitmaps/roaring`](https://www.npmjs.com/package/@cloudbitmaps/roaring) (install this one) and
-[`@cloudbitmaps/core`](https://www.npmjs.com/package/@cloudbitmaps/core), Apache-2.0, with npm build
-provenance. Everything below is the work that got it here.
-
-### Added
-
-- **Release auth is now tokenless** — `release.yml` carries **no
-  `NPM_TOKEN`**, publishes from the workflow's GitHub OIDC identity (npm Trusted Publishing), runs behind a
-  protected `release` environment whose required reviewer is the approval gate, and sets
-  `NPM_CONFIG_PROVENANCE=true`. Root [`RELEASING.md`](RELEASING.md) documents the pipeline, the one-time npm +
-  GitHub setup, and the break-glass path.
-  - **This resolves a trap rather than dodging it.** Setting a package to *"require 2FA and disallow tokens"* —
-    which the standards ask for — **rejects an automation-token publish outright**, so token auth and that
-    hardening are mutually exclusive. Trusted Publishing is not a token, so it passes. Choosing the token model
-    would have meant silently dropping the hardening.
-  - **Bootstrap:** a Trusted Publisher is a *per-package* setting and needs the package to exist, so the very
-    first version is published manually with interactive 2FA — the order both sibling projects actually used,
-    confirmed from their git history. One-time, not a standing token. Since a manual publish carries no
-    provenance attestation, [`RELEASING.md`](RELEASING.md) documents two bootstraps: publish `0.1.0` manually
-    (as the siblings did), or publish a throwaway `0.1.0-rc.0` to create the names and ship the real `0.1.0`
-    through the gated workflow **with** provenance. **The prerelease route is the chosen one** — deliberately
-    diverging from the siblings so the launch artifact isn't the single unattested tarball in a project whose
-    supply-chain story is the point.
-  - The decision was taken by **matching the sibling projects** (`onadiet`, `babystack` already publish this way)
-    rather than inventing a third model; cloud-roaring was the outlier. The tag trigger and its two guards —
-    tag↔version agreement, and refusing to "publish" a still-`private` package that `pnpm publish` would silently
-    skip while exiting 0 — are kept as-is.
-- **Internal-doc citations removed from shipped code comments**. Packing the tarballs revealed
-  **362** internal-doc references inside the published `@cloudbitmaps/core` artifact (and 20 in `roaring`) —
-  carried there by preserved JSDoc and by sourcemap `sourcesContent`, which copies every source comment verbatim.
-  Two consequences: a user hovering a type in their editor saw links that would **404** (that directory is dropped
-  from the public snapshot), and `leak-scan --snapshot` fatally failed the tarball. Every citation is now replaced
-  by the fact it was pointing at — a comment should *say* the thing, not cite a file the reader cannot open. Also
-  swept the `spec-04` / `spec-09` shorthand, which had the same problem in disguise. **Now 0 in both tarballs.**
-- **Three real defects in `pnpm leak-scan`, found by actually scanning the npm tarballs** — and
-  `tests/scripts/leak-scan.test.ts`, the test file that should have existed from the start. Nothing in the gate
-  guarded the script that decides whether a tree is safe to publish, which is why all three survived.
-  - **False positive that would have failed the launch gate.** `const token = crypto.randomUUID();` was reported
-    as a "hardcoded secret literal" — the callee is 17 characters of otherwise-legal literal characters. It fired
-    on **five shipped driver bundles** (the random-UUID OCC tokens) and made `leak-scan --snapshot` fail the core
-    tarball outright. Not cosmetic: a scanner that cries wolf gets bypassed with `--force`, and then it protects
-    nothing. Call expressions are now rejected as values.
-  - **False negative.** Any env-var name with a *suffix* slipped through, because the keyword had to sit
-    immediately before the `=`/`:` — so `DJANGO_SECRET_KEY=…` and `MY_API_TOKEN_VALUE=…` were both unflagged, and
-    the `SECRET_KEY` convention is near-universal. Verified against the pre-fix script rather than assumed.
-    (`AWS_SECRET_ACCESS_KEY` was *never* in this gap — it has its own dedicated rule. Worth stating because it is
-    the example one reaches for first, and it is wrong.) An all-numeric-value exclusion keeps the widening from
-    tripping on `tokenExpiryNanos = 1730000000000000000`.
-  - **Two rules disagreeing.** The URL rule carefully exempted `mysql://root:pw@host.docker.internal` — and then
-    the *email* rule flagged `pw@host.docker.internal` anyway, so a compose DSN still failed. The loopback/compose
-    host list is now defined once and shared, since keeping two copies is what caused it.
-  - The scanner also skips its own test file by exact path (that file exists to hold secret-*shaped* fixtures, the
-    same reasoning that keeps `.leak-needles` gitignored) — an exact-path allowlist, not a `tests/` glob, because a
-    real credential under `tests/` is still a real credential.
-- **Planned: `analyze` — decide before adopting**. Not built; scoped on paper. Every cost tool we ship currently
-  presupposes adoption — `costReport()` needs data already in CloudRoaring, `estimateCost()` needs half a dozen
-  guessed parameters — so the thing that would *convince* a team to adopt requires them to have adopted. `analyze`
-  streams a candidate's own ids through `bulkLoadCrbmGeneration` into a Memory/LocalFs driver (**no cloud account,
-  no credentials, nothing created**) to *measure* cardinality, `.crbm` bytes and above all **chunk density** — the
-  figure nobody can guess and the one that drives everything — then feeds those measured numbers to `estimateCost`
-  in place of the guesses. It will refuse to invent what it can't know: traffic rates and arrival pattern stay
-  caller-declared and labelled as such. Stage **9.5b** adds the *"do you even need the native addon?"* comparison
-  (a plain per-chunk bitset is exactly `chunkCount × 8192` bytes against a measured roaring size — ratio ~1 ⇒ skip
-  CRoaring and deploy to edge runtimes), gated on the `bitset` flavor existing.
-- **`CostReport.advisories` — the estimator now compares you to *us*, not only to Redis**.
-  `verdict` has always been Redis-relative, which left a blind spot: feed it the id-at-a-time write shape and it
-  returns `'win-big'` — true, and thoroughly misleading, because you can beat the $346/mo baseline by 40× while
-  paying ~150× more than *this same library* would charge for the same outcome. `advisories` is a second,
-  self-relative channel that closes it.
-  - Ships one code, **`'batchable-writes'`**, carrying `currentUSD` and `batchedFloorUSD`. Empty array is the
-    normal case (never `undefined`, so consumers iterate unconditionally); dollar figures, `verdict` and
-    `rationale` are untouched.
-  - **The trigger is arithmetic, not a heuristic.** A 16-bit chunk key caps a segment at 65,536 warm rows, and a
-    segment can't occupy more rows than it holds ids — so if modeled writes/month far exceed that bound, the same
-    rows are provably being rewritten many times over.
-  - **The bound is deliberately an *upper* bound.** Over-stating it only makes the advisory quieter; under-stating
-    it makes it fire on already-optimal workloads, which trains people to ignore it — at which point the feature is
-    worse than absent. Byte-derived cardinality is rejected for exactly this reason (it understates a dense 8 KiB
-    bitmap container by ~16×). Two further gates keep it quiet: a ratio floor of 8 and a $1/mo savings floor.
-  - **A hit is a prompt to check, not an accusation** — the message says so. If those ids genuinely arrive one at a
-    time (real-time qualification) then `add()` *is* the right path; the estimator sees the shape, not the arrival
-    pattern.
-  - **Planning-time by design.** Detecting this at runtime would put a counter, map lookup and clock read on every
-    `add()` — the hot path everyone pays for, taxed to catch a mistake a minority makes once. Rejected outright
-    rather than deferred.
-- **Corrected: `add()`-in-a-loop at scale costs more than we published.** "$7.50 for 10M ids" was a **floor**, not
-  the figure. The measured $0.75/million holds for warm rows ≤1 KiB — what the calibration run exercised at ~500
-  ids/segment — but DynamoDB bills writes per **1 KiB** and a chunk's delta grows as you fill it, so a full ~8 KiB
-  roaring-bitmap row costs 2 RRU + 8 WRU = **$5.25/million**, i.e. ~$52 for the same 10M ids. **Denser data makes
-  the loop worse**, which is precisely the case where bulk-load was the obvious call. Now published as a range in
-  the README, benchmarks page, and guide.
-- **`pnpm test` now validates doc *anchors*, not just paths** (`tests/docs/links.test.ts`). Resolving the path
-  was never the whole invariant: `[x](docs/benchmarks.md#renamed-heading)` passed the existing check and still
-  dumped the reader at the top of the page with no signal anything was wrong. Adding the check immediately found
-  three real breaks — a stale table-of-contents entry in the threat model, and **six** links to a phase-doc
-  heading that had since gained a `*(gate — ☑ SHIPPED)*` suffix (fixed with a stable `<a id>` so a future status
-  edit can't break them again). The subtlety worth recording: GitHub maps **each** space to a hyphen, so
-  `## Cost & performance` is `cost--performance` — collapsing whitespace runs instead would have declared most of
-  this repo's own correct links broken, and the slugifier is unit-tested against that specific mistake.
-- **Real-cloud calibration — MEASURED.** The library's cost claim is no longer a model. Run
-  `2026-07-25-60291` against real S3 + DynamoDB in `us-east-1` (20 segments / 2,000 `add`s / 20 publishes /
-  2,000 `count`s, concurrency 16) cost **$0.001911** across 6,355 billed requests, against an always-on
-  Redis-HA line of **$346/mo**. Unit economics: **$0.75 per million** incremental writes, **$0.14 per million**
-  `count()`s, **$5.88 per million** segment publishes. Published with the full method, the cost-safety evidence,
-  and what it does *not* establish, in [`docs/benchmarks.md`](docs/benchmarks.md#real-cloud-calibration--aws).
-  - **The run measured two things the estimator could only assume.** **Zero SDK retry billing** — `attempts`
-    equalled `commands` for every command type (6,355 = 6,355), so no throttle/5xx storm quietly multiplied the
-    bill; and a **2.65% OCC conflict rate** (53 retries over 2,053 write attempts = 1.027 attempts per write,
-    against the engine's bound of 17). It also confirmed `cold.list = 0` — LIST bills at the PUT rate, 12.5× a
-    GET, so a stray list-per-read is the classic cost blowup in this design, and the read path issues none.
-  - **The pre-flight projection was 95× the actual, by design.** It assumes every write exhausts all 16 OCC
-    retries, making the spend ceiling a true upper bound rather than a forecast — a run that fits under it cannot
-    surprise you, and one that does not gets refused rather than trimmed. (It refused at $0.10.)
-  - **Latency was measured but does *not* calibrate the in-region claim, and the docs now say so.** The client sat
-    outside the region: a same-machine TCP probe put the network floor at **96.0 ms** to DynamoDB and 92.6 ms to
-    S3, which decomposes the phases exactly — READ p50 95.47 ms ≈ **one** round trip, WRITE p50 197.72 ms ≈ **two**
-    (`add()` is `GetItem` then conditional `UpdateItem` under OCC), and throughput tracks concurrency ÷ latency
-    rather than any engine ceiling. Since the North Star warm-`has()` target is
-    single-digit-to-~25 ms and the floor here is ~4× that whole budget, run 1 neither confirms nor contradicts it.
-    An **in-region run** (Lambda/EC2 in `us-east-1`) is recorded as the named follow-up in
-    the production-readiness review, and no in-region figure is published until
-    it happens.
-  - **One honest floor:** AWS bills a failed conditional write at 1 WCU, but the 53
-    `ConditionalCheckFailedException` responses carried no `ConsumedCapacity`, so the meter could not recover those
-    units. True total ≈ $0.001944; the published figure understates by $0.000033. Disclosed on the page.
-- **Real-cloud calibration harness** (`pnpm calibrate:aws`) — the tool behind the numbers above.
-  Drives the real S3 + DynamoDB drivers against a real AWS account through the same three phases as `pnpm load`
-  (WRITE / PUBLISH / READ), timing every op for p50/p99/p999 and metering every billable request. Method, safety
-  properties, a per-run log, and an explicit list of what a run does **not** cover:
-  the real-cloud method doc.
-  - **Ops are metered at the AWS SDK layer, not through our own telemetry.** `IMetricsSink` emits only
-    `cold.get`/`warm.read`/`warm.write`, so it cannot see S3 **PUTs** — the ingest path, billed at **12.5× a
-    GET** — nor LIST, DELETE, or any registry operation. A cost figure derived from an op set missing the most
-    expensive write would be an overclaim, so the harness counts commands on the client itself.
-  - **DynamoDB cost comes from AWS's own numbers.** The meter injects `ReturnConsumedCapacity: 'TOTAL'` and reads
-    the units back off each response, replacing our size→`ceil`→units estimate (which mis-rounds on a
-    size-varied workload) with the capacity AWS reports consuming.
-  - **Safety, because it spends money:** dry-run by default; a hard `CR_CALIBRATE_MAX_USD` ceiling checked
-    against a projection computed the same way the result is; a required explicit region (no default — a silent
-    us-east-1 fallback is how you bill the wrong account); typed confirmation; the account identity printed
-    before anything is created; uniquely-named, cost-allocation-tagged resources; a refusal to touch any
-    pre-existing bucket or table; and teardown from the `finally`, from a SIGINT/SIGTERM handler, or by
-    `--cleanup <runId>` after an uncatchable kill. Every one of these was verified against LocalStack.
-  - `CR_CALIBRATE_ENDPOINT` rehearses the whole harness against LocalStack for free, so a real-account run has no
-    untested moving parts. Rehearsal also relaxes SDK checksum validation (LocalStack doesn't implement it
-    fully); a **real** run leaves validation on, because end-to-end integrity is something a calibration run
-    should be exercising.
-- **`bench/lib/measure.cjs`** — the latency and cost maths are now shared by the LocalStack and AWS harnesses, so
-  the *arithmetic* cannot drift between them. Their **dollar** figures are still not comparable, and the review
-  quantified why: the LocalStack one **over-states S3 GET cost by ~90×**, because `IMetricsSink` counts *logical*
-  chunk reads and the `.crbm` reader answers most of them from its cached index with no HTTP request at all
-  (1901 events carrying 1016 total bytes in the committed result). Disclosed in the harness output, the method
-  doc, and the test-strategy figure that quoted it.
-- **`pnpm test` now guards the calibration script's refusal paths** (`tests/bench/calibrate-guards.test.ts`, 19
-  cases on the pure-projection path — no AWS, no credentials, no cost).
-
-- **Launch prep — the repo is now presentable to the public**:
-  - **A public [roadmap](docs/ROADMAP.md)** — what's shipped, the **validated envelope** (what's proven, at what
-    scale, and what isn't), the path to `1.0`, and an explicit *deliberately not planned* list. It is a curated,
-    public-safe subset of the internal roadmap, and `CONTRIBUTING.md` now requires the two to move together.
-  - **Community-health files** — a Contributor Covenant [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md), issue forms
-    (bug / feature, routing security reports to the private policy and questions to Discussions), and a pull
-    request template tailored to this project's gate rather than generic filler.
-  - **README badges** — npm version, CI, license, and supported Node. The npm/Node badges read the registry and
-    the CI badge needs a public repo, so all three resolve themselves at launch.
-  - **`pnpm leak-scan`** — the pre-publish gate. Always fatal: credentials (including the unquoted `.env`/YAML
-    shapes, which is how secrets actually leak), private keys, non-noreply email addresses, and absolute local
-    machine paths. Fatal under `--snapshot`: stale old-owner URLs and dangling private-doc references, in both
-    the path form and the bare `NN-DOC-NAME.md` form. Scans tracked files, an arbitrary directory (`--dir`, for
-    an **unpacked npm tarball** — the artifact no git-based scan can see and the one that's immutable once
-    published), or every blob reachable from **every ref** (`--history`; `git log -p` walks HEAD only and emits
-    no diff for merge commits, so it would miss a secret added as a merge resolution or left on an unmerged
-    branch — both of which `git push --mirror` carries).
-  - **`pnpm verify-blob-hashes`** — content-verifies a repo migration by **git blob hash**, so the package
-    split's renames don't produce false alarms; relocated matches are listed rather than silently counted,
-    because duplicated content (the per-package `LICENSE`/`NOTICE`/`PRIVACY.md` copies) would otherwise mask a
-    real deletion. Nothing gets archived until every file provably survives.
-  - **Three new doc gates** — every relative link in the docs, `site/`, and `.github/` resolves; `site/` and the
-    public roadmap link nothing at a private path (which the snapshot drops, so those links resolve locally
-    and 404 only in public — the reason five of them survived the package split); no user-facing file tells a
-    reader to install or import the retired unscoped `cloud-roaring` name; and the exported `VERSION` matches
-    **both** package manifests, pinning the lockstep-release invariant that previously had no test.
-
-### Changed
-
-- **Every open dependency advisory is now patched rather than accepted, and the triage list is empty.**
-  `vitest` `^2` → `^3.2.7` (clearing two criticals in the UI server), and `tar`, `vite`, `postcss`, `js-yaml`,
-  `fast-uri` and `brace-expansion` moved to patched releases within their existing ranges.
-  - **The three accepted `tar` advisories were removed, not re-justified.** They were held on reachability
-    grounds — `tar` reaches the tree only through `roaring`'s *install-time* native-build chain and is never on
-    a runtime path — but the entry carried an explicit revisit condition ("`tar` ships a fixed release"), which
-    upstream met. `pnpm.auditConfig.ignoreGhsas` is now `[]`. Reachability is a reason not to panic; it is not a
-    reason to stay unpatched once a patch exists.
-  - What remains open is dev-scope only and blocked on upstream majors (`adm-zip` via `cassandra-driver`, `qs`
-    via Stryker's `typed-rest-client`, `uuid`); none of it appears in either published tarball, which carry
-    **zero** and **two** runtime dependencies respectively.
-- **Both packages are versioned `0.1.0-rc.0` and are no longer `private`** — the bootstrap prerelease that
-  creates the two names on npm so a Trusted Publisher can be bound to each. It publishes under the `rc`
-  dist-tag, so `latest` stays unset and a plain `npm i` resolves nothing until the real `0.1.0` ships through
-  the attested pipeline. `private: true` was the last accidental-publish guard, and `pnpm publish` *silently
-  skips* a private package (no error, exit 0) — which would have turned a real release attempt into a fully
-  green run that published nothing. That guard is now carried by
-  [`pnpm release:bootstrap`](scripts/bootstrap-publish.cjs) and by the release workflow, both of which **fail
-  loudly** instead, and both of which verify the registry afterwards rather than trusting a clean log. The
-  **root** manifest stays `private` — it is never published.
-- **Both packages gained `prepack`**, so a publish can never ship a stale or absent `dist`.
-
-- **Launch decisions locked**: the public repo will be
-  **`cloudbitmaps/cloudbitmaps`** — the family monorepo, not a flavor name — with language ports as suffixed
-  siblings; and the repo goes **public before the first publish**, so `0.1.0` ships with npm build provenance
-  (which requires a public source repo) instead of deferring the attestation.
-
-### Fixed
-
-- **`publishConfig.provenance: true` made every manual publish impossible.** npm honoured it off-CI too, went
-  looking for a provider to mint the attestation from, found none on a laptop, and aborted with
-  `EUSAGE: Automatic provenance generation not supported for provider: null` — taking out both the bootstrap
-  and the documented break-glass path. Neither `--no-provenance` nor `NPM_CONFIG_PROVENANCE=false` could
-  override it (and pnpm does not forward `--no-provenance` at all). Provenance is now opt-in at the call site,
-  where [`release.yml`](.github/workflows/release.yml) already passed `--provenance` explicitly, so CI's
-  attestation is unchanged — verified by confirming npm still *attempts* provenance from the flag alone.
-- **The post-publish check called a successful publish a failure.** npm ACKs a publish on the write path
-  (`PUT 200`) but serves `npm view` from a replica that lagged **~7 minutes** for these brand-new packages, so
-  probing once immediately afterwards reported `not found after publish` for two packages that were live,
-  public and correct — the worst available wrong answer directly after an irreversible step. It now waits the
-  propagation out (with `--prefer-online`, since npm had also cached the pre-publish 404 from its own
-  precondition probe) and, if it really does time out, says to confirm against the authoritative API rather
-  than assume failure.
-- **The `latest` dist-tag claim was wrong in the safe direction, and the repair for it did not exist.**
-  `--tag rc` states the intent but does not stop a registry from also pointing `latest` at a package's first
-  version, and `npm dist-tag rm … latest` is refused. The tooling now **reports** which happened instead of
-  failing a successful, irreversible publish over a condition that resolves itself when the real release claims
-  `latest`. Established against a real registry rather than reasoned about.
-- **A timing-fragile RNG test could fail the gate under load.** `next() stays in [0, 1)` ran 200,000 `expect()`
-  calls inside its loop — ~1.3 s alone, but past the 5 s timeout when scheduled beside the heavier suites. The
-  loop now records the first offending draw and asserts once afterwards, which is both stable and a better
-  failure message (*which* draw broke, not "expected 1 to be less than 1"). The file dropped 1,240 ms → 37 ms and
-  the whole suite 19.7 s → 9.3 s; the timeout was left at its default rather than raised to paper over it.
-- **The calibration script's spend ceiling could be silently deleted.** A non-numeric `CR_CALIBRATE_MAX_USD`
-  (`1,00`, `$1.00`, `abc`) parses to `NaN`, and `total > NaN` is `false` — so the documented "real bound" wasn't
-  one. Now rejected, and regression-tested.
-- **Refusing a pre-existing DynamoDB table orphaned the S3 bucket it had just created**, and bailed via
-  `process.exit`, which skips `finally` — so nothing was even printed about the leak. Both existence probes now
-  run before either resource is created.
-- **Three exit paths raced each other's teardown.** A SIGTERM'd run printed only one of two deletes because the
-  top-level catch's `process.exit(1)` killed an in-flight `DeleteTable`. There is now one memoised teardown
-  promise awaited by the `finally`, the signal handler, and the catch. Re-verified at two interrupt points: both
-  deletes complete, zero leftovers.
-- **A signal during table creation would have torn down nothing** — `createFresh` returned a fresh `created`
-  object, so the caller's copy stayed all-false for up to the 120 s `waitUntilTableExists` window on real AWS.
-- **The meter counted commands, not billed requests, and lost capacity on failures.** It sat above the SDK's
-  retry loop, so a throttled run — the case calibration exists to catch — would have under-reported. Split into
-  two middlewares: attempts are tallied inside the retry loop, capacity and byte sizes are read where the output
-  is actually parsed, and a failed data-plane command's `ConsumedCapacity` is recovered off the error (an OCC
-  `ConditionalCheckFailedException` consumes capacity like any other write).
-- **Published op counts disagreed with the published cost.** `measuredOps` was assigned by reference, so
-  teardown's own LIST/DELETE landed in it *after* cost was computed — anyone recomputing cost from the counts got
-  a higher number. Snapshotted now.
-- **`CR_CALIBRATE_WRITES=0` ran the full default workload**, because the shared `int()` helper maps 0 to the
-  default. Sizes now mean what they say, and a malformed one is an error.
-- **The projection was not a bound.** Measured writes came within *one request* of a ×2 projection, so the
-  multipliers were raised and the ceiling is additionally re-checked against measured cost after every phase.
-- **A silently understated DynamoDB cost can no longer be published as a measurement** — if fewer capacity units
-  are reported than requests issued, the run warns and stamps `cost.capacityWarning` into the result.
-- `--cleanup <runId>` was documented but only the env var was read; an empty `CR_CALIBRATE_RUN_ID` would have
-  named resources `cloudbitmaps-calib-`.
-- **A present-but-empty `CR_CALIBRATE_ENDPOINT` meant "real AWS".** `CR_CALIBRATE_ENDPOINT=$LOCALSTACK` with the
-  variable unset turned the documented *free rehearsal* — whose command line already carries
-  `CR_CALIBRATE_CONFIRM=spend-real-money` — into a billed run, and for `--cleanup` a deletion aimed at a real
-  account. Now an error.
-- **A second Ctrl-C leaked everything.** `process.once` meant an impatient repeat signal during teardown reached
-  Node's default handler and killed the process mid-delete, leaking bucket, objects and table with no warning —
-  immediately after printing "tearing down before exit". Teardown is 4+ round trips on real AWS, so "press it
-  again" is the expected reaction. It now warns and prints the recovery command.
-- **A failed existence probe read as "absent".** `HeadBucket` answers **403, not 404**, for a bucket you own but
-  can't `ListBucket` — and in **us-east-1** `CreateBucket` on a bucket you already own returns **200 OK**. The run
-  would have written into your bucket and teardown would then have emptied and deleted it. Only a genuine
-  not-found now counts as absent.
-- **The projection still wasn't a bound.** Each OCC retry round issues another `GetItem` + `UpdateItem`, so reads
-  and writes track each other — but reads had the *smaller* multiplier, so the read slot always breached first
-  (measured 237 against a projected 186, triggered by `CONCURRENCY > SEGMENTS`, i.e. exactly what you'd set to
-  make a run cheaper). Both now derive from the engine's own OCC retry bound, and the ceiling is additionally
-  enforced **during** the WRITE phase rather than only at phase boundaries.
-- **The failure counter was inverted.** A 4xx (`ConditionalCheckFailedException` — the dominant OCC case)
-  *resolves* at the `deserialize` step, because the SDK's own deserializer sits outside the middleware, so it was
-  recorded as a clean success and `failedAttempts` published `{}` on runs full of conflicts. Meanwhile a
-  transport failure, where nothing reached AWS and nothing was billed, was counted as a billed attempt.
-  Classification is now off the HTTP status. A rehearsal that reported 0 failures now reports 131.
-- **Teardown couldn't empty a versioned bucket or abort an in-flight multipart upload** — the parts are billed,
-  and real `DeleteBucket` refuses while one is in progress, so the last-resort cleanup tool could dead-end. It now
-  aborts uploads and deletes object versions plus delete-markers.
-- **A crashed run discarded every measurement it had already paid for** (reproducible: OCC exhaustion at ~90% of
-  the workload). Results are now written from the `finally`, flagged `partial`.
-- **`--cleanup` reported non-existent resources as leftovers that "will keep costing money"** — crying wolf on the
-  common case, which trains you to ignore the one signal that matters for spend.
-- The identity check could print **"@aws-sdk/client-sts is not installed"** when the real cause was an expired
-  token, resolved credentials *separately* from the clients doing the work, and only ever printed the account at
-  someone rather than checking it. Both clients must now agree, and `CR_CALIBRATE_EXPECT_ACCOUNT` is enforced.
-- Percentiles a sample can't support now print `—` instead of a number: with n < 1000, `p999` degenerates to
-  `max`, so a 20-op phase was presenting p99/p999/max as three statistics drawn from one observation.
-- Meter details: don't mutate the caller's input object; count the harness's own bucket-lifecycle requests
-  (billed); sum array-shaped `ConsumedCapacity` from batch/transact commands; add `TransactGetItems`.
-
-- **The three `pnpm fuzz:*` targets silently lost coverage guidance under any other directory name.** They
-  filtered instrumentation with `--includes cloud-roaring/fuzz/build`, a path substring that matched only because
-  the checkout directory happened to be called `cloud-roaring`. Renaming the repo — which the launch will do —
-  loaded **1 module / 512 counters instead of 2 / 663**, dropping our own code from the fuzzer's feedback loop
-  while the nightly job still exited 0. Now `--includes fuzz/build`, verified to instrument identically on all
-  three targets.
-
-- **`site/` still told readers to `npm i cloud-roaring` and to import from `'cloud-roaring'`** — 32 occurrences
-  across all four pages, missed when the package split swept the source and the docs. That package is a
-  non-functional `0.0.0` placeholder, so every copy-pasteable example on the most shareable surface we have
-  produced an empty install and a `Cannot find module`. Now guarded by a test.
-- **Five `site/` pages linked into the private docs tree** — a path the public snapshot drops, so they resolved
-  locally and would have 404'd only once deployed. Also a `src/` path stale since the package split, and
-  `docs/guide/`'s pointer to the conformance suite.
-- **The shipped `packages/roaring/PRIVACY.md` linked `docs/guide/…` relatively** — but the tarball contains no
-  `docs/` tree, so those links were dead for every npm reader. It also cited a private adversarial-research doc
-  by name, inside an artifact that is immutable once published.
-- **`site/`'s status block** still described the drivers as upcoming, and named the wrong release as `1.0`.
-- **`site/`'s framing of the design target** claimed a productized-replacement pedigree that the roadmap
-  explicitly says isn't there yet (adoption feedback is listed as still owed). Softened to what's true: the
-  design target was a real workload of that shape.
-- **npm keywords** now include `mysql`/`mariadb` (a shipped driver that was missing) plus `cloud-roaring` and
-  `cloudbitmaps` on the flavor, so the retired unscoped name and the family name both still find it.
-- **Split into the `@cloudbitmaps` family: `@cloudbitmaps/core` + `@cloudbitmaps/roaring`**
-. The repo is now a pnpm workspace of two publishable packages.
-  **What you install changes name, not shape:** `npm i @cloudbitmaps/roaring` (plus only the backend SDK(s) you
-  use); `@cloudbitmaps/core` arrives **transitively** and is never installed directly. Every import keeps its
-  form — `import { CloudRoaring } from '@cloudbitmaps/roaring'`,
-  `import { S3StorageDriver } from '@cloudbitmaps/roaring/s3'` — because the flavor re-exports core wholesale and
-  mirrors each driver subpath.
-  - **`@cloudbitmaps/core`** — the codec-agnostic engine: `SegmentEngine` + the `CodecInterface` seam, **all**
-    storage drivers (each on its own subpath, SDKs as optional peers), the `.crbm` format, crash-safe compaction,
-    encryption/crypto-shred, the registry, consistency check, budget, and eject. **Zero runtime dependencies.**
-  - **`@cloudbitmaps/roaring`** — the flagship flavor: the roaring codec (`SafeBitmap`/`roaringCodec`), the
-    `CloudRoaring` facade, the driver re-export barrels, and both CLIs (`compact-segments`, `export-segments`).
-  - **Completing the codec seam:** core can no longer default the codec (the concrete codec lives in a package
-    that *depends on* core — a default would invert that arrow). `EngineDeps.codec` is now **required**; the
-    public entry points that need one (`bulkLoadCrbmGeneration`, `compactSegment`, `runCompactionCycle`,
-    `runExport`) keep it optional and fail fast with a typed error, while the flavor re-exports **codec-bound**
-    wrappers that shadow the star-export — so existing call signatures are unchanged.
-  - **Additive API surface:** core's barrel now also exports the **flavor-author kit** (`SegmentEngine`,
-    `EngineDeps`, `BoundedLru`, `safeMetrics`, `groundedReport`, `validateCompactionOptions`, `runExport`,
-    `splitId`/`joinId`, `mapWithConcurrency`, the budget helpers, `validateSegmentRef`) and the **driver kit**
-    (`NO_ROW`, `NoRow`, `Token`, `WarmRow`, `WarmReadOptions`, `chunkRefKey`, `segmentKey`) — what a flavor or
-    driver author composes, which is core's audience. Documented in
-    [the API reference](docs/guide/api-reference.md).
-  - Both packages shipped **private at `0.0.0`** (since versioned `0.1.0`, still private — see above);
-    publishing under the scope is the public launch itself.
-  - Guard-rails added/repaired with the split: a dep-cruiser rule that **core may never import a flavor**
-    (one-way arrow), the api-reference sync guard extended to both barrels + the flavor driver barrels, and the
-    determinism / SDK-free-core ESLint override, the bundle-purity dep-cruiser rules, and the mutation-testing
-    targets all retargeted to the new paths (they had silently matched nothing after the move).
-
-### Fixed
-
-- **The concurrent read-modify-write conformance case now rides out a `TransientError`, ending a recurring
-  Cassandra CI flake.** The
-  concurrent read-modify-write conformance test asserts the OCC contract — *no lost updates* — but its retry loop
-  only absorbed `WriteConflictError` and rethrew everything else. A cold Cassandra node whose Paxos layer isn't
-  warm answers a burst of `INSERT … IF NOT EXISTS` with *"Server timeout at consistency SERIAL (0 peer(s)
-  acknowledged)"*, failing the lane for a reason unrelated to lost updates. Production never sees this because
-  `CloudRoaring` wraps every warm driver in `RetryingWarmDriver` by default, so the contract test now reflects
-  real usage: transients are retried with a short linear backoff, **bounded** (25) so a driver that only throws
-  transients still fails loudly. Predicted by the warm-driver audit and deferred at the
-  time; promoted after it reddened CI again. Verified against a freshly-recreated (cold) Cassandra container.
-
-### Added
-
-- **Bitmap-codec seam** — `core/` is now **codec-agnostic**: the
-  `SegmentEngine`, compaction, and the `.crbm` read/write helpers construct and combine bitmaps only through a
-  new `CodecInterface` factory + `CodecBitmap` value type (`src/core/codec.ts`), never a concrete implementation.
-  Roaring is the flagship codec (`roaringCodec`, delegating to `SafeBitmap`); the `CloudRoaring` facade injects
-  it, so nothing changes for callers. This is the pre-split step that lets `@cloudbitmaps/bitset` /
-  `@cloudbitmaps/soaring` plug in behind the same seam with zero engine or driver changes. New public exports:
-  `CodecInterface`, `CodecBitmap`, `roaringCodec`. A codec-agnostic test drives the whole engine (add/has/remove/
-  count/iterate/tier-merge/intersect) on a non-roaring `Set`-backed codec to prove no roaring assumption leaked.
-  The hot path is unchanged — the codec is resolved once at store construction, never per-op. *(The physical
-  `@cloudbitmaps/core` + `@cloudbitmaps/roaring` package split is the follow-up; the `.crbm` serialization-id
-  generalizes to a per-codec id with the second codec's format work.)*
-
-### Security
-
-- **Supply-chain hardening.** Publishing now runs through a hardened, provenance-
-  signed pipeline. A new gated [release workflow](.github/workflows/release.yml) publishes with
-  `npm publish --provenance` (SLSA build provenance via GitHub OIDC; `publishConfig.provenance: true`), re-runs
-  the **entire** gate against the exact commit before creating the tarball, enforces `vX.Y.Z`-tag ↔
-  `package.json`-version agreement, and installs with `pnpm install --frozen-lockfile`. **Every GitHub Action
-  is now pinned to a full commit SHA** (a moved tag can no longer inject code). Workflows declare least-privilege
-  `permissions:` (only the release job gets `id-token: write`). Documented in
-  [SECURITY.md](SECURITY.md#supply-chain-build-publish--provenance), incl. the optional from-source `roaring`
-  build (already proven by the AL2023 Lambda CI job) for consumers who won't trust a prebuilt addon. The first
-  real publish is the public launch; until then the workflow runs in dry-run. The threat model
-  is finalized — supply-chain hardening marked implemented, and the stale per-op-budget and audit-sink
-  statuses reconciled.
-
-- **Hard memory & OS ceilings.** Closes the readiness deferrals that were *hardening* (not launch):
-  - **`pnpm rss-gate`** — the definitive hard-RSS-ceiling gate.
-    Runs a sustained write+read+compact workload under a hard cgroup `--memory` limit (swap off) and **fails if
-    OOM-killed** — so peak RSS, *including the `roaring` addon's off-heap native memory*, is now gated, not just
-    leak-watched. Wired as a CI job; runnable locally on any Linux-VM Docker (Colima/Docker Desktop).
-  - **Native OS matrix** — a gated `native-os-matrix` CI job builds + loads the addon on ubuntu/windows/macOS ×
-    node 20/22 (gated off on the private repo to save paid minutes; proven on `workflow_dispatch`, always-on at
-    go-public — not yet run in CI).
-  - **`pnpm build-lambda-layer`** — produces a ready-to-attach AWS Lambda **layer** (`roaring` compiled from
-    source for Amazon Linux 2023; builder verified locally), uploaded as an artifact by a gated CI job.
-  - Hardened the Cassandra integration lane's cold-boot warm-up to prime the **LOCAL_SERIAL read** path (not
-    just the LWT write), fixing an intermittent `Server timeout … at LOCAL_SERIAL` flake in the concurrent-delete
-    conformance test on cold CI nodes.
-
-- **Continuous fuzzing.** Promoted the coverage-guided jazzer/libFuzzer campaign toward
-  continuous: the fuzz workflow now runs a **nightly** (10 min/target) **and a weekly deep soak** (60 min/target)
-  with an accretive cached corpus, exercising the untrusted-`.crbm` boundary well beyond a single nightly budget.
-  The fully-continuous **OSS-Fuzz / ClusterFuzzLite** lane (targets are already Jazzer.js-compatible) is
-  documented as the post-go-public follow-on (it needs a public repo).
-
-### Tests
-
-- **Per-driver engine end-to-end + wide-segment scale coverage for the six new drivers.** The six new drivers
-  were conformance-verified but only S3 was exercised behind the real engine. Each driver now has an
-  **engine-level end-to-end** test in its integration lane: the two cold drivers (GCS, Azure Blob) bulk-load →
-  `count` / `iterate` / chunk-skipping `intersect` through a real `CloudRoaring` store; the four warm drivers
-  (PostgreSQL, Redis, MongoDB, Cassandra/ScyllaDB) layer live `add`/`remove` deltas over an immutable cold base
-  and prove the tier-merge (`(cold ∪ warm.adds) \ warm.removes`) + intersect. Each warm driver also gets a
-  **wide-segment scale** test that writes 1.1K–2.1K chunks (past several of its own default `listChunks`
-  pagination pages) and asserts the enumeration is complete + strictly ascending with no dropped/duplicated
-  chunk at a page/batch seam. All green against the real docker-compose backends.
-
-### Added
-
-- **MySQL / MariaDB warm driver (`cloud-roaring/mysql`).** `MysqlWarmDriver` — an `IWarmDriver` over
-  MySQL / MariaDB via the official `mysql2` (its promise API; an **optional peer dependency**, so the core
-  install stays SDK-free). A `mysql2` `Pool` is **injected**. Each chunk is one row in a single table
-  (`PRIMARY KEY (key_prefix, namespace, segment, chunk_key)`) with an opaque random-UUID OCC **token** and the
-  delta `payload` (LONGBLOB). OCC is real, cross-process, server-side plain SQL: create-if-absent = a plain
-  `INSERT` (a pre-existing row raises `ER_DUP_ENTRY` ⇒ `WriteConflictError`); token-fenced update/delete =
-  `UPDATE`/`DELETE … AND token = ?` with an `affectedRows !== 1` conflict check. The fresh-UUID-per-write makes
-  `affectedRows` (which MySQL counts as *changed* rows) cleanly reflect the *match*, and the table's
-  **`utf8mb4_bin` collation** makes the key columns compare **byte-exact and case-sensitive** (MySQL's default ci
-  collation would alias `A`/`a` — a correctness hole the DDL closes). Column lengths keep the composite primary
-  key within InnoDB's 3072-byte index limit under utf8mb4. Ships an idempotent `mysqlWarmTableDDL()` for
-  deploy-time schema. Tokens are never reused across delete→recreate (ABA-safe).
-  Passes the same `warmConformance` suite as the in-memory / LocalFs / DynamoDB / Postgres / Redis / Mongo /
-  Cassandra warm drivers against a real MySQL (new docker-compose service + integration lane, incl.
-  the engine-e2e tier-merge + wide-segment scale checks), plus a case-sensitivity regression. `mysql2` is MySQL-
-  first [babystack](https://github.com/sharvilk/babystack)'s wheelhouse, so it doubles as a real-engine local
-  test harness. **Rounds out the warm-driver set as a fast-follow.**
-
-- **Cassandra / ScyllaDB warm driver (`cloud-roaring/cassandra`).** `CassandraWarmDriver` — an
-  `IWarmDriver` over Cassandra / ScyllaDB via the official `cassandra-driver` (an **optional peer dependency**;
-  the core install stays SDK-free). A connected `Client` is injected. Each chunk is one row in a table
-  partitioned by `(kp, ns, seg)` and clustered by `ck`, so all of a segment's chunks share one partition and
-  `listChunks` is a single partition read already ordered by `ck` ascending (streamed with auto-paging). The
-  opaque random-UUID OCC **token** lives in a `tok` column (`token` is a CQL reserved word); OCC is a **lightweight transaction** (LWT —
-  Paxos-linearizable CAS): create-if-absent = `INSERT … IF NOT EXISTS`; token-fenced update/delete =
-  `UPDATE`/`DELETE … IF tok = ?` — not-applied ⇒ `WriteConflictError`. The keyspace + table names are
-  identifier-validated + quoted (the sole CQL-injection vector; every other value is a bound `?`). Ships an
-  idempotent `cassandraWarmTableDDL()` for deploy-time schema. Tokens are never reused across delete→recreate
-  (ABA-safe). Passes the same `warmConformance` suite as the in-memory / LocalFs / DynamoDB / Postgres / Redis /
-  Mongo warm drivers against a real Cassandra (new docker-compose service + integration lane).
-  **Completes the planned warm-driver set.**
-
-- **MongoDB warm driver (`cloud-roaring/mongodb`).** `MongoWarmDriver` — an `IWarmDriver` over
-  MongoDB / DocumentDB via the official `mongodb` driver (an **optional peer dependency**; the core install
-  stays SDK-free). A `Db` is injected. Each chunk is one document keyed by a **deterministic composite `_id`**
-  (`<prefix>|<ns>|<seg>|<chunkKey>`) with an opaque random-UUID OCC token + the delta payload (BSON binary).
-  OCC is per-document + server-side: create-if-absent = `insertOne` (a duplicate `_id` ⇒ `WriteConflictError`);
-  token-fenced update/delete = `updateOne`/`deleteOne` filtered on `{ _id, token }` (a 0 matched/deleted count ⇒
-  `WriteConflictError`). Each op is single-document atomic (no transaction). `listChunks` streams a `find` cursor
-  sorted numerically by `ck` (bounded memory). Ships `ensureMongoWarmIndexes()` for the `listChunks` index (the
-  composite `_id` already makes create-if-absent unique — no extra index needed). Tokens are never reused across
-  delete→recreate (ABA-safe). Passes the same `warmConformance` suite as the in-memory / LocalFs / DynamoDB /
-  Postgres / Redis warm drivers against a real MongoDB (new docker-compose service + integration
-  lane).
-
-- **Redis warm driver (`cloud-roaring/redis`).** `RedisWarmDriver` — an `IWarmDriver` over Redis via
-  the official `ioredis` (an **optional peer dependency**; the core install stays SDK-free). An `ioredis`
-  client is injected. The "sub-millisecond writes, accept always-on" warm tier. Each chunk is a Redis **hash**
-  (`t` = opaque random-UUID OCC token, `b` = delta payload); each segment keeps a **sorted-set index** of its
-  live chunk keys (Redis has no range scan) that `listChunks` reads ascending. Optimistic concurrency is a
-  **server-side atomic Lua compare-and-set** (Redis runs the script atomically — no `WATCH`/`MULTI`): create-
-  if-absent fails if the hash exists; token-fenced update/delete fails unless the stored token matches — both
-  ⇒ `WriteConflictError`. The hash + index share a Redis-Cluster **hash tag** so the multi-key script is
-  slot-safe. Tokens are never reused across delete→recreate (ABA-safe). Passes the same `warmConformance`
-  suite as the in-memory / LocalFs / DynamoDB / Postgres warm drivers against a real Redis (new
-  docker-compose service + integration lane).
-
-- **PostgreSQL warm driver (`cloud-roaring/postgres`).** `PostgresWarmDriver` — an `IWarmDriver`
-  over PostgreSQL via the official `pg` (an **optional peer dependency**; the core install stays SDK-free). A
-  `pg.Pool` is injected. "No DynamoDB — use the Postgres you already run." Each chunk is one row keyed by
-  `(key_prefix, namespace, segment, chunk_key)` with an opaque OCC **token** (a random UUID minted per write)
-  and the delta payload (`bytea`). Optimistic concurrency is real, cross-process, server-side: create-if-absent
-  is `INSERT … ON CONFLICT DO NOTHING` (0 rows ⇒ `WriteConflictError`); token-fenced update/delete is
-  `UPDATE`/`DELETE … WHERE … AND token = :expected` (0 rows ⇒ `WriteConflictError`). Tokens are **never reused**
-  across delete→recreate (ABA-safe). `listChunks` is keyset-paginated (bounded memory on wide segments). Ships
-  an idempotent `postgresWarmTableDDL()` to create the table at deploy time (the driver stays thin — no runtime
-  DDL); the table name is identifier-validated + quoted (the one non-parameterizable value → the sole injection
-  vector, closed). Passes the same `warmConformance` suite as the in-memory / LocalFs / DynamoDB warm drivers
-  against a real Postgres (new docker-compose service + integration lane). **First non-AWS warm
-  tier — "use the datastore you already run."**
-
-- **Azure Blob cold driver (`cloud-roaring/azure`).** `AzureBlobStorageDriver` — an `IStorageDriver` over
-  Azure Blob Storage via the official `@azure/storage-blob` (an **optional peer dependency**; the core install
-  stays SDK-free). A container-scoped `ContainerClient` is injected. Generations are **write-once** immutable
-  blobs — the conditional `ifNoneMatch: '*'` makes publish atomic (a second write is a `WriteConflictError`,
-  never a silent overwrite), the Azure analogue of S3's `If-None-Match: *` and GCS's `ifGenerationMatch: 0`.
-  Writes **stream in constant memory** (a small blob is a single conditional `upload`; a larger one is staged as
-  blocks, each freed as it goes, committed with a conditional `commitBlockList` — **write-once enforced on both
-  paths, empirically verified against Azurite**). Range + tail reads, idempotent delete, and generation listing
-  round out the contract. Passes the same `coldChunkSourceConformance` suite as the in-memory / LocalFs / S3 /
-  GCS cold drivers against the Azurite emulator (new docker-compose service + integration lane).
-  **Completes the object-store story on all three major clouds: AWS (S3) + GCP (GCS) + Azure (Blob).**
-
-- **GCS cold driver (`cloud-roaring/gcs`).** `GcsStorageDriver` — an `IStorageDriver` over Google Cloud
-  Storage via the official `@google-cloud/storage` (an **optional peer dependency**; the core install stays
-  SDK-free). The `Storage` client is injected. Generations are **write-once** immutable objects — a resumable
-  upload with `ifGenerationMatch: 0` makes publish atomic (a second write is a `WriteConflictError`, never a
-  silent overwrite), the GCS analogue of S3's `If-None-Match: *`. Writes **stream in constant memory**; range +
-  tail reads, idempotent delete, and generation listing round out the contract. Passes the same
-  `coldChunkSourceConformance` suite as the in-memory / LocalFs / S3 cold drivers against the
-  `fake-gcs-server` emulator (new docker-compose service + integration lane). Runs on any major cloud's object
-  store: **AWS (S3) + GCP (GCS)**, with Azure Blob next.
-
-- **Byte-aware cold-reader cache bound + native-memory soak proof; production-readiness verdict → READY within a validated envelope.**
-  A fresh 6-lens adversarial re-audit of production readiness (verified against the *current code*) found the
-  fixes solid — docs-vs-code honesty **resolved**, correctness clean — with two gaps in the *memory-bound proof*,
-  now closed: (1) the cold-reader cache is bounded by aggregate parsed-index **bytes** (new `storageReaderCacheMaxBytes`,
-  default 64 MiB), not just open-segment **count**, so a working set of unusually *wide* segments can't pin
-  gigabytes of indices while the count looks in-bounds; (2) the soak endurance harness now
-  watches the roaring addon's **off-heap native memory** (`getRoaringUsedMemory()`) for creep alongside JS heap —
-  a flat heap alone was not evidence the native footprint is bounded. Scope stated honestly: these prove *no leak*
-  on the read path, not a hard RSS ceiling (the cgroup `--memory` gate stays deferred to the public launch). Also:
-  the reference `compact-segments` daemon can emit per-attempt `MetricEvent`s on stdout via `CR_COMPACT_METRICS=1`.
-  The the production-readiness review verdict is upgraded from the original
-  analytical NOT READY to **READY within a validated envelope** (read-mostly / ≤~100K segments / tens-of-millions
-  ids-per-segment / single-tenant / single-region; billions-ids, real-AWS cost calibration, and multi-tenant
-  isolation are the named hardening deferrals). Hot path (`add`/`has`/`remove`/`count`/`intersect`) unchanged.
-- **Chaos drills against LocalStack — completes the testing frontier.**
-  `pnpm chaos` (`bench/chaos-localstack.cjs`; offline, needs LocalStack + `docker`, not a CI gate) injects real
-  faults at the AWS SDK drivers: a **throttle storm** (`ThrottlingException` at ~30% of DynamoDB calls, SDK
-  retries off) — the store's retry layer rode out 818 injected throttles with **no lost update** — and a
-  **backend outage** (`docker pause` for 2.5 s) — ridden through, every write lands, consistency preserved.
-  Daemon-kill-mid-2PC stays with the in-process crash-at-every-step sweep; disk-full is deferred (not injectable
-  on ephemeral LocalStack). No product code change.
-- **Load + tail-latency harness against LocalStack.**
-  `pnpm load` (`bench/load-localstack.cjs`; offline, not a CI gate) drives the **real** S3 + DynamoDB drivers
-  against LocalStack (a new on-demand `docker-compose.localstack.yml`) in three timed phases (add → DynamoDB OCC,
-  bulk-load → S3 PUT, count → tier-merge), reporting throughput **and p50/p99/p999** tail latency, plus a $
-  projection computed from a metrics sink's **measured** op-counts at published AWS prices (vs the always-on
-  Redis baseline). Explicitly LocalStack-on-a-laptop numbers, not an AWS SLA. **This workload surfaced the CJS
-  cross-bundle identity bug** (see Fixed / ).
-- **Security hardening.** Three additions atop
-  the existing crypto/trust-boundary coverage: **external AES-256-GCM known-answer vectors**
-  (`tests/crypto-vectors.test.ts` — McGrew–Viega / NIST test cases) pin the AEAD to published answers, not just
-  self-referential round-trips; an **end-to-end KEK-rotation test** (`tests/key-rotation.test.ts`) proves old
-  segments read under a retained old KEK (and compact without re-wrapping) while new segments adopt the new
-  active KEK; and a **blocking CI dependency audit** (`pnpm audit` → `scripts/audit.cjs`, prod deps at high)
-  guards the supply chain. Adds a **`SECURITY.md`** (private reporting policy, trust boundary, and the three
-  triaged build-time `tar` advisories reached only via `roaring`'s install-time `node-pre-gyp` chain — never on
-  the runtime path). No product code change.
-- **Executable DR drill.** `pnpm dr-drill`
-  (`tests/dr-drill.test.ts`) turns the [disaster-recovery runbook](docs/guide/disaster-recovery.md) into a
-  gated, **on-disk** `backup → corrupt → restore → verify` exercise against the real `LocalFs` cold + registry
-  tiers. It injects a **torn restore** (registry recovered ahead of cold) and a **lost `.crbm`** — both detected
-  as `missing-cold-generation` and cleared by rolling `currentGen` back / restoring the object — and **byte
-  corruption** inside a present `.crbm`, which `checkConsistency` deliberately **cannot** see (it is
-  presence-only) but which fails closed on read with `IntegrityError` (per-chunk CRC). Documents and verifies
-  why the runbook's post-restore read spot-check exists. No product code change — the DR primitives already
-  shipped earlier in this line.
-- **Stress harness.** An offline `pnpm stress`
-  (`bench/stress.cjs`; machine-dependent, **not** a CI gate) pushes three subsystems past their comfort zone,
-  each against a deterministic oracle: **(1)** a budgeted compaction-backlog drain (1,000 dirty segments drain in
-  16 monotonic cycles, ≤ 64 compacted/cycle — the compaction *count* is budget-bounded; discovery stays
-  O(fleet)); **(2)** hot-row OCC contention (4,800 concurrent ops on one chunk → the effective set equals a
-  per-writer oracle exactly, no lost update); **(3)** a 50 M-id single segment where `count === 50 M` (no loss),
-  counted in tens of ms, footprint tracking the roaring container structure (RSS ~370 MiB; JS heap stays ~5.4 MiB
-  only because roaring is off-heap). **S2 surfaced a real data-loss bug** (the OCC-backoff premature-exit fixed
-  in ) — see Fixed. Results persist to
-  `bench/stress-results.json` with `STRESS_INJECT=1`.
-- **Mutation testing of the core with Stryker.**
-  A [Stryker](https://stryker-mutator.io) pass (`pnpm mutation`) injects mutants into the highest-risk core logic
-  — compaction 2PC/OCC, tombstone merge, bounded concurrency, bit routing (~1,115 LOC) — to quantify how well the
-  suite catches bugs. **83.4% mutation score on covered code** (79.1% incl. uncovered; 449 killed / 90 survived /
-  29 no-cov / 2 timeout of 570). It found **real gaps**, now hardened: a one-sided boundary in `decodeDelta` (the
-  suite tested only _over-cap rejection_, never that a _maximal in-spec_ delta is _accepted_ — an off-by-N in the
-  cap arithmetic would reject legitimate Warm rows; **chunk.ts 68% → 85%**), plus two reachable compaction
-  branches (bootstrap-clean; encrypted-segment-without-keystore → `KeyUnavailableError`, never a silent decode).
-  Residual survivors (concentrated in `compaction.ts`) are error-message strings (unasserted by design),
-  observability/metrics-timing mutants, and defensive/edge branches. Offline + on-demand (not a CI gate; re-run
-  pre-freeze). Dev-only (`@stryker-mutator/*` devDeps).
-- **Coverage-guided fuzzing of the untrusted-`.crbm` boundary.**
-  Beyond the seeded property fuzz already in the suite, a [jazzer.js](https://github.com/CodeIntelligenceTesting/jazzer.js)
-  (libFuzzer) campaign (`pnpm fuzz:*`, nightly) evolves adversarial inputs toward unreached branches over three
-  targets — the **native** CRoaring portable deserializer (ungated), the hand-written index parser `parseIndex`
-  **directly** (past the CRC wall a mutational fuzzer can't cross), and `CrbmReader.open`'s validation front.
-  All assert the boundary contract: arbitrary bytes yield a typed `CloudRoaringError` or a self-consistent
-  success, never a `RangeError`/native crash/hang.
-  - Recorded run (Apple M3 Pro, 120 s/target): **~11.3 M adversarial executions, 0 crashes** — 4.19 M against
-    the deserializer (~34.6k/s, black-box: native C++ isn't instrumentable), 3.72 M against `parseIndex`
-    (~30.7k/s, coverage-guided: 34 edges / 189 features), 3.37 M against the reader front (~27.8k/s,
-    coverage-guided: 102 edges / 163 features).
-  - **Offline + nightly, not a CI gate** (corpus cached so coverage accretes). A found crash becomes a committed
-    reproducer under `tests/core/crbm/fuzz-corpus/`, replayed by a new test on **every** PR — so the campaign
-    stays offline while every fixed bug is guarded. Harness + policy in [`fuzz/README.md`](fuzz/README.md).
-  - Dev-only (`@jazzer.js/core` devDep; nothing enters the published bundle).
-- **Soak / endurance harness — no heap creep under sustained load.**
-  A new offline endurance harness (`pnpm soak`) runs sustained mixed load — continuous writes + reads across the
-  population + compaction (with orphan-generation GC) — and samples **post-GC retained heap over time**, asserting
-  the last-third median hasn't grown past the first-third median beyond a **relative** band. Complements G4's
-  memory _snapshot_ with the _steady state over time_:
-  - **No creep** — 90 s / 400 segments / 712 real compactions leaves post-GC heap flat (~7.3 → 7.4 MiB; +0.1 vs a
-    2.1 MiB band) → PASS (measured; Apple M3 Pro).
-  - **Isolated reader-child footprint** (closes G4's follow-up) — a fresh reader-only child reading the whole fleet
-    holds a **6.8 MiB post-GC heap** (the read-path bound); its ~65 MiB RSS is the fixed Node + roaring-addon floor.
-  Requires `--expose-gc` (the script sets it) and **fails fast without it**, since a no-op GC would hide a leak.
-  Measured + machine-dependent, so — like the other benches — **not** a CI gate; a multi-day run is the same
-  harness at a larger `SOAK_SECONDS` (nightly). Results in
-  the test-strategy doc + `bench/soak-results.json`.
-- **At-scale benchmark — measured readiness at 1K→10K→100K segments.**
-  A new offline load benchmark (`pnpm bench:scale`) that converts the production-readiness audit's code-read
-  conclusions into **measured** evidence at fleet scale, building up to 100K real `.crbm` segments on local disk:
-  - **Bounded memory (the headline).** Reading across the _entire_ fleet under the default reader-cache cap holds
-    retained live heap **flat at ~7 MiB from 1K to 100K segments** (measured; Apple M3 Pro) — memory is a function
-    of the working set (the cap), not the fleet, exactly as the design claims (closes the measurement half of that bound).
-  - **Discovery cost characterized** — `findCompactable` timing across fleet sizes shows the honest `O(total)`
-    registry-enumeration floor; sharding (which splits the Warm drain, not the enumeration) is discussed
-    in prose, not measured here.
-  - **Chunk-skipping intersection holds at scale** — two large multi-chunk segments intersect by fetching only
-    the shared chunks, skipping the rest by key alignment.
-  Measured (wall-clock + RSS) and machine-dependent, so — like the cost bench — **not** a CI gate; the
-  deterministic claims stay gated in `tests/bench/anchors.test.ts`. Results land in a new "At scale" section of
-  [docs/benchmarks.md](docs/benchmarks.md).
-- **Simulator hardening — compaction under concurrency.**
-  The deterministic simulator now runs the **real** engine + `.crbm`/registry path with a compaction actor racing
-  each batch's live reads/writes through one seeded scheduler, closing the "simulator half" of the bounded-memory work: the 2PC,
-  intersection-under-compaction, torn-read, and crash-recovery are proven by a **searched interleaving** rather than
-  hand-examples. New oracle coverage — effective-set equivalence under a racing compaction (fenced-purge / no-lost-write),
-  chunk-skipping `intersect` equals the oracle intersection on a just-rewritten segment, and no torn read of a
-  write-free segment being compacted (generation-pinning). New faults — a **process crash injected at any durable
-  2PC step** (staged generation + lease-acquire/`currentGen`-swap/lease-release), and **transient faults on cold
-  reads** ridden out by the retry decorator. Determinism holds: a disabled fault draws no randomness, so every
-  prior seed replays byte-for-byte. Test-only (nothing enters the published bundle).
-- **Zero-cost pre-freeze test/release gates.**
-  Two release gates that run for **$0** on the self-hosted runner, before the 1.0 format freeze:
-  - **Bounded-memory gate (structural).** A deterministic at-scale test proves the cold-reader cache is bounded
-    by its cap, not the fleet size: reading a fleet far larger than the cap twice re-opens every
-    segment (2N opens) because each is evicted before the loop returns — an unbounded cache (the regression this cap fixed
-    regression) would keep them resident (N opens) and fail. (A hard cgroup-OOM gate is deferred to the
-    public-launch Linux runners — Docker Desktop for Mac doesn't reliably enforce `--memory`.)
-  - **AWS Lambda / Amazon Linux 2023 deployability smoke.** Builds the native `roaring` dep for the AL2023
-    Lambda runtime and loads the packaged library under both ESM and CJS in a container (`pnpm lambda-smoke`
-    + a CI job). Surfaces a real deploy note: `roaring` ships no linux-arm64 prebuilt for the current Lambda
-    node runtimes, so it must be **built for the target** (container build / SAM `--use-container` / a layer) —
-    see [Deploying to AWS Lambda](docs/guide/getting-started.md#deploying-to-aws-lambda). A prebuilt Lambda
-    layer for a drop-in experience, and a native windows/ubuntu OS matrix, are deferred to the public launch.
-- **Schema-version stamps on the Warm-delta & registry formats (a pre-1.0 format-freeze prerequisite).**
-  A pre-1.0 format-freeze prerequisite: every persisted format now carries a version discriminator, so a
-  future, incompatible writer's bytes **fail closed** on an old reader instead of being silently misparsed
-  (the Cold `.crbm` format already had this).
-  - **Warm delta** gains a 1-byte version prefix (`[u8 version][u32 addsLen][adds][removes]`); an unrecognized
-    version is rejected with `UnsupportedError`.
-  - **Registry rows** gain a `schemaVersion` field (LocalFs/S3 envelope + DynamoDB body): a **newer** version
-    is rejected (`UnsupportedError`), an **absent** one is tolerated as legacy v1 so durable pre-freeze rows
-    stay readable across the upgrade. The stamp is wire-only — it never appears on the in-memory record; the
-    in-RAM `Memory*` drivers carry no stamp.
-  - Error-type split mirrors the `.crbm` reader: unknown *version* → `UnsupportedError`, structural
-    *corruption* → `IntegrityError`. **Scope:** the *logical* formats are stamped; the per-driver *physical*
-    framings (e.g. LocalFs warm's `[counter][deleted]` prefix) wrap the versioned payload and are intentionally
-    not separately stamped. **+1 byte/Warm-row, ~18 bytes/registry-row; O(1), off the hot path.**
-  - **Upgrade note:** pre-stamp *Warm* rows fail closed on read (never a silent wrong answer) — because Warm is
-    a transient tier, drain/compact or wipe+re-seed it on an in-place upgrade; durable *registry* rows are
-    tolerated as v1 and need no action.
-  - Incidental hardening: `parseRegistryEnvelope` now rejects `null`/primitive JSON with a typed
-    `IntegrityError` instead of an uncaught `TypeError` (invariant 5).
-- **Tenancy, denial-of-wallet budget & DR consistency.**
-  Three pre-1.0 hardening items, scoped lean (the fuller tenancy/crypto/format work is deferred — see below):
-  - **Per-op request budget — the denial-of-wallet ceiling the specs asserted but never built.** A new
-    `BudgetExceededError` + a store-level `budget` option (default `{ maxRequests: 1_000_000 }` — on, but
-    generous), with a per-op override and `budget: false` to disable. `count` / `iterate` / `intersect` /
-    `subjectReport` / `eraseSubject` now **refuse before fan-out** when the work would exceed the ceiling.
-    The check is **O(1)** against the already-known fan-out size, so the hot path (`add`/`has`/`remove`) is
-    untouched. Byte volume is **transitively bounded** by requests × the per-request safe-deserialize size
-    cap, so no per-chunk byte accounting is added (a deliberate refinement of the spec's "requests *and* bytes").
-  - **Minimal tenancy guard.** `subjectReport` / `eraseSubject` operate over the **global u32 id space**
-    shared across namespaces, so a namespace-less call is a fleet-wide sweep. They now require an explicit
-    `namespace` **or** an `{ allNamespaces: true }` acknowledgement — a fleet-wide erase/report can no longer
-    be the accidental default. (Full namespace-scoped handles + per-namespace KEK are deferred.)
-  - **Torn-restore detection.** `store.checkConsistency()` (and the standalone `runConsistencyCheck`)
-    verify every registered segment's `currentGen` `.crbm` is actually present in cold storage — catching a
-    **registry recovered ahead of the object store** (its `currentGen` points at a generation that was never
-    restored), which would otherwise surface as a failed read much later. Paired with a coordinated-restore
-    runbook ([docs/guide/disaster-recovery.md](docs/guide/disaster-recovery.md)). The self-healing
-    footer-DEK format change is documented as a deferred evolution (the footer is full; it also changes the crypto-shred model — "Reserved / future").
-
-  New `BudgetExceededError`, `DEFAULT_BUDGET`, `runConsistencyCheck`, and the `Budget` / `BudgetOption` /
-  `ConsistencyReport` / `ConsistencyIssue` types are exported.
-
-### Documentation
-
-- **Production-readiness re-audit — operator docs + envelope re-scope.** A second 6-lens adversarial readiness
-  re-audit against the merged 10-driver code found the correctness verdict unchanged (no in-envelope
-  silent-wrong-answer hole in the 8 drivers) but surfaced **operator-facing footguns** the
-  DynamoDB/S3-era docs never covered. Closed here (companion to the code fixes in
-  ):
-  - **getting-started** now documents production wiring for all 7 new backends + a "choosing a registry"
-    callout: the **Redis eviction footgun** (`maxmemory-policy noeviction` + AOF, or warm chunks silently drop →
-    wrong answers), the **registry-pairing rule** (the new drivers are tier-only → a compaction-enabled
-    deployment needs an S3/DynamoDB registry), and per-driver required settings (MySQL `utf8mb4_bin` +
-    `ROW_FORMAT=DYNAMIC`, Cassandra RF + must-wrap-in-`RetryingWarmDriver`, Mongo simple collation +
-    `ensureMongoWarmIndexes`).
-  - **disaster-recovery** gains a **per-backend backup/PITR table** (warm: DynamoDB PITR · PG WAL · MySQL binlog
-    · Mongo oplog/snapshot · Cassandra snapshot · Redis AOF+RDB; cold: S3/GCS/Azure versioning) — warm sets your
-    RPO, and Redis-warm is the only live copy; the `checkConsistency` **Case-A honesty note** (detects the torn/dangling-pointer case, not the silent lost-update); and a **no manual
-    publish during active compaction** caveat.
-  - **the production-readiness review** re-scopes the validated envelope to **DynamoDB + S3 (fully documented)**,
-    with the other 8 drivers labeled **conformance-passing + correctness-clean**; roadmap updated.
-  - **README + SECURITY**: Alpine/musl install note (`roaring` has no musl prebuilt → needs a build toolchain).
-
-- **Accuracy sweep.** Reconciled all docs against the merged driver + hardening state. Launch facts
-  corrected everywhere: the public launch is at `0.1.0`, not `1.0.0`; the **`.crbm` format
-  freeze gates `1.0`, not the `0.1.0` launch**; the package publishes scoped as **`@cloudbitmaps/roaring`**
-  (umbrella family) and the split is a pre-release gate;
-  trademark search/registration is a pre-launch task, not "deferred". Added a *partially-superseded* banner to the
-  release runbook and fixed its decisions table, publish command, and
-  checklist. Marked the **hard cgroup-RSS ceiling gate** as **shipped** (`pnpm rss-gate`) across the
-  testing/readiness docs (previously listed as deferred), and the **Lambda layer** as shipped
-  (`pnpm build-lambda-layer`). Added **MySQL/MariaDB** to warm-driver enumerations; corrected barrel count to
-  **ten**; corrected the fuzz-workflow references; refreshed the roadmap status markers
-  complete. Clarified that the conformance suite stays **internal** (no public `./testing` export — publishing it was deferred).
-- **Driver-doc sweep.** Synced the docs to the shipped driver set now that all six drivers have
-  merged. Corrected the `IWarmDriver` OCC-token table in the driver SDK contract — the
-  **PostgreSQL** row wrongly described the token as a `version`/`xmin`/counter; all four warm drivers (Postgres,
-  Redis, Mongo, Cassandra) use a **per-write random UUID + hard delete**, now recorded as a first-class
-  contract-valid realization alongside the monotonic counter (reconciled the "recommended implementation" prose and the locked-decision row). Added a **Cassandra/ScyllaDB
-  operational note** (LWT + `LOCAL_SERIAL` reads + single-partition-per-segment hot-partition guidance).
-  Refreshed the stale status/"works today"/driver-list prose in the [README](README.md), the
-  [getting-started guide](docs/guide/getting-started.md), and the usage guide; fixed the
-  "three barrel files" → nine count and completed the driver-option-types index in
-  [the API reference](docs/guide/api-reference.md); corrected the `tsup.config.ts` entry comment
-  ("AWS SDK" → the per-driver backend SDKs).
-
-### Fixed
-
-- **Pre-launch hardening from the production-readiness re-audit** (6-lens adversarial pass against the merged
-  the driver + hardening code). Four sharp code/test fixes; no in-envelope correctness defect was found, these close latent
-  edges before the `0.1.0` publish:
-  - **MongoDB warm driver now pins a binary collation** (`{ locale: 'simple' }`) on every `get`/`update`/
-    `delete`/`list` op + the index. Under a case-**insensitive** collection default collation, an unpinned query
-    could match the wrong document (case-differing segments/namespaces are distinct stores) → cross-segment
-    read/leak. This is the Mongo analogue of the MySQL `utf8mb4_bin` requirement; a case-sensitivity integration
-    test (mirroring MySQL's) now guards it. *(insert uniqueness is still governed by the `_id` index collation —
-    the operator guide states the warm collection must use the simple default collation.)*
-  - **`InProcessKeystore.openDek` now tries every held wrapping**, not just the first. A DEK is wrapped under
-    both the active and (optional) offline **recovery** KEK precisely so a corrupt/tampered active-KEK wrapping
-    can be recovered from the other — but the loop returned on the first held keyId and let a failed unwrap
-    throw, defeating that insurance. It now falls through to the next held wrapping and only surfaces the
-    integrity failure when **all** held wrappings fail (a missing-KEK case still raises `KeyUnavailableError`).
-  - **Chunk-skipping intersection is now tested at the boundaries** — the crown-jewel path at the maximum
-    chunk-key span (id `0xFFFFFFFF`, chunk `65535`) and a common chunk whose effective set is fully tombstoned
-    in one operand (must yield `null` and be skipped, not a phantom id). Membership was already proven at the
-    ceiling; intersect was only sampled below chunk key 4.
-  - **GCS resumable (large-object) upload path is now exercised end-to-end against fake-gcs-server** (previously
-    only the ≤8 MiB simple path was emulator-grounded). Write-once *enforcement* on the resumable finalize stays
-    covered by the driver mock (sends `ifGenerationMatch:0`, maps a 412 → `WriteConflictError`) + real GCS,
-    because fake-gcs-server does not honor the precondition on resumable finalize — documented in the test.
-
-- **Cross-bundle identity broke the DynamoDB driver + all retry/resilience in the published CJS package (found by the T7 LocalStack load harness).**
-  The package ships separate bundles (the core entry + the `./s3` / `./dynamodb` subpaths); the CJS output
-  inlines its own copy of `core/*` into each, so values compared by **identity across that boundary** broke for
-  `require()` consumers. Two symptoms, both invisible to the test suite (one source module graph): (1) the
-  `NO_ROW` create sentinel was a plain `Symbol('no-row')` → distinct per bundle → `expected === NO_ROW` always
-  false → **every warm-row create failed** (empty-`:expected` `ValidationException`); (2) the typed **error
-  classes** were duplicated per bundle → the engine/retry/compaction `instanceof WriteConflictError` /
-  `isTransient` checks against **driver-thrown** errors returned false → **OCC retry, transient-fault retry, and
-  compaction race-handling were silently disabled** (the resilience layer was a no-op in CJS). Fixes:
-  `NO_ROW` is now a global-registry `Symbol.for`; errors carry `Symbol.for` **brands** and are classified by new
-  exported predicates — **`isCloudRoaringError` · `isWriteConflictError` · `isTransientError` ·
-  `isNotFoundError` · `isIntegrityError` · `isValidationError`** (prefer these over `instanceof` when catching
-  errors from a cloud driver) — replacing every cross-boundary `instanceof` in `core/`. Guarded by unit tests +
-  a built-bundle cross-check in `scripts/smoke.cjs`. Verified end-to-end against LocalStack.
-- **OCC-backoff premature process exit — silently dropped contended writes (found while developing the hot-row contention stress).**
-  The default clock's `sleep` **unref'd** its backoff timer. Because that `sleep` only ever backs a
-  caller-awaited, bounded retry (the engine's OCC read-modify-write and the driver `withRetry` loop), the
-  timer was the sole thing holding a short-lived process open during a retry. Under contention on a hot chunk,
-  a losing writer would back off, and if that backoff timer was the process's only remaining handle, Node
-  treated the event loop as empty and **exited `0` mid-retry** — the awaited `add()`/`remove()` neither applied
-  nor threw. This struck exactly the serverless target (Lambda/CLI/short-lived scripts) the library is built
-  for. Fix: the default clock now uses a **ref'd** timer; a pending backoff keeps the loop alive until the
-  awaited, bounded retry resolves. Guarded by a regression test (`tests/backoff-liveness.test.ts`); the
-  bare-process end-to-end contention scenario that first exposed it lands with the contention-stress PR. No hot-path or
-  steady-state cost (retries are bounded).
-- **Read-path cost & admin latency.**
-  Four cost/latency gaps from the readiness audit, kept lean (two heavier sub-items deferred — see below):
-  - **Opt-in eventually-consistent warm reads.** Every warm `has()`/`count()`/`iterate()`/`intersect()`
-    previously forced a **strongly-consistent** DynamoDB read (2× RCU) with no in-process absorption. A new store
-    option `warmReadConsistency: 'strong' | 'eventual'` (default `'strong'`, unchanged) makes the **read paths**
-    eventually-consistent — **~½ the read cost** — while the OCC read-modify-write path stays strong regardless
-    (correctness). No effect on the always-strong in-memory / LocalFs drivers. Trades read-after-write for cost.
-  - **Compaction is now in the cost estimator.** `estimateCost` / `segment.costReport` add a `compaction`
-    term (whole-generation re-read + PUT + Warm purge) to `byOp` / `byTier`. Default `compactionsPerMonth: 0`
-    leaves existing estimates unchanged, but the report now **discloses** the omission instead of silently
-    under-reporting the background job that usually dominates operational cost. (First consumer of
-    `pricing.cold.putPerMillion`, now validated.)
-  - **Bounded admin fan-out.** `subjectReport` / `eraseSubject` scanned segments **serially**; they now fan out
-    at a bounded `concurrency` (default 8) — per-segment fault isolation preserved. The **S3 registry `list()`**
-    did one GET per key serially (an N+1); it now reads each page's rows at bounded parallelism.
-  - **Bounded flusher.** `addMany` / `removeMany` gain an opt-in `writeConcurrency` (default **1** ⇒ unchanged
-    serial) to fan distinct-chunk writes out for throughput on wide batches.
-
-  New reusable `mapWithConcurrency` primitive (`core/concurrency.ts`) underpins the fan-out. **Deferred
-  (documented):** an in-process short-TTL warm-chunk cache and compaction's coalesced constant-memory merge
-  GET — each needs its own focused change.
-- **Scaled the compaction daemon for the fleet + made it observable.**
-  The crash-safe daemon was correct but a single unsharded worker, invisible to monitoring, and could wedge on one
-  bad segment. This release closes those fleet-scale gaps (kept lean — see the deferred list):
-  - **Observability + a dead-man's-switch.** Every compaction attempt now emits a `compaction` metric to your
-    `IMetricsSink` (committed / clean no-op / error, dirty-chunk count, rows purged, ms), and every commit stamps
-    `lastCompactedAt` on the segment's registry record. Alarm on "nothing compacted in the last hour" to catch a
-    wedged or absent daemon — previously a compaction failure was logged-and-swallowed with no signal at all.
-  - **Poison-segment quarantine.** A segment whose compaction kept throwing (e.g. one corrupt warm row) used
-    to be retried every cycle **forever** — freezing that segment's compaction and burning money. It's now
-    quarantined after `quarantineThreshold` consecutive failures (default 5), skipped until a cooldown elapses
-    (default 5 min), then retried once; a success clears the streak. One poison segment can no longer wedge a worker.
-  - **Shardable, budgeted, urgency-ordered discovery.** Run N workers over disjoint shards (`shard`/`totalShards`;
-    CLI `CR_COMPACT_SHARD` / `CR_COMPACT_TOTAL_SHARDS`) partitioned by a stable hash — disjoint and covering the whole
-    fleet, no coordination. `maxScanSegments` (CLI `CR_COMPACT_MAX_SEGMENTS`) caps work per cycle, compacting the
-    most-backed-up segments first (dirty-chunk count, oldest-compacted tiebreak) and deferring the rest so a burst
-    can't starve the tail. A change-guarded CAS skips the registry write when nothing moved. `runCompactionCycle`
-    now returns `{ candidates, compacted, deferred, results }`.
-
-  Two **optional** registry fields (`lastCompactedAt`, `consecutiveFailures`) carry the daemon state — both optional
-  for backward-compatibility with existing rows. **Deferred (documented):** an O(dirty) enumeration seam
-  (`Select:COUNT` / GSI / projection) + resumable cursor, lease heartbeat/renewal, and lease-aware publishing.
-- **Bounded the cold-reader cache — no more unbounded index growth.**
-  `CrbmStorageChunkSource` held opened `.crbm` readers (each carrying a fully-parsed index) in an **unbounded** map,
-  so a long-running server that read across many segments grew its footprint with *every distinct segment ever
-  read* (tens of GB / OOM at 100K+ segments). The reader cache is now a `BoundedLru` capped by a new
-  `storageReaderCacheMax` option (default **1024** segments): past the ceiling the least-recently-used segment's
-  reader is evicted, and re-reading it later re-opens it in one cheap tail GET (generations are immutable). The
-  currentGen TTL is unchanged (orthogonal). Steady-state memory is now bounded by the working set, capped
-  at the ceiling.
-- **Correctness holes closed.**
-  Three silent-wrong-answer bugs outside the well-tested crash paths:
-  - **Stale reads after compaction.** A long-lived reader (a Topology-B app server) pinned a segment's
-    generation for its lifetime, so after a separate daemon compacted it served the prior generation
-    indefinitely — a folded add read `false`, and an **erased id resurrected to `true`**. The cold source now
-    re-resolves `currentGen` on a short TTL (`storageGenTtlMs`, default 2000 ms; lazy — checked on read, no timer)
-    and the HOT cache is **generation-keyed**, so a reader converges to the new generation within the TTL. Reads
-    are now **bounded eventually-consistent** — up to `storageGenTtlMs` of staleness after a compaction, then they
-    converge; the hot path stays I/O-free within the window. Needs a `registry` (else the source pins as before,
-    which suits single-process/local use).
-  - **Compaction RECONCILE vs a concurrent publish.** A `publishGeneration` / `bulkLoadCrbmGeneration`
-    that advanced `currentGen` mid-compaction could have its generation deleted by RECONCILE — a silent
-    whole-generation lost update. Compaction now re-reads `currentGen` under its lease and **aborts**
-    (`reason: 'superseded'`) if it moved, so RECONCILE never deletes a just-published generation.
-  - **`.crbm` format-field validation.** `CrbmReader.open` now validates `element_width` /
-    `roaring_serialization_id` / `container_codec` and throws `UnsupportedError` on a mismatch, so a future
-    64-bit or re-codec'd generation can never be silently fed to the 32-bit deserializer. A 64-bit generation
-    is a **major**-version bump (old readers auto-reject).
-- **ESM import under Node** — the shipped package now imports cleanly in a native Node ESM project
-  (`import { CloudRoaring } from 'cloud-roaring'`). The `roaring` native addon is CommonJS, and a _named_
-  ESM import of it crashed Node's ESM loader (`SyntaxError: Named export 'DeserializationFormat' not found`);
-  the core now takes those runtime values off `roaring`'s default export (Node maps a CJS module's
-  `module.exports` to the ESM `default`). A `scripts/smoke.cjs` package smoke test — wired into CI and
-  runnable via `pnpm smoke` — loads every published entry (`index`, `s3`, `dynamodb`) under **both** ESM and
-  CJS and exercises the roaring-backed path, so this can't regress.
-
-### Added
-
-- **Export / eject your data — `store.exportSegments()` + the `export-segments` CLI**: dump every registered segment's
-  current effective set to a portable file, using only public read APIs, so your data is readable **without
-  CloudRoaring** (the exit path / a building block for a data-portability response). `format: 'roaring'` (default) writes one
-  portable RoaringBitmap32 per segment (loadable by any roaring library in any language); `'ndjson'` writes
-  newline-delimited ids (zero-dependency, streamed). Writes through an injected `ExportSink` (the store never
-  imports `node:fs`); the `export-segments` CLI supplies a filesystem sink (atomic `.part`→rename) and writes a
-  self-describing `manifest.json` last (its presence = the run **finished**; a crash leaves none → re-run into a
-  fresh dir). Reuses the store's own registry (needs one, else `UnsupportedError`); folds in warm deltas; decrypts
-  transparently if a keystore is wired (export is **cleartext**); skips crypto-shredded segments. **Fault
-  isolation**: a segment that can't be read (corrupt cold object, or an encrypted segment with no keystore) is
-  recorded in the manifest's `failed[]` and the export continues — one bad segment never blocks the rest (the CLI
-  exits non-zero when any failed). **Warm-only escape hatch**: all-warm segments not yet in the registry can be
-  named via the `candidates` option (CLI: `CR_EXPORT_SEGMENTS`), mirroring the compaction daemon's discovery
-.
-
-- **Store lifecycle methods reuse the store's own drivers** — `store.compact(ref, { owner })` (new), plus
-  `store.eraseSubject(id, { owner })` and `store.subjectReport(id)` now build their compaction/erasure deps from
-  the store's own cold/warm/registry, so you no longer re-pass a `registry` or a hand-assembled `CompactionDeps`.
-  `compact`/`eraseSubject` require the store built with a raw cold driver + a `registry`; `subjectReport` needs
-  only a `registry` (it just enumerates + `has()`) — all throw `UnsupportedError` when the store lacks what they
-  need. The `compactSegment` / `destroySegment` / `bulkLoadCrbmGeneration` free functions remain for
-  out-of-process daemons/CLIs. This also removes a footgun: the erasure ledger can no longer report a false purge
-  from mismatched deps — the drivers are provably the store's own. `eraseSubject` isolates per-segment faults
-  (records `physicallyPurged:false`, `note:'error: …'` and continues, so one segment can't discard the whole
-  ledger) and validates `owner` before writing any tombstone.
-
-- **Simpler wiring — one config shape (`cold` / `warm` / `registry` / `keystore`)**: the `CloudRoaring`
-  constructor now accepts a **raw `IStorageDriver`** as `cold` (`S3StorageDriver`, `LocalFsStorageDriver`,
-  `MemoryStorageDriver`, …) and assembles the `.crbm` cold source for you, with `registry` / `keystore` /
-  `requireEncryption` lifted to the same config object — so each driver is named **once** instead of being
-  threaded through a hand-built `new CrbmStorageChunkSource(cold, { registry, keystore })` wrapper. Passing an
-  already-built `StorageChunkSource` still works unchanged (for a source-only backend like `MemoryStorageChunkSource`,
-  or a source you configured with advanced reader options like `tailBytes`/size caps), so no capability is lost.
-  Fail-fast guards reject `registry`/`keystore`/`requireEncryption` paired with a pre-built source (configure
-  them on the source), a keystore without a registry, and a `cold` that is nullish, ambiguous, or neither a
-  driver nor a source. Wiring-time only — the hot path is untouched.
-
-- **`S3RegistryDriver` — run the registry on S3, no DynamoDB** (`cloud-roaring/s3`): an `IRegistryDriver`
-  backed by one tiny object per segment in the same bucket as your Cold data, using **S3 conditional writes**
-  (`If-None-Match` for create, `If-Match` ETag for the atomic compare-and-swap; GA Nov 2024) instead of a
-  server-side counter — so a **read-mostly deployment runs on S3 alone**. Same OCC + ABA-safe token (monotonic
-  counter, tombstone-on-delete) as the other registries; passes the shared `registryConformance` suite in the
-  unit lane (faithful fake S3) and against **MinIO** in the integration lane. Requires a backend that honors
-  `If-Match`, `s3:ListBucket`, and no lifecycle-expiry on the `registry/` prefix (see the driver docs +
-  getting-started §7). Also hardened both S3 drivers to treat a **`409 ConditionalRequestConflict`** (S3's
-  other concurrent-conditional-write outcome, not just `412`) as a `WriteConflictError`
-.
-
-- **legal hold (documented)**: the legal-hold posture is enforced via **S3 Object Lock** (a locked
-  Cold object can't be deleted before its retention date — stronger than an in-library flag) plus excluding
-  held segments from compaction/erasure; documented in `PRIVACY.md`. A native `legalHold` flag was
-  deliberately not built (it would be advisory where Object Lock is enforced at rest, and wasn't cheap). This
-  completes the lean compliance milestone.
-
-- **subject access & erasure (`subjectReport` / `eraseSubject`)**: two admin helpers on the store
-  for GDPR Art. 15 / 17. `subjectReport(id, registry)` returns which **registered** segments an id is a member
-  of; `eraseSubject(id, compaction, { owner })` writes a logical `remove` **and force-compacts** each affected
-  segment on the spot — so the bit is physically gone from Cold on return, even for idle/archival segments
-  organic compaction would never touch — and returns an **erasure ledger** (per-segment proof of
-  deletion; return-value only, route it to your audit sink). Both scan registered segments (`O(registered
-  segments)`, admin-only) — **no `id→segments` reverse index**, so nothing taxes the hot path. If a daemon
-  holds a live lease, that segment's purge is deferred honestly (`physicallyPurged:false`); logical removal
-  always holds. Per-subject crypto-shred is infeasible, so this is the single-subject route; whole-segment/
-  tenant erasure remains `destroySegment`/`eraseNamespace`. See getting-started §13 + `PRIVACY.md`.
-
-- **`PRIVACY.md` (privacy & shared responsibility)**: a user-facing statement of the trust
-  boundary (CloudRoaring is an embedded library, sends nothing to the authors, so *you* are the
-  controller/processor and we are not a sub-processor), the honest erasure model (logical `remove` →
-  scheduled-compaction physical purge → `destroySegment` crypto-shred, incl. the backups/WORM trap), the
-  residency transfer surface, retention guidance, a shared-responsibility matrix, and a DPIA skeleton + Art. 30
-  record template. Documents residency/classification/retention as integrator responsibilities rather than
-  building policy-engine machinery.
-
-- **audit sink (security/compliance events)**: an optional, off-by-default `IAuditSink` — separate
-  from the metrics sink — records the compliance-relevant state changes: `segment.publish` (a generation
-  became current), `segment.compact` (a generation was committed), `segment.erase` (a genuine crypto-shred),
-  and `namespace.erase` (with an honest `segmentsShredded` count). It's the natural feed for an append-only
-  audit log / SIEM and a truthful GDPR Art. 30 erasure receipt — `segment.erase` fires only for a real key
-  shred, never for a cleartext tombstone (bytes stay readable) or an idempotent re-run, and `segment.compact`
-  fires at the durable commit so a purge fault can't drop it. Pass `audit` to `bulkLoadCrbmGeneration` /
-  `compactSegment` / `runCompactionCycle` / `destroySegment` / `eraseNamespace`; the sink is exception-safe
-  (a throwing sink never breaks the op) and vendor-neutral. Also hardens the compaction boundary
-  (`owner`/`leaseMs` validated fail-fast). **KEK rotation is not emitted** — it's operator-side keystore
-  reconfiguration with no library hook (see the [dashboards guide](docs/guide/dashboards.md)).
-
-- **cheap `count()`**: `count()` now sums per-chunk cardinality straight from the `.crbm` index
-  for warm-delta-free chunks — **zero payload reads or deserializes** — and merges only the chunks with
-  pending Warm deltas. A fully-compacted (Topology-A steady-state) segment counts for free; this is now a
-  build-breaking CI anchor (`count()` → 0 payload reads). Adds an optional `cardinalities()` to
-  `StorageChunkSource` (the in-memory source omits it and falls back to fetch-and-merge — same answer, just not
-  free); `has` / `iterate` / intersection are unchanged.
-
-- **benchmark-as-test + published crossover chart**: the verified economics are now
-  **build-breaking CI assertions** ([`tests/bench/anchors.test.ts`](tests/bench/anchors.test.ts)) so a
-  cost/perf regression or overclaim can't ship — chunk-skipping byte-savings (a 5%-overlap intersection
-  fetches ≤ 10% of a full download, measured through the metrics sink), at-rest ≤ 10% of a Redis-HA node,
-  the write crossover ≥ the published rate, and the estimator within **±20%** of the engine's measured
-  backend cost. Adds an offline, **zero-dependency** `pnpm bench` generator that draws the
-  CloudRoaring-vs-flat-Redis crossover chart straight from the shipped `estimateCost()` (so it can't drift),
-  published to `bench/crossover.svg`, `bench/results.json`, [`docs/benchmarks.md`](docs/benchmarks.md), and
-  the [site](site/benchmarks.html). Wall-clock latency stays offline (too noisy to gate on shared CI
-  runners). The `count()` → 0-payload-reads anchor + the enabling cheap-count optimization land next
-.
-
-- **cost estimator**: a first-class cost API. **Planning:** pure
-  `CloudRoaring.estimateCost({ segments, workload, topology, pricing? })` — size a workload with no instance
-  or data. **Grounded:** `segment.costReport({ workload?, pricing?, topology? })` — storage cost from the
-  segment's **real** `.crbm` size (exact, no payload reads), request cost from the supplied workload. Rates are
-  a pluggable `PricingProfile` (default `aws-us-east-1-ondemand`, from the fact-checked research; set
-  `wruPerMillion: 0` to model a flat/provisioned Warm tier). Every `CostReport` carries a `verdict`
-  (`win-big` | `win` | `lose-zone` — never hides where flat Redis wins), the `redisCrossover` rates (matching
-  the verified ~26 writes/s + ~329 reads/s), and `assumptions` (the grounded flag + the model's
-  simplifications). Malformed inputs — workload rates, segment sizes, and pricing rates — are rejected
-  fail-fast with `ValidationError` (a report is never silently `NaN`). Adds an optional `sizeOf()` to
-  `StorageChunkSource` for grounded size from the index. New
-  exports: `estimateCost`, `DEFAULT_PRICING`, `AWS_US_EAST_1_ONDEMAND`, and the `PricingProfile` /
-  `CostReport` / `Workload` / `SegmentSizing` / `EstimateInput` / `Topology` / `SegmentSize` types. Deferred:
-  whole-store aggregation + live-metrics-derived request cost.
-
-- **observability metrics sink**: an optional, injected `IMetricsSink` that receives typed
-  `MetricEvent`s — cold GET (+ bytes + latency), warm read/write (+ bytes), cache hit/miss, OCC + transient
-  retries, intersection fetched-vs-skipped chunks, and per-op latency. **Off by default** (a no-op sink;
-  emission is skipped entirely when unused — a `metricsOn` fast-path, near-zero overhead); enable it with
-  `new CloudRoaring({ warm, cold, metrics })`. The library emits **vendor-neutral
-  events**, so you map the handful you care about to OpenTelemetry / Datadog / a log line in ~12 lines (a
-  copy-paste OTel adapter is in the getting-started guide) — **no telemetry dependency is added to the
-  library**. A buggy sink can never break a read/write (its exceptions are swallowed). Ships
-  `CountingMetricsSink` (tallies events into a `MetricsSnapshot` — handy for tests and the upcoming grounded
-  `costReport()`), `NOOP_METRICS`, and `safeMetrics`. New exports: `IMetricsSink`, `MetricEvent`,
-  `MetricOpName`, `MetricsSnapshot`, `CountingMetricsSink`, `NOOP_METRICS`
-.
-
-- **streaming / constant-memory compaction**: compaction now merges **and writes as a stream**, so
-  the daemon streams the **cold** merge in constant memory — flat on the cold side (the dirty warm delta set is still buffered; a deferred fix) (the "runs in a 128 MB Lambda" property,
-  now true for the write path too). `mergeChunksStream` yields one merged chunk at a time and
-  `writeCrbmGenerationStream` feeds each to a streaming cold sink, freeing it. The **S3 cold driver uploads via
-  multipart** (buffering ≤ one ~8 MiB part, flushed as the codec writes); a small object that fits one part is a
-  single conditional `PutObject`, a larger one finishes with a conditional `CompleteMultipartUpload` — **both
-  keep S3-enforced write-once** (a second writer → `WriteConflictError`, never a silent overwrite). In-flight
-  uploads are aborted on error and SHA-256 is hashed incrementally; the S3 default object ceiling rises to the
-  5 TiB multipart max (`partBytes` tunable). LocalFs already streamed to a temp file; the in-memory cold driver
-  stays buffered (RAM by definition). Encryption composes unchanged.
-
-- **encryption-at-rest + crypto-shred**: opt-in **AES-256-GCM** encryption of the Cold `.crbm`
-  objects (payloads **and** index, so a leaked object reveals neither ids nor cardinality), with **crypto-shred**
-  erasure. Envelope model: a per-segment **DEK** is wrapped under one or more operator **KEKs** and stored in the
-  registry; reads unwrap it, `destroySegment` / `eraseNamespace` delete it (the at-rest bytes are then
-  permanently unrecoverable — GDPR erasure that works even on immutable/backed-up storage). Each ciphertext is
-  AAD-bound to its `(namespace, segment, generation, chunkKey)` so it can't be relocated. **Key management is
-  dependency-free by default**: an `InProcessKeystore` (BYOK — you supply 32-byte KEK(s)) using `node:crypto`;
-  the `IKeystore`/`Aead` seams keep `core/` crypto-free and let KMS/Vault adapters drop in later. KEK rotation
-  needs no data re-encryption (keyId-aware), and a DEK can be wrapped under an offline **recovery KEK** so losing
-  the active KEK isn't fatal. Encryption is **store-level opt-in** (pass a keystore) with an optional
-  `requireEncryption` guard; lose every KEK and a segment's at-rest data is gone by design (rebuild it from
-  source). Threads through `bulkLoadCrbmGeneration`, `CrbmStorageChunkSource`, and the compaction daemon (which
-  reuses a segment's DEK across generations). New exports: `InProcessKeystore`, `NodeAead`, `destroySegment`,
-  `eraseNamespace`, `aadFor`, `KeyUnavailableError`, and the `Aead`/`IKeystore`/`WrappedDek` types
-.
-
-- **crash-safe compaction daemon**: consolidates accumulated Warm deltas into a fresh immutable
-  Cold generation via a **2-phase commit** — `compactSegment()` (pin → merge `(cold ∪ adds) \ removes` → stage
-  → verify chunk-keyset + cardinality → atomic `currentGen` swap → **version-fenced** Warm purge → orphan GC),
-  merged chunk-by-chunk with working memory bounded by one segment's size. A write that lands mid-compaction is
-  never lost (its newer OCC token fails the purge fence), and a crash at **any** step recovers cleanly (proven
-  by a crash-at-every-step test sweep). A per-segment **lease** (registry `status` + owner/expiry, stealable on
-  expiry) avoids duplicate work across multiple workers — though correctness never depends on it (concurrent
-  compactions are safe); the lease is released even on an abnormal abort so a faulted segment isn't stuck
-  `compacting`, and a per-segment fault is isolated so one bad segment can't abort the whole cycle. Concurrent
-  **bootstrap** is no-data-loss: only the worker that actually writes generation 0 purges its Warm rows; an
-  adopter leaves them for the next compaction. Readers self-heal if GC sweeps the exact generation they pinned
-  mid-read (re-resolve to the current generation rather than fail — **no torn read**). Discovery
-  (`findCompactable` / `runCompactionCycle`) scans the registry and drains Warm per segment (O(total warm)/cycle); the write path stays uncoupled from the registry. Ships the **`compact-segments` CLI** (`once` for Lambda/cron, `loop` for
-  K8s/ECS) over the local-filesystem backend; cloud users call `runCompactionCycle` from their own handler.
-  Also adds an in-memory `MemoryStorageDriver`. (Crypto-shred-driven erase arrives with encryption-at-rest.)
-
-- **segment registry**: an `IRegistryDriver` — the authoritative per-segment record holding the
-  current generation (`currentGen`), discovery index, status, and a reserved wrapped-DEK slot — in three
-  backends (`MemoryRegistryDriver`, `LocalFsRegistryDriver`, and `DynamoDbRegistryDriver` at the
-  `cloud-roaring/dynamodb` subpath, co-located with warm rows in the single table). Reads can now resolve the
-  current generation through the registry instead of a per-read **list-scan** of every generation: pass a
-  `registry` to `CrbmStorageChunkSource` (`new CrbmStorageChunkSource(cold, { registry })`) — **optional**, with the
-  list-scan kept as the fallback when absent. `bulkLoadCrbmGeneration(..., { registry })` publishes the new
-  generation, and `publishGeneration(registry, key)` is the standalone, forward-only publish primitive. OCC,
-  ABA-safety, and discovery all pass a shared `registryConformance` suite (vs in-memory, LocalFs, and
-  DynamoDB-Local). Also: a `RetryingRegistryDriver` decorator, and a shared driver key-grammar helper
-  (`_default` sentinel) extracted now that it has five consumers.
-
-- **resilience & fault-tolerance**: CloudRoaring now **rides through transient cloud faults**
-  (throttling, 5xx, dropped connections, request timeouts) instead of surfacing them. A shared retry layer
-  retries such faults with **bounded exponential backoff + full jitter** (default: 4 attempts; 50ms→100→200,
-  capped at 2s),
-  **on by default** for every warm/cold call — tune with the `retry` option or disable with `retry: false`.
-  OCC conflict retries now back off too. **No data is ever lost or double-applied**: retries are idempotent
-  (the OCC token detects a phantom-success; cold writes stay write-once), and the deterministic simulator now
-  injects transient faults and proves effective-set equivalence holds under them. New public surface:
-  `TransientError`/`TimeoutError`, `withRetry`, `RetryPolicy`, `DEFAULT_RETRY_POLICY`, and the
-  `RetryingWarmDriver`/`RetryingStorageChunkSource`/`RetryingStorageDriver` decorators (driver authors can wrap
-  their own). **Configure a request timeout on your injected S3/DynamoDB client** — timeouts are retried as
-  transient (see the [getting-started guide](docs/guide/getting-started.md) §reliability).
-
-- **DynamoDB warm driver**:
-  `DynamoDbWarmDriver` for the live warm tier, at the **`cloud-roaring/dynamodb`** subpath with
-  `@aws-sdk/client-dynamodb` as an **optional peer dependency** (core's only runtime dep stays `roaring`).
-  Real cross-process optimistic concurrency via DynamoDB conditional writes (a monotonic, ABA-safe counter);
-  single-table layout; an optional `keyPrefix` lets several logical stores share one table. Inject your own
-  `DynamoDBClient` (`new DynamoDbWarmDriver({ client, tableName })`). Passes the same warm-driver conformance
-  suite as the in-memory and local-filesystem tiers.
-
-- **S3 cold driver**: `S3StorageDriver`
-  for S3-compatible object storage (AWS S3 / MinIO), exposed at the **`cloud-roaring/s3`** subpath. Built on
-  `@aws-sdk/client-s3` as an **optional peer dependency** — the core package's only runtime dependency stays
-  `roaring`; you install the AWS SDK only if you use S3. Inject your own `S3Client`
-  (`new S3StorageDriver({ client, bucket, prefix? })`); write-once via conditional `If-None-Match:*`. Passes the
-  same cold-driver conformance suite as the in-memory and local-filesystem tiers.
-
-- **bulk-load**:
-  `bulkLoadCrbmGeneration(driver, key, ids)` builds an immutable `.crbm` Cold generation from an arbitrary
-  **unsorted** id stream (sync or async iterable) — the batch "seed/sweep" entry point. Folds ids into
-  per-chunk Roaring bitmaps as they stream (input consumed lazily; deduped on insert), then writes chunks
-  ascending. Returns `{ size, sha256, chunkCount, cardinality }`.
-
-- **chunk-skipping intersection engine**:
-  `segment.intersect([...others])` and `intersectInto(dest, [...others])` — the crown jewel. Computes
-  `A ∩ B ∩ …` by aligning the segments' chunk-key maps and fetching **only** the Cold chunks present in every
-  operand (non-overlapping keys are never downloaded), streaming result ids ascending under a bounded
-  in-flight window so it runs over huge segments in a small/serverless process. Tier-merging (warm adds +
-  tombstones honored) and commutative.
-
-- **deterministic simulator**:
-  a seeded scheduler (gating at driver-call boundaries) + fault-injecting fake drivers + a `Set`-oracle
-  effective-set equivalence check, running the real engine under reproducible, replayable concurrency.
-  Failures print a seed that reproduces the exact interleaving; a regression-seed corpus + seeded
-  Warm-bytes fuzz round it out. Internal test infrastructure (not part of the published bundle).
-  **Completes the local end-to-end milestone.**
-- **driver conformance suite**: shared
-  `warmConformance` / `coldChunkSourceConformance` factories that every driver must pass, run against the
-  in-memory **and** LocalFs drivers.
-- **Warm tier**: a persistent
-  `LocalFsWarmDriver` with filesystem optimistic concurrency (monotonic counter token, ABA-safe tombstones,
-  per-row lossless CAS chain). Engine writes survive a restart.
-- **Cold tier**: `IStorageDriver` +
-  `LocalFsStorageDriver` (write-once via atomic `link`, symlink-hardened) + `CrbmStorageChunkSource` bridging
-  `.crbm` generations to the engine (generation-pinned). The engine now reads a persistent Cold tier.
-- **`.crbm` archive codec**: a streaming
-  writer + speculative-tail-read reader for the on-disk Cold format — delta+varint footer index, per-chunk
-  + index + footer CRC32C, version/flag gating, and a frozen golden-file corpus.
-- **in-memory core engine**: id routing,
-  `SafeBitmap` (safe-deserialize + size cap over the `roaring` engine), the tombstone-aware chunk model +
-  effective-set merge, a bounded LRU+TTL HOT cache, and the seven segment operations
-  (`add`/`addMany`/`remove`/`removeMany`/`has`/`count`/`iterate`) over an OCC read-modify-write loop, with
-  in-memory drivers and property tests against a `Set` oracle.
-- **Foundations**: repo scaffold
-  (TypeScript strict, ESLint/Prettier, Vitest, CI, Husky, docker-compose), the 7 design specs, and the
-  reserved npm name.
-- **Public API exports:** `CloudRoaring`, `Segment`, the in-memory + LocalFs drivers, `CrbmStorageChunkSource`,
-  `writeCrbmGeneration`, `SafeBitmap`, the `.crbm` codec + blob seam, and the typed error classes.
-
-<!-- The section above is the 0.1.0 release; new work goes under [Unreleased] at the top. -->
+<!-- New work goes under [Unreleased] at the top. -->

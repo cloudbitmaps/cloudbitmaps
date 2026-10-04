@@ -1,23 +1,20 @@
+import { writeCrbmGeneration } from '@/core/crbm-storage-source';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  createBackend,
-  CloudRoaring,
-  LocalFsStorageDriver,
-  LocalFsRegistryDriver,
-  CrbmStorageChunkSource,
-  bulkLoadCrbmGeneration,
-  writeCrbmGeneration,
-} from '@/index';
+import { CloudRoaring, CrbmStorageChunkSource } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
 import { splitId } from '@/core/bit-route';
 import { collect } from './helpers/loaded';
+import { bulkLoadCrbmGeneration } from './helpers/bulk-load';
+import { brandAsBackend } from '@/core/ports';
+import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
+import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 
 /**
  * End-to-end: the engine reading a real on-disk `.crbm` generation through `CrbmStorageChunkSource` →
- * `LocalFsStorageDriver`, with the registry pointer on disk too. Exercises the whole persistent stack and proves
- * the engine is unchanged — it just has a persistent storage tier and a persistent pointer now.
+ * `LocalFsStorageDriver`, with the registry pointer on disk too. Exercises the whole persistent stack: the same
+ * engine the in-memory tests drive, over a persistent storage tier and a persistent pointer.
  */
 let root: string;
 
@@ -61,8 +58,8 @@ describe('engine over LocalFs storage (.crbm)', () => {
   });
 
   it('is consistent under the cache: a store keeps its generation, a fresh store sees the newer one', async () => {
-    // Regression for the cache-staleness hazard: the engine caches decoded Storage chunks keyed by generation,
-    // so the storage source MUST present an immutable view for as long as it keeps its snapshot.
+    // The cache-staleness hazard: the engine caches decoded Storage chunks keyed by generation, so the storage
+    // source MUST present an immutable view for as long as it keeps its snapshot.
     const storage = new LocalFsStorageDriver(root);
     await writeCrbmGeneration(storage, { segment: 'seg', generation: 1 }, [
       { chunkKey: 0, bitmap: SafeBitmap.fromValues([1]) },
@@ -91,7 +88,7 @@ describe('engine over LocalFs storage (.crbm)', () => {
     const storage = new LocalFsStorageDriver(root);
     const registry = new LocalFsRegistryDriver(root);
     const fresh = (): CloudRoaring =>
-      new CloudRoaring({ storage: createBackend({ storage, registry }) });
+      new CloudRoaring({ storage: brandAsBackend({ storage, registry }) });
 
     await bulkLoadCrbmGeneration(storage, { segment: 'seg', generation: 0 }, [1, 2, 3, 100], {
       registry,
@@ -115,7 +112,7 @@ describe('engine over LocalFs storage (.crbm)', () => {
       registry,
     });
 
-    const seg = new CloudRoaring({ storage: createBackend({ storage, registry }) }).segment('seg');
+    const seg = new CloudRoaring({ storage: brandAsBackend({ storage, registry }) }).segment('seg');
     expect(await collect(seg.iterate())).toEqual([1, 3, 70_000]);
     expect(await seg.has(2)).toBe(false); // superseded, not merged: a load replaces the set
     expect(await seg.count()).toBe(3);

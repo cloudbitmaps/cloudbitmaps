@@ -5,16 +5,15 @@ import { parse } from 'yaml';
 
 // Guards the SHAPE of the release workflow, which is a safety property and not a style preference.
 //
-// This exists because a real edit silently broke it. Adding the `github-release` job used a Python
-// `replace(anchor, ..., 1)` whose anchor — `NPM_CONFIG_PROVENANCE: true` — appears TWICE in the file, once
-// under the dry-run step and once under the real one. The replacement hit the first, so the new job was
-// inserted BETWEEN the two publish steps, and YAML re-parented `Publish (real)` into `github-release`.
+// The shape can break with every other check green. `NPM_CONFIG_PROVENANCE: true` appears TWICE in the file,
+// once under the dry-run step and once under the real one, so an edit anchored on it can land a job
+// (`github-release`, say) BETWEEN the two publish steps, and YAML then re-parents `Publish (real)` into it.
 //
-// Nothing caught it. The file still parsed, the job names were still right, and a shallow check that listed
-// job names and permissions passed. The failure only appeared on a real tag: `github-release` has no pnpm, so
-// the publish step died with `pnpm: command not found` — after the release object had already been created for
-// a version that never reached npm. Exactly the state `needs: publish` exists to prevent, defeated by the step
-// living in the wrong job.
+// Nothing else catches it. The file still parses, the job names are still right, and a shallow check that
+// lists job names and permissions passes. The failure appears only on a real tag: `github-release` has no
+// pnpm, so a publish step inside it dies with `pnpm: command not found` — after the release object has been
+// created for a version that never reaches npm. Exactly the state `needs: publish` exists to prevent,
+// defeated by the step living in the wrong job.
 //
 // So the assertions below are about job MEMBERSHIP and PERMISSIONS, not the presence of strings.
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -60,7 +59,7 @@ describe('release workflow shape', () => {
   });
 
   it('publishes ONLY from the publish job', () => {
-    // The precise regression: `Publish (real)` ended up in github-release.
+    // The shape described at the top: `Publish (real)` re-parented into github-release.
     expect(hasStep(job('publish'), 'Publish (real)')).toBe(true);
     expect(hasStep(job('publish'), 'Publish (dry-run)')).toBe(true);
     expect(hasStep(job('github-release'), 'Publish (real)')).toBe(false);
@@ -73,11 +72,11 @@ describe('release workflow shape', () => {
   });
 
   it('keeps contents:write off the job that publishes — EFFECTIVE, not just job-level', () => {
-    // The first version of this test read `job('publish').permissions?.contents`, which is `undefined`
-    // because the publish job declares no job-level block — so `.not.toBe('write')` passed without
-    // inspecting anything. A `contents: write` added at the WORKFLOW level would be inherited by the
-    // publish job and this test would still have been green, which is the exact opposite of its purpose.
-    // Permissions resolve job-level first, falling back to workflow-level, so the assertion must too.
+    // Read at the job level alone, `job('publish').permissions?.contents` is `undefined`, because the publish
+    // job declares no job-level block — so `.not.toBe('write')` passes without inspecting anything, and a
+    // `contents: write` added at the WORKFLOW level, which the publish job inherits, leaves it green: the
+    // exact opposite of its purpose. Permissions resolve job-level first, falling back to workflow-level, so
+    // the assertion must too.
     expect(effectivePermissions('publish').contents).not.toBe('write');
     expect(effectivePermissions('github-release').contents).toBe('write');
     // The publish job's whole justification is that it holds the OIDC token and nothing else.
@@ -86,7 +85,7 @@ describe('release workflow shape', () => {
 
   it('keeps the human approval gate wired to the publish job', () => {
     // `environment: release` is the single line that makes a publish require a reviewer, and RELEASING.md
-    // calls it "the last point at which a release can be stopped". Deleting it fails SILENTLY: every other
+    // says of that approval that "nothing reaches npm before it". Deleting it fails SILENTLY: every other
     // test stays green, CI is green, and the next tag publishes with no prompt — and a run that never
     // pauses is indistinguishable from one whose reviewer approved quickly. Worse than a red job.
     expect(job('publish').environment).toBe('release');
@@ -99,7 +98,7 @@ describe('release workflow shape', () => {
   });
 
   it('every job that runs pnpm also installs pnpm', () => {
-    // The actual failure mode: a job inherited a pnpm step without pnpm/action-setup.
+    // The failure mode described at the top: a job holding a pnpm step without pnpm/action-setup.
     for (const [name, job] of Object.entries(wf.jobs)) {
       const usesPnpm = job.steps.some((s) => /(^|\s)pnpm\s/.test(s.run ?? ''));
       if (!usesPnpm) continue;
@@ -129,11 +128,11 @@ describe('release workflow shape', () => {
 
   it('runs EVERY recoverable precondition before the irreversible step', () => {
     // The ordering rule this file exists to defend, stated once for all of them: an npm publish cannot be
-    // undone outside a 72-hour window, so anything that can still be FIXED has to fail first. The release-notes
-    // check is the newest member and the most instructive — it lives in `github-release`, which by
+    // undone outside a 72-hour window, so anything that can still be FIXED has to fail first. The
+    // release-notes check is the most instructive — the notes are extracted in `github-release`, which by
     // construction runs after the publish, so without a precondition here a missing CHANGELOG section is only
-    // ever discovered once nothing can be done about it. That is the same shape as the bug that once created a
-    // GitHub Release for a version that never published, just pointing the other way.
+    // ever discovered once nothing can be done about it. That is the shape described at the top, a GitHub
+    // Release for a version that never published, pointing the other way.
     const names = stepNames(job('publish'));
     const iReal = names.indexOf('Publish (real)');
     expect(iReal).toBeGreaterThan(-1);
@@ -180,18 +179,16 @@ describe('release workflow shape', () => {
     );
   });
 
-  it('checks out with tags, because the suite it runs reads the previous release at its tag', () => {
-    // `previous-release-claims` reads the PREVIOUS release's sources at its git tag to check that what the
-    // docs say about it is true, and a shallow checkout carries NO tags. It fails loudly rather than passing
-    // vacuously, which is correct — and means this job, which claims to re-run the complete gate, would have
-    // failed on the first real release. `ci.yml` has carried `fetch-depth: 0` for exactly this reason since
-    // the gate was written; release.yml did not, and nothing compared them.
+  it('checks out the whole history, because the suite it runs reads the history of a file', () => {
+    // `calibration-reports` proves each committed calibration evidence file was written once and never edited,
+    // which reads the file's history out of git, and a shallow checkout carries none. It fails loudly rather
+    // than passing vacuously, so this job, which re-runs the complete gate, checks out as `ci.yml` does.
     const checkout = job('publish').steps.find((s) => (s.uses ?? '').includes('actions/checkout'));
     expect(checkout, 'the publish job no longer checks out').toBeDefined();
     expect(
       (checkout as unknown as { with?: { 'fetch-depth'?: number } }).with?.['fetch-depth'],
-      'release.yml must check out with fetch-depth: 0 — a shallow clone has no tags, and the suite this job ' +
-        'runs includes a gate that reads one',
+      'release.yml must check out with fetch-depth: 0 — a shallow clone has no history, and the suite this ' +
+        'job runs includes a gate that reads it',
     ).toBe(0);
   });
 
@@ -232,7 +229,7 @@ describe('release workflow shape', () => {
       expect(run, `${name} must set nullglob`).toContain('shopt -s nullglob');
       expect(run, `${name} must assert the match count`).toMatch(/\$\{#pkgs\[@\]\}/);
       // The COMPARISON specifically, not just a mention: the error message also interpolates the variable,
-      // so a `toContain` over the whole block stayed green when the `-lt` was changed back to a literal.
+      // so a `toContain` over the whole block stays green when the `-lt` compares against a literal.
       expect(run, `${name} must compare the count against EXPECTED_PACKAGES`).toMatch(
         /-lt\s+"\$EXPECTED_PACKAGES"/,
       );
@@ -240,11 +237,11 @@ describe('release workflow shape', () => {
   });
 
   it('expects as many package manifests as the workspace actually has', () => {
-    // The count was hardcoded as `2` and stayed `2` through the split to five packages, so both guards would
-    // have passed a tag that shipped core and roaring and silently left the three driver packages behind —
-    // a PARTIAL publish of a family that releases in lockstep, which is the one npm state that cannot be
-    // undone. The number is a policy claim about the workspace, and nothing in the workflow can see the
-    // workspace, so the comparison has to happen here.
+    // A hardcoded count goes stale when a package is added: a count of `2` in a five-package workspace passes
+    // a tag that ships core and roaring and silently leaves the three driver packages behind — a PARTIAL
+    // publish of a family that releases in lockstep, which is the one npm state that cannot be undone. The
+    // number is a policy claim about the workspace, and nothing in the workflow can see the workspace, so the
+    // comparison has to happen here.
     const packages = readdirSync(join(ROOT, 'packages'), { withFileTypes: true }).filter(
       (e) => e.isDirectory() && existsSync(join(ROOT, 'packages', e.name, 'package.json')),
     );

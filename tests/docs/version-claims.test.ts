@@ -3,21 +3,19 @@ import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// The site's version badge drifts silently, and this test exists because it did.
+// The site's version badge drifts silently.
 //
-// Cutting 0.1.3 bumped both manifests and the exported `VERSION` constant — the latter caught by
-// `tests/index.test.ts`, which is why that one has never been wrong. The site pages carry the same number in
-// two places each, guarded by nothing, and were still advertising 0.1.2. Nobody would have noticed: the pages
-// render fine, CI is green, and the only symptom is a visitor being told the current release is one they
-// cannot install the features of.
+// Cutting a release bumps the manifests, which `tests/index.test.ts` holds to one version. The site pages carry the same number in two places each, and without this nothing reads them: a page
+// can go on advertising the release before and nobody would notice — the pages render fine, CI is green, and the
+// only symptom is a visitor being told the current release is one they cannot install the features of.
 //
 // Documentation that is WRONG is worse than documentation that is missing, and a version badge is the single
 // most load-bearing number on a landing page — it is what a reader checks to decide whether a feature they
 // just read about exists yet. So it gets the same treatment as every other public claim in this repo: pinned
 // by a test rather than by remembering.
 //
-// It covers two surfaces, `site/` and the markdown docs, because the hole it was written to close turned out
-// to be in both. See MARKDOWN_DOCS for why the second half is scoped differently from the first.
+// It covers two surfaces, `site/` and the markdown docs, because a stale version can sit in either. See
+// MARKDOWN_DOCS for why the second half is scoped differently from the first.
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 /** The site gate's reader of markup, so a comment ends here where the browser ends it: `<!-->` is a whole comment. */
 const { withoutComments } = createRequire(import.meta.url)(
@@ -40,7 +38,7 @@ const version = (
 const VERSION_RE = /\bv?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\b/g;
 
 /**
- * The same badge written with two components: `v0.9`, `v0.10`.
+ * The same badge written with two components, as in `v0.10`.
  *
  * The `v` is REQUIRED here, and that is the whole reason this is a second pattern rather than a loosening of
  * the one above. Two bare numbers separated by a dot are everywhere in these pages — `Node ≥ 22.12`,
@@ -48,8 +46,8 @@ const VERSION_RE = /\bv?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\b/g;
  * a token a version BADGE rather than a number, so it is what this matches.
  *
  * Compared against the release's own `major.minor`, not its full version: `v0.10` is an honest way to name
- * the 0.10 line and must not be flagged, while `v0.9` on a hero is exactly the stale badge that a
- * three-component pattern could not see.
+ * the 0.10 line and must not be flagged, while an older line's two-component badge on a hero is exactly the
+ * stale badge that a three-component pattern cannot see.
  */
 const SHORT_VERSION_RE = /\bv(\d+\.\d+)(?![.\d])/g;
 
@@ -61,7 +59,7 @@ const MAJOR_MINOR = version.split('.').slice(0, 2).join('.');
  *
  * Only a backwards badge is stale. `v1.0` appears throughout the README and the roadmap as the format freeze
  * this project is working towards — a forward reference, and flagging it would red the docs for describing
- * their own plan. `v0.9` on a hero is the defect: a line that has shipped and moved on.
+ * their own plan. An older line's badge on a hero is the defect: a line that has shipped and moved on.
  */
 function isOlderLine(mm: string): boolean {
   const [a = 0, b = 0] = mm.split('.').map((n) => Number.parseInt(n, 10));
@@ -72,45 +70,61 @@ function isOlderLine(mm: string): boolean {
 /**
  * Versions on the site that are deliberately NOT ours, each with the reason it is here.
  *
- * This allowlist is the whole design. Two earlier drafts tried to identify our badges by what sits NEAR them
- * and both under-reached:
+ * This allowlist is the whole design. Identifying our badges by what sits NEAR them under-reaches whatever
+ * the anchor:
  *
- *   1. anchored on `pre-1.0` — reached 1 of 7 pages, because only benchmarks.html put that string on the same
- *      line as a version.
- *   2. added `Apache-2.0` — reached all 7 pages, and was believed to be complete. It was not: it still missed
- *      4 of 19 occurrences, because the hero eyebrows (`roaring shipped · v0.5.0`, `Usage ·
- *      @cloudbitmaps/roaring v0.5.0`) name the release with neither anchor beside them, and flavors.html's
- *      status pill wrote it BARE (`Shipped 0.5.0`) where a `v`-prefixed regex could not see it at all. All four
- *      were nonetheless bumped correctly through several releases — by hand, which is exactly the property a
- *      gate is supposed to remove.
+ *   1. `pre-1.0` sits on the same line as a version on one page only, `benchmarks.html`.
+ *   2. `Apache-2.0` reaches every page and still misses the hero eyebrows (`roaring shipped · v<version>`,
+ *      `Usage · @cloudbitmaps/roaring v<version>`), which name the release with neither anchor beside them,
+ *      and a version written BARE (`Shipped <version>`), which a `v`-prefixed regex cannot see at all. Those
+ *      are then kept right by hand, which is exactly the property a gate is supposed to remove.
  *
- * Both drafts failed the same way: an opt-IN match, where a version is only checked if it looks the way the
- * test author expected. New copy is then unguarded by default and nothing says so. So the polarity is
+ * Both are an opt-IN match, where a version is only checked if it looks the way the test author expected.
+ * New copy is then unguarded by default and nothing says so. So the polarity is
  * inverted — every version-shaped token on a site page is assumed to be OURS and must equal the release, and
  * the exceptions are enumerated here. New copy is guarded by default; the failure mode is a loud false
  * positive that gets an entry added, not silent staleness.
  */
 const FOREIGN_VERSIONS = new Map<string, string>([
   [
+    '4.12.1',
+    'the @smithy/node-http-handler release the production guide checked its S3 client-timeout sample on: there ' +
+      '`requestTimeout` alone only logs a warning, so the sample sets `socketTimeout`. A third-party version, not a ' +
+      'claim about our release',
+  ],
+  [
+    '8.1.0',
+    'the other @google-cloud/storage release the GCS download-retry crash was checked on (with 7.22.0). A third-party ' +
+      'version, not a claim about our release',
+  ],
+  [
+    '7.22.0',
+    "the @google-cloud/storage release the GCS download-retry crash was checked on (with 8.1.0), in the GCS package's " +
+      'README, the API reference and the production guide. A third-party version, not a claim about our release',
+  ],
+  [
     '5.0.6',
     "the Redis OSS version from which ElastiCache allows up to 500 nodes a cluster, in the getting-started guide's " +
       'note on the node quota the estimator prices past. A third-party version, not a claim about our release',
   ],
   [
-    '0.9.0',
-    "the PREVIOUS release, named in the API reference's paragraph on which option spellings are now refused " +
-      'and in the migration guide throughout. Those are claims about what 0.9.x had, not badges advertising ' +
-      'what this release is — and naming the version is the point of the sentence, so rewording it to dodge ' +
-      'this gate would make the docs worse. The badges that DO advertise the current release carry no ' +
-      'exemption and are still checked on every page.',
+    '3.699.0',
+    "the last @aws-sdk/client-s3 version whose PutObject serializer omits If-Match, in the s3 README's and the " +
+      "production guide's reason for the 3.700.0 floor: the registry's compare-and-swap goes out unconditionally on " +
+      'it and every version before. A third-party version, not a claim about our release',
   ],
   [
-    '3.645.0',
+    '3.698.0',
+    'the first @aws-sdk/client-s3 version whose DeleteObject serializer sends If-Match, named in the production guide as ' +
+      'the header the registry checks for before it removes a row with a conditional delete. A third-party version, not ' +
+      'a claim about our release',
+  ],
+  [
+    '3.700.0',
     "the floor of @cloudbitmaps/s3's dependency on @aws-sdk/client-s3, in that package's README. It is a " +
-      'correctness floor, not a preference: measured against MinIO, 3.640.0 drops the unmodeled ' +
-      '`IfNoneMatch: "*"` and a second PUT to the same key SUCCEEDS — write-once silently lost, which is ' +
-      'hard invariant 2 — while 3.641.0 rejects it. 3.645.0 is the pinned floor, a small margin above the ' +
-      'measured boundary',
+      'correctness floor, not a preference: an SDK drops a conditional header it does not model, and up to ' +
+      "3.699.0 PutObject's serializer omits If-Match, so the registry's compare-and-swap goes out " +
+      'unconditionally; 3.700.0 is the first version that sends it',
   ],
   [
     '3.640.0',
@@ -127,29 +141,24 @@ const FOREIGN_VERSIONS = new Map<string, string>([
     '24.18.1',
     'the Node version in the benchmarks methodology — a fact about the measurement, not a release',
   ],
-  [
-    '0.0.0',
-    "README's license section: the placeholder published to reserve the unscoped `cloud-roaring` npm name",
-  ],
 ]);
 
 /**
  * The next minor, which pages may legitimately name as a FORWARD reference.
  *
- * While the storage packages are unpublished, every install block says so and names the release that fixes it
- * (see `unreleased-install-caveat.test.ts`). That is a true statement about a version that is not current, and
- * it is the one kind of non-current version this file must not treat as a stale badge.
+ * A page may say what lands in the next release and that it is not out yet. That is a true statement about a
+ * version that is not current, and it is the one kind of non-current version this file must not treat as a stale
+ * badge.
  *
  * It is computed, not allowlisted, which is what keeps it safe: `FOREIGN_VERSIONS` would exempt the string
- * `0.10.0` permanently, so a badge left reading `0.10.0` after `0.11.0` shipped would sail through — the exact
+ * `0.11.0` permanently, so a badge left reading `0.11.0` after `0.12.0` shipped would sail through — the exact
  * drift this file exists to catch. As a computed next-minor the exemption moves with the version and can only
  * ever excuse a reference to the release that has not happened yet. Once it ships it becomes `version` itself
- * and is checked normally, and the caveat naming it is force-removed by the other guard.
+ * and is checked normally.
  *
- * It is also scoped to the LINE carrying that caveat, not the page. Page-wide, a hero eyebrow reading
- * "roaring shipped · v0.10.0" — a release that is not on npm — passed while the footer badges still said
- * 0.9.0, which is precisely the stale badge this file exists to catch. Every legitimate mention of the next
- * minor sits on a caveat line, so the narrow scope costs nothing.
+ * It is also scoped to the words beside the version, not the page: a hero eyebrow reading "roaring shipped ·
+ * v0.11.0", a release that is not out, must not pass because an unrelated "unreleased" sits somewhere else on the
+ * page. Every legitimate mention of the next minor says, beside it, that it is not out.
  */
 const NEXT_MINOR = ((): string => {
   const [major = 0, minor = 0] = version.split('.').map((n) => Number.parseInt(n, 10));
@@ -159,9 +168,9 @@ const NEXT_MINOR = ((): string => {
 /**
  * A line may name the next minor only if it says, on that same line, that the version is not out.
  *
- * Keyed on the CLAIM rather than on one exact sentence: the install caveat is not the only place that
- * legitimately names an unreleased version — a status line saying which release is published has to as well —
- * and an exemption tied to a single string would force honest prose to quote it verbatim. What it must never
+ * Keyed on the CLAIM rather than on one exact sentence: a note on what the next release carries and a status line
+ * saying which release is published both legitimately name an unreleased version, and an exemption tied to a single
+ * string would force honest prose to quote it verbatim. What it must never
  * excuse is a bare badge, which is the whole point of this file.
  */
 const MARKS_UNRELEASED = /\b(not on npm yet|unreleased|not yet released|is not published)\b/i;
@@ -169,9 +178,8 @@ const MARKS_UNRELEASED = /\b(not on npm yet|unreleased|not yet released|is not p
 /**
  * Version tokens a reader can actually see, excluding HTML comments, which end where the browser ends them.
  *
- * Comments are stripped because they are not rendered, so they cannot mislead anyone — and because they
- * legitimately discuss other releases ("until 0.6.0, this table offered nothing to check it against"), which a
- * bare-token match would otherwise flag forever.
+ * Comments are stripped because they are not rendered, so they cannot mislead anyone — and because they may
+ * legitimately discuss other releases, which a bare-token match would otherwise flag forever.
  */
 function badgeVersions(
   html: string,
@@ -192,14 +200,13 @@ function badgeVersions(
             const v = m[1] as string;
             if (foreign.has(v)) return false;
             if (v !== NEXT_MINOR) return true;
-            // ADJACENT, not merely same-line. On an HTML page a "line" can be a whole markup region, so any
-            // stray "unreleased" anywhere on it exempted a stale badge — verified: a hero reading
-            // `roaring shipped · v0.10.0` passed with an unrelated "see the unreleased notes" span beside it.
+            // ADJACENT, not merely same-line. On an HTML page a "line" can be a whole markup region, so a
+            // stray "unreleased" anywhere on it would exempt a stale badge.
             const at = m.index ?? 0;
             const near = line.slice(Math.max(0, at - 80), at + 80);
             // The marker must be adjacent AND the version must not also be claimed as shipped. Proximity alone
-            // cannot tell "this version is unreleased" from "see the unreleased notes" — verified: a hero
-            // reading `roaring shipped · v0.10.0` passed with an unrelated "unreleased" span beside it. A
+            // cannot tell "this version is unreleased" from "see the unreleased notes": a hero reading
+            // `roaring shipped · v<next minor>` would pass with an unrelated "unreleased" span beside it. A
             // version cannot be both shipped and not out, so the contradiction is the thing to reject.
             if (/\b(shipped|ships|available|released|out now)\b/i.test(near)) return true;
             return !MARKS_UNRELEASED.test(near);
@@ -212,12 +219,11 @@ function badgeVersions(
 /**
  * Every page under `site/`, nested ones included.
  *
- * This was `readdirSync(SITE)` — one level, no recursion — which was correct only for as long as the site was
- * flat. Moving the roaring page to `site/flavors/roaring.html` (so the `/flavors/roaring` URL it has always
- * advertised as its canonical actually resolves) would have dropped it out of this suite entirely: the loop
- * below would have found six pages, passed, and left the flagship flavor page free to advertise any version at
- * all. That is the same hole this file was rewritten to close, reopened by a directory move rather than by a
- * wording change — so the enumeration is now structural rather than depth-one.
+ * A depth-one `readdirSync(SITE)` is correct only while the site is flat. It drops `site/flavors/roaring.html`
+ * (where the `/flavors/roaring` URL the page advertises as its canonical resolves) out of this suite entirely:
+ * the loop below would pass over the top-level pages and leave the flagship flavor page free to advertise any
+ * version at all. A directory move opens the same hole a wording change does, so the enumeration is structural
+ * rather than depth-one.
  */
 function htmlPagesUnder(dir: string, prefix = ''): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -239,16 +245,12 @@ function filesUnder(dir: string, exts: readonly string[], prefix = ''): string[]
 const pages = SITE_DIRS.flatMap((dir) => htmlPagesUnder(join(ROOT, dir), dir));
 
 /**
- * Non-HTML files under `site/` that could name the release — DERIVED, not listed.
+ * Non-HTML files under `site/` that must name the release.
  *
- * `llms.txt` is the machine-readable summary served to crawlers and assistants, and it sat at `v0.1.0`
- * through three releases — invisible because this suite only ever read `*.html`. A version gate that covers
- * some of the files carrying a version is a gate with a hole in it, and this is what fell through.
- *
- * It was then fixed by hardcoding `['llms.txt']`, which is the same hole with one file taken out of it:
- * `site/demo.js`, `site/theme.js`, `site/robots.txt` and `site/sitemap.xml` ship to the same origin and were
- * all still unread. None carries a version today, and a one-element list is exactly what stops being true the
- * day one does. Enumerating the directory means a new served file is covered on the day it is added.
+ * `llms.txt` is the machine-readable summary served to crawlers and assistants. A suite that reads only
+ * `*.html` leaves it naming whatever version it was written with, release after release: a version gate that
+ * covers some of the files carrying a version is a gate with a hole in it. Every other `.txt`, `.xml`, `.js` and
+ * `.json` file served from `site/` is read below, derived rather than listed.
  */
 const VERSIONED_TEXT_FILES = SITE_DIRS.map((dir) => `${dir}/llms.txt`);
 
@@ -259,10 +261,10 @@ const VERSIONED_TEXT_FILES = SITE_DIRS.map((dir) => `${dir}/llms.txt`);
  * them is obliged to carry a version at all. `llms.txt` above is, which is why it keeps the stronger
  * "must name it" assertion; asserting that of `robots.txt` would be asserting something untrue.
  *
- * Derived rather than listed. Hardcoding `['llms.txt']` fixed the original hole by taking exactly one file
- * out of it and leaving `demo.js`, `theme.js`, `robots.txt`, `sitemap.xml` and the replay fixture unread —
- * all served from the same origin. None carries a version today, and a hardcoded list is precisely what
- * stops being true on the day one does.
+ * Derived rather than listed. A list of `['llms.txt']` alone leaves `demo.js`, `theme.js`, `robots.txt` and
+ * `sitemap.xml` unread — all served from the same origin. None carries a version today, and a hardcoded list
+ * is precisely what stops being true on the day one does. Enumerating the directory means a new served file is
+ * covered on the day it is added.
  */
 const OTHER_SERVED_FILES = SITE_DIRS.flatMap((dir) =>
   filesUnder(join(ROOT, dir), ['.txt', '.xml', '.js', '.json'], dir),
@@ -271,56 +273,44 @@ const OTHER_SERVED_FILES = SITE_DIRS.flatMap((dir) =>
 /**
  * Markdown that describes the CURRENT release, and therefore must name the current release.
  *
- * The third hole in the same gate. It has now grown twice for the same reason — once for `llms.txt` (a
- * versioned file that was not `*.html`) and once for nested pages (a versioned file the walk could not reach) —
- * and both times the note left behind said that a version gate covering *some* of the files carrying a version
- * is a gate with a hole in it. The markdown was the rest of that hole: `README.md` and the getting-started
- * guide both advertised `0.1.1` while the packages shipped `0.6.0`, across five releases, because nothing in
- * here had ever opened a `.md`.
+ * A version gate covering *some* of the files carrying a version is a gate with a hole in it, whether the file
+ * missed is not `*.html` (`llms.txt`) or sits where a walk does not reach (a nested page). The markdown is the
+ * rest of that hole: `README.md` and the getting-started guide name the release, and a gate that never opens a
+ * `.md` leaves them naming whatever version they were written with.
  *
  * The site half's polarity does **not** transfer wholesale, and that is the part worth reading. On the site
  * every version token is a badge — a claim about what you can install right now — so "assume ours, allowlist
- * the exceptions" is right. In markdown it is not: `docs/ROADMAP.md` is *about* past releases ("other cloud
- * backends are post-`0.1.0`"), and at the repo root `CHANGELOG.md`, `RELEASING.md` and `SECURITY.md` are a
- * release history, worked examples, and third-party advisory pins respectively. Pointing an assume-ours rule at
+ * the exceptions" is right. In markdown it is not: at the repo root `CHANGELOG.md`, `RELEASING.md` and
+ * `SECURITY.md` are a release history, worked examples, and third-party advisory pins respectively. Pointing an assume-ours rule at
  * those yields nothing but false positives, and the allowlist absorbing them would grow until it exempted the
  * numbers that actually matter.
  *
  * So the scope is per-FILE and by kind — files whose job is to describe the library as it is *now*. Inside
- * them the site polarity applies unchanged. The set is derived by walking `docs/` rather than enumerated, so a
- * new page is covered the day it is added; `ROADMAP.md` is the one carve-out and it has to name itself here.
+ * them the site polarity applies unchanged, the roadmap included. The set is derived by walking `docs/` rather
+ * than enumerated, so a new page is covered the day it is added.
  */
-const HISTORICAL_DOCS = new Set([
-  'docs/ROADMAP.md', // a release history by design — every version in it is deliberately not the current one
-  // A migration guide names the version you are going TO, which by construction is not yet published when
-  // the guide is written, and the version you are coming FROM, which by construction is not current either.
-  // Both are the point of the document.
-  'MIGRATING.md',
-]);
 
 function markdownUnder(dir: string, prefix: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const rel = `${prefix}/${entry.name}`;
     if (entry.isDirectory()) return markdownUnder(join(dir, entry.name), rel);
-    return entry.name.endsWith('.md') && !HISTORICAL_DOCS.has(rel) ? [rel] : [];
+    return entry.name.endsWith('.md') ? [rel] : [];
   });
 }
 
 /**
  * The per-package READMEs — one `README.md` per directory under `packages/`.
  *
- * (Spelled out rather than written as a glob: the glob's `*` followed by `/` closes this very comment, which
- * is a two-minute detour worth not repeating.)
+ * (Spelled out rather than written as a glob: the glob's `*` followed by `/` closes this very comment.)
  *
- * The **fourth** hole in this gate, found while cutting 0.7.0. These are the npm landing pages: the first
- * thing anyone evaluating either package reads, and arguably the most-seen prose in the project. The scope
- * above reaches `README.md` at the repo root and everything under `docs/`, and neither of those is this.
+ * These are the npm landing pages: the first thing anyone evaluating a package reads, and arguably the
+ * most-seen prose in the project. The scope above reaches `README.md` at the repo root and everything under
+ * `docs/`, and neither of those is this.
  *
- * They happen to carry no version token today, so nothing was stale — but "currently harmless" is not the
- * same as "covered", and that distinction is the entire history of this file. A badge added to either README
- * tomorrow would be guarded by nobody.
+ * A README with no version token in it is harmless today, but "currently harmless" is not the same as
+ * "covered": without this, a badge added to one tomorrow would be guarded by nobody.
  *
- * Derived by walking `packages/`, so a third package is covered the day it exists rather than the day someone
+ * Derived by walking `packages/`, so a new package is covered the day it exists rather than the day someone
  * remembers to add it here.
  */
 function packageReadmes(): string[] {
@@ -355,8 +345,8 @@ describe('site version badges', () => {
   });
 
   it('reaches pages in subdirectories, not just the top level', () => {
-    // Named explicitly because the depth-one version of this suite passed while silently excluding a nested
-    // page. "Every page" has to mean every page at any depth, and the assertion that says so should fail if the
+    // Named explicitly because a depth-one walk passes while silently excluding a nested page. "Every page"
+    // has to mean every page at any depth, and the assertion that says so should fail if the
     // walk ever regresses to one level — not merely cover fewer files without comment.
     const nested = pages.filter((p) => p.split('/').length > 2);
     expect(
@@ -440,21 +430,13 @@ describe('site version badges', () => {
       ).not.toBe(version);
     }
   });
-
-  it('matches the exported VERSION constant, so all three sources agree', async () => {
-    // package.json ↔ VERSION is already pinned by tests/index.test.ts; this closes the triangle so the site
-    // cannot agree with one and disagree with the other.
-    const { VERSION } = (await import('@/index')) as { VERSION: string };
-    expect(VERSION).toBe(version);
-  });
 });
 
 describe('markdown version claims', () => {
   it('reaches the two front doors, so a move cannot silently shrink the scope', () => {
-    // README and the getting-started guide are the files a reader meets first and the two that were actually
-    // wrong. The derived walk protects against a page being ADDED and missed; this protects against one being
-    // MOVED and dropped, which the walk cannot see. Both were stale for five releases, so a rename has to fail
-    // loudly here rather than quietly reduce what is checked.
+    // README and the getting-started guide are the files a reader meets first. The derived walk protects
+    // against a page being ADDED and missed; this protects against one being MOVED and dropped, which the walk
+    // cannot see, so a rename has to fail loudly here rather than quietly reduce what is checked.
     expect(MARKDOWN_DOCS).toContain('README.md');
     expect(MARKDOWN_DOCS).toContain('docs/guide/getting-started.md');
     // The npm landing pages. Named individually rather than counted, so renaming a package directory fails
@@ -465,8 +447,8 @@ describe('markdown version claims', () => {
 
   it('is not vacuous — the covered docs name a version somewhere', () => {
     // Every per-file assertion below is a loop over the tokens found, so a scope that matched only
-    // version-free files would pass while checking nothing. That is exactly how the markdown went unguarded in
-    // the first place, so it gets an assertion rather than an assumption.
+    // version-free files would pass while checking nothing. A scope that checks nothing is how a surface goes
+    // unguarded, so it gets an assertion rather than an assumption.
     const total = MARKDOWN_DOCS.reduce(
       (n, f) => n + badgeVersions(readFileSync(join(ROOT, f), 'utf8')).length,
       0,
@@ -477,25 +459,12 @@ describe('markdown version claims', () => {
     ).toBeGreaterThan(0);
   });
 
-  it('excludes only docs that exist, so a stale carve-out cannot linger', () => {
-    // HISTORICAL_DOCS is an exemption list and gets the same treatment as FOREIGN_VERSIONS: if ROADMAP.md is
-    // renamed, the entry stops excluding anything and should be deleted rather than left as a comment about a
-    // file that is gone.
-    for (const f of HISTORICAL_DOCS) {
-      expect(
-        existsSync(join(ROOT, f)),
-        `HISTORICAL_DOCS carves out ${f}, which no longer exists`,
-      ).toBe(true);
-    }
-  });
-
   it.each(MARKDOWN_DOCS)('%s names the current version wherever it names one', (file) => {
     for (const v of badgeVersions(readFileSync(join(ROOT, file), 'utf8'))) {
       expect(
         v,
         `${file} names ${v}, but the packages are at ${version}. If ${v} is a third-party or historical ` +
-          `version rather than a claim about the current release, add it to FOREIGN_VERSIONS with the reason ` +
-          `— or, if the whole file is a release history, to HISTORICAL_DOCS.`,
+          `version rather than a claim about the current release, add it to FOREIGN_VERSIONS with the reason.`,
       ).toBe(version);
     }
   });

@@ -16,8 +16,8 @@ import { collect, loadedStore } from '../helpers/loaded';
  * segments.
  *
  * The broader guard — refusing to publish an empty or implausible generation over a non-empty one, with an
- * `allowEmpty` override — now applies here too (`materialize-load-guard.test.ts`). The two are still worth
- * keeping apart: that one is a REPORTED refusal a caller may legitimately override, while an expired handle
+ * `allowEmpty` override — applies here too (`materialize-load-guard.test.ts`). The two are worth keeping
+ * apart: that one is a REPORTED refusal a caller may legitimately override, while an expired handle
  * is a wiring mistake and THROWS, before any object is written. An `allowEmpty: true` must not turn an
  * expired operand into a wipe.
  */
@@ -39,9 +39,9 @@ const FUTURE = MIN_EXPIRES_AT_MS + 1_000_000;
 
 describe('the *Into verbs refuse an expired handle instead of publishing over the destination', () => {
   it('allowEmpty: true does NOT turn an expired operand into a wipe', async () => {
-    // The docblock above asserts this; nothing proved it. The two guards differ in KIND — the empty guard is
-    // a reported refusal a caller may override, an expired handle is a wiring mistake — so the override must
-    // not reach it. It does not, because `refuseIfExpired` runs before `materialize` and never sees options;
+    // The docblock above asserts this, and this test is what proves it. The two guards differ in KIND — the empty
+    // guard is a reported refusal a caller may override, an expired handle is a wiring mistake — so the override
+    // must not reach it. It does not, because `refuseIfExpired` runs before `materialize` and never sees options;
     // this pins that ordering, which is otherwise one refactor away from inverting.
     const clock = fakeClock();
     const { store } = await loadedStore(

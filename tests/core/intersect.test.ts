@@ -1,5 +1,6 @@
+import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import fc from 'fast-check';
-import { CloudRoaring, MemoryStorageChunkSource, type Clock } from '@/index';
+import { CloudRoaring, type Clock } from '@/index';
 import { roaringCodec, SafeBitmap } from '@/roaring-codec';
 import { SegmentEngine } from '@/core/engine';
 import { joinId } from '@/core/bit-route';
@@ -120,8 +121,8 @@ describe('chunk-skipping intersection', () => {
   });
 
   // Boundary: the crown-jewel path at the top of the id space. Membership is proven at 0xFFFFFFFF elsewhere,
-  // but intersect (joinId masking + assertChunkKeyInRange's `< 65536` edge + ascending merge across the full
-  // span) was only sampled below chunk key 4 — a regression at the ceiling would have had no test.
+  // but intersect has ceiling edges of its own (joinId masking + assertChunkKeyInRange's `< 65536` edge +
+  // ascending merge across the full span), and a test that samples only low chunk keys cannot reach them.
   it('intersects at the maximum chunk-key span (id 0xFFFFFFFF, chunk 65535)', async () => {
     const { store, seed } = harness();
     const TOP = joinId(65_535, 65_535); // = 0xFFFF_FFFF, the u32 ceiling
@@ -192,8 +193,8 @@ describe('intersectInto — the result is a NEW GENERATION of the destination', 
       .intersectInto(store.segment('dest'), [store.segment('b')]);
     expect(result).toEqual({
       generation: 0,
-      // A materialisation now reports whether it PUBLISHED, because it can refuse — an empty or implausible
-      // result no longer overwrites the destination. `dest` did not exist here, so there was nothing to
+      // A materialisation reports whether it PUBLISHED, because it can refuse — an empty or implausible result
+      // does not overwrite a destination that holds data. `dest` did not exist here, so there was nothing to
       // protect and nothing to collect.
       published: true,
       cardinalityBefore: null,
@@ -264,11 +265,10 @@ describe('intersection vs Set oracle (property)', () => {
   /**
    * Four subsets of ONE shared universe, plus the chunk-boundary ids explicitly.
    *
-   * Three independent `fc.array(ID)` draws — the previous spelling — almost never overlap: measured over 200
-   * samples, exactly **one** produced a non-empty two-way intersection and none touched a chunk boundary, so a
-   * three-way intersection was effectively always empty and this property was asserting `[] === []`. Subsets of
-   * a shared universe overlap by construction (92 of 200 two-way, 114 touching a boundary). The generator's
-   * reach is asserted in `tests/engine.property.test.ts`, which uses the same construction.
+   * Three independent `fc.array(ID)` draws almost never overlap and almost never touch a chunk boundary, so a
+   * three-way intersection of them is effectively always empty and the property would assert `[] === []`.
+   * Subsets of a shared universe overlap by construction. The generator's reach is asserted in
+   * `tests/engine.property.test.ts`, which uses the same construction.
    */
   const universe = fc.uniqueArray(
     fc.oneof(

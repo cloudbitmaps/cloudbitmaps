@@ -4,10 +4,11 @@ import { gcOrphanGenerations } from '@/core/generation-gc';
 import { openGenerationReader } from '@/core/crbm-storage-source';
 import { KeyUnavailableError, ValidationError, WriteConflictError } from '@/core/errors';
 import { InProcessKeystore } from '@/drivers/crypto';
-import { CloudRoaring, RecordingAuditSink, bulkLoadCrbmGeneration } from '@/index';
+import { CloudRoaring, RecordingAuditSink } from '@/index';
 import type { GenKey, IStorageDriver, IKeystore, SegmentRef } from '@/index';
 import { SafeBitmap, roaringCodec } from '@/roaring-codec';
 import { collect, loadedStore } from '../helpers/loaded';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 /**
  * `eraseIdFromSegment` — subject erasure on a loaded segment, one id at a time.
@@ -413,11 +414,11 @@ describe('eraseIdFromSegment — the receipt check asserts the outcome, not who 
 });
 
 describe('eraseIdFromSegment — what a re-run after a failed collect actually reports', () => {
-  // This matrix is documented in four places an operator is pointed at: this module's `collected` doc, the
-  // ledger entry note, the API reference and both privacy documents. It has been written down wrongly twice —
-  // once describing behaviour from before the superseded-generation search existed, once generalising the
-  // Storage-`delete`-fault outcome to a cause that does not share it. Prose cannot be trusted here, so the matrix
-  // is asserted: if one of these outcomes changes, the sentence that describes it has to change with it.
+  // This matrix is documented in five places an operator is pointed at: this module's `collected` doc, the
+  // ledger entry note, the API reference and both privacy documents. It is easy to write down wrongly — by leaving
+  // out the re-run's search of the superseded generations, or by generalising the Storage-`delete`-fault outcome
+  // to a cause that does not share it. Prose cannot be trusted here, so the matrix is asserted: if one of these
+  // outcomes changes, the sentence that describes it has to change with it.
 
   it('a Storage delete fault: the re-run erases and gives the receipt the failed call could not', async () => {
     const w = await world();

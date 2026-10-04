@@ -1,13 +1,10 @@
 /*
- * At-scale load benchmark — turns the production-readiness audit's code-read conclusions
- * into MEASURED evidence at 1K → 10K → 100K segments.
- *
- * The audit's "NOT READY" verdict rested on three concerns, all since fixed: docs honesty, the unbounded
- * reader cache, and fleet-scale admin passes. This harness measures that those fixes
- * actually deliver at scale:
+ * At-scale load benchmark — MEASURED evidence, at 1K → 10K → 100K segments, for what a reading of the code can
+ * only claim: that the reader cache bounds memory however large the fleet grows, and what a fleet-scale admin
+ * pass costs. It measures:
  *   M1  Bounded memory (headline)   reading the WHOLE fleet under a fixed reader-cache cap holds the post-GC
  *                                   LIVE HEAP ~flat as the fleet grows — memory is a function of the cap, not the
- *                                   fleet (the "OOMs a long-running server" claim). (Process RSS also
+ *                                   fleet (the answer to "it OOMs a long-running server"). (Process RSS also
  *                                   grows with the in-process seed phase and isn't the bound — see render().)
  *                                   NB: M1's read loop parses `.crbm` INDICES (JS-heap objects) — it does not
  *                                   decode payloads — so JS heap IS the right metric here; the roaring addon's
@@ -21,8 +18,8 @@
  *                                   each and never enumerate.
  *   M3  Intersection chunk-skipping two large multi-chunk segments, ~5% overlap: fetchedChunks ≪ total + latency
  *                                   (the crown jewel, on the ids-per-segment axis).
- *   M4  Load throughput             segments/sec while the fleet is bulk-loaded — one published generation per
- *                                   segment, which is the only write path the store has (a coarse write number).
+ *   M4  Load throughput             segments/sec while the fleet is loaded through `store.load()` — one published
+ *                                   generation per segment, the store's only write path (a coarse write number).
  *
  * Each fleet size is measured in a FRESH CHILD PROCESS so RSS is clean (RSS is monotonic within a process, so
  * running all sizes in one would contaminate the 100K baseline with 1K/10K residue). Run with --expose-gc so
@@ -71,10 +68,9 @@ function library() {
   return require('@cloudbitmaps/roaring');
 }
 
-// The library's own default scan ceiling. It used to arrive as `DEFAULT_MAX_SCAN_SEGMENTS`; curating core's
-// public surface made that constant internal, so the bench states the number it is measuring against rather
-// than reaching for a name it no longer has. If core's default moves, this is a deliberate bench parameter
-// and not a silent disagreement.
+// The library's own default scan ceiling. Core keeps that constant internal, so the bench states the number it
+// is measuring against rather than reaching for a name it does not export. If core's default moves, this is a
+// deliberate bench parameter and not a silent disagreement.
 const SCAN_CEILING = 250_000;
 
 const ROOT = path.resolve(__dirname, '..');
@@ -122,27 +118,20 @@ function rmTmp(dir) {
 
 // ── M1+M2+M4: one fleet size, measured in its own process ────────────────────────────────────────────
 async function measureFleet(n) {
-  const {
-    bulkLoadCrbmGeneration,
-    CrbmStorageChunkSource,
-    LocalFsStorage,
-    collectWithinBudget,
-    excludingReservedRows,
-  } = library();
+  const { CloudRoaring, CrbmStorageChunkSource, LocalFsStorage, excludingReservedRows } = library();
+  // Budget internals live on core: the flavor is what an application imports, and this is not one.
+  const { collectWithinBudget } = require('@cloudbitmaps/core');
   const dir = mkTmp(`fleet${n}`);
   try {
     const backend = new LocalFsStorage(dir, { now: () => Date.now() });
     const { storage, registry } = backend;
     const ids = segmentIds();
 
-    // M4 — load throughput (build the fleet on disk: one immutable .crbm generation + one registry row per
-    // segment, published forward-only — the store's only write path).
+    // M4 — load throughput (build the fleet on disk through `store.load()`: one immutable .crbm generation and one
+    // registry row per segment, the store's only write path).
+    const writer = new CloudRoaring({ storage: backend });
     const seed = await ms(async () => {
-      for (let i = 0; i < n; i++) {
-        await bulkLoadCrbmGeneration(storage, { segment: `s${i}`, generation: 0 }, ids, {
-          registry,
-        });
-      }
+      for (let i = 0; i < n; i++) await writer.load({ segment: `s${i}` }, ids);
     });
 
     // M1 — bounded memory. Read across the WHOLE fleet through a reader cache capped at CAP ≪ n. Each
@@ -187,6 +176,8 @@ async function measureFleet(n) {
 
     return {
       n,
+      // What M4 timed, so a render can say so: results without it timed a write and a publish per segment.
+      seedVia: 'store.load()',
       seedMs: round(seed.ms, 0),
       seedPerSec: round(n / (seed.ms / 1000), 0),
       readAllMs: round(read.ms, 0),
@@ -205,14 +196,13 @@ async function measureFleet(n) {
 
 // ── M3: intersection chunk-skipping on two large multi-chunk segments (ids-per-segment axis) ───────────
 async function measureIntersect() {
-  const { bulkLoadCrbmGeneration, MemoryStorage, CloudRoaring, CountingMetricsSink } = library();
+  const { MemoryStorage, CloudRoaring, CountingMetricsSink } = library();
   const CHUNKS = int(process.env.SCALE_INTERSECT_CHUNKS, 2000);
   const DENSITY = int(process.env.SCALE_INTERSECT_DENSITY, 1000);
   const OVERLAP = Number(process.env.SCALE_INTERSECT_OVERLAP || '0.05');
   const sharedChunks = Math.max(1, Math.round(CHUNKS * OVERLAP));
 
   const backend = new MemoryStorage({ now: () => 0 });
-  const { storage, registry } = backend;
   // Segment A: chunks [0, CHUNKS). Segment B: `sharedChunks` chunks shared with A, the rest disjoint (offset
   // past A's range) — so exactly `sharedChunks` chunk keys align, and intersect must fetch only those.
   const idsA = [];
@@ -222,11 +212,13 @@ async function measureIntersect() {
     const chunk = c < sharedChunks ? c : c + CHUNKS; // shared prefix, then a disjoint tail
     for (let j = 0; j < DENSITY; j++) idsB.push(chunk * 65536 + j);
   }
-  await bulkLoadCrbmGeneration(storage, { segment: 'A', generation: 0 }, idsA, { registry });
-  await bulkLoadCrbmGeneration(storage, { segment: 'B', generation: 0 }, idsB, { registry });
+  const writer = new CloudRoaring({ storage: backend });
+  await writer.load({ segment: 'A' }, idsA);
+  await writer.load({ segment: 'B' }, idsB);
 
   const metrics = new CountingMetricsSink();
-  // The two halves ARE a StorageBackend — the port is structural, so an object literal satisfies it.
+  // A second store over the same backend: a fresh reader with its own cold cache, so the intersect below starts
+  // with nothing cached.
   const client = new CloudRoaring({ storage: backend, metrics });
   metrics.reset();
   let resultCount = 0;
@@ -321,10 +313,11 @@ function render(r) {
     .map((f) => `${f.heapRetainedMiB} MiB @ ${f.n.toLocaleString('en-US')}`)
     .join(' · ');
 
-  // The claim the table cannot make about itself, computed rather than asserted: how far the heap moved while
-  // the fleet grew by a factor of N. Restating the heap column under the table (which is what `memFlat` does)
-  // is fine in markdown, where the table and the note read as separate blocks; directly under a bordered panel
-  // it is the same three numbers twice. This is the derived line the panel gets instead.
+  // The claim the table cannot make about itself, computed rather than asserted: the band the heap stayed in
+  // (highest minus lowest) while the fleet grew by a factor of N. Restating the heap column under the table
+  // (which is what `memFlat` does) is fine in markdown, where the table and the note read as separate blocks;
+  // directly under a bordered panel it is the same three numbers twice. This is the derived line the panel
+  // gets instead.
   const heaps = r.fleets.map((f) => f.heapRetainedMiB);
   const fleetLo = Math.min(...r.fleets.map((f) => f.n));
   const fleetHi = Math.max(...r.fleets.map((f) => f.n));
@@ -346,22 +339,30 @@ function render(r) {
   const header = ['Fleet', 'Retained heap (cap ' + r.cap + ')', 'Peak RSS', 'Discovery scan'];
   const seedLo = Math.min(...r.fleets.map((f) => f.seedPerSec));
   const seedHi = Math.max(...r.fleets.map((f) => f.seedPerSec));
+  const throughLoad = r.fleets.every((f) => f.seedVia === 'store.load()');
+  const seededBy = throughLoad
+    ? 'through `store.load()`'
+    : 'by writing and publishing each generation';
+  const seededByHtml = throughLoad
+    ? 'through <code>store.load()</code>'
+    : 'by writing and publishing each generation';
   const perSeg = `fetched only ${r.intersect.fetchedChunks} of the ${r.intersect.chunksPerSegment.toLocaleString('en-US')} chunks per segment`;
   const mdTable =
     `| ${header.join(' | ')} |\n| ${header.map(() => '---').join(' | ')} |\n` +
     rows.map((row) => `| ${row.join(' | ')} |`).join('\n') +
-    `\n\nIntersection of two ${r.intersect.idsPerSegment.toLocaleString('en-US')}-id segments ` +
+    `\n\nIntersection of two ${r.intersect.idsPerSegment.toLocaleString('en-US')}-id segments on in-memory storage ` +
     `(${r.intersect.chunksPerSegment.toLocaleString('en-US')} chunks each, ${r.intersect.sharedChunks} shared): ` +
-    `**${perSeg}** — the shared keys; the rest skipped by key alignment — in ${r.intersect.intersectMs} ms.\n\n` +
+    `**${perSeg}** — the shared keys; the rest skipped by key alignment — in ${r.intersect.intersectMs} ms, ` +
+    `which times the engine rather than object storage.\n\n` +
     `_Measured on ${r.env.cpu} (${r.env.arch}, node ${r.env.node}). **The bound is the retained heap** (post-GC), ` +
     `flat at ${memFlat} — the reader cache holds bounded live data regardless of fleet. Process **peak RSS** ` +
     `(shown for context) is a high-water that also folds in the benchmark's own fleet-*seeding* allocations and ` +
     `isn't returned to the OS after GC, so it grows with fleet here — it is not a clean read-path footprint ` +
-    `(isolating read-path RSS in a reader-only process is a follow-up). Fleet seeded at ~${seedLo}–${seedHi} ` +
+    `(isolating read-path RSS in a reader-only process is a follow-up). Fleet seeded ${seededBy} at ~${seedLo}–${seedHi} ` +
     `durable segments/s (fsync-bound); discovery is LocalFs-filesystem-bound — the \`O(total)\` **shape** is the ` +
     `point, not the absolute ms._`;
-  // The site's markup, not the old site's `.bench-table` — that class no longer exists in
-  // site/cloudbitmaps.css, so injecting it rendered as a bare unstyled table with nothing complaining.
+  // The site's own markup, which site/cloudbitmaps.css styles: a table class the stylesheet does not define
+  // renders as a bare unstyled table, with nothing complaining.
   // Numeric columns take `.num` (tabular, right-aligned) so the fleet sizes and MiB figures line up.
   //
   // The footnote here is deliberately SHORTER than the markdown one: the page already carries a three-row
@@ -374,7 +375,7 @@ function render(r) {
   const htmlTable = ({ a11y }) =>
     `<div class="tpanel">` +
     // The cap is already in the heap column's own header, where it qualifies the column it applies to —
-    // repeating it here said "1024" twice on one panel. The head carries the axis instead.
+    // repeating it here would say "1024" twice on one panel. The head carries the axis instead.
     `<div class="tpanel-head"><span class="label">Memory at fleet scale</span>` +
     `<span class="label">Measured &middot; ${fleetLo.toLocaleString('en-US')} &rarr; ` +
     `${fleetHi.toLocaleString('en-US')} segments</span></div>` +
@@ -392,11 +393,12 @@ function render(r) {
       )
       .join('') +
     `</tbody></table></div>` +
-    `<p class="tpanel-foot">A <strong>${fleetFactor}&times;</strong> larger fleet moved retained heap by ` +
-    `<strong>${heapSpread} MiB</strong>. Intersection of two ` +
+    `<p class="tpanel-foot">Across a <strong>${fleetFactor}&times;</strong> larger fleet, retained heap stayed ` +
+    `inside a <strong>${heapSpread} MiB</strong> band. Intersection of two ` +
     `${r.intersect.idsPerSegment.toLocaleString('en-US')}-id segments ` +
     `(${r.intersect.chunksPerSegment.toLocaleString('en-US')} chunks each, ${r.intersect.sharedChunks} shared) ` +
-    `<strong>${perSeg}</strong>, in ${r.intersect.intersectMs} ms. Fleet seeded at ~${seedLo}&ndash;${seedHi} ` +
+    `<strong>${perSeg}</strong>, in ${r.intersect.intersectMs} ms against the in-memory drivers. Fleet seeded ` +
+    `${seededByHtml} at ~${seedLo}&ndash;${seedHi} ` +
     `durable segments/s (fsync-bound). Measured on ${esc(r.env.cpu)} (${r.env.arch}, node ` +
     `${r.env.node}) &mdash; discovery is filesystem-bound here, so the ` +
     `<strong>shape</strong> is the claim, not the absolute milliseconds.</p>` +
@@ -632,9 +634,9 @@ function doInject() {
 }
 
 // ── check-only: the published table is exactly what the committed results render ─────────────────────
-// The at-scale table is a measured figure on two pages, and for a while nothing held it to the file it was
+// The at-scale table is a measured figure on two pages, and without a check nothing holds it to the file it is
 // rendered from: a hand edit to either page, or a new results file rendered into one page and not the other,
-// would have shipped. `pnpm bench:scale:check` re-renders both copies from bench/scale-results.json and fails on
+// would ship. `pnpm bench:scale:check` re-renders both copies from bench/scale-results.json and fails on
 // any difference, the way `site-replay.cjs --check` holds the demo's figures to the same file.
 function doCheck() {
   const results = JSON.parse(fs.readFileSync(path.join(ROOT, 'bench/scale-results.json'), 'utf8'));

@@ -1,11 +1,9 @@
+import { storageObjectKey, parseGenerationFromKey, segmentObjectPrefix } from '@/s3/keys';
 import {
-  storageObjectKey,
-  parseGenerationFromKey,
   parseRegistryKey,
   registryListPrefix,
   registryObjectKey,
-  segmentObjectPrefix,
-} from '@/s3/keys';
+} from '@/drivers/_shared/object-registry-keys';
 import { ValidationError } from '@/core/errors';
 
 describe('S3 object-key grammar', () => {
@@ -20,8 +18,8 @@ describe('S3 object-key grammar', () => {
     });
 
     it('applies a caller prefix, trimming stray slashes', () => {
-      expect(storageObjectKey('cloudroaring', { segment: 's', generation: 1 })).toBe(
-        'cloudroaring/_default/segments/s.1.crbm',
+      expect(storageObjectKey('cloudbitmaps', { segment: 's', generation: 1 })).toBe(
+        'cloudbitmaps/_default/segments/s.1.crbm',
       );
       expect(storageObjectKey('/a/b/', { segment: 's', generation: 1 })).toBe(
         'a/b/_default/segments/s.1.crbm',

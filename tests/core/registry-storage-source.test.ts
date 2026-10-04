@@ -1,16 +1,13 @@
+import { publishGeneration } from '@/core/crbm-storage-source';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  CloudRoaring,
-  CrbmStorageChunkSource,
-  LocalFsStorageDriver,
-  MemoryRegistryDriver,
-  bulkLoadCrbmGeneration,
-  publishGeneration,
-} from '@/index';
+import { CloudRoaring, CrbmStorageChunkSource } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
 import type { GenKey, SegmentRef } from '@/index';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
+import { MemoryRegistryDriver } from '@/drivers/memory';
 
 const SEG: SegmentRef = { segment: 's' };
 
@@ -90,9 +87,8 @@ describe('registry-aware CrbmStorageChunkSource', () => {
     // segment that difference is the whole cost of the refresh: N concurrent reads at the boundary become one
     // strong read, not N.
     //
-    // Its only test went with `live-invalidation.test.ts`, and nothing else in the suite counts registry reads —
-    // so a refactor that awaited before installing the promise would have been invisible. Counting them is the
-    // only way to see it; the observable answers are identical either way.
+    // The observable answers are identical either way, so a refactor that awaited before installing the promise
+    // is visible only to a count of registry reads, and this test is that count.
     const storage = freshStorage();
     const base = new MemoryRegistryDriver();
     let gets = 0;
@@ -135,7 +131,7 @@ describe('registry-aware CrbmStorageChunkSource', () => {
     const first = await source.getChunk({ segment: 's', chunkKey: 0 });
     expect(SafeBitmap.safeDeserialize(first!, 1 << 20).toArray()).toEqual([1, 2]);
 
-    // A compaction commits gen 1 and GC sweeps gen 0 — the exact object this source still points at.
+    // A load commits gen 1 and GC sweeps gen 0 — the exact object this source still points at.
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 1 }, [1, 2, 3], { registry });
     await storage.delete({ ...SEG, generation: 0 });
 

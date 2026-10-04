@@ -2,14 +2,14 @@
 # Pull a container image, absorbing a registry RATE limit, and putting the registry's own error in the log when an
 # image cannot be had.
 #
-# Why this exists as a shared function rather than three copies. Every public registry throttles the shared
+# Why this exists as a shared function rather than a copy per script. Every public registry throttles the shared
 # GitHub-runner IP pool, and the two shapes need opposite responses: Docker Hub answers with a **6-hour quota**
 # (`pull rate limit`), which cannot be waited out and needs a different registry; public.ecr.aws answers with a
 # **per-second rate** (`toomanyrequests: Rate exceeded`), which clears in moments and only needs backoff. The CI
-# integration job learned that the hard way and grew a serial-pull-with-backoff loop. The two scripts that
-# `docker run` an ECR image directly — rss-gate.sh and lambda-smoke.sh — did not, so they kept failing on a
-# throttle that a 10-second retry would have absorbed. `docker run` pulls implicitly on a cache miss, which is
-# exactly the trap: the pull happens whether or not anyone wrote a pull step, so the retry has to be explicit.
+# integration job pulls its images serially through it, and so do the scripts that `docker run` an ECR image
+# directly — rss-gate.sh, lambda-smoke.sh and build-lambda-layer.sh — which without it fail on a throttle that a
+# 10-second retry absorbs. `docker run` pulls implicitly on a cache miss, which is exactly the trap: the pull
+# happens whether or not anyone wrote a pull step, so the retry has to be explicit.
 #
 # Failing loudly still matters. Throttling is transient; a typo'd tag or a deleted image is not, and a retry
 # loop that swallows both is worse than no retry at all. So on the final attempt this re-runs the pull WITHOUT
@@ -17,8 +17,8 @@
 # not, it returns non-zero, unless CI's cache (below) holds a copy of the image: then the copy stands in, and the run
 # is warned.
 #
-# THE CACHE. Backoff absorbs a rate, not a refusal, and registries refuse too: quay.io began refusing anonymous
-# pulls of MinIO in September 2026, public.ecr.aws answers `Data limit exceeded` once the runners' shared IPs pass
+# THE CACHE. Backoff absorbs a rate, not a refusal, and registries refuse too: quay.io refuses anonymous
+# pulls of MinIO, public.ecr.aws answers `Data limit exceeded` once the runners' shared IPs pass
 # its anonymous quota of 500 GB a month, and Chainguard's free tier publishes only `latest` and `latest-dev`: it
 # lets anyone pull by digest, but does not say for how long, so a digest pinned today could stop resolving.
 # With DOCKER_IMAGE_CACHE set to a directory, which CI keeps in the Actions cache, each image pulled is also saved
@@ -144,8 +144,8 @@ docker_image_cache_file() { printf '%s/%s.tar' "$DOCKER_IMAGE_CACHE" "$(docker_i
 # The local name a cached image is saved and loaded under. A loaded image answers only to the names it was saved
 # under, and a digest it was pulled by is not one, so an image named by digest is found after a load only by this
 # name. Its registry is under `.invalid`, which never resolves, so a pull of it fails rather than fetch whatever
-# Docker Hub might one day hold under a name like `cloud-roaring-ci/cache`.
-docker_image_local_name() { printf 'cloud-roaring-ci.invalid/cache:%s' "$(docker_image_cache_id "$1")"; }
+# Docker Hub might one day hold under a name like `cloudbitmaps-ci/cache`.
+docker_image_local_name() { printf 'cloudbitmaps-ci.invalid/cache:%s' "$(docker_image_cache_id "$1")"; }
 
 # The name to run an image by once docker_pull_with_backoff has made it local: its local name when that exists, and
 # the image otherwise. `docker run <digest>` on a copy loaded from the cache would pull it again, with no backoff.
@@ -197,10 +197,19 @@ docker_image_save() {
     docker_image_cache_used "$2"
 }
 
+# The copy is accepted only as this image's own: it must hold an image whose local name ends in this reference's id.
+# The prefix may differ, so an entry an older helper saved, which the cache offers when no entry matches the current
+# one, still loads under the name that helper chose and is given the current local name. The id may not: a copy holding
+# another reference's image, as a mixed or corrupted cache could, is refused, and the caller pulls again.
 docker_image_load() {
-  local name
+  local name loaded
   name="$(docker_image_local_name "$1")"
-  docker load -q -i "$2" >/dev/null 2>&1 && docker image inspect "$name" >/dev/null 2>&1 || return 1
+  loaded="$(docker load -q -i "$2" 2>/dev/null)" || return 1
+  if ! docker image inspect "$name" >/dev/null 2>&1; then
+    loaded="$(printf '%s\n' "$loaded" | sed -n 's/^Loaded image: //p' | tail -n 1)"
+    [[ "$loaded" == *.invalid/cache:"$(docker_image_cache_id "$1")" ]] &&
+      docker tag "$loaded" "$name" >/dev/null 2>&1 || return 1
+  fi
   docker_image_cache_used "$2"
   # A tag is given back, so `docker run <image>` finds it; a digest cannot be.
   [[ "$1" == *@sha256:* ]] || docker tag "$name" "$1"

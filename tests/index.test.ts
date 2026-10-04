@@ -1,27 +1,20 @@
+import { MemoryStorageChunkSource } from './helpers/memory-chunk-source';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { CloudRoaring, MemoryStorageChunkSource, ValidationError, VERSION } from '@/index';
+import { CloudRoaring, ValidationError } from '@/index';
 
 function store(): CloudRoaring {
   return new CloudRoaring({ storage: new MemoryStorageChunkSource() });
 }
 
 describe('public API', () => {
-  it('exposes a VERSION string', () => {
-    expect(typeof VERSION).toBe('string');
-    expect(VERSION).toMatch(/^\d+\.\d+\.\d+/);
-  });
-
-  // The exported marker is what a consumer reads to report "which CloudRoaring am I running". A hand-edited
-  // constant drifts silently at the next release, so the manifests are the source of truth and this fails the
-  // build the moment a version bump forgets one of them.
+  // The five packages ship in lockstep, and each manifest is the one place its version is written. This fails
+  // the build the moment a version bump forgets one of them.
   //
   // EVERY package is asserted, derived from the workspace rather than listed here.
   //
-  // This named `roaring` and `core` only, on the reasoning that those were the two published packages. The
-  // split made that list a subset: `s3`, `gcs` and `azure-blob` could sit at any version and the whole suite
-  // stayed green — 150 files, every gate — because nothing looked at them. The release workflow's tag check
-  // would have caught it, at tag-push time, after the approval, which is precisely the lateness this test
-  // exists to remove.
+  // A hand-kept list drifts into a subset: a package it leaves out can sit at any version while the whole suite
+  // stays green, because no other test reads its version. The release workflow's tag check would catch it only at
+  // tag-push time, after the approval, which is precisely the lateness this test exists to remove.
   //
   // The list is read off the filesystem so a sixth package is covered on the day it is created, rather than
   // on the day someone remembers to add it here.
@@ -37,12 +30,15 @@ describe('public API', () => {
     expect(PACKAGES).toContain('s3');
   });
 
-  it.each(PACKAGES)('keeps VERSION in sync with @cloudbitmaps/%s', (pkg) => {
-    const manifest: unknown = JSON.parse(
-      readFileSync(new URL(`../packages/${pkg}/package.json`, import.meta.url), 'utf8'),
-    );
-    const version = (manifest as { version?: unknown }).version;
-    expect(version).toBe(VERSION);
+  it('keeps every package at one version', () => {
+    const versions = PACKAGES.map((pkg) => {
+      const manifest: unknown = JSON.parse(
+        readFileSync(new URL(`../packages/${pkg}/package.json`, import.meta.url), 'utf8'),
+      );
+      return (manifest as { version?: unknown }).version;
+    });
+    expect(new Set(versions).size, `versions by package: ${versions.join(', ')}`).toBe(1);
+    expect(versions[0]).toMatch(/^\d+\.\d+\.\d+/);
   });
 
   it('accepts valid segment / namespace names', () => {
@@ -83,12 +79,12 @@ describe('public API', () => {
     ] as const) {
       expect(typeof seg[method]).toBe('function');
     }
-    // The write verbs are gone with the warm tier — data enters a segment as a whole generation. Asserted so a
-    // re-introduction has to be deliberate rather than accidental (an `add` that quietly returned would be the
-    // worst possible regression: it would look like it worked).
-    for (const gone of ['add', 'addMany', 'remove', 'removeMany', 'claimMany']) {
-      expect(seg).not.toHaveProperty(gone);
-      expect((seg as unknown as Record<string, unknown>)[gone]).toBeUndefined();
+    // A handle has no per-id write — data enters a segment as a whole generation. Asserted so a per-id verb has
+    // to be added deliberately rather than by accident (an `add` that quietly returned would be the worst
+    // possible regression: it would look like it worked).
+    for (const verb of ['add', 'addMany', 'remove', 'removeMany']) {
+      expect(seg).not.toHaveProperty(verb);
+      expect((seg as unknown as Record<string, unknown>)[verb]).toBeUndefined();
     }
     expect(store()).not.toHaveProperty('compact');
   });
@@ -99,7 +95,7 @@ describe('public API', () => {
       expect(() => cr.segment(bad)).toThrow(ValidationError);
     }
     expect(() => cr.segment('ok', { namespace: '' })).toThrow(ValidationError);
-    // Everything that used to be refused is now an ordinary name, escaped at the boundary.
+    // Everything else is an ordinary name, escaped at the boundary.
     for (const ok of ['a/b', '../etc', 'a b', 'a#b', '.hidden', 'con', '100%', 'user@example.com'])
       expect(() => cr.segment(ok)).not.toThrow();
   });

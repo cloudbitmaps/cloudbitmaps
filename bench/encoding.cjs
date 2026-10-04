@@ -3,14 +3,13 @@
  *
  * WHY THIS EXISTS
  *
- * Three layers carry the argument on the site. Two were measured: residency (`$0.03` at rest against `$346`
- * standing) and idle cost (the published crossovers). The first one — structure — was the only claim with no
- * number under it at all:
+ * Three layers carry the argument on the site. Two are measured by the cost benchmarks: residency (`$0.03` at rest
+ * against `$346` standing) and idle cost (the published crossovers). The first one — structure — is measured here:
  *
  *   "Redis has no Roaring type of its own … So the honest comparison is not us versus Redis: it is Roaring
  *    versus a fixed representation."                                          — site/flavors/roaring.html
  *
- * That is a falsifiable claim about encoded size, and it was published on assertion. This measures it.
+ * That is a falsifiable claim about encoded size, and without a measurement it would stand on assertion alone.
  *
  * WHAT IS COMPARED, AND WHY THESE THREE
  *
@@ -18,7 +17,8 @@
  * is that the alternatives are each one of those three, chosen permanently and in advance — so the comparison
  * that means anything is against those fixed choices, on the same ids:
  *
- *   roaring   the shipped codec's own `serialize()` — the bytes we would actually store.
+ *   roaring   the native bitmap's portable serialization, optimized as a storage write optimizes it — the bytes
+ *             we would actually store.
  *   array     a sorted `u32` list: `4 × n`. What "just keep the ids" costs, and the floor a Redis intset-encoded
  *             Set is measured against below.
  *   bitset    one bit per id across the whole span: `ceil((max + 1) / 8)`. What `SETBIT` over a Redis String
@@ -38,14 +38,16 @@
  * any machine. Unlike bench/run.cjs and bench/scale.cjs this has no wall-clock or RSS component at all, which is
  * why it CAN be asserted in CI rather than only recorded — see the gate note at the bottom.
  *
- * Run: `pnpm bench:encoding` (builds first). With `ENCODING_TASK=inject` it also persists
+ * Run: `pnpm bench:encoding`. With `ENCODING_TASK=inject` it also persists
  * bench/encoding-results.json.
  */
 'use strict';
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { roaringCodec } = require('@cloudbitmaps/roaring');
+// The native bitmap the library's codec wraps, called the way a storage write calls it: portable format,
+// `runOptimize()` first. Used directly because the codec itself is not public.
+const { RoaringBitmap32, SerializationFormat } = require('roaring');
 
 /** Tiny seeded RNG (mulberry32) so every shape is reproducible. */
 function rng(seed) {
@@ -113,12 +115,12 @@ function measure(ids) {
   const min = ids[0];
   const max = ids[ids.length - 1];
   if (max > U32_MAX) throw new Error(`shape exceeds u32 (${max})`);
-  // `optimize()` first, because that is what a storage write does — see writeCrbmGeneration. Measuring the
-  // un-optimized encoding would understate our own codec by up to 570x and describe bytes we do not store.
-  const rb = roaringCodec.fromValues(ids);
-  const roaringPlain = rb.serialize().length;
-  rb.optimize();
-  const roaring = rb.serialize().length;
+  // `runOptimize()` first, because that is what a storage write does. Measuring the un-optimized encoding
+  // would understate our own codec by up to 570x and describe bytes we do not store.
+  const rb = new RoaringBitmap32(ids);
+  const roaringPlain = rb.serialize(SerializationFormat.portable).length;
+  rb.runOptimize();
+  const roaring = rb.serialize(SerializationFormat.portable).length;
   const array = ids.length * 4;
   // From 0, because that is what a Redis String bitmap actually costs: SETBIT is indexed from zero, so
   // `SETBIT key 5000000 1` allocates the preceding 5 million bits whether or not anything is in them.

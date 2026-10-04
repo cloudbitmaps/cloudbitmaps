@@ -1,17 +1,18 @@
-import {
-  CloudRoaring,
-  LocalFsStorage,
-  MemoryStorage,
-  bulkLoadCrbmGeneration,
-  nextGeneration,
-} from '@/index';
+import { nextGeneration } from '@/core/generation-gc';
+import { CloudRoaring, LocalFsStorage, MemoryStorage } from '@/index';
 import { S3Storage } from '@cloudbitmaps/s3';
 import { GcsStorage } from '@cloudbitmaps/gcs';
+import { GCS_STORAGE_OPTION_KEYS } from '@/gcs/backend';
+import { S3_STORAGE_OPTION_KEYS } from '@/s3/backend';
+import { AZURE_BLOB_STORAGE_OPTION_KEYS } from '@/azure-blob/backend';
+
 import { AzureBlobStorage } from '@cloudbitmaps/azure-blob';
 import { ValidationError } from '@/core/errors';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { SameKeys } from '../helpers/types';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 // Azurite's fixed, publicly-documented dev account + key (not a secret — the same value ships in every SDK).
 // Constructing a client parses this string but talks to nothing, which is all these wiring tests need.
@@ -23,16 +24,16 @@ const AZURITE_CONN =
 /**
  * A backend exists to state a location ONCE.
  *
- * The bug it removes is not hypothetical and not loud: wire the objects at one prefix and the registry at
- * another and the store constructs fine, reads fine, and answers **empty** — because the pointer it consults
+ * The failure it prevents is quiet: wire the objects at one prefix and the registry at another and the
+ * store constructs fine, reads fine, and answers **empty** — because the pointer it consults
  * lives somewhere nothing was ever written. "Empty" is indistinguishable from "new", so the misconfiguration
  * presents as an absence of data rather than as an error. These tests pin the property that makes it
  * unexpressible: both halves are built from one set of inputs, and you cannot hand them different ones.
  */
 describe('a backend configures both halves from one place', () => {
-  // The prefix is the half that actually causes the silent-empty bug, so assert it on BOTH halves rather
-  // than assuming one config object means one answer — an earlier version of this test checked only the
-  // shared client, and a mutant that handed the registry a different prefix sailed straight through it.
+  // The prefix is the half that actually causes the silent-empty failure, so assert it on BOTH halves rather
+  // than assuming one config object means one answer — a test that checks only the shared client passes a
+  // mutant that hands the registry a different prefix.
   it('S3Storage gives both halves the same client, bucket and prefix', () => {
     const backend = new S3Storage({ bucket: 'bitmaps', prefix: 'cr', region: 'us-east-1' });
     // The client is built once and shared — not one per half, which would also double the connection pool.
@@ -57,10 +58,10 @@ describe('a backend configures both halves from one place', () => {
     for (const [label, backend] of [
       ['S3', new S3Storage({ bucket: 'b', prefix: 'p' })],
       ['GCS', new GcsStorage({ bucket: 'b', prefix: 'p', apiEndpoint: 'http://127.0.0.1:4443' })],
-      // Azure was missing here, and only here. A mutant pointing its registry at a different prefix survived
-      // BOTH the unit suite and the Azurite integration run — the integration test writes and reads through
-      // the same mismatched registry, so a uniform prefix error is invisible to it. This is the single failure
-      // mode the backend shape exists to make unexpressible, so it is asserted on every cloud, not most.
+      // Azure is checked here because the Azurite integration run cannot catch a mutant pointing its registry
+      // at a different prefix: that test writes and reads through the same mismatched registry, so a uniform
+      // prefix error is invisible to it. This is the single failure mode the backend shape exists to make
+      // unexpressible, so it is asserted on every cloud, not most.
       [
         'Azure',
         new AzureBlobStorage({ connectionString: AZURITE_CONN, container: 'c', prefix: 'p' }),
@@ -88,15 +89,253 @@ describe('a backend configures both halves from one place', () => {
     );
   });
 
-  // The old driver took the GCS client as `storage`. A caller collapsing two constructions into one keeps
-  // the name — and ignoring it would fall back to ambient credentials and the PUBLIC endpoint, so a user
-  // pointed at fake-gcs-server would silently start talking to production.
-  it('GcsStorage rejects the old `storage` option instead of ignoring it', () => {
+  // `GcsStorageDriver` takes the GCS client as `storage`, and `GcsStorage` takes it as `client`. An ignored
+  // client key would fall back to ambient credentials and the PUBLIC endpoint, so a user pointed at
+  // fake-gcs-server would silently start talking to production: every key GcsStorage does not take is refused.
+  it('GcsStorage refuses a key it does not take, `storage` among them, instead of ignoring it', () => {
     const client = new GcsStorage({ bucket: 'b', apiEndpoint: 'http://127.0.0.1:4443' }).client;
+    const build = (options: object) => () => new GcsStorage(options as { bucket: string });
+    expect(build({ bucket: 'b', storage: client })).toThrow(ValidationError);
+    expect(build({ bucket: 'b', storage: client })).toThrow(
+      /does not take `storage`.*goes in `client`/,
+    );
+    expect(build({ bucket: 'b', endpoint: 'http://x' })).toThrow(/`endpoint`/);
+    expect(build({ bucket: 'b', client, prefix: 'p', now: () => 0 })).not.toThrow();
+  });
+
+  it('S3Storage and AzureBlobStorage refuse a key they do not take, and every backend a bag that is not an object', () => {
+    const s3 = (options: object) => () => new S3Storage(options as { bucket: string });
+    expect(s3({ bucket: 'b', s3Client: {} })).toThrow(
+      /S3Storage does not take `s3Client`.*goes in `client`/,
+    );
+    expect(s3({ bucket: 'b', forcePathStyle: true })).toThrow(/`forcePathStyle`/);
     expect(
-      () => new GcsStorage({ bucket: 'b', storage: client } as unknown as { bucket: string }),
-    ).toThrow(ValidationError);
-    expect(() => new GcsStorage({ bucket: 'b', client })).not.toThrow();
+      s3({ bucket: 'b', region: 'us-east-1', pathStyle: true, prefix: 'p', now: () => 0 }),
+    ).not.toThrow();
+    const azure = (options: object) => () => new AzureBlobStorage(options);
+    expect(azure({ connectionString: 'x', container: 'c', client: {} })).toThrow(
+      /AzureBlobStorage does not take `client`.*goes in `containerClient`/,
+    );
+    for (const bad of [undefined, null, 'b']) {
+      expect(() => new S3Storage(bad as unknown as { bucket: string })).toThrow(ValidationError);
+      expect(() => new GcsStorage(bad as unknown as { bucket: string })).toThrow(ValidationError);
+      expect(() => new AzureBlobStorage(bad as unknown as object)).toThrow(ValidationError);
+    }
+  });
+
+  // The size settings are options of the backend, and the backend hands them to the storage half, which is the
+  // one that writes the objects. Each is read back off the half's advertised ceiling or its write threshold.
+  it('S3Storage takes maxObjectBytes and partBytes and gives them to its storage half', () => {
+    const MIB = 1024 * 1024;
+    expect(new S3Storage({ bucket: 'b' }).storage.capabilities().maxObjectBytes).toBe(
+      8 * MIB * 10_000,
+    );
+    const sized = new S3Storage({ bucket: 'b', partBytes: 5 * MIB, maxObjectBytes: 1234 });
+    expect(sized.storage.capabilities().maxObjectBytes).toBe(1234);
+    expect((sized.storage as unknown as { partBytes: number }).partBytes).toBe(5 * MIB);
+    // The default ceiling follows the part size it is given.
+    expect(
+      new S3Storage({ bucket: 'b', partBytes: 5 * MIB }).storage.capabilities().maxObjectBytes,
+    ).toBe(5 * MIB * 10_000);
+  });
+
+  it('GcsStorage takes maxObjectBytes and simpleUploadThresholdBytes and gives them to its storage half', () => {
+    const opts = { bucket: 'b', apiEndpoint: 'http://127.0.0.1:4443' };
+    expect(new GcsStorage(opts).storage.capabilities().maxObjectBytes).toBe(5 * 1024 ** 4);
+    const sized = new GcsStorage({ ...opts, maxObjectBytes: 1234, simpleUploadThresholdBytes: 7 });
+    expect(sized.storage.capabilities().maxObjectBytes).toBe(1234);
+    expect((sized.storage as unknown as { threshold: number }).threshold).toBe(7);
+  });
+
+  it('AzureBlobStorage takes maxObjectBytes and blockBytes, gives them to its storage half, and refuses a bad one', () => {
+    const opts = { connectionString: AZURITE_CONN, container: 'c' };
+    expect(new AzureBlobStorage(opts).storage.capabilities().maxObjectBytes).toBe(
+      8 * 1024 * 1024 * 50_000,
+    );
+    const sized = new AzureBlobStorage({ ...opts, blockBytes: 4, maxObjectBytes: 1234 });
+    expect(sized.storage.capabilities().maxObjectBytes).toBe(1234);
+    expect((sized.storage as unknown as { blockBytes: number }).blockBytes).toBe(4);
+    for (const bad of [0, -1, 1.5, Number.NaN]) {
+      expect(() => new AzureBlobStorage({ ...opts, blockBytes: bad })).toThrow(ValidationError);
+      expect(() => new AzureBlobStorage({ ...opts, maxObjectBytes: bad })).toThrow(ValidationError);
+    }
+  });
+
+  it('a size setting that is not a positive safe integer is refused by name, on every backend', () => {
+    const bads = [
+      0,
+      -1,
+      1.5,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      2 ** 53,
+      '8' as unknown as number,
+    ];
+    const s3 = { bucket: 'b' };
+    const gcs = { bucket: 'b', apiEndpoint: 'http://127.0.0.1:4443' };
+    const azure = { connectionString: AZURITE_CONN, container: 'c' };
+    for (const bad of bads) {
+      expect(() => new S3Storage({ ...s3, partBytes: bad })).toThrow(/partBytes must be/);
+      expect(() => new S3Storage({ ...s3, maxObjectBytes: bad })).toThrow(/maxObjectBytes must be/);
+      expect(() => new GcsStorage({ ...gcs, maxObjectBytes: bad })).toThrow(
+        /maxObjectBytes must be/,
+      );
+      expect(() => new GcsStorage({ ...gcs, simpleUploadThresholdBytes: bad })).toThrow(
+        /simpleUploadThresholdBytes must be/,
+      );
+      expect(() => new AzureBlobStorage({ ...azure, blockBytes: bad })).toThrow(
+        /blockBytes must be/,
+      );
+      expect(() => new AzureBlobStorage({ ...azure, maxObjectBytes: bad })).toThrow(
+        /maxObjectBytes must be/,
+      );
+    }
+    for (const fn of [
+      () => new S3Storage({ ...s3, partBytes: Number.NaN }),
+      () => new GcsStorage({ ...gcs, simpleUploadThresholdBytes: 0 }),
+    ]) {
+      expect(fn).toThrow(ValidationError);
+    }
+  });
+
+  it('S3Storage raises a small partBytes to the 5 MiB floor and grows it to cover maxObjectBytes in 10,000 parts', () => {
+    const MIB = 1024 * 1024;
+    const part = (o: object) =>
+      (new S3Storage({ bucket: 'b', ...o }).storage as unknown as { partBytes: number }).partBytes;
+    expect(part({ partBytes: 1 })).toBe(5 * MIB);
+    expect(part({ partBytes: 1, maxObjectBytes: 1 })).toBe(5 * MIB);
+    expect(part({ partBytes: 5 * MIB, maxObjectBytes: 100 * MIB * 10_000 })).toBe(100 * MIB);
+  });
+
+  it('a size setting that belongs to another backend is still refused by name', () => {
+    const s3 = (options: object) => () => new S3Storage(options as { bucket: string });
+    expect(s3({ bucket: 'b', blockBytes: 1 })).toThrow(/does not take `blockBytes`/);
+    expect(s3({ bucket: 'b', simpleUploadThresholdBytes: 1 })).toThrow(
+      /`simpleUploadThresholdBytes`/,
+    );
+    const gcs = (options: object) => () => new GcsStorage(options as { bucket: string });
+    expect(gcs({ bucket: 'b', partBytes: 1 })).toThrow(/does not take `partBytes`/);
+    const azure = (options: object) => () => new AzureBlobStorage(options);
+    expect(
+      azure({ connectionString: AZURITE_CONN, container: 'c', simpleUploadThresholdBytes: 1 }),
+    ).toThrow(/does not take `simpleUploadThresholdBytes`/);
+  });
+
+  // A supplied client already carries its own region, endpoint, addressing and credentials (S3), or project and
+  // endpoint (GCS). A setting beside it would be ignored, which sends an `endpoint` meant for MinIO, or an
+  // `apiEndpoint` meant for an emulator, to a client that talks to production. Each such key is refused and
+  // named, as AzureBlobStorage refuses `connectionString` / `container` beside `containerClient`.
+  describe('a client carries its own connection settings, so none may be given beside it', () => {
+    const s3Settings = {
+      region: 'us-east-1',
+      endpoint: 'http://127.0.0.1:9000',
+      pathStyle: true,
+      credentials: { accessKeyId: 'a', secretAccessKey: 's' },
+      maxSockets: 64,
+    } as const;
+    const gcsSettings = { projectId: 'p', apiEndpoint: 'http://127.0.0.1:4443' } as const;
+    const s3Client = new S3Storage({ bucket: 'b' }).client;
+    const gcsClient = new GcsStorage({ bucket: 'b', apiEndpoint: 'http://127.0.0.1:4443' }).client;
+    const s3 = (options: object) => () => new S3Storage({ bucket: 'b', ...options });
+    const gcs = (options: object) => () => new GcsStorage({ bucket: 'b', ...options });
+
+    for (const [key, value] of Object.entries(s3Settings)) {
+      it(`S3Storage refuses \`${key}\` beside \`client\`, names it, and says the client carries it`, () => {
+        const build = s3({ client: s3Client, [key]: value });
+        expect(build).toThrow(ValidationError);
+        expect(build).toThrow(new RegExp(`with \`${key}\`; the \`client\` already carries them`));
+        // …and only that key is named: the others were not given.
+        for (const other of Object.keys(s3Settings).filter((k) => k !== key)) {
+          expect(build).not.toThrow(new RegExp(`with .*\`${other}\`; `));
+        }
+        // …while the same key without a client still builds one.
+        expect(s3({ [key]: value })).not.toThrow();
+      });
+    }
+
+    for (const [key, value] of Object.entries(gcsSettings)) {
+      it(`GcsStorage refuses \`${key}\` beside \`client\`, names it, and says the client carries it`, () => {
+        const build = gcs({ client: gcsClient, [key]: value });
+        expect(build).toThrow(ValidationError);
+        expect(build).toThrow(new RegExp(`with \`${key}\`; the \`client\` already carries them`));
+        for (const other of Object.keys(gcsSettings).filter((k) => k !== key)) {
+          expect(build).not.toThrow(new RegExp(`with .*\`${other}\`; `));
+        }
+        expect(gcs({ [key]: value })).not.toThrow();
+      });
+    }
+
+    it('several settings beside a client are all named', () => {
+      expect(s3({ client: s3Client, ...s3Settings })).toThrow(
+        /with `region`, `endpoint`, `pathStyle`, `credentials`, `maxSockets`; the `client` already carries them/,
+      );
+      expect(s3({ client: s3Client, region: 'x', credentials: s3Settings.credentials })).toThrow(
+        /with `region`, `credentials`;/,
+      );
+      expect(gcs({ client: gcsClient, ...gcsSettings })).toThrow(
+        /with `projectId`, `apiEndpoint`; the `client` already carries them/,
+      );
+    });
+
+    it('the message says what to do: configure the client, or drop `client`', () => {
+      expect(s3({ client: s3Client, region: 'x' })).toThrow(
+        /configure them on the client, or drop `client`/,
+      );
+      expect(gcs({ client: gcsClient, projectId: 'x' })).toThrow(
+        /configure them on the client, or drop `client`/,
+      );
+    });
+
+    it('a client alone, and the keys the backend itself uses beside it, are taken', () => {
+      const now = () => 0;
+      expect(s3({ client: s3Client })).not.toThrow();
+      expect(s3({ client: s3Client, prefix: 'p', now })).not.toThrow();
+      expect(gcs({ client: gcsClient })).not.toThrow();
+      expect(gcs({ client: gcsClient, prefix: 'p', now })).not.toThrow();
+      // A key set to `undefined` is absent, as it is for AzureBlobStorage's `containerClient`.
+      expect(s3({ client: s3Client, region: undefined, credentials: undefined })).not.toThrow();
+      expect(
+        gcs({ client: gcsClient, projectId: undefined, apiEndpoint: undefined }),
+      ).not.toThrow();
+      expect(new S3Storage({ bucket: 'b', client: s3Client }).client).toBe(s3Client);
+      expect(new GcsStorage({ bucket: 'b', client: gcsClient }).client).toBe(gcsClient);
+    });
+
+    it('a `client` of null is no client, as it was before: the store builds one from the settings', () => {
+      // `S3Client | undefined` is the declared type, but a plain-JS caller can pass null, which `??` treated as absent.
+      expect(s3({ client: null, ...s3Settings })).not.toThrow();
+      expect(gcs({ client: null, ...gcsSettings })).not.toThrow();
+      expect(new S3Storage({ bucket: 'b', client: null as never }).client).toBeTruthy();
+      expect(new GcsStorage({ bucket: 'b', client: null as never }).client).toBeTruthy();
+    });
+
+    it('an unknown key is reported before a setting beside a client', () => {
+      expect(s3({ client: s3Client, region: 'x', bogus: 1 })).toThrow(/does not take `bogus`/);
+      expect(gcs({ client: gcsClient, projectId: 'x', bogus: 1 })).toThrow(/does not take `bogus`/);
+    });
+
+    it('a built client takes every setting without a client', () => {
+      expect(s3({ ...s3Settings })).not.toThrow();
+      expect(gcs({ ...gcsSettings })).not.toThrow();
+    });
+  });
+
+  it('each cloud backend takes exactly the keys its options interface declares (checked by the compiler)', () => {
+    const agree: {
+      readonly s3: SameKeys<
+        (typeof S3_STORAGE_OPTION_KEYS)[number],
+        keyof ConstructorParameters<typeof S3Storage>[0]
+      >;
+      readonly gcs: SameKeys<
+        (typeof GCS_STORAGE_OPTION_KEYS)[number],
+        keyof ConstructorParameters<typeof GcsStorage>[0]
+      >;
+      readonly azure: SameKeys<
+        (typeof AZURE_BLOB_STORAGE_OPTION_KEYS)[number],
+        keyof NonNullable<ConstructorParameters<typeof AzureBlobStorage>[0]>
+      >;
+    } = { s3: true, gcs: true, azure: true };
+    expect(Object.values(agree).every(Boolean)).toBe(true);
   });
 
   it('AzureBlobStorage refuses a half-specified container rather than failing at the first read', () => {
@@ -106,9 +345,9 @@ describe('a backend configures both halves from one place', () => {
   });
 
   // `now` exists so tests and replayable jobs can pin the clock. It is threaded to the REGISTRY half (the
-  // half that stamps rows), and a backend that quietly dropped it would pass every suite today and produce
-  // unreproducible timestamps later — the defect that only shows up as flake. Every backend, no exceptions:
-  // all five drop-`now` mutants survived the suite before this existed.
+  // half that stamps rows), and a backend that quietly drops it passes every other suite and produces
+  // unreproducible timestamps later — the defect that only shows up as flake. So every backend is checked, no
+  // exceptions.
   it('threads an injected `now` to the registry half of every backend', async () => {
     const now = (): number => 1_700_000_000_000;
     const dir = await mkdtemp(join(tmpdir(), 'cbm-now-'));
@@ -162,6 +401,15 @@ describe('a backend configures both halves from one place', () => {
       () => new AzureBlobStorage({ containerClient: client, connectionString: AZURITE_CONN }),
     ).toThrow(ValidationError);
     expect(() => new AzureBlobStorage({ containerClient: client })).not.toThrow();
+  });
+
+  it('a containerClient of null is no containerClient: the settings build one, and without them it is refused up front', () => {
+    // `ContainerClient | undefined` is the declared type, but a plain-JS caller can pass null, as for S3 and GCS.
+    const nul = (options: object) => () => new AzureBlobStorage(options);
+    expect(
+      nul({ containerClient: null, connectionString: AZURITE_CONN, container: 'c' }),
+    ).not.toThrow();
+    expect(nul({ containerClient: null })).toThrow(/needs either `containerClient`/);
   });
 
   it('every backend satisfies the port: both halves present and usable', () => {
@@ -218,39 +466,6 @@ describe('a backend is all the wiring a store needs', () => {
     expect(await nextGeneration(ref, backend)).toBe(1);
   });
 
-  // The failure this prevents is not "it does not work" — it is that it fails wearing someone else's
-  // symptoms. A 0.9 store keeps its generations in `<root>/cold`; point `LocalFsStorage` at that root and the
-  // registry half resolves a pointer the storage half cannot satisfy, which reports
-  // `missing-storage-generation` — the torn-restore signature, whose runbook remedy is to roll `currentGen`
-  // back. Destructive, on a store that was never damaged.
-  it('refuses a root written before the tier was renamed, naming the directory to rename', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'cbm-oldroot-'));
-    try {
-      const { mkdir } = await import('node:fs/promises');
-      await mkdir(join(root, 'cold'), { recursive: true });
-      await mkdir(join(root, 'registry'), { recursive: true });
-      expect(() => new LocalFsStorage(root)).toThrow(ValidationError);
-      expect(() => new LocalFsStorage(root)).toThrow(/"cold\/" directory but no "storage\/"/);
-      // And it says what NOT to conclude, because the wrong conclusion here is the destructive one.
-      expect(() => new LocalFsStorage(root)).toThrow(/torn\s+restore/);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it('does not fire on a current root, or on a fresh one, or on a leftover cold/ beside storage/', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'cbm-newroot-'));
-    try {
-      const { mkdir } = await import('node:fs/promises');
-      expect(() => new LocalFsStorage(root)).not.toThrow(); // nothing there yet — a first run
-      await mkdir(join(root, 'storage'), { recursive: true });
-      await mkdir(join(root, 'cold'), { recursive: true }); // an already-renamed store's leftover copy
-      expect(() => new LocalFsStorage(root)).not.toThrow();
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
   it('a raw driver still works, and is read-only-cleartext because it has no pointer', async () => {
     const backend = new MemoryStorage();
     await bulkLoadCrbmGeneration(backend.storage, { segment: 's', generation: 0 }, [9], {
@@ -260,8 +475,8 @@ describe('a backend is all the wiring a store needs', () => {
     const readOnly = new CloudRoaring({ storage: backend.storage });
     expect(await readOnly.segment('s').count()).toBe(1);
     // …and the verbs that must publish through a pointer say so, rather than half-working.
-    // The message must name what to DO, not an option that no longer exists — an earlier version said
-    // "needs a `registry` in the store config", sending the reader to add a key TypeScript rejects.
+    // The message must name what to DO — build the store on a backend — rather than send the reader to add a
+    // `registry` key, which TypeScript rejects.
     await expect(readOnly.dropSegment({ segment: 's' }, { confirmSegment: 's' })).rejects.toThrow(
       /needs a storage backend/,
     );

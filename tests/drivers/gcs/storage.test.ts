@@ -1,4 +1,4 @@
-import { Writable } from 'node:stream';
+import { PassThrough, Writable } from 'node:stream';
 import type { Storage } from '@google-cloud/storage';
 import { GcsStorageDriver } from '@/gcs/storage';
 import { TransientError, ValidationError, WriteConflictError } from '@/core/errors';
@@ -11,7 +11,7 @@ const fakeStorage = {} as unknown as Storage;
 
 describe('GcsStorageDriver construction', () => {
   it('accepts a clean prefix (or none) and advertises conditional-put + range-read', () => {
-    for (const prefix of [undefined, '', 'cloudroaring', 'a/b/c', '/leading/trailing/']) {
+    for (const prefix of [undefined, '', 'cloudbitmaps', 'a/b/c', '/leading/trailing/']) {
       const driver = new GcsStorageDriver({ storage: fakeStorage, bucket: 'b', prefix });
       const caps = driver.capabilities();
       expect(caps.rangeRead).toBe(true);
@@ -63,25 +63,23 @@ describe('GcsStorageDriver construction', () => {
 // ── write-once, proven WITHOUT the emulator ─────────────────────────────────────
 // A fake `Storage` records the upload options the driver sends and lets us inject the outcome, so we prove
 // the driver (a) sends `ifGenerationMatch: 0` and (b) maps 412 → WriteConflictError / 5xx → TransientError on
-// BOTH the simple (`save`, small objects) and resumable (`createWriteStream`, large objects) paths — the
-// crown-jewel write-once behaviour, independent of whatever fake-gcs-server does.
+// BOTH the simple (one non-resumable request, small objects) and resumable (large objects) paths — the
+// crown-jewel write-once behaviour, independent of whatever fake-gcs-server does. Both paths open a
+// `createWriteStream`; the `resumable` flag is what tells them apart.
 
 interface Recorder {
-  saveOpts: unknown[];
   streamOpts: unknown[];
 }
 
-/** Build a fake `Storage` whose single file's `save`/`createWriteStream` we control + record. */
-function fakeStorageWith(rec: Recorder, file: Record<string, unknown>): Storage {
+/** Build a fake `Storage` whose single file's `createWriteStream` we control + record. */
+function fakeStorageWith(rec: Recorder, stream: () => Writable = () => fakeStream()): Storage {
   const f = {
-    save: async (_data: unknown, opts: unknown) => {
-      rec.saveOpts.push(opts);
-      if (typeof file.saveThrow === 'function') await (file.saveThrow as () => Promise<void>)();
-    },
     createWriteStream: (opts: unknown) => {
       rec.streamOpts.push(opts);
-      return (file.stream as () => Writable)();
+      return stream();
     },
+    // The read-back a 412 on a resumable commit makes: an object that carries no write id, so the conflict stands.
+    getMetadata: async () => [{}],
   };
   return { bucket: () => ({ file: () => f }) } as unknown as Storage;
 }
@@ -107,48 +105,42 @@ const err = (code: number) => Object.assign(new Error(`http ${code}`), { code })
 
 describe('GcsStorageDriver write-once (fake Storage, emulator-independent)', () => {
   it('SIMPLE path: sends resumable:false + ifGenerationMatch:0, and succeeds', async () => {
-    const rec: Recorder = { saveOpts: [], streamOpts: [] };
-    const driver = new GcsStorageDriver({ storage: fakeStorageWith(rec, {}), bucket: 'b' });
+    const rec: Recorder = { streamOpts: [] };
+    const driver = new GcsStorageDriver({ storage: fakeStorageWith(rec), bucket: 'b' });
     const res = await put(driver, new Uint8Array([1, 2, 3]));
     expect(res.size).toBe(3);
-    expect(rec.saveOpts).toHaveLength(1);
-    expect(rec.streamOpts).toHaveLength(0); // small object → no resumable stream
-    expect(rec.saveOpts[0]).toMatchObject({
+    expect(rec.streamOpts).toHaveLength(1); // small object → one simple upload
+    expect(rec.streamOpts[0]).toMatchObject({
       resumable: false,
       preconditionOpts: { ifGenerationMatch: 0 },
     });
   });
 
   it('SIMPLE path: a 412 → WriteConflictError; a 5xx → TransientError', async () => {
-    const rec: Recorder = { saveOpts: [], streamOpts: [] };
+    const rec: Recorder = { streamOpts: [] };
     const d412 = new GcsStorageDriver({
-      storage: fakeStorageWith(rec, {
-        saveThrow: () => Promise.reject(err(412)),
-      }),
+      storage: fakeStorageWith(rec, () => fakeStream(err(412))),
       bucket: 'b',
     });
     await expect(put(d412, new Uint8Array([1]))).rejects.toBeInstanceOf(WriteConflictError);
 
     const d500 = new GcsStorageDriver({
-      storage: fakeStorageWith(rec, {
-        saveThrow: () => Promise.reject(err(500)),
-      }),
+      storage: fakeStorageWith(rec, () => fakeStream(err(500))),
       bucket: 'b',
     });
     await expect(put(d500, new Uint8Array([1]))).rejects.toBeInstanceOf(TransientError);
   });
 
   it('RESUMABLE path (object > threshold): sends resumable:true + ifGenerationMatch:0, and commits', async () => {
-    const rec: Recorder = { saveOpts: [], streamOpts: [] };
+    const rec: Recorder = { streamOpts: [] };
     const driver = new GcsStorageDriver({
-      storage: fakeStorageWith(rec, { stream: () => fakeStream() }),
+      storage: fakeStorageWith(rec),
       bucket: 'b',
       simpleUploadThresholdBytes: 2, // force the resumable path
     });
     const res = await put(driver, new Uint8Array([1, 2, 3, 4, 5]));
     expect(res.size).toBe(5);
-    expect(rec.streamOpts).toHaveLength(1);
-    expect(rec.saveOpts).toHaveLength(0); // large object → no simple upload
+    expect(rec.streamOpts).toHaveLength(1); // large object → one resumable stream, no simple upload
     expect(rec.streamOpts[0]).toMatchObject({
       resumable: true,
       preconditionOpts: { ifGenerationMatch: 0 },
@@ -156,9 +148,9 @@ describe('GcsStorageDriver write-once (fake Storage, emulator-independent)', () 
   });
 
   it('RESUMABLE path: a 412 on commit → WriteConflictError', async () => {
-    const rec: Recorder = { saveOpts: [], streamOpts: [] };
+    const rec: Recorder = { streamOpts: [] };
     const driver = new GcsStorageDriver({
-      storage: fakeStorageWith(rec, { stream: () => fakeStream(err(412)) }),
+      storage: fakeStorageWith(rec, () => fakeStream(err(412))),
       bucket: 'b',
       simpleUploadThresholdBytes: 2,
     });
@@ -168,20 +160,26 @@ describe('GcsStorageDriver write-once (fake Storage, emulator-independent)', () 
   });
 });
 
-// The cost model prices a segment's tail read on GCS as two requests (`requestsPerSizedRead: 2`): the metadata for
-// the object's size, then a ranged download, where S3's suffix-range GET is one. Held here against the driver.
+// The cost model prices a segment's tail read on GCS as one request (`requestsPerSizedRead: 1`, the field that prices
+// tail reads alone): a suffix-range GET answers with the tail and the object's size. Held against the driver here,
+// and against hostile responses in tail.test.ts.
 describe('GcsStorageDriver — what a tail read costs', () => {
-  it('makes two requests: the metadata, then the ranged download', async () => {
-    const calls: string[] = [];
+  it('makes one request: a suffix-range GET', async () => {
+    const calls: unknown[] = [];
     const body = new Uint8Array(100).fill(7);
     const file = {
-      getMetadata: async () => {
-        calls.push('getMetadata');
-        return [{ size: String(body.length) }];
-      },
-      download: async (opts: { start: number; end: number }) => {
-        calls.push('download');
-        return [Buffer.from(body.subarray(opts.start, opts.end + 1))];
+      interceptors: [] as unknown[],
+      createReadStream: (opts: unknown) => {
+        calls.push(opts);
+        const out = new PassThrough();
+        queueMicrotask(() => {
+          out.emit('response', {
+            statusCode: 206,
+            headers: { 'content-range': 'bytes 60-99/100', 'content-length': '40' },
+          });
+          out.end(Buffer.from(body.subarray(60)));
+        });
+        return out;
       },
     };
     const storage = { bucket: () => ({ file: () => file }) } as unknown as Storage;
@@ -189,6 +187,28 @@ describe('GcsStorageDriver — what a tail read costs', () => {
     const tail = await driver.getTail({ segment: 's', generation: 0 }, 40);
     expect(tail.size).toBe(100);
     expect(tail.bytes.length).toBe(40);
-    expect(calls).toEqual(['getMetadata', 'download']);
+    expect(calls).toEqual([{ end: -40, decompress: false }]);
+  });
+});
+
+// Collecting by name deletes one generation without knowing whether an object is there, so a delete is one request
+// that asks the SDK to treat a missing object as success.
+describe('GcsStorageDriver — what a delete costs', () => {
+  it('makes one delete call with ignoreNotFound, so an absent object is no error', async () => {
+    const calls: { name: string; options: unknown }[] = [];
+    const storage = {
+      bucket: () => ({
+        file: (name: string) => ({
+          delete: async (options: unknown) => {
+            calls.push({ name, options });
+          },
+        }),
+      }),
+    } as unknown as Storage;
+    const driver = new GcsStorageDriver({ storage, bucket: 'b', prefix: 'p' });
+    await expect(driver.delete({ segment: 's', generation: 3 })).resolves.toBeUndefined();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.name).toMatch(/s\.3\.crbm$/);
+    expect(calls[0]?.options).toEqual({ ignoreNotFound: true });
   });
 });

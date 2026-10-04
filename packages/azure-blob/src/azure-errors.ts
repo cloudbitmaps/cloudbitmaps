@@ -48,6 +48,15 @@ export function isConditionalConflict(err: unknown): boolean {
 }
 
 /**
+ * A specific-ETag precondition (`ifMatch`) did not hold: **412 `ConditionNotMet`**. Narrower than
+ * {@link isConditionalConflict}, which also takes 409: on a delete a 409 is not a lost race but a snapshot or a lease
+ * in the way, and treating it as one would retry a delete that can only fail the same way.
+ */
+export function isPreconditionFailed(err: unknown): boolean {
+  return httpStatus(err) === 412 || azureCode(err) === 'ConditionNotMet';
+}
+
+/**
  * The blob does not exist. Azure returns **404**; the code is `BlobNotFound` on a GET but *undefined* on a
  * HEAD (`getProperties`) since a HEAD has no response body — so the 404 status is the reliable signal.
  */

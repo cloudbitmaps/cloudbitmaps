@@ -1,13 +1,11 @@
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { SafeBitmap } from '@/roaring-codec';
+import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fsSink, main, parseConfig } from '@/bin/export-segments';
-import {
-  LocalFsStorageDriver,
-  LocalFsRegistryDriver,
-  SafeBitmap,
-  bulkLoadCrbmGeneration,
-} from '@/index';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
+import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 
 const roaringIds = (bytes: Uint8Array): number[] =>
   SafeBitmap.safeDeserialize(bytes, 1 << 30)
@@ -15,45 +13,6 @@ const roaringIds = (bytes: Uint8Array): number[] =>
     .sort((a, b) => a - b);
 
 describe('export-segments CLI', () => {
-  // The generations directory was `cold/` before the tier was renamed to `storage`. `exportSegments` reports
-  // per-segment failures rather than refusing outright, so pointing this tool at an older store would finish,
-  // write a manifest and exit ZERO having exported nothing — a successful-looking empty dump, from the one
-  // tool someone reaches for when they are trying to get their data out.
-  describe('a store written before the rename', () => {
-    it('refuses, naming the directory to rename, instead of exporting nothing successfully', async () => {
-      const root = await mkdtemp(join(tmpdir(), 'cbm-oldlayout-'));
-      const out = await mkdtemp(join(tmpdir(), 'cbm-oldout-'));
-      try {
-        await mkdir(join(root, 'cold'), { recursive: true });
-        await mkdir(join(root, 'registry'), { recursive: true });
-        await expect(main({ CR_EXPORT_ROOT: root, CR_EXPORT_OUT: out })).rejects.toThrow(
-          /"cold\/" directory but no "storage\/"/,
-        );
-        // And nothing was written — no manifest, so no run can be mistaken for a finished one.
-        expect(await readdir(out)).toEqual([]);
-      } finally {
-        await rm(root, { recursive: true, force: true });
-        await rm(out, { recursive: true, force: true });
-      }
-    });
-
-    it('does not fire when the store is current, or when neither directory exists yet', async () => {
-      const root = await mkdtemp(join(tmpdir(), 'cbm-newlayout-'));
-      const out = await mkdtemp(join(tmpdir(), 'cbm-newout-'));
-      try {
-        await mkdir(join(root, 'storage'), { recursive: true });
-        await mkdir(join(root, 'cold'), { recursive: true }); // a leftover copy must not trip it
-        await mkdir(join(root, 'registry'), { recursive: true });
-        await expect(main({ CR_EXPORT_ROOT: root, CR_EXPORT_OUT: out })).resolves.toMatchObject({
-          totalSegments: 0,
-        });
-      } finally {
-        await rm(root, { recursive: true, force: true });
-        await rm(out, { recursive: true, force: true });
-      }
-    });
-  });
-
   describe('parseConfig', () => {
     it('requires CR_EXPORT_ROOT and CR_EXPORT_OUT', () => {
       expect(() => parseConfig({})).toThrow(/CR_EXPORT_ROOT/);
@@ -77,10 +36,10 @@ describe('export-segments CLI', () => {
           .namespace,
       ).toBe('ns');
     });
-    it('ignores an unknown variable rather than failing (CR_EXPORT_SEGMENTS is retired)', () => {
-      // The escape hatch existed for a segment that had no registry row because it was written by `add()`
-      // alone. Every loaded segment publishes a row, so the registry is complete by construction and there is
-      // nothing left for the variable to reach. An operator's stale script must still run.
+    it('ignores a variable it does not read, such as a segment list, rather than failing', () => {
+      // There is no variable naming segments to export: every loaded segment publishes a row, so the registry
+      // is complete by construction and the CLI enumerates it. A variable it does not read must not stop an
+      // operator's script.
       expect(() =>
         parseConfig({ CR_EXPORT_ROOT: '/x', CR_EXPORT_OUT: '/o', CR_EXPORT_SEGMENTS: 'a,ns/b' }),
       ).not.toThrow();
@@ -219,13 +178,12 @@ describe('export-segments CLI', () => {
       expect(mani.failed.map((f) => f.segment)).toEqual(['bad']); // persisted so an operator sees the gap
     });
 
-    it('needs no escape hatch: a segment written without a registry is invisible, and says so', async () => {
-      // What replaced CR_EXPORT_SEGMENTS. A load that passes a registry publishes a row, so the registry is a
-      // complete index of every loaded segment and enumeration cannot miss one. A load that passes NO registry
-      // writes an object nothing points at — the object is still readable by any roaring library (that is the
-      // format's promise), but this CLI enumerates the registry it was given, so such a segment is absent from
-      // the dump rather than silently half-exported. Pinned because it is the one gap the retired variable used
-      // to paper over.
+    it('a segment written without a registry is invisible, and says so', async () => {
+      // A load that passes a registry publishes a row, so the registry is a complete index of every loaded
+      // segment and enumeration cannot miss one. A load that passes NO registry writes an object nothing points
+      // at — the object is still readable by any roaring library (that is the format's promise), but this CLI
+      // enumerates the registry it was given, so such a segment is absent from the dump rather than silently
+      // half-exported. Pinned because it is the one gap enumeration leaves.
       const storage = new LocalFsStorageDriver(join(root, 'storage'));
       const registry = new LocalFsRegistryDriver(join(root, 'registry'));
       await bulkLoadCrbmGeneration(storage, { segment: 'reg', generation: 0 }, [1], { registry });
@@ -242,7 +200,7 @@ describe('export-segments CLI', () => {
       const writer = await sink.open({ segment: 's' }, '.roaring');
       await writer.write(Buffer.from('partial'));
       await writer.abort?.();
-      // The .part was deleted and nothing was renamed into place.
+      // Abort deletes the .part and renames nothing into place.
       expect(await readdir(join(out, '_default'))).toEqual([]);
     });
   });

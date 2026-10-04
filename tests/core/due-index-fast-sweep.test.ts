@@ -183,7 +183,7 @@ describe('sweep — scan: index', () => {
     expect((await store.retireExpired({ scan: 'fleet', now: soon + 1 })).retired).toBe(1);
   });
 
-  it('defaults to the fleet scan, so upgrading changes nothing', async () => {
+  it('defaults to the fleet scan, so a policy with no pointer is still retired', async () => {
     const w = await harness();
     const { store, registry } = w;
     const soon = T0 + DAY;

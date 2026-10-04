@@ -37,7 +37,8 @@ pnpm build >/dev/null
 # into the layer's node_modules by hand, since the `@cloudbitmaps/core` version pinned in THIS tree is
 # generally not on the registry yet. The three driver packages are deliberately NOT in the layer: a layer exists
 # to hold the expensive native `roaring` addon, and which storage a function talks to is the function's own
-# choice — bundling all three would put every cloud SDK into every deployment, the exact cost the split removed.
+# choice — bundling all three would put every cloud SDK into every deployment, the exact cost separate driver
+# packages exist to avoid.
 PACKDIR="$ROOT/.pack-tmp"
 rm -rf "$PACKDIR" && mkdir -p "$PACKDIR"
 ( cd packages/core    && pnpm pack --pack-destination "$PACKDIR" >/dev/null )
@@ -73,10 +74,10 @@ docker run --rm --entrypoint bash \
     # --omit=dev: ship only runtime deps (the library + roaring); build roaring FROM SOURCE for AL2023.
     npm init -y >/dev/null 2>&1
     # npm has its own retry; this raises it from the default of 2. It covers the REGISTRY legs of the install
-# (a 5xx or a throttle is retried; a bad version still fails on the first attempt). node-gyp downloads
-# its headers separately and retries those on its own schedule, which this setting does not reach. Each
-    # registry leg comes from the shared GitHub-runner IP pool - the same throttling surface that made the image
-    # pull above grow docker_pull_with_backoff. Two attempts with a 10s floor is thin for that; five costs
+    # (a 5xx or a throttle is retried; a bad version still fails on the first attempt). node-gyp downloads
+    # its headers separately and retries those on its own schedule, which this setting does not reach. Each
+    # registry leg comes from the shared GitHub-runner IP pool - the same throttling surface the image pull
+    # above meets with docker_pull_with_backoff. Two attempts with a 10s floor is thin for that; five costs
     # nothing on the happy path and absorbs a blip that would otherwise red a gate having tested nothing.
     export npm_config_fetch_retries=5
     npm_config_build_from_source=true npm install "roaring@${ROARING_VER}" --omit=dev --no-audit --no-fund >/dev/null 2>&1 || {

@@ -3,9 +3,9 @@ import { ValidationError } from '@/core/errors';
 import type { Clock } from '@/core/determinism';
 
 // `Math.max(1, x)` guards 0 and negatives but NOT NaN: `Math.max(1, NaN)` is NaN and `1 <= NaN` is false, so
-// the retry loop body never executed. `op()` was never called, and the function rejected with the literal
-// `undefined` — a silent no-op write plus a non-Error in every caller's catch. Reachable from ordinary
-// wiring: `maxAttempts: Number(process.env.CR_RETRY_ATTEMPTS)` is NaN when the variable is unset.
+// a loop guarded that way never runs its body. `op()` is never called, and the function rejects with the
+// literal `undefined` — a silent no-op write plus a non-Error in every caller's catch. Reachable from
+// ordinary wiring: `maxAttempts: Number(process.env.CR_RETRY_ATTEMPTS)` is NaN when the variable is unset.
 const clock: Clock = {
   now: () => 0,
   sleep: () => Promise.resolve(),
@@ -29,13 +29,13 @@ describe('withRetry — policy validation', () => {
     await expect(
       withRetry(op, { ...DEFAULT_RETRY_POLICY, maxAttempts: v as number }, deps),
     ).rejects.toBeInstanceOf(ValidationError);
-    // The part that actually mattered: the old code resolved/rejected without ever running the operation.
+    // The part that matters: a loop that never runs resolves or rejects without ever calling the operation.
     expect(called).toBe(0);
   });
 
   it('never rejects with a non-Error', async () => {
-    // The old failure threw `lastErr`, which was `undefined` — so `err instanceof Error` was false and
-    // every typed-error branch in the stack fell through to its default.
+    // A loop that never runs throws `lastErr` while it is still `undefined` — so `err instanceof Error` is
+    // false and every typed-error branch in the stack falls through to its default.
     const err = await withRetry(
       () => Promise.resolve('x'),
       { ...DEFAULT_RETRY_POLICY, maxAttempts: Number.NaN },

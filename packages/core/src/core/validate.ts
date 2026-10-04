@@ -6,12 +6,10 @@
  * caller's. Every physical boundary escapes what *it* cannot take literally (`core/name-codec.ts`),
  * so `dedup:2026-08-01`, `user@example.com`, `orders/2026`, `日本語` and `100%` are all ordinary names.
  *
- * That replaced a grammar which had banned the colon *by accident rather than by decision*: every dated-bucket
- * example the retention docs published threw, because prose in a fenced block is not run by anything. The
- * grammar also **permitted** names that were genuinely broken — `con`, `nul` and `com1` are Windows device
- * names, and `store.segment('con')` validated cleanly here and failed only on a user's machine. Encoding
- * handles both directions: it stops rejecting what is merely unfamiliar, and starts defusing what is actually
- * dangerous.
+ * A grammar would fail in both directions. It would reject names that are merely unfamiliar, and it would pass
+ * names that are genuinely broken — `con`, `nul` and `com1` are Windows device names made only of letters and
+ * digits, so `store.segment('con')` would validate cleanly and fail only on a user's machine. Encoding handles
+ * both: it accepts what is merely unfamiliar, and defuses what is actually dangerous.
  *
  * What remains is **size** and **representability**, both real constraints rather than tastes.
  *
@@ -34,8 +32,7 @@ const CHUNK_KEY_MAX = 0xffff;
  *
  * S3's limit is 1024 bytes for the WHOLE key, which also carries the caller's prefix, the namespace, a fixed
  * infix (`/segments/`) and the `.<generation>.crbm` suffix. 256 leaves generous room for all of that with both
- * a namespace and a segment at the ceiling, and matches the limit the previous grammar advertised, so no name
- * that was legal before becomes illegal now.
+ * a namespace and a segment at the ceiling.
  */
 export const MAX_NAME_LENGTH = 256;
 
@@ -47,6 +44,11 @@ export const MAX_NAME_LENGTH = 256;
  * this package does not set. Matching on code units is what sees a half of a pair.
  */
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+/** Whether `value` is well-formed UTF-16: no unpaired surrogate, so it survives a round trip through UTF-8. */
+export function isWellFormedString(value: string): boolean {
+  return !LONE_SURROGATE.test(value);
+}
 
 /**
  * How long a name is once storage has it — the longer of the two encodings.
@@ -102,7 +104,50 @@ export function validateSegmentRef(ref: SegmentRef): void {
   if (ref.namespace !== undefined) validatePart(ref.namespace, 'namespace');
 }
 
-/** Validate a chunk ref: the segment/namespace rules plus `chunkKey` ∈ `[0, 65535]` (a u16). */
+/**
+ * The namespace prefix the library keeps for its own bookkeeping: the due index stores one pointer row per
+ * expiring segment in `cbm.due.<bucket>` (see `due-index.ts`). **One constant, read by both sides** — the
+ * application-facing checks below refuse it in a name an application passes in, and the due index writes and
+ * recognises its rows by it — so the two cannot drift.
+ *
+ * Only this exact prefix is reserved, not `cbm.` as a whole: `cbm.dueX`, `cbm.due` and `cbmdue.eu` are ordinary
+ * namespaces. Every fleet-wide enumeration skips the rows of a reserved namespace as bookkeeping, so a segment
+ * there would be invisible to an erasure, a consistency check, an export and a retention sweep.
+ *
+ * Internal: not exported from any entry. The flavor keeps a copy for its own facade checks, and a test pins the
+ * two together.
+ */
+export const RESERVED_NAMESPACE_PREFIX = 'cbm.due.';
+
+/** Does this namespace start with {@link RESERVED_NAMESPACE_PREFIX}? `undefined` (no namespace) never does. */
+export function isReservedNamespace(namespace: string | undefined): boolean {
+  return namespace !== undefined && namespace.startsWith(RESERVED_NAMESPACE_PREFIX);
+}
+
+/**
+ * Validate a namespace an application names, as a segment ref's namespace or as a `namespace` option that scopes
+ * a scan: the name rules, and **not** in the reserved namespace. Internal; the public `validateSegmentRef` of
+ * `@cloudbitmaps/core/driver-kit` is the name rules only, which is what a driver needs, since the due index's own
+ * rows live in the reserved namespace and go through the drivers.
+ */
+export function validateUserNamespace(namespace: string): void {
+  validatePart(namespace, 'namespace');
+  if (isReservedNamespace(namespace)) {
+    throw new ValidationError(
+      `namespace "${namespace}" is reserved: names starting with "${RESERVED_NAMESPACE_PREFIX}" hold the ` +
+        `library's own bookkeeping rows, which every fleet-wide scan skips, so a segment there would be ` +
+        `invisible to an erasure, a consistency check, an export and a retention sweep. Choose another namespace.`,
+    );
+  }
+}
+
+/** Validate a segment ref an application hands in: the name rules, and a namespace outside the reserved prefix. */
+export function validateUserRef(ref: SegmentRef): void {
+  validatePart(ref.segment, 'segment');
+  if (ref.namespace !== undefined) validateUserNamespace(ref.namespace);
+}
+
+/** Validate a chunk ref: the segment/namespace rules plus `chunkKey` ∈ `[0, 65535]` (a u16). A driver-boundary check. */
 export function validateChunkRef(ref: ChunkRef): void {
   validateSegmentRef(ref);
   if (!Number.isInteger(ref.chunkKey) || ref.chunkKey < 0 || ref.chunkKey > CHUNK_KEY_MAX) {

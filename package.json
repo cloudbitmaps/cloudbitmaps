@@ -46,11 +46,12 @@
     "fuzz:deser": "pnpm run build && node fuzz/seed-corpus.cjs safe-deserialize && mkdir -p fuzz/crashes && fuzz/node_modules/.bin/jazzer fuzz/targets/safe-deserialize.mjs fuzz/corpus/safe-deserialize --sync --includes fuzz/build -- -max_total_time=${FUZZ_SECONDS:-60} -rss_limit_mb=4096 -print_final_stats=1 -artifact_prefix=fuzz/crashes/",
     "fuzz:crbm": "pnpm run build && node fuzz/seed-corpus.cjs crbm-reader && mkdir -p fuzz/crashes && fuzz/node_modules/.bin/jazzer fuzz/targets/crbm-reader.mjs fuzz/corpus/crbm-reader --includes fuzz/build -- -max_total_time=${FUZZ_SECONDS:-60} -rss_limit_mb=4096 -print_final_stats=1 -artifact_prefix=fuzz/crashes/",
     "fuzz:index": "pnpm run build && node fuzz/seed-corpus.cjs crbm-index && mkdir -p fuzz/crashes && fuzz/node_modules/.bin/jazzer fuzz/targets/crbm-index.mjs fuzz/corpus/crbm-index --sync --includes fuzz/build -- -max_total_time=${FUZZ_SECONDS:-60} -rss_limit_mb=4096 -print_final_stats=1 -artifact_prefix=fuzz/crashes/",
+    "fuzz:ext": "pnpm run build && node fuzz/seed-corpus.cjs crbm-ext && mkdir -p fuzz/crashes && fuzz/node_modules/.bin/jazzer fuzz/targets/crbm-ext.mjs fuzz/corpus/crbm-ext --sync --includes fuzz/build -- -max_total_time=${FUZZ_SECONDS:-60} -rss_limit_mb=4096 -print_final_stats=1 -artifact_prefix=fuzz/crashes/",
     "mutation": "pnpm dlx --package @stryker-mutator/core@10.0.0 --package @stryker-mutator/vitest-runner@10.0.0 stryker run",
     "release:bootstrap": "node scripts/bootstrap-publish.cjs",
     "calibrate:aws": "pnpm run build && node bench/calibrate-aws.cjs",
     "changeset": "changeset",
-    "version:packages": "changeset version && node scripts/sync-version.cjs && pnpm install --lockfile-only",
+    "version:packages": "changeset version && pnpm install --lockfile-only",
     "audit": "node scripts/audit.cjs",
     "leak-scan": "node scripts/leak-scan.cjs",
     "leak-scan:snapshot": "node scripts/leak-scan.cjs --snapshot --history",
@@ -59,7 +60,11 @@
     "format:check": "prettier --check .",
     "prepare": "husky",
     "typecheck:pkgs": "tsc -p packages/core --noEmit && tsc -p packages/roaring --noEmit && tsc -p packages/s3 --noEmit && tsc -p packages/gcs --noEmit && tsc -p packages/azure-blob --noEmit",
-    "bench:encoding": "pnpm run build && node bench/encoding.cjs",
+    "bench:encoding": "node bench/encoding.cjs",
+    "bench:event-loop": "pnpm run build && node bench/event-loop.cjs",
+    "bench:event-loop:check": "node bench/event-loop.cjs --check",
+    "bench:load-input": "pnpm run build && node bench/load-input.cjs",
+    "bench:load-input:check": "node bench/load-input.cjs --check",
     "fuzz:install": "pnpm -C fuzz install --ignore-workspace --frozen-lockfile"
   },
   "lint-staged": {
@@ -103,7 +108,7 @@
     },
     "overrides": {
       "undici": ">=6.28.0 <7",
-      "brace-expansion@5": ">=5.0.9 <6",
+      "brace-expansion@5": ">=5.0.12 <6",
       "nanoid@3": ">=3.3.18 <4",
       "uuid": "^11.1.1",
       "esbuild": ">=0.28.2 <0.29"

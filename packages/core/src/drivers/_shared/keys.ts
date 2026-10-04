@@ -1,16 +1,15 @@
 /**
  * Shared key-grammar fragments used by every driver's logical-ref → physical-key mapping.
  *
- * Extracted once the registry drivers became the third consumer of the same `_default` namespace sentinel
- * (it lived copy-pasted in `s3/keys` and `localfs/paths`). Pure string logic, no SDK, no I/O —
- * lives in the SDK-free `_shared` bundle so any driver may import it.
+ * One copy of the `_default` namespace sentinel for every driver that maps a namespace to a key or a path. Pure
+ * string logic, no SDK, no I/O — it lives in the SDK-free `_shared` bundle so any driver may import it.
  */
 
 /**
  * The physical stand-in for an **absent** namespace. A caller MAY name a namespace `_default`; it simply does not collide, because
  * `namespaceKeyPart`/`namespacePathPart` encode the caller's namespace (to `%5Fdefault`) and emit this
- * sentinel literally. The separation is a property of the encoding, not of a grammar — an earlier version of
- * this comment claimed the latter, and that claim is exactly what made the collision easy to reintroduce.
+ * sentinel literally. The separation is a property of the encoding, not of a grammar; reading it as a grammar is
+ * exactly what would make the collision easy to reintroduce.
  */
 export const DEFAULT_NAMESPACE = '_default';
 

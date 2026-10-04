@@ -3,13 +3,14 @@
  * How a calibration run stops, and what it leaves behind.
  *
  * The process plumbing around `bench/calibrate-aws.cjs`, kept apart from the pure guards in `calibrate-guards.cjs`
- * so that each piece can be driven in a test rather than read. Every function here exists because a review stopped
- * a run in a way no run had yet: a Ctrl-C while the loads were still writing, a terminal closed on macOS, a second
- * run under a name already taken, and a harness with uncommitted edits recorded as a commit.
+ * so that each piece can be driven in a test rather than read. Each function here handles a way a run can be
+ * stopped or can go wrong at its edges: a Ctrl-C while the loads are still writing, a terminal closed on macOS, a
+ * second run under a name already taken, and a harness with uncommitted edits recorded as a commit.
  */
 const { execFileSync } = require('node:child_process');
-const { mkdirSync, writeFileSync } = require('node:fs');
-const { dirname } = require('node:path');
+const { mkdirSync, readFileSync, writeFileSync } = require('node:fs');
+const { dirname, join } = require('node:path');
+const { createRequire } = require('node:module');
 const { clearTimeout, setTimeout } = require('node:timers');
 
 const { redact } = require('./calibrate-guards.cjs');
@@ -31,27 +32,78 @@ function isInterruption(err) {
   return false;
 }
 
+/** An error and the errors beneath it, through `cause`, as far as five down. */
+function chainOf(err) {
+  const chain = [];
+  for (let e = err; e !== null && typeof e === 'object' && chain.length < 6; e = e.cause) {
+    chain.push(e);
+  }
+  return chain;
+}
+
 /**
- * What a run's failure records: its message, redacted, or `null` when it is only the gate refusing a send because the
- * run is stopping. A request that fails while the run is stopping is still a failure, and is recorded: one that
- * answered 403 during the drain, the likeliest reason someone presses Ctrl-C on a run that looks stuck, was once
- * discarded because the run was stopping.
+ * What an error says about itself, for a results file: its name, the name of the error at the bottom of its causes,
+ * the transport `code` and the SDK's `$metadata` from the first error down the chain that has them, and its message,
+ * redacted.
+ *
+ * The name alone is not enough. The SDK's HTTP handler renames a request error whose code is `ECONNRESET`, `EPIPE` or
+ * `ETIMEDOUT` to `TimeoutError`, and the S3 driver wraps that in a `TransientError`, so a run that recorded a name
+ * said "TimeoutError" and could not say which of the three it was. The code survives the rename, a level down.
+ */
+function faultOf(err) {
+  const chain = chainOf(err);
+  const first = (pick) => {
+    for (const e of chain) {
+      const v = pick(e);
+      if (v !== undefined) return v;
+    }
+    return null;
+  };
+  const bottom = chain[chain.length - 1];
+  return {
+    name: typeof err?.name === 'string' ? err.name : 'Error',
+    cause: chain.length > 1 && typeof bottom.name === 'string' ? bottom.name : null,
+    code: first((e) => (typeof e.code === 'string' ? e.code : undefined)),
+    attempts: first((e) =>
+      Number.isInteger(e.$metadata?.attempts) ? e.$metadata.attempts : undefined,
+    ),
+    httpStatus: first((e) =>
+      Number.isInteger(e.$metadata?.httpStatusCode) ? e.$metadata.httpStatusCode : undefined,
+    ),
+    message: redact(err?.message ?? String(err)),
+  };
+}
+
+/** One line for a console, from {@link faultOf}: the message, then what lies beneath it. */
+function describeFault(f) {
+  const parts = [
+    f.cause === null ? f.name : `${f.name} from ${f.cause}`,
+    ...(f.code === null ? [] : [`code ${f.code}`]),
+    ...(f.httpStatus === null ? [] : [`HTTP ${f.httpStatus}`]),
+    ...(f.attempts === null ? [] : [`${f.attempts} attempt${f.attempts === 1 ? '' : 's'}`]),
+  ];
+  return `${f.message} (${parts.join(', ')})`;
+}
+
+/**
+ * What a run's failure records ({@link faultOf}), or `null` when it is only the gate refusing a send because the run
+ * is stopping. A request that fails while the run is stopping is still a failure, and is recorded: one that answers
+ * 403 during the drain, the likeliest reason someone presses Ctrl-C on a run that looks stuck, must not be discarded
+ * because the run is stopping.
  */
 function failureOf(err) {
   if (isInterruption(err)) return null;
-  return redact(err?.message ?? String(err));
+  return faultOf(err);
 }
 
 /**
  * Stop a client from sending anything more, and know when what it already sent has answered.
  *
- * A signal used to start teardown while the workload was still writing. Teardown listed the bucket, a load's PUT
- * landed after the listing, and the bucket was left behind: in two of four rehearsals interrupted during their
- * loads, one of them after printing that the bucket had been removed. And an interrupt while `CreateBucket` was in
- * flight would tear down a bucket that did not exist yet, and the create would land afterwards with nothing said.
- * So a signal now stops the work before anything is deleted: `abort()` makes every later send on the client fail at
- * once, before it reaches the wire, and `drained()` resolves once every send already made has answered. Teardown
- * waits for both.
+ * A signal that starts teardown while the workload is still writing leaves the bucket behind: teardown lists the
+ * bucket, and a load's PUT lands after the listing. And an interrupt while `CreateBucket` is in flight would tear
+ * down a bucket that does not exist yet, and the create would land afterwards with nothing said. So a signal stops
+ * the work before anything is deleted: `abort()` makes every later send on the client fail at once, before it
+ * reaches the wire, and `drained()` resolves once every send already made has answered. Teardown waits for both.
  *
  * It sits at `initialize` with high priority, outside the meter, so a send it refuses is not counted: it is not a
  * request, and it is not billed.
@@ -136,11 +188,11 @@ function exitCodeAfterSignal({ finished, code }) {
  * Open the terminal's two streams now, while there is a terminal.
  *
  * Node creates `process.stdout` and `process.stderr` on first use, and on macOS creating one on a terminal that has
- * hung up (a closed window, a dropped SSH session) never returns. A hang-up handler whose first line of output was
- * the first use of stderr blocked there, so teardown never ran: no bucket removed, no results written, no LEFTOVERS
- * message. Writing to a stream created before the hang-up returns. The harness had been spared only because
- * something happened to create stderr earlier, and a first fix that dropped output on a hang-up would itself have
- * blocked, since reaching `process.stderr` to silence it created it. So both are created at startup.
+ * hung up (a closed window, a dropped SSH session) never returns. A hang-up handler whose first line of output is
+ * the first use of stderr blocks there, so teardown never runs: no bucket removed, no results written, no LEFTOVERS
+ * message. Writing to a stream created before the hang-up returns. A harness spared only because something happened
+ * to create stderr earlier is spared by luck, and dropping output on a hang-up does not help on its own, since
+ * reaching `process.stderr` to silence it creates it. So both are created at startup.
  */
 function holdTerminal() {
   void process.stdout;
@@ -150,7 +202,7 @@ function holdTerminal() {
 /**
  * Drop what would be written to a terminal after it has hung up. Nothing is left to read it there, and the results
  * file records what teardown left behind. A stream that is a pipe or a file is left alone: a log, `tee` or CI still
- * has a reader, and silencing those once lost the teardown and LEFTOVERS lines from `nohup … > run.log`. Safe only
+ * has a reader, and silencing those would lose the teardown and LEFTOVERS lines from `nohup … > run.log`. Safe only
  * because {@link holdTerminal} ran first: this reaches both streams.
  */
 function silenceTerminal() {
@@ -163,10 +215,11 @@ function silenceTerminal() {
  * Write a run's results without ever replacing a file, and say where they went.
  *
  * The evidence file is created with `wx`, since evidence is write-once: if a file under the same id appeared while
- * the run was going, the write fails rather than replacing it. That failure used to escape, taking the results with
- * it, so neither the evidence nor the partial file was written. Now they go to `fallback`, a name only this run can
- * hold because it carries the run's start, and the caller is told. A partial file is kept the same way, so a retry
- * under the same id no longer replaces the earlier attempt's bill. A rehearsal's file is scratch, and is overwritten.
+ * the run was going, the write fails rather than replacing it. Were that failure to escape, it would take the
+ * results with it, and neither the evidence nor the partial file would be written. So they go to `fallback`, a name
+ * only this run can hold because it carries the run's start, and the caller is told. A partial file is kept the
+ * same way, so a retry under the same id cannot replace the earlier attempt's bill. A rehearsal's file is scratch,
+ * and is overwritten.
  */
 function writeResultsFile({ file, fallback, text, overwrite = false }) {
   mkdirSync(dirname(file), { recursive: true });
@@ -181,6 +234,20 @@ function writeResultsFile({ file, fallback, text, overwrite = false }) {
 }
 
 /**
+ * A run's results as the text of its file, every fractional number written to nine decimals.
+ *
+ * A ratio or a sum prints with a binary tail of up to 17 digits that no measurement carries, and a tail of exactly 12
+ * is the run of digits the leak scan refuses as a possible account id, so a file could fail it by chance and then
+ * not be committed. Nine decimals is below a nanosecond for a time in milliseconds and a billionth of a dollar for a
+ * cost, so nothing measured is lost.
+ */
+function resultsJson(results) {
+  const round = (_key, v) =>
+    typeof v === 'number' && !Number.isInteger(v) && Number.isFinite(v) ? Number(v.toFixed(9)) : v;
+  return `${JSON.stringify(results, round, 2)}\n`;
+}
+
+/**
  * The files a run from a checkout executes: the harness, the modules it loads, and the packages it loads, which are
  * this checkout's. The figures library in `bench/lib` is not among them; it reads a run's file, and never runs one.
  */
@@ -189,13 +256,16 @@ const HARNESS_FILES = [
   'bench/lib/aws-meter.cjs',
   'bench/lib/calibrate-guards.cjs',
   'bench/lib/calibrate-process.cjs',
+  'bench/lib/calibrate-samples.cjs',
+  'bench/lib/calibrate-spread.cjs',
+  'bench/lib/calibrate-stages.cjs',
   'packages',
 ];
 
 /**
  * The commit the harness ran from, marked `-dirty` when its files had uncommitted edits.
  *
- * Evidence names the harness that produced it. A bare commit named one that did not run whenever the harness had
+ * Evidence names the harness that produced it. A bare commit names one that did not run whenever the harness has
  * been edited since, which is exactly the state a harness is in while someone fixes it. `calibrate-cloudshell.sh`
  * passes the ref in, because the copy of the harness it runs is not a git checkout.
  */
@@ -215,7 +285,99 @@ function harnessRef(root, env = process.env) {
   }
 }
 
+/**
+ * The version of `@cloudbitmaps/roaring` a run measured: this checkout's own package when the run is from one, and the
+ * installed package when it is from a scratch directory that installed the published ones, as the CloudShell script
+ * does. A directory with neither is refused, since a run that cannot say what it measured has no evidence to write.
+ */
+function measuredVersion(root) {
+  const where = [
+    'packages/roaring/package.json',
+    'node_modules/@cloudbitmaps/roaring/package.json',
+  ];
+  for (const rel of where) {
+    let text;
+    try {
+      text = readFileSync(join(root, rel), 'utf8');
+    } catch (err) {
+      if (err?.code === 'ENOENT') continue;
+      throw err;
+    }
+    return JSON.parse(text).version;
+  }
+  throw new Error(
+    `no @cloudbitmaps/roaring package under ${root}: looked in ${where.join(' and ')}`,
+  );
+}
+
+/** How many sockets the SDK's HTTP handler opens to one host unless told otherwise. The harness does not set it. */
+const SDK_DEFAULT_MAX_SOCKETS = 50;
+
+/**
+ * The versions of the AWS SDK client and of the HTTP handler under it that a run used, read from what is installed
+ * under `root`. The scratch directory a CloudShell run installs into is deleted once the results are copied out, so the
+ * file is the only place they survive; and the handler's socket cap bounds how many requests a stage can really have
+ * in flight, which a latency has to be read against. A directory with neither is refused, as `measuredVersion` does.
+ */
+function measuredSdk(root) {
+  const version = (from, spec) => {
+    let file;
+    try {
+      file = createRequire(from).resolve(`${spec}/package.json`);
+    } catch (err) {
+      if (err?.code === 'MODULE_NOT_FOUND') return null;
+      throw err;
+    }
+    return { file, version: JSON.parse(readFileSync(file, 'utf8')).version };
+  };
+  const client = version(join(root, 'package.json'), '@aws-sdk/client-s3');
+  if (client === null) throw new Error(`no @aws-sdk/client-s3 installed under ${root}`);
+  const handler = version(client.file, '@smithy/node-http-handler');
+  if (handler === null) {
+    throw new Error(
+      `no @smithy/node-http-handler under the @aws-sdk/client-s3 installed in ${root}`,
+    );
+  }
+  return { clientS3: client.version, nodeHttpHandler: handler.version };
+}
+
+/**
+ * The SDK's own classes of retryable fault, from the `@aws-sdk/client-s3` installed under `root`: what its standard
+ * retry would have tried again, had the workload's client been let retry — throttling, a transient fault (a timeout,
+ * a reset or refused socket, a 500, 502, 503 or 504) and any other 5xx. They are read from the SDK that sends the
+ * requests rather than restated, so the harness counts as transient exactly what that SDK does. An SDK that does not
+ * export them is refused, before anything is created.
+ */
+function sdkFaultClasses(root) {
+  let retry;
+  try {
+    const client = createRequire(join(root, 'package.json')).resolve('@aws-sdk/client-s3');
+    retry = createRequire(client)('@smithy/core/retry');
+  } catch (err) {
+    if (err?.code !== 'MODULE_NOT_FOUND') throw err;
+  }
+  const classes = ['isThrottlingError', 'isTransientError', 'isServerError'];
+  if (retry === undefined || classes.some((name) => typeof retry[name] !== 'function')) {
+    throw new Error(
+      `the @aws-sdk/client-s3 installed under ${root} does not export ${classes.join(', ')} from @smithy/core/retry, ` +
+        'so the harness cannot tell a transient fault from another',
+    );
+  }
+  return {
+    isThrottlingError: retry.isThrottlingError,
+    isTransientError: retry.isTransientError,
+    isServerError: retry.isServerError,
+  };
+}
+
 module.exports = {
+  measuredVersion,
+  measuredSdk,
+  sdkFaultClasses,
+  chainOf,
+  faultOf,
+  describeFault,
+  SDK_DEFAULT_MAX_SOCKETS,
   interruptGate,
   isInterruption,
   failureOf,
@@ -224,6 +386,7 @@ module.exports = {
   holdTerminal,
   silenceTerminal,
   writeResultsFile,
+  resultsJson,
   harnessRef,
   HARNESS_FILES,
 };

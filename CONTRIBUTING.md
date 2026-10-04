@@ -5,8 +5,8 @@ How this project is built — the **canonical** record of our conventions and wo
 **principles** and the project's **hard correctness invariants**, and points here for the process below.
 `CLAUDE.md` is a symlink to `AGENTS.md`.)
 
-> CloudBitmaps is pre-release and built in phases — see the roadmap (the
-> living source of project state).
+> CloudBitmaps is pre-`1.0`: the format and the API can still move in a minor release.
+> [`docs/ROADMAP.md`](docs/ROADMAP.md) is what's shipped, what's proven, and what's next.
 
 Participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md). Issues and pull requests use the
 forms and template in [`.github/`](.github/); security reports go **privately** via
@@ -14,74 +14,99 @@ forms and template in [`.github/`](.github/); security reports go **privately** 
 
 ## Commands (the gate)
 
-CI runs exactly these, and all must pass (TypeScript, pnpm):
+Every change must pass these locally, and CI runs each of them on every pull request (TypeScript, pnpm):
 
 - `pnpm lint` · `pnpm lint:arch` · `pnpm format:check` · `pnpm typecheck` · `pnpm test` · `pnpm build` ·
   `pnpm smoke`
 - `pnpm test:integration` — against the docker-compose backends (MinIO, fake-gcs-server,
-  Azurite) — no real cloud account needed
-- `pnpm lint:arch` runs `tests/arch`: the import graph is acyclic, and every import-boundary rule in `eslint.config.js` (the storage-agnostic-core rule and its siblings) is proven to fire on a planted violation — and, since
-  `core-no-node-builtins`, the **runtime**-agnostic one too.
+  Azurite) — no real cloud account needed. Locally it needs Docker with the backends started first
+  (`docker compose up -d`, as [`tests/README.md`](tests/README.md) says), and a change that touches a driver runs it
+- `pnpm lint:arch` runs `tests/arch`: the import graph is acyclic; every import-boundary rule in
+  `eslint.config.js` (the storage-agnostic-core rule and its siblings, the **runtime**-agnostic
+  `core-no-node-builtins` among them) is proven to fire on a planted violation, and so is `core/`'s ban on the
+  `fetch` and `crypto` globals, on the global object (`globalThis`, `self`, `window`, `global`), on `eval` and the
+  `Function` constructor, and on dynamic `import()`; and the
+  detectors the build, `pnpm smoke` and the Node-floor gate rely on are fired at planted inputs in both
+  directions.
 - `pnpm smoke` loads **every** built package through its own `exports` map under both ESM and `require()` —
-  the entry list is derived from each manifest, so a declared entry that does not load fails the build — and
-  cross-checks the `Symbol.for`-branded error and backend predicates ACROSS PACKAGES, and asserts the five
-  built packages really do share **one** copy of core — every package leaves `@cloudbitmaps/core` external,
-  so `instanceof` holds across them and a regression to a bundled copy would break it silently. Both halves
-  are the class of bug the source-graph tests structurally cannot see.
+  the entry list is derived from each manifest, so a declared entry that does not load fails the build. It checks
+  that core's error predicates classify an error the built `@cloudbitmaps/s3` throws, and that the store takes a
+  backend that package builds, so the predicates are wired across a real package boundary; and it asserts that
+  core, the flavor and the S3 package share **one** copy of core — every package leaves `@cloudbitmaps/core`
+  external, so `instanceof` holds across them and a regression to a bundled copy would break it silently. Both
+  halves are the class of bug the source-graph tests structurally cannot see. It cannot see whether the brands are
+  registered `Symbol.for`s, since with one shared copy of core a plain `Symbol` passes too; that is
+  [`tests/core/error-predicates.test.ts`](tests/core/error-predicates.test.ts)'s to prove.
+
+CI runs more than these. Its `build & test` job also holds the site and the benchmark pages to their sources
+(`site:replay:check`, `bench:scale:check`, `site:figures`, `site-classes.py`, `site-links.py`, `bench:sizing:check`,
+`bench:check`), scans the tracked tree and the packed tarballs for leaks, and checks the fuzz lockfile; separate
+jobs run the dependency audit, the smoke test on the declared Node floor, the Lambda deployability smoke, the hard
+RSS ceiling and the native addon on Linux, Windows and macOS. [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
+says why each one is there.
 
 A fresh clone must pass `install → lint → lint:arch → format:check → typecheck → test → build → smoke` with
-**no manual setup** (Node ≥22.12, which the manifests enforce — `.nvmrc` pins the major, 22 — and pnpm 9; Docker only for
-`test:integration`).
+**no manual setup** (Node ≥22.12, the floor the packages declare — `.nvmrc` pins the major, 22, and the dev tools
+want a current 22: lint-staged, which the pre-commit hook runs, declares 22.22.1 or later — and pnpm 9; Docker only
+for `test:integration`).
 Every command runs from the **repo root** — it is a pnpm workspace, and the root scripts cover all five packages.
 
 ## Repo layout (a pnpm workspace of five packages)
 
-The `@cloudbitmaps` family split makes this repo a workspace
+The `@cloudbitmaps` family is five packages, so this repo is a workspace
 (`pnpm-workspace.yaml` → `packages/*`). Where code lives:
 
 | Path | Package | Holds |
 |---|---|---|
 | `packages/core/src/` | **`@cloudbitmaps/core`** (zero runtime deps, no cloud SDK) | the codec-agnostic `SegmentEngine` + the `CodecInterface` seam, the driver ports, the in-memory and local-filesystem drivers, the `.crbm` format, the load/publish write path, generation GC, erasure, crypto, registry, consistency, budget, eject — plus `driver-kit`, the declared contract a driver package builds against |
-| `packages/roaring/src/` | **`@cloudbitmaps/roaring`** (depends on core) | the flavor: the roaring codec (`SafeBitmap` / `roaringCodec`), the `CloudRoaring` facade, the `export-segments` CLI, and the test-only conformance SDK |
+| `packages/roaring/src/` | **`@cloudbitmaps/roaring`** (depends on core) | the flavor: the roaring codec (internal, not exported), the `CloudRoaring` facade, the `export-segments` CLI, and the test-only conformance SDK |
 | `packages/{s3,gcs,azure-blob}/src/` | **`@cloudbitmaps/{s3,gcs,azure-blob}`** (depend on core + their SDK) | one package per storage **service**, each a real dependency on its own SDK. They build against `@cloudbitmaps/core/driver-kit` and nothing else of ours — never a flavor, never a sibling |
 | `tests/` (repo root) | — | **all** tests, deliberately *not* per package: many drive the facade and core internals together, so the `@/…` alias is remapped onto the packages (`@/index` → the facade, `@/roaring-codec` → the codec, `@/s3/*` → the S3 driver package, `@/*` → core) in `vitest.config.ts` + the root `tsconfig.json`. [`tests/README.md`](tests/README.md) maps each directory and every documentation gate |
 | `bench/` · `fuzz/` · `scripts/` · `site/` · `docs/` | — | the benchmarks ([`bench/README.md`](bench/README.md)), fuzz targets ([`fuzz/README.md`](fuzz/README.md)), the build, release and gate scripts ([`scripts/README.md`](scripts/README.md)), the static site ([`site/README.md`](site/README.md)), and the docs trees below |
 
 A user installs **two packages** — a flavor (`@cloudbitmaps/roaring`) and the storage they have
 (`@cloudbitmaps/s3`, `/gcs` or `/azure-blob`); core arrives as a dependency of both and is never installed
-directly. The dependency arrow is one-way — `lint:arch` fails if core imports a flavor or a driver package, if
-any main entry outside a driver package reaches a cloud SDK, or if `core/` reaches a driver impl.
+directly. The dependency arrow is one-way — `pnpm lint` fails if core imports a flavor or a driver package, if
+core or the flavor names a cloud SDK, or if `core/` reaches a driver impl, and `pnpm smoke` fails if a built main
+entry outside a driver package names an SDK or a driver package. `pnpm lint:arch` proves each of those lint rules
+fires.
 
-`core/` is also **runtime**-agnostic: `lint:arch` fails on any `node:*` import under `packages/core/src/core`, so
-the seam stays loadable where no node builtin exists (a V8 isolate — Workers, Deno Deploy). Randomness, time and
-I/O reach it through injected seams — `Clock`, `Rng`, `BlobReader`, the driver ports — which is what makes that
-enforceable rather than aspirational. **Anything needing a builtin belongs in a driver** — either one of the
-driver packages, or `packages/core/src/drivers/` where the SDK-free memory and local-filesystem drivers live.
+`core/` is also **runtime**-agnostic: `pnpm lint` fails on any `node:*` import under `packages/core/src/core` (a dynamic `import()` is refused there
+whatever its source), and
+on the `fetch` and `crypto` globals there, and on the global object that would reach them (`globalThis`, `self`,
+`window`, `global`) and on `eval` and the `Function` constructor, so the seam stays loadable where no node builtin exists (a V8 isolate — Workers, Deno Deploy). Randomness, time and I/O reach it through injected seams — `Clock`, `Rng`, `BlobReader`, the
+driver ports — which is what makes that enforceable rather than aspirational. **Anything needing a builtin belongs
+in a driver** — either one of the driver packages, or `packages/core/src/drivers/` where the SDK-free memory and local-filesystem drivers live.
 
 ## Adding a storage driver package
 
 Most of the topology is **derived** — `scripts/build.mjs` reads each package's own `exports`, the release
-workflow globs `packages/*/package.json`, and the `no-circular`, `api-reference-sync`, `issue-template-sync`
-and `sdk-floor-claims` gates all read the manifests. Those need no edit.
+workflow globs `packages/*/package.json`, and the `no-circular`, `api-reference-sync` and `sdk-floor-claims` gates
+all read the manifests. Those need no edit.
 
-These do, and the list is exhaustive as of this writing. A missing one fails **loudly** — in `pnpm lint`,
-`pnpm typecheck` or `pnpm smoke`, long before a publish — but knowing them up front turns a bisect into a
-checklist:
+These do. The last column says what fails when one is missing: most fail a local gate long before a publish, and
+the ones marked **nothing** fail no gate at all, so this table is the only thing that remembers them.
 
-| File | What to add |
-|---|---|
-| `package.json` | the workspace devDependency, **and** the package in the `typecheck:pkgs` and `typecheck:next` chains (both spell every package out) |
-| `tsconfig.json` | the two `paths` entries |
-| `vitest.config.ts` · `vitest.integration.config.ts` | the two aliases in **each**, above the `@/*` catch-all |
-| `eslint.config.js` | a per-package block re-stating the full SDK list **minus** this package's own — eslint replaces a rule's options rather than merging them |
-| `scripts/sdk-specifiers.cjs` | the driver-name pattern |
-| `.github/ISSUE_TEMPLATE/bug_report.yml` | the two dropdown options; `tests/docs/issue-template-sync.test.ts` derives the *expectation* and fails until the template catches up |
-| docs | the README install + driver tables, `docs/guide/getting-started.md` wiring, the API reference entry points and export index, and the guide index |
-| npm | **bootstrap the package name** before any release can include it — see [`RELEASING.md`](RELEASING.md#bootstrapping-a-name) |
+| File | What to add | What fails without it |
+|---|---|---|
+| `package.json` | the workspace devDependency, **and** the package in the `typecheck:pkgs` and `typecheck:next` chains (both spell every package out) | the devDependency: `pnpm smoke`, which loads each package by name. The chains: **nothing** — the root program still typechecks the source, but under the root's settings rather than the package's own `tsconfig.json` |
+| `tsconfig.json` | the two `paths` entries | `pnpm typecheck`, once a test imports the package through them |
+| `vitest.config.ts` · `vitest.integration.config.ts` | the two aliases in **each**, above the `@/*` catch-all | `pnpm test` or `pnpm test:integration`, once a test imports the package through them |
+| `eslint.config.js` | a per-package block re-stating the full SDK list **minus** this package's own — eslint replaces a rule's options rather than merging them | `pnpm lint`, at the package's first import of its own SDK, which the generic driver block refuses |
+| `eslint.config.js` | the new name in the flavor block's driver-package pattern (`^@cloudbitmaps/(s3\|gcs\|azure-blob)(/\|$)`) | **nothing** — the flavor can then import or re-export the new driver, lint-clean |
+| `tests/arch/import-boundaries.test.ts` | planted violations for that block and the flavor pattern, as the s3, gcs and azure-blob blocks have | **nothing** — and without them, a later edit that empties the block fails nothing either. (A package named `r2` is the exception: the file plants its generic-block cases at `packages/r2`, which a real `r2` block then fails until they move.) |
+| `scripts/sdk-specifiers.cjs` | the driver-name pattern | **nothing** — `pnpm smoke` then misses a main entry that names the new package |
+| `.github/workflows/release.yml` | `EXPECTED_PACKAGES`, the number of manifests the release must find | `pnpm test`: `tests/ci/release-workflow.test.ts` compares it with the workspace |
+| `.github/ISSUE_TEMPLATE/bug_report.yml` · `tests/docs/issue-template-sync.test.ts` | the two dropdown options, and the backend's label in the test's `LABELS` map | `pnpm test`: the test derives which drivers exist from the packages, and spells each one's options from `LABELS` |
+| `docker-compose.yml` | the backend's emulator, as a service on a pinned image | a floating tag: `pnpm test` (`tests/ci/compose-images.test.ts`). The service: `pnpm test:integration`, once a test needs it. The CI image pull reads the file, so it needs no edit |
+| `tests/integration/` | a test that runs the conformance suite against that emulator, as `s3.test.ts`, `gcs.test.ts` and `azure.test.ts` do | **nothing** — the package is then never run against a backend |
+| the package's `README.md` · `site/usage.html` | the SDK range the manifest declares, verbatim, in both: the README's statement of it and the site's driver table | `pnpm test`: `tests/docs/sdk-floor-claims.test.ts` compares all three |
+| docs and site | the README install + driver tables, the `docs/guide/` pages that show wiring, the API reference entry points and export index, the guide index, and every site page that lists the drivers (`grep -rl '@cloudbitmaps/gcs' site` finds them) | the API reference: `pnpm test` (`tests/docs/api-reference-sync.test.ts`). The rest: **nothing** |
+| every place that names the SDK roots, if the new SDK is not under `@aws-sdk/`, `aws-sdk`, `@google-cloud/` or `@azure/` | the new root in each eslint `group` list, `SDK_ROOTS` in `scripts/sdk-specifiers.cjs`, `CLOUD_SDK` in `scripts/smoke.cjs`, and the SDK patterns in `tests/docs/issue-template-sync.test.ts` and `tests/docs/sdk-floor-claims.test.ts` | **nothing** — those gates then do not see the package as a driver, so the eslint, issue-template and SDK-range rows above fail nothing either |
+| npm | **bootstrap the package name** before any release can include it — see [`RELEASING.md`](RELEASING.md#bootstrapping-a-name) | the release workflow's registry probe, which refuses the run before its publish step |
 
-Two things to copy rather than invent: the package must declare its SDK as a **real dependency** (never an
-optional peer), and its README must state the same range its manifest does — `tests/docs/sdk-floor-claims.test.ts`
-compares them.
+One thing to copy rather than invent: the package declares its SDK as a **real dependency**, never an optional
+peer.
 
 ## Dependency policy
 
@@ -111,7 +136,8 @@ peer, and no package pulls an SDK for a service the user does not use. Keep it t
 What we own rather than depend on, and why: the package build (`scripts/build.mjs`: esbuild for the bundles,
 `tsc` for the declarations) and the architecture checks (`eslint.config.js` + `tests/arch`). What we deliberately keep
 as tools: `husky` + `lint-staged` for the pre-commit hook — lint-staged's handling of *partially staged* files (it
-stashes the unstaged hunks, formats the staged ones, restores) is worth its 21 packages, and rewriting it is not.
+stashes the unstaged hunks, formats the staged ones, restores) is worth its three dependencies, and rewriting it is
+not.
 
 ## Branching & merge conventions
 
@@ -138,20 +164,20 @@ stashes the unstaged hunks, formats the staged ones, restores) is worth its 21 p
 default.** A decision is "important" if it is hard to reverse, precedent-setting, or outward-facing:
 
 - public API / exported surface · the on-disk or wire **format** · **dependencies** added (and how they're
-  packaged: bundled vs peer/optional vs subpath export) · architecture or **phase/sub-phase sequencing** ·
-  anything users consume or that later phases will build on.
+  packaged: bundled vs peer/optional vs subpath export) · architecture or **the order work lands in** ·
+  anything users consume or that later work will build on.
 
 For each such decision, present the realistic **options with their trade-offs**, note the **industry
 standard / common practice**, give a **clear recommendation**, and let the user choose **before**
 implementing. Reversible, internal, low-stakes details (naming, local algorithm choices, test structure) you
 decide yourself with a sensible default — **state the notable ones** so they can be vetoed, and proceed.
 
-When in doubt about whether something is "important," ask. This applies to **all** work, every phase.
+When in doubt about whether something is "important," ask. This applies to **all** work.
 
-## Per-phase working process (follow after EVERY phase AND sub-phase)
+## Working process (every pull request)
 
-The roadmap is built in phases. A **sub-phase** is any meaningful increment / PR within a phase — the gate
-below runs after sub-phases too, not just whole phases. For each, in order:
+Every change reaches `main` as a pull request, however small, and every pull request follows these steps, in
+order:
 
 1. **Branch off `main`** per the conventions above, docs-only changes included.
 2. **Build with tests, not after.** No untested code — new behavior ships with tests in the same commit.
@@ -159,15 +185,18 @@ below runs after sub-phases too, not just whole phases. For each, in order:
    property tests over loaded generations and crash/race tests for the write-then-publish path.
 3. **Run the full local gate — and it must be green.** Before review or merge, run every gate command and
    confirm each passes: `pnpm lint` · `pnpm lint:arch` · `pnpm format:check` · **`pnpm typecheck`** ·
-   `pnpm test` · `pnpm build`. **`pnpm typecheck` (`tsc --noEmit`) is a required gate exactly like lint and
-   the tests** — a clean typecheck (zero errors *and* zero editor red squiggles, e.g. deprecations) is
-   mandatory, never deferred or `// @ts-ignore`-d away. CI runs the same set; a fresh clone must pass it with
-   no manual setup. Don't open/merge a PR on a red gate.
-4. **Run the adversarial review gate (after every phase AND sub-phase).** Spawn **multiple parallel
+   `pnpm test` · `pnpm build` · `pnpm smoke`. **`pnpm typecheck` is a required gate exactly like lint and the
+   tests**, and it runs two compilers, each `--noEmit` over the root program and every package's own
+   `tsconfig.json`: TypeScript 5.9, which lint and the declaration build use, and TypeScript 7
+   (`typecheck:next`). A clean typecheck (zero errors *and* zero editor red squiggles, e.g. deprecations) is
+   mandatory, never deferred or `// @ts-ignore`-d away. CI runs the same set and more; a fresh clone must pass it
+   with no manual setup. Don't open/merge a PR on a red gate.
+4. **Run the adversarial review gate (every pull request).** Spawn **multiple parallel
    adversarial subagents**, each with a distinct lens, to hunt for flaws in what was built **end to end**
    (not just the diff). Standard lenses — use all that apply, add domain-specific ones:
    - **correctness/logic, end-to-end** — trace the whole data/control flow vs the specs + named invariants
-     (races, lost writes, merge/tombstone bugs, divergence from the oracle),
+     (races, lost writes, a torn read, a pointer that moves backwards, a live generation collected, divergence
+     from the oracle),
    - **bug-hunt** — edge cases, error paths, resource leaks, async/boundary bugs,
    - **security** — untrusted deserialization, injection/traversal, IAM/authz, secrets/PII in logs,
      DoS/denial-of-wallet, supply chain,
@@ -203,17 +232,20 @@ root-level project files. What each one is, and when it must be updated:
 | `docs/guide/` | **users** | how to actually use it — accurate to what's shipped | a user-visible capability or public API ships |
 | `docs/guide/api-reference.md` | users | the complete callable surface — every export, every entry point | **CI-enforced**: `tests/docs/api-reference-sync.test.ts` fails the build if an export is undocumented |
 | `docs/ROADMAP.md` | **users** | what's shipped, the **validated envelope**, the path to `1.0`, and the explicit not-planned list | capabilities land, or the envelope changes |
-| `docs/benchmarks.md` | users | the published cost and memory figures, how each was measured or modelled, and what is still owed, in-region latency among them | a benchmark or calibration run lands |
+| `docs/benchmarks.md` | users | the published cost and memory figures, how each was measured or modelled, and what is still owed, a Lambda's cold start among them | a benchmark or calibration run lands |
 | `bench/` · `scripts/` · `site/` · `tests/` — each `README.md` | contributors | a row for every part of that directory — each file in `bench/` and `scripts/`; each page and top-level file in `site/`; each directory, top-level file and documentation gate in `tests/` — saying what it is and what runs it | a part there is added, removed or renamed — **CI-enforced**: `tests/docs/directory-readmes.test.ts` fails when a part has no row, or a row names a path that does not exist |
 | `CODE_OF_CONDUCT.md` · `.github/` | contributors | Contributor Covenant, PR template, issue forms | the gate or process changes |
 
 **When a change ships a user-visible capability or a public-API change — in the same change:**
 
-1. **Guide** — update [`docs/guide/getting-started.md`](docs/guide/getting-started.md); add a how-to when a
+1. **Guide** — update the page the change belongs to (see the [guide index](docs/guide/README.md)), and
+   [`docs/guide/getting-started.md`](docs/guide/getting-started.md) when it changes the first ten minutes; add a how-to when a
    headline capability lands.
 2. **API reference** — a new export **cannot** merge undocumented; CI enforces it.
 3. **README** — refresh the status line / "what works today" / quick taste if the surface moved.
-4. **CHANGELOG** — add a bullet at the **top** of `[Unreleased]` (newest first). This is the prose, and it
+4. **CHANGELOG** — add a bullet at the **top** of its subsection of `[Unreleased]` (newest first): **Breaking**
+   (with what a caller does about it, and the section's opening count kept in step), **Added**, **Changed** or
+   **Fixed**. This is the prose, and it
    is hand-written: `.changeset/` does **not** generate it, deliberately
    ([why](.changeset/README.md)).
 5. **Changeset** — `pnpm changeset`, if the change should move the version. It records the **bump type**
@@ -236,8 +268,10 @@ gets the reasoning rather than a dead reference to it.
 
 This applies to code comments as much as prose: a doc-comment reaches users on hover in their editor and
 inside the published `.d.ts` and sourcemaps. **CI-enforced** by
-[`tests/docs/internal-citations.test.ts`](tests/docs/internal-citations.test.ts), which scans every tracked
-text file. Ids a reader *can* resolve are fine and stay: the seven hard invariants in
+[`tests/docs/internal-citations.test.ts`](tests/docs/internal-citations.test.ts), which scans every `.ts`, `.js`,
+`.cjs`, `.mjs`, `.md`, `.html`, `.json`, `.yml`, `.yaml` and `.txt` file in the tree — except itself and this file,
+which spell the forms out to define the rule. A shell or Python script is not scanned, so keep ids out of those by
+hand. Ids a reader *can* resolve are fine and stay: the seven hard invariants in
 [`AGENTS.md`](AGENTS.md), a `§` section of a public guide, and a `#123` issue or PR on this repository.
 
 ## Code style
@@ -247,12 +281,16 @@ text file. Ids a reader *can* resolve are fine and stay: the seven hard invarian
 - Tests live at the **repo root under `tests/`, mirroring the package source trees** (e.g.
   `packages/core/src/core/lru.ts` → `tests/core/lru.test.ts`), not co-located with source and not split per
   package — the `@/…` alias remap (see [Repo layout](#repo-layout-a-pnpm-workspace-of-five-packages)) keeps that
-  mirror intact across the split. Integration tests under `tests/integration/`. Property tests over loaded
+  mirror intact across the packages. Integration tests under `tests/integration/`. Property tests over loaded
   generations, and race tests for the write-then-publish path.
 - Pluggable drivers behind explicit interfaces; a driver **conformance suite**
-  ([`packages/roaring/src/testing/conformance.ts`](packages/roaring/src/testing/conformance.ts)) every driver
-  (incl. community ones) must pass.
+  ([`packages/roaring/src/testing/conformance.ts`](packages/roaring/src/testing/conformance.ts)) that every driver
+  in this repo passes: the memory and local-filesystem drivers in `tests/conformance/`, the cloud drivers against
+  their emulators in `tests/integration/`. The suite is **not published** — `@cloudbitmaps/roaring` exports its main entry only — so a driver outside this repo cannot run it;
+  the [API reference](docs/guide/api-reference.md#driver-kit--what-you-need-to-implement-a-driver) lists the
+  behaviours such a driver has to reproduce by hand.
 - The engineering **principles** (SOLID/DRY/KISS/YAGNI, fail-fast, security-by-default, determinism,
-  boy-scout) are in [`AGENTS.md`](AGENTS.md#principles); the **hard correctness invariants** (tombstones,
-  generation fencing, untrusted bytes, bounded memory, storage-agnostic core) are in
-  [`AGENTS.md`](AGENTS.md#hard-correctness-invariants).
+  boy-scout) are in [`AGENTS.md`](AGENTS.md#principles); the seven **hard correctness invariants** (write-once
+  generations whose pointer only moves forward within a row's incarnation, immutable generation-keyed objects, a
+  read that is never torn, GC that never touches the current generation, untrusted tier bytes, bounded memory and
+  cost, and a storage- and runtime-agnostic core) are in [`AGENTS.md`](AGENTS.md#hard-correctness-invariants).

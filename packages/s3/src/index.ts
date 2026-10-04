@@ -12,17 +12,13 @@
  * ```
  *
  * These drivers move opaque payload bytes, so they are codec-agnostic: the same package serves every
- * flavor. That is why they are a package rather than a subpath of one — as a subpath, each flavor needed a
- * re-export barrel per service, and the count multiplied with every new codec.
+ * flavor. That is why they are a package rather than a subpath of one — as a subpath, each flavor would need a
+ * re-export barrel per service, and the count would multiply with every new codec.
  *
  * The engine, the `.crbm` format and the ports live in `@cloudbitmaps/core`, which is a real dependency of
  * THIS package: it lands in your tree without you installing it, and you never name it yourself. What this
  * package builds against is `@cloudbitmaps/core/driver-kit`, the declared contract for a driver — the same
  * surface a third-party driver would use.
  */
-export { S3StorageDriver } from './storage';
-export type { S3StorageDriverOptions } from './storage';
-export { S3RegistryDriver } from './registry';
-export type { S3RegistryDriverOptions } from './registry';
 export { S3Storage } from './backend';
 export type { S3StorageOptions } from './backend';

@@ -8,16 +8,17 @@ import { collect } from '../helpers/loaded';
  * an empty or implausible result over it. When the segment has no registry row there is nothing to read, so
  * `before` is `null` and every bound passes vacuously — correctly, because there is nothing to lose.
  *
- * The bug was what happened next. Both existing fences compare against a value taken FROM a row —
- * `expectFrom` against the pointer, `expectToken` against the identity — so with no row both were omitted and
- * the publish became a bare forward-only advance. A writer that created the row and published in that window
- * was then overwritten by the empty generation, and the result said `published: true` with no reason.
+ * The hazard is what happens next. The other two fences compare against a value taken FROM a row —
+ * `expectFrom` against the pointer, `expectToken` against the identity — so with no row both are omitted, and
+ * without a fence on the absence itself the publish is a bare forward-only advance. A writer that creates the
+ * row and publishes in that window is then overwritten by the empty generation, and the result says
+ * `published: true` with no reason.
  *
  * `tests/core/load.test.ts` has a test named for this exact invariant ("refuses rather than wiping when
- * another loader publishes between the read and the publish") and it did NOT catch it: it fires its racer
- * from a `putImmutable` proxy, i.e. after `nextGeneration` has already chosen. Both writers then pick the
- * same generation number and the loser is stopped by the write-once collision on the object PUT — never by
- * the fence. The fence was untested in the one case where it was missing.
+ * another loader publishes between the read and the publish") and it cannot reach this case: it fires its
+ * racer from a `putImmutable` proxy, i.e. after `nextGeneration` has already chosen. Both writers then pick
+ * the same generation number and the loser is stopped by the write-once collision on the object PUT — never
+ * by the fence.
  *
  * So the racer here fires from the REGISTRY READ, which is the only interleaving that reaches it.
  */
@@ -78,7 +79,7 @@ describe('a write that judged an absent segment does not publish over one that a
     expect(await collect(store.segment('dest').iterate())).toHaveLength(1000);
   });
 
-  it('load(): the same hole, on the path the guard was written for', async () => {
+  it('load(): the same hole, on the path the guard exists for', async () => {
     const backend = new MemoryStorage();
     const store = new CloudRoaring({ storage: backend, cache: { genTtlMs: 0 } });
 

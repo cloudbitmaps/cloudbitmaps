@@ -1,21 +1,23 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // Guards `scripts/leak-scan.cjs` — the script that decides whether a tree is safe to make public. Nothing else
-// in the gate protects it, which is exactly why two real defects survived in it until the Stage-3 tarball audit:
+// in the gate protects it, so the false positives and false negatives it must avoid are planted here, in both
+// directions:
 //
-//   1. FALSE POSITIVE — `const token = crypto.randomUUID();` was reported as a "hardcoded secret literal",
-//      because the callee happens to be 17 characters of otherwise-legal literal characters. It fired on five
-//      shipped driver bundles (the random-UUID OCC tokens) and would have failed the `--snapshot` gate outright.
-//      That is not cosmetic: a scanner that cries wolf gets bypassed with `--force`, and then it protects nothing.
-//   2. FALSE NEGATIVE — any env-var name with a SUFFIX slipped through, because the keyword had to sit
-//      *immediately* before the `=`/`:`. `DJANGO_SECRET_KEY=…` and `MY_API_TOKEN_VALUE=…` were both unflagged,
-//      and the `SECRET_KEY` convention is near-universal (Django, Flask, Rails). Verified against the pre-fix
-//      script rather than assumed — `AWS_SECRET_ACCESS_KEY=…` is NOT an example of this gap, since it has its own
-//      dedicated rule, and reaching for it as the example is the mistake to avoid here.
+//   1. FALSE POSITIVE — `const token = crypto.randomUUID();` is a call, not a "hardcoded secret literal",
+//      although the callee is 17 characters of otherwise-legal literal characters. Code that assigns a
+//      generated token this way is ordinary, and a scanner that flags it fails the `--snapshot` gate outright.
+//      That is not cosmetic: a scanner that cries wolf gets bypassed with `--force`, and then it protects
+//      nothing.
+//   2. FALSE NEGATIVE — an env-var name with a SUFFIX is a secret too. A rule that needs the keyword to sit
+//      *immediately* before the `=`/`:` leaves `DJANGO_SECRET_KEY=…` and `MY_API_TOKEN_VALUE=…` unflagged, and
+//      the `SECRET_KEY` convention is near-universal (Django, Flask, Rails). `AWS_SECRET_ACCESS_KEY=…` is NOT
+//      an example of this gap, since it has its own dedicated rule, and reaching for it as the example is the
+//      mistake to avoid here.
 //
 // Both directions are pinned here. A scanner is only as trustworthy as its worst false positive and its worst
 // false negative, so neither list is allowed to shrink.
@@ -82,14 +84,30 @@ describe('leak-scan', () => {
     // WHY THIS EXISTS. `--snapshot` is the mode run before a tree is published, and its whole point is that a
     // missing `.leak-needles` becomes FATAL rather than a warning — the file is gitignored, so a `git archive`
     // snapshot never carries it, and the employer-name check would be silently off in exactly the tree it
-    // exists to protect. That guarantee had no test at all; a comment two lines from here used to gesture at
-    // coverage that did not exist.
+    // exists to protect.
     //
     // `.leak-needles` is read from the REPO root, not from `--dir`, so the no-needles case can only be
     // asserted when this checkout has no such file. That is stated rather than worked around: a test that
     // quietly passes on a maintainer's machine and means something different on CI is worse than one that
     // says which half it checked.
-    const hasLocalNeedles = existsSync(join(ROOT, '.leak-needles'));
+    // The scan also reads the main worktree's file when this checkout is a linked worktree with none of its own.
+    const mainWorktreeNeedles = (): boolean => {
+      try {
+        const common = execFileSync(
+          'git',
+          ['rev-parse', '--path-format=absolute', '--git-common-dir'],
+          {
+            cwd: ROOT,
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore'],
+          },
+        ).trim();
+        return common.endsWith('.git') && existsSync(join(dirname(common), '.leak-needles'));
+      } catch {
+        return false;
+      }
+    };
+    const hasLocalNeedles = existsSync(join(ROOT, '.leak-needles')) || mainWorktreeNeedles();
 
     it('accepts a snapshot when needles ARE configured', () => {
       const { status, out } = scanWith('export const x = 1;\n', ['--snapshot'], {
@@ -107,10 +125,28 @@ describe('leak-scan', () => {
       expect(out).toMatch(/Refusing to certify/);
       expect(status).toBe(2);
     });
+
+    it("refuses a repo under the maintainer's own account, and passes the project's own", () => {
+      // The account is spliced in, so this file does not contain the path it tests for.
+      const needles = { LEAK_SCAN_EXTRA: 'acme-corp' };
+      const personal = scanWith(
+        `// https://github.com/${'sharvilk'}/any-repo\n`,
+        ['--snapshot'],
+        needles,
+      );
+      expect(personal.out).toMatch(/repo under the maintainer account/);
+      expect(personal.status).not.toBe(0);
+      const own = scanWith(
+        '// https://github.com/cloudbitmaps/cloudbitmaps\n',
+        ['--snapshot'],
+        needles,
+      );
+      expect(own.status).toBe(0);
+    });
   });
 
   describe('does NOT flag benign code (a false positive here gets the scanner bypassed)', () => {
-    // The exact five lines the real tarball audit tripped on.
+    // Call expressions: a value computed at run time, however much its callee looks like a literal.
     it.each([
       'const token = crypto.randomUUID();',
       'const token = randomUUID();',
@@ -130,15 +166,13 @@ describe('leak-scan', () => {
       expect(scan(`${line}\n`).status).toBe(0);
     });
 
-    // Defect 3, found by the ESM-only review: a value that READS A PROPERTY is not a literal. The S3
-    // backend's `...(options.credentials === undefined ? {} : { credentials: options.credentials })` was
-    // reported as a hardcoded secret and failed the RELEASE workflow's tarball scan — a step no other job
-    // runs, so `pnpm test` and 14 CI checks were green while releases were blocked. `credentials` is the AWS
-    // SDK's own option name, so this collision cannot be renamed away; the rule had to learn the difference.
-    // These four each go from flagged to clean purely because of the property-read lookahead — verified by
-    // removing it and watching them fail. (`config.applicationSecret;` and `fn(opts.apiKeyMaterial, …)` are
-    // NOT in this list: the older call-expression lookahead already excused them, so they would look like
-    // regression tests for this fix while pinning nothing.)
+    // A value that READS A PROPERTY is not a literal either. The S3 backend's
+    // `...(options.credentials === undefined ? {} : { credentials: options.credentials })` is that shape, and a
+    // rule that flags it fails the tarball scan that CI and the release workflow run on the built packages.
+    // `credentials` is the AWS SDK's own option name, so this collision cannot be renamed away; the rule has to
+    // know the difference. Each of these four is clean only because of the property-read lookahead: without it,
+    // each is flagged. A line some other lookahead already excuses would pin nothing about this one, so none is
+    // here.
     it.each([
       'const c = { credentials: options.credentials };',
       '...(options.credentials === undefined ? {} : { credentials: options.credentials }),',
@@ -155,7 +189,7 @@ describe('leak-scan', () => {
       },
     );
 
-    // Guards the widening that fixed defect 2 — it must not newly trip on long numbers.
+    // The suffix match that closes the false negative (2 above) must not trip on long numbers.
     it.each(['tokenExpiryNanos = 1730000000000000000', 'const tokenCount = 1234567890123456789;'])(
       'an all-numeric value: %s',
       (line) => {
@@ -164,11 +198,11 @@ describe('leak-scan', () => {
     );
   });
 
-  // THE EXEMPTION IS SCOPED TO JS/TS, and this block is why. The first version of the property-read fix
-  // applied everywhere, and an adversarial review found 24 real secret shapes it stopped catching: outside a
-  // JS-like language the closer set `[),;}\]]` is wrong, because `,` and `;` SEPARATE VALUES in shell,
-  // Makefiles, Dockerfiles, .env, .ini, .toml, SQL, CSV and connection strings, while `)` and `}` turn up in
-  // ordinary prose. Each line below was caught before that fix, missed after it, and is caught again now.
+  // THE EXEMPTION IS SCOPED TO JS/TS, and this block is why. Applied everywhere, the property-read exemption
+  // stops catching real secret shapes: outside a JS-like language the closer set `[),;}\]]` is wrong, because
+  // `,` and `;` SEPARATE VALUES in shell, Makefiles, Dockerfiles, .env, .ini, .toml, SQL, CSV and connection
+  // strings, while `)` and `}` turn up in ordinary prose. The rule for other file types, which has no exemption,
+  // catches each line below, and the JS/TS rule, which has it, misses each one, so each fails if the scoping goes.
   describe('still flags an unquoted dotted secret outside JS/TS (the scoping of the exemption)', () => {
     it.each([
       // `Password=…;` is the canonical spelling of an ADO.NET connection-string secret; `;` is mandatory.
@@ -209,8 +243,8 @@ describe('leak-scan', () => {
       ['a suffixed env-var name', 'DJANGO_SECRET_KEY=aB3xY9zQ1mN7pL2kR5tV8w'],
       ['another suffixed shape', 'MY_API_TOKEN_VALUE=aB3xY9zQ1mN7pL2kR5tV8w'],
       ['a passphrase', 'passphrase:"correct-horse-battery-staple-99"'],
-      // The boundary of defect 3's fix, from both sides. Narrowing a secret rule is the direction that
-      // blinds a scanner, so every shape the new lookahead could have swallowed is pinned here.
+      // The boundary of the property-read exemption, from both sides. Narrowing a secret rule is the direction
+      // that blinds a scanner, so every shape the lookahead could swallow is pinned here.
       // A DOT is required, so a bare word is still a secret even though it is identifier-shaped:
       ['a bare word ending a line', 'API_KEY=aB3xY9zQ1mN7pL2k'],
       ['a bare word before a closing brace', '{api_key: aB3xY9zQ1mN7pL2k}'],
@@ -228,8 +262,8 @@ describe('leak-scan', () => {
         'a quoted dotted literal in an object',
         'const o = { token: "eyJhbGciOiJIUzI1.eyJzdWIiOiIxMjM0.SflKxwRJ" };',
       ],
-      // The exemption must not reach INSIDE a string. With the quote optional it did: the lookahead ran from
-      // the first character of the literal, so a closing token WITHIN the quotes excused the whole value.
+      // The exemption must not reach INSIDE a string. With the quote optional it would: the lookahead would run
+      // from the first character of the literal, so a closing token WITHIN the quotes would excuse the whole value.
       ['a quoted literal containing a closing token', 'const token = "aaaaaaaa.bbbbbbbb};";'],
       [
         'a quoted JWT ending in a paren',
@@ -257,11 +291,130 @@ describe('leak-scan', () => {
     });
   });
 
+  describe('an AWS account id or an ARN', () => {
+    // A fixture cannot be told from a real account, so any standalone run of exactly 12 digits and any ARN is a
+    // failure, as the private needles CI configures already make them. Every sample is built here at run time, so
+    // this file holds none of what it tests for.
+    const twelve = '1234'.repeat(3);
+    const arn = (partition: string, rest: string): string => `${'arn'}:${partition}:${rest}`;
+
+    it.each([
+      [
+        'an access point host',
+        `const host = 'my-ap-${twelve}.s3-accesspoint.us-east-1.amazonaws.com';`,
+      ],
+      ['an account id in JSON', `{ "account": "${twelve}" }`],
+      ['an account id in prose', `the bucket belongs to ${twelve}.`],
+      ['a float printed with 12 fraction digits', `{ "medianRounds": 0.${twelve} }`],
+      ['an S3 ARN', `"Resource": "${arn('aws', 's3:::my-bitmaps/*')}"`],
+      ['an IAM ARN', `role ${arn('aws', `iam::${'0'.repeat(12)}:role/x`)}`],
+      ['a China-partition ARN', `${arn('aws-cn', 's3:::b')}`],
+      ['a GovCloud ARN', `${arn('aws-us-gov', 's3:::b')}`],
+    ])('flags %s', (_label, line) => {
+      const { status, out } = scan(`${line}\n`, 'sample.md');
+      expect(status).toBe(1);
+      expect(out).toMatch(/AWS account id|ARN literal/);
+    });
+
+    it.each([
+      ['eleven digits', `const n = ${twelve.slice(1)};`],
+      ['thirteen digits, a millisecond timestamp', `const at = ${twelve}5;`],
+      ['twelve digits inside a hex digest', `sha256 a${twelve}b${'f'.repeat(50)}`],
+      ['twelve digits after an underscore', `const id = run_${twelve};`],
+      ['nine fraction digits', `{ "medianRounds": 0.${twelve.slice(3)} }`],
+      ['the word ARN', 'grant the role by its ARN, named in words: the bucket, then the prefix'],
+      ['a URN', `urn:aws:${'not-an-arn'}`],
+    ])('leaves alone %s', (_label, line) => {
+      expect(scan(`${line}\n`, 'sample.md').status).toBe(0);
+    });
+  });
+
+  describe('in a linked worktree', () => {
+    // A linked worktree has no copy of a gitignored file. Without a fallback, a scan there runs with no needles at
+    // all while the same scan in the main checkout runs with every one, and a hit shows up only in CI. So the
+    // scan reads the main worktree's `.leak-needles` when its own checkout has none.
+    const git = (cwd: string, ...args: string[]): void => {
+      execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], {
+        cwd,
+        stdio: 'ignore',
+      });
+    };
+    const run = (cwd: string): { status: number; out: string } => {
+      try {
+        const out = execFileSync(process.execPath, [join(cwd, 'scripts', 'leak-scan.cjs')], {
+          cwd,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: { ...process.env, LEAK_SCAN_EXTRA: '' },
+        });
+        return { status: 0, out };
+      } catch (err) {
+        const e = err as { status?: number; stdout?: string; stderr?: string };
+        return { status: e.status ?? 1, out: `${e.stdout ?? ''}${e.stderr ?? ''}` };
+      }
+    };
+    /** A repository whose tracked file names `acme-corp`, and a linked worktree of it. */
+    const setUp = (): { main: string; worktree: string; cleanup: () => void } => {
+      const dir = mkdtempSync(join(tmpdir(), 'leak-scan-worktree-'));
+      const main = join(dir, 'main');
+      mkdirSync(join(main, 'scripts'), { recursive: true });
+      copyFileSync(SCRIPT, join(main, 'scripts', 'leak-scan.cjs'));
+      writeFileSync(join(main, '.gitignore'), '.leak-needles\n');
+      writeFileSync(join(main, 'notes.md'), 'built for acme-corp\n');
+      git(main, 'init', '-q');
+      git(main, 'add', '.');
+      git(main, 'commit', '-q', '-m', 'init');
+      const worktree = join(dir, 'wt');
+      git(main, 'worktree', 'add', '-q', worktree);
+      return { main, worktree, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+    };
+
+    it("reads the main worktree's needles when its own checkout has none", () => {
+      const { main, worktree, cleanup } = setUp();
+      try {
+        writeFileSync(join(main, '.leak-needles'), 'acme-corp\n');
+        const { status, out } = run(worktree);
+        expect(out).toMatch(
+          /1 extra needle\(s\) configured \(from the main worktree's \.leak-needles\)/,
+        );
+        expect(out).toMatch(/redacted/);
+        expect(out).not.toMatch(/acme-corp/);
+        expect(status).toBe(1);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it("prefers the worktree's own needles over the main worktree's", () => {
+      const { main, worktree, cleanup } = setUp();
+      try {
+        writeFileSync(join(main, '.leak-needles'), 'acme-corp\n');
+        writeFileSync(join(worktree, '.leak-needles'), 'other-corp\n');
+        const { status, out } = run(worktree);
+        expect(out).toMatch(/1 extra needle\(s\) configured\n/);
+        expect(status).toBe(0);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('says no needles are configured when neither checkout has any', () => {
+      const { worktree, cleanup } = setUp();
+      try {
+        const { status, out } = run(worktree);
+        expect(out).toMatch(/no extra needles configured/);
+        expect(status).toBe(0);
+      } finally {
+        cleanup();
+      }
+    });
+  });
+
   it('always DISCLOSES its needle state, configured or not', () => {
     // `.leak-needles` is gitignored on purpose (committing it would BE the leak), so the scanner has to say
     // which mode it is in rather than reporting a reassuring all-clear either way.
     //
-    // Asserting only the "no needles" warning made this test depend on whether a developer happens to have a
+    // Asserting only the "no needles" warning would make this test depend on whether a developer happens to have a
     // local `.leak-needles` — green in CI, red on the machine of anyone actually using the feature. The real
     // invariant is disclosure, and it holds in both states. The stronger guarantee — that `--snapshot`
     // REFUSES to certify when no needles are configured — is covered by the `--snapshot` describe above.

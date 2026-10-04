@@ -1,24 +1,30 @@
-import type { Storage } from '@google-cloud/storage';
-import { registryConformance, registryConcurrency } from '@/testing/conformance';
+import { PassThrough, Writable } from 'node:stream';
+import { Storage } from '@google-cloud/storage';
+import {
+  registryConformance,
+  registryConcurrency,
+  registryDeleteConformance,
+} from '@/testing/conformance';
 import { GcsRegistryDriver } from '@/gcs/registry';
+import { GcsStorage } from '@/gcs/backend';
+import { registryObjectKey } from '@/drivers/_shared/object-registry-keys';
 import { MAX_ROW_BYTES } from '@/drivers/_shared/object-registry';
 import { IntegrityError, ValidationError, WriteConflictError } from '@/core/errors';
 
 /**
- * A faithful in-memory fake of the slice of GCS the registry uses: `getMetadata`, a generation-pinned
- * `download`, a **conditional** `save`, and a paginated `getFiles`.
+ * A faithful in-memory fake of the slice of GCS the registry uses: a single-GET `createReadStream` that
+ * announces its response headers (`x-goog-generation`, `content-length`) before any data, a **conditional** upload through `createWriteStream`, and a paginated `getFiles`.
  *
  * Two modelling decisions carry the weight here, both copied from the backend rather than invented:
  *
- * 1. **A precondition only binds on the simple upload path.** `save()` opens a resumable session unless
+ * 1. **A precondition only binds on the simple upload path.** An upload opens a resumable session unless
  *    `resumable: false` is passed, and fake-gcs-server 1.52.2 — the emulator the integration lane runs
  *    against, pinned in `docker-compose.yml` for exactly this property — does not enforce
  *    `ifGenerationMatch` on that path. A driver that omits the flag therefore has no compare-and-swap at
  *    all while every sequential test stays green. Modelling it here makes that one line testable in the
  *    fast lane instead of only in Docker.
- * 2. **The bucket is not versioned**, so an overwrite retires the superseded generation immediately and a
- *    download pinned to it answers 404. That is the mid-read race `ObjectVersionRaced` exists for; a fake
- *    that kept old generations around could never reproduce it.
+ * 2. **A read is one GET**, so the bytes and the `x-goog-generation` header that fences the next write come
+ *    from the same observation of the object.
  */
 function gcsError(status: number): Error {
   const err = new Error(`gcs ${status}`) as Error & { code: number };
@@ -34,14 +40,26 @@ interface FakeObject {
 class FakeGcs {
   readonly objects = new Map<string, FakeObject>();
   private seq = 0;
-  /** Counts `getMetadata` + `download` calls, to pin the round-trip cost of a read. */
+  /** Counts read requests, to pin the round-trip cost of a read. */
   reads = 0;
+  /** Every delete received, with the generation it was conditioned on. */
+  readonly deletes: Array<{ name: string; ifGenerationMatch?: number }> = [];
+  /** Run just before the next delete is applied: another writer landing between the delete's read and it. */
+  beforeDelete: (() => Promise<void>) | undefined;
+
+  /** Put `text` at `name` as a new generation, as another writer left it. */
+  plant(name: string, text: string): void {
+    this.objects.set(name, {
+      bytes: new TextEncoder().encode(text),
+      generation: ++this.seq + 1_000,
+    });
+  }
 
   constructor(private readonly pageSize = Infinity) {}
 
   bucket(): unknown {
     return {
-      file: (name: string, opts?: { generation?: string }) => this.file(name, opts?.generation),
+      file: (name: string) => this.file(name),
       getFiles: async (q: {
         prefix?: string;
         maxResults?: number;
@@ -59,34 +77,74 @@ class FakeGcs {
     };
   }
 
-  private file(name: string, pinned?: string): unknown {
+  /** The status a read answers with; a test sets it to model a backend that does not answer a plain GET with 200. */
+  status = 200;
+
+  /** Response headers a plain GET carries; a test overrides this to model a hostile or non-conforming backend. */
+  headers = (obj: FakeObject): Record<string, string> => ({
+    'x-goog-generation': String(obj.generation),
+    'content-length': String(obj.bytes.length),
+  });
+
+  private file(name: string): unknown {
     return {
-      getMetadata: async (): Promise<unknown[]> => {
-        this.reads++;
-        const obj = this.objects.get(name);
-        if (obj === undefined) throw gcsError(404);
-        return [{ generation: String(obj.generation), size: String(obj.bytes.length) }];
-      },
-      download: async (): Promise<unknown[]> => {
-        this.reads++;
-        const obj = this.objects.get(name);
-        if (obj === undefined) throw gcsError(404);
-        // No Object Versioning: a generation that is no longer live is simply gone.
-        if (pinned !== undefined && pinned !== String(obj.generation)) throw gcsError(404);
-        return [Buffer.from(obj.bytes)];
-      },
-      save: async (
-        body: Buffer,
-        opts?: { resumable?: boolean; preconditionOpts?: { ifGenerationMatch?: number } },
-      ): Promise<void> => {
+      delete: async (opts?: { ifGenerationMatch?: number }): Promise<void> => {
+        this.deletes.push({ name, ifGenerationMatch: opts?.ifGenerationMatch });
+        const hook = this.beforeDelete;
+        this.beforeDelete = undefined;
+        if (hook !== undefined) await hook();
         const cur = this.objects.get(name);
-        const expect = opts?.preconditionOpts?.ifGenerationMatch;
-        // The emulator enforces the precondition ONLY on the simple (non-resumable) path.
-        if (opts?.resumable === false && expect !== undefined) {
-          if (expect === 0 && cur !== undefined) throw gcsError(412);
-          if (expect !== 0 && (cur === undefined || cur.generation !== expect)) throw gcsError(412);
+        if (cur === undefined) throw gcsError(404);
+        // GCS applies `ifGenerationMatch` on a delete: a generation that moved on is a 412.
+        if (opts?.ifGenerationMatch !== undefined && cur.generation !== opts.ifGenerationMatch) {
+          throw gcsError(412);
         }
-        this.objects.set(name, { bytes: Uint8Array.from(body), generation: ++this.seq + 1_000 });
+        this.objects.delete(name);
+      },
+      interceptors: [],
+      createReadStream: (): PassThrough => {
+        const out = new PassThrough();
+        this.reads++;
+        const obj = this.objects.get(name);
+        queueMicrotask(() => {
+          if (obj === undefined) return void out.destroy(gcsError(404));
+          out.emit('response', {
+            statusCode: this.status,
+            headers: this.headers(obj),
+          });
+          out.end(Buffer.from(obj.bytes));
+        });
+        return out;
+      },
+      createWriteStream: (opts?: {
+        resumable?: boolean;
+        preconditionOpts?: { ifGenerationMatch?: number };
+      }): Writable => {
+        const chunks: Buffer[] = [];
+        return new Writable({
+          write(chunk: Uint8Array, _encoding, done) {
+            chunks.push(Buffer.from(chunk));
+            done();
+          },
+          // The upload lands when the stream ends, as the SDK's does: check and store in one step, so two
+          // concurrent writers race exactly where they do against the service.
+          final: (done) => {
+            const cur = this.objects.get(name);
+            const expect = opts?.preconditionOpts?.ifGenerationMatch;
+            // The emulator enforces the precondition ONLY on the simple (non-resumable) path.
+            if (opts?.resumable === false && expect !== undefined) {
+              if (expect === 0 && cur !== undefined) return done(gcsError(412));
+              if (expect !== 0 && (cur === undefined || cur.generation !== expect)) {
+                return done(gcsError(412));
+              }
+            }
+            this.objects.set(name, {
+              bytes: Uint8Array.from(Buffer.concat(chunks)),
+              generation: ++this.seq + 1_000,
+            });
+            done();
+          },
+        });
       },
     };
   }
@@ -105,12 +163,17 @@ function soleObject(storage: FakeGcs): { key: string; object: FakeObject } {
   return { key, object: storage.objects.get(key) as FakeObject };
 }
 
-const driverOver = (storage: FakeGcs, prefix = 'cloudroaring'): GcsRegistryDriver =>
+const driverOver = (
+  storage: FakeGcs,
+  prefix = 'cloudbitmaps',
+  conditionalDelete?: boolean,
+): GcsRegistryDriver =>
   new GcsRegistryDriver({
     storage: storage as unknown as Storage,
     bucket: 'b',
     prefix,
     now: ticking(),
+    ...(conditionalDelete === undefined ? {} : { conditionalDelete }),
   });
 
 // The GCS registry must pass the SAME contract as memory / LocalFs / S3 / Azure, in the fast lane.
@@ -120,6 +183,87 @@ registryConformance('GcsRegistryDriver (fake GCS)', () => driverOver(new FakeGcs
 registryConcurrency('GcsRegistryDriver (fake GCS)', () => {
   const storage = new FakeGcs();
   return [driverOver(storage), driverOver(storage)];
+});
+
+// What a delete leaves behind: a tombstone by default, a removed row when `conditionalDelete` is `true`.
+for (const conditionalDelete of [undefined, false, true] as const) {
+  registryDeleteConformance(
+    `GcsRegistryDriver (fake GCS, conditionalDelete: ${String(conditionalDelete)})`,
+    () => {
+      const storage = new FakeGcs();
+      const driver = new GcsRegistryDriver({
+        storage: storage as unknown as Storage,
+        bucket: 'b',
+        prefix: 'cloudbitmaps',
+        now: ticking(),
+        ...(conditionalDelete === undefined ? {} : { conditionalDelete }),
+      });
+      return {
+        driver,
+        stored: async (r) => storage.objects.has(registryObjectKey('cloudbitmaps', r)),
+        plantRow: async (r, text) => storage.plant(registryObjectKey('cloudbitmaps', r), text),
+      };
+    },
+  );
+}
+
+describe('GcsRegistryDriver — whether a delete removes the row', () => {
+  const ref = { segment: 's:v1' };
+  const caps = (storage: Storage, conditionalDelete?: boolean) =>
+    new GcsRegistryDriver({
+      storage,
+      bucket: 'b',
+      ...(conditionalDelete === undefined ? {} : { conditionalDelete }),
+    }).capabilities().conditionalDelete;
+  const publicGcs = (): Storage => new Storage({ projectId: 'p' });
+  const emulator = (): Storage =>
+    new Storage({ projectId: 'p', apiEndpoint: 'http://127.0.0.1:4443' });
+
+  it('is off by default, on the public endpoint and on a custom one alike', () => {
+    expect(caps(publicGcs())).toBe(false);
+    expect(caps(emulator())).toBe(false);
+    expect(
+      new GcsStorage({ bucket: 'b', projectId: 'p' }).registry.capabilities().conditionalDelete,
+    ).toBe(false);
+  });
+
+  it("is the caller's to set either way, and GcsStorage passes it through", () => {
+    expect(caps(emulator(), true)).toBe(true);
+    expect(caps(publicGcs(), true)).toBe(true);
+    expect(caps(publicGcs(), false)).toBe(false);
+    const built = new GcsStorage({ bucket: 'b', projectId: 'p', apiEndpoint: 'http://e:4443' });
+    expect(built.registry.capabilities().conditionalDelete).toBe(false);
+    const optedIn = new GcsStorage({
+      bucket: 'b',
+      projectId: 'p',
+      apiEndpoint: 'http://e:4443',
+      conditionalDelete: true,
+    });
+    expect(optedIn.registry.capabilities().conditionalDelete).toBe(true);
+    expect(() => caps(publicGcs(), 'yes' as never)).toThrow(ValidationError);
+  });
+
+  it('deletes with ifGenerationMatch set to the generation it read', async () => {
+    const storage = new FakeGcs();
+    const d = driverOver(storage, 'cloudbitmaps', true);
+    const { token } = await d.create(ref, { currentGen: 0 });
+    const { key, object } = soleObject(storage);
+    await d.delete(ref, token);
+    expect(storage.deletes).toEqual([{ name: key, ifGenerationMatch: object.generation }]);
+    expect(storage.objects.size).toBe(0);
+  });
+
+  it('a 412 on the delete is a lost race: WriteConflictError, and the written row stays', async () => {
+    const storage = new FakeGcs();
+    const [a, b] = [driverOver(storage, 'cloudbitmaps', true), driverOver(storage)];
+    const { token } = await a.create(ref, { currentGen: 0 });
+    let swapped = '';
+    storage.beforeDelete = async () => {
+      swapped = (await b.compareAndSwap(ref, token, { currentGen: 1 })).token;
+    };
+    await expect(a.delete(ref, token)).rejects.toBeInstanceOf(WriteConflictError);
+    expect(await a.get(ref)).toMatchObject({ currentGen: 1, token: swapped });
+  });
 });
 
 describe('GcsRegistryDriver — construction + GCS specifics', () => {
@@ -134,26 +278,27 @@ describe('GcsRegistryDriver — construction + GCS specifics', () => {
     }
   });
 
-  // The cost model prices a GCS pointer read as two requests (`requestsPerSizedRead: 2`): the metadata carries the
-  // generation fence and the size, then a pinned download. Held here, so the model moves if the driver does.
-  it('reads a row in two requests: the metadata, then the pinned download', async () => {
+  // The cost model prices a GCS pointer read as one request (`requestsPerPointerRead: 1`): the single GET's headers
+  // carry the generation fence and the length. Held here, so the model moves if the driver does.
+  it('reads a row in one request', async () => {
     const storage = new FakeGcs();
     const d = driverOver(storage);
     await d.create(ref, { currentGen: 0 });
     const before = storage.reads;
     await d.get(ref);
-    expect(storage.reads - before).toBe(2);
+    expect(storage.reads - before).toBe(1);
   });
 
   it('advertises strongRead', () => {
     const storage = new FakeGcs() as unknown as Storage;
     expect(new GcsRegistryDriver({ storage, bucket: 'b' }).capabilities()).toEqual({
       strongRead: true,
+      conditionalDelete: false,
     });
   });
 
-  // The regression test for the blocker: without `resumable: false` the fake (like the emulator) ignores
-  // `ifGenerationMatch` entirely, so both writers "win" and one silently overwrites the other.
+  // Without `resumable: false` the fake (like the emulator) ignores `ifGenerationMatch` entirely, so both
+  // writers "win" and one silently overwrites the other.
   it('writes on the simple upload path, so the precondition actually fences', async () => {
     const storage = new FakeGcs();
     const [a, b] = [driverOver(storage), driverOver(storage)];
@@ -177,46 +322,25 @@ describe('GcsRegistryDriver — construction + GCS specifics', () => {
     expect(soleObject(storage).object.generation).toBeGreaterThan(1_000);
   });
 
-  // The failure this prevents: a live row reported as absent because the generation we pinned was retired
-  // by a concurrent writer. `get` would answer null, `delete` would report a false success, and `list`
-  // would quietly drop the row from every sweep that drives off it.
-  it('re-reads instead of reporting absence when a write lands mid-read', async () => {
+  // A write that lands while a read is in flight must not tear the pair: the bytes and the fence come from one
+  // response, so the read observes the older row with its own generation, and the next read the newer one.
+  it('returns a row with the generation of the same response', async () => {
     const storage = new FakeGcs();
     const d = driverOver(storage);
-    await d.create(ref, { currentGen: 7 });
-
-    // Retire the pinned generation between `getMetadata` and `download`, exactly once.
-    const realBucket = storage.bucket.bind(storage);
-    let armed = true;
-    vi.spyOn(storage, 'bucket').mockImplementation(() => {
-      const real = realBucket() as {
-        file: (n: string, o?: { generation?: string }) => { download: () => Promise<unknown[]> };
-      };
+    const { token } = await d.create(ref, { currentGen: 7 });
+    const { key } = soleObject(storage);
+    storage.headers = (obj) => {
+      // Overwrite right as the response is announced: this response is still the older object.
+      const stale = { ...obj };
+      storage.objects.set(key, { ...obj, generation: obj.generation + 1 });
       return {
-        ...(real as object),
-        file: (n: string, o?: { generation?: string }) => {
-          const handle = real.file(n, o);
-          if (o?.generation === undefined) return handle;
-          return {
-            ...handle,
-            download: async (): Promise<unknown[]> => {
-              if (armed) {
-                armed = false;
-                const cur = storage.objects.get(n) as FakeObject;
-                storage.objects.set(n, { ...cur, generation: cur.generation + 1 });
-              }
-              return handle.download();
-            },
-          };
-        },
+        'x-goog-generation': String(stale.generation),
+        'content-length': String(obj.bytes.length),
       };
-    });
-
+    };
     const got = await d.get(ref);
-    expect(armed).toBe(false); // the race really did fire
-    expect(got).not.toBeNull();
     expect(got!.currentGen).toBe(7);
-    vi.restoreAllMocks();
+    expect(got!.token).toBe(token);
   });
 
   it('threads the getFiles page token across pages', async () => {
@@ -228,7 +352,7 @@ describe('GcsRegistryDriver — construction + GCS specifics', () => {
     expect(seen.sort()).toEqual(['s0', 's1', 's2', 's3', 's4', 's5', 's6']);
   });
 
-  it('rejects an oversized object on its advertised size, before downloading it', async () => {
+  it('rejects an oversized object on its advertised length, before buffering it', async () => {
     const storage = new FakeGcs();
     const d = driverOver(storage);
     await d.create(ref, { currentGen: 0 });
@@ -238,28 +362,68 @@ describe('GcsRegistryDriver — construction + GCS specifics', () => {
     });
     const before = storage.reads;
     await expect(d.get(ref)).rejects.toBeInstanceOf(IntegrityError);
-    // One round trip only: the metadata call. The body was never fetched.
     expect(storage.reads - before).toBe(1);
   });
 
-  it('refuses a version fence that is not a GCS generation', async () => {
+  it('rejects an oversized body even when the response understates its length', async () => {
     const storage = new FakeGcs();
     const d = driverOver(storage);
     await d.create(ref, { currentGen: 0 });
-    const { object: cur } = soleObject(storage);
-    // A backend that answered with an ETag-shaped fence would silently disable the precondition
-    // (`Number('"etag-1"')` is NaN, and `ifGenerationMatch: NaN` is not a precondition GCS honours).
-    vi.spyOn(storage, 'bucket').mockImplementation(
-      () =>
-        ({
-          file: () => ({
-            getMetadata: async () => [{ generation: '"etag-1"', size: String(cur.bytes.length) }],
-            download: async () => [Buffer.from(cur.bytes)],
-            save: async () => undefined,
-          }),
-        }) as never,
+    storage.objects.set(soleObject(storage).key, {
+      bytes: new Uint8Array(MAX_ROW_BYTES + 1),
+      generation: 2_000,
+    });
+    storage.headers = (obj) => ({
+      'x-goog-generation': String(obj.generation),
+      'content-length': '10',
+    });
+    await expect(d.get(ref)).rejects.toBeInstanceOf(IntegrityError);
+    storage.headers = (obj) => ({ 'x-goog-generation': String(obj.generation) }); // no length at all
+    await expect(d.get(ref)).rejects.toBeInstanceOf(IntegrityError);
+  });
+
+  it('refuses a response with a missing or malformed x-goog-generation', async () => {
+    const storage = new FakeGcs();
+    const d = driverOver(storage);
+    await d.create(ref, { currentGen: 0 });
+    for (const generation of [
+      undefined,
+      '',
+      '0',
+      '-5',
+      '1.5',
+      '"etag-1"',
+      '99999999999999999999',
+    ]) {
+      storage.headers = (obj) => ({
+        ...(generation === undefined ? {} : { 'x-goog-generation': generation }),
+        'content-length': String(obj.bytes.length),
+      });
+      await expect(d.get(ref)).rejects.toBeInstanceOf(IntegrityError);
+    }
+  });
+
+  it('refuses a pointer read that is not a 200', async () => {
+    const storage = new FakeGcs();
+    const d = driverOver(storage);
+    await d.create(ref, { currentGen: 0 });
+    for (const status of [204, 206]) {
+      storage.status = status;
+      await expect(d.get(ref)).rejects.toBeInstanceOf(IntegrityError);
+    }
+  });
+
+  it('reports a missing object as absent', async () => {
+    expect(await driverOver(new FakeGcs()).get(ref)).toBeNull();
+  });
+
+  it('refuses a version fence that is not a GCS generation on write', async () => {
+    const storage = new FakeGcs();
+    const d = driverOver(storage);
+    await d.create(ref, { currentGen: 0 });
+    // A token that is not a generation would silently disable the precondition (`ifGenerationMatch: NaN`).
+    await expect(d.compareAndSwap(ref, '"etag-1"', { currentGen: 1 })).rejects.toBeInstanceOf(
+      Error,
     );
-    await expect(d.compareAndSwap(ref, '0', { currentGen: 1 })).rejects.toBeInstanceOf(Error);
-    vi.restoreAllMocks();
   });
 });

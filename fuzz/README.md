@@ -6,23 +6,30 @@ deterministically ([`tests/core/crbm/crafted.test.ts`](../tests/core/crbm/crafte
 **coverage-guided** campaign ([jazzer.js](https://github.com/CodeIntelligenceTesting/jazzer.js) → libFuzzer)
 that evolves inputs toward unreached branches and persists a growing corpus.
 
-## Why three targets (the CRC wall)
+## Why four targets (the CRC wall)
 
-`CrbmReader.open()` gates the index parser and the payload deserialize behind three CRC32C checks (footer,
-index, per-chunk payload) — each *before* the code it protects. A mutational fuzzer cannot satisfy a CRC32C, so
-a single "read a `.crbm`" target would only ever exercise `open()`'s pre-CRC validation. So we fuzz the two deep
-surfaces **directly**, ungated, and keep a third target for the validation front:
+`CrbmReader.open()` gates the index parser, the extension block and the payload deserialize behind
+CRC32C checks (footer, index, extension block, per-chunk payload) — each *before* the code it protects. A
+mutational fuzzer cannot satisfy a CRC32C, so a single "read a `.crbm`" target would only ever exercise `open()`'s
+pre-CRC validation. So we fuzz the three deep surfaces **directly**, ungated, and keep a fourth target for the
+validation front:
 
 | Target | Entry point | Coverage | Runs |
 | --- | --- | --- | --- |
-| `targets/safe-deserialize.mjs` | `SafeBitmap.safeDeserialize` → **native** CRoaring portable deserializer | black-box (native C++ isn't instrumentable from JS) | `pnpm fuzz:deser` |
+| `targets/safe-deserialize.mjs` | the codec's safe deserialize → its structural check → **native** CRoaring portable deserializer | **coverage-guided** over the structural check; black-box beyond it (native C++ isn't instrumentable from JS) | `pnpm fuzz:deser` |
 | `targets/crbm-index.mjs` | `parseIndex` **directly** on raw index bytes | **coverage-guided** (pure, branch-dense TS) | `pnpm fuzz:index` |
-| `targets/crbm-reader.mjs` | `CrbmReader.open` validation front (+ full chain on valid seeds) | **coverage-guided** | `pnpm fuzz:crbm` |
+| `targets/crbm-ext.mjs` | `parseExtension` **directly** on the raw sections of an extension block: the section walk, then the metadata record (UTF-8, JSON, the metadata rules, canonical form), read as cleartext and again as sealed under a key whose every open fails | **coverage-guided** (pure TS) | `pnpm fuzz:ext` |
+| `targets/crbm-reader.mjs` | `CrbmReader.open` validation front (+ full chain on valid seeds, with and without an extension block), opened at the default tail, a footer-sized tail, a footer-sized tail with every range read a byte short, and tails at and a byte either side of where the input's footer puts the index, the block's trailer and the block | **coverage-guided** | `pnpm fuzz:crbm` |
 
-The **contract** all three assert: arbitrary bytes either succeed self-consistently or throw a typed
-`CloudRoaringError` — never a `RangeError`/`TypeError`, native crash, unbounded allocation, or hang. This is
-memory-safety/liveness, **not** semantic correctness (a wrong-but-well-formed decode is the `Set`-oracle
-property tests' job). An escape is a finding; libFuzzer writes the reproducer under `fuzz/crashes/`.
+The **contract** all four assert: arbitrary bytes either succeed self-consistently or throw a typed
+`CloudRoaringError` — never a `RangeError`/`TypeError`, native crash, unbounded allocation, or hang. The two
+targets that decode a bitmap also hold what they accept to `assertConsistentDecode` (in
+`packages/roaring/src/testing/fuzz-codec.ts`): it iterates strictly ascending, and its `size` and `has` agree with
+what it iterates. That catches a structurally broken decode — containers or values out of order, a cardinality
+that disagrees with the bits — which is well-behaved memory until something trusts it, so a memory-safety
+contract alone would pass it. It is still **not** semantic correctness (a well-formed decode of the wrong ids is
+the `Set`-oracle property tests' job). An escape is a finding; libFuzzer writes the reproducer under
+`fuzz/crashes/`.
 
 ## Run
 
@@ -30,6 +37,7 @@ property tests' job). An escape is a finding; libFuzzer writes the reproducer un
 pnpm fuzz:install           # once per clone: installs jazzer into fuzz/ (kept out of the root dependency graph)
 pnpm fuzz:deser             # 60s default; FUZZ_SECONDS=600 pnpm fuzz:deser for longer
 pnpm fuzz:index
+pnpm fuzz:ext
 pnpm fuzz:crbm
 pnpm fuzz:seed              # (re)generate the seed corpus only
 ```
@@ -41,7 +49,8 @@ narrow it to something that matches nothing and coverage guidance silently degra
 
 ## Fuzz-only internals build
 
-The targets need entry points that aren't public API (notably `parseIndex`). `src/testing/fuzz-support.ts`
+The targets need entry points that aren't public API (notably `parseIndex` and `parseExtension`), and the seed
+generator needs the `.crbm` writer for objects with an extension block. `packages/core/src/testing/fuzz-core.ts`
 re-exports them and is built by `scripts/build.mjs` (esbuild) to **`fuzz/build/`** (git-ignored, never under `dist/`,
 never in the package `files`) — so the fuzzer reaches the hand-written parser directly while the published API
 stays minimal. Targets fuzz this build; the regression test (below) replays against `src` via vitest — fidelity
@@ -51,15 +60,23 @@ rests on `dist ≈ src` (esbuild, no minify, same native addon).
 
 `fuzz/corpus/` (seed + evolved inputs), `fuzz/crashes/` (findings), and `fuzz/build/` are git-ignored. Seeds are
 generated deterministically by `fuzz/seed-corpus.cjs` (valid bitmaps/`.crbm` files/index regions spanning every
-container type, plus truncations/flips), so nothing binary lives in the repo. The nightly workflow caches
-`fuzz/corpus/` so coverage accretes across runs.
+container type, objects with an extension block and its sections spanning the metadata shapes up to the 1 KiB cap, plus
+truncations/flips), so no seed is committed: the only inputs in the repo are the
+reproducers below. The nightly workflow caches `fuzz/corpus/` so coverage accretes across runs.
 
 ## When a crash is found — the regression loop
 
 1. Minimize it: `jazzer <target> -- -minimize_crash=1 <fuzz/crashes/crash-…>`.
-2. Copy the reproducer into `tests/core/crbm/fuzz-corpus/{safe-deserialize,crbm-index,crbm-reader}/`.
+2. Copy the reproducer into `tests/core/crbm/fuzz-corpus/{safe-deserialize,crbm-index,crbm-ext,crbm-reader}/`. A
+   reproducer written by hand, for a hostile shape the campaign has not reached, goes in the same place.
 3. Fix the bug. [`tests/core/crbm/fuzz-corpus.test.ts`](../tests/core/crbm/fuzz-corpus.test.ts) replays every
    committed reproducer on **every PR** (the campaign itself is nightly-only), so the fix stays locked in.
+
+The campaign itself never runs in the per-PR suite, so
+[`tests/scripts/fuzz-wiring.test.ts`](../tests/scripts/fuzz-wiring.test.ts) holds its wiring to itself there: each
+`fuzz:*` script runs a target that exists over the corpus it seeds, each target has a script and a nightly matrix
+entry, and every name a target imports from the fuzz build is one its source exports. The seed generator refuses to
+write an extension-block seed the parser does not read back.
 
 CI: [`.github/workflows/fuzz-nightly.yml`](../.github/workflows/fuzz-nightly.yml) — nightly + on-demand;
 uploads any crash reproducers as an artifact and fails the job.

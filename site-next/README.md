@@ -75,8 +75,8 @@ The gates `site/` has, on this tree too:
   browser parses it and marks what it read, and a number on the page that none of them read fails, since the footer
   says every figure on this page is gated in CI; what would show text no check reads, or hide text one did, is
   refused, and each script the page runs is pinned by its hash, so a changed one is read again before it passes. It
-  refuses the July run's figures, run id and date in every file here, and holds the benchmarks page's comparison
-  panel row by row.
+  holds a rate, a share of the Redis line and a cold intersect's request count to their one source on every page
+  here, and the benchmarks page's comparison panel row by row.
 - `site-replay.cjs` checks both trees' `demo.html`. `pnpm bench:check` holds both benchmarks pages' generated
   regions and the homepage's crossover, both drawings of it; `pnpm bench:scale:check` holds both at-scale tables
   and the homepage's strip, grid and memory panel.
@@ -105,7 +105,7 @@ they work locally.
 `git mv site-next site`, in its own pull request, and in the same change:
 
 - in `scripts/site-figures.cjs`, give `site` what `site-next` has now in each per-tree map (`HOME_HAS_SPEC_STRIP`,
-  `DRIVER_STATEMENT_FLOOR`, `STATES_THE_JULY_RUN`), then drop the `site-next` entries; the homepage's ledger needs
+  `DRIVER_STATEMENT_FLOOR`, `HOLDS_EVERY_PAGE`, `HELD_ROW_BY_ROW`), then drop the `site-next` entries; the homepage's ledger needs
   no entry, since it runs on whichever homepage carries the display-tier hero or says its figures are gated;
 - point the homepage's generated regions at `site/index.html`, in `bench/run.cjs` and in `bench/scale.cjs`'s
   `HOME_PAGE`;

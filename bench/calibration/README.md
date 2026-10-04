@@ -13,8 +13,8 @@ by its run id:
 - **`<runId>.md`, the report.** What the run lets the project publish, each figure labelled measured, derived or
   expected, with what it means and what the run does not establish.
 
-The one file here that predates those rules is `2026-09-23-94416.json`. The harness at commit `e42c27f` wrote it as
-`bench/calibrate-aws-results.json`, and it was moved here unchanged, so its `note` still describes regenerating it.
+`2026-09-23-94416.json` is committed exactly as the harness at commit `e42c27f` wrote it, under another path, so its
+`note` says to regenerate it; no evidence file here is ever regenerated.
 
 [`tests/docs/calibration-reports.test.ts`](../../tests/docs/calibration-reports.test.ts) holds each report to its
 evidence in both directions: every headline figure must appear, and no dollar amount, percentage, duration, byte
@@ -30,9 +30,8 @@ take a run's numbers from one derivation, and hold them to it with one matcher.
 | report · evidence | when, and from where | what it established |
 |---|---|---|
 | [`2026-09-23-94416.md`](2026-09-23-94416.md) · [`2026-09-23-94416.json`](2026-09-23-94416.json) | 2026-09-23 (UTC), `us-east-1`, from a laptop outside the region | The single-bucket bill for a cold intersect and a load, pointer included, and chunk-skipping on real S3. Not latency or throughput: the client measured its own connection. |
-
-The July 2026 run predates this directory. Its harness and raw file were removed with the tier they metered, and
-[`docs/benchmarks.md`](../../docs/benchmarks.md#real-cloud-calibration--aws) keeps its figures as the record.
+| [`2026-10-03-e13c7.md`](2026-10-03-e13c7.md) · [`2026-10-03-e13c7.json`](2026-10-03-e13c7.json) | 2026-10-03 (UTC), `us-east-1`, from AWS CloudShell in `us-east-1`, against the published `0.12.0` packages | The first complete in-region run: cold intersect latency, load throughput, the sweep, warm intersects, point reads and `andNot`, with the bill. Every stage exact, every request count as expected, $0.0376350 in all. |
+| [`2026-10-04-73668.md`](2026-10-04-73668.md) · [`2026-10-04-73668.json`](2026-10-04-73668.json) | 2026-10-04 (UTC), `us-east-1`, from AWS CloudShell in `us-east-1`, against the published `0.13.0` packages | The same seven stages on the engine whose combine window widens from 8 to 32, set against `0.12.0`'s run: the same requests and bill, in fewer rounds. Every stage exact, $0.0376350 in all. Its rounds sit a fifth to a half above the rounds model's, which assumes no socket limit; the run did not vary its client's 50 sockets, so it does not say why. |
 
 ## Adding a run
 
@@ -41,9 +40,13 @@ The July 2026 run predates this directory. Its harness and raw file were removed
    A run from CloudShell leaves the file in the shell's home directory; it belongs here under the same name. A
    `.partial.json` is a run that did not finish, or one whose name was taken, and is not evidence.
 2. **Check the file for anything identifying before committing it**: no account id, no ARN, no bucket URI. The
-   harness writes none. CI's leak scan looks for all three; `pnpm leak-scan` looks for them locally only with the
-   same extra patterns set in `LEAK_SCAN_EXTRA`, and reads only files git tracks, so stage the file first.
+   harness writes none. CI's leak scan looks for all three. `pnpm leak-scan` looks for an account id (any standalone
+   run of 12 digits) and an ARN on its own, and for the rest only with the same extra patterns, in
+   `.leak-needles` or `LEAK_SCAN_EXTRA`; it reads only files git tracks, so stage the file first.
 3. **Write its report.** The existing one is the template. The gate lists the headline figures a report must state
-   and any figure in it the evidence cannot account for, so run it until it passes.
+   and any figure in it the evidence cannot account for, so run it until it passes. A run that discarded a sample
+   after a transient fault is evidence, its latency and request-count figures taken from the samples each stage kept,
+   and its report states how many it discarded (`1 discarded sample`, `3 discarded samples`), a count the gate holds to
+   the evidence. Each stage's `discarded` says which samples they were.
 4. **Give it a row above.** If it is the latest run, move the benchmarks page's section onto it. The site's gate
    then requires the site to state the new run's figures.

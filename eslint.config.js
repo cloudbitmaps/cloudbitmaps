@@ -2,8 +2,8 @@ import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  // Build output now lives per-package (`packages/*/dist`) after the workspace split, plus the
-  // git-ignored fuzz bundle — none of it is source, so keep the linter off it.
+  // Build output lives per-package (`packages/*/dist`), plus the git-ignored fuzz bundle — none of it is
+  // source, so keep the linter off it.
   {
     ignores: [
       'dist',
@@ -55,6 +55,58 @@ export default tseslint.config(
           name: 'queueMicrotask',
           message: 'core/ must stay free of ambient scheduling.',
         },
+        // I/O and randomness that need no import: both are globals in Node and in a V8 isolate alike, so the
+        // node-builtin import ban below cannot see them. A local binding named `crypto` (the `CrbmCrypto` the
+        // writers take) is not the global, and is untouched.
+        {
+          name: 'fetch',
+          message: 'core/ does no I/O of its own — it reaches storage through a driver port.',
+        },
+        {
+          name: 'crypto',
+          message:
+            'core/ must take randomness via an injected Rng, and encryption via an injected Aead.',
+        },
+        // The global object under each of its names. `globalThis.fetch(...)` reaches every global above without
+        // naming it, so naming the object is the same hole: `globalThis` everywhere, `self` in a worker or an
+        // isolate, `window` in a browser, `global` in Node.
+        {
+          name: 'globalThis',
+          message:
+            'core/ reaches no ambient global through the global object — take time, randomness and I/O through injected seams and driver ports.',
+        },
+        {
+          name: 'self',
+          message:
+            'core/ reaches no ambient global through the global object — take time, randomness and I/O through injected seams and driver ports.',
+        },
+        {
+          name: 'window',
+          message:
+            'core/ reaches no ambient global through the global object — take time, randomness and I/O through injected seams and driver ports.',
+        },
+        {
+          name: 'global',
+          message:
+            'core/ reaches no ambient global through the global object — take time, randomness and I/O through injected seams and driver ports.',
+        },
+      ],
+      // The global object also has routes that name nothing: `(0, eval)('this')` and `Function('return this')()`
+      // both return it, so the code-from-string constructors are refused, direct and indirect.
+      'no-eval': ['error', { allowIndirect: false }],
+      'no-new-func': 'error',
+      'no-implied-eval': 'error',
+      'no-restricted-syntax': [
+        'error',
+        // A dynamic `import()` is an import the `no-restricted-imports` patterns below never see, so
+        // `import('node:fs')` would pass them. core/ has no legitimate one: it does no I/O and loads no module
+        // at run time, so every form is refused, a literal source and a computed one alike, rather than
+        // copying the pattern lists into a second rule that could drift from them.
+        {
+          selector: 'ImportExpression',
+          message:
+            'core/ has no dynamic import() — it loads nothing at run time, and the no-restricted-imports patterns cannot see one. Import statically, or take the dependency through an injected seam.',
+        },
       ],
       'no-restricted-properties': [
         'error',
@@ -69,7 +121,7 @@ export default tseslint.config(
           message: 'core/ must take time via an injected Clock.',
         },
       ],
-      // The import-boundary rules (they used to live in dependency-cruiser). ESLint REPLACES a rule's options
+      // The import-boundary rules. ESLint REPLACES a rule's options
       // when a later block sets the same rule for the same file — it does not merge them — so each block below
       // owns a DISJOINT set of files and carries the complete list that applies there.
       // `tests/arch/import-boundaries.test.ts` proves each rule fires (a check that cannot fail is not a check).
@@ -117,9 +169,8 @@ export default tseslint.config(
     // The rest of @cloudbitmaps/core outside core/: the main entry, the driver-kit subpath, the local and
     // memory drivers, export, testing. core-never-imports-a-flavor + no cloud SDK anywhere.
     //
-    // There is no longer an exception for cloud subpaths, because core has none: the cloud drivers are their
-    // own packages. That makes this the stronger statement — core contains no cloud SDK reference at all,
-    // rather than none outside three directories — and it is why core has no optional peer dependencies left.
+    // There is no exception for cloud drivers, because core has none: they are their own packages. So core
+    // contains no cloud SDK reference at all, and has no optional peer dependencies.
     files: ['packages/core/src/**/*.ts'],
     ignores: ['packages/core/src/core/**'],
     rules: {
@@ -148,8 +199,8 @@ export default tseslint.config(
     // codec-agnostic claim false and force every flavor to carry every driver's dependencies.
     // EVERY package that is not core or a flavor, so a fourth service package is guarded the day it is
     // added rather than the day someone notices. Naming the three meant `packages/r2/src/**` matched no
-    // block at all and silently had no boundary rules — and the split's whole point is that adding a
-    // service package is cheap.
+    // block at all and silently had no boundary rules — and separate service packages exist so that adding
+    // one is cheap.
     files: ['packages/*/src/**/*.ts'],
     ignores: ['packages/core/src/**', 'packages/roaring/src/**'],
     rules: {
@@ -187,9 +238,8 @@ export default tseslint.config(
   {
     // @cloudbitmaps/roaring: SDK-free, and it does not name a driver package either.
     //
-    // The `ignores` for its cloud barrels is gone with the barrels themselves. A user installs the driver
-    // package they want alongside the flavor, so the flavor re-exporting one would put that SDK back into
-    // every install — which is the whole thing the split removes.
+    // A user installs the driver package they want alongside the flavor, so the flavor re-exporting one would
+    // put that SDK into every install — which is what separate driver packages exist to prevent.
     files: ['packages/roaring/src/**/*.ts'],
     rules: {
       'no-restricted-imports': [

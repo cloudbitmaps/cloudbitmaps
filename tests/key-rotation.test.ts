@@ -1,14 +1,10 @@
 import { randomBytes } from 'node:crypto';
-import {
-  CloudRoaring,
-  CrbmStorageChunkSource,
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
-  bulkLoadCrbmGeneration,
-} from '@/index';
+import { CloudRoaring, CrbmStorageChunkSource } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { KeyUnavailableError } from '@/core/errors';
 import type { IKeystore, SegmentRef } from '@/index';
+import { bulkLoadCrbmGeneration } from './helpers/bulk-load';
+import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 
 /**
  * End-to-end KEK rotation.

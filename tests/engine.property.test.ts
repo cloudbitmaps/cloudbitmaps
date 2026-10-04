@@ -2,8 +2,8 @@ import fc from 'fast-check';
 import { collect, loadedStore } from './helpers/loaded';
 
 /**
- * Property tests against a `Set` oracle. Every generation here is written through the real load
- * path (`bulkLoadCrbmGeneration` + publish), so the properties hold over the shape production actually stores:
+ * Property tests against a `Set` oracle. Every generation here is written by the loader `store.load()` is built
+ * on, and published, so the properties hold over the shape production actually stores:
  * a published `.crbm` generation, read back chunk by chunk.
  *
  * The oracle is a plain `Set` — deliberately the dumbest possible model of "a segment is a set of u32". Any
@@ -26,13 +26,13 @@ const BOUNDARY = [0, 1, 65_534, 65_535, 65_536, 65_537, 131_071, 131_072, 4_294_
  * Operands drawn from ONE shared universe, which is what makes the set-algebra properties mean anything.
  *
  * Generating each operand independently from `fc.integer({ max: 300_000 })` is the obvious spelling and it is
- * close to useless here: measured over the real 100-run configuration, **one** run in a hundred produced a
- * non-empty `a ∩ b`, none produced identical operands, none produced an `exclude` that removed everything, and
- * none touched a chunk boundary. So the intersect and exclude assertions were comparing `[]` against `[]`
- * almost every run — a mis-routed remainder or a suppression applied at the wrong key would have been seen
- * about once per hundred runs, and shrinking would have walked straight back off it.
+ * close to useless here: two draws of a few dozen ids from 300,001 values almost never share one, essentially
+ * never coincide or nest, and almost never touch a chunk boundary, and an `exclude` drawn the same way almost
+ * never removes everything. The intersect and exclude assertions would then compare `[]` against `[]` almost
+ * every run — a mis-routed remainder or a suppression applied at the wrong key would surface only in the rare
+ * run whose operands overlap, and shrinking would walk straight back off it.
  *
- * Drawing three subsets of a small shared universe fixes the overlap by construction: subsets of the same
+ * Drawing three subsets of a small shared universe builds the overlap in by construction: subsets of the same
  * handful of ids intersect often, sometimes coincide, and sometimes nest. {@link REACH} keeps it honest — a
  * generator that stops reaching those shapes fails a test instead of quietly weakening every property below it.
  */
@@ -59,8 +59,8 @@ function fakeClock(): { now: () => number; sleep: () => Promise<void>; advance: 
 }
 
 /**
- * The generator's own test. Every property below is only as strong as the shapes this reaches, and that reach
- * was silently near-zero once already — so it is asserted rather than assumed, on the same sample size the
+ * The generator's own test. Every property below is only as strong as the shapes this reaches, and a reach that
+ * falls to near zero does so silently — so it is asserted rather than assumed, on the same sample size the
  * properties run at.
  */
 describe('the operand generator actually reaches the interesting shapes', () => {
@@ -79,8 +79,7 @@ describe('the operand generator actually reaches the interesting shapes', () => 
       if (A.size > 0 && [...A].every((x) => S.has(x))) reach.excludesAll += 1;
       if (A.size > 0 && A.size < B.size && [...A].every((x) => B.has(x))) reach.nested += 1;
     }
-    // Deliberately loose floors: this asserts the generator is not degenerate, not that it hits a quota. The
-    // pre-fix generator scored 1 / 0 / — / 0 / 0 / 0 on these six over the same sample size.
+    // Deliberately loose floors: this asserts the generator is not degenerate, not that it hits a quota.
     expect(reach.overlap).toBeGreaterThan(40);
     expect(reach.identical).toBeGreaterThan(2);
     expect(reach.disjoint).toBeGreaterThan(2);

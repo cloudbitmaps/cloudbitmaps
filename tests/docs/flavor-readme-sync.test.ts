@@ -1,22 +1,19 @@
+import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { CloudRoaring, MemoryStorageChunkSource } from '@/index';
+import { CloudRoaring } from '@/index';
 
 /**
  * The **published** README of the flavor package must not lag the API it ships.
  *
  * WHY THIS EXISTS. `packages/roaring/README.md` is a separate file from the repo-root `README.md`, and it is the
- * one npm renders — so it is simultaneously the most-read surface and the easiest to forget. It has now drifted
- * twice:
+ * one npm renders — so it is simultaneously the most-read surface and the easiest to forget. A method the guide
+ * gives as the answer to a Redis command can be missing from the npm page, and that page can claim operations
+ * "carry over one-for-one" from Redis with no boundary, or leave out the per-id write warning: the most-read
+ * surface is then the least honest one in the project.
  *
- *   - `0.7.0` shipped the Redis mapping and I reported it as being on the npm README. It was not; only the root
- *     README had it.
- *   - `0.8.0` shipped `claimMany` and `dropSegment` — the two headline features — and the npm page mentioned
- *     **neither**, while still claiming operations "carry over one-for-one" from Redis with no boundary. The npm
- *     page was briefly the least honest surface in the project.
- *
- * Both slipped because every gate we had looked at the root README, the guide and the api-reference. Nothing looked
- * at the file that actually gets published.
+ * Gates that read the root README, the guide and the api-reference see none of that. This one reads the file that
+ * actually gets published.
  *
  * WHY IT IS DERIVED RATHER THAN A LIST. A hand-maintained "methods the README must mention" array is a check that
  * cannot fire: you would have to remember to update it in the same breath you forgot to update the README. So both
@@ -39,11 +36,10 @@ function publicMethods(target: object): string[] {
  * Every public method a Redis reader could be pointed at: the `SegmentHandle` verbs AND the **store's** own
  * methods.
  *
- * The store half was added when retention shipped, because it exposed a hole in this gate: `EXPIRE` maps onto
- * `setRetention` / `retireExpired`, which live on the store rather than on a segment — so the derivation that
- * caught the last two drifts would have watched the wrong prototype and passed while the npm page still said
- * "there is no TTL". A gate that only covers the shape of the previous mistake is the same problem this file's
- * header is about.
+ * The store half is there because `EXPIRE` maps onto `setRetention` / `retireExpired`, which live on the store
+ * rather than on a segment: a derivation from the segment's prototype alone watches the wrong prototype, and
+ * passes while the npm page says "there is no TTL". A gate that only covers the shape of one mistake is the same
+ * problem this file's header is about.
  */
 function mappableMethods(): string[] {
   const store = new CloudRoaring({ storage: new MemoryStorageChunkSource() });
@@ -89,9 +85,9 @@ describe('published flavor README stays in sync with the shipped API', () => {
   });
 
   it('does not claim Redis parity without stating a boundary', async () => {
-    // The honesty half, and the one that actually misled: the README claimed operations "carry over one-for-one"
-    // long after the guide had qualified that with two hard limits. A parity claim is fine; an unbounded one is
-    // falsifiable by the first reader who ports a SETBIT loop, so the qualifier has to travel with it.
+    // The honesty half, and the one that misleads: a README saying operations "carry over one-for-one" while the
+    // guide qualifies that with hard limits. A parity claim is fine; an unbounded one is falsifiable by the first
+    // reader who ports a SETBIT loop, so the qualifier has to travel with it.
     if (!/redis/i.test(flavorReadme)) return; // no claim, nothing to bound
 
     const hasBoundary =

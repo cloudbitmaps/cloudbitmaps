@@ -2,16 +2,20 @@
  * `LocalFsRegistryDriver` — a zero-cloud, persistent {@link IRegistryDriver}.
  *
  * One JSON file per segment at `<root>/<namespace>/registry/<segment>.reg`, holding `{ deleted, record }`.
- * OCC: the token is a monotonic counter (stringified), advanced on every mutation and
- * even across a `delete` (which **tombstones** rather than unlinks) so a deleted-then-recreated row never
- * re-issues an old token (ABA-safe). Every write is temp → fsync(file) → atomic rename → fsync(dir), and
- * read-modify-write is serialized per row in-process. Drivers do I/O; only `core/` is bound by determinism.
+ * OCC: the token is a random incarnation id drawn when the row is created, a counter advanced on every mutation, and a
+ * random part drawn for every write, so with overwhelming probability a deleted-then-recreated row, or one restored from a backup, never
+ * re-issues an old token (ABA-safe). A `delete` unlinks a row born with an incarnation id, and **tombstones** one a release before
+ * 0.12 wrote, whose bare counter a re-create carries on. Every write is temp → fsync(file) → atomic rename → fsync(dir), and
+ * read-modify-write is serialized per row across the whole process (the lock is keyed by the row's resolved
+ * path, so every instance on one root shares it). A root is for one process: two processes on one root are not
+ * fenced. Drivers do I/O; only `core/` is bound by determinism.
  */
 import { constants as FS } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { mkdir, open, readdir, rename, unlink } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { mkdir, open, readdir, realpath, rename, unlink } from 'node:fs/promises';
+import { basename, dirname, join, resolve } from 'node:path';
 import { IntegrityError, ValidationError, WriteConflictError } from '@/core/errors';
+import type { Entropy } from '@/core/determinism';
 import type {
   IRegistryDriver,
   NewRegistryRecord,
@@ -23,39 +27,82 @@ import type {
 } from '@/core/ports';
 import {
   applyRegistryPatch,
+  incarnationOf,
+  newIncarnationToken,
+  nextRegistryToken,
   parseRegistryEnvelope,
   recordFromNew,
-  registryCounterOf,
   serializeRegistryEnvelope,
   validateNewRegistryRecord,
   validateRegistryPatch,
   type RegistryEnvelope,
 } from '../_shared/registry';
+import { entropyIsAvailable, webCryptoEntropy } from '../_shared/entropy';
 import { registryDir, registryRowPath, parseNamespaceDir, parseRegistryRow } from './paths';
 import { O_NOFOLLOW, fsyncDir, isCode, mapFsError } from './fs-util';
 
 /** Defensive cap on a single registry file read from storage, before allocation. */
 const DEFAULT_MAX_ROW_BYTES = 1 * 1024 * 1024;
 
+/**
+ * Per-row promise chains, shared by every driver instance in the process and keyed by the row's resolved path,
+ * so two instances on one root (or one root reached through a symlink or a relative path) take one lock. An
+ * entry is deleted when its chain drains, so the map holds only rows with an operation in flight.
+ */
+const rowChains = new Map<string, Promise<unknown>>();
+
+/** Entries in the process-wide row-lock map; the map is empty whenever no registry operation is in flight. */
+export function localFsRowLockCount(): number {
+  return rowChains.size;
+}
+
+/**
+ * The row's identity for locking: the real path of the nearest directory that exists, plus the not-yet-created
+ * tail. Resolving symlinks and relative roots makes every spelling of one row the same key.
+ */
+async function rowLockKey(path: string): Promise<string> {
+  const abs = resolve(path);
+  const tail: string[] = [basename(abs)];
+  let dir = dirname(abs);
+  for (;;) {
+    try {
+      return join(await realpath(dir), ...tail);
+    } catch (err) {
+      const parent = dirname(dir);
+      if (!isCode(err, 'ENOENT') || parent === dir) throw mapFsError(err);
+      tail.unshift(basename(dir));
+      dir = parent;
+    }
+  }
+}
+
 export interface LocalFsRegistryDriverOptions {
   /** Injected clock for `createdAt`/`updatedAt`; defaults to `Date.now`. */
   readonly now?: () => number;
+  /** Draws every token's random parts; defaults to Web Crypto. Inject one only to make a test replayable. */
+  readonly entropy?: Entropy;
 }
 
 export class LocalFsRegistryDriver implements IRegistryDriver {
-  /** Per-row promise chain — serializes read-modify-write so an in-process CAS never loses an update. */
-  private readonly chain = new Map<string, Promise<unknown>>();
   private readonly now: () => number;
+  private readonly entropy: Entropy;
 
   constructor(
     private readonly root: string,
     options: LocalFsRegistryDriverOptions = {},
   ) {
     this.now = options.now ?? (() => Date.now());
+    this.entropy = options.entropy ?? webCryptoEntropy;
   }
 
+  /**
+   * `conditionalDelete`: a delete reads the row, checks it, and unlinks it under the row's lock, which every writer on
+   * the root in this process takes, so no write can land between the check and the unlink.
+   */
   capabilities(): RegCaps {
-    return { strongRead: true };
+    return entropyIsAvailable(this.entropy)
+      ? { strongRead: true, conditionalDelete: true }
+      : { strongRead: true, canWrite: false, conditionalDelete: true };
   }
 
   async get(ref: SegmentRef): Promise<RegistryRecord | null> {
@@ -64,16 +111,16 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
   }
 
   async create(ref: SegmentRef, record: NewRegistryRecord): Promise<{ token: Token }> {
-    validateNewRegistryRecord(record);
+    const checked = validateNewRegistryRecord(record);
     const path = registryRowPath(this.root, ref);
     return this.withRowLock(path, async () => {
       const current = await this.readRow(path);
       if (current !== null && !current.deleted) {
         throw new WriteConflictError(`registry row already exists for segment ${ref.segment}`);
       }
-      const counter = current ? registryCounterOf(current.record) + 1 : 0; // advance across a tombstone (ABA-safe)
-      const token = String(counter);
-      await this.writeRow(path, false, recordFromNew(ref, record, this.now(), token));
+      // A new incarnation, whose counter continues across a tombstone (ABA-safe).
+      const token = newIncarnationToken(this.entropy, current?.record);
+      await this.writeRow(path, false, recordFromNew(ref, checked, this.now(), token));
       return { token };
     });
   }
@@ -83,18 +130,18 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
     expected: Token,
     patch: RegistryPatch,
   ): Promise<{ token: Token }> {
-    validateRegistryPatch(patch);
+    const checked = validateRegistryPatch(patch);
     const path = registryRowPath(this.root, ref);
     return this.withRowLock(path, async () => {
       const current = await this.readRow(path);
       if (current === null || current.deleted || current.record.token !== expected) {
         throw new WriteConflictError(`OCC token mismatch for registry row ${ref.segment}`);
       }
-      const token = String(registryCounterOf(current.record) + 1);
+      const token = nextRegistryToken(current.record, this.entropy);
       await this.writeRow(
         path,
         false,
-        applyRegistryPatch(current.record, patch, this.now(), token),
+        applyRegistryPatch(current.record, checked, this.now(), token),
       );
       return { token };
     });
@@ -119,15 +166,37 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
     }
   }
 
-  async delete(ref: SegmentRef): Promise<void> {
+  async delete(ref: SegmentRef, expected?: Token): Promise<void> {
     const path = registryRowPath(this.root, ref);
     return this.withRowLock(path, async () => {
       const current = await this.readRow(path);
-      if (current === null || current.deleted) return; // idempotent
-      // Tombstone (advance the counter) rather than unlink — keeps the token monotonic for ABA-safety.
-      const token = String(registryCounterOf(current.record) + 1);
+      if (expected !== undefined) {
+        if (current === null || current.deleted || current.record.token !== expected) {
+          throw new WriteConflictError(`OCC token mismatch for registry row ${ref.segment}`);
+        }
+      } else if (current === null || current.deleted) {
+        return; // idempotent
+      }
+      if (incarnationOf(current.record.token) !== undefined) {
+        // Born with an incarnation id: a re-create draws a new one, so the file can go.
+        await this.unlinkRow(path);
+        return;
+      }
+      // A row a release before 0.12 wrote: tombstone it (advance the counter) rather than unlink, so a re-create
+      // carries the counter on, and a process still on that release cannot re-issue its tokens from 0.
+      const token = nextRegistryToken(current.record, this.entropy);
       await this.writeRow(path, true, { ...current.record, token, updatedAt: this.now() });
     });
+  }
+
+  /** Remove a row's file and make the removal durable (fsync the directory). */
+  private async unlinkRow(path: string): Promise<void> {
+    try {
+      await unlink(path);
+    } catch (err) {
+      if (!isCode(err, 'ENOENT')) throw mapFsError(err);
+    }
+    await fsyncDir(dirname(path));
   }
 
   /** Namespaces to scan: just the one requested, or every namespace dir under the root. */
@@ -203,17 +272,18 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
     await fsyncDir(dirname(path));
   }
 
-  /** Serialize callbacks for a row path so read-modify-write is atomic in-process. */
-  private withRowLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
-    const prev = this.chain.get(key) ?? Promise.resolve();
+  /** Serialize callbacks for a row so read-modify-write is atomic across every instance in the process. */
+  private async withRowLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
+    const key = await rowLockKey(path);
+    const prev = rowChains.get(key) ?? Promise.resolve();
     const result = prev.then(fn, fn);
     const tail = result.then(
       () => undefined,
       () => undefined,
     );
-    this.chain.set(key, tail);
+    rowChains.set(key, tail);
     void tail.then(() => {
-      if (this.chain.get(key) === tail) this.chain.delete(key);
+      if (rowChains.get(key) === tail) rowChains.delete(key);
     });
     return result;
   }

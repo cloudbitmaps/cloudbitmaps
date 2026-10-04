@@ -3,16 +3,11 @@
 Three illustrative deployments, small, medium and large, priced by the library's own `estimateCost()` at AWS
 `us-east-1` on-demand rates, and set against the Redis that would hold each one's data.
 
-**The workloads are made up; the arithmetic is not.** Each workload is a guess at what a typical deployment of
-that size looks like, not anyone's measured system. Every figure below that comes from the model, the prices or the
-library's defaults is generated from them, and `pnpm bench:sizing:check` fails CI when a generated figure and its
-source disagree, so when any of them changes, the page is regenerated rather than edited. What the estimator counts
-is held by tests to the requests the engine makes; [§11 of the guide](getting-started.md#what-each-term-counts) says
-what each term counts.
+**The answer is in [the monthly bill](#the-monthly-bill): each deployment's bill, term by term, beside the Redis that
+would hold its data.** The workloads are made up; the arithmetic is not. Each workload is a guess at what a typical
+deployment of that size looks like, not anyone's measured system. To price your own, see [Price your own](#price-your-own).
 
-**There is no latency on this page.** The loaded read path has not been timed inside a region yet, so how fast
-these deployments would answer is not published; the [benchmarks page](../benchmarks.md#what-is-still-owed) keeps
-it on the list of what is owed.
+**There is no latency on this page.** How fast these deployments would answer is not modelled here. The loaded read path was timed inside a region for one shape, and the [benchmarks page](../benchmarks.md#real-cloud-calibration--aws) has the figures.
 
 ## Contents
 
@@ -37,45 +32,47 @@ it on the list of what is owed.
 <!-- SIZING:INPUTS:END -->
 
 <!-- SIZING:SHAPE:START -->
-Every segment has the shape of the [calibration run's](../../bench/calibration/2026-09-23-94416.md): its ids spread over about 2,000 chunks, and every cold intersect of two segments sharing 100 of them, so each fetches the shared chunks from both. A larger segment is modeled as holding its ids more densely, up to the 16 MB its chunks can take, about 8 KiB each, the most one takes whatever ids it holds, not as sharing more chunks, which is the most favourable choice for large segments; [the overlap table](#how-much-the-overlap-matters) undoes it. **Hot segments** are the ones a long-lived reader keeps open, each reader its own; the last column is how often one reader reads each of them, with the point reads spread evenly. The large deployment's 10 MB segments load as 2-part uploads, 4 PUT-class requests each, since the S3 driver uploads in 8 MiB parts.
+Every segment has the shape of the [calibration run's](../../bench/calibration/2026-09-23-94416.md): its ids spread over about 2,000 chunks, and every cold intersect of two segments sharing 100 of them, so each fetches the shared chunks from both. A larger segment is modeled as holding its ids more densely, up to the 16 MB its chunks can take, about 8 KiB each, the most one takes whatever ids it holds, not as sharing more chunks, which is the most favourable choice for large segments; [the overlap table](#how-much-the-overlap-matters) undoes it. **Hot segments** are the ones a long-lived reader keeps open, each reader its own; the last column is how often one reader reads each of them, with the point reads spread evenly. The large deployment's 10 MB segments load as 2-part uploads, 4 PUT-class requests each, since the S3 backend uploads in 8 MiB parts.
 <!-- SIZING:SHAPE:END -->
 
 ## What each reader holds
 
 The bill below assumes each reader keeps its hot segments open and answers its point reads from memory at the hit
-rates above. Both take memory, and the defaults hold less than the larger deployments need:
+rates above. Both take memory, and the default chunk cache holds a small share of each hot set:
 
 <!-- SIZING:READERS:START -->
-| | index a reader holds open, at 160 B a chunk | against the default `cache.readerMaxBytes` (64 MiB) | chunks in its hot set | what they hold | against the default `cache.maxChunks` (1,024) | reads it answers, spread evenly |
+| | index a reader holds open, at 20 B a chunk | against the default `cache.readerMaxBytes` (64 MiB) | chunks in its hot set | what they hold | against the default `cache.maxChunks` (1,024) | reads it answers, spread evenly |
 |---|---:|---|---:|---:|---|---:|
-| **Small** | 6 MiB | fits | 40,000 | 20 MB | 39× it | 2.6% |
-| **Medium** | 61 MiB | at the limit: raise it | 400,000 | 800 MB | 391× it | 0.26% |
-| **Large** | 305 MiB | 4.8× it: raise it, or 209 stay open | 2,000,000 | 10 GB | 1,953× it | 0.051% |
+| **Small** | 1 MiB | fits | 40,000 | 20 MB | 39× it | 2.6% |
+| **Medium** | 8 MiB | fits | 400,000 | 800 MB | 391× it | 0.26% |
+| **Large** | 38 MiB | fits | 2,000,000 | 10 GB | 1,953× it | 0.051% |
 <!-- SIZING:READERS:END -->
 
 A reader past `cache.readerMaxBytes` evicts segments and opens them again as it reads them, a pointer read and a tail
 read each, which **neither the bill below nor the estimator's report prices**: the report warns only when there are
-more hot segments than `cache.readerMax`, since it cannot see how large each index is. Two more things about these
-columns:
+more hot segments than the default `cache.readerMax`, since it sees neither your store's own setting nor how large
+each index is. Two more things about these columns:
 
-- **The index column is the reader's own count, an estimate.** The reader counts each chunk's index entry at the
-  fixed size in the column's heading, an estimate reasoned from V8's object layout rather than measured on the heap,
-  so leave room above it.
+- **The index column is the reader's own count, and it is exact.** The reader holds its parsed index as typed
+  arrays, so each chunk's entry weighs the fixed size in the column's heading and the reader reports the arrays'
+  byte length. A test checks that count against the memory the process retains, so the figure is the index's own
+  weight; the reader's other objects and your chunk cache are not in it.
 - **The hit rates assume the reads are skewed.** The fifth column is what holding a hot set whole takes, and the
   last is the share of reads a default chunk cache would answer if they were spread evenly over the hot set. The hit
   rates above hold only where most reads fall on a small part of it, or where the chunk cache is raised toward that
   size.
 
-Raising both caches is the price of these figures, paid in each reader's memory.
+Raising the chunk cache is the price of these figures, paid in each reader's memory. The default index budget holds
+the hot set's indices at all three sizes.
 
 ## The monthly bill
 
 <!-- SIZING:BILL:START -->
 | | cold intersects | point reads | pointer refresh | loads | storage | **a month** | the Redis that holds it | **against it** |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| **Small** | $1.63 | $0.53 | $1.05 | $0.14 | under $0.01 | **$3.35** | $35.04 (3 × t4g.micro) | **90% less** |
-| **Medium** | $214 | $10.51 | $52.56 | $3.54 | $0.43 | **$281** | $900 (3 × r6g.xlarge) | **69% less** |
-| **Large** | $4,289 | $105 | $2,102 | $232 | $42.84 | **$6,771** | $27,325 (3 × r6gd.16xlarge) | **75% less** |
+| **Small** | $1.63 | $0.53 | $1.05 | $0.07 | under $0.01 | **$3.29** | $35.04 (3 × t4g.micro) | **91% less** |
+| **Medium** | $214 | $10.51 | $52.56 | $1.85 | $0.43 | **$280** | $900 (3 × r6g.xlarge) | **69% less** |
+| **Large** | $4,289 | $105 | $2,102 | $164 | $42.84 | **$6,703** | $27,325 (3 × r6gd.16xlarge) | **75% less** |
 <!-- SIZING:BILL:END -->
 
 <!-- SIZING:REDIS:START -->
@@ -100,8 +97,8 @@ held where it is:
 <!-- SIZING:HEADROOM:START -->
 | | cold intersects a second | where the bill meets its Redis | headroom |
 |---|---:|---:|---:|
-| **Small** | 0.00761 | 0.155 | 20× |
-| **Medium** | 1 | 3.88 | 3.9× |
+| **Small** | 0.00761 | 0.156 | 20× |
+| **Medium** | 1 | 3.89 | 3.9× |
 | **Large** | 20 | 116 | 5.8× |
 <!-- SIZING:HEADROOM:END -->
 
@@ -119,13 +116,13 @@ A cold intersect costs 4 + 2k GETs for k shared chunks, so what two segments sha
 <!-- SIZING:OVERLAP:START -->
 | shared chunks, of 2,000 | GETs a cold intersect | Medium, a month | against its Redis | Large, a month | against its Redis |
 |---:|---:|---:|---:|---:|---:|
-| 100 (the tables above) | 204 | $281 | 69% less | $6,771 | 75% less |
-| 1,000 | 2,004 | $2,174 | 2.4× as much | $44,614 | 1.6× as much |
-| 2,000 | 4,004 | $4,276 | 4.8× as much | $86,662 | 3.2× as much |
+| 100 (the tables above) | 204 | $280 | 69% less | $6,703 | 75% less |
+| 1,000 | 2,004 | $2,172 | 2.4× as much | $44,546 | 1.6× as much |
+| 2,000 | 4,004 | $4,274 | 4.7× as much | $86,594 | 3.2× as much |
 <!-- SIZING:OVERLAP:END -->
 
 <!-- SIZING:OVERLAP_NOTE:START -->
-The medium deployment's bill passes its Redis at **395 shared chunks**, about 20% of a segment's, and the large one's at **589**, about 29%.
+The medium deployment's bill passes its Redis at **396 shared chunks**, about 20% of a segment's, and the large one's at **591**, about 30%.
 <!-- SIZING:OVERLAP_NOTE:END -->
 Know your overlap before you trust a verdict: it is the one input that moves these bills most.
 
@@ -141,9 +138,9 @@ big lines have a lever:
   <!-- SIZING:LEVERS:START -->
   | `cache.genTtlMs` | pointer refresh | **a month** | against its Redis |
   |---|---:|---:|---:|
-  | 2 s, the default | $2,102 | **$6,771** | 75% less |
-  | 1 minute | $350 | **$5,019** | 82% less |
-  | 5 minutes | $70.08 | **$4,739** | 83% less |
+  | 2 s, the default | $2,102 | **$6,703** | 75% less |
+  | 1 minute | $350 | **$4,951** | 82% less |
+  | 5 minutes | $70.08 | **$4,671** | 83% less |
   <!-- SIZING:LEVERS:END -->
 
 - **The cold intersects**, which are priced as if every one started from an empty cache. A reader that serves a
@@ -173,9 +170,9 @@ the long tail: the segments that are too many or too large to keep in RAM, and t
 
 <!-- SIZING:SAMPLE:START -->
 ```ts
-import { estimateCost } from '@cloudbitmaps/roaring';
+import { CloudRoaring } from '@cloudbitmaps/roaring';
 
-const report = estimateCost({
+const report = CloudRoaring.estimateCost({
   segments: [{ sizeBytes: 4_000_000, count: 5_000 }],
   workload: {
     intersectsPerSec: 1, // priced cold
@@ -186,22 +183,22 @@ const report = estimateCost({
     hotSegments: 200, // in each reader process…
     readerProcesses: 3, // …of 3
   },
-  // pricing: your region's rates; on GCS or Azure Blob, set storage.requestsPerSizedRead to 2.
+  // pricing: your region's rates; on Azure Blob, storage.requestsPerSizedRead: 2 for its tail reads.
 });
-report.monthlyUSD.total; // $281, the medium deployment above
+report.monthlyUSD.total; // $280, the medium deployment above
 report.redisBaseline; // $900 a month: 1 shard of 3 cache.r6g.xlarge nodes
 report.assumptions.notes; // what it modeled, and what it did not
 ```
 <!-- SIZING:SAMPLE:END -->
 
 Every report says what it modeled and what it left out: which Redis it priced and why, loads or the refresh when you
-did not size them, and more hot segments than a reader keeps open. [§11 of the
-guide](getting-started.md#11-cost-estimate-it-then-ground-it) has the whole model, and `segment.costReport()` prices a
+did not size them, and more hot segments than a reader keeps open by default. [the cost
+guide](cost.md#cost-estimate-it-then-ground-it) has the whole model, and `segment.costReport()` prices a
 real segment at its measured size and the store's own `cache.genTtlMs`.
 
 ## What this page does not establish
 
-- **Latency.** Nothing here says how fast a query returns; the in-region run is owed.
+- **Latency.** Nothing here says how fast a query returns; the [in-region run](../benchmarks.md#real-cloud-calibration--aws) measured one shape.
 - **A warm reader's intersects.** They are priced cold: an upper bound on their requests, but for what a call reads
   again when it outlives `cache.genTtlMs` (a pointer, and an index once the segment's row has changed, as a load's
   publish changes it) or the reader cache evicts its reader part-way through (a pointer and an index), and a second
@@ -209,8 +206,13 @@ real segment at its measured size and the store's own `cache.genTtlMs`.
 - **Memory.** What the caches above take in each reader is not priced; it is your reader's memory, not S3's bill.
 - **An invoice.** These are list prices applied to modeled request counts, not what AWS would bill; data transfer
   out of the region is not modeled.
-- **Other clouds' prices.** The rates are AWS's. GCS and Azure Blob charge differently, and take more requests than
-  S3 to read a pointer or a tail; set both in your own pricing profile, as [Price your own](#price-your-own) shows.
+- **Other clouds' prices.** The rates are AWS's. GCS and Azure Blob charge differently, and Azure Blob takes more requests than
+  S3 to read a segment's tail; set the rates, and for Azure Blob `requestsPerSizedRead`, in your own pricing profile, as [Price your own](#price-your-own) shows.
 - **What running Redis takes besides its price.** The comparison is CloudBitmaps' bill for the workload against a
   Redis sized to hold the data, not to its request rate; nor does it price the operations, the failovers or the speed
   of either.
+
+**How the figures are kept honest.** Every figure on this page that comes from the model, the prices or the library's
+defaults is generated from them, and `pnpm bench:sizing:check` fails CI when a generated figure and its source
+disagree, so when any of them changes, the page is regenerated rather than edited. What the estimator counts is held by
+tests to the requests the engine makes; [the cost guide](cost.md#what-each-term-counts) says what each term counts.

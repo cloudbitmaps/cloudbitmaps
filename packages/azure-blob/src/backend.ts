@@ -26,8 +26,67 @@ export interface AzureBlobStorageOptions {
   readonly container?: string;
   /** Optional blob-name prefix under which everything lives — generations and the registry alike. */
   readonly prefix?: string;
+  /**
+   * Largest blob the backend will write and advertise. Default = `blockBytes × 50,000` (≈ 400 GiB at the default
+   * 8 MiB block) — the honest ceiling reachable within Azure's 50,000-block limit. Set it higher and
+   * `blockBytes` auto-grows so 50,000 blocks still cover it (raising peak write memory to ~one block).
+   * Must be a positive safe integer.
+   */
+  readonly maxObjectBytes?: number;
+  /** Staged block size in bytes (default 8 MiB). Tunes peak write memory. Must be a positive safe integer. */
+  readonly blockBytes?: number;
+  /**
+   * How long each read request either half sends may take, in ms, its response body included, before it is aborted
+   * and throws `TransientError` for the store's read retry: a range read, a tail read's properties and its ranged
+   * download, each on its own, and a registry row's read. The clock starts at the call into the SDK, so time waiting
+   * for a socket or a credential's token counts. Writes, deletes and listings are not timed. `0`, the default, sets no
+   * timeout; an integer from 0 to 2,147,483,647.
+   */
+  readonly readTimeoutMs?: number;
   /** Injected clock for the registry's `createdAt`/`updatedAt`; defaults to `Date.now`. */
   readonly now?: () => number;
+  /**
+   * Whether the registry removes a deleted row for good, by a Delete Blob sent with `ifMatch`, rather than leaving a
+   * tombstone a full listing reads forever. Defaults to `true`.
+   */
+  readonly conditionalDelete?: boolean;
+}
+
+/**
+ * The keys `new AzureBlobStorage(options)` takes. Any other is refused by name rather than ignored: an ignored
+ * client key leaves the backend without the container the caller meant.
+ */
+export const AZURE_BLOB_STORAGE_OPTION_KEYS = [
+  'containerClient',
+  'connectionString',
+  'container',
+  'prefix',
+  'maxObjectBytes',
+  'blockBytes',
+  'readTimeoutMs',
+  'now',
+  'conditionalDelete',
+] as const;
+
+/** Refuse an options bag that is not an object, or that holds a key not in `keys`, naming each such key. */
+function refuseUnknown(
+  name: string,
+  options: unknown,
+  keys: readonly string[],
+  hint: string,
+): void {
+  if (options === null || typeof options !== 'object') {
+    throw new ValidationError(
+      `${name} needs an options object — got ${options === null ? 'null' : typeof options}`,
+    );
+  }
+  const unknown = Object.keys(options).filter((k) => !keys.includes(k));
+  if (unknown.length > 0) {
+    const list = (ks: readonly string[]): string => ks.map((k) => `\`${k}\``).join(', ');
+    throw new ValidationError(
+      `${name} does not take ${list(unknown)}. It takes ${list(keys)}; ${hint}.`,
+    );
+  }
 }
 
 export class AzureBlobStorage implements StorageBackend {
@@ -39,7 +98,13 @@ export class AzureBlobStorage implements StorageBackend {
   readonly containerClient: ContainerClient;
 
   constructor(options: AzureBlobStorageOptions) {
-    if (options.containerClient !== undefined) {
+    refuseUnknown(
+      'AzureBlobStorage',
+      options,
+      AZURE_BLOB_STORAGE_OPTION_KEYS,
+      'a container client goes in `containerClient`',
+    );
+    if (options.containerClient !== undefined && options.containerClient !== null) {
       // `containerClient` already names the account AND the container, so anything that also names them is
       // either redundant or a contradiction — and the contradiction loses silently, leaving a store pointed
       // at a container the caller did not ask for. Refuse instead of picking one.
@@ -64,11 +129,19 @@ export class AzureBlobStorage implements StorageBackend {
     const shared = {
       containerClient: this.containerClient,
       ...(options.prefix === undefined ? {} : { prefix: options.prefix }),
+      ...(options.readTimeoutMs === undefined ? {} : { readTimeoutMs: options.readTimeoutMs }),
     };
-    this.storage = new AzureBlobStorageDriver(shared);
+    this.storage = new AzureBlobStorageDriver({
+      ...shared,
+      ...(options.maxObjectBytes === undefined ? {} : { maxObjectBytes: options.maxObjectBytes }),
+      ...(options.blockBytes === undefined ? {} : { blockBytes: options.blockBytes }),
+    });
     this.registry = new AzureBlobRegistryDriver({
       ...shared,
       ...(options.now === undefined ? {} : { now: options.now }),
+      ...(options.conditionalDelete === undefined
+        ? {}
+        : { conditionalDelete: options.conditionalDelete }),
     });
     brandAsBackend(this);
   }

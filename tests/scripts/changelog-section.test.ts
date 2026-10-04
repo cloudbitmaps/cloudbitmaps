@@ -20,13 +20,13 @@ Preamble that must never leak into release notes.
 
 _Nothing yet._
 
-## [0.2.0] - 2026-08-01
+## [0.11.0] - 2026-10-01
 
 ### Added
 
 - The newer thing.
 
-## [0.1.0] - 2026-07-26
+## [0.10.0] - 2026-09-21
 
 First public release.
 
@@ -39,29 +39,29 @@ First public release.
 
 describe('changelog-section', () => {
   it('extracts exactly one version, stopping at the next heading', () => {
-    const out = extractSection(SAMPLE, '0.2.0');
+    const out = extractSection(SAMPLE, '0.11.0');
     expect(out).toContain('The newer thing.');
     // The bug that matters: bleeding into the neighbouring release's notes.
     expect(out).not.toContain('The original thing.');
-    expect(out).not.toContain('## [0.1.0]');
+    expect(out).not.toContain('## [0.10.0]');
     expect(out).not.toContain('Preamble');
   });
 
   it('runs to the end of the file for the last section', () => {
-    const out = extractSection(SAMPLE, '0.1.0');
+    const out = extractSection(SAMPLE, '0.10.0');
     expect(out).toContain('First public release.');
     expect(out).toContain('The original thing.');
     expect(out).not.toContain('The newer thing.');
   });
 
   it('accepts a tag-style leading v, since that is what a tag push provides', () => {
-    expect(extractSection(SAMPLE, 'v0.1.0')).toBe(extractSection(SAMPLE, '0.1.0'));
+    expect(extractSection(SAMPLE, 'v0.10.0')).toBe(extractSection(SAMPLE, '0.10.0'));
   });
 
   it('does not confuse a version that is a prefix of another', () => {
-    const md = '## [0.1.0] - a\n\nTEN\n\n## [0.1.0-rc.0] - b\n\nRC\n';
-    expect(extractSection(md, '0.1.0')).toBe('TEN');
-    expect(extractSection(md, '0.1.0-rc.0')).toBe('RC');
+    const md = '## [0.10.0] - a\n\nTEN\n\n## [0.10.0-rc.0] - b\n\nRC\n';
+    expect(extractSection(md, '0.10.0')).toBe('TEN');
+    expect(extractSection(md, '0.10.0-rc.0')).toBe('RC');
   });
 
   it('throws on a missing version rather than emitting nothing', () => {
@@ -69,7 +69,7 @@ describe('changelog-section', () => {
   });
 
   it('throws on an empty section rather than publishing blank notes', () => {
-    expect(() => extractSection('## [1.0.0]\n\n## [0.9.0]\n\nx\n', '1.0.0')).toThrow(/empty/);
+    expect(() => extractSection('## [1.0.0]\n\n## [0.10.0]\n\nx\n', '1.0.0')).toThrow(/empty/);
   });
 
   it('strips trailing HTML comments, which the last section always absorbs', () => {
@@ -91,13 +91,10 @@ describe('changelog-section', () => {
     expect(() => extractSection(md, '1.0.0')).toThrow(/curated notes/);
   });
 
-  it("extracts the real repo's 0.1.0 section cleanly", () => {
+  it("extracts the real repo's 0.10.0 section cleanly", () => {
     const real = readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8');
-    const out = extractSection(real, '0.1.0');
-    // It is enormous — 0.1.0 absorbed the whole pre-1.0 dev log — but it does fit GitHub's cap, so the
-    // extractor must succeed. (The v0.1.0 release itself ships hand-curated notes anyway: "fits" and
-    // "worth reading as release notes" are different bars, and only the first one is this script's job.)
-    expect(out.length).toBeGreaterThan(50_000);
+    const out = extractSection(real, '0.10.0');
+    expect(out).toContain('The loaded store.');
     expect(out).not.toContain('## [Unreleased]');
     expect(out).not.toContain('Keep a Changelog');
     // The trailing maintainer comment must not be in there.

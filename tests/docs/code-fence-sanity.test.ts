@@ -2,28 +2,32 @@ import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 
-import { MOVED_OPTIONS } from '@/moved-options';
+import { AZURE_BLOB_STORAGE_OPTION_KEYS } from '@/azure-blob/backend';
+import { GCS_STORAGE_OPTION_KEYS } from '@/gcs/backend';
+import { S3_STORAGE_OPTION_KEYS } from '@/s3/backend';
+
+import { codeOnly, unknownConstructorKeys, unknownStoreKeys } from '../helpers/option-literals';
 
 /**
- * The TypeScript samples in the docs must not repeat the mistakes that have shipped in them: a name declared twice,
- * a removed or moved option key, and the old and new wiring mixed in one sample. Nothing here parses a sample.
+ * The TypeScript samples in the docs must not make the mistakes that stop a copied sample running: a name declared
+ * twice, an option key the store or a cloud backend does not take, and a sample that declares one half of its wiring
+ * and uses a name it never declared. Nothing here runs a sample.
  *
  * WHY THIS EXISTS. Doc samples are copy-pasted; a sample that cannot run is worse than no sample, because the
- * reader assumes their own environment is at fault. Two of them shipped broken in one release, and neither
- * was visible to any existing gate:
+ * reader assumes their own environment is at fault. Two of them are easy to write:
  *
- *   - The GCS wiring sample declared `const storage` twice — `Identifier 'storage' has already been declared`.
- *     The `cold` → `storage` rename walked straight into the name `@google-cloud/storage` already uses for
- *     its own client class, which the sample declares one line above.
- *   - A `CHANGELOG.md` entry in the *pending* release wired `cold:`, the very key that release removes.
+ *   - A GCS sample that names its backend `storage`, below the `storage` it made for the client
+ *     `@google-cloud/storage` exports: `Identifier 'storage' has already been declared`.
+ *   - A sample that wires an option key the store, or the backend it builds, refuses.
  *
  * Both render fine, lint fine, and are invisible to the link and export-sync checks, which look at prose and
  * symbol names rather than at whether the code would run.
  *
  * WHAT IT CHECKS, and why only things like these. A full typecheck of every fence would need each sample to be
  * self-contained, which they deliberately are not (they elide imports and setup to stay readable). None of these
- * checks needs that assumption: a duplicate binding is a `SyntaxError` in any context, and a removed or moved
- * option key, or two wirings in one sample, is wrong no matter what surrounds it.
+ * checks needs that assumption: a duplicate binding is a `SyntaxError` in any context, and a refused option key,
+ * or a sample that declares `storage` or `registry` but uses a `backend` it never declares, is wrong no matter what
+ * surrounds it.
  */
 
 const ROOT = join(__dirname, '..', '..');
@@ -35,19 +39,19 @@ const docs = execFileSync('git', ['ls-files', '*.md', '*.html'], { cwd: ROOT, en
 
 interface Fence {
   readonly file: string;
+  /** The line of `file` that the sample's first line of code is on, so line `i` of `code` (from 0) is `line + i`. */
   readonly line: number;
   readonly code: string;
 }
 
 /**
  * The site writes its samples as `<pre><code>` with a `<span>` per token, not as ``` fences — so the markdown
- * scanner below found **zero** samples in all seven site pages while the file glob made it look covered.
- * That is worse than not scanning them: it reads as coverage. This strips the markup and hands back the code.
+ * scanner below finds **zero** samples in the site's pages while the file glob makes them look covered. That
+ * is worse than not scanning them: it reads as coverage. This strips the markup and hands back the code.
  */
-function htmlSamplesOf(file: string): Fence[] {
-  const text = readFileSync(join(ROOT, file), 'utf8');
+function htmlSamplesOf(file: string, text = readFileSync(join(ROOT, file), 'utf8')): Fence[] {
   const out: Fence[] = [];
-  for (const m of text.matchAll(/<pre[^>]*>\s*<code[^>]*>([\s\S]*?)<\/code>\s*<\/pre>/g)) {
+  for (const m of text.matchAll(/<pre[^>]*>\s*<code[^>]*>([\s\S]*?)<\/code>\s*<\/pre>/dg)) {
     const code = (m[1] as string)
       .replace(/<[^>]+>/g, '')
       .replace(/&lt;/g, '<')
@@ -57,24 +61,25 @@ function htmlSamplesOf(file: string): Fence[] {
       .replace(/&#39;/g, "'");
     // Only the samples that are actually code we ship — skip shell blocks and prose-in-a-box.
     if (!/\b(new CloudRoaring|import\s|const\s|await\s)/.test(code)) continue;
-    out.push({ file, line: text.slice(0, m.index).split('\n').length, code });
+    // The code starts right after `<code …>`, which may be on the `<pre>` line or the one below it.
+    const codeAt = m.indices?.[1]?.[0] ?? m.index;
+    out.push({ file, line: text.slice(0, codeAt).split('\n').length, code });
   }
   return out;
 }
 
 /**
- * Fenced ```ts / ```js blocks, with the 1-based line the fence opens on.
+ * Fenced ```ts / ```js blocks, each with the line its code starts on.
  *
- * Leading indentation is matched and then stripped, because a fence nested inside a list item — which is how
- * every `CHANGELOG.md` sample is written — is indented. An earlier version of this anchored the fence at
- * column 0 and silently scanned none of them, which is the failure mode a gate must not have.
+ * Leading indentation is matched and then stripped, because a fence nested inside a list item, as in
+ * `docs/guide/getting-started.md`, is indented. A pattern anchored at column 0 silently skips it, which is the
+ * failure mode a gate must not have.
  */
-function fencesOf(file: string): Fence[] {
-  const text = readFileSync(join(ROOT, file), 'utf8');
+function fencesOf(file: string, text = readFileSync(join(ROOT, file), 'utf8')): Fence[] {
   const out: Fence[] = [];
   // An INFO STRING after the language is allowed. `\`\`\`ts title="wiring.ts"` and `\`\`\`ts twoslash` are
-  // ordinary Markdown that many renderers act on, and requiring end-of-line after the language meant such a
-  // fence left this gate altogether — not "checked more loosely", but unscanned, with every check in the file
+  // ordinary Markdown that many renderers act on, and requiring end-of-line after the language would drop such
+  // a fence from this gate altogether — not "checked more loosely", but unscanned, with every check in the file
   // silent on it. The language must still be the FIRST word, so a ```text block is not dragged in.
   const re =
     /^([ \t]*)```(?:ts|tsx|js|javascript|typescript)(?:[ \t]+[^\n]*)?[ \t]*$\n([\s\S]*?)^[ \t]*```[ \t]*$/gm;
@@ -84,14 +89,15 @@ function fencesOf(file: string): Fence[] {
       .split('\n')
       .map((l) => l.slice(indent))
       .join('\n');
-    out.push({ file, line: text.slice(0, m.index).split('\n').length, code });
+    // The code starts on the line below the opening fence.
+    out.push({ file, line: text.slice(0, m.index).split('\n').length + 1, code });
   }
   return out;
 }
 
 const allFences = [
-  ...docs.flatMap(fencesOf),
-  ...docs.filter((f) => f.endsWith('.html')).flatMap(htmlSamplesOf),
+  ...docs.flatMap((f) => fencesOf(f)),
+  ...docs.filter((f) => f.endsWith('.html')).flatMap((f) => htmlSamplesOf(f)),
 ];
 
 describe('documentation code samples', () => {
@@ -114,8 +120,8 @@ describe('documentation code samples', () => {
         const first = seen.get(name);
         if (first !== undefined) {
           offenders.push(
-            `${fence.file}:${fence.line + i + 1} — \`${name}\` is already declared on line ` +
-              `${fence.line + first + 1} of the same sample (SyntaxError when pasted)`,
+            `${fence.file}:${fence.line + i} — \`${name}\` is already declared on line ` +
+              `${fence.line + first}, in the same sample (SyntaxError when pasted)`,
           );
         } else {
           seen.set(name, i);
@@ -125,26 +131,17 @@ describe('documentation code samples', () => {
     expect(offenders).toEqual([]);
   });
 
-  // A sample whose wiring vocabulary contradicts ITSELF is a half-applied rename. The rename from a
-  // `storage` + `registry` pair to a single `backend` was applied fence by fence, and three fences ended up
-  // holding both halves of it: declaring `const storage = …` / `const registry = …` and then passing
-  // `storage: backend`, or declaring `const backend = …` and then passing `{ registry }`. Each throws
+  // A sample whose wiring contradicts ITSELF: declaring `const storage = …` / `const registry = …` and then
+  // passing `storage: backend`, or declaring `const backend = …` and then passing `{ registry }`. Each throws
   // `ReferenceError` on the first line a reader runs.
   //
   // What this deliberately does NOT flag is a fence that only *references* `backend` — samples on a page
-  // routinely elide the construction shown in an earlier fence, which is why a plain free-identifier check
-  // reported eight passages, every one of them correct. The defect is the contradiction, not the elision.
-  it('does not mix the old `storage`/`registry` wiring with the new `backend` wiring in one sample', () => {
-    // Comments, strings and template literals are stripped before anything is matched: half these names appear
+  // routinely elide the construction shown in an earlier fence, so a plain free-identifier check fires on
+  // passages that are correct. The defect is the contradiction, not the elision.
+  it('does not declare `storage` or `registry` and use an undeclared `backend`, or declare `backend` and use an undeclared `registry`', () => {
+    // Comments, strings and template literals are blanked before anything is matched: half these names appear
     // in prose ("the wrapped DEKs live in the backend's registry") and in paths ("pointers under ./x/registry"),
-    // and matching those reported ten correct samples. What is left is code.
-    const codeOnly = (src: string): string =>
-      src
-        .replace(/\/\*[\s\S]*?\*\//g, ' ')
-        .replace(/\/\/[^\n]*/g, ' ')
-        .replace(/`(?:[^`\\]|\\.)*`/g, ' ')
-        .replace(/'(?:[^'\\\n]|\\.)*'/g, ' ')
-        .replace(/"(?:[^"\\\n]|\\.)*"/g, ' ');
+    // and matching those would report correct samples. What is left is code.
 
     const offenders: string[] = [];
     for (const fence of allFences) {
@@ -155,17 +152,17 @@ describe('documentation code samples', () => {
       const referencesBare = (name: string): boolean =>
         new RegExp(`(?<![.\\w])${name}\\b(?!\\s*:)`).test(code);
 
-      // Declaring either old-style half and then reaching for `backend` — the rename stopped halfway.
+      // Declaring `storage` or `registry` and then reaching for a `backend` the sample never declares.
       if (
         referencesBare('backend') &&
         !declares('backend') &&
         (declares('storage') || declares('registry'))
       ) {
         offenders.push(
-          `${fence.file}:${fence.line} — sample declares the old \`storage\`/\`registry\` wiring but uses \`backend\``,
+          `${fence.file}:${fence.line} — sample declares \`storage\` or \`registry\` but uses an undeclared \`backend\``,
         );
       }
-      // Declaring `backend` and then passing a bare `registry` that the rename should have absorbed into it.
+      // Declaring `backend` and then passing a bare `registry` the sample never declares, which the backend carries.
       if (declares('backend') && referencesBare('registry') && !declares('registry')) {
         offenders.push(
           `${fence.file}:${fence.line} — sample builds a \`backend\` but still references an undeclared \`registry\``,
@@ -175,128 +172,81 @@ describe('documentation code samples', () => {
     expect(offenders).toEqual([]);
   });
 
-  // Option keys this release removed. A sample naming one throws at runtime rather than misbehaving, so the
-  // reader's first experience of the library would be an error in code we gave them.
-  //
-  // DERIVED from the store's own `MOVED_OPTIONS`, minus the four spellings below that survive one level down.
-  // The hand-typed list this replaced had drifted: it named three `storage*` keys no release ever shipped,
-  // and omitted the five options that went away with the live tier, so a sample wiring `warm:` was unwatched.
-  //
-  // `onRetry`, `keystore`, `clock`, `rng` and `registry` are deliberately excluded: each still exists as a
-  // key, just one level down (`retry.onRetry`, `encryption.keystore`, `seams.clock`/`seams.rng`), and several
-  // are also valid on the free-function deps objects. Listing them made this gate fire on the correct new
-  // spelling. Only spellings that vanished outright belong here; the survivors are caught positionally by
-  // ILLEGAL_AT_TOP_LEVEL below.
-  const STILL_VALID_ONE_LEVEL_DOWN = new Set(['registry', 'keystore', 'onRetry', 'clock', 'rng']);
-  const REMOVED_KEYS = MOVED_OPTIONS.map(([from]) => from).filter(
-    (from) => !STILL_VALID_ONE_LEVEL_DOWN.has(from),
-  );
-
-  // A migration note has to show the old spelling — that is its whole job. So the rule is not "never write
-  // the removed key", it is "label it when you do": the line, or the one above it, must carry a `// before`
-  // marker. That is a tightening rather than an exemption, since an unlabelled before/after block is exactly
-  // as copy-pasteable, and exactly as broken, as an ordinary sample.
-  // A line is historical when the NEAREST preceding marker is `// before`. A before/after block writes the
-  // marker once at the top of each half, so scanning the whole prefix is too permissive — it would excuse the
-  // *after* half as well, which is the half that must be correct. Checking only the previous line is too
-  // strict, because the marker sits above the whole block. The nearest marker is the one that applies.
-  const isMarkedAsHistorical = (lines: string[], i: number): boolean => {
-    for (let k = i; k >= 0; k--) {
-      const line = lines[k] ?? '';
-      if (/\/\/\s*after\b/i.test(line)) return false;
-      if (/\/\/\s*before\b/i.test(line)) return true;
-    }
-    return false;
-  };
-
-  // `registry` is a special case: it is gone from `CloudRoaringOptions`, but it is still a perfectly good
-  // option on `bulkLoadCrbmGeneration` and the lifecycle free functions. Listing it above would flag every
-  // correct load example, so the check is scoped to the one literal it was removed from — which means
-  // brace-matching, because `new CloudRoaring({ … })` spans lines and nests.
-  /**
-   * Keys that are illegal at the TOP LEVEL of a `new CloudRoaring({…})` literal, and where each one went.
-   *
-   * These cannot go in `REMOVED_KEYS`, which matches a key anywhere in a fence: `keystore`, `clock` and
-   * `registry` are all still correct on the free-function deps objects (`bulkLoadCrbmGeneration`,
-   * `loadSegment`, `eraseIdFromSegment`) and on `CrbmStorageChunkSourceOptions`, and `onRetry` is still
-   * correct one level down inside `retry`. Listing them there made this suite fire on the correct new
-   * spelling. But at the top level of the store's own options every one of them now THROWS — so the
-   * position is what decides, which is exactly what the top-level scan below can see and a flat match cannot.
-   *
-   * Two samples shipped in this state — the repo's front-door README options summary and the only worked
-   * encryption example in the guide — with all eleven doc gates green, because the machinery existed and was
-   * pointed at one key instead of five.
-   */
-  const ILLEGAL_AT_TOP_LEVEL: ReadonlyArray<readonly [string, string]> = MOVED_OPTIONS.filter(
-    ([from]) => STILL_VALID_ONE_LEVEL_DOWN.has(from),
-  ).map(([from, to]) => [from, /^[\w.]+$/.test(to) ? `it moved to \`${to}\`` : to]);
-
-  it('no sample passes a moved key at the top level of CloudRoaring options', () => {
+  // A key the store does not take, at the top level of `new CloudRoaring({ … })` or inside one of its groups,
+  // throws when the sample runs, so the reader's first experience of the library would be an error in code we
+  // gave them. The keys come from the store's own table, `@/option-keys`, which the constructor checks against.
+  it('passes CloudRoaring only the option keys it takes, at the top level and in each group', () => {
     const offenders: string[] = [];
     for (const fence of allFences) {
-      const code = fence.code;
-      for (const m of code.matchAll(/new CloudRoaring\(\{/g)) {
-        const open = (m.index ?? 0) + m[0].length - 1;
-        let depth = 0;
-        let end = open;
-        for (; end < code.length; end++) {
-          const ch = code[end];
-          if (ch === '{' || ch === '(' || ch === '[') depth++;
-          else if (ch === '}' || ch === ')' || ch === ']') {
-            depth--;
-            if (depth === 0) break;
-          }
-        }
-        const body = code.slice(open + 1, end);
-        const line = fence.line + code.slice(0, open).split('\n').length - 1;
-        if (isMarkedAsHistorical(code.split('\n'), code.slice(0, open).split('\n').length - 1))
-          continue;
-        // Top-level `registry` only. Everything nested is blanked out FIRST, because a legitimate backend
-        // literal — `storage: createBackend({ storage: driver, registry: myRegistry })` — carries a perfectly correct
-        // `registry` one level down, and on a single line a per-line depth counter still reads it as top
-        // level. Blanking makes the depth question positional rather than line-ordered.
-        const topLevelOnly = ((): string => {
-          let out = '';
-          let d = 0;
-          for (const ch of body) {
-            const opening = ch === '{' || ch === '(' || ch === '[';
-            const closing = ch === '}' || ch === ')' || ch === ']';
-            if (closing) d--;
-            out += d === 0 && !opening && !closing ? ch : ' ';
-            if (opening) d++;
-          }
-          return out;
-        })();
-        // `key:` (a value), `key,` and `key }` (shorthand) — the shorthand form is how these were usually
-        // written, and an earlier pattern that required a trailing `:` missed all of it.
-        const scannable = topLevelOnly.replace(/\/\/.*$/gm, '');
-        for (const [key, moved] of ILLEGAL_AT_TOP_LEVEL) {
-          if (new RegExp(`(^|[{,\\s])${key}\\s*([:,}]|$)`, 'm').test(scannable)) {
-            offenders.push(`${fence.file}:${line} — passes \`${key}\` to CloudRoaring; ${moved}`);
-          }
+      for (const { line, key } of unknownStoreKeys(fence.code)) {
+        offenders.push(
+          `${fence.file}:${fence.line + line - 1} — passes \`${key}\` to CloudRoaring, which does not take it`,
+        );
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  // The three cloud backends refuse a key they do not take, as the store does, so a sample that passes one throws
+  // on its first line. The keys come from each backend's own table, which its constructor checks against.
+  const BACKEND_KEYS = {
+    S3Storage: S3_STORAGE_OPTION_KEYS,
+    GcsStorage: GCS_STORAGE_OPTION_KEYS,
+    AzureBlobStorage: AZURE_BLOB_STORAGE_OPTION_KEYS,
+  } as const;
+
+  it('passes each cloud backend only the option keys it takes', () => {
+    const offenders: string[] = [];
+    for (const fence of allFences) {
+      for (const [name, keys] of Object.entries(BACKEND_KEYS)) {
+        for (const { line, key } of unknownConstructorKeys(fence.code, name, keys)) {
+          offenders.push(
+            `${fence.file}:${fence.line + line - 1} — passes \`${key}\` to ${name}, which does not take it`,
+          );
         }
       }
     }
     expect(offenders).toEqual([]);
   });
 
-  it('names no option key that was removed, unless the sample marks it `// before`', () => {
-    const offenders: string[] = [];
-    for (const fence of allFences) {
-      const lines = fence.code.split('\n');
-      lines.forEach((raw, i) => {
-        if (isMarkedAsHistorical(lines, i)) return;
-        for (const key of REMOVED_KEYS) {
-          // `key:` as an object property — not `key.foo`, not a string, not a word in a comment.
-          if (new RegExp(`(^|[{,(\\s])${key}\\s*:`).test(raw.replace(/\/\/.*$/, ''))) {
-            offenders.push(
-              `${fence.file}:${fence.line + i + 1} — sample uses the removed \`${key}:\` option ` +
-                '(mark it `// before` if it is deliberately showing the old API)',
-            );
-          }
-        }
-      });
-    }
-    expect(offenders).toEqual([]);
+  it('reads a backend sample the way the backend does, and not a driver class', () => {
+    const keys = (code: string): string[] =>
+      unknownConstructorKeys(code, 'S3Storage', S3_STORAGE_OPTION_KEYS).map((k) => k.key);
+    expect(keys("new S3Storage({ bucket: 'b', prefix: 'p', client, now })")).toEqual([]);
+    expect(keys("new S3Storage({ bucket: 'b', partBytes: 1 << 26 })")).toEqual([]);
+    expect(keys("new S3Storage({ bucket: 'b', forcePathStyle: true })")).toEqual([
+      'forcePathStyle',
+    ]);
+    expect(keys("new S3Driver({ client, bucket: 'b', forcePathStyle: true })")).toEqual([]);
+    expect(keys("new S3Storage({ ...where, bucket: 'b' }) // a comment naming storage: x")).toEqual(
+      [],
+    );
+  });
+
+  it("reports the line of the file that each sample's code starts on", () => {
+    const md = 'Wire it:\n\n```ts\nconst a = 1;\n```\n';
+    expect(fencesOf('x.md', md).map((f) => f.line)).toEqual([4]);
+    const html =
+      '<p>Wire it:</p>\n<pre><code>const a = 1;</code></pre>\n<pre>\n<code>const b = 2;</code></pre>\n' +
+      '<pre><code>\nconst c = 3;</code></pre>';
+    expect(htmlSamplesOf('x.html', html).map((f) => f.line)).toEqual([2, 4, 5]);
+  });
+
+  it('reads a sample the way the store does: groups, shorthand, and comments and strings left out', () => {
+    const keys = (code: string): string[] => unknownStoreKeys(code).map((k) => k.key);
+    expect(
+      keys('new CloudRoaring({ storage, cache: { maxChunks: 10 }, seams: { clock } })'),
+    ).toEqual([]);
+    expect(
+      keys('new CloudRoaring({\n  storage, // a backend, S3Storage or GcsStorage\n  registry,\n})'),
+    ).toEqual(['registry']);
+    expect(
+      keys("new CloudRoaring({ storage: new S3Storage({ endpoint: 'http://x:9000', registry }) })"),
+    ).toEqual([]);
+    expect(keys('new CloudRoaring({ storage, cache: { maxChunk: 10 }, keystore })')).toEqual([
+      'cache.maxChunk',
+      'keystore',
+    ]);
+    expect(keys('new CloudRoaring({ storage, ...shared, retry: false })')).toEqual([]);
   });
 });

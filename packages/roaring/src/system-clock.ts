@@ -4,9 +4,8 @@
  * It lives outside `core/`, so `Date.now()`, `setTimeout` and `setImmediate` are allowed here; that separation is
  * the whole point of the seam, and it is lint-enforced on the other side.
  *
- * It sits in its own module rather than in `index.ts` because two places need it — the facade, and
- * `codec-bound.ts`, which pre-binds it into `bulkLoadCrbmGeneration`. Importing it from `index.ts` would put a
- * cycle between the barrel and a module the barrel re-exports.
+ * It sits in its own module rather than in `index.ts` so the facade, the tests and anything else that needs a real
+ * clock can import it without importing the whole barrel.
  */
 import type { Clock } from '@cloudbitmaps/core';
 
@@ -19,13 +18,12 @@ export class SystemClock implements Clock {
   sleep(ms: number): Promise<void> {
     if (ms <= 0) return Promise.resolve();
     // A *ref'd* timer, deliberately. Every `sleep` on this clock backs a caller-awaited, bounded retry — today
-    // the driver transient-retry loop (`withRetry`). A pending backoff therefore always means unfinished
-    // awaited work, so the timer MUST keep the event
-    // loop alive until it resolves. Unref-ing it (the pre-fix behaviour) let a short-lived process — CLI,
-    // Lambda, a bare script — whose only remaining handle was the backoff timer exit 0 mid-retry, silently
-    // dropping the awaited operation with neither a result nor a thrown error. Found by a stress test that
-    // drove many writers at one contended registry row, which is what makes the backoff path run long enough
-    // to be the last handle standing.
+    // the transient-retry loop (`withRetry`) that wraps the chunk source. A pending backoff therefore always means unfinished
+    // awaited work, so the timer MUST keep the event loop alive until it resolves. An unref'd timer lets a
+    // short-lived process — CLI, Lambda, a bare script — whose only remaining handle is the backoff timer exit 0
+    // mid-retry, silently dropping the awaited operation with neither a result nor a thrown error. When a
+    // transient fault repeats (a backend throttling a hot key, say), the backoff timer can be the last handle
+    // standing.
     // Retries are bounded (`maxAttempts`/`maxRetries` + `maxDelayMs`), so a ref'd timer can only
     // extend a process by the small remaining backoff budget of work that is genuinely still in flight.
     return new Promise((resolve) => {
@@ -39,7 +37,7 @@ export class SystemClock implements Clock {
    * A long CPU-bound loop in `core/` (bulk-load is the one that matters) periodically hands the loop back so a
    * co-resident HTTP server keeps answering. Measured on the **synthetic yield-primitive benchmark** — a
    * 61,035-iteration loop yielding every 1,024, isolating the primitive rather than timing a real load (the
-   * end-to-end figures are 450 ms → 19 ms; see `cooperative.ts`, which lists all three experiments):
+   * end-to-end figures are 519 ms → 24 ms; see `cooperative.ts`, which lists all three experiments):
    *
    * ```text
    *   no yield         568 ms wall   568.0 ms worst event-loop gap

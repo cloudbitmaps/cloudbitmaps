@@ -3,7 +3,7 @@
 #
 # There is deliberately no Discussions entry: Discussions is not enabled on this repo, and an entry pointing at
 # a disabled tab sends anyone with a question to a 404 — worse than not offering it, because it looks like a
-# door. If Discussions is ever turned on in the repo settings, add the entry back in the same change.
+# door. If Discussions is ever turned on in the repo settings, add an entry for it in the same change.
 blank_issues_enabled: false
 contact_links:
   - name: Security report (private)

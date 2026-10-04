@@ -26,7 +26,7 @@
  *   new CloudRoaring({ storage: new S3Storage({ bucket }) })
  *
  * One backend object, not a driver pair. Assembling `{ storage, registry }` by hand is refused with a
- * `ValidationError` that names `createBackend` as the way to supply a half of your own.
+ * `ValidationError` that names the backend classes.
  *
  * Config is read from the environment (12-factor-friendly):
  *   CR_EXPORT_ROOT       (required) — the local-filesystem root holding storage/ registry/
@@ -39,7 +39,8 @@ import { realpathSync } from 'node:fs';
 import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { CloudRoaring, LocalFsStorage, encodeNameForPath, namespacePathPart } from '../index';
+import { encodeNameForPath, namespacePathPart } from '@cloudbitmaps/core/driver-kit';
+import { CloudRoaring, LocalFsStorage } from '../index';
 import type { ExportFormat, ExportManifest, ExportSink, SegmentRef } from '../index';
 
 export interface ExportConfig {
@@ -194,7 +195,7 @@ export async function main(
  * `realpathSync` can throw, and none of those cases mean "run the CLI", so they resolve to false. The one
  * that genuinely reaches the catch is `node -` (a script on stdin), where `argv[1]` is the literal string
  * `"-"` and resolving it raises `ENOENT`. (Under `node --eval` there is no `argv[1]` at all, so the early
- * return above handles that one — this comment used to cite it, which was wrong.)
+ * return above handles that one.)
  */
 function invokedAsCli(): boolean {
   const entry = process.argv[1];

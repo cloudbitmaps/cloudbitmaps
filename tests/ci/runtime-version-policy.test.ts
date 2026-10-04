@@ -4,16 +4,12 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'yaml';
 
-// The runtime floor is declared in three places and they had already drifted.
+// The runtime floor is declared in three places, and only a test keeps them together.
 //
 // The policy is "declare the floor and enforce it in `engines`, the version file, and the CI matrix, kept in
-// sync". In practice `.nvmrc` said 22 while all three manifests still said `>=20` — so the PUBLISHED packages
-// advertised support for a Node major that reached end-of-life on 2026-04-30 and that nobody was developing
-// against. Nothing caught it, because each of the three is individually plausible; only the disagreement is
-// wrong, and no single file can see the disagreement.
-//
-// It surfaced by accident: an AWS SDK warning in an unrelated in-region latency run mentioned Node 20, which
-// prompted a look. That is not a detection strategy, hence this test.
+// sync". Each of the three is plausible on its own: `.nvmrc` on 22 while the manifests say `>=20` would have
+// the PUBLISHED packages advertise support for a Node major that reached end-of-life on 2026-04-30 and that
+// nobody develops against. Only the disagreement is wrong, and no single file can see the disagreement.
 //
 // The floor is a POLICY number, not a fact about the code, so it lives here as a constant with its reasoning
 // attached. Raising it is a deliberate edit to this line plus the three files — which is the point.
@@ -30,8 +26,7 @@ const { findNodeFloorClaims, findPinnedNodeVersions, satisfiesFloor, compareVers
 /**
  * Minimum supported Node, as `engines` declares it.
  *
- * `22` because Node 20 reached EOL on 2026-04-30 and shipping an EOL runtime is a security liability as well
- * as a tooling one (dependency-cruiser 18 already declares `^22 || ^24`).
+ * `22` because Node 20 reached EOL on 2026-04-30, and shipping an EOL runtime is a security liability.
  *
  * `.12` because the packages are ESM-only and a CommonJS consumer therefore reaches them through Node's
  * `require(esm)`, which landed in 22.12. Measured, not assumed: 22.11.0 throws `ERR_REQUIRE_ESM`, 22.12.0
@@ -47,15 +42,15 @@ const FLOOR = '22.12';
  * what users actually get.
  */
 const FLOOR_MAJOR = Number(FLOOR.split('.')[0]);
-/** The CI matrix is the active LTS + the current release — not every major that still runs. */
+/** The CI matrix is the two LTS lines, 22 and 24 — not every major that still runs. */
 const EXPECTED_MATRIX = [22, 24];
 
 /**
  * The root manifest plus EVERY package manifest, derived rather than listed.
  *
- * This was a hardcoded three — root, core, roaring — and stayed three through the split to five packages.
- * A driver package could therefore advertise `engines.node: ">=20"`: an EOL major, and one below 22.12
- * where a CommonJS consumer cannot `require()` these ESM packages at all, with the whole suite green.
+ * Derived, because a hardcoded list goes stale the day a package is added: a new driver package could then
+ * advertise `engines.node: ">=20"` — an EOL major, and one below 22.12 where a CommonJS consumer cannot
+ * `require()` these ESM packages at all — with the whole suite green.
  */
 const MANIFESTS = [
   'package.json',
@@ -95,34 +90,40 @@ describe('runtime version policy is consistent across every declaration', () => 
   });
 
   it('every prose declaration of the floor states the current floor', () => {
-    // A FOURTH declaration site, found the same way the first three were — by accident. The README said
-    // "Node ≥ 20" long after the floor moved to 22: a major that was already EOL, telling readers the
-    // opposite of what the manifests enforce. The three-way check above could not see it, because prose is
-    // not a manifest.
+    // A FOURTH declaration site: prose. A README saying "Node ≥ 20" under this floor names a major that is
+    // already EOL, telling readers the opposite of what the manifests enforce, and the three-way check above
+    // cannot see it, because prose is not a manifest.
     //
-    // The two PACKAGE readmes are in scope and are the reason this list is not just the repo root: they are
-    // what `files` publishes, so they are the npm page a consumer reads to decide whether they can install
-    // at all. Neither states a floor today, which is exactly when a blind spot is cheapest to close.
+    // Every PACKAGE readme is in scope, and is the reason this list is not just the repo root: each is
+    // published in its package's `files`, so it is the npm page a consumer reads to decide whether they can
+    // install at all.
     //
     // CHANGELOG.md is deliberately out of scope: its old entries state the floor that was correct when they
     // were written, and rewriting history to match today's number would make it a worse record.
+    const markdownUnder = (dir: string, prefix: string): string[] =>
+      readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+        const rel = `${prefix}/${entry.name}`;
+        if (entry.isDirectory()) return markdownUnder(join(dir, entry.name), rel);
+        return entry.name.endsWith('.md') ? [rel] : [];
+      });
     const DOCS = [
       'README.md',
       'CONTRIBUTING.md',
       'SECURITY.md',
-      'docs/guide/getting-started.md',
-      // States the floor three times and is the first page an upgrading user reads.
-      'MIGRATING.md',
-      // Every package README, derived: these are npm landing pages, and the three newest are exactly when
-      // a wrong floor is cheapest to write and least likely to be noticed.
+      // Every page under docs/, derived, so a page a split creates is covered on the day it exists.
+      ...markdownUnder(join(ROOT, 'docs'), 'docs'),
+      // Every package README, derived: these are npm landing pages, and the one a new package adds is where a
+      // wrong floor is cheapest to write and least likely to be noticed.
       ...readdirSync(join(ROOT, 'packages'), { withFileTypes: true })
         .filter((e) => e.isDirectory() && existsSync(join(ROOT, 'packages', e.name, 'README.md')))
         .map((e) => `packages/${e.name}/README.md`)
         .sort(),
     ];
-    // These two are where the floor is actually stated. If a rewording drops it from EITHER, that is the
-    // silent regression this test exists for — a global "something matched somewhere" count would let the
-    // README lose its statement entirely and still read 1.
+    expect(DOCS).toContain('docs/guide/getting-started.md');
+    expect(DOCS).toContain('docs/guide/production.md');
+    // These two must state the floor. If a rewording drops it from EITHER, that is the silent regression this
+    // test exists for — a global "something matched somewhere" count would let the README lose its statement
+    // entirely and still read 1.
     const MUST_DECLARE = ['README.md', 'CONTRIBUTING.md'];
 
     const perFile = new Map<string, number>();
@@ -148,11 +149,10 @@ describe('runtime version policy is consistent across every declaration', () => 
     // The matrix is not the only place a version appears — several jobs hardcode `node-version:`, and one of
     // those silently below the floor would test a runtime consumers are told not to use.
     //
-    // A SUB-MAJOR pin is the case that matters now and did not exist before: while the floor was a bare
-    // major, "below the floor" could only mean a smaller major, and a plain integer match was enough.
-    // `>=22.12` makes `node-version: 22.11` a below-floor pin that looks identical to a good one, so the
-    // comparison has to be version-aware — and prefix-aware, since a bare `22` resolves to the latest 22.x
-    // and is therefore fine.
+    // A SUB-MAJOR pin is the case that matters: under a floor on a bare major, "below the floor" could only
+    // mean a smaller major, and a plain integer match would be enough. `>=22.12` makes `node-version: 22.11`
+    // a below-floor pin that looks identical to a good one, so the comparison has to be version-aware — and
+    // prefix-aware, since a bare `22` resolves to the latest 22.x and is therefore fine.
     // EVERY workflow, not just ci.yml. `release.yml` and `fuzz-nightly.yml` carry their own pins, and a
     // below-floor pin in the release workflow is the worst place for one — that is the job that builds the
     // tarballs consumers install.

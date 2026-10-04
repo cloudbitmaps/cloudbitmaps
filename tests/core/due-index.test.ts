@@ -1,15 +1,15 @@
 /**
  * The due index — the structure that makes a retention cycle cost what is EXPIRING rather than what the fleet
- * HOLDS. Foundation only: encoding, bucket maths and the reserved-namespace rules. Wiring it into the sweep is
- * the next PR.
+ * HOLDS. This file covers the foundation: encoding, bucket maths and the reserved-namespace rules. The sweep's
+ * use of it is covered by `due-index-maintenance.test.ts` and `due-index-fast-sweep.test.ts`.
  *
  * The property under test throughout is **reversibility**: an index row's name is the only place the original
  * ref is recorded, so if `decode(encode(ref))` is ever not `ref`, the sweep retires the wrong segment or none.
  */
+import { RESERVED_NAMESPACE_PREFIX, validateSegmentRef } from '@/core/validate';
 import { describe, expect, it } from 'vitest';
 import {
   DUE_BUCKET_MS,
-  DUE_NAMESPACE_PREFIX,
   MAX_NAME_LENGTH,
   canIndex,
   decodeDueName,
@@ -21,7 +21,6 @@ import {
   isDueIndexRow,
 } from '@/core/due-index';
 import { ValidationError } from '@/core/errors';
-import { validateSegmentRef } from '@/index';
 
 describe('due index — encoding round-trips', () => {
   const refs = [
@@ -30,8 +29,8 @@ describe('due index — encoding round-trips', () => {
     // Every character the grammar allows appears in both parts — no separator could be unambiguous on its own,
     // which is exactly why the encoding is length-prefixed rather than delimited.
     { namespace: 'a.b-c_d:x', segment: 'e.f-g_h:y' },
-    // The colon is the newest grammar character and the most separator-looking one, so it gets the
-    // ambiguity pair too: these two differ only in which side of the split the colon falls on.
+    // The colon is the most separator-looking grammar character, so it gets the ambiguity pair too: these two
+    // differ only in which side of the split the colon falls on.
     { namespace: 'a:b', segment: 'c' },
     { namespace: 'a', segment: 'b:c' },
     { namespace: 'd-2026-08-05', segment: 'd-2026-08-05' },
@@ -107,7 +106,7 @@ describe('due index — buckets', () => {
       const ns = dueNamespace(dueBucket(at));
       expect(() => validateSegmentRef({ segment: 'x', namespace: ns })).not.toThrow();
       expect(ns).not.toContain('..');
-      expect(ns.startsWith(DUE_NAMESPACE_PREFIX)).toBe(true);
+      expect(ns.startsWith(RESERVED_NAMESPACE_PREFIX)).toBe(true);
     }
   });
 

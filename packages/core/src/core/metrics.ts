@@ -11,8 +11,8 @@
  * Two caveats for sink authors: `onEvent` runs **synchronously on the I/O path**, so keep it cheap and
  * non-blocking (offload batching/network to your own async queue); and `segment`/`namespace` are
  * caller-controlled strings that may be PII and are **unbounded-cardinality** — do not map them to
- * per-series metric labels unless they're known low-cardinality and PII-free. See the getting-started
- * "Observability" section.
+ * per-series metric labels unless they're known low-cardinality and PII-free. See the observability
+ * guide.
  */
 
 /** The segment operations that emit an `op` latency event (timed with the injected clock, at the facade). */
@@ -29,7 +29,7 @@ export type MetricEvent =
       readonly kind: 'storage.get';
       readonly namespace?: string;
       readonly segment: string;
-      /** Bytes returned (0 if the chunk was absent — a GET still happened). */
+      /** One event per request, however many callers were waiting on it. Bytes returned (0 if the chunk was absent — a GET still happened). */
       readonly bytes: number;
       /**
        * Elapsed wall time of the read — includes any transient-retry backoff on the storage call. From the
@@ -37,7 +37,16 @@ export type MetricEvent =
        */
       readonly ms: number;
     }
-  | { readonly kind: 'cache'; readonly hit: boolean }
+  | {
+      /**
+       * One decoded-chunk cache lookup (emitted only when a cache is configured). `hit: false` means the lookup found
+       * no cached chunk. A caller that missed while another caller's read of the same chunk was open waits on that
+       * read and adds no `storage.get`, so the misses can outnumber the `storage.get` events; the `storage.get`
+       * count is the number of requests.
+       */
+      readonly kind: 'cache';
+      readonly hit: boolean;
+    }
   | {
       readonly kind: 'retry';
       /** Infrastructure-fault backoff (throttling, 5xx, a dropped connection) — the one kind of retry the store does. */
@@ -49,8 +58,7 @@ export type MetricEvent =
   | {
       readonly kind: 'intersect';
       /**
-       * Which chunk-aligned combine this was. **Optional for backward compatibility** — absent means
-       * `'intersect'`, which is all this event reported before `union`/`andNot` existed.
+       * Which chunk-aligned combine this was. **Optional** — absent means `'intersect'`.
        *
        * For `'union'` over its *include* operands alone, `skippedChunks` is 0 by construction — union reads
        * every chunk of every operand, so there is nothing to prune. It can still be non-zero when a union
@@ -72,6 +80,11 @@ export type MetricEvent =
       /**
        * **Distinct** chunk-keys pruned — never fetched (the chunk-skipping saving). Counts distinct keys,
        * not per-operand GETs, so it under-states the true GET saving when 3+ operands partially overlap.
+       *
+       * On a read bounded by `after` / `through`, this and `fetchedChunks` count only the keys inside the range:
+       * the keys outside it are never considered, so they are not counted as pruned either. Both count the keys the
+       * call would fetch if read to the end, so a page that stops early reports every key up to `through`, or to the
+       * end of the segment when `through` is left out.
        */
       readonly skippedChunks: number;
     }

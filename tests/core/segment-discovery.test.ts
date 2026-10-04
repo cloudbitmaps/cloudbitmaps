@@ -1,12 +1,8 @@
-import {
-  createBackend,
-  MemoryStorage,
-  CloudRoaring,
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
-} from '@/index';
+import { MemoryStorage, CloudRoaring } from '@/index';
 import type { IRegistryDriver } from '@/core/ports';
 import { UnsupportedError, ValidationError } from '@/core/errors';
+import { brandAsBackend } from '@/core/ports';
+import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 
 // "How do I know whether a segment already exists?" — the question this answers, and the reason a user should
 // NOT keep their own list of segment names beside the store. The registry is already that list.
@@ -71,10 +67,9 @@ describe('exists()', () => {
   });
 
   it('validates at the boundary — before any registry I/O, not by letting the driver reject it', async () => {
-    // The earlier version of this test only asserted that a ValidationError came back, which every registry
-    // driver already produces from its own key builder — so removing `validateSegmentRef` from both `exists()`
-    // and `segmentExists` left the whole suite green. The guarantee that is actually unique here is that a
-    // malformed ref costs nothing.
+    // Asserting only that a ValidationError comes back proves nothing: every registry driver already produces
+    // one from its own key builder, so such a test passes with `validateSegmentRef` removed from both `exists()`
+    // and `segmentExists`. The guarantee that is actually unique here is that a malformed ref costs nothing.
     const registry = new MemoryRegistryDriver();
     let gets = 0;
     const counting: IRegistryDriver = {
@@ -86,11 +81,11 @@ describe('exists()', () => {
       },
       create: (r, rec) => registry.create(r, rec),
       compareAndSwap: (r, t, patch) => registry.compareAndSwap(r, t, patch),
-      delete: (r) => registry.delete(r),
+      delete: (r, expected) => registry.delete(r, expected),
       list: (ns?: string) => registry.list(ns),
     };
     const s = new CloudRoaring({
-      storage: createBackend({ storage: new MemoryStorageDriver(), registry: counting }),
+      storage: brandAsBackend({ storage: new MemoryStorageDriver(), registry: counting }),
     });
 
     await expect(s.exists({ segment: '' })).rejects.toBeInstanceOf(ValidationError);
@@ -107,7 +102,8 @@ describe('exists()', () => {
 
   it('a torn restore still answers true — the pointer resolves, the object is gone', async () => {
     // The documented exception. `exists()` reports on the POINTER; a live pointer whose object was deleted is
-    // the forbidden `missing-storage-generation` state, where reads THROW rather than answer empty.
+    // the forbidden `missing-storage-generation` state, where reads of the object THROW rather than answer empty (a
+    // cold `count()` answers the row's number).
     // `checkConsistency` is the call that looks for it, and the JSDoc says so rather than over-claiming.
     const backend = new MemoryStorage();
     const { storage } = backend;
@@ -116,7 +112,9 @@ describe('exists()', () => {
     await storage.delete({ segment: 'torn', generation: 0 });
 
     expect(await s.exists({ segment: 'torn' })).toBe(true);
-    await expect(s.segment('torn').count()).rejects.toThrow(/no such generation/);
+    // A count answers from the row, which is true of the generation it names; a read of the object throws.
+    expect(await s.segment('torn').count()).toBe(2);
+    await expect(s.segment('torn').has(1)).rejects.toThrow(/no such generation/);
   });
 
   it('needs a registry', async () => {
@@ -151,9 +149,9 @@ describe('segments()', () => {
     expect((await drain(s.segments({ namespace: 'acme' }))).map((v) => v.segment)).toEqual(['x']);
     expect((await drain(s.segments())).length).toBe(3);
 
-    // A colon namespace, SCOPED. Colons became legal one commit ago, and the scoped path is the interesting
-    // one: the facade validates through `validateSegmentRef`, and a filesystem driver percent-encodes the
-    // colon on the way to a directory name and has to decode it to answer this.
+    // A colon namespace, SCOPED. The scoped path is the interesting one: the facade validates through
+    // `validateSegmentRef`, and a filesystem driver percent-encodes the colon on the way to a directory name and
+    // has to decode it to answer this.
     await s.load({ segment: 'q', namespace: 'tenant:acme' }, [4]);
     expect((await drain(s.segments({ namespace: 'tenant:acme' }))).map((v) => v.segment)).toEqual([
       'q',
@@ -161,10 +159,9 @@ describe('segments()', () => {
   });
 
   it('streams — breaking out really stops the scan, it does not just stop reading', async () => {
-    // The previous version of this test asserted `seen.length === 2` after breaking at 2, which restates the
-    // break condition and cannot fail. It could not tell a streaming implementation from one that drained the
-    // whole fleet into an array first — which is the only thing the claim is about. Count what the DRIVER
-    // produced instead.
+    // Asserting `seen.length === 2` after breaking at 2 restates the break condition and cannot fail: it cannot
+    // tell a streaming implementation from one that drained the whole fleet into an array first — which is the
+    // only thing the claim is about. So this counts what the DRIVER produced.
     const registry = new MemoryRegistryDriver();
     let pulled = 0;
     const counting: IRegistryDriver = {
@@ -173,7 +170,7 @@ describe('segments()', () => {
       get: (r) => registry.get(r),
       create: (r, rec) => registry.create(r, rec),
       compareAndSwap: (r, t, patch) => registry.compareAndSwap(r, t, patch),
-      delete: (r) => registry.delete(r),
+      delete: (r, expected) => registry.delete(r, expected),
       async *list(namespace?: string) {
         for await (const row of registry.list(namespace)) {
           pulled++;
@@ -182,7 +179,7 @@ describe('segments()', () => {
       },
     };
     const s = new CloudRoaring({
-      storage: createBackend({ storage: new MemoryStorageDriver(), registry: counting }),
+      storage: brandAsBackend({ storage: new MemoryStorageDriver(), registry: counting }),
     });
     for (const n of ['a', 'b', 'c', 'd', 'e', 'f']) await s.load({ segment: n }, [1]);
 
@@ -228,12 +225,12 @@ describe('segments()', () => {
     expect(listed.some((v) => (v.namespace ?? '').startsWith('cbm.due.'))).toBe(false);
   });
 
-  it('still shows reserved rows to a caller who scopes to them deliberately', async () => {
+  it('refuses a caller who scopes to the reserved namespace, rather than listing the bookkeeping rows', async () => {
     // Hold the registry so the test can discover the due-index namespace rather than hardcode a bucket
     // number, which is clock-dependent.
     const registry = new MemoryRegistryDriver();
     const s = new CloudRoaring({
-      storage: createBackend({ storage: new MemoryStorageDriver(), registry: registry }),
+      storage: brandAsBackend({ storage: new MemoryStorageDriver(), registry: registry }),
     });
     await s.load({ segment: 'real' }, [1]);
     await s.setRetention({ segment: 'real' }, { expiresAt: Date.now() + 86_400_000 });
@@ -243,11 +240,8 @@ describe('segments()', () => {
     const dueNamespace = raw.find((r) => (r.namespace ?? '').startsWith('cbm.due.'))?.namespace;
     expect(dueNamespace).toBeDefined(); // the fixture must actually have produced one
 
-    // The exclusion is for the UNSCOPED fleet scan only. Naming the namespace is an explicit request, and the
-    // retention sweep's own diagnostics depend on being able to make it.
-    const reserved = await drain(s.segments({ namespace: dueNamespace }));
-    expect(reserved).toHaveLength(1);
-    expect(reserved[0]?.namespace).toBe(dueNamespace);
+    // The namespace is the library's own, so naming it is refused rather than listing the pointer rows.
+    expect(() => s.segments({ namespace: dueNamespace })).toThrow(ValidationError);
   });
 
   it('validates a namespace rather than silently scanning everything', async () => {

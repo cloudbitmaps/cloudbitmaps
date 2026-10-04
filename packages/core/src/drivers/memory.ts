@@ -8,13 +8,12 @@
 import { createHash } from 'node:crypto';
 import { BufferSink } from '../core/blob';
 import type { BlobSink } from '../core/blob';
+import type { Entropy } from '../core/determinism';
 import { NotFoundError, ValidationError, WriteConflictError } from '../core/errors';
-import { chunkRefKey, segmentKey, segmentPrefix } from '../core/keys';
-import { validateChunkRef, validateSegmentRef } from '../core/validate';
+import { segmentKey } from '../core/keys';
+import { validateSegmentRef } from '../core/validate';
 import type {
-  ChunkRef,
   StorageCaps,
-  StorageChunkSource,
   GenKey,
   IStorageDriver,
   IRegistryDriver,
@@ -23,80 +22,53 @@ import type {
   RegistryPatch,
   RegistryRecord,
   SegmentRef,
-  SegmentSize,
   Token,
 } from '../core/ports';
 import {
   applyRegistryPatch,
+  drawIncarnation,
+  drawWrite,
+  incarnationOf,
   recordFromNew,
   validateNewRegistryRecord,
   validateRegistryPatch,
 } from './_shared/registry';
-
-export class MemoryStorageChunkSource implements StorageChunkSource {
-  private readonly chunks = new Map<string, Uint8Array>();
-
-  async getChunk(ref: ChunkRef): Promise<Uint8Array | null> {
-    validateChunkRef(ref);
-    return this.chunks.get(chunkRefKey(ref)) ?? null;
-  }
-
-  async listChunkKeys(ref: SegmentRef): Promise<number[]> {
-    validateSegmentRef(ref);
-    const prefix = segmentPrefix(ref);
-    const keys: number[] = [];
-    for (const key of this.chunks.keys()) {
-      if (key.startsWith(prefix)) keys.push(Number(key.slice(prefix.length)));
-    }
-    return keys;
-  }
-
-  async sizeOf(ref: SegmentRef): Promise<SegmentSize | null> {
-    validateSegmentRef(ref);
-    const prefix = segmentPrefix(ref);
-    let sizeBytes = 0;
-    let found = false;
-    for (const [key, bytes] of this.chunks) {
-      if (!key.startsWith(prefix)) continue;
-      found = true;
-      sizeBytes += bytes.length;
-    }
-    return found ? { sizeBytes } : null;
-  }
-
-  /** Test/seed helper — populate immutable Storage bytes for a chunk directly (bypassing the `.crbm` format). */
-  seed(ref: ChunkRef, bytes: Uint8Array): void {
-    validateChunkRef(ref); // keep seed symmetric with the validated read path
-    this.chunks.set(chunkRefKey(ref), bytes);
-  }
-}
+import { entropyIsAvailable, webCryptoEntropy } from './_shared/entropy';
 
 export interface MemoryRegistryDriverOptions {
   /** Injected clock for `createdAt`/`updatedAt`; defaults to `Date.now` (drivers may use ambient time). */
   readonly now?: () => number;
+  /** Draws every token's random parts; defaults to Web Crypto. Inject one only to make a test replayable. */
+  readonly entropy?: Entropy;
 }
 
 /**
- * In-memory {@link IRegistryDriver} — one record per segment under OCC. The token is a single global,
- * monotonic, never-reused counter (so a record recreated after `delete` always gets a strictly-greater
- * token → ABA-safe even though `delete` removes the row physically).
+ * In-memory {@link IRegistryDriver} — one record per segment under OCC. The token has the form every shipped driver
+ * gives it, an incarnation id drawn at create, a counter and a per-write random part, but its counter is global to the
+ * driver: monotonic and never reused, so a record recreated after `delete` never meets an earlier token, by
+ * construction, even though `delete` removes the row physically.
  */
 export class MemoryRegistryDriver implements IRegistryDriver {
   private readonly rows = new Map<string, RegistryRecord>();
   private readonly now: () => number;
+  private readonly entropy: Entropy;
   private seq = 0;
 
   constructor(options: MemoryRegistryDriverOptions = {}) {
     this.now = options.now ?? (() => Date.now());
+    this.entropy = options.entropy ?? webCryptoEntropy;
   }
 
-  private nextToken(): Token {
+  private nextToken(incarnation: string): Token {
     this.seq += 1;
-    return String(this.seq);
+    return `${incarnation}.${this.seq}.${drawWrite(this.entropy)}`;
   }
 
+  /** `conditionalDelete`: a delete checks the token and removes the row in one step, with no await between. */
   capabilities(): RegCaps {
-    return { strongRead: true };
+    return entropyIsAvailable(this.entropy)
+      ? { strongRead: true, conditionalDelete: true }
+      : { strongRead: true, canWrite: false, conditionalDelete: true };
   }
 
   async get(ref: SegmentRef): Promise<RegistryRecord | null> {
@@ -107,15 +79,15 @@ export class MemoryRegistryDriver implements IRegistryDriver {
 
   async create(ref: SegmentRef, record: NewRegistryRecord): Promise<{ token: Token }> {
     validateSegmentRef(ref);
-    validateNewRegistryRecord(record);
+    const checked = validateNewRegistryRecord(record);
     const key = segmentKey(ref);
     if (this.rows.has(key)) {
       throw new WriteConflictError(`registry row already exists for segment ${ref.segment}`);
     }
-    const token = this.nextToken();
+    const token = this.nextToken(drawIncarnation(this.entropy));
     // clone in: the caller's (nested) retention/residency can't alias stored state (value semantics, parity
     // with the serialize-based persistent drivers).
-    this.rows.set(key, structuredClone(recordFromNew(ref, record, this.now(), token)));
+    this.rows.set(key, structuredClone(recordFromNew(ref, checked, this.now(), token)));
     return { token };
   }
 
@@ -125,14 +97,14 @@ export class MemoryRegistryDriver implements IRegistryDriver {
     patch: RegistryPatch,
   ): Promise<{ token: Token }> {
     validateSegmentRef(ref);
-    validateRegistryPatch(patch);
+    const checked = validateRegistryPatch(patch);
     const key = segmentKey(ref);
     const existing = this.rows.get(key);
     if (!existing || existing.token !== expected) {
       throw new WriteConflictError(`OCC token mismatch for registry row ${ref.segment}`);
     }
-    const token = this.nextToken();
-    this.rows.set(key, structuredClone(applyRegistryPatch(existing, patch, this.now(), token)));
+    const token = this.nextToken(incarnationOf(existing.token) ?? drawIncarnation(this.entropy));
+    this.rows.set(key, structuredClone(applyRegistryPatch(existing, checked, this.now(), token)));
     return { token };
   }
 
@@ -142,9 +114,13 @@ export class MemoryRegistryDriver implements IRegistryDriver {
     }
   }
 
-  async delete(ref: SegmentRef): Promise<void> {
+  async delete(ref: SegmentRef, expected?: Token): Promise<void> {
     validateSegmentRef(ref);
-    this.rows.delete(segmentKey(ref)); // idempotent; token uniqueness is global so a recreate is ABA-safe
+    const key = segmentKey(ref);
+    if (expected !== undefined && this.rows.get(key)?.token !== expected) {
+      throw new WriteConflictError(`OCC token mismatch for registry row ${ref.segment}`);
+    }
+    this.rows.delete(key); // idempotent; token uniqueness is global so a recreate is ABA-safe
   }
 }
 

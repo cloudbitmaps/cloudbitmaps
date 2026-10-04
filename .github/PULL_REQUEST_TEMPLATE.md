@@ -13,7 +13,9 @@
 - [ ] **Adversarial review gate run** — multiple parallel subagents, one per lens, against the whole
       component end to end; real findings fixed here, or recorded with a severity and a deferral
 - [ ] Docs updated in the same change (see [CONTRIBUTING → Documentation](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/CONTRIBUTING.md#documentation--keeping-it-current)):
-      README / `docs/guide/` / `CHANGELOG.md` (top of `[Unreleased]`, newest-first) / roadmap
+      README / `docs/guide/` / `CHANGELOG.md` (top of its `[Unreleased]` subsection, newest-first) / roadmap
+- [ ] Moves the version? A changeset from `pnpm changeset` records the bump type for the family (pre-`1.0`, a
+      breaking change is a minor); a change to docs, tests or tooling alone needs none
 - [ ] Consequential + hard to reverse (public exports, `.crbm` format, a dependency)? Say so in the PR body,
       with the options and the trade-offs, so the decision is reviewable rather than implied
 - [ ] Hot path (`has` / `count` / `iterate` / `intersect`) not taxed for a feature most users won't use

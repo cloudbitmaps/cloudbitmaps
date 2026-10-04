@@ -1,38 +1,30 @@
-import {
-  MemoryStorage,
-  CloudRoaring,
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
-  bulkLoadCrbmGeneration,
-  gcOrphanGenerations,
-} from '@/index';
+import { gcOrphanGenerations } from '@/core/generation-gc';
+import { MemoryStorage, CloudRoaring } from '@/index';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { openGenerationReader } from '@/core/crbm-storage-source';
 import { roaringCodec } from '@/roaring-codec';
 import type { IStorageDriver, SegmentRef } from '@/index';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 
 /**
- * "The bit is physically gone from the bucket when the call returns" held for *current members* and quietly
- * did not for **ex-members** — the one population most likely to be asking.
+ * "The bit is physically gone from the bucket when the call returns" has to hold for **ex-members** as well as
+ * for *current members* — ex-members are the one population most likely to be asking.
  *
- * The lifecycle that produces it is the documented one, with no race: a re-seed stops including someone, and
- * `gcOrphanGenerations`' default `keep: 1` retains exactly the generation they were dropped from as the reader
- * grace window. The rewrite checked `currentGen` only, said `'not-member'`, and `eraseSubject` filtered the
- * segment out of the ledger — a clean receipt over bytes still in the bucket.
+ * The documented lifecycle leaves an ex-member's bit in the bucket, with no race: a re-seed stops including
+ * someone, and `gcOrphanGenerations`' default `keep: 1` retains exactly the generation they were dropped from
+ * as the reader grace window. A rewrite that checks `currentGen` only says `'not-member'`, and `eraseSubject`
+ * then filters the segment out of the ledger — a clean receipt over bytes still in the bucket.
  */
 const REF: SegmentRef = { namespace: 'audiences', segment: 'active-30d' };
 
-async function heldIn(
-  storage: MemoryStorageDriver,
-  generation: number,
-  id: number,
-): Promise<boolean> {
+async function heldIn(storage: IStorageDriver, generation: number, id: number): Promise<boolean> {
   const reader = await openGenerationReader(storage, { ...REF, generation }, undefined);
   const bytes = await reader.getChunk(0);
   return bytes === null ? false : roaringCodec.safeDeserialize(bytes, 1 << 20).has(id);
 }
 
-async function generations(storage: MemoryStorageDriver): Promise<number[]> {
+async function generations(storage: IStorageDriver): Promise<number[]> {
   const out: number[] = [];
   for await (const k of storage.list(REF)) out.push(k.generation);
   return out.sort((a, b) => a - b);
@@ -56,7 +48,7 @@ describe('erasure reaches an ex-member in a retained generation', () => {
     expect(await generations(storage)).toEqual([1]); // physically gone
   });
 
-  it('the ledger now lists the segment instead of filtering it out', async () => {
+  it('the ledger lists the segment rather than filtering it out', async () => {
     const backend = new MemoryStorage();
     const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [5, 6, 7], { registry });

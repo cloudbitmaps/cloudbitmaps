@@ -13,28 +13,28 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // Guards `scripts/bootstrap-publish.cjs` — the one-time, irreversible first publish. Its dry-run path is easy
-// to exercise and was; its LIVE path is not, because the last thing it does is publish to npm for real. That
-// asymmetry shipped a crash:
+// to exercise; its LIVE path is not, because the last thing it does is publish to npm for real, and a script
+// tested only up to there can crash past it:
 //
-//   `execFileSync` returns NULL — not a string — whenever stdout is inherited rather than piped, and the build
-//   and publish steps inherit deliberately so pnpm's progress and npm's 2FA prompt reach the terminal. The
-//   `run()` helper called `.trim()` on that result unconditionally, so the script threw `Cannot read properties
-//   of null` the moment it got past the preconditions. Every precondition had passed; the operator had already
-//   typed `--confirm`.
+//   `execFileSync` returns NULL — not a string — whenever stdout is inherited rather than piped, and the
+//   build and publish steps inherit deliberately so pnpm's progress and npm's 2FA prompt reach the terminal.
+//   A `run()` helper that calls `.trim()` on that result unconditionally throws
+//   `Cannot read properties of null` the moment the script gets past the preconditions — with every
+//   precondition passed and `--confirm` already typed.
 //
 // So the live path gets covered here by putting fake `pnpm`, `npm`, `git` and `gh` executables ahead of the
 // real ones on PATH. Nothing is published, and the script cannot tell the difference — which is the point: a
 // publish script that is only ever tested up to the publish is untested where it matters most.
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const SCRIPT = join(ROOT, 'scripts', 'bootstrap-publish.cjs');
-const VERSION = '0.1.0-rc.0';
+const VERSION = '0.10.0-rc.0';
 
 interface Shims {
   /**
-   * How `npm view <pkg> versions --json` fails for a name the registry does not have. The script now
-   * distinguishes a 404 from every other failure, so the shim has to emit a REALISTIC one: the old shim
-   * just exited 1 with no output, which is indistinguishable from a network error and encoded the very
-   * bug this distinction fixes.
+   * How `npm view <pkg> versions --json` fails for a name the registry does not have. The script
+   * distinguishes a 404 from every other failure, so the shim has to emit a REALISTIC one: a shim that just
+   * exits 1 with no output is indistinguishable from a network error, and a suite built on it would pass a
+   * script that reads a network error as a missing name.
    */
   npmViewVersionsExitCode?: number;
   /** Emit this on stderr instead of an E404, to simulate a transient registry failure. */
@@ -105,11 +105,12 @@ function runScript(
       shims.npmViewStderr ??
       'npm error code E404\nnpm error 404 Not Found - GET https://registry.npmjs.org/x';
     // Per-name existence, so a MIXED family (two published, three brand new) can be exercised — which is the
-    // case that matters now that packages get added to an already-published family.
+    // case that matters whenever a package is added to an already-published family.
     const existsCase = (shims.existing ?? []).map((n) => `      ${n}) exit 0;;`).join('\n');
     const tags = JSON.stringify(shims.distTags ?? { rc: version });
     // Simulates the read replica lagging behind the write: the first N `view dist-tags` calls 404 before the
-    // package appears, which is what really happens and what used to be reported as a failed publish.
+    // package appears, which is what really happens, and which a script that does not wait reports as a
+    // failed publish.
     const lag = shims.distTagsLagCalls ?? 0;
     const counter = join(dir, 'view-calls');
     shim(
@@ -193,9 +194,9 @@ function runScript(
 }
 
 describe('bootstrap-publish', () => {
-  it('completes the LIVE path without throwing — the null-stdout regression', () => {
+  it('completes the LIVE path without throwing on a null stdout', () => {
     const { status, out } = runScript(['--confirm']);
-    // The specific crash: `.trim()` on execFileSync's null return under inherited stdio.
+    // The crash this pins: `.trim()` on execFileSync's null return under inherited stdio.
     expect(out).not.toMatch(/Cannot read properties of null/);
     expect(out).not.toMatch(/TypeError/);
     expect(status).toBe(0);
@@ -204,17 +205,17 @@ describe('bootstrap-publish', () => {
 
   it('publishes under the prerelease dist-tag', () => {
     const { out, calls } = runScript(['--confirm']);
-    // Derived from the version (0.1.0-rc.0 -> rc), because npm's default tag is `latest` unconditionally and
+    // Derived from the version (0.10.0-rc.0 -> rc), because npm's default tag is `latest` unconditionally and
     // is not semver-aware.
     expect(out).toMatch(/dist-tag:\s+rc/);
-    expect(out).toMatch(/rc=0\.1\.0-rc\.0/);
+    expect(out).toMatch(/rc=0\.10\.0-rc\.0/);
     // Assert the argv actually handed to pnpm, not just the plan the script printed — the printed line and
     // the executed command are two different things, and only one of them reaches the registry.
     expect(calls).toMatch(/^pnpm .*\bpublish\b.*--tag rc\b/m);
     expect(calls).toMatch(/--access public/);
     // `--no-provenance` must NOT be here: pnpm silently drops it, so passing it would read as a safeguard
     // while doing nothing. Provenance is opt-in at the call site instead (the release workflow passes
-    // `--provenance`), which is what let `publishConfig.provenance` come out of the manifests.
+    // `--provenance`), so no manifest needs `publishConfig.provenance`.
     expect(calls).not.toMatch(/--no-provenance/);
   });
 
@@ -232,18 +233,18 @@ describe('bootstrap-publish', () => {
   });
 
   it('waits out read-replica lag instead of calling a good publish failed', () => {
-    // The real bootstrap ACKed with `PUT 200` and then 404'd on `npm view` for ~7 minutes. Reporting that as
+    // The registry can ACK with `PUT 200` and then 404 on `npm view` for minutes. Reporting that as
     // "not found after publish" is the worst wrong answer available directly after an irreversible step.
     const { status, out } = runScript(['--confirm'], { distTagsLagCalls: 1 });
     expect(out).toMatch(/not on the read path yet — waiting for propagation/);
-    expect(out).toMatch(/rc=0\.1\.0-rc\.0/);
+    expect(out).toMatch(/rc=0\.10\.0-rc\.0/);
     expect(out).not.toMatch(/not found after publish/);
     expect(status).toBe(0);
   });
 
   it('still fails when the requested dist-tag did not land', () => {
     const { status, out } = runScript(['--confirm'], { distTags: { latest: '9.9.9' } });
-    expect(out).toMatch(/rc is \(unset\), expected 0\.1\.0-rc\.0/);
+    expect(out).toMatch(/rc is \(unset\), expected 0\.10\.0-rc\.0/);
     expect(status).toBe(1);
   });
 
@@ -255,11 +256,10 @@ describe('bootstrap-publish', () => {
   });
 
   it('publishes ONLY the names the registry lacks, and skips the ones it has', () => {
-    // The case the earlier version of this script could not express, and the reason it was rewritten: the
-    // storage split added three packages to a family whose other two were already on npm. Refusing outright
-    // (the old behaviour) left no guarded way to create them, and tagging without creating them first would
-    // have published core and then failed on the first name with no Trusted Publisher — an immutable,
-    // partial release of a family that ships in lockstep.
+    // A family where some packages are already on npm and the rest are new. A script that refuses outright
+    // leaves no guarded way to create the new names, and tagging without creating them first publishes core
+    // and then fails on the first name with no Trusted Publisher — an immutable, partial release of a family
+    // that ships in lockstep.
     const { status, out, calls } = runScript(['--confirm'], {
       packages: ['core', 'roaring', 's3', 'gcs', 'azure-blob'],
       existing: ['@cloudbitmaps/core', '@cloudbitmaps/roaring'],
@@ -309,8 +309,9 @@ describe('bootstrap-publish', () => {
   it('REFUSES when the registry probe fails for any reason other than a 404', () => {
     // The script hand-publishes the names it believes are missing. Treating a 500 / rate limit / timeout /
     // auth failure as "missing" therefore publishes an unattested prerelease OVER packages that are already
-    // live — irreversibly. The old shim exited 1 with no output, which is exactly what a network error
-    // looks like, so the suite encoded the bug as the intended behaviour.
+    // live — irreversibly. A shim that exits 1 with no output looks exactly like a network error, and a suite
+    // built on it would encode that bug as the intended behaviour; this one fails the probe as the registry
+    // does.
     const { status, out } = runScript(['--confirm'], {
       npmViewStderr:
         'npm error code ENOTFOUND\nnpm error network request to https://registry.npmjs.org failed',

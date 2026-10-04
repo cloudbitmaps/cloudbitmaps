@@ -27,46 +27,47 @@ describe('LocalFsRegistryDriver corruption + edge handling', () => {
     await writeRaw('s.reg', JSON.stringify({ deleted: false, record: { segment: 's' } })); // missing fields
     await expect(d.get({ segment: 's' })).rejects.toBeInstanceOf(IntegrityError);
 
-    // structurally complete but a corrupt currentGen / status / non-canonical token
+    // Stamped and structurally complete, then one thing wrong at a time. The control first: the base row reads, so
+    // each refusal below is about the one field it changes.
     const base = {
       segment: 's',
       currentGen: 0,
-      dirtyChunkCount: 0,
       status: 'active',
       createdAt: 1,
       updatedAt: 1,
       token: '0',
     };
-    await writeRaw(
-      's.reg',
-      JSON.stringify({ deleted: false, record: { ...base, currentGen: -1 } }),
-    );
-    await expect(d.get({ segment: 's' })).rejects.toBeInstanceOf(IntegrityError);
-    await writeRaw('s.reg', JSON.stringify({ deleted: false, record: { ...base, status: 'huh' } }));
-    await expect(d.get({ segment: 's' })).rejects.toBeInstanceOf(IntegrityError);
-    await writeRaw('s.reg', JSON.stringify({ deleted: false, record: { ...base, token: '1e3' } }));
-    // token only consulted on the next mutation (counterOf) — create-over a live row is a conflict first,
-    // so probe via compareAndSwap which reads the token.
-    await expect(
-      d.compareAndSwap({ segment: 's' }, '1e3', { currentGen: 1 }),
-    ).rejects.toBeInstanceOf(IntegrityError);
+    const stamped = (record: object, deleted = false): string =>
+      JSON.stringify({ schemaVersion: 1, deleted, record });
+    await writeRaw('s.reg', stamped(base));
+    expect(await d.get({ segment: 's' })).toMatchObject({ currentGen: 0, token: '0' });
+    for (const [record, why] of [
+      [{ ...base, currentGen: -1 }, /invalid currentGen/],
+      [{ ...base, status: 'huh' }, /unknown status/],
+      [{ ...base, dirtyChunkCount: 0 }, /does not declare \(dirtyChunkCount\)/],
+      // A token in no form the library writes fails the read, naming the file.
+      [{ ...base, token: '1e3' }, /token is not one a schema-1 row holds \("1e3"\): .*s\.reg$/],
+    ] as const) {
+      await writeRaw('s.reg', stamped(record));
+      await expect(d.get({ segment: 's' })).rejects.toThrow(why);
+    }
   });
 
-  it('reads a legacy row (no schemaVersion) but rejects a future-stamped one (format freeze)', async () => {
+  it('reads a stamped row, and refuses an unstamped or future-stamped one (format freeze)', async () => {
     const d = new LocalFsRegistryDriver(root);
     const record = {
       segment: 's',
       currentGen: 2,
-      dirtyChunkCount: 0,
       status: 'active',
-      consecutiveFailures: 0,
       createdAt: 1,
       updatedAt: 1,
       token: '0',
     };
-    // pre-freeze row (no stamp) must stay readable across the upgrade → tolerated as v1
-    await writeRaw('s.reg', JSON.stringify({ deleted: false, record }));
+    await writeRaw('s.reg', JSON.stringify({ schemaVersion: 1, deleted: false, record }));
     expect((await d.get({ segment: 's' }))!.currentGen).toBe(2);
+    // a row with no stamp is not one this build wrote
+    await writeRaw('s.reg', JSON.stringify({ deleted: false, record }));
+    await expect(d.get({ segment: 's' })).rejects.toBeInstanceOf(IntegrityError);
     // a row from a newer, incompatible writer must fail closed rather than be misparsed
     await writeRaw('s.reg', JSON.stringify({ schemaVersion: 999, deleted: false, record }));
     await expect(d.get({ segment: 's' })).rejects.toBeInstanceOf(UnsupportedError);

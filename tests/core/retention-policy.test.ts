@@ -1,12 +1,9 @@
 import {
   CloudRoaring,
   CrbmStorageChunkSource,
-  MemoryStorageDriver,
   MIN_EXPIRES_AT_MS,
   destroySegment,
-  clearSegmentRetention,
   readRetentionPolicy,
-  setSegmentRetention,
 } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { UnsupportedError, ValidationError, WriteConflictError } from '@/core/errors';
@@ -14,11 +11,14 @@ import type { SegmentRef } from '@/index';
 import type { IRegistryDriver } from '@/core/ports';
 import { randomBytes } from 'node:crypto';
 import { loadedStore } from '../helpers/loaded';
+import { clearSegmentRetention, setSegmentRetention } from '@cloudbitmaps/core';
+import { MemoryStorageDriver } from '@/drivers/memory';
 
 /**
- * The retention **policy** — recording *when* a segment becomes eligible for retirement. Part 2 of 3: this
- * writes and reads the intent only. Nothing here deletes anything (`dropSegment` does), and nothing here runs on
- * a timer (`retireExpired` is the sweep, and the operator schedules it).
+ * The retention **policy** — recording *when* a segment becomes eligible for retirement, between the null-gen row
+ * (`null-generation-row.test.ts`) and the sweep (`retention-sweep.test.ts`). This writes and reads the intent
+ * only. Nothing here deletes anything (`dropSegment` does), and nothing here runs on a timer (`retireExpired` is
+ * the sweep, and the operator schedules it).
  *
  * Two properties carry the design:
  *
@@ -26,11 +26,11 @@ import { loadedStore } from '../helpers/loaded';
  *    `updatedAt`, the current generation — is republished by every load, so a derived TTL would keep a busy
  *    daily bucket alive forever precisely because it is being kept up to date. A test asserts a load leaves the
  *    policy untouched.
- *  - **Setting a policy on a segment that has never been loaded mints the Part-1 null-gen row.** That is what
+ *  - **Setting a policy on a segment that has never been loaded mints the null-gen row.** That is what
  *    makes the segment enumerable — and therefore sweepable — without changing a single read.
  */
 
-/** Interpose on the registry's mutating methods to reproduce contention. Mirrors the Part-1 test helper. */
+/** Interpose on the registry's mutating methods to reproduce contention. */
 function wrapRegistry(
   base: IRegistryDriver,
   hooks: {
@@ -52,7 +52,7 @@ function wrapRegistry(
       return base.compareAndSwap(ref, expected, patch);
     },
     list: (ns) => base.list(ns),
-    delete: (ref) => base.delete(ref),
+    delete: (ref, expected) => base.delete(ref, expected),
   };
 }
 
@@ -96,7 +96,7 @@ describe('setRetention / getRetention / clearRetention', () => {
       indexed: true,
     });
 
-    // …and now it does — enumerable by every fleet-wide operation, which is the entire point of Part 1.
+    // …and now it does — enumerable by every fleet-wide operation, which is the entire point of the null-gen row.
     const rec = (await w.registry.get(SEG))!;
     expect(rec.currentGen).toBeNull(); // claims NO Storage generation, so reads resolve exactly as before
     expect(rec.status).toBe('active');
@@ -267,9 +267,9 @@ describe('setRetention / getRetention / clearRetention', () => {
       expect(readRetentionPolicy({ legalHold: 'x' })).toBeNull();
       expect(readRetentionPolicy({ expiresAt: FUTURE })).toEqual({ expiresAt: FUTURE });
       expect(readRetentionPolicy({ expiresAt: null })).toBe('invalid');
-      // The CONTAINER, not just the value: `in` dereferences its operand, so these used to throw an untyped
-      // `TypeError` — and the sweep calls this outside its per-segment `try`, so one such row aborted the whole
-      // fleet sweep and the healthy expired segment beside it was never retired.
+      // The CONTAINER, not just the value: `in` dereferences its operand, so an unguarded read throws an untyped
+      // `TypeError` on these — and the sweep calls this outside its per-segment `try`, so one such row would
+      // abort the whole fleet sweep and the healthy expired segment beside it would never be retired.
       for (const bad of [null, 'nope', 42, [], true]) {
         expect(readRetentionPolicy(bad as never)).toBe('invalid');
       }

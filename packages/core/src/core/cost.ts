@@ -13,26 +13,30 @@
  *
  * What the model covers, and states in `assumptions.notes`: object-store GETs for point reads, for
  * intersections (each operand's pointer and index as well as its chunks) and for the pointer refresh a long-lived
- * reader pays; the requests of a load (the object's write, and the listings and pointer reads and write
- * `store.load()` makes around it); and storage. Same-region egress is treated as free and internet egress is not
- * modeled; request cost is derived from the supplied workload rates (deriving it from live metrics counters is a
- * later refinement). There is no per-write term because the loaded store has no per-id write: data arrives as
- * generations, and a generation is a load.
+ * reader pays; the requests of the retention sweep (a retirement and a purge, each priced from the registry requests
+ * it makes); the requests of a load (the object's write, and the pointer reads and write, the checks of the next
+ * generation number and of the current generation's object, and the listing of every 16th generation that
+ * `store.load()` makes around it); and storage. Same-region egress is
+ * treated as free and internet egress is not modeled; request cost is derived from the supplied workload rates
+ * (deriving it from live metrics counters is a later refinement). There is no per-write term because the loaded
+ * store has no per-id write: data arrives as generations, and a generation is a load.
  *
  * Every request count below is one the engine makes, and `tests/core/cost.test.ts` holds each to the engine by
  * counting what it sends: the model is only as honest as those counts, and they move when the engine does. They
  * are for a single-bucket store, where the pointer is an object beside the data, which is the topology that
- * ships. The estimator once priced a load as the object's PUT alone and an intersect as its chunk reads alone,
- * which a real-cloud run showed under-quoted a load by more than half and left out a pointer read and an index
- * read for every operand.
+ * ships. A load is more than the object's PUT, and an intersect more than its chunk reads: pricing either as the
+ * one alone under-quotes a load by more than half and leaves out a pointer read and an index read for every
+ * operand.
  *
- * The counts are S3's, and one reader process's. On GCS and Azure Blob a read that needs the object's size — a
- * pointer read, and a segment's tail read — is two requests, the metadata and then the bytes, which
+ * The counts are S3's (and GCS's), and one reader process's. A pointer read is one request on every backend, and
+ * {@link PricingProfile} carries it as `requestsPerPointerRead`. A segment's tail read needs the object's size, and
+ * on Azure Blob, which takes no suffix range, it is two requests, the properties and then the bytes, which
  * {@link PricingProfile} carries as `requestsPerSizedRead`. A fleet of reader processes pays the pointer refresh
  * once per process, which {@link Workload.readerProcesses} carries. Where the model still quotes low is listed on
  * {@link Workload.hotSegments} and {@link Workload.chunksPerIntersect}.
  */
 import { ValidationError } from './errors';
+import { LIST_COLLECTION_CADENCE } from './generation-gc';
 import { DEFAULT_CURRENT_GEN_TTL_MS, DEFAULT_MAX_OPEN_SEGMENTS } from './reader-defaults';
 
 /**
@@ -58,9 +62,19 @@ export interface PricingProfile {
     readonly putPerMillion: number;
     readonly storagePerGiBMonth: number;
     /**
-     * Requests one read costs when it needs the object's size first: a pointer read, and a segment's tail read.
-     * Default **1**, S3's, whose suffix-range GET returns the size with the bytes. **2** on GCS and Azure Blob,
-     * which read the metadata and then the bytes. A chunk read knows its range, and is one request everywhere.
+     * Requests one pointer read costs: a read of a segment's registry row, whose version comes back with its bytes.
+     * Default **1**, and 1 on S3, GCS and Azure Blob, each of which answers it with one GET. Charged for each operand
+     * of an intersection, for the pointer reads a load makes, and for each pointer refresh. Set it when a
+     * registry of your own takes more than one request to read a row.
+     */
+    readonly requestsPerPointerRead?: number;
+    /**
+     * Requests one tail read costs: the read of a segment's index from the end of its generation, which needs the
+     * object's size. Default **1**, S3's, whose suffix-range GET returns the size with the bytes, and GCS's, the same.
+     * **2** on Azure Blob, which takes no suffix range and reads the properties and then the bytes. Charged for each
+     * operand of an intersection. A load reads no index of its own: a row that carries a summary of its current
+     * generation gives the load the size it needs, and the checks it makes are one metadata request on every backend.
+     * A chunk read knows its range, and is one request everywhere.
      */
     readonly requestsPerSizedRead?: number;
   };
@@ -167,8 +181,6 @@ export const AWS_US_EAST_1_ONDEMAND: PricingProfile = deepFreeze({
   redis: { sizedToData: ELASTICACHE_REDIS_US_EAST_1_ONDEMAND },
 });
 
-export const DEFAULT_PRICING: PricingProfile = AWS_US_EAST_1_ONDEMAND;
-
 /** Sustained access pattern. All rates default to 0; unspecified ⇒ that op contributes nothing. */
 export interface Workload {
   /**
@@ -177,7 +189,7 @@ export interface Workload {
    */
   readonly readsPerSec?: number;
   readonly intersectsPerSec?: number;
-  /** CACHE-cache hit rate in `[0, 1]` — hits are free; only misses cost. Default 0. */
+  /** Cache hit rate in `[0, 1]` — hits are free; only misses cost. Default 0. */
   readonly cacheHitRate?: number;
   /**
    * Storage chunks one intersection fetches, summed over its operands: the chunk-skipping survivors. Default 1.
@@ -190,7 +202,8 @@ export interface Workload {
   /**
    * Segments each intersection reads, `exclude` operands included; at least 1. Default 2. An intersection is priced
    * **cold**: before its chunks, each operand's pointer is read, then its index, in one read of the object's tail —
-   * 2 GETs an operand, so a cold intersect of two segments sharing `k` chunks is `4 + 2k` GETs. `cacheHitRate`
+   * 2 GETs an operand on S3 and GCS, so a cold intersect of two segments sharing `k` chunks is `4 + 2k` GETs there,
+   * and 3 on Azure Blob, whose tail read is two requests (see {@link PricingProfile}). `cacheHitRate`
    * does not apply to intersections, so a long-lived reader that answers a repeat from its cache pays less. Other
    * combines read their operands the same way and can be priced here too, with the chunks they fetch.
    */
@@ -203,12 +216,23 @@ export interface Workload {
   /**
    * PUT-class requests one load's object write issues, each priced at the PUT rate. Default **1** (a single-object
    * PUT). A multipart write of `P` parts bills `P + 2` (initiate, the parts, complete) — set it when you know your
-   * object sizes. The model adds what `store.load()` does around the write: two listings and the pointer's write,
-   * PUT-class on S3, and nine GETs, the pointer read eight times and the current generation's index once. That is
-   * a segment with two generations behind it; its first load makes two fewer GETs, and its second one fewer. On
-   * S3 at the default prices a single-part `store.load()` is then about $23.60 per million. A segment whose index
-   * outgrows the tail read makes one more GET, and a publish that loses a race to another writer reads the
-   * pointer again.
+   * object sizes. The model adds what `store.load()` does around the write, at the default `keep` of 1: the pointer's
+   * write, PUT-class on S3, and five GETs: the pointer read three times, one check that the next generation number is
+   * free, and one that the current generation's object is there, which tells the collection that deletes by name it
+   * may. The current generation's size comes from the row's summary of it, so the load reads no index. Collection
+   * deletes the generation the window pushed out by name, so it lists only on every 16th generation, which adds a
+   * PUT-class request and two pointer reads there and makes no check that the current generation is there, a
+   * sixteenth of each on average. That is a segment with two
+   * generations behind it, whose row carries a summary; its first two loads make fewer requests and collect nothing,
+   * and the first load of a row written before rows carried a summary reads the current generation's index, one tail
+   * read, in place of the check that its object is there. A publish that loses a race to another writer
+   * reads the pointer again, and a load whose check finds the number taken (a crashed load's object, or the
+   * generations a rollback left above the pointer) lists the segment's objects to number past them and to collect,
+   * two PUT-class requests on S3 and two more pointer reads. So does every load that keeps two or more generations,
+   * which lists to collect: one more PUT-class request and two more pointer reads than the model counts. The counts
+   * are a cleartext segment's: an encrypted segment's load reads its row once more, after its ids and before it
+   * unwraps the key, one more GET ($0.40 per million at the default prices) that the model leaves out, beside the
+   * key-management calls it does not price either.
    */
   readonly requestsPerLoad?: number;
   /**
@@ -238,6 +262,26 @@ export interface Workload {
    * write invalidates it, none of which this term prices.
    */
   readonly genTtlMs?: number;
+  /**
+   * Segments the retention sweep (`retireExpired`) retires a month. Each costs 9 registry reads, 3 writes and a
+   * delete with {@link Workload.conditionalDelete} on, and 8 reads and 3 writes with it off, priced at the GET and PUT
+   * rates, a delete unbilled, as S3 leaves it. Default
+   * **0**.
+   */
+  readonly retirementsPerMonth?: number;
+  /**
+   * Tombstones the sweep purges a month: at a steady state, as many as it retires a month, a `tombstoneGraceMs` later.
+   * A purge costs 4 reads and 2 deletes with {@link Workload.conditionalDelete} on, and 3 reads and a write with it
+   * off. Default **0**.
+   */
+  readonly purgesPerMonth?: number;
+  /**
+   * Whether the registry's deletes remove a row for good (`RegCaps.conditionalDelete`), which the shipped registries
+   * do where the backend applies a delete precondition. Default **true**. `false` prices the sweep of a registry that
+   * only tombstones: a purge rewrites the row instead of deleting it, and every later full sweep reads each tombstone
+   * left (two reads per purged segment), which this term does not price.
+   */
+  readonly conditionalDelete?: boolean;
 }
 
 /** One (group of) segment(s) for planning. `count` = how many like this (default 1). */
@@ -267,6 +311,11 @@ export interface CostReport {
       readonly loads: number;
       /** The pointer refresh of {@link Workload.hotSegments}. 0 unless `hotSegments` is set. */
       readonly pointerRefresh: number;
+      /**
+       * The retention sweep's retirements and purges: each's registry reads at the GET rate and its writes at the PUT
+       * rate. 0 unless `retirementsPerMonth` or `purgesPerMonth` is set.
+       */
+      readonly retention: number;
     };
     readonly total: number;
   };
@@ -320,20 +369,54 @@ const SECONDS_PER_MONTH = HOURS_PER_MONTH * 3600; // 2,628,000
 const GIB = 1024 ** 3;
 
 /**
- * A cold intersection's reads for each operand before its chunks: the pointer, then the index in one tail read.
- * Both need the object's size, so each costs `requestsPerSizedRead` requests.
+ * What `store.load()` adds to its object's write, as the engine makes the requests on a segment with two
+ * generations behind it, at the default `keep` of 1 with nothing above the pointer. Collection deletes the one
+ * generation the window pushed out by name, so the pointer is read three times (the load's one read before its
+ * publish, the compare-and-swap's read of the row's version, and the re-read before the delete) and nothing is
+ * listed, except on every {@link LIST_COLLECTION_CADENCE}th generation, where collection lists instead: one more
+ * PUT-class request and two more pointer reads (before and after the listing). Those two are averaged over the
+ * cadence, so a count of `n` loads is exact for `n` consecutive generations of the cadence. PUT-class: the
+ * pointer's write and the averaged listing. Pointer reads each cost `requestsPerPointerRead` requests. The load reads
+ * no index: the row's summary of the current generation gives it the size the guard needs. It makes two checks, each
+ * a single metadata request on every backend (S3's `HeadObject`, GCS's object metadata, Azure Blob's properties), so
+ * `requestsPerSizedRead` applies to neither: that the next generation number is free, on every load, and that the
+ * current generation's object is there, before the collection deletes by name the generation it pushed out of the
+ * window, so on every load but the listing one. `tests/core/cost.test.ts` holds these to the engine over sixteen
+ * consecutive loads. A load that keeps two or more generations, or whose check meets an object, lists on every load:
+ * one more PUT-class request and two more pointer reads than these, and one check fewer.
  */
-const SIZED_READS_PER_COLD_OPERAND = 2;
+const STORE_LOAD_PUT_CLASS = 1 + 1 / LIST_COLLECTION_CADENCE;
+const STORE_LOAD_POINTER_READS = 3 + 2 / LIST_COLLECTION_CADENCE;
+const STORE_LOAD_EXISTENCE_CHECKS = 2 - 1 / LIST_COLLECTION_CADENCE;
+
+/** The requests one segment's retirement or purge makes: reads (GET-class), writes (PUT-class) and deletes. */
+interface SweepRequests {
+  readonly reads: number;
+  readonly writes: number;
+  readonly deletes: number;
+}
 
 /**
- * What `store.load()` adds to its object's write, as the engine makes the requests on a segment with two
- * generations behind it: PUT-class, two listings (one to number the generation, one to collect after the publish)
- * and the pointer's write; reads, eight of the pointer and one of the current generation's index, each a sized
- * read. `tests/core/cost.test.ts` holds these to the engine, and counts a segment's first load at seven reads and
- * its second at eight.
+ * What the retention sweep makes per segment, counted with a store that counts its requests
+ * (`tests/core/retention-hard-purge.test.ts` holds each figure to the engine, and `tests/core/cost.test.ts` holds the
+ * estimator to these). With the registry's `conditionalDelete` on, a retirement files a due-index pointer to the
+ * tombstone and a purge removes the row and every pointer: a later sweep reads nothing of a purged segment. With it
+ * off, a retirement files no pointer, a purge rewrites the row as a tombstone, and every later full sweep reads what
+ * is left, two objects per purged segment.
  */
-const STORE_LOAD_PUT_CLASS = 3;
-const STORE_LOAD_SIZED_READS = 9;
+export const RETENTION_SWEEP_REQUESTS = deepFreeze({
+  conditionalDelete: {
+    retirement: { reads: 9, writes: 3, deletes: 1 },
+    purge: { reads: 4, writes: 0, deletes: 2 },
+  },
+  tombstoning: {
+    retirement: { reads: 8, writes: 3, deletes: 0 },
+    purge: { reads: 3, writes: 1, deletes: 0 },
+  },
+}) satisfies Readonly<Record<string, Readonly<Record<string, SweepRequests>>>>;
+
+/** A count of requests for a note: at most two decimals, none when it is whole. */
+const shown = (n: number): string => String(Number(n.toFixed(2)));
 
 /** Fail-fast at the boundary: reject non-finite / negative inputs rather than leak NaN into the report. */
 function requireFiniteNonNeg(n: number | undefined, field: string): number {
@@ -570,6 +653,10 @@ function buildReport(input: {
   requireFiniteNonNeg(storage.getPerMillion, 'pricing.storage.getPerMillion');
   requireFiniteNonNeg(storage.putPerMillion, 'pricing.storage.putPerMillion');
   requireFiniteNonNeg(storage.storagePerGiBMonth, 'pricing.storage.storagePerGiBMonth');
+  const pointerRead = requireFiniteNonNeg(
+    storage.requestsPerPointerRead ?? 1,
+    'pricing.storage.requestsPerPointerRead',
+  );
   const sizedRead = requireFiniteNonNeg(
     storage.requestsPerSizedRead ?? 1,
     'pricing.storage.requestsPerSizedRead',
@@ -620,6 +707,15 @@ function buildReport(input: {
     input.workload.genTtlMs ?? DEFAULT_CURRENT_GEN_TTL_MS,
     'genTtlMs',
   );
+  const retirementsPerMonth = requireFiniteNonNeg(
+    input.workload.retirementsPerMonth ?? 0,
+    'retirementsPerMonth',
+  );
+  const purgesPerMonth = requireFiniteNonNeg(input.workload.purgesPerMonth ?? 0, 'purgesPerMonth');
+  const conditionalDelete = input.workload.conditionalDelete ?? true;
+  if (typeof conditionalDelete !== 'boolean') {
+    throw new ValidationError(`conditionalDelete must be a boolean; got ${conditionalDelete}`);
+  }
 
   // Per-request unit costs (USD). Same-region egress is free; internet egress not modeled.
   const storageGetUSD = storage.getPerMillion / 1e6;
@@ -639,14 +735,20 @@ function buildReport(input: {
 
   const storageUSD = storedGiB * storage.storagePerGiBMonth;
   const readsUSD = readMisses * storageGetUSD;
-  const intersectGets =
-    chunksPerIntersect + SIZED_READS_PER_COLD_OPERAND * operandsPerIntersect * sizedRead;
+  // A cold intersection reads each operand's pointer, then its index in one tail read, before its chunks.
+  const getsPerColdOperand = pointerRead + sizedRead;
+  const intersectGets = chunksPerIntersect + getsPerColdOperand * operandsPerIntersect;
   const intersectsUSD = intersects * intersectGets * storageGetUSD;
-  const loadGets = STORE_LOAD_SIZED_READS * sizedRead;
+  const loadGets = STORE_LOAD_POINTER_READS * pointerRead + STORE_LOAD_EXISTENCE_CHECKS;
   const loadsUSD =
     loadsPerMonth * ((requestsPerLoad + STORE_LOAD_PUT_CLASS) * putUSD + loadGets * storageGetUSD);
-  const refreshUSD = refreshes * sizedRead * storageGetUSD;
-  const total = readsUSD + intersectsUSD + storageUSD + loadsUSD + refreshUSD;
+  const refreshUSD = refreshes * pointerRead * storageGetUSD;
+  const sweep = RETENTION_SWEEP_REQUESTS[conditionalDelete ? 'conditionalDelete' : 'tombstoning'];
+  const retentionUSD =
+    retirementsPerMonth *
+      (sweep.retirement.reads * storageGetUSD + sweep.retirement.writes * putUSD) +
+    purgesPerMonth * (sweep.purge.reads * storageGetUSD + sweep.purge.writes * putUSD);
+  const total = readsUSD + intersectsUSD + storageUSD + loadsUSD + refreshUSD + retentionUSD;
 
   // Crossover: the sustained read rate (other axes 0) where request cost alone passes the baseline less the fixed
   // monthly costs (storage and the pointer refresh), evaluated at this report's cache posture (misses).
@@ -659,7 +761,14 @@ function buildReport(input: {
   const verdict: CostReport['verdict'] =
     total <= baselineUSD * 0.1 ? 'win-big' : total < baselineUSD ? 'win' : 'lose-zone';
 
-  const dominant = Math.max(readsUSD, intersectsUSD, storageUSD, loadsUSD, refreshUSD);
+  const dominant = Math.max(
+    readsUSD,
+    intersectsUSD,
+    storageUSD,
+    loadsUSD,
+    refreshUSD,
+    retentionUSD,
+  );
   let driver = 'storage';
   if (dominant === readsUSD && readsUSD > 0) driver = 'point reads (object GETs)';
   else if (dominant === intersectsUSD && intersectsUSD > 0) {
@@ -667,6 +776,8 @@ function buildReport(input: {
   } else if (dominant === loadsUSD && loadsUSD > 0)
     driver = 'loads (object, listing and pointer requests)';
   else if (dominant === refreshUSD && refreshUSD > 0) driver = 'the pointer refresh (object GETs)';
+  else if (dominant === retentionUSD && retentionUSD > 0)
+    driver = 'the retention sweep (registry reads and writes)';
   // A fixed baseline keeps the words it always had — "flat baseline" in a lose-zone, "baseline" otherwise — and a
   // sized one says what it priced.
   const sized = baseline.sized;
@@ -721,12 +832,14 @@ function buildReport(input: {
     'Request cost is from the supplied workload rates (live-metrics-derived request cost is a later phase).',
     loadsPerMonth > 0
       ? `Loads modeled: ${loadsPerMonth}/mo, each ${requestsPerLoad} PUT-class request(s) for the object plus ` +
-        `${STORE_LOAD_PUT_CLASS} PUT-class and ${loadGets} GETs that store.load() adds (listings, pointer, index).`
+        `${shown(STORE_LOAD_PUT_CLASS)} PUT-class and ${shown(loadGets)} GETs that store.load() adds (the pointer, ` +
+        'a check that the next generation number is free, a check that the current generation is there, and a listing every ' +
+        `${LIST_COLLECTION_CADENCE}th load).`
       : 'Loads are NOT modeled — set workload.loadsPerMonth (+ requestsPerLoad for multipart) to include them.',
     ...(intersects > 0
       ? [
           `Intersections priced cold: ${intersectGets} GETs each, ` +
-            `${SIZED_READS_PER_COLD_OPERAND * sizedRead} for each of ${operandsPerIntersect} operand(s) plus ` +
+            `${getsPerColdOperand} for each of ${operandsPerIntersect} operand(s) plus ` +
             `${chunksPerIntersect} chunk read(s); cacheHitRate does not apply.`,
         ]
       : []),
@@ -745,6 +858,19 @@ function buildReport(input: {
         'the reader evicted opens it again, a pointer and a tail read, which this does not price. Raise ' +
         'cache.readerMax, and cache.readerMaxBytes, to keep them open.'
       : null,
+    ...(retirementsPerMonth > 0 || purgesPerMonth > 0
+      ? [
+          `Retention sweep modeled: ${retirementsPerMonth}/mo retirements at ${sweep.retirement.reads} reads, ` +
+            `${sweep.retirement.writes} writes and ${sweep.retirement.deletes} delete(s) each, ${purgesPerMonth}/mo ` +
+            `purges at ${sweep.purge.reads} reads, ${sweep.purge.writes} writes and ${sweep.purge.deletes} ` +
+            'delete(s) each; reads are priced at the GET rate and writes at the PUT rate, deletes at nothing, as S3 ' +
+            'bills none' +
+            (conditionalDelete
+              ? '.'
+              : '; a registry that only tombstones is read again, two reads per purged segment, by every later ' +
+                'full sweep, which is not priced.'),
+        ]
+      : []),
     ...(input.extraNotes ?? []),
     // Last, so the notes a report already carried keep their places.
     redisNote,
@@ -758,6 +884,7 @@ function buildReport(input: {
         storage: storageUSD,
         loads: loadsUSD,
         pointerRefresh: refreshUSD,
+        retention: retentionUSD,
       },
       total,
     },
@@ -787,7 +914,7 @@ function buildReport(input: {
  * exact, real sizes. See {@link CostReport}.
  */
 export function estimateCost(input: EstimateInput): CostReport {
-  const pricing = input.pricing ?? DEFAULT_PRICING;
+  const pricing = input.pricing ?? AWS_US_EAST_1_ONDEMAND;
   const workload = input.workload ?? {};
   let storageBytes = 0;
   let sizesFromCardinality = false;
@@ -820,7 +947,7 @@ export function groundedReport(input: {
   return buildReport({
     storageBytes: input.storageBytes,
     workload: input.workload ?? {},
-    pricing: input.pricing ?? DEFAULT_PRICING,
+    pricing: input.pricing ?? AWS_US_EAST_1_ONDEMAND,
     grounded: input.grounded ?? true,
     extraNotes: input.extraNotes,
   });

@@ -6,7 +6,7 @@ settings:
 
 overrides:
   undici: '>=6.28.0 <7'
-  brace-expansion@5: '>=5.0.9 <6'
+  brace-expansion@5: '>=5.0.12 <6'
   nanoid@3: '>=3.3.18 <4'
   uuid: ^11.1.1
   esbuild: '>=0.28.2 <0.29'
@@ -148,7 +148,7 @@ importers:
   packages/s3:
     dependencies:
       '@aws-sdk/client-s3':
-        specifier: '>=3.645.0 <4'
+        specifier: '>=3.700.0 <4'
         version: 3.1132.0
       '@cloudbitmaps/core':
         specifier: workspace:^
@@ -1080,10 +1080,6 @@ packages:
 
   brace-expansion@5.0.12:
     resolution: {integrity: sha512-YovQ3rzhaLMIrDjNDMkNS01tea93qhEhG5xy8f6+R0l+dw3Ki+5sCoIoI942iuLZTHWogWktgwVDhU09iNEimQ==}
-    engines: {node: 20 || >=22}
-
-  brace-expansion@5.0.9:
-    resolution: {integrity: sha512-ScQ4IuvIEF1TMlP7Zt+vjJ//9zlPb2SDcxWxM3bk8s6t6GGdJ7KO1dCcTidOPJKePW30LE/2cT7wCyPho9/Wxg==}
     engines: {node: 20 || >=22}
 
   buffer-equal-constant-time@1.0.1:
@@ -2820,10 +2816,6 @@ snapshots:
     dependencies:
       balanced-match: 4.0.4
 
-  brace-expansion@5.0.9:
-    dependencies:
-      balanced-match: 4.0.4
-
   buffer-equal-constant-time@1.0.1: {}
 
   cac@7.0.0: {}
@@ -3218,7 +3210,7 @@ snapshots:
 
   minimatch@10.2.5:
     dependencies:
-      brace-expansion: 5.0.9
+      brace-expansion: 5.0.12
 
   minimatch@10.2.6:
     dependencies:

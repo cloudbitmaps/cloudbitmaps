@@ -3,14 +3,12 @@ import { loadSegment } from '@/core/load';
 import { openGenerationReader } from '@/core/crbm-storage-source';
 import { ValidationError } from '@/core/errors';
 import { InProcessKeystore } from '@/drivers/crypto';
-import {
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
-  RecordingAuditSink,
-  bulkLoadCrbmGeneration,
-} from '@/index';
+import { RecordingAuditSink } from '@/index';
 import type { IStorageDriver, SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { setSegmentRetention } from '@/core/retention';
+import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 
 /**
  * `loadSegment` — replace a segment's contents with one immutable generation.
@@ -147,7 +145,7 @@ describe('loadSegment — the guard, and what a refusal leaves behind', () => {
 
   it('pins minRetained ASYMMETRICALLY, so an inverted bound cannot pass', async () => {
     // 0.5 is the fixed point of `1 - x`, so a suite that only ever tests one-half cannot tell this bound from
-    // its own inverse — mutating the comparison to the mirrored form left every test green. These two use
+    // its own inverse — the comparison mutated to the mirrored form leaves such a suite green. These two use
     // fractions where the two readings disagree.
     const w = world();
     await loadSegment(SEG, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], w.deps); // 10 ids
@@ -224,6 +222,82 @@ describe('loadSegment — the guard, and what a refusal leaves behind', () => {
 });
 
 describe('loadSegment — racing writers', () => {
+  /** `storage` with `hook` run once, around the first object put: before it lands, or after. */
+  function around(
+    storage: IStorageDriver,
+    when: 'before' | 'after',
+    hook: () => Promise<unknown>,
+  ): IStorageDriver {
+    let fired = false;
+    return new Proxy(storage, {
+      get(t, p, rx) {
+        if (p !== 'put' && p !== 'putImmutable') return Reflect.get(t, p, rx) as unknown;
+        const inner = Reflect.get(t, p, rx) as (...a: never[]) => Promise<unknown>;
+        return async (...args: never[]) => {
+          if (!fired && when === 'before') {
+            fired = true;
+            await hook();
+          }
+          const out = await inner.apply(storage, args);
+          if (!fired) {
+            fired = true;
+            await hook();
+          }
+          return out;
+        };
+      },
+    }) as IStorageDriver;
+  }
+
+  it('a load that loses its generation number wrote nothing, and is audited like any refusal', async () => {
+    const w = world();
+    await loadSegment(SEG, [1], w.deps);
+    // Another load takes the same number and lands before this one's object put.
+    const racing = around(w.storage, 'before', () => loadSegment(SEG, [7], w.deps));
+    const audit = new RecordingAuditSink();
+    const r = await loadSegment(SEG, [2], { ...w.deps, storage: racing }, { audit });
+    expect(r).toMatchObject({ generation: 1, published: false, reason: 'superseded', size: 0 });
+    expect(audit.snapshot()).toEqual([
+      {
+        kind: 'segment.load-refused',
+        namespace: 'ns',
+        segment: 's',
+        generation: 1,
+        reason: 'superseded',
+        cardinality: 0,
+      },
+    ]);
+    expect(await idsOf(w.storage, 1)).toEqual([7]);
+  });
+
+  it('a refusal after another write changed the row leaves its object, superseded and guarded alike', async () => {
+    // The delete is fenced on the row's token, not its pointer: a retention change moves no pointer and still
+    // makes the number this call holds one it can no longer prove is its own.
+    for (const [ids, reason] of [
+      [[2], 'superseded'],
+      [[], 'empty'],
+    ] as const) {
+      const w = world();
+      await loadSegment(SEG, [1, 2, 3], w.deps);
+      const racing = around(w.storage, 'after', () =>
+        setSegmentRetention(SEG, { registry: w.registry }, { expiresAt: Date.now() + 86_400_000 }),
+      );
+      const r = await loadSegment(SEG, ids, { ...w.deps, storage: racing });
+      expect(r, reason).toMatchObject({ generation: 1, published: false, reason });
+      expect((await w.registry.get(SEG))!.currentGen, reason).toBe(0);
+      expect(await generations(w.storage), reason).toEqual([0, 1]);
+    }
+  });
+
+  it('a refusal whose row was deleted while it wrote deletes its object', async () => {
+    const w = world();
+    await loadSegment(SEG, [1, 2, 3], w.deps);
+    const racing = around(w.storage, 'after', () => w.registry.delete(SEG));
+    const r = await loadSegment(SEG, [2], { ...w.deps, storage: racing });
+    expect(r).toMatchObject({ generation: 1, published: false, reason: 'superseded' });
+    expect(await generations(w.storage)).toEqual([0]);
+  });
+
   it('reports superseded rather than publishing a generation no reader will resolve', async () => {
     const w = world();
     await loadSegment(SEG, [1], w.deps);
@@ -310,8 +384,10 @@ describe('loadSegment — the guard is fenced on the row it judged', () => {
   it('refuses rather than wiping when another loader publishes between the read and the publish', async () => {
     // The guard reads the "before" cardinality, then writes, then publishes. Anything that lands in between
     // voids the premise the guard judged on — and an unfenced forward-only publish would report success anyway.
-    // Reproduced before the fence existed: two loaders on a fresh segment let an EMPTY generation land over a
-    // thousand ids, under DEFAULT options, because `before` had been read as "no row yet".
+    // Without the fence, two loaders on a fresh segment can land an EMPTY generation over a thousand ids, under
+    // DEFAULT options, because `before` reads as "no row yet". This case does not reach the fence: its racer fires
+    // from the object PUT, after `nextGeneration` has chosen, so both loaders take the same number and the
+    // write-once collision stops the loser first. The fence itself is pinned in `publish-absence-fence.test.ts`.
     const w = world();
     let raced = false;
     const racing = new Proxy(w.storage, {
@@ -374,6 +450,10 @@ describe('loadSegment — validation', () => {
     await expect(loadSegment(SEG, [1], w.deps, { keep: -1 })).rejects.toBeInstanceOf(
       ValidationError,
     );
+    // Not a number, not whole, not finite: each would otherwise reach the collection and collect, or keep, the wrong set.
+    for (const keep of [Number.NaN, 1.5, Number.POSITIVE_INFINITY]) {
+      await expect(loadSegment(SEG, [1], w.deps, { keep })).rejects.toBeInstanceOf(ValidationError);
+    }
     await expect(
       loadSegment(SEG, [1], w.deps, { guard: { minRetained: 1.5 } }),
     ).rejects.toBeInstanceOf(ValidationError);
@@ -381,5 +461,66 @@ describe('loadSegment — validation', () => {
       loadSegment(SEG, [1], w.deps, { guard: { minCardinality: -1 } }),
     ).rejects.toBeInstanceOf(ValidationError);
     expect(await generations(w.storage)).toEqual([]);
+  });
+});
+
+describe('two loads onto a segment with no row, under allowEmpty and no guard', () => {
+  // The guide's load-ordering passage: neither load reads anything to fence on, so each publish is a plain
+  // forward-only advance. Both loads write their object before either publishes (the gate holds each one right after
+  // its put), so they hold different numbers: the first takes 0, the second sees that object and takes 1.
+  async function raced(firstToPublish: 'lower' | 'higher') {
+    const w = world();
+    const held: { release: () => void; arrived: Promise<void> }[] = [];
+    const storage: IStorageDriver = {
+      capabilities: () => w.storage.capabilities(),
+      getRange: (k, o, l) => w.storage.getRange(k, o, l),
+      getTail: (k, m) => w.storage.getTail(k, m),
+      list: (ref) => w.storage.list(ref),
+      delete: (k) => w.storage.delete(k),
+      putImmutable: async (k, fn) => {
+        const out = await w.storage.putImmutable(k, fn);
+        let arrive!: () => void;
+        let release!: () => void;
+        const arrived = new Promise<void>((r) => (arrive = r));
+        const gate = new Promise<void>((r) => (release = r));
+        held.push({ release, arrived });
+        arrive();
+        await gate;
+        return out;
+      },
+    };
+    const deps = { ...w.deps, storage };
+    const opts = { allowEmpty: true } as const;
+    const lower = loadSegment(SEG, [1], deps, opts);
+    await until(() => held.length === 1);
+    const higher = loadSegment(SEG, [2], deps, opts);
+    await until(() => held.length === 2);
+
+    const [a, b] = firstToPublish === 'lower' ? [0, 1] : [1, 0];
+    held[a]!.release();
+    const first = await (a === 0 ? lower : higher);
+    held[b]!.release();
+    const second = await (b === 0 ? lower : higher);
+    return { w, lower: a === 0 ? first : second, higher: a === 0 ? second : first };
+  }
+  const until = async (cond: () => boolean): Promise<void> => {
+    for (let i = 0; i < 1000 && !cond(); i++) await new Promise((r) => setImmediate(r));
+    expect(cond()).toBe(true);
+  };
+
+  it('both land when the lower generation publishes first, and the higher stays current', async () => {
+    const { w, lower, higher } = await raced('lower');
+    expect([lower.generation, higher.generation]).toEqual([0, 1]);
+    expect(lower.published).toBe(true);
+    expect(higher.published).toBe(true);
+    expect((await w.registry.get(SEG))!.currentGen).toBe(1);
+  });
+
+  it('the lower one is superseded when the higher publishes first', async () => {
+    const { w, lower, higher } = await raced('higher');
+    expect([lower.generation, higher.generation]).toEqual([0, 1]);
+    expect(higher.published).toBe(true);
+    expect(lower).toMatchObject({ published: false, reason: 'superseded' });
+    expect((await w.registry.get(SEG))!.currentGen).toBe(1);
   });
 });

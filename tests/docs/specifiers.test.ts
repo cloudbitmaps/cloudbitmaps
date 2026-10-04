@@ -2,24 +2,17 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// Guards that no user-facing file still tells a reader to install or import the RETIRED unscoped package name.
+// Guards that no user-facing file tells a reader to install or import the unscoped `cloud-roaring` package.
 //
-// `cloud-roaring` survives on npm only as a non-functional `0.0.0` placeholder; the real
-// packages are `@cloudbitmaps/roaring` (+ `/s3`, `/gcs`, `/azure`) and `@cloudbitmaps/core`. A doc or site page
-// that says `npm i cloud-roaring` or `from 'cloud-roaring'` hands the reader an empty package and a
-// `Cannot find module`, and it is the *most* copy-pasted content we publish.
+// `cloud-roaring` is on npm only as a non-functional `0.0.0` placeholder; the real packages are
+// `@cloudbitmaps/roaring`, the storage packages (`@cloudbitmaps/s3`, `/gcs`, `/azure-blob`) and
+// `@cloudbitmaps/core`. A doc or site page that says `npm i cloud-roaring` or `from 'cloud-roaring'` hands the
+// reader an empty package and a `Cannot find module`, and it is the *most* copy-pasted content we publish.
 //
-// This exists because the package split swept the docs but missed all four `site/` pages — every install line
-// and every import there stayed on the old name, invisible to the source-graph tests.
-//
-// It also, for a while, did not sweep the **source**, and the comment above used to claim it had. The warm-tier
-// removal proved otherwise: `packages/core/src/{s3,gcs,azure}/index.ts` each carried a runnable
-// ```import … from 'cloud-roaring/s3'``` in its header, and the three storage drivers named the old subpath in
-// theirs — nine specifiers this gate walked straight past, because it read only `.md` and `.html`. A doc-comment
-// is copy-pasted exactly like a README (an editor shows it on hover, and it ships in the `.d.ts`), so each
-// package's `src` tree is in scope now.
-// The name is still legitimate as the GitHub repo name, a README keyword, and a prose mention of history, so
-// this checks the *specifier* forms only.
+// It reads the site pages and the package **source** as well as the docs. The site is invisible to the
+// source-graph tests, and a doc-comment is copy-pasted exactly like a README (an editor shows it on hover, and
+// it ships in the `.d.ts`), so every `site/` page and each package's `src` tree is in scope.
+// The name is still legitimate as a README keyword and in prose, so this checks the *specifier* forms only.
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 const SKIP_DIRS = new Set([
@@ -44,7 +37,6 @@ function publicFacingFiles(): string[] {
     'AGENTS.md',
     'SECURITY.md',
     'PRIVACY.md',
-    'MIGRATING.md',
     ...packageReadmes(),
     'packages/roaring/PRIVACY.md',
   ];
@@ -61,8 +53,7 @@ function publicFacingFiles(): string[] {
   };
   // Everything under `docs/` is in scope. There is no allowlist: this repo contains only public-bound docs,
   // so every one of them is an instruction a reader will follow, and a stale specifier in any of them is
-  // simply wrong. (An earlier version carried two exemptions for immutable historical records that lived in a
-  // separate, private tree — dead weight here, and removed with it.)
+  // simply wrong.
   walk('docs', (n) => n.endsWith('.md'));
   walk('site', (n) => n.endsWith('.html'));
   walk('site-next', (n) => n.endsWith('.html'));
@@ -79,9 +70,8 @@ function publicFacingFiles(): string[] {
 /**
  * Every package's README, derived from the workspace rather than listed.
  *
- * These were hardcoded to core + roaring and stayed that way through the split to five packages, so the
- * three NEW npm landing pages — the highest-risk copy in the repo for a stale specifier, since they are
- * brand new and carry runnable import examples — were outside the guard entirely.
+ * Derived so that a new package's README — the highest-risk copy in the repo for a stale specifier, since it
+ * is new and carries runnable import examples — is inside the guard from its first commit.
  */
 function packageReadmes(): string[] {
   return readdirSync(join(ROOT, 'packages'), { withFileTypes: true })
@@ -92,29 +82,28 @@ function packageReadmes(): string[] {
 
 /**
  * The specifier forms only — `npm i cloud-roaring`, `from 'cloud-roaring'`, `require('cloud-roaring')`,
- * `'cloud-roaring/s3'`. Deliberately NOT matched: `github.com/cloudbitmaps/cloudbitmaps` (the repo), a bare
+ * `'cloud-roaring/x'`. Deliberately NOT matched: `github.com/cloudbitmaps/cloudbitmaps` (the repo), a bare
  * prose mention, or `cloud-roaring` as an npm keyword.
  */
 const OFFENDERS: readonly RegExp[] = [
-  // Every client people actually use. `unreleased-install-caveat.test.ts` records this exact lesson two
-  // files away — "the first version matched `npm i` on one line, which missed `pnpm add`, `yarn add`…" —
-  // and it was never re-derived here, so `yarn add cloud-roaring` and `bun add cloud-roaring` were legal.
+  // Every client people actually use: a pattern that matched `npm i` on one line would miss `pnpm add`,
+  // `yarn add`, the `npm install` long form, and a command that wraps its package onto the next line.
   /\b(?:npm|pnpm|yarn|bun)(?:&nbsp;| |\s)+(?:i|install|add)(?:&nbsp;| |\s)+cloud-roaring\b/,
-  // `from 'cloud-roaring'` / `require("cloud-roaring/s3")`, tolerating the site's syntax-highlight spans
+  // `from 'cloud-roaring'` / `require("cloud-roaring/x")`, tolerating the site's syntax-highlight spans
   // between the keyword and the quoted specifier.
   /(?:from|require\s*\()[^'"\n]{0,80}['"]cloud-roaring(?:\/[a-z0-9]+)?['"]/,
-  // A bare quoted specifier, e.g. inside a highlighted <span class="s">'cloud-roaring/s3'</span>.
+  // A bare quoted specifier, e.g. inside a highlighted <span class="s">'cloud-roaring/x'</span>.
   //
-  // The SUBPATH is required, and stays required. Dropping it to catch a bare `'cloud-roaring'` immediately
-  // flagged `otel.getMeter('cloud-roaring')` in two guides — an OpenTelemetry meter name, which is a label a
-  // user chooses and not a module specifier at all. A quoted string is only evidence of an import when it
-  // names a subpath; otherwise the `from` / `require(` / `import(` forms below are what identify one.
+  // The SUBPATH is required, and stays required. Dropping it to catch a bare `'cloud-roaring'` would flag a
+  // string such as an OpenTelemetry meter name, which is a label a user chooses and not a module specifier at
+  // all. A quoted string is only evidence of an import when it names a subpath; otherwise the `from` /
+  // `require(` / `import(` forms below are what identify one.
   /['"]cloud-roaring\/[a-z0-9]+['"]/,
   // `await import('cloud-roaring')` — a real import, and neither `from` nor `require`.
   /\bimport\s*\(\s*['"]cloud-roaring(?:\/[a-z0-9]+)?['"]/,
 ];
 
-describe('retired package specifier', () => {
+describe('the placeholder package specifier', () => {
   const files = publicFacingFiles();
 
   it('finds the files it is supposed to guard', () => {

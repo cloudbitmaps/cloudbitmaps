@@ -1,12 +1,6 @@
 import { withRetry, backoffDelayMs, applyJitter, DEFAULT_RETRY_POLICY } from '@/core/retry';
 import type { RetryPolicy } from '@/core/retry';
-import {
-  IntegrityError,
-  TimeoutError,
-  TransientError,
-  ValidationError,
-  isTransientError,
-} from '@/core/errors';
+import { IntegrityError, TransientError, ValidationError, isTransientError } from '@/core/errors';
 import type { Clock, Rng } from '@/core/determinism';
 
 /** A clock that records every requested sleep and resolves instantly (no real waiting in tests). */
@@ -70,9 +64,8 @@ describe('applyJitter', () => {
 });
 
 describe('isTransientError', () => {
-  it('is true only for TransientError (incl. TimeoutError subclass)', () => {
+  it('is true only for TransientError', () => {
     expect(isTransientError(new TransientError('x'))).toBe(true);
-    expect(isTransientError(new TimeoutError('x'))).toBe(true);
     expect(isTransientError(new ValidationError('x'))).toBe(false);
     expect(isTransientError(new Error('x'))).toBe(false);
   });
@@ -144,5 +137,34 @@ describe('withRetry', () => {
       { attempt: 1, delayMs: 50 },
       { attempt: 2, delayMs: 100 },
     ]);
+  });
+
+  describe('a throwing onRetry hook', () => {
+    const boom = (): never => {
+      throw new Error('hook blew up');
+    };
+
+    it('does not abort the retry: the operation still gets its remaining attempts', async () => {
+      const clock = recordingClock();
+      const { op, calls } = flaky(2, new TransientError('x'), 'ok');
+      const result = await withRetry(op, policy({ jitter: 'none', maxAttempts: 5 }), {
+        clock,
+        rng: rngOf(0),
+        onRetry: boom,
+      });
+      expect(result).toBe('ok');
+      expect(calls()).toBe(3);
+      expect(clock.sleeps).toEqual([50, 100]); // both backoff waits still happened
+    });
+
+    it("does not replace the operation's error when the attempts run out", async () => {
+      const clock = recordingClock();
+      const failure = new TransientError('the operation failed');
+      const { op, calls } = flaky(99, failure, 'never');
+      await expect(
+        withRetry(op, policy({ maxAttempts: 3 }), { clock, rng: rngOf(0), onRetry: boom }),
+      ).rejects.toBe(failure);
+      expect(calls()).toBe(3);
+    });
   });
 });

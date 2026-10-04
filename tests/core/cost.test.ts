@@ -1,15 +1,11 @@
+import { writeCrbmGeneration } from '@/core/crbm-storage-source';
+import { SafeBitmap } from '@/roaring-codec';
 import {
   CloudRoaring,
-  estimateCost,
   AWS_US_EAST_1_ONDEMAND,
-  DEFAULT_PRICING,
   ELASTICACHE_REDIS_US_EAST_1_ONDEMAND,
   ONE_REDIS_HA_CLUSTER,
-  MemoryStorageDriver,
   CrbmStorageChunkSource,
-  createBackend,
-  writeCrbmGeneration,
-  SafeBitmap,
   ValidationError,
   type CostReport,
   type PricingProfile,
@@ -20,34 +16,32 @@ import {
 import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
 import { CountingObjectStore, counting } from '../helpers/counting';
 import { seededStore } from '../helpers/loaded';
+import { estimateCost } from '@cloudbitmaps/core';
+import { RETENTION_SWEEP_REQUESTS } from '@/core/cost';
+import { brandAsBackend, type GenKey } from '@/core/ports';
+import { MemoryStorageDriver } from '@/drivers/memory';
 
 /**
- * The cost model of a loaded store. There is no per-id write term any more — data arrives only as a
- * generation, so the write side is `loads` (object PUTs) and the only crossover that exists is the read one.
+ * The cost model of a loaded store. There is no per-id write term — data arrives only as a generation, so the
+ * write side is `loads` (object PUTs) and the only crossover that exists is the read one.
  */
 
 const GIB = 1024 ** 3;
 const P = AWS_US_EAST_1_ONDEMAND;
 /** The default rates against one Redis-HA cluster, whatever the data size: the arithmetic of the verdict, alone. */
 const FLAT: PricingProfile = { ...P, redis: ONE_REDIS_HA_CLUSTER };
-const SECONDS_PER_MONTH = 730 * 3600; // 2,628,000 — the research's convention
+const SECONDS_PER_MONTH = 730 * 3600; // 2,628,000: a 730-hour month, as the cloud price lists bill
 
-describe('DEFAULT_PRICING', () => {
-  // It survived the export curation on the argument that a caller clones and tweaks it for their own
-  // region — and it was the one kept export with no test at all.
+describe('AWS_US_EAST_1_ONDEMAND', () => {
+  // It is exported so a caller can clone and tweak it for their own region.
   //
-  // The first version of this block mostly restated JavaScript: that an alias equals its target, that `??`
-  // falls back, that a spread copies. Those cannot fail for the reason the block exists. Every number below
-  // is HAND-MAINTAINED from published cloud pricing, and a stale or fat-fingered edit to any of them changes
-  // every estimate this library produces while every other test stays green — so the profile is pinned
-  // WHOLE. That is also the assertion that fails loudest when a price is deliberately updated, which is when
-  // someone should be looking at it.
+  // A block that restates JavaScript — that `??` falls back, that a spread copies — cannot fail for the
+  // reason this block exists. Every number below is HAND-MAINTAINED from published cloud pricing, and a stale
+  // or fat-fingered edit to any of them changes every estimate this library produces while every other test
+  // stays green — so the profile is pinned WHOLE. That is also the assertion that fails loudest when a price
+  // is deliberately updated, which is when someone should be looking at it.
   it('is the exact published rate card, every field pinned', () => {
-    // The identity matters as much as the values: `AWS_US_EAST_1_ONDEMAND` is `const P`, which the ~40
-    // assertions in the rest of this file compute against. Re-point `DEFAULT_PRICING` at a fresh literal with
-    // the same numbers and every other test here would still pass while the two silently diverged.
-    expect(DEFAULT_PRICING).toBe(AWS_US_EAST_1_ONDEMAND);
-    expect(DEFAULT_PRICING).toEqual({
+    expect(AWS_US_EAST_1_ONDEMAND).toEqual({
       name: 'aws-us-east-1-ondemand',
       storage: { getPerMillion: 0.4, putPerMillion: 5.0, storagePerGiBMonth: 0.023 },
       redis: { sizedToData: ELASTICACHE_REDIS_US_EAST_1_ONDEMAND },
@@ -59,13 +53,15 @@ describe('DEFAULT_PRICING', () => {
 
   it('is the profile `estimateCost` falls back to, and the fallback is not vacuous', () => {
     const input = { segments: [{ sizeBytes: 1.2e9 }], workload: { readsPerSec: 10 } };
-    expect(estimateCost(input)).toEqual(estimateCost({ ...input, pricing: DEFAULT_PRICING }));
+    expect(estimateCost(input)).toEqual(
+      estimateCost({ ...input, pricing: AWS_US_EAST_1_ONDEMAND }),
+    );
     // `??` would satisfy the line above against ANY profile, so prove the default actually reaches the
     // arithmetic: a profile with different rates must produce a different answer.
     const dearer: PricingProfile = {
-      ...DEFAULT_PRICING,
+      ...AWS_US_EAST_1_ONDEMAND,
       name: 'dearer',
-      storage: { ...DEFAULT_PRICING.storage, getPerMillion: 40 },
+      storage: { ...AWS_US_EAST_1_ONDEMAND.storage, getPerMillion: 40 },
     };
     expect(estimateCost({ ...input, pricing: dearer })).not.toEqual(estimateCost(input));
   });
@@ -77,10 +73,10 @@ const ONE_CHUNK_IDS = [1, 2, 3, 9, 77];
 const ONE_CHUNK_BYTES = SafeBitmap.fromValues(ONE_CHUNK_IDS).serialize().length;
 
 // ---------------------------------------------------------------------------------------------------
-// Redis sized to the data. The verdict used to compare every workload with one $346 cluster, which is the wrong
-// size in both directions: 200 MB fits a node a tenth of its price, and 2 TB does not fit it at all. The default now
-// prices the cheapest ElastiCache cluster that holds the stored bytes, from AWS's price list. The expected figures
-// below are worked by hand from that price list, not by the code under test.
+// Redis sized to the data. One $346 cluster is the wrong baseline for every workload, in both directions: 200 MB
+// fits a node a tenth of its price, and 2 TB does not fit it at all. So the default prices the cheapest ElastiCache
+// cluster that holds the stored bytes, from AWS's price list. The expected figures below are worked by hand from
+// that price list, not by the code under test.
 // ---------------------------------------------------------------------------------------------------
 describe('Redis sized to the data', () => {
   const HOURS = 730;
@@ -278,7 +274,7 @@ describe('Redis sized to the data', () => {
       },
     });
     expect(r.redisBaseline.monthlyUSD).toBeCloseTo(MONTH(3, 0.411), 9);
-    expect(r.verdict).toBe('win'); // $281 against $900, where one $346 cluster made it 81%
+    expect(r.verdict).toBe('win'); // $281 against $900, where one $346 cluster would make it 81%
     expect(r.rationale).toContain(
       'under the $900.09/mo Redis that would hold 18.63 GiB (1 shard of 3 cache.r6g.xlarge nodes)',
     );
@@ -430,7 +426,7 @@ describe('Redis sized to the data', () => {
     expect(redisNote(report(1024 ** 5))).toContain('holds the 1.00 PiB stored');
   });
 
-  it('keeps a fixed baseline as given, whatever the data size, in the words it always had', () => {
+  it('keeps a fixed baseline as given, whatever the data size, and words it as a baseline', () => {
     for (const bytes of [0, 20e9, 2e12]) {
       expect(baselineFor(bytes, FLAT)).toStrictEqual({ basis: 'fixed', monthlyUSD: 346 });
     }
@@ -803,7 +799,7 @@ describe('costReport (grounded)', () => {
   });
 });
 
-describe('cost model — additional coverage (5b review)', () => {
+describe('cost model — additional coverage', () => {
   it('byOp partitions the total — every dollar is attributed to exactly one op', () => {
     const r = estimateCost({
       segments: [{ sizeBytes: 5e8 }],
@@ -813,11 +809,18 @@ describe('cost model — additional coverage (5b review)', () => {
         chunksPerIntersect: 3,
         loadsPerMonth: 50,
         hotSegments: 4,
+        retirementsPerMonth: 10,
+        purgesPerMonth: 10,
       },
     });
     const { byOp, total } = r.monthlyUSD;
     expect(
-      byOp.reads + byOp.intersects + byOp.storage + byOp.loads + byOp.pointerRefresh,
+      byOp.reads +
+        byOp.intersects +
+        byOp.storage +
+        byOp.loads +
+        byOp.pointerRefresh +
+        byOp.retention,
     ).toBeCloseTo(total, 9);
     // Every term is genuinely exercised, so the identity above is not passing on a bed of zeroes.
     for (const term of [
@@ -826,6 +829,7 @@ describe('cost model — additional coverage (5b review)', () => {
       byOp.storage,
       byOp.loads,
       byOp.pointerRefresh,
+      byOp.retention,
     ]) {
       expect(term).toBeGreaterThan(0);
     }
@@ -961,8 +965,12 @@ describe('cost model — additional coverage (5b review)', () => {
 describe('loads cost term', () => {
   const putUSD = P.storage.putPerMillion / 1e6;
   const getUSD = P.storage.getPerMillion / 1e6;
-  /** What `store.load()` adds to the object's write: two listings and the pointer's PUT, and nine GETs. */
-  const storeLoadUSD = 3 * putUSD + 9 * getUSD;
+  /**
+   * What `store.load()` adds to the object's write: the pointer's PUT and a sixteenth of a listing, and five GETs less
+   * a sixteenth of one (the pointer three times, the two checks, the two more pointer reads of a listing, and no check
+   * that the current object is there on a generation whose collection lists).
+   */
+  const storeLoadUSD = (1 + 1 / 16) * putUSD + (3 + 2 / 16 + 2 - 1 / 16) * getUSD;
 
   it('is 0 and disclosed as not-modeled when loadsPerMonth is unset', () => {
     const r = estimateCost({ segments: [{ sizeBytes: 1e9 }] });
@@ -983,8 +991,8 @@ describe('loads cost term', () => {
       12,
     );
     expect(r.assumptions.notes.some((n) => /Loads modeled/.test(n))).toBe(true);
-    // $23.60 per million single-part loads at the default prices, as the docs say.
-    expect(r.monthlyUSD.byOp.loads * 1000).toBeCloseTo(23.6, 9);
+    // $12.34 per million single-part loads at the default prices, as the docs say.
+    expect(r.monthlyUSD.byOp.loads * 1000).toBeCloseTo(12.3375, 9);
   });
 
   it('a multipart load bills its extra PUT-class requests (initiate + parts + complete)', () => {
@@ -993,7 +1001,7 @@ describe('loads cost term', () => {
       workload: { loadsPerMonth: 1000, requestsPerLoad: 102 }, // a 100-part upload
     });
     expect(r.monthlyUSD.byOp.loads).toBeCloseTo(1000 * (102 * putUSD + storeLoadUSD), 12);
-    expect(r.monthlyUSD.byOp.loads).toBeCloseTo(0.5286, 9); // still small money
+    expect(r.monthlyUSD.byOp.loads).toBeCloseTo(0.5173375, 9); // still small money
   });
 
   it('loads never move the read crossover — the crossover is a read-rate question', () => {
@@ -1160,62 +1168,161 @@ describe('pointer refresh cost term', () => {
 });
 
 // ---------------------------------------------------------------------------------------------------
-// GCS and Azure Blob read an object's metadata before its bytes, so a read that needs the size — a pointer read, a
-// tail read — is two requests there. The driver tests pin those two requests against each SDK; this holds the
-// model to them.
+// A pointer read and a tail read are priced apart. A pointer read is one GET everywhere: the response that carries the
+// pointer's bytes carries its version too. A tail read needs the object's size, which S3 and GCS return with a
+// suffix-range GET, and which Azure Blob, taking no suffix range, reads with the properties first: two requests. The
+// driver tests pin the requests against each SDK; this holds the model to them, each field in each place it is charged.
 // ---------------------------------------------------------------------------------------------------
-describe('requests per sized read', () => {
-  const GCS_SHAPED: PricingProfile = { ...P, storage: { ...P.storage, requestsPerSizedRead: 2 } };
+describe('requests per pointer read and per sized read', () => {
   const getUSD = P.storage.getPerMillion / 1e6;
   const putUSD = P.storage.putPerMillion / 1e6;
+  const priced = (storage: Partial<PricingProfile['storage']>): PricingProfile => ({
+    ...P,
+    storage: { ...P.storage, ...storage },
+  });
+  /** Distinct, so a figure that charged the wrong field, or one field for both, cannot land on the right total. */
+  const APART = priced({ requestsPerPointerRead: 3, requestsPerSizedRead: 5 });
+  const AZURE_SHAPED = priced({ requestsPerSizedRead: 2 });
+  const intersect = { intersectsPerSec: 1, chunksPerIntersect: 200 };
+  const loadAndRefresh = { loadsPerMonth: 1000, hotSegments: 1, readsPerSec: 10 };
 
-  it("doubles each operand's pointer and tail read, and leaves chunk reads alone", () => {
-    const r = estimateCost({
-      segments: [{ sizeBytes: 0 }],
-      workload: { intersectsPerSec: 1, chunksPerIntersect: 200 },
-      pricing: GCS_SHAPED,
-    });
+  it("charges each operand's pointer read and tail read at their own fields, and leaves chunk reads alone", () => {
+    const r = estimateCost({ segments: [{ sizeBytes: 0 }], workload: intersect, pricing: APART });
     expect(r.monthlyUSD.byOp.intersects).toBeCloseTo(
-      SECONDS_PER_MONTH * (200 + 2 * 2 * 2) * getUSD,
+      SECONDS_PER_MONTH * (200 + 2 * (3 + 5)) * getUSD,
       6,
     );
     expect(r.assumptions.notes).toContain(
-      'Intersections priced cold: 208 GETs each, 4 for each of 2 operand(s) plus 200 chunk read(s); ' +
+      'Intersections priced cold: 216 GETs each, 8 for each of 2 operand(s) plus 200 chunk read(s); ' +
         'cacheHitRate does not apply.',
+    );
+    const three = estimateCost({
+      segments: [{ sizeBytes: 0 }],
+      workload: { ...intersect, operandsPerIntersect: 3 },
+      pricing: APART,
+    });
+    expect(three.monthlyUSD.byOp.intersects).toBeCloseTo(
+      SECONDS_PER_MONTH * (200 + 3 * (3 + 5)) * getUSD,
+      6,
     );
   });
 
-  it("doubles a load's reads, and the refresh", () => {
+  it("charges a load's pointer reads at their own field, and its two checks at one request each", () => {
     const r = estimateCost({
       segments: [{ sizeBytes: 0 }],
-      workload: { loadsPerMonth: 1000, hotSegments: 1, readsPerSec: 10 },
-      pricing: GCS_SHAPED,
+      workload: loadAndRefresh,
+      pricing: APART,
     });
-    expect(r.monthlyUSD.byOp.loads).toBeCloseTo(1000 * (4 * putUSD + 18 * getUSD), 12);
-    expect(r.monthlyUSD.byOp.pointerRefresh).toBeCloseTo(2 * 1_314_000 * getUSD, 9);
+    // The checks, of the next generation number and of the current generation's object, are one metadata request each on
+    // every backend, under either field, and the load reads no index: its guard takes the size from the row's summary.
+    expect(r.monthlyUSD.byOp.loads).toBeCloseTo(
+      1000 * ((2 + 1 / 16) * putUSD + ((3 + 2 / 16) * 3 + 2 - 1 / 16) * getUSD),
+      12,
+    );
+    expect(r.assumptions.notes).toContain(
+      'Loads modeled: 1000/mo, each 1 PUT-class request(s) for the object plus 1.06 PUT-class and 11.31 GETs ' +
+        'that store.load() adds (the pointer, a check that the next generation number is free, a check that the ' +
+        'current generation is there, and a listing every 16th load).',
+    );
   });
 
-  it('is 1 by default, and refuses a malformed value', () => {
-    const plain = estimateCost({
+  it('charges the refresh at the pointer field alone', () => {
+    const r = estimateCost({
       segments: [{ sizeBytes: 0 }],
-      workload: { intersectsPerSec: 1, chunksPerIntersect: 200 },
+      workload: loadAndRefresh,
+      pricing: APART,
     });
-    expect(plain.monthlyUSD.byOp.intersects).toBeCloseTo(SECONDS_PER_MONTH * 204 * getUSD, 6);
-    for (const requestsPerSizedRead of [NaN, -1, Infinity]) {
-      const pricing: PricingProfile = { ...P, storage: { ...P.storage, requestsPerSizedRead } };
-      expect(() => estimateCost({ segments: [{ sizeBytes: 0 }], pricing })).toThrow(
-        ValidationError,
-      );
-    }
+    expect(r.monthlyUSD.byOp.pointerRefresh).toBeCloseTo(3 * 1_314_000 * getUSD, 9);
+    const tailsOnly = estimateCost({
+      segments: [{ sizeBytes: 0 }],
+      workload: loadAndRefresh,
+      pricing: priced({ requestsPerSizedRead: 5 }),
+    });
+    expect(tailsOnly.monthlyUSD.byOp.pointerRefresh).toBeCloseTo(1_314_000 * getUSD, 9);
   });
+
+  it('takes what the refresh costs at the pointer field out of the read crossover', () => {
+    const at = (pricing: PricingProfile): number =>
+      estimateCost({
+        segments: [{ sizeBytes: 0 }],
+        workload: { hotSegments: 100, readsPerSec: 100 },
+        pricing: { ...pricing, redis: ONE_REDIS_HA_CLUSTER },
+      }).redisCrossover.readsPerSec;
+    expect(at(APART)).toBeCloseTo(
+      (ONE_REDIS_HA_CLUSTER.monthlyUSD - 3 * 100 * 1_314_000 * getUSD) /
+        (SECONDS_PER_MONTH * getUSD),
+      6,
+    );
+  });
+
+  it("prices Azure Blob's shape: a tail read is two requests, a pointer read one", () => {
+    const r = estimateCost({
+      segments: [{ sizeBytes: 0 }],
+      workload: { ...intersect, ...loadAndRefresh },
+      pricing: AZURE_SHAPED,
+    });
+    expect(r.monthlyUSD.byOp.intersects).toBeCloseTo(
+      SECONDS_PER_MONTH * (200 + 2 * (1 + 2)) * getUSD,
+      6,
+    );
+    // Three pointer reads and two sixteenths and the checks, which are one properties request there too: a load
+    // reads no tail, so the two-request tail read prices the intersect and not the load.
+    expect(r.monthlyUSD.byOp.loads).toBeCloseTo(
+      1000 * ((2 + 1 / 16) * putUSD + (3 + 2 / 16 + 2 - 1 / 16) * getUSD),
+      12,
+    );
+    expect(r.monthlyUSD.byOp.pointerRefresh).toBeCloseTo(1_314_000 * getUSD, 9);
+  });
+
+  it('defaults each field to 1 on its own', () => {
+    const at = (storage: Partial<PricingProfile['storage']>) =>
+      estimateCost({
+        segments: [{ sizeBytes: 0 }],
+        workload: { ...intersect, ...loadAndRefresh },
+        pricing: priced(storage),
+      }).monthlyUSD.byOp;
+    const gets = (byOp: CostReport['monthlyUSD']['byOp']) => ({
+      intersect: Math.round(byOp.intersects / (SECONDS_PER_MONTH * getUSD)),
+      load: (byOp.loads / 1000 - (2 + 1 / 16) * putUSD) / getUSD,
+      refresh: Math.round(byOp.pointerRefresh / (1_314_000 * getUSD)),
+    });
+    const POINTERS = 3 + 2 / 16; // a load's pointer reads: three, and two more on every sixteenth load
+    const CHECKS = 2 - 1 / 16; // its two checks, less the check of the current object on every sixteenth load
+    const defaulted = gets(at({}));
+    expect(defaulted).toMatchObject({ intersect: 204, refresh: 1 });
+    expect(defaulted.load).toBeCloseTo(POINTERS + CHECKS, 9);
+    const tails = gets(at({ requestsPerSizedRead: 5 }));
+    expect(tails).toMatchObject({ intersect: 200 + 2 * (1 + 5), refresh: 1 });
+    expect(tails.load).toBeCloseTo(POINTERS + CHECKS, 9); // a load reads no tail
+    const pointers = gets(at({ requestsPerPointerRead: 3 }));
+    expect(pointers).toMatchObject({ intersect: 200 + 2 * (3 + 1), refresh: 3 });
+    expect(pointers.load).toBeCloseTo(POINTERS * 3 + CHECKS, 9);
+  });
+
+  it.each(['requestsPerPointerRead', 'requestsPerSizedRead'] as const)(
+    'refuses a malformed %s, naming it',
+    (field) => {
+      for (const value of [NaN, -1, Infinity]) {
+        expect(() =>
+          estimateCost({ segments: [{ sizeBytes: 0 }], pricing: priced({ [field]: value }) }),
+        ).toThrow(
+          new ValidationError(
+            `pricing.storage.${field} must be a finite number >= 0; got ${value}`,
+          ),
+        );
+      }
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------------------------------
-// What the model counts is what the engine does. Each figure the estimator adds — two reads an operand for a cold
-// intersect, what `store.load()` adds to a load, one pointer read per hot segment per TTL — is held here to the
-// requests the real engine makes over the real single-bucket registry protocol, on S3's request shape (one request
-// a read). The estimator once priced a load as the object's PUT alone and an intersect as its chunks alone, and a
-// real-cloud run is what showed it; a count taken here moves with the engine instead.
+// What the model counts is what the engine does. Each figure the estimator adds — a pointer read and a tail read an
+// operand for a cold intersect, what `store.load()` adds to a load, one pointer read per hot segment per TTL — is held
+// here to the requests the real engine makes over the real single-bucket registry protocol, on S3's request shape (one
+// request a read). Each is held twice more with one kind of read priced at nothing, so the pointer reads the model
+// charges at `requestsPerPointerRead` are the engine's pointer reads, and the ones it charges at `requestsPerSizedRead`
+// are its tail reads. An estimator that priced a load as the object's PUT alone and an intersect as its chunks alone would
+// undercount both; a count taken here moves with the engine, where a hand-worked figure does not.
 //
 // The prices are chosen so a dollar figure decodes to request counts: a GET costs $1 and a PUT-class request
 // $1,000, so `1000 × PUTs + GETs` has one reading while there are fewer than a thousand GETs.
@@ -1233,28 +1340,49 @@ describe('the estimator counts the requests the engine makes', () => {
     expect(Math.abs(usd - rounded)).toBeLessThan(1e-6);
     return { put: Math.floor(rounded / 1000), get: rounded % 1000 };
   };
-  const price = (workload: Workload) =>
-    estimateCost({ segments: [{ sizeBytes: 0 }], workload, pricing: COUNTING }).monthlyUSD.byOp;
+  const price = (workload: Workload, pricing: PricingProfile = COUNTING) =>
+    estimateCost({ segments: [{ sizeBytes: 0 }], workload, pricing }).monthlyUSD.byOp;
+  /** The counting prices with tail reads free, so the model's GETs are its chunk and pointer reads alone. */
+  const POINTERS_ONLY: PricingProfile = {
+    ...COUNTING,
+    storage: { ...COUNTING.storage, requestsPerPointerRead: 1, requestsPerSizedRead: 0 },
+  };
+  /** The counting prices with pointer reads free, so the model's GETs are its chunk and tail reads alone. */
+  const TAILS_ONLY: PricingProfile = {
+    ...COUNTING,
+    storage: { ...COUNTING.storage, requestsPerPointerRead: 0, requestsPerSizedRead: 1 },
+  };
   /** The storage driver's calls that are requests; `capabilities()` is a local query, and sends nothing. */
   const requestsIn = (calls: Record<string, number>): string[] =>
     Object.keys(calls)
       .filter((k) => k !== 'capabilities')
       .sort();
 
+  /** The memory driver, counting apart the zero-byte tail reads a load checks a generation number with. */
+  class CheckCountingDriver extends MemoryStorageDriver {
+    checks = 0;
+    override getTail(key: GenKey, maxBytes: number): ReturnType<MemoryStorageDriver['getTail']> {
+      if (maxBytes === 0) this.checks += 1;
+      return super.getTail(key, maxBytes);
+    }
+  }
+
   /** A single-bucket store over counting drivers: every storage call by name, and every pointer read and write. */
   function countingStore() {
     const calls: Record<string, number> = {};
     const pointer = new CountingObjectStore(0);
-    const storage = counting(new MemoryStorageDriver(), calls);
+    const driver = new CheckCountingDriver();
+    const storage = counting(driver, calls);
     const registry = new ObjectStoreRegistry(pointer, undefined, () => 0);
     const open = (extra: object = {}) =>
-      new CloudRoaring({ storage: createBackend({ storage, registry }), ...extra });
+      new CloudRoaring({ storage: brandAsBackend({ storage, registry }), ...extra });
     const reset = () => {
       for (const k of Object.keys(calls)) delete calls[k];
       pointer.reads = 0;
       pointer.writes = 0;
+      driver.checks = 0;
     };
-    return { calls, pointer, open, reset };
+    return { calls, pointer, driver, open, reset };
   }
 
   /** A clock that moves only when told to. */
@@ -1299,45 +1427,97 @@ describe('the estimator counts the requests the engine makes', () => {
       expect(chunkReads).toBe(names.length * shared.length); // chunk-skipping: the shared chunks, from each operand
       const engineGets = pointer.reads + (calls.getTail ?? 0) + chunkReads;
 
-      const model = decode(
-        price({
-          intersectsPerSec: ONCE,
-          chunksPerIntersect: chunkReads,
-          operandsPerIntersect: names.length,
-        }).intersects,
-      );
+      const workload = {
+        intersectsPerSec: ONCE,
+        chunksPerIntersect: chunkReads,
+        operandsPerIntersect: names.length,
+      };
+      const model = decode(price(workload).intersects);
       expect(model).toEqual({ put: 0, get: engineGets });
       expect(engineGets).toBe(2 * names.length + chunkReads);
+      // A pointer read and a tail read an operand, each charged at its own field.
+      expect(pointer.reads).toBe(names.length);
+      expect(calls.getTail).toBe(names.length);
+      expect(decode(price(workload, POINTERS_ONLY).intersects).get).toBe(
+        chunkReads + pointer.reads,
+      );
+      expect(decode(price(workload, TAILS_ONLY).intersects).get).toBe(
+        chunkReads + (calls.getTail ?? 0),
+      );
     },
   );
 
   it('prices a load at the requests store.load() makes once a segment has two generations behind it', async () => {
-    const { calls, pointer, open, reset } = countingStore();
+    const { calls, pointer, driver, open, reset } = countingStore();
     const store = open();
-    const billed = async (ids: number[]): Promise<{ put: number; get: number }> => {
+    /** A load's PUT-class requests and GETs, and its GETs by kind: the pointer's, the storage reads, the checks. */
+    const billed = async (generation: number) => {
       reset();
-      const result = await store.load({ segment: 's' }, ids);
-      expect(result.published).toBe(true);
-      // On S3 the object, the listings and the pointer bill as PUT-class; every read is a GET; a delete is free.
+      const result = await store.load(
+        { segment: 's' },
+        Array.from({ length: generation + 1 }, (_, i) => i),
+      );
+      expect(result).toMatchObject({ generation, published: true });
+      // On S3 the object, the listing and the pointer bill as PUT-class; every read is a GET (the check of the
+      // next generation number is a HeadObject); a delete is free.
       const known = ['delete', 'getRange', 'getTail', 'list', 'putImmutable'];
       expect(requestsIn(calls).filter((k) => !known.includes(k))).toEqual([]);
+      const checks = driver.checks;
+      const storageReads = (calls.getTail ?? 0) + (calls.getRange ?? 0) - checks;
       return {
-        put: (calls.putImmutable ?? 0) + (calls.list ?? 0) + pointer.writes,
-        get: pointer.reads + (calls.getTail ?? 0) + (calls.getRange ?? 0),
+        bill: {
+          put: (calls.putImmutable ?? 0) + (calls.list ?? 0) + pointer.writes,
+          get: pointer.reads + storageReads + checks,
+        },
+        pointerReads: pointer.reads,
+        storageReads,
+        checks,
+        lists: calls.list ?? 0,
+        deletes: calls.delete ?? 0,
       };
     };
-    const first = await billed([1, 2, 3]);
-    const second = await billed([1, 2, 3, 4]);
-    const third = await billed([1, 2, 3, 4, 5]);
-    const fourth = await billed([1, 2, 3, 4, 5, 6]);
+    const all: Awaited<ReturnType<typeof billed>>[] = [];
+    for (let g = 0; g <= 18; g++) all.push(await billed(g));
+    const [first, second, third] = all;
 
+    // The steady state is every load from the third on, and every sixteenth generation of it lists instead of
+    // collecting by name. So the model's count is for sixteen consecutive loads: generations 3 to 18 hold one listing.
+    const steady = all.slice(3);
+    expect(steady).toHaveLength(16);
+    const sum = (pick: (l: (typeof all)[number]) => number): number =>
+      steady.reduce((n, l) => n + pick(l), 0);
     // A single-part object write is one PUT-class request: requestsPerLoad 1.
-    const model = decode(price({ loadsPerMonth: 1, requestsPerLoad: 1 }).loads);
-    expect(model).toEqual(third);
-    expect(fourth).toEqual(third); // the steady state: every load from the third on
-    // The first two loads make two and one fewer reads, and the same PUT-class requests.
-    expect(first).toEqual({ put: model.put, get: model.get - 2 });
-    expect(second).toEqual({ put: model.put, get: model.get - 1 });
+    const workload = { loadsPerMonth: 16, requestsPerLoad: 1 };
+    expect(decode(price(workload).loads)).toEqual({
+      put: sum((l) => l.bill.put),
+      get: sum((l) => l.bill.get),
+    });
+    // Three pointer reads and two checks a load, and no read of an index: the row's summary sizes the current generation.
+    // Where it lists, two more pointer reads and one check fewer, since the listing needs no word that the current object is
+    // there.
+    expect(steady.filter((l) => l.lists === 1)).toHaveLength(1);
+    expect(all[16]).toMatchObject({ lists: 1, pointerReads: 5, storageReads: 0, checks: 1 });
+    expect(all[16]?.bill).toEqual({ put: 3, get: 6 });
+    for (const l of steady.filter((s) => s.lists === 0)) {
+      expect(l).toMatchObject({ pointerReads: 3, storageReads: 0, checks: 2, deletes: 1 });
+      expect(l.bill).toEqual({ put: 2, get: 5 });
+    }
+    // Each kind of read is charged at its own field: the pointer reads and the checks, then the tail reads, of which a
+    // load makes none, and the checks, which the model prices at one request under either.
+    expect(decode(price(workload, POINTERS_ONLY).loads).get).toBe(
+      sum((l) => l.pointerReads) + sum((l) => l.checks),
+    );
+    expect(decode(price(workload, TAILS_ONLY).loads).get).toBe(
+      sum((l) => l.storageReads) + sum((l) => l.checks),
+    );
+    // The first two loads collect nothing, so they list and delete nothing, never re-read the pointer for it, and have
+    // no deletion to be sure of, so they make one check: the first reads its row again after its ids, having found none,
+    // and the second has no generation outside its window yet and sizes the first from its row's summary.
+    expect(first).toMatchObject({ lists: 0, deletes: 0, checks: 1 });
+    expect(second).toMatchObject({ lists: 0, deletes: 0, checks: 1, storageReads: 0 });
+    expect(third).toMatchObject({ lists: 0, deletes: 1 });
+    expect(first?.bill).toEqual({ put: 2, get: 4 });
+    expect(second?.bill).toEqual({ put: 2, get: 3 });
   });
 
   it('prices the refresh at one pointer read per hot segment per genTtlMs, and nothing else', async () => {
@@ -1390,6 +1570,11 @@ describe('the estimator counts the requests the engine makes', () => {
     // With no timed refresh the reads re-read no pointer, and the model bills none.
     expect((await readFor(0, 100)).pointerReads).toBe(0);
     expect(price({ hotSegments: 1, readsPerSec: 10, genTtlMs: 0 }).pointerRefresh).toBe(0);
+
+    // The refresh is pointer reads alone: charged at the pointer field, and not at all at the tail field.
+    const hot = { hotSegments: 1, readsPerSec: byDefault.reads / (DURATION_MS / 1000) };
+    expect(price(hot, POINTERS_ONLY).pointerRefresh).toBe(price(hot).pointerRefresh);
+    expect(price(hot, TAILS_ONLY).pointerRefresh).toBe(0);
   });
 
   it("prices a segment's grounded report at the store's own refresh", async () => {
@@ -1415,5 +1600,92 @@ describe('the estimator counts the requests the engine makes', () => {
     expect(
       await at({ seams: { clock }, cache: { genTtlMs: 60_000 } }, { genTtlMs: 2000 }),
     ).toBeCloseTo((SECONDS_PER_MONTH * 1000) / 2000, 3);
+  });
+});
+
+describe('retention sweep cost term', () => {
+  /** Reads a later full sweep makes of one purged segment on a registry that only tombstones: its row and its pointer. */
+  const RETENTION_TOMBSTONE_READS = 2;
+  const putUSD = P.storage.putPerMillion / 1e6;
+  const getUSD = P.storage.getPerMillion / 1e6;
+  const retention = (workload: Workload): number =>
+    estimateCost({ segments: [{ sizeBytes: 0 }], workload }).monthlyUSD.byOp.retention;
+
+  it('is 0 and silent unless a retirement or a purge is set', () => {
+    const r = estimateCost({ segments: [{ sizeBytes: 1e9 }], workload: { loadsPerMonth: 100 } });
+    expect(r.monthlyUSD.byOp.retention).toBe(0);
+    expect(r.assumptions.notes.some((n) => /Retention sweep/.test(n))).toBe(false);
+  });
+
+  it('prices a retirement and a purge with the gate on: 9 reads and 3 writes, 4 reads, deletes unbilled', () => {
+    expect(RETENTION_SWEEP_REQUESTS.conditionalDelete).toEqual({
+      retirement: { reads: 9, writes: 3, deletes: 1 },
+      purge: { reads: 4, writes: 0, deletes: 2 },
+    });
+    expect(retention({ retirementsPerMonth: 1000 })).toBeCloseTo(
+      1000 * (9 * getUSD + 3 * putUSD),
+      12,
+    );
+    expect(retention({ purgesPerMonth: 1000 })).toBeCloseTo(1000 * 4 * getUSD, 12);
+    // $20.20 per million segments retired and purged, at the default prices.
+    expect(1e6 * retention({ retirementsPerMonth: 1, purgesPerMonth: 1 })).toBeCloseTo(20.2, 9);
+  });
+
+  it('prices a registry that only tombstones, as before: 8 reads and 3 writes, 3 reads and a write', () => {
+    expect(RETENTION_SWEEP_REQUESTS.tombstoning).toEqual({
+      retirement: { reads: 8, writes: 3, deletes: 0 },
+      purge: { reads: 3, writes: 1, deletes: 0 },
+    });
+    const off = retention({
+      retirementsPerMonth: 1,
+      purgesPerMonth: 1,
+      conditionalDelete: false,
+    });
+    expect(off).toBeCloseTo(11 * getUSD + 4 * putUSD, 12);
+    // $24.40 per million segments, and the gate is the cheaper one.
+    expect(1e6 * off).toBeCloseTo(24.4, 9);
+    expect(1e6 * off).toBeGreaterThan(
+      1e6 * retention({ retirementsPerMonth: 1, purgesPerMonth: 1 }),
+    );
+  });
+
+  it("holds the cost guide's fleet-scale figures", () => {
+    const fleet = { retirementsPerMonth: 2_000_000, purgesPerMonth: 2_000_000 };
+    expect(retention(fleet)).toBeCloseTo(40.4, 6);
+    expect(retention({ ...fleet, conditionalDelete: false })).toBeCloseTo(48.8, 6);
+    // A full sweep of a registry that only tombstones reads two objects for each of a year's purged segments.
+    expect(24_000_000 * RETENTION_TOMBSTONE_READS * getUSD).toBeCloseTo(19.2, 6);
+    // `checkConsistency({ summaries: true })`: one tail read a segment, per million segments.
+    expect(1e6 * 1 * getUSD).toBeCloseTo(0.4, 9);
+    expect(1e6 * 2 * getUSD).toBeCloseTo(0.8, 9);
+  });
+
+  it('says what it priced, and what it leaves out when rows stay', () => {
+    const on = estimateCost({
+      segments: [{ sizeBytes: 0 }],
+      workload: { retirementsPerMonth: 5, purgesPerMonth: 5 },
+    }).assumptions.notes.find((n) => /Retention sweep modeled/.test(n));
+    expect(on).toContain('9 reads, 3 writes and 1 delete(s)');
+    expect(on).not.toContain('not priced');
+    const off = estimateCost({
+      segments: [{ sizeBytes: 0 }],
+      workload: { retirementsPerMonth: 5, conditionalDelete: false },
+    }).assumptions.notes.find((n) => /Retention sweep modeled/.test(n));
+    expect(off).toContain('8 reads, 3 writes and 0 delete(s)');
+    expect(off).toContain('which is not priced');
+  });
+
+  it('refuses a count that is not a finite number of at least 0, and a gate that is not a boolean', () => {
+    for (const bad of [{ retirementsPerMonth: -1 }, { purgesPerMonth: NaN }]) {
+      expect(() => estimateCost({ segments: [{ sizeBytes: 0 }], workload: bad })).toThrow(
+        ValidationError,
+      );
+    }
+    expect(() =>
+      estimateCost({
+        segments: [{ sizeBytes: 0 }],
+        workload: { retirementsPerMonth: 1, conditionalDelete: 'yes' as unknown as boolean },
+      }),
+    ).toThrow(ValidationError);
   });
 });

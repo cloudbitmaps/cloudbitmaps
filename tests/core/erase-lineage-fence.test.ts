@@ -1,21 +1,22 @@
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { openGenerationReader, publishGeneration } from '@/core/crbm-storage-source';
 import { dropSegment } from '@/core/erasure';
-import { MemoryStorageDriver, MemoryRegistryDriver, bulkLoadCrbmGeneration } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import type { IStorageDriver, SegmentRef } from '@/index';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 
 /**
  * A generation number identifies a generation only **within one incarnation of a name**. `nextGeneration`
  * returns `max(currentGen, highest object) + 1`, so it restarts at `0` once the registry row is purged and the
  * bucket is empty — and a retired, re-created name then presents a different segment at the same `currentGen`.
  *
- * `expectFrom` compares that number, so it matched across incarnations: the erasure rewrite published
- * incarnation 1's content over incarnation 2, collected the live objects with its `keep: 0` sweep, and returned
- * `erased: true`. A successful Art. 17 receipt for an operation that destroyed the live segment.
+ * `expectFrom` compares that number, so it matches across incarnations: an erasure rewrite fenced on it alone
+ * publishes incarnation 1's content over incarnation 2, collects the live objects with its `keep: 0` sweep, and
+ * returns `erased: true`. A successful Art. 17 receipt for an operation that destroys the live segment.
  *
- * The row's OCC token is the identity that survives a delete: the port contract says a later `create` gets "a
- * fresh, greater token", and every driver is conformance-tested on it.
+ * The row's OCC token is the identity that survives a delete: the port contract says a re-created row never carries
+ * a token an earlier incarnation held, and every driver is conformance-tested on it.
  */
 const REF: SegmentRef = { namespace: 'ns', segment: 's' };
 
@@ -84,7 +85,7 @@ describe('a derived publish is fenced on the row, not just the pointer value', (
   it('the reincarnation lands before the verify — reported, not thrown', async () => {
     // Here our own object is swept by the reincarnation's `dropSegment`, so the verify read misses. Without a
     // lineage check on the row re-read, the pointer still reads `from` and the miss propagates as a bare
-    // `NotFoundError` — the unactionable face this module stopped presenting.
+    // `NotFoundError`, which gives the caller nothing to act on where `'superseded'` tells it to re-run.
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3], { registry });

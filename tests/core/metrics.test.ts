@@ -1,11 +1,11 @@
 import {
   CountingMetricsSink,
-  NOOP_METRICS,
   type IMetricsSink,
   type MetricEvent,
   type MetricOpName,
 } from '@/index';
 import { safeMetrics } from '@/core/metrics';
+import { NOOP_METRICS } from '@cloudbitmaps/core';
 
 describe('CountingMetricsSink', () => {
   it('tallies each event kind into the snapshot', () => {
@@ -39,7 +39,7 @@ describe('CountingMetricsSink', () => {
     expect(s.ops.andNotInto).toEqual({ count: 0, totalMs: 0 });
   });
 
-  it('the snapshot has exactly the loaded-store shape — no warm/compaction tallies, transient retries only', () => {
+  it('the snapshot has exactly the loaded-store shape — five tallies, transient retries only', () => {
     const s = new CountingMetricsSink().snapshot();
     expect(Object.keys(s).sort()).toEqual(['cache', 'intersect', 'ops', 'retries', 'storage']);
     expect(Object.keys(s.retries)).toEqual(['transient']);

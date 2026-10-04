@@ -5,16 +5,17 @@ import { fileURLToPath } from 'node:url';
 /**
  * Pages that enumerate the audit event kinds must enumerate ALL of them.
  *
- * WHY THIS EXISTS. Two surfaces promised a complete list and delivered five of seven.
- * `site/architecture.html` said "Every change of state is an audit event beside it:" and then named five;
- * `docs/guide/dashboards.md` introduced "what lands in the log" the same way. Both omitted
- * `segment.rollback` and `segment.load-refused`.
+ * WHY THIS EXISTS. Several surfaces promise a complete list. `site/architecture.html` says "Every change of state
+ * is an audit event beside it:", `docs/guide/dashboards.md` introduces "what lands in the log" the same way, and the
+ * observability guide's table of kinds, the API reference's compliance-trail row and both copies of the privacy
+ * note, the one npm ships included, each list them. A list in any of them that names five of the seven kinds reads as
+ * complete, and leaving out `segment.rollback` or `segment.load-refused` is not cosmetic.
  *
- * Neither omission is cosmetic. `segment.rollback` records an operator moving the pointer BACKWARDS, and the
- * disaster-recovery guide tells operators it is the one event whose effect cannot be reconstructed from the
- * objects in the bucket — so a compliance reader building a trail from the enumerated list would have left
- * out the only irreversible one. `segment.load-refused` is how a refused load is distinguished from a job
- * that never ran; without it, the absence of a `segment.publish` means two different things.
+ * `segment.rollback` records an operator moving the pointer BACKWARDS, and the disaster-recovery guide tells
+ * operators it is the one event whose effect cannot be reconstructed from the objects in the bucket — so a
+ * compliance reader building a trail from a list without it would leave out the only irreversible one.
+ * `segment.load-refused` is how a refused load is distinguished from a job that never ran; without it, the
+ * absence of a `segment.publish` means two different things.
  *
  * The list is DERIVED from `audit.ts` rather than restated here, so a new kind is covered on the day it is
  * added rather than on the day someone remembers these pages exist.
@@ -29,7 +30,11 @@ function auditKinds(): string[] {
 
 /** Pages whose wording promises the whole set. */
 const ENUMERATING_PAGES = [
+  'PRIVACY.md',
+  join('packages', 'roaring', 'PRIVACY.md'),
+  join('docs', 'guide', 'api-reference.md'),
   join('docs', 'guide', 'dashboards.md'),
+  join('docs', 'guide', 'observability.md'),
   join('site', 'architecture.html'),
   join('site-next', 'architecture.html'),
 ] as const;

@@ -13,31 +13,21 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 
 async function exercise(label, m) {
-  for (const name of [
-    'CloudRoaring',
-    'estimateCost',
-    'MemoryStorageDriver',
-    'MemoryRegistryDriver',
-    'MemoryStorageChunkSource',
-    'bulkLoadCrbmGeneration',
-  ]) {
+  for (const name of ['CloudRoaring', 'MemoryStorage']) {
     if (m[name] == null) throw new Error(`${label}: missing export ${name}`);
   }
+  if (typeof m.CloudRoaring.estimateCost !== 'function')
+    throw new Error(`${label}: CloudRoaring.estimateCost is missing`);
   // Data enters a loaded store only as a published generation, so the round-trip IS the load: encode the ids
   // into one immutable `.crbm`, publish it, then read it back. The two ids sit in different 16-bit chunks, so
   // chunk routing and the native bitmap both run rather than a single-container no-op.
-  // A BACKEND, which is what the docs tell users to build. This wired a raw driver plus a `registry` option,
-  // and that option stopped existing when the backend class landed — so the pointer path it meant to exercise
-  // had been silently dead here ever since, while the round-trip kept passing because a store with one
-  // generation list-scans to the same answer. Plain ESM run inside a container: no compiler was going to say.
-  const backend = new m.MemoryStorage({ now: () => 0 });
-  await m.bulkLoadCrbmGeneration(
-    backend.storage,
-    { segment: 'lambda-smoke', generation: 0 },
-    [42, 70_000],
-    { registry: backend.registry },
-  );
-  const seg = new m.CloudRoaring({ storage: backend }).segment('lambda-smoke');
+  // A BACKEND, which is what the docs tell users to build, so the round-trip goes through the pointer. A raw
+  // driver with no registry would leave the pointer path silently dead while the round-trip kept passing,
+  // because a store with one generation list-scans to the same answer. Plain ESM run inside a container: no
+  // compiler would say.
+  const store = new m.CloudRoaring({ storage: new m.MemoryStorage({ now: () => 0 }) });
+  await store.load({ segment: 'lambda-smoke' }, [42, 70_000]);
+  const seg = store.segment('lambda-smoke');
   const ok =
     (await seg.has(42)) &&
     (await seg.has(70_000)) &&

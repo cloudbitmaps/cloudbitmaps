@@ -2,51 +2,23 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { MOVED_OPTIONS } from '@/moved-options';
+import { unknownStoreKeys } from '../helpers/option-literals';
 
 /**
- * The executable harnesses — `scripts/`, `bench/` — must not construct a store with an option that moved.
+ * The executable harnesses — `scripts/`, `bench/` — pass `new CloudRoaring({ … })` only the option keys it takes, at
+ * the top level and in each group, since the store refuses any other.
  *
- * WHY THIS EXISTS. Three of these shipped broken in a row, each found by something other than a gate:
+ * WHY THIS EXISTS. These files are plain JS, so `tsc` never sees their option bags; they are not Markdown, so the
+ * doc-fence gate does not read them; and most of them do not run in the ordinary unit suite. A harness passing a
+ * key the store refuses fails only when it runs: for `scripts/lambda-smoke.mjs` that is a container build in CI, and
+ * for `bench/scale.cjs` it is the command `docs/benchmarks.md` tells a reader to run to check the at-scale table.
  *
- *   - `scripts/smoke.cjs` passed `registry` after the backend class removed it. Found only when the new
- *     constructor guard turned a silent ignore into a throw.
- *   - `bench/soak.cjs` (x2) and `bench/scale.cjs`, same key. Found by an adversarial review, after the sweep
- *     that fixed `scripts/` stopped short of `bench/`. `docs/benchmarks.md` cites `pnpm bench:scale` as the
- *     provenance of the published at-scale table, so the command a reader is told to run to check our numbers
- *     no longer started.
- *   - `scripts/lambda-smoke.mjs`, same key again. Found by CI, on a job that builds a container — the slowest
- *     and most expensive place to learn it.
- *
- * These files are the one corner nothing covers. They are plain JS, so `tsc` never sees their option bags;
- * they are not Markdown, so the doc-fence gate does not read them; and only one of the three runs in the
- * ordinary unit suite. Every one of them kept *passing* while the option did nothing, because a store with a
- * single generation resolves by list-scan to the same answer a registry would have given — the failure was
- * invisible right up until the guard made it loud.
- *
- * WHY IT MATCHES `new <anything>.CloudRoaring`. All three write `new m.CloudRoaring({…})` against a namespace
- * import. A pattern anchored on `new CloudRoaring(` — the obvious one, and the one the doc-fence gate uses
- * because samples always destructure — matches none of them. That is most of why hand searches kept missing
- * these: the grep looked right and returned nothing.
+ * WHY IT MATCHES `new <anything>.CloudRoaring`. `scripts/smoke.cjs` and `scripts/lambda-smoke.mjs` write
+ * `new m.CloudRoaring({…})` against a namespace import, which a pattern anchored on `new CloudRoaring(` misses, so
+ * this gate reads both forms.
  */
 
 const ROOT = join(__dirname, '..', '..');
-
-/**
- * Option keys that no longer exist at the top level of a store config, and where each one went.
- *
- * DERIVED, not retyped. The hand-maintained copy that used to sit here had drifted into a strictly worse
- * state than no list at all: it carried three names (`storageGenTtlMs`, `storageReaderCacheMax`,
- * `storageReaderCacheMaxBytes`) that no release ever shipped, so the gate spent its effort watching for
- * spellings nobody can have written, while the five options that actually vanished with the live tier —
- * `warm`, `warmReadConsistency`, `maxWarmScanBytes`, `writeConcurrency`, `occBackoff` — were not checked at
- * all. A harness passing one of those would have sailed through. The store's own `MOVED_OPTIONS` is the
- * thing that decides at runtime, so it is the thing to read.
- */
-const MOVED: ReadonlyArray<readonly [string, string]> = MOVED_OPTIONS.map(([from, to, kind]) => [
-  from,
-  kind === 'gone' ? `gone — ${to}` : `now ${/^[\w.]+$/.test(to) ? `\`${to}\`` : to}`,
-]);
 
 const files = execFileSync('git', ['ls-files', 'scripts/*', 'bench/*'], {
   cwd: ROOT,
@@ -55,52 +27,26 @@ const files = execFileSync('git', ['ls-files', 'scripts/*', 'bench/*'], {
   .split('\n')
   .filter((f) => /\.(c|m)?js$/.test(f));
 
-/** The argument of each `new [ns.]CloudRoaring({ … })`, with everything nested blanked out. */
-function topLevelOptionBodies(src: string): { body: string; line: number }[] {
-  const out: { body: string; line: number }[] = [];
-  for (const m of src.matchAll(/new\s+(?:[A-Za-z_$][\w$]*\s*\.\s*)?CloudRoaring\(\s*\{/g)) {
-    const open = src.indexOf('{', m.index ?? 0);
-    let depth = 0;
-    let end = open;
-    for (; end < src.length; end++) {
-      const ch = src[end];
-      if (ch === '{' || ch === '(' || ch === '[') depth++;
-      else if (ch === '}' || ch === ')' || ch === ']') {
-        depth--;
-        if (depth === 0) break;
-      }
-    }
-    // Blank nested groups so a legitimate `storage: { storage, registry }` backend literal — which is how
-    // these harnesses now pass their two halves — is not read as a top-level `registry`.
-    let flat = '';
-    let d = 0;
-    for (const ch of src.slice(open + 1, end)) {
-      const opening = ch === '{' || ch === '(' || ch === '[';
-      const closing = ch === '}' || ch === ')' || ch === ']';
-      if (closing) d--;
-      flat += d === 0 && !opening && !closing ? ch : ' ';
-      if (opening) d++;
-    }
-    out.push({ body: flat.replace(/\/\/.*$/gm, ''), line: src.slice(0, open).split('\n').length });
-  }
-  return out;
-}
-
 describe('the executable harnesses build a store the way the docs say', () => {
+  it('reads a store built through a namespace import, as the harnesses build it', () => {
+    const src = 'const store = new m.CloudRoaring({ storage, registry, cache: { maxChunk: 1 } });';
+    expect(unknownStoreKeys(src, { namespaced: true }).map((k) => k.key)).toEqual([
+      'registry',
+      'cache.maxChunk',
+    ]);
+    expect(unknownStoreKeys(src)).toEqual([]);
+  });
+
   it('finds the harnesses at all (a zero-file sweep is a green light that proves nothing)', () => {
     expect(files.length).toBeGreaterThan(2);
   });
 
   it.each(files)('%s', (file) => {
     const src = readFileSync(join(ROOT, file), 'utf8');
-    const offenders: string[] = [];
-    for (const { body, line } of topLevelOptionBodies(src)) {
-      for (const [key, moved] of MOVED) {
-        if (new RegExp(`(^|[{,\\s])${key}\\s*([:,}]|$)`, 'm').test(body)) {
-          offenders.push(`${file}:${line} — passes \`${key}\` to CloudRoaring; it is ${moved}`);
-        }
-      }
-    }
+    const offenders = unknownStoreKeys(src, { namespaced: true }).map(
+      ({ line, key }) =>
+        `${file}:${line} — passes \`${key}\` to CloudRoaring, which does not take it`,
+    );
     expect(offenders).toEqual([]);
   });
 });

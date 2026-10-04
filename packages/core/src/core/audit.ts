@@ -1,12 +1,13 @@
 /**
  * Audit sink — an injected, no-op-by-default seam for **security/compliance** events, distinct
- * from the metrics sink (5a). Different audience (an audit log / SIEM, not a dashboard), different retention,
- * and only the compliance-relevant *state changes* — never routine reads/writes (that's the metrics sink).
- * It doubles as the GDPR Art. 30 "record of processing" surface: publishes, rewrites, and erasures.
+ * from the metrics sink (`IMetricsSink`). Different audience (an audit log / SIEM, not a dashboard), different
+ * retention, and only the compliance-relevant *state changes* — never routine reads/writes (that's the metrics
+ * sink). It doubles as the GDPR Art. 30 "record of processing" surface: publishes, refused loads, rollbacks,
+ * rewrites, erasures and disposals.
  *
- * Like `Clock`/`Rng`/`IMetricsSink`, it's injected (into the operations that emit — bulk-load, the `*Into`
- * verbs, the erasure rewrite, crypto-shred, disposal and the retention sweep) and wrapped exception-safe, so a
- * buggy sink can never break the operation it observes.
+ * Like `Clock`/`Rng`/`IMetricsSink`, it's injected (into the operations that emit — a load, the `*Into`
+ * verbs, a rollback, the erasure rewrite, crypto-shred, disposal and the retention sweep) and wrapped
+ * exception-safe, so a buggy sink can never break the operation it observes.
  * Events are vendor-neutral and carry no timestamp/actor — the sink runs synchronously at the event, so it
  * stamps its own time / attaches the caller identity (keeps `core/` free of ambient time). As with metrics,
  * `segment`/`namespace` are caller-controlled strings that may be PII — treat them accordingly when routing.
@@ -19,7 +20,7 @@
 /** A security/compliance-relevant state change. Vendor-neutral; the sink adds its own timestamp/actor. */
 export type AuditEvent =
   | {
-      /** A new immutable Storage generation *became the segment's current generation* (via bulk-load publish). */
+      /** A new immutable Storage generation *became the segment's current generation*, by a load's publish. */
       readonly kind: 'segment.publish';
       readonly namespace?: string;
       readonly segment: string;
@@ -27,7 +28,8 @@ export type AuditEvent =
     }
   | {
       /**
-       * A segment's pointer was moved **backwards**, to a generation still in the bucket.
+       * A segment's pointer was moved by a rollback to a generation still in the bucket that the caller named:
+       * **backwards**, or forward with `allowForward`, which undoes an earlier rollback.
        *
        * The only non-forward-only pointer move in the library, and the only one no automatic path can perform —
        * a human decided the current generation was wrong and named the one they wanted. Every other pointer move
@@ -44,13 +46,19 @@ export type AuditEvent =
     }
   | {
       /**
-       * A load was **refused** — the generation was written, failed a guard, and was deleted again rather than
-       * published. The security-relevant fact is that a replacement the caller asked for did NOT happen, which a
+       * A load was **refused**: it did not publish, because its result failed a guard or another writer got there
+       * first. The security-relevant fact is that a replacement the caller asked for did NOT happen, which a
        * downstream system reconciling "the segment should now contain X" needs as much as it needs the publish.
        *
        * `reason` is `'empty'` (an empty result over a non-empty segment, with no `allowEmpty`),
-       * `'min-cardinality'`, `'min-retained'`, or `'superseded'` (another writer published a higher generation
-       * first). `cardinality` is what the refused generation would have contained.
+       * `'min-cardinality'`, `'min-retained'`, or `'superseded'` (another load took the generation number, or the
+       * segment's registry row changed while the load was writing). `cardinality` is what the refused generation
+       * would have contained, and `0` for a load that lost its generation number and wrote nothing.
+       *
+       * `unanswered` is present, and `true`, on a `'superseded'` refusal whose registry write ended without an answer
+       * before the row was found to have moved on: that write may have landed, so the generation may have been the
+       * segment's current one for a while before another writer replaced it. The refusal says only that it is not
+       * current now. Absent when every write the load made was answered.
        */
       readonly kind: 'segment.load-refused';
       readonly namespace?: string;
@@ -58,6 +66,7 @@ export type AuditEvent =
       readonly generation: number;
       readonly reason: 'empty' | 'min-cardinality' | 'min-retained' | 'superseded';
       readonly cardinality: number;
+      readonly unanswered?: true;
     }
   | {
       /**
@@ -112,9 +121,6 @@ export type AuditEvent =
       readonly namespace: string;
       readonly segmentsShredded: number;
     };
-
-/** The `kind` discriminant of an {@link AuditEvent}. */
-export type AuditEventKind = AuditEvent['kind'];
 
 /** Sink for {@link AuditEvent}s. Injected via the lifecycle options; omit it and nothing is recorded. */
 export interface IAuditSink {

@@ -1,6 +1,6 @@
 import type { ContainerClient } from '@azure/storage-blob';
 import { AzureBlobStorageDriver, type AzureBlobStorageDriverOptions } from '@/azure-blob/storage';
-import { TransientError, ValidationError, WriteConflictError } from '@/core/errors';
+import { NotFoundError, TransientError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { GenKey } from '@/core/ports';
 
 // Construction-level checks need no network (the client is never called), so they run on the normal lane.
@@ -10,7 +10,7 @@ const fakeContainer = {} as unknown as ContainerClient;
 
 describe('AzureBlobStorageDriver construction', () => {
   it('accepts a clean prefix (or none) and advertises conditional-put + range-read', () => {
-    for (const prefix of [undefined, '', 'cloudroaring', 'a/b/c', '/leading/trailing/']) {
+    for (const prefix of [undefined, '', 'cloudbitmaps', 'a/b/c', '/leading/trailing/']) {
       const driver = new AzureBlobStorageDriver({ containerClient: fakeContainer, prefix });
       const caps = driver.capabilities();
       expect(caps.rangeRead).toBe(true);
@@ -88,6 +88,8 @@ function fakeContainerWith(rec: Recorder, ctl: Record<string, unknown>): Contain
       rec.uploadOpts.push(opts);
       if (typeof ctl.uploadThrow === 'function') await (ctl.uploadThrow as () => Promise<void>)();
     },
+    // The read-back a conflict makes: a blob that carries no write id, so the conflict stands.
+    getProperties: async () => ({ metadata: undefined }),
     stageBlock: async () => {
       rec.stagedBlocks += 1;
     },
@@ -218,7 +220,8 @@ describe('AzureBlobStorageDriver write-once (fake ContainerClient, emulator-inde
 
 // The cost model prices a segment's tail read on Azure Blob as two requests (`requestsPerSizedRead: 2`): the
 // properties for the blob's size, then a ranged download, where S3's suffix-range GET is one. Held here against the
-// driver. (The registry's own two-request read is pinned in registry.test.ts.)
+// driver. (The registry's pointer read, one request, priced by `requestsPerPointerRead`, is pinned in
+// registry.test.ts and registry-read.test.ts.)
 describe('AzureBlobStorageDriver — what a tail read costs', () => {
   it('makes two requests: the properties, then the ranged download', async () => {
     const calls: string[] = [];
@@ -244,5 +247,60 @@ describe('AzureBlobStorageDriver — what a tail read costs', () => {
     expect(tail.size).toBe(100);
     expect(tail.bytes.length).toBe(40);
     expect(calls).toEqual(['getProperties', 'download']);
+  });
+
+  // A load checks that the next generation number is free with a zero-byte tail read, and the cost model prices that
+  // check at one request on every backend, whatever `requestsPerSizedRead` says.
+  it('makes one request for a zero-byte tail, the properties, and answers a missing blob with NotFoundError', async () => {
+    const calls: string[] = [];
+    let present = true;
+    const blob = {
+      getProperties: async () => {
+        calls.push('getProperties');
+        if (!present)
+          throw Object.assign(new Error('BlobNotFound'), { statusCode: 404, code: 'BlobNotFound' });
+        return { contentLength: 100 };
+      },
+      download: async () => {
+        calls.push('download');
+        throw new Error('a zero-byte tail must not download');
+      },
+    };
+    const containerClient = { getBlockBlobClient: () => blob } as unknown as ContainerClient;
+    const driver = new AzureBlobStorageDriver({ containerClient });
+    const tail = await driver.getTail({ segment: 's', generation: 0 }, 0);
+    expect(tail).toEqual({ bytes: new Uint8Array(0), size: 100 });
+    expect(calls).toEqual(['getProperties']);
+    present = false;
+    calls.length = 0;
+    await expect(driver.getTail({ segment: 's', generation: 1 }, 0)).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
+    expect(calls).toEqual(['getProperties']);
+  });
+});
+
+// Collecting by name deletes one generation without knowing whether a blob is there, so a delete is one request, and
+// a blob that is absent is no error: `deleteIfExists` answers it without throwing.
+describe('AzureBlobStorageDriver — what a delete costs', () => {
+  it('makes one deleteIfExists call, so an absent blob is no error', async () => {
+    const calls: string[] = [];
+    const blob = {
+      deleteIfExists: async () => {
+        calls.push('deleteIfExists');
+        return { succeeded: false };
+      },
+      delete: async () => {
+        calls.push('delete');
+      },
+      getProperties: async () => {
+        calls.push('getProperties');
+        return { contentLength: 0 };
+      },
+    };
+    const containerClient = { getBlockBlobClient: () => blob } as unknown as ContainerClient;
+    const driver = new AzureBlobStorageDriver({ containerClient });
+    await expect(driver.delete({ segment: 's', generation: 3 })).resolves.toBeUndefined();
+    expect(calls).toEqual(['deleteIfExists']);
   });
 });

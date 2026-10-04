@@ -21,11 +21,10 @@ import { DEFAULT_TAIL_BYTES, FOOTER_BYTES, PREAMBLE_BYTES } from '@/core/crbm/fo
  *
  * WHY THIS FILE EXISTS. A run report's numbers are the ones a reader has no way to check: they come from a bill for
  * a run nobody else saw, and a report is written by hand, after the run, by someone who wants the numbers to be
- * good. The first explanation of run `2026-09-23-94416` — written from the run's own log — got three of them wrong:
- * it put a load at one GET where the code makes three, called a byte share a chunk share, and gave identical
- * segments 2,000 chunks where the layout has 1,999. A review then found three more in the published draft: object
- * sizes that included the pointer, a measured figure labelled with the expected one's value, and an upload rate
- * described as the uplink's speed. Each read plausibly. None was checkable from the page.
+ * good. The errors such a report makes read plausibly, even written from the run's own log, and none is checkable
+ * from the page: a load put at one GET where the code makes three, a byte share called a chunk share, identical
+ * segments given 2,000 chunks where the layout has 1,999, object sizes that include the pointer, a measured figure
+ * labelled with the expected one's value, an upload rate described as the uplink's speed.
  *
  *   FORWARD   every headline figure `bench/lib/calibration-figures.cjs` derives appears, as a whole figure, in the
  *             text a reader sees — not inside a longer number, and not in a comment;
@@ -59,6 +58,7 @@ interface Row {
 interface Figures {
   runId: string;
   remote: boolean;
+  loadVia: string | null;
   chunksPerSegment: number;
   chunksPerOperand: number;
   byCommand: Record<string, number>;
@@ -114,6 +114,73 @@ const { int, usd } = figures.format;
 const git = (...args: string[]): string =>
   execFileSync('git', args, { cwd: ROOT, encoding: 'utf8' }).trim();
 
+/**
+ * The commits that touched an evidence file, following it through a move between evidence paths. Git's `--follow`
+ * also finds a copy source for a file that merely resembles another, such as a test fixture of the same shape, and
+ * would then count that fixture's history as the evidence's. The history is cut at the first commit that adds the
+ * file from a path outside `bench/calibration/`.
+ */
+/**
+ * Every commit that touched `file` at its own path. No `--follow`: a file that resembles another run's, or that came
+ * back after a removal, keeps every commit made at its path, and a removal or a move away is refused on its own by
+ * {@link evidenceRemovals}, so neither can restart a file's history.
+ */
+function evidenceCommits(file: string, cwd: string = ROOT): string[] {
+  const out = execFileSync('git', ['log', '--no-renames', '--format=%H', '--', file], {
+    cwd,
+    encoding: 'utf8',
+  });
+  return out.split('\n').filter((line) => line.trim() !== '');
+}
+
+/** Every evidence file a commit deleted or moved away, with the commit. Evidence is append-only: this stays empty. */
+function evidenceRemovals(cwd: string = ROOT): string[] {
+  const out = execFileSync(
+    'git',
+    [
+      'log',
+      '--no-renames',
+      '--diff-filter=D',
+      '--name-only',
+      '--format=%x00%h',
+      '--',
+      'bench/calibration/',
+    ],
+    { cwd, encoding: 'utf8' },
+  );
+  const removed: string[] = [];
+  for (const block of out.split('\0').filter((b) => b.trim() !== '')) {
+    const [hash, ...files] = block.trim().split('\n');
+    for (const f of files) if (f.endsWith('.json')) removed.push(`${f} (${hash ?? '?'})`);
+  }
+  return removed;
+}
+
+/**
+ * The anchors a benchmarks-page section must state. A run that timed `store.load()` has the loads' own prices to
+ * state; one that timed the write and publish has those, and the first `store.load()` the tests count.
+ */
+function requiredAnchors(loadVia: string | null): string[] {
+  return [
+    'run id',
+    'exact cold intersects',
+    'chunks fetched',
+    'GETs the median cold intersect made',
+    'a cold intersect, measured',
+    'per million cold intersects, measured',
+    'GETs a cold intersect makes with each pointer read once',
+    'per million cold intersects with each pointer read once',
+    ...(loadVia === null
+      ? [
+          'per million single-part write-and-publishes',
+          'per million multipart write-and-publishes',
+          "per million of a segment's first store.load()",
+        ]
+      : ['per million single-part store.load() calls', 'per million multipart store.load() calls']),
+    'the run',
+  ];
+}
+
 /** The rows of the markdown table whose header line matches `header`, as trimmed cells. */
 function tableAfter(text: string, header: RegExp): string[][] {
   const lines = text.split('\n');
@@ -167,26 +234,33 @@ function checkBill(
         `the "${operation}" row is labelled "${row[cols.label]}", which the run does not use`,
       );
     }
-    const match = want.find((w) => w.requests === requests);
+    const group = want.filter((w) => w.requests === requests);
+    const match = group[0];
     if (match === undefined) {
       problems.push(`a row bills "${requests}", which the run does not derive`);
       continue;
     }
-    if (!match.says.test(operation)) {
+    // A run whose measured and expected counts are equal derives two rows with one request count and one price: a
+    // single row may state both, which then must say both, or two rows may each say one.
+    const same = group.every((w) => w.one === match.one && w.perMillion === match.perMillion);
+    const said = group.filter((w) => w.says.test(operation));
+    const ok = same && group.length > 1 ? said.length > 0 : said.includes(match);
+    if (!ok) {
       problems.push(
         `the "${requests}" row calls itself "${operation}", which does not say ${match.says}`,
       );
     }
     seen.set(requests, (seen.get(requests) ?? 0) + 1);
+    const wanted = same && group.length > 1 ? (said[0] ?? match) : match;
     const got = {
       one: row[cols.one],
       perMillion: row[cols.perMillion],
       ...(cols.label === undefined ? {} : { label: row[cols.label] }),
     };
     const expected = {
-      one: match.one,
-      perMillion: match.perMillion,
-      ...(cols.label === undefined ? {} : { label: match.label }),
+      one: wanted.one,
+      perMillion: wanted.perMillion,
+      ...(cols.label === undefined ? {} : { label: wanted.label }),
     };
     if (JSON.stringify(got) !== JSON.stringify(expected)) {
       problems.push(
@@ -194,9 +268,17 @@ function checkBill(
       );
     }
   }
-  for (const w of want) {
-    const n = seen.get(w.requests) ?? 0;
-    if (n !== 1) problems.push(`the "${w.requests}" row appears ${n} times, not once`);
+  for (const requests of new Set(want.map((w) => w.requests))) {
+    const group = want.filter((w) => w.requests === requests);
+    const n = seen.get(requests) ?? 0;
+    // Two derived rows with one figure may be stated as one row or as two.
+    const allowed =
+      group.length > 1 && group.every((w) => w.one === group[0]?.one) ? group.length : 1;
+    if (n < 1 || n > allowed) {
+      problems.push(
+        `the "${requests}" row appears ${n} times, not ${allowed === 1 ? 'once' : 'once or twice'}`,
+      );
+    }
   }
   return problems;
 }
@@ -233,6 +315,301 @@ describe('calibration reports are held to their evidence', () => {
 
   // The reverse check is only as good as its ability to fail. These are the look-alikes it must tell apart, and
   // the spellings a wrong figure could otherwise hide behind.
+  // The evidence is committed once. A new file that resembles a fixture is not followed into the fixture's history,
+  // a second commit touching it still counts, and a move between evidence paths is followed.
+  describe('the evidence commit count', () => {
+    const body = JSON.stringify({ a: Array.from({ length: 50 }, (_, i) => `line ${i}`) }, null, 2);
+    const repo = (): string => {
+      const dir = mkdtempSync(join(tmpdir(), 'evidence-commits-'));
+      execFileSync('git', ['init', '-q'], { cwd: dir });
+      mkdirSync(join(dir, 'bench', 'calibration'), { recursive: true });
+      mkdirSync(join(dir, 'fixtures'), { recursive: true });
+      return dir;
+    };
+    const commit = (dir: string, msg: string): void => {
+      execFileSync('git', ['add', '-A'], { cwd: dir });
+      execFileSync(
+        'git',
+        [
+          '-c',
+          'user.name=t',
+          '-c',
+          'user.email=t@example.com',
+          '-c',
+          'commit.gpgsign=false',
+          'commit',
+          '-q',
+          '-m',
+          msg,
+        ],
+        { cwd: dir },
+      );
+    };
+
+    it('counts a new file that resembles a fixture once, and a second commit twice', () => {
+      const dir = repo();
+      try {
+        writeFileSync(join(dir, 'fixtures', 'f.json'), `${body}\n`);
+        commit(dir, 'fixture');
+        writeFileSync(join(dir, 'fixtures', 'f.json'), `${body.replace('line 1"', 'line 1b"')}\n`);
+        commit(dir, 'fixture edit');
+        const file = 'bench/calibration/run.json';
+        writeFileSync(join(dir, file), `${body.replace('line 2"', 'line 2b"')}\n`);
+        commit(dir, 'evidence');
+        expect(evidenceCommits(file, dir)).toHaveLength(1);
+        writeFileSync(join(dir, file), `${body}\n`);
+        commit(dir, 'edit');
+        expect(evidenceCommits(file, dir)).toHaveLength(2);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('counts a new run that resembles an earlier run once, and the earlier run still once', () => {
+      // Two runs of one harness share their shape, so git reports the second as a copy of the first. A copy's
+      // source still exists with its own history, so the copy's history starts at the commit that made it.
+      const dir = repo();
+      try {
+        writeFileSync(join(dir, 'bench', 'calibration', 'first.json'), `${body}\n`);
+        commit(dir, 'first run');
+        const second = 'bench/calibration/second.json';
+        writeFileSync(join(dir, second), `${body.replace('line 3"', 'line 3b"')}\n`);
+        commit(dir, 'second run');
+        expect(evidenceCommits(second, dir)).toHaveLength(1);
+        expect(evidenceCommits('bench/calibration/first.json', dir)).toHaveLength(1);
+        writeFileSync(join(dir, second), `${body}\n`);
+        commit(dir, 'edit');
+        expect(evidenceCommits(second, dir)).toHaveLength(2);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('refuses a move between evidence paths as a removal of the old one', () => {
+      const dir = repo();
+      try {
+        writeFileSync(join(dir, 'bench', 'calibration', 'old.json'), `${body}\n`);
+        commit(dir, 'evidence');
+        expect(evidenceRemovals(dir)).toEqual([]);
+        execFileSync('git', ['mv', 'bench/calibration/old.json', 'bench/calibration/new.json'], {
+          cwd: dir,
+        });
+        commit(dir, 'move');
+        expect(evidenceRemovals(dir)).toEqual([
+          expect.stringMatching(/^bench\/calibration\/old\.json /),
+        ]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('counts every commit at the path of a run removed and re-added edited, and refuses the removal', () => {
+      // Re-added beside a similar run, the file reads to `git log --follow` as a copy of that run, which would hide
+      // its first commit and the removal. Counted at its own path, nothing hides.
+      const dir = repo();
+      try {
+        writeFileSync(join(dir, 'bench', 'calibration', 'first.json'), `${body}\n`);
+        const second = 'bench/calibration/second.json';
+        writeFileSync(join(dir, second), `${body.replace('line 3"', 'line 3b"')}\n`);
+        commit(dir, 'two runs');
+        execFileSync('git', ['rm', '-q', second], { cwd: dir });
+        commit(dir, 'remove');
+        writeFileSync(join(dir, second), `${body.replace('line 4"', 'line 4b"')}\n`);
+        commit(dir, 're-add, edited');
+        expect(evidenceCommits(second, dir)).toHaveLength(3);
+        expect(evidenceRemovals(dir)).toEqual([
+          expect.stringMatching(/^bench\/calibration\/second\.json /),
+        ]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('counts every commit at the path of a run moved out and back, and refuses the move out', () => {
+      const dir = repo();
+      try {
+        const file = 'bench/calibration/run.json';
+        writeFileSync(join(dir, file), `${body}\n`);
+        commit(dir, 'evidence');
+        execFileSync('git', ['mv', file, 'fixtures/run.json'], { cwd: dir });
+        commit(dir, 'out');
+        writeFileSync(
+          join(dir, 'fixtures', 'run.json'),
+          `${body.replace('line 5"', 'line 5b"')}\n`,
+        );
+        execFileSync('git', ['mv', 'fixtures/run.json', file], { cwd: dir });
+        commit(dir, 'back, edited');
+        expect(evidenceCommits(file, dir)).toHaveLength(3);
+        expect(evidenceRemovals(dir)).toEqual([
+          expect.stringMatching(/^bench\/calibration\/run\.json /),
+        ]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  // The figures of a run's own stages are derived from its evidence, not listed: each real one is accepted, and a
+  // number that no stage holds is refused beside them.
+  describe('the stage figures of the in-region run', () => {
+    const evidence = EVIDENCE.find((e) => e.includes('2026-10-03-e13c7'));
+    const run = evidence === undefined ? undefined : JSON.parse(read(evidence));
+    const f = run === undefined ? undefined : figures.derive(run, SOURCES);
+    const check = (sentence: string): string[] =>
+      f === undefined ? ['no evidence'] : figures.unaccounted(sentence, f.values);
+
+    it('accepts what each stage measured, and what follows from it', () => {
+      expect(
+        check(
+          'The sweep at 1,000 shared chunks took 4,238.82 ms and 2,004 GETs; at 2,000, 8,658.44 ms and 4,004 GETs, 2.04 times the first. ' +
+            'A warm intersect took 3.96 ms. A cold count took 27.48 ms. andNot took 8,687.10 ms and 3,021 GETs. ' +
+            'A GET round is about 26.9 ms. Loads ran at 2.86 million ids a second and 11.3 million. The run was bounded at $0.044470.',
+        ),
+      ).toEqual([]);
+    });
+
+    it('refuses a figure that no stage holds', () => {
+      for (const wrong of [
+        'The sweep at 1,000 shared chunks took 4,238.83 ms.',
+        'A warm intersect took 3.97 ms.',
+        'A cold count took 31.37 ms.',
+        'andNot made 3,333 GETs.',
+        'A GET round is about 31.2 ms.',
+        'Loads ran at 3.86 million ids a second.',
+        'The run was bounded at $0.054470.',
+        'Doubling the overlap took 3.04 times as long.',
+      ]) {
+        expect(check(wrong), wrong).not.toEqual([]);
+      }
+    });
+  });
+
+  // A run whose measured and expected intersect make the same requests derives two rows with one figure. The bill
+  // may state them as one row or as two, but not as none, and a pair that differs still needs both rows.
+  describe('the bill table when the measured and the expected count agree', () => {
+    const cols = { operation: 0, requests: 1, one: 2, perMillion: 3, label: 4 };
+    const row = (requests: string, label: string, says: RegExp, price = '$0.0000816'): Row => ({
+      requests,
+      one: price,
+      perMillion: price === '$0.0000816' ? '$81.60' : '$82.40',
+      label,
+      says,
+    });
+    const equal = [
+      row('204 GET', 'derived', /\bmedian\b|\bmeasured\b/i),
+      row('204 GET', 'expected', /\bonce\b|\bexpected\b|\binside the region\b/i),
+    ];
+    const differ = [
+      row('206 GET', 'derived', /\bmedian\b|\bmeasured\b/i, '$0.0000824'),
+      row('204 GET', 'expected', /\bonce\b|\bexpected\b|\binside the region\b/i),
+    ];
+
+    it('accepts one row that says both, or two rows with the same figure', () => {
+      expect(
+        checkBill(
+          [
+            [
+              'cold intersect, the median measured and expected inside the region',
+              '204 GET',
+              '$0.0000816',
+              '$81.60',
+              'derived',
+            ],
+          ],
+          equal,
+          cols,
+        ),
+      ).toEqual([]);
+      expect(
+        checkBill(
+          [
+            [
+              'cold intersect, the median this run measured',
+              '204 GET',
+              '$0.0000816',
+              '$81.60',
+              'derived',
+            ],
+            [
+              'the same, expected, each pointer read once',
+              '204 GET',
+              '$0.0000816',
+              '$81.60',
+              'expected',
+            ],
+          ],
+          equal,
+          cols,
+        ),
+      ).toEqual([]);
+    });
+
+    it('refuses a wrong figure, a row that says neither, and a differing pair stated once', () => {
+      expect(
+        checkBill([['median measured', '204 GET', '$0.0000817', '$81.70', 'derived']], equal, cols),
+      ).not.toEqual([]);
+      expect(
+        checkBill([['cold intersect', '204 GET', '$0.0000816', '$81.60', 'derived']], equal, cols),
+      ).not.toEqual([]);
+      expect(checkBill([], equal, cols)).not.toEqual([]);
+      expect(
+        checkBill(
+          [['cold intersect, the median measured', '206 GET', '$0.0000824', '$82.40', 'derived']],
+          differ,
+          cols,
+        ),
+      ).not.toEqual([]);
+      expect(
+        checkBill(
+          [
+            ['cold intersect, the median measured', '206 GET', '$0.0000824', '$82.40', 'derived'],
+            ['the same, expected inside the region', '204 GET', '$0.0000816', '$81.60', 'expected'],
+          ],
+          differ,
+          cols,
+        ),
+      ).toEqual([]);
+    });
+  });
+
+  // Which anchors a section must state follows from what the run timed.
+  describe('the anchors a benchmarks section must state', () => {
+    const names = (via: string | null): string[] =>
+      requiredAnchors(via).filter((n) => /single-part|multipart|first store\.load/.test(n));
+    const anchorsOf = (path: string): string[] => {
+      const ev = EVIDENCE.find((e) => e.includes(path));
+      if (ev === undefined) throw new Error(`no evidence for ${path}`);
+      return figures.derive(JSON.parse(read(ev)), SOURCES).anchors.map(([n]) => n);
+    };
+
+    it('are, for a run that timed store.load(), its own load prices, and all of them exist', () => {
+      expect(names('store.load()')).toHaveLength(2);
+      const have = anchorsOf('2026-10-03-e13c7');
+      for (const n of requiredAnchors('store.load()')) expect(have).toContain(n);
+      expect(requiredAnchors('store.load()')).not.toContain(
+        'per million single-part write-and-publishes',
+      );
+    });
+
+    it('are, for a write-and-publish run, the three old names, and all of them exist', () => {
+      expect(names(null)).toHaveLength(3);
+      const have = anchorsOf('2026-09-23-94416');
+      for (const n of requiredAnchors(null)) expect(have).toContain(n);
+      expect(requiredAnchors(null)).not.toContain('per million multipart store.load() calls');
+    });
+
+    it('fail a section that leaves out a load anchor', () => {
+      const ev = EVIDENCE.find((e) => e.includes('2026-10-03-e13c7'));
+      if (ev === undefined) throw new Error('no evidence');
+      const f = figures.derive(JSON.parse(read(ev)), SOURCES);
+      const section = 'run 2026-10-03-e13c7 $11.60 per million single-part';
+      const missing = f.anchors
+        .filter(([n]) => requiredAnchors(f.loadVia).includes(n))
+        .filter(([, want]) => !figures.statesFigure(section, want));
+      expect(missing.map(([n]) => n)).toContain('per million multipart store.load() calls');
+    });
+  });
+
   describe('the reverse check', () => {
     const values: Values = {
       usd: [0.0000816, 81.6, 346],
@@ -340,9 +717,9 @@ describe('calibration reports are held to their evidence', () => {
       }
     });
 
-    // Every wrong figure this gate exists because of, planted back into the real report one at a time. Each must
-    // fail it, however plausibly it is written: these are the errors that were made, not the ones imagined.
-    it("fails on every error the run's explanations actually made", () => {
+    // Wrong figures planted into the real report one at a time, each a misreading the run's evidence invites: a
+    // request shape, a share, a count, a size, a label. Each must fail it, however plausibly it is written.
+    it('fails on each misreading of the run planted into its report', () => {
       const report = read(join(DIR, '2026-09-23-94416.md'));
       const evidence = EVIDENCE.find((e) => e.includes('2026-09-23-94416'));
       expect(evidence).toBeDefined();
@@ -360,22 +737,23 @@ describe('calibration reports are held to their evidence', () => {
         'Inside the region the same intersect would make 206 GETs, $82.40 per million.',
         '98% of the chunks were skipped.',
         'Each intersect read 10 chunks per operand.',
-        "A segment's first store.load() costs $22.80 per million, as measured.",
-        // Two corrections that were themselves wrong, a depth and a price per dollar, and two misreadings of a price.
+        "A segment's first store.load() costs $11.60 per million, as measured.",
+        // Seven more figures the report states, each misstated: a byte share, a depth, a per-request time, a price
+        // per dollar, a crossover rate, a load price and the objects' sizes.
         "Of the two objects' bytes, 29.9% were fetched and 70.1% never left S3.",
         'The median cold intersect was about 15 requests deep.',
         'Each of its requests took about 194 ms.',
         'A dollar buys 12,136 cold intersects.',
         'Past 329.15 cold intersects a second, sustained, the node is cheaper.',
-        "A segment's store.load() costs $11.20 per million.",
+        "A segment's store.load() costs $12.40 per million.",
         'The two objects are 2,104,496 bytes, and the index is 20,152 bytes.',
       ]) {
         expect(plant(wrong), wrong).not.toEqual([]);
       }
     });
 
-    // A share is read by the words nearest it in its own clause. A byte share in the clause after a semicolon once stood
-    // nearer the chunk share before it than that clause's own chunks, and failed a sentence that was right.
+    // A share is read by the words nearest it in its own clause. Read across the semicolon below, the chunk share that
+    // ends the first clause stands nearer the second clause's payload than its own chunks, and a right sentence fails.
     it('reads each clause of a sentence apart, so neighbouring shares keep their own words', () => {
       const report = read(join(DIR, '2026-09-23-94416.md'));
       const evidence = EVIDENCE.find((e) => e.includes('2026-09-23-94416'));
@@ -395,9 +773,9 @@ describe('calibration reports are held to their evidence', () => {
       ).not.toEqual([]);
     });
 
-    // A binding in one direction only let the reverse claim through: the object's size called the upload's passed while
-    // the upload's size called the object's failed. Each value that can make two claims now fails both ways, and each
-    // wrong claim below sits beside an honest one with the same number.
+    // A binding in one direction only lets the reverse claim through: the object's size called the upload's passes
+    // while the upload's size called the object's fails. Each value that can make two claims fails both ways, and
+    // each wrong claim below sits beside an honest one with the same number.
     it('binds both directions of a claim that two values can make', () => {
       const report = read(join(DIR, '2026-09-23-94416.md'));
       const evidence = EVIDENCE.find((e) => e.includes('2026-09-23-94416'));
@@ -412,8 +790,8 @@ describe('calibration reports are held to their evidence', () => {
           'That puts about 16 requests in line.',
         ],
         [
-          'A write and publish is 2 PUT + 3 GET, $22.80 per million.',
-          "A segment's first store.load() is expected at $22.80 per million.",
+          'A write and publish is 2 PUT + 3 GET, $11.60 per million.',
+          "A segment's first store.load() is expected at $11.60 per million.",
         ],
         [
           'A dollar buys 12,254 cold intersects as the run measured them.',
@@ -453,7 +831,7 @@ describe('calibration reports are held to their evidence', () => {
         'ours $1',
         '#### Detail',
         'still ours $2',
-        '#### The run `2026-07-25-60291` compared',
+        '#### The run `2026-10-01-11111` compared',
         'not ours $3',
         '### Next',
         'not ours $4',
@@ -481,10 +859,10 @@ describe('calibration reports are held to their evidence', () => {
     });
   });
 
-  describe('evidence as a later harness writes it', () => {
-    // Run order is the time a run started. The committed run predates the field, and sorted by its date alone it came
-    // after every run started later the same day, since `T` sorts before `|`: a second run that day would never have
-    // become the latest, and the pages would have gone on being checked against the first.
+  describe('evidence with every field the harness records', () => {
+    // Run order is the time a run started. The committed run's file has no start time, and keyed by its date alone it
+    // would sort after every run started later the same day, since `T` sorts before `|`: a second run that day would
+    // never become the latest, and the pages would go on being checked against the first.
     it('puts a run without a start time before a later run the same day', () => {
       const root = mkdtempSync(join(tmpdir(), 'calib-order-'));
       try {
@@ -509,10 +887,11 @@ describe('calibration reports are held to their evidence', () => {
       }
     });
 
-    // A later harness records the object's size apart from what a load uploaded, and a large segment's ids. Its file
-    // of this same run must derive the same figures. The derivation paired the object's size with an upload RATE,
-    // which is the object and its pointer's body a second, and so refused every file the fixed harness would write.
-    it("derives the same figures from a later harness's file of the same run", () => {
+    // The harness records the object's size apart from what a load uploaded, and a large segment's ids; the committed
+    // run's file records neither. The same run with both recorded must derive the same figures. An upload RATE is the
+    // object and its pointer's body a second, so a derivation that pairs it with the object's size refuses every file
+    // that records the two apart.
+    it('derives the same figures from the same run with every field recorded', () => {
       const file = EVIDENCE.find((e) => e.includes('2026-09-23-94416'));
       expect(file).toBeDefined();
       if (file === undefined) return;
@@ -542,6 +921,34 @@ describe('calibration reports are held to their evidence', () => {
       expect(after.anchors).toEqual(before.anchors);
       expect(after.rows).toEqual(before.rows);
     });
+  });
+
+  // A run that timed `store.load()` records its loads' and every stage's own requests, and is priced from those
+  // (tests/bench/calibration-figures-store-load.test.ts). A file that says it timed `store.load()` and records none
+  // of them is refused, rather than priced as a write and publish.
+  describe('a run that says it timed store.load()', () => {
+    it('is refused when it records no requests of its own', () => {
+      const file = EVIDENCE.find((e) => e.includes('2026-09-23-94416'));
+      expect(file).toBeDefined();
+      if (file === undefined) return;
+      const run = JSON.parse(read(file)) as { phases: { load: Record<string, unknown> } };
+      expect(() => figures.derive(run, SOURCES)).not.toThrow();
+      const later = structuredClone(run);
+      later.phases.load.via = 'store.load()';
+      expect(() => figures.derive(later, SOURCES)).toThrow(
+        /records no requests for its load stage/,
+      );
+    });
+  });
+
+  // Evidence is append-only. A run's file is never deleted or moved away, which is also what stops a file removed and
+  // re-added from passing as new.
+  it('no commit deletes or moves away an evidence file', () => {
+    expect(
+      git('rev-parse', '--is-shallow-repository'),
+      'a shallow checkout has no history to check; CI checks out with fetch-depth: 0',
+    ).toBe('false');
+    expect(evidenceRemovals()).toEqual([]);
   });
 
   describe.each(EVIDENCE.map((file) => ({ file, id: basename(file, '.json') })))(
@@ -581,9 +988,7 @@ describe('calibration reports are held to their evidence', () => {
           git('rev-parse', '--is-shallow-repository'),
           'a shallow checkout has no history to check; CI checks out with fetch-depth: 0',
         ).toBe('false');
-        const commits = git('log', '--follow', '--format=%H', '--', file)
-          .split('\n')
-          .filter(Boolean);
+        const commits = evidenceCommits(file);
         expect(
           commits.length,
           `${file} is touched by ${commits.length} commits`,
@@ -697,20 +1102,7 @@ describe('calibration reports are held to their evidence', () => {
     const ALIASES = ['September run', 'September 2026', 'single-bucket run', 'single-bucket bill'];
     const claims = f === undefined ? null : figures.claimsAbout(doc, f.runId, ALIASES);
     const section = claims?.section ?? null;
-    const REQUIRED = [
-      'run id',
-      'exact cold intersects',
-      'chunks fetched',
-      'GETs the median cold intersect made',
-      'a cold intersect, measured',
-      'per million cold intersects, measured',
-      'GETs a cold intersect makes with each pointer read once',
-      'per million cold intersects with each pointer read once',
-      'per million single-part write-and-publishes',
-      'per million multipart write-and-publishes',
-      "per million of a segment's first store.load()",
-      'the run',
-    ];
+    const REQUIRED = requiredAnchors(f?.loadVia ?? null);
 
     it('has a section on the latest run, which links its report', () => {
       expect(section, `docs/benchmarks.md has no heading naming run ${f?.runId}`).not.toBeNull();

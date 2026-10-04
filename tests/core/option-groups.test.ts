@@ -1,31 +1,28 @@
+import { SafeBitmap } from '@/roaring-codec';
+import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { randomBytes } from 'node:crypto';
-import {
-  createBackend,
-  CloudRoaring,
-  CountingMetricsSink,
-  MemoryStorage,
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
-  bulkLoadCrbmGeneration,
-} from '@/index';
+import { CloudRoaring, CountingMetricsSink, MemoryStorage } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
-import { MemoryStorageChunkSource, SafeBitmap } from '@/index';
 import { TransientError } from '@/core/errors';
 import type {
   ChunkRef,
   Clock,
+  IRegistryDriver,
   IStorageDriver,
   SegmentRef as Ref,
   StorageChunkSource,
 } from '@/index';
 import { KeyUnavailableError, ValidationError, BudgetExceededError } from '@/core/errors';
 import type { SegmentRef } from '@/index';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { brandAsBackend } from '@/core/ports';
+import { MemoryRegistryDriver } from '@/drivers/memory';
 
 /**
- * The 14 flat options became one required `storage` plus four groups (`cache`, `encryption`, `retry`,
- * `seams`); `metrics` and `budget` stayed flat.
+ * The store takes one required `storage` plus four groups (`cache`, `encryption`, `retry`, `seams`);
+ * `metrics` and `budget` are flat.
  *
- * A regrouping is the kind of change that passes every existing test while quietly doing nothing: wire
+ * A grouped option is the kind of wiring that passes every other test while quietly doing nothing: wire
  * `cache.genTtlMs` to the wrong place and it reverts to the 2 s default, which is what most tests want anyway.
  * So each group is asserted by the **effect** it has, not by reading the field back.
  */
@@ -86,7 +83,7 @@ describe('grouped options reach the thing they configure', () => {
     const metrics = new CountingMetricsSink();
     // Two chunks, room for one: alternating reads evict each other, so NOTHING is ever served from cache.
     // Assert on hits rather than misses — with the ceiling dropped, the two cold reads are still misses, so a
-    // `misses > 1` assertion passes under the default ceiling too and the mutant survives (it did).
+    // `misses > 1` assertion passes under the default ceiling too and the mutant survives.
     const store = new CloudRoaring({ storage: backend, cache: { maxChunks: 1 }, metrics });
     const seg = store.segment('s');
     for (let i = 0; i < 3; i++) {
@@ -98,17 +95,15 @@ describe('grouped options reach the thing they configure', () => {
   });
 
   // `reader-cache.test.ts` covers these bounds thoroughly — but it constructs `CrbmStorageChunkSource`
-  // DIRECTLY, so it cannot see whether the facade passes the caller's value through. Both mutants survived
-  // the whole suite. That matters more than it looks: `MOVED_OPTIONS`' own comment names this exact failure
-  // as the reason the guard exists ("a dropped readerMaxBytes restores a 64 MiB ceiling someone had
-  // deliberately lowered for a small heap") — the guard protected the OLD spelling while nothing protected
-  // the new one.
+  // DIRECTLY, so it cannot see whether the facade passes the caller's value through: a facade that dropped
+  // either one would pass it. That matters more than it looks: a dropped `readerMaxBytes` restores a 64 MiB
+  // ceiling someone had deliberately lowered for a small heap, and nothing else would notice.
   //
   // The effect: one reader, two segments, read alternately. At a ceiling of 1 each read evicts the other's
   // reader and must re-open it with a fresh tail GET; at the default both stay open.
   // Re-opening an evicted reader costs a TAIL read, not a chunk GET, so count at the driver rather than
-  // through the metrics sink (which counts chunk gets and is identical either way — my first version of this
-  // test asserted on that and could not tell the two ceilings apart).
+  // through the metrics sink (which counts chunk gets and is identical either way, so an assertion on it
+  // cannot tell the two ceilings apart).
   const alternatingTailReads = async (cache: Record<string, number>): Promise<number> => {
     const backend = new MemoryStorage();
     for (const seg of ['a', 'b']) {
@@ -129,7 +124,7 @@ describe('grouped options reach the thing they configure', () => {
       list: (...a) => backend.storage.list(...a),
     };
     const store = new CloudRoaring({
-      storage: createBackend({ storage: counting, registry: backend.registry }),
+      storage: brandAsBackend({ storage: counting, registry: backend.registry }),
       cache,
     });
     for (let i = 0; i < 4; i++) {
@@ -170,8 +165,8 @@ describe('grouped options reach the thing they configure', () => {
     expect(metrics.snapshot().storage.gets).toBeGreaterThan(0);
   });
 
-  // The flat form took a WHOLE RetryPolicy, so tuning one field meant restating all five — and `onRetry` was a
-  // sibling key, so it could not be given at all without one. Both are now expressible alone.
+  // A partial policy means tuning one field does not mean restating all five, and `onRetry` can be given with
+  // no policy field at all.
   it('`retry` takes a partial policy, and `onRetry` alone is legal', async () => {
     const backend = new MemoryStorage();
     await bulkLoadCrbmGeneration(backend.storage, { ...SEG, generation: 0 }, [1], {
@@ -186,46 +181,44 @@ describe('grouped options reach the thing they configure', () => {
 });
 
 /**
- * Every moved option is a knob whose absence is SILENT and wrong — a dropped `requireEncryption` reads
- * cleartext, a dropped `clock` makes a deterministic job non-deterministic. TypeScript catches these at the
- * call site; this catches the plain-JS caller, the JSON config and the `as` cast, which are exactly the
- * callers who would otherwise get the default and never know.
+ * A key the store does not take is refused, not ignored: a group's key written at the top level is a knob whose
+ * absence is SILENT and wrong — a dropped `required` reads cleartext, a dropped `clock` makes a deterministic job
+ * non-deterministic. TypeScript catches these at the call site; this catches the plain-JS caller, the JSON config
+ * and the `as` cast, which are exactly the callers who would otherwise get the default and never know.
  */
-describe('an option that moved into a group is refused, not ignored', () => {
+describe('a key the store does not take is refused, not ignored', () => {
   const backend = (): MemoryStorage => new MemoryStorage();
   const build = (extra: Record<string, unknown>): CloudRoaring =>
     new CloudRoaring({ storage: backend(), ...extra } as unknown as { storage: MemoryStorage });
 
   it.each([
-    ['cacheMaxChunks', 512, 'cache.maxChunks'],
-    ['cacheTtlMs', 1000, 'cache.ttlMs'],
-    ['storageGenTtlMs', 0, 'cache.genTtlMs'],
-    ['storageReaderCacheMax', 8, 'cache.readerMax'],
-    ['storageReaderCacheMaxBytes', 1024, 'cache.readerMaxBytes'],
-    ['keystore', {}, 'encryption.keystore'],
-    ['requireEncryption', true, 'encryption.required'],
-    ['onRetry', () => {}, 'retry.onRetry'],
-    ['rng', { next: () => 0.5 }, 'seams.rng'],
-    ['registry', new MemoryRegistryDriver(), 'backend'],
-    ['cold', new MemoryStorageDriver(), '`cold` → `storage`'],
-  ])('rejects `%s` and names where it went', (key, value, expected) => {
+    ['maxChunks', 512],
+    ['genTtlMs', 0],
+    ['keystore', {}],
+    ['required', true],
+    ['onRetry', () => {}],
+    ['clock', { now: (): number => 0, sleep: async (): Promise<void> => {} }],
+    ['rng', { next: () => 0.5 }],
+    ['registry', new MemoryRegistryDriver()],
+  ])('refuses `%s` at the top level, naming it and what the store takes', (key, value) => {
     expect(() => build({ [key]: value })).toThrow(ValidationError);
-    expect(() => build({ [key]: value })).toThrow(new RegExp(expected.replace('.', '\\.')));
+    expect(() => build({ [key]: value })).toThrow(`\`${key}\``);
+    expect(() => build({ [key]: value })).toThrow(/The store takes `storage`, `cache`/);
   });
 
   it('names every offender at once, not just the first', () => {
-    // Order follows the declaration list, not the caller's object, so assert presence rather than sequence.
     const both = (): CloudRoaring =>
-      build({ clock: { now: () => 0, sleep: async () => {} }, cacheTtlMs: 5 });
-    expect(both).toThrow(/cacheTtlMs/);
-    expect(both).toThrow(/clock/);
+      build({ clock: { now: (): number => 0, sleep: async (): Promise<void> => {} }, ttlMs: 5 });
+    expect(both).toThrow(/`clock`/);
+    expect(both).toThrow(/`ttlMs`/);
   });
 
-  // `storageGenTtlMs: 0` is falsy and `requireEncryption: false` is too — a presence check written as a
-  // truthiness check would wave both through, and `genTtlMs: 0` is precisely the value tests rely on.
+  // `genTtlMs: 0` and `required: false` are falsy — a presence check written as a truthiness check would wave
+  // both through, and `genTtlMs: 0` is precisely the value tests rely on.
   it('catches a falsy value, which a truthiness check would miss', () => {
-    expect(() => build({ storageGenTtlMs: 0 })).toThrow(ValidationError);
-    expect(() => build({ requireEncryption: false })).toThrow(ValidationError);
+    expect(() => build({ genTtlMs: 0 })).toThrow(ValidationError);
+    expect(() => build({ required: false })).toThrow(ValidationError);
+    expect(() => build({ cache: { maxChunk: 0 } })).toThrow(/`cache\.maxChunk`/);
   });
 
   it('leaves the grouped form alone', () => {
@@ -242,16 +235,16 @@ describe('an option that moved into a group is refused, not ignored', () => {
 });
 
 /**
- * A partial policy is the whole point of the `retry` group — and it is also what put this hazard in reach.
+ * A partial policy is the whole point of the `retry` group — and it is also what puts this hazard in reach.
  *
  * `{ ...DEFAULT_RETRY_POLICY, ...overrides }` lets a key that is PRESENT WITH VALUE `undefined` overwrite the
  * default instead of falling back to it. `exactOptionalPropertyTypes` is off in this repo, so
  * `retry: { baseDelayMs: cfg.baseDelayMs }` typechecks clean when `cfg.baseDelayMs` is absent — the ordinary
- * shape for a value read from env or JSON. The delays became `NaN`; `SystemClock.sleep` then takes the
- * `setTimeout(resolve, NaN)` path, which Node coerces to 1 ms. Bounded jittered backoff silently becomes a
- * ~1 ms hot retry loop: the read still succeeds, the retry metric still emits, and the thundering-herd and
- * denial-of-wallet protection is gone with nothing to see. Every one of these was a compile error before the
- * policy became a `Partial`.
+ * shape for a value read from env or JSON. Under a plain spread the delays become `NaN`; `SystemClock.sleep`
+ * then takes the `setTimeout(resolve, NaN)` path, which Node coerces to 1 ms. Bounded jittered backoff
+ * silently becomes a ~1 ms hot retry loop: the read still succeeds, the retry metric still emits, and the
+ * thundering-herd and denial-of-wallet protection is gone with nothing to see. A policy typed as a full record
+ * would make every one of these a compile error; a `Partial` does not.
  */
 describe('a partial retry policy fills from the default, even for an explicit undefined', () => {
   const recordingClock = (): Clock & { sleeps: number[] } => {
@@ -306,10 +299,10 @@ describe('a partial retry policy fills from the default, even for an explicit un
     expect(await sleepsFor({ baseDelayMs: 7 })).toEqual([7, 14]);
   });
 
-  // Each of the next two exists because the assertion above CANNOT see the field it names. `[7, 14]` is
-  // 7 × 2, and 2 is the default `backoffFactor` — so a store that ignored the caller's factor produces the
-  // same schedule. Likewise no test here ever reached the `maxDelayMs` cap, so the cap was never
-  // load-bearing. Both overrides survived being forced back to their defaults until these landed.
+  // Each of the next two exists because the assertion above CANNOT see the field it names. `[7, 14]` is 7 × 2,
+  // and 2 is the default `backoffFactor` — so a store that ignored the caller's factor produces the same
+  // schedule. Likewise none of the schedules above reaches the `maxDelayMs` cap, so the cap is not
+  // load-bearing in them. Without these two, either override forced back to its default passes them all.
   it('a non-default `backoffFactor` actually shapes the curve', async () => {
     // Default factor 2 would give [10, 20]; only a factor of 3 gives 30.
     expect(await sleepsFor({ baseDelayMs: 10, backoffFactor: 3 })).toEqual([10, 30]);
@@ -339,7 +332,7 @@ describe('a partial retry policy fills from the default, even for an explicit un
     expect(await sleepsFor({ baseDelayMs: 100, maxDelayMs: 150 })).toEqual([100, 150]);
   });
 
-  // The regression. Each of these produced NaN delays — a ~1 ms hot loop — under a plain spread.
+  // The hazard itself. Under a plain spread, each of these produces NaN delays — a ~1 ms hot loop.
   it.each(['baseDelayMs', 'maxDelayMs', 'backoffFactor', 'maxAttempts', 'jitter'])(
     'an explicitly-undefined `%s` falls back to the default rather than erasing it',
     async (field) => {
@@ -350,10 +343,119 @@ describe('a partial retry policy fills from the default, even for an explicit un
 
 describe('a nullish options bag is a typed error, not a TypeError', () => {
   // The constructor reads `options.seams?.clock` before anything validates the bag, so without this guard
-  // `new CloudRoaring(null)` threw a raw `TypeError: Cannot read properties of null (reading 'seams')`.
+  // `new CloudRoaring(null)` throws a raw `TypeError: Cannot read properties of null (reading 'seams')`.
   it.each([null, undefined, 42, 'storage'])('rejects %p with a ValidationError', (bad) => {
     expect(() => new CloudRoaring(bad as unknown as { storage: MemoryStorage })).toThrow(
       ValidationError,
     );
+  });
+});
+
+describe('`retry` retries reads of segment data, and no write', () => {
+  // A write that lands and then loses its response would, replayed, find its own write already there and report
+  // it as a conflict, so the read retry never touches a write. An object put that fails throws to the caller, who
+  // re-runs the call; a registry write that gets no answer is settled by the publish itself, which reads the row and
+  // sends a fresh compare-and-swap from it when nothing changed. The registry and bucket reads the store makes
+  // directly are left to the caller. Each case fails one call once, with the retry on, and counts both the calls and
+  // the retries.
+  type Fault = 'putImmutable' | 'create' | 'compareAndSwap' | 'get' | 'list' | 'getTail';
+
+  const faultyStore = (fault: Fault) => {
+    const base = new MemoryStorage();
+    const s = base.storage;
+    const r = base.registry;
+    const calls = new Map<Fault, number>();
+    const state = { armed: false };
+    const trips = (name: Fault): boolean => {
+      calls.set(name, (calls.get(name) ?? 0) + 1);
+      if (!state.armed || name !== fault) return false;
+      state.armed = false;
+      return true;
+    };
+    const blip = (name: Fault): TransientError => new TransientError(`${name}: transient`);
+    const storage: IStorageDriver = {
+      capabilities: () => s.capabilities(),
+      putImmutable: (key, write) =>
+        trips('putImmutable') ? Promise.reject(blip('putImmutable')) : s.putImmutable(key, write),
+      getRange: (key, offset, length) => s.getRange(key, offset, length),
+      getTail: (key, maxBytes) =>
+        trips('getTail') ? Promise.reject(blip('getTail')) : s.getTail(key, maxBytes),
+      delete: (key) => s.delete(key),
+      list: (ref) =>
+        trips('list')
+          ? (async function* () {
+              yield* [];
+              throw blip('list');
+            })()
+          : s.list(ref),
+    };
+    const registry: IRegistryDriver = {
+      capabilities: () => r.capabilities(),
+      get: (ref) => (trips('get') ? Promise.reject(blip('get')) : r.get(ref)),
+      create: (ref, record) =>
+        trips('create') ? Promise.reject(blip('create')) : r.create(ref, record),
+      compareAndSwap: (ref, token, patch) =>
+        trips('compareAndSwap')
+          ? Promise.reject(blip('compareAndSwap'))
+          : r.compareAndSwap(ref, token, patch),
+      list: (namespace) => r.list(namespace),
+      delete: (ref, expected) => r.delete(ref, expected),
+    };
+    const retries: number[] = [];
+    const store = new CloudRoaring({
+      storage: brandAsBackend({ storage, registry }),
+      retry: { onRetry: ({ attempt }) => retries.push(attempt) },
+      seams: { clock: { now: () => 0, sleep: () => Promise.resolve() }, rng: { next: () => 0 } },
+    });
+    const count = (name: Fault): number => calls.get(name) ?? 0;
+    return { store, count, retries, arm: () => (state.armed = true) };
+  };
+
+  it('a load whose object put fails once throws, and nothing retries it', async () => {
+    const f = faultyStore('putImmutable');
+    const before = f.count('putImmutable');
+    f.arm();
+    await expect(f.store.load(SEG, [1, 2, 3])).rejects.toBeInstanceOf(TransientError);
+    expect(f.count('putImmutable') - before).toBe(1);
+    expect(f.retries).toEqual([]);
+  });
+
+  it.each([
+    ['first pointer write, onto no row,', 'create', false],
+    ['pointer advance', 'compareAndSwap', true],
+  ] as const)(
+    'a load whose %s fails once is sent again by the publish, not by the read retry, and publishes',
+    async (_, fault, loaded) => {
+      const f = faultyStore(fault);
+      if (loaded) await f.store.load(SEG, [1, 2]);
+      const before = f.count(fault);
+      f.arm();
+      const r = await f.store.load(SEG, [1, 2, 3]);
+      expect(r.published).toBe(true);
+      expect(f.count(fault) - before).toBe(2); // the one that failed, then a fresh write from the row read back
+      expect(f.retries).toEqual([]); // the read retry's hook never fired
+    },
+  );
+
+  it.each([
+    ['exists', 'get', (store: CloudRoaring) => store.exists(SEG)],
+    ['generations', 'list', (store: CloudRoaring) => store.generations(SEG)],
+  ] as const)(
+    '`%s` reads directly, and throws on a fault with no retry',
+    async (_, fault, call) => {
+      const f = faultyStore(fault);
+      await f.store.load(SEG, [1]);
+      f.arm();
+      await expect(call(f.store)).rejects.toBeInstanceOf(TransientError);
+      expect(f.retries).toEqual([]);
+    },
+  );
+
+  it('while a read of segment data through the same store rides the same kind of fault out', async () => {
+    const f = faultyStore('getTail');
+    await f.store.load(SEG, [1, 2, 3]);
+    f.arm();
+    expect(await f.store.segment('s').has(1)).toBe(true);
+    expect(f.retries).toEqual([1]);
   });
 });

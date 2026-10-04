@@ -1,17 +1,12 @@
-import {
-  MemoryStorage,
-  CloudRoaring,
-  CrbmStorageChunkSource,
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
-  bulkLoadCrbmGeneration,
-  runConsistencyCheck,
-  UnsupportedError,
-} from '@/index';
+import { MemoryStorage, CloudRoaring, CrbmStorageChunkSource, UnsupportedError } from '@/index';
 import type { SegmentRef } from '@/index';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { runConsistencyCheck } from '@cloudbitmaps/core';
+import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
+import type { IRegistryDriver } from '@/core/ports';
 
 /** Advance the registry's currentGen WITHOUT writing the matching Storage generation — a torn cross-tier restore. */
-async function tearRestore(registry: MemoryRegistryDriver, ref: SegmentRef): Promise<void> {
+async function tearRestore(registry: IRegistryDriver, ref: SegmentRef): Promise<void> {
   const rec = (await registry.get(ref))!;
   expect(rec.currentGen).not.toBeNull(); // fixtures bulk-load a real gen 0; a null pointer means a broken setup
   await registry.compareAndSwap(ref, rec.token, { currentGen: rec.currentGen! + 1 });

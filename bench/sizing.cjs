@@ -90,6 +90,12 @@ const INTERSECT_CONCURRENCY = sourceConstant(
   'packages/core/src/core/engine.ts',
   'DEFAULT_INTERSECT_CONCURRENCY',
 );
+const COMBINE_WINDOW_START = sourceConstant(
+  'packages/core/src/core/engine.ts',
+  'COMBINE_WINDOW_START',
+);
+const { windowRounds, windowPeak } = require('./lib/calibrate-stages.cjs');
+const calibrationFigures = require('./lib/calibration-figures.cjs');
 const { esc, logChart } = require('./lib/log-chart.cjs');
 const { markersOf, regionsOf, withRegions } = require('./lib/sizing-markers.cjs');
 /** The estimator's month, read from it: AWS's 730 hours, of 3,600 seconds. */
@@ -397,7 +403,7 @@ const GUIDE_EXAMPLE_INPUT = {
 const sizeOf = (p) => p.segments * p.segmentBytes;
 /** One cold intersect's GETs on its segments' data prefix: every chunk and tail read, not the pointers beside it. */
 const DATA_GETS_PER_INTERSECT =
-  intersectGets(SHARED_CHUNKS) - OPERANDS * (P.storage.requestsPerSizedRead ?? 1);
+  intersectGets(SHARED_CHUNKS) - OPERANDS * (P.storage.requestsPerPointerRead ?? 1);
 /** A deployment's GETs a second on its one data prefix, the point reads that miss the cache included. */
 const dataGetsOf = (p) =>
   (p.intersectsPerMonth / SECONDS_PER_MONTH) * DATA_GETS_PER_INTERSECT +
@@ -713,7 +719,7 @@ function render() {
   const multipart = PROFILES.filter((p) => writeRequests(p.segmentBytes) > 1).map(
     (p) =>
       `The ${p.id} deployment's ${bytes(p.segmentBytes)} segments load as ${int(Math.ceil(p.segmentBytes / S3_PART_BYTES))}-part ` +
-      `uploads, ${int(writeRequests(p.segmentBytes))} PUT-class requests each, since the S3 driver uploads in ` +
+      `uploads, ${int(writeRequests(p.segmentBytes))} PUT-class requests each, since the S3 backend uploads in ` +
       `${mib(S3_PART_BYTES)} parts.`,
   );
   const shape =
@@ -756,7 +762,7 @@ function render() {
   ];
 
   // The large deployment's GETs a second on its one data prefix: every chunk and tail read, and the point reads
-  // that miss the cache. Pointer reads, one sized read an operand, go to the registry's own prefix beside it.
+  // that miss the cache. Pointer reads, one an operand, go to the registry's own prefix beside it.
   const dataGets = dataGetsOf(large);
   const prefix =
     `And S3 has a rate of its own. AWS documents [at least ${int(S3_PREFIX_GETS_PER_SEC)} GET requests a second ` +
@@ -769,9 +775,9 @@ function render() {
   const medium = byId('medium');
   const sample = [
     '```ts',
-    "import { estimateCost } from '@cloudbitmaps/roaring';",
+    "import { CloudRoaring } from '@cloudbitmaps/roaring';",
     '',
-    'const report = estimateCost({',
+    'const report = CloudRoaring.estimateCost({',
     `  segments: [{ sizeBytes: ${medium.segmentBytes.toLocaleString('en-US').replace(/,/g, '_')}, count: ${medium.segments.toLocaleString('en-US').replace(/,/g, '_')} }],`,
     '  workload: {',
     `    intersectsPerSec: ${medium.intersectsPerMonth / SECONDS_PER_MONTH}, // priced cold`,
@@ -782,7 +788,7 @@ function render() {
     `    hotSegments: ${medium.hotPerProcess}, // in each reader process…`,
     `    readerProcesses: ${medium.readerProcesses}, // …of ${medium.readerProcesses}`,
     '  },',
-    "  // pricing: your region's rates; on GCS or Azure Blob, set storage.requestsPerSizedRead to 2.",
+    "  // pricing: your region's rates; on Azure Blob, storage.requestsPerSizedRead: 2 for its tail reads.",
     '});',
     `report.monthlyUSD.total; // ${usd(price(medium).monthlyUSD.total)}, the medium deployment above`,
     `report.redisBaseline; // ${usd(redisOf(medium).monthlyUSD)} a month: ${estimatorWords(price(medium)).cluster}`,
@@ -839,7 +845,7 @@ function render() {
     'const report = CloudRoaring.estimateCost({',
     `  segments: [{ sizeBytes: ${seg.sizeBytes.toExponential().replace('e+', 'e')}, count: ${seg.count} }], // or { cardinality }`,
     '  workload: {',
-    `    readsPerSec: ${w.readsPerSec}, // point reads; each cache miss is one GET`,
+    `    readsPerSec: ${w.readsPerSec}, // point reads; each cache miss is at most one GET`,
     `    cacheHitRate: ${w.cacheHitRate}, // hits are free`,
     `    intersectsPerSec: ${w.intersectsPerSec}, // priced cold: each operand's pointer and index are read too`,
     `    chunksPerIntersect: ${w.chunksPerIntersect}, // the chunks it fetches: ${OPERANDS} operands × ${w.chunksPerIntersect / OPERANDS} shared chunks`,
@@ -847,7 +853,7 @@ function render() {
     `    hotSegments: ${w.hotSegments}, // segments a long-lived reader keeps reading: each refreshes its pointer every ${ttlLabel(GEN_TTL_MS)}`,
     '  },',
     '});',
-    `report.monthlyUSD.byOp; // { reads: ${approx(o.reads)}, intersects: ${approx(o.intersects)}, storage: ${approx(o.storage)}, loads: ${approx(o.loads)}, pointerRefresh: ${approx(o.pointerRefresh)} }`,
+    `report.monthlyUSD.byOp; // { reads: ${approx(o.reads)}, intersects: ${approx(o.intersects)}, storage: ${approx(o.storage)}, loads: ${approx(o.loads)}, pointerRefresh: ${approx(o.pointerRefresh)}, retention: 0 }`,
     `report.monthlyUSD.total; // ${approx(g.monthlyUSD.total)}`,
     `report.redisBaseline; // ${usd2(g.redisBaseline.monthlyUSD)} a month: the cheapest cluster in the catalogue that holds ${guideWords.holds}, ${guideWords.cluster}`,
     `report.verdict; // '${g.verdict}' — 'win-big' | 'win' | 'lose-zone', never hides the lose case`,
@@ -1022,7 +1028,7 @@ function render() {
         'at most one a read, and one a genTtlMs',
       ],
       [
-        'each load       ──► S3 PUTs and LISTs, GETs, a pointer write',
+        'each load       ──► S3 PUTs and GETs, a pointer write',
         'grows with how often the data changes',
       ],
     ]),
@@ -1100,7 +1106,7 @@ function render() {
   const whyLine =
     "The line is the table's last column. It climbs with the data because the Redis it is measured against does. " +
     'In this model an extra cold intersect costs CloudBitmaps the same at any size: every segment keeps the ' +
-    `[calibration run](../../bench/calibration/2026-09-23-94416.md)'s shape, ${int(CHUNKS_PER_SEGMENT)} chunks with ` +
+    `[calibration run](../../bench/calibration/2026-09-23-94416.md)'s shape, about ${int(CHUNKS_PER_SEGMENT)} chunks with ` +
     `${int(SHARED_CHUNKS)} shared, so a larger store is more segments of that shape, not larger ones. Segments that grow by sharing ` +
     'more chunks cost more, as [overlap](#where-it-loses) shows. The chart counts cold intersects alone; the three ' +
     'deployments also make point reads and refresh pointers, which ' +
@@ -1128,17 +1134,34 @@ function render() {
     "for its pointer reads, once each `cache.genTtlMs`; one that ranges over more than a reader's cache holds is " +
     "Redis's ground, or a cache's in front of CloudBitmaps.";
 
-  // The engine keeps a window of INTERSECT_CONCURRENCY chunks in flight and starts the next as the OLDEST finishes, so
-  // at an even latency the shared chunks take ceil(shared ÷ window) request times, after the pointers and indexes.
-  const chain = 2 + Math.ceil(SHARED_CHUNKS / INTERSECT_CONCURRENCY);
+  // The engine opens a window of COMBINE_WINDOW_START chunk keys and widens it, as keys are taken, to
+  // INTERSECT_CONCURRENCY, starting the next as the OLDEST finishes, so at an even latency the shared chunks take
+  // windowRounds request times, after the pointers and indexes.
+  const chain = 2 + windowRounds(SHARED_CHUNKS, INTERSECT_CONCURRENCY, COMBINE_WINDOW_START);
+  const peakInFlight =
+    OPERANDS * windowPeak(SHARED_CHUNKS, INTERSECT_CONCURRENCY, COMBINE_WINDOW_START);
+  // The latest in-region run's measurement of the same chain, read from its evidence: the rounds the median cold
+  // intersect waited through, and the sockets its client had against the requests the window can open.
+  const latestRun = JSON.parse(
+    fs.readFileSync(path.join(ROOT, calibrationFigures.evidenceFiles(ROOT).at(-1)), 'utf8'),
+  );
+  const measuredChain = latestRun.phases.intersect;
+  const measuredRounds = Number(measuredChain.medianRounds.toFixed(1));
+  const against = measuredRounds > chain ? 'above' : measuredRounds < chain ? 'below' : 'equal to';
+  const measured =
+    `The in-region run of ${latestRun.runId.slice(0, 10)} measured ${measuredRounds.toFixed(1)} request times for this shape, ` +
+    `${measuredChain.p50ms.toFixed(2)} ms at the median, ${against} the derived ${int(chain)}, with a mean of ` +
+    `${measuredChain.medianMeanInFlight.toFixed(1)} requests in flight against its client's ` +
+    `${int(latestRun.measured.maxSockets)} sockets. It did not vary the socket count, so it does not say what part of ` +
+    'any gap is socket wait.';
   const depth =
-    `A cold intersect of two segments sharing ${int(SHARED_CHUNKS)} chunks waits on a chain of requests ` +
-    `**${int(chain)} deep**: both operands' pointers, then both indexes, then the shared chunks, ` +
-    `${int(INTERSECT_CONCURRENCY)} at a time, each read from both operands together, so ` +
-    `${int(OPERANDS * INTERSECT_CONCURRENCY)} requests are in flight, and the next chunk starts as the oldest finishes. At an ` +
-    `even latency that is ${int(chain)} request times end to end. A slow request holds up those queued behind it, ` +
-    'so what the chain takes is for a measurement to say. A repeat served from the chunk cache makes no request ' +
-    'within `cache.genTtlMs`, and one round of pointer reads after it.';
+    `A cold intersect of two segments sharing ${int(SHARED_CHUNKS)} chunks waits on a chain of requests, derived from the engine's constants, ` +
+    `**${int(chain)} deep**: both operands' pointers, then both indexes, then the shared chunks, opening ` +
+    `${int(COMBINE_WINDOW_START)} at a time and widening to ${int(INTERSECT_CONCURRENCY)}, each read from both ` +
+    `operands together, so up to ${int(peakInFlight)} requests are in flight, and the next chunk starts as the oldest ` +
+    `finishes. At an even latency that is ${int(chain)} request times end to end. A slow request holds up those queued ` +
+    `behind it. ${measured} A repeat served from the chunk cache makes no ` +
+    'request within `cache.genTtlMs`, and one round of pointer reads after it.';
 
   const whyPrefix =
     `AWS documents [at least ${int(S3_PREFIX_GETS_PER_SEC)} GET requests a second per partitioned prefix]` +
@@ -1471,12 +1494,7 @@ const GENERATED_PROSE = {
   'docs/guide/sizing.md': null,
   'README.md': {
     section: 'Why CloudBitmaps',
-    elsewhere: [
-      'overlapping in 5% of chunks',
-      'LIST bills at 12.5× a GET',
-      '65,536-id chunk (6.25% of it)',
-      'about twice the load figure',
-    ],
+    elsewhere: ['overlapping in 5% of chunks'],
   },
 };
 for (const doc of Object.keys(GENERATED_PROSE)) {
@@ -1527,14 +1545,12 @@ const HAND_WRITTEN_TOKENS = [
   token(String.raw`\bV8(?:'s)?\b`), // an engine's
   token(String.raw`\bids are 32-bit\b|\b64-bit ids\b`), // an id's width
   token(String.raw`\b65,536 ids\b`), // the ids a chunk holds
-  token(String.raw`§11 of the\s+guide\b`), // a section of the guide
   token(String.raw`\b1\.2 billion customers\b`), // the README's example of a set too large for one machine's memory
   // Link targets, which a reader is not shown, each whole: any other target is read like the text around it.
   token(
     String.raw`\]\(https:\/\/docs\.aws\.amazon\.com\/AmazonS3\/latest\/userguide\/EventNotifications\.html\)`,
   ),
   token(String.raw`\]\(https:\/\/aws\.amazon\.com\/s3\/storage-classes\/\)`),
-  token(String.raw`\]\(getting-started\.md#11-cost-estimate-it-then-ground-it\)`),
 ];
 const MARKER_TEXT = /<!-- SIZING:[A-Z][A-Z0-9_]*:(?:START|END) -->/g;
 /** HTML: a tag, a comment, a declaration or a processing instruction opening, or a comment or CDATA closing. */
@@ -1619,8 +1635,18 @@ function handWrittenFigure(text) {
     what: 'a character other than plain ASCII, § or —',
   };
 }
-/** The run of non-space characters around `at`, which is how a number is written. */
-const numberAt = (s, at) => /\S*$/.exec(s.slice(0, at))[0] + /^\S*/.exec(s.slice(at))[0];
+/**
+ * The run of non-space characters around `at`, which is how a number is written. It walks out from `at` rather than
+ * matching `\S*$` against the text before it, which would try every start inside a long run and so take time
+ * quadratic in the run.
+ */
+function numberAt(s, at) {
+  let from = at;
+  while (from > 0 && !/\s/.test(s[from - 1])) from--;
+  let to = at;
+  while (to < s.length && !/\s/.test(s[to])) to++;
+  return s.slice(from, to);
+}
 /** Cyrillic and Greek letters that look like a Latin one, as the Latin one. */
 const LOOKS_LIKE = Object.fromEntries(
   [...'аaвbеeкkмmнhоoрpсcтtуyхxіiјjѕsԁdӏlɡgαaβbεeιiκkνvοoρpτtυuχx'.matchAll(/(.)(.)/gu)].map(
@@ -1628,12 +1654,25 @@ const LOOKS_LIKE = Object.fromEntries(
   ),
 );
 /**
+ * What an ATX heading line shows as its text, or null when the line is none: up to six `#` after a blockquote's `>`
+ * and indentation, then a blank and the text with its closing `#`s and blanks taken off. It is read by hand, since the
+ * regular expression for it backtracks over a long run of blanks and `#`s and takes time quadratic in the line.
+ */
+function atxText(line) {
+  const head = /^[ \t>]*#{1,6}/.exec(line);
+  if (head === null) return null;
+  let to = line.length;
+  while (to > head[0].length && /[ \t#]/.test(line[to - 1])) to--;
+  const text = line.slice(head[0].length, to);
+  return /^[ \t]/.test(line.slice(head[0].length)) ? text.replace(/^[ \t]+/, '') : null;
+}
+/**
  * Where a section runs in `text`: from its `## ` heading to the next line that starts one. It is read from that one
  * line, so the page is held to showing the section there alone: a second copy of the line is refused, and so is any
  * other line that could show as a heading of that title, at another level, with closing hashes or a trailing space,
  * or underlined. The line that ends the section must show some text, or the section a reader sees would run on past
- * this one. The page holds no HTML and no fence above the section or in it, which `proseFigure` refuses, so neither
- * can hide the heading or the line that ends the section.
+ * this one. The page holds no HTML above the section or in it, no fence open where the heading is reached and none in
+ * the section, which `proseFigure` refuses, so none can hide the heading or the line that ends the section.
  */
 function sectionOf(doc, text, title) {
   const heading = `## ${title}`;
@@ -1654,23 +1693,35 @@ function sectionOf(doc, text, title) {
       );
     }
   }
+  // The text of the lines directly above a line, one non-blank run, is what an underline would make a heading of. It
+  // is built as the lines go by rather than rescanned for each underline, and what is read from it is kept across a
+  // run of underlines in a row: an underline is `=` or `-` and blanks, which names nothing and closes no HTML, so the
+  // text above the next one reads as the text above this one did. A run that alternates a line of text and an
+  // underline, with no blank line between, is still read in time quadratic in its length, which no page here holds.
+  let above = [];
+  let aboveNamed = null;
+  let underlinesSince = false;
   lines.forEach((line, n) => {
-    if (line === heading) return;
-    const atx = /^[ \t>]*#{1,6}(?:[ \t]+(.*?))?[ \t#]*$/.exec(line);
-    let underlined = null;
-    if (/^[ \t>]*(?:=+|-+)[ \t]*$/.test(line)) {
-      const above = [];
-      for (let k = n - 1; k >= 0 && lines[k].trim() !== ''; k--)
-        above.unshift(lines[k].replace(/^[ \t>]*/, ''));
-      underlined = above.join(' ');
-    }
-    for (const shown of [atx?.[1], underlined]) {
-      if (shown != null && named(shown) === wanted) {
+    const isUnderline = /^[ \t>]*(?:=+|-+)[ \t]*$/.test(line);
+    if (line !== heading) {
+      const atx = atxText(line);
+      if (isUnderline && (aboveNamed === null || !underlinesSince)) {
+        aboveNamed = named(above.join(' '));
+        underlinesSince = true;
+      }
+      if ((atx !== null && named(atx) === wanted) || (isUnderline && aboveNamed === wanted)) {
         throw new Error(
           `sizing: ${doc} line ${n + 1} could show as the heading of its "${title}" section, which is read from ` +
             `"${heading}" alone — write that line, and no other heading of the title`,
         );
       }
+    }
+    if (line.trim() === '') {
+      above = [];
+      aboveNamed = null;
+    } else {
+      above.push(line.replace(/^[ \t>]*/, ''));
+      if (!isUnderline) underlinesSince = false;
     }
   });
   const starts = lines.flatMap((line, n) => (line === heading ? [n] : []));
@@ -1691,6 +1742,54 @@ function sectionOf(doc, text, title) {
   const offset = (n) => lines.slice(0, n).reduce((sum, line) => sum + line.length + 1, 0);
   return { start: offset(starts[0]), end: next < 0 ? text.length : offset(next) };
 }
+/**
+ * The line that opens a code fence still open at the end of `above`, the lines of a page above a heading at the left
+ * margin, or that may be, and null when every fence above is closed. Only a fence open at the heading can hide it, by
+ * showing it as code. This follows CommonMark's fenced code blocks: a fence opens on three or more backticks or
+ * tildes, indented up to three spaces, and a backtick fence's info string holds no backtick; it closes on a line of the
+ * same character, at least as long, indented up to three spaces and followed by nothing but blanks; and one never
+ * closed runs to the end of its container. A fence inside a blockquote or a list item ends with it, so before a
+ * heading at the left margin, which no container holds, it is closed, and only a fence outside every container is
+ * tracked. A line that starts with `>` or a list marker is in one, and one indented four spaces or more is code
+ * that holds no fence. A line indented one to three spaces after a list item has started may be in the item or
+ * outside it, which this cannot tell without reading the item's width and its lazy lines, so it is read as open:
+ * every such line is refused, and so is anything left unclosed. The item is taken as ended by a blank line and then a
+ * line at the left margin that is no list item, a later end than the true one, never an earlier. Lines end as
+ * CommonMark ends them, at a carriage return and line feed, a carriage return alone, or a line feed, and a byte order
+ * mark that begins the page is dropped, as a renderer drops it.
+ *
+ * It returns the opening line and whether the refusal is the list's, as `{ line, inList }`, or null.
+ */
+function fenceOpenAt(above) {
+  let open = null; // the character, length and line of the fence that is open
+  let inList = false; // a list item may still hold the lines that follow
+  let afterBlank = false;
+  for (const line of above.replace(/^\uFEFF/, '').split(/\r\n|\r|\n/)) {
+    if (open !== null) {
+      const close = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
+      if (close !== null && close[1][0] === open.char && close[1].length >= open.length)
+        open = null;
+      continue;
+    }
+    const opener = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(line);
+    if (opener !== null && !(opener[2][0] === '`' && opener[3].includes('`'))) {
+      if (opener[1] !== '' && inList) return { line, inList: true };
+      open = { char: opener[2][0], length: opener[2].length, line };
+      inList = false;
+      afterBlank = false;
+      continue;
+    }
+    if (/^[ \t]*$/.test(line)) {
+      afterBlank = true;
+      continue;
+    }
+    const marker = /^ *(?:[-+*]|\d{1,9}[.)])(?:[ \t]|$)/.test(line);
+    if (marker) inList = true;
+    else if (afterBlank && !/^[ \t]/.test(line)) inList = false;
+    afterBlank = false;
+  }
+  return open === null ? null : { line: open.line, inList: false };
+}
 /** The first figure in a page's prose that nothing checks, and where it stands, or null. */
 function proseFigure(doc, text) {
   const scope = GENERATED_PROSE[doc];
@@ -1707,19 +1806,27 @@ function proseFigure(doc, text) {
       );
     }
   }
-  // A comment, a block of HTML or a fence opened above the section could hide its heading from a reader, and leave the
-  // top of the section a reader sees to the rule for the rest of the page.
-  for (const [pattern, what] of [
-    [HTML_TEXT, 'HTML'],
-    [FENCE, 'a code fence'],
-  ]) {
-    const m = pattern.exec(blank.slice(0, start));
-    if (m !== null) {
-      throw new Error(
-        `sizing: ${doc} holds ${what} above its "${scope.section}" section, ` +
-          `"${blank.slice(m.index, m.index + 24).split('\n')[0]}", which could hide the section's heading`,
-      );
-    }
+  // A comment or a block of HTML above the section could hide its heading from a reader, and so could a fence still
+  // open where the heading is reached, which shows it as code. Either leaves the top of the section a reader sees to
+  // the rule for the rest of the page.
+  const above = blank.slice(0, start);
+  const html = HTML_TEXT.exec(above);
+  if (html !== null) {
+    throw new Error(
+      `sizing: ${doc} holds HTML above its "${scope.section}" section, ` +
+        `"${above.slice(html.index, html.index + 24).split('\n')[0]}", which could hide the section's heading`,
+    );
+  }
+  const fence = fenceOpenAt(above);
+  if (fence !== null) {
+    throw new Error(
+      `sizing: ${doc} holds a code fence above its "${scope.section}" section, ` +
+        `"${fence.line.trim().slice(0, 24)}", ` +
+        (fence.inList
+          ? 'indented inside a list item, which this check cannot place: write it at the left margin, or move ' +
+            "the list below the section, so it cannot hide the section's heading"
+          : "that is not closed before the section's heading, so could hide it"),
+    );
   }
   const inside = handWrittenFigure(blank.slice(start, end));
   if (inside !== null) {

@@ -4,21 +4,30 @@
  * Lets a **read-mostly deployment run on one bucket alone** — storage `.crbm` generations plus the registry in
  * the same place, with no separate database. One tiny JSON object per segment at
  * `<prefix>registry/<ns>/<segment>.reg` holding the `{ deleted, record }` envelope (the same shape LocalFs
- * persists). The OCC token is a monotonic counter, advanced on every mutation and even across a `delete`
- * (which **tombstones** rather than removes the object) so a deleted-then-recreated row never re-issues an
- * old token (ABA-safe) — identical semantics to the LocalFs registry, so it passes the same conformance suite.
+ * persists). The OCC token is a random incarnation id drawn when the row is created, a counter advanced on every
+ * mutation, and a random part drawn for every write, so with overwhelming probability a deleted-then-recreated row, or
+ * one restored from a backup, never re-issues an old token (ABA-safe) — identical semantics to the LocalFs registry, so it passes the same
+ * conformance suite.
+ *
+ * **`delete` removes a row for good where the store vouches for a conditional delete** (`If-Match: <etag>`,
+ * `ifGenerationMatch: <generation>`), and only a row whose token carries an incarnation id: a re-create draws a new
+ * incarnation, so nothing of the old row is needed to keep its tokens apart, and a full `list()` no longer reads a
+ * row for every name it ever held. Every other row is **tombstoned**: the object stays, its counter advanced, and a
+ * re-create carries the counter on. A row a release before 0.12 wrote has a bare decimal token and is always
+ * tombstoned, since a process still on that release, re-creating the name over nothing, would start its counter at 0
+ * again and issue the old row's tokens.
  *
  * **The atomic swap is offloaded to the store's conditional writes.** `create` writes only if absent (or
- * over a tombstone under its version), and `compareAndSwap`/`delete` write only if the object still carries
- * the version we read — so a concurrent writer between our read and our write loses, and the loss surfaces
+ * over a tombstone under its version), and `compareAndSwap`/`delete` write (or delete) only if the object still
+ * carries the version we read — so a concurrent writer between our read and our write loses, and the loss surfaces
  * as {@link WriteConflictError}. No in-process lock is needed (unlike LocalFs): the precondition fences
  * writers *across processes*.
  *
  * **Why this is shared rather than written per cloud.** Every object store worth using has the same two
  * primitives under different names — S3 `If-None-Match: *` / `If-Match: <etag>`, GCS `ifGenerationMatch: 0`
  * / `ifGenerationMatch: <generation>`, Azure `If-None-Match: *` / `If-Match: <etag>` — so the only thing
- * that differs is three I/O calls, which is what {@link ObjectRegistryStore} abstracts. The parts that are
- * genuinely hard (the ABA-safe counter, the tombstone, the bounded delete retry, the round-trip key check)
+ * that differs is a few I/O calls, which is what {@link ObjectRegistryStore} abstracts. The parts that are
+ * genuinely hard (the ABA-safe token, the delete and its tombstone, the bounded delete retry, the round-trip key check)
  * exist once. Three copies would be three chances for one cloud to drift, and a drifted registry is not a
  * visible bug — it is a lost `currentGen` swap.
  *
@@ -27,9 +36,13 @@
  *   degrades compare-and-swap to last-write-wins → lost `currentGen` swaps.
  * - Reads must be **strongly consistent** — true of S3 (since 2020), GCS and Azure Blob — since the registry
  *   advertises `strongRead` and generation resolution depends on it.
- * - **Do not apply a lifecycle-expiration rule to the `registry/` prefix.** `delete` tombstones (keeps the
- *   object with an advanced counter) for ABA-safety; expiring a tombstone would let a recreate reset the
- *   token to 0 and re-issue a stale one.
+ * - **Do not apply a lifecycle-expiration rule to the `registry/` prefix that expires a current version.**
+ *   Expiring a live row loses its pointer. A tombstone `delete` left keeps the counter for a re-create; one expired
+ *   by a rule is no worse than a row removed for good, since a recreate draws a fresh incarnation and its tokens are
+ *   new but for a collision of probability 2^-128 per pair of incarnations, but a rule cannot tell a tombstone from a
+ *   live row.
+ * - **A store's conditional delete must be honoured by its backend** before the store sets `conditionalDelete`.
+ *   One that ignores the precondition lets two sweepers and a re-create delete a live row.
  *
  * **`list()` is fail-closed, and one bad object stops it for everyone.** An object under the `registry/`
  * prefix whose key parses but whose body does not aborts the whole enumeration — every namespace, not just
@@ -60,22 +73,26 @@ import type {
   SegmentRef,
   Token,
 } from '@/core/ports';
+import type { Entropy } from '@/core/determinism';
 import { mapWithConcurrency } from '@/core/concurrency';
 import {
   applyRegistryPatch,
+  incarnationOf,
+  newIncarnationToken,
+  nextRegistryToken,
   parseRegistryEnvelope,
   recordFromNew,
-  registryCounterOf,
   serializeRegistryEnvelope,
   validateNewRegistryRecord,
   validateRegistryPatch,
   type RegistryEnvelope,
 } from './registry';
+import { entropyIsAvailable, webCryptoEntropy } from './entropy';
 import { parseRegistryKey, registryListPrefix, registryObjectKey } from './object-registry-keys';
 
 /** Defensive cap on a single registry object read from storage, before allocation (rows are tiny; ~1 KB). */
 export const MAX_ROW_BYTES = 1 * 1024 * 1024;
-/** Bounded retry for `delete`'s read→tombstone under cross-process contention (converges; then fails typed). */
+/** Bounded retry for `delete`'s read then delete or tombstone, under cross-process contention (then fails typed). */
 const MAX_DELETE_ATTEMPTS = 8;
 /** Bounded re-read when a store's pinned version is overwritten mid-read (see {@link ObjectVersionRaced}). */
 const MAX_READ_ATTEMPTS = 8;
@@ -88,12 +105,13 @@ const LIST_READ_CONCURRENCY = 16;
  *
  * This is deliberately **neither** of the two things it superficially resembles. It is not absence: the row
  * is very likely still live, just one version further on. And it is not a write conflict: the caller may be
- * a read-only `get()`, which has nothing to conflict with. Both of those mistakes were made — one per cloud —
- * before this type existed, which is exactly why the signal is now part of the port rather than left to each
- * store's judgement. {@link ObjectStoreRegistry} answers it the only way that is correct for every caller:
- * it reads again.
+ * a read-only `get()`, which has nothing to conflict with. Either is an easy misreading for a store that reads a
+ * row in two calls, metadata and then bytes pinned to it, which is why the signal is part of the port rather than
+ * left to each store's judgement. {@link ObjectStoreRegistry} answers it the only way that is correct for every
+ * caller: it reads again.
  *
- * Stores whose read is atomic (S3 serves bytes and `ETag` from one `GetObject`) can never raise it.
+ * Stores whose read is atomic can never raise it, and every shipped store's is: S3 serves bytes and `ETag` from one
+ * `GetObject`, GCS bytes and `generation` from one GET, and Azure Blob bytes and `ETag` from one GET.
  */
 export class ObjectVersionRaced extends Error {
   constructor(objectKey: string) {
@@ -110,8 +128,8 @@ export interface ObjectRow {
 }
 
 /**
- * The three I/O calls an object store must provide to host a registry. Everything else — the OCC counter,
- * tombstones, the delete retry, key parsing — is implemented once above.
+ * The I/O calls an object store must provide to host a registry: three, and an optional conditional delete. Everything
+ * else — the OCC token, tombstones, the delete retry, key parsing — is implemented once above.
  */
 export interface ObjectRegistryStore {
   /** A label for error messages, e.g. `GCS` or `Azure Blob`. */
@@ -132,21 +150,58 @@ export interface ObjectRegistryStore {
   /**
    * Write one object under a precondition: `'absent'` means create-only, a version means
    * compare-and-swap against exactly that version. A lost race MUST throw {@link WriteConflictError}.
+   *
+   * A store must not replay this write after a lost response without telling the replay apart: the replay meets
+   * the row it just wrote and its precondition fails, which would read as a lost race. Send it once, or store a
+   * write id with the row and treat a conflict whose stored row carries it as success. Retryable faults throw
+   * {@link TransientError}.
    */
   write(key: string, body: Uint8Array, expect: 'absent' | { version: string }): Promise<void>;
   /** Every object key under `prefix`, paginated internally. */
   listKeys(prefix: string): AsyncIterable<string>;
+  /**
+   * Optional: delete one object, and only while it is still at exactly `expect.version`, by a precondition the
+   * backend applies (`If-Match: <etag>`, `ifGenerationMatch: <generation>`). An object that was overwritten, or is
+   * gone, MUST throw {@link WriteConflictError} and delete nothing. Retryable faults throw {@link TransientError}.
+   *
+   * Sending it again after a lost response is safe, unlike a write: the precondition names one version, so a second
+   * copy can remove nothing the first was not allowed to. A copy that meets its own landed delete fails the
+   * precondition and reports a conflict; the registry re-reads, and finds the row gone.
+   *
+   * The registry calls it only when {@link conditionalDelete} is `true`.
+   */
+  delete?(key: string, expect: { version: string }): Promise<void>;
+  /**
+   * Whether {@link delete} may be relied on: `true` only where the backend is known to apply the precondition. A
+   * backend that accepts the header and ignores it would let a delete remove a row written after the delete read it,
+   * a live one included. Absent or `false`, the registry never calls `delete` and tombstones every row instead.
+   */
+  readonly conditionalDelete?: boolean;
 }
 
 export class ObjectStoreRegistry implements IRegistryDriver {
+  /**
+   * `entropy` draws the random parts of every token: a new row's incarnation id, and each write's own part. It
+   * defaults to the platform's Web Crypto. Inject one only to make a test replayable: a seeded source in production
+   * gives every process the same ids.
+   */
   constructor(
     private readonly store: ObjectRegistryStore,
     private readonly prefix: string | undefined,
     private readonly now: () => number,
+    private readonly entropy: Entropy = webCryptoEntropy,
   ) {}
 
   capabilities(): RegCaps {
-    return { strongRead: true };
+    const conditionalDelete = this.removesRows();
+    return entropyIsAvailable(this.entropy)
+      ? { strongRead: true, conditionalDelete }
+      : { strongRead: true, canWrite: false, conditionalDelete };
+  }
+
+  /** Whether a delete removes a row born with an incarnation id: the store has a delete, and vouches for it. */
+  private removesRows(): boolean {
+    return this.store.conditionalDelete === true && typeof this.store.delete === 'function';
   }
 
   async get(ref: SegmentRef): Promise<RegistryRecord | null> {
@@ -155,17 +210,17 @@ export class ObjectStoreRegistry implements IRegistryDriver {
   }
 
   async create(ref: SegmentRef, record: NewRegistryRecord): Promise<{ token: Token }> {
-    validateNewRegistryRecord(record);
+    const checked = validateNewRegistryRecord(record);
     const key = registryObjectKey(this.prefix, ref);
     const current = await this.readRow(key);
     if (current !== null && !current.env.deleted) {
       throw new WriteConflictError(`registry row already exists for segment ${ref.segment}`);
     }
-    // Advance across a tombstone so a recreate never re-issues an old token (ABA-safe).
-    const token = String(current ? registryCounterOf(current.env.record) + 1 : 0);
+    // A new incarnation, whose counter continues across a tombstone, so with overwhelming probability a recreate never re-issues an old token.
+    const token = newIncarnationToken(this.entropy, current?.env.record);
     const env: RegistryEnvelope = {
       deleted: false,
-      record: recordFromNew(ref, record, this.now(), token),
+      record: recordFromNew(ref, checked, this.now(), token),
     };
     // Create-only when truly absent; overwrite the tombstone under its version when recreating. Either way
     // a concurrent create loses the precondition and surfaces as a conflict.
@@ -178,16 +233,16 @@ export class ObjectStoreRegistry implements IRegistryDriver {
     expected: Token,
     patch: RegistryPatch,
   ): Promise<{ token: Token }> {
-    validateRegistryPatch(patch);
+    const checked = validateRegistryPatch(patch);
     const key = registryObjectKey(this.prefix, ref);
     const current = await this.readRow(key);
     if (current === null || current.env.deleted || current.env.record.token !== expected) {
       throw new WriteConflictError(`OCC token mismatch for registry row ${ref.segment}`);
     }
-    const token = String(registryCounterOf(current.env.record) + 1);
+    const token = nextRegistryToken(current.env.record, this.entropy);
     const env: RegistryEnvelope = {
       deleted: false,
-      record: applyRegistryPatch(current.env.record, patch, this.now(), token),
+      record: applyRegistryPatch(current.env.record, checked, this.now(), token),
     };
     // The version we read fences a concurrent writer between that read and this write.
     await this.putRow(key, env, { version: current.version });
@@ -221,30 +276,44 @@ export class ObjectStoreRegistry implements IRegistryDriver {
     if (page.length > 0) yield* flush(page);
   }
 
-  async delete(ref: SegmentRef): Promise<void> {
+  async delete(ref: SegmentRef, expected?: Token): Promise<void> {
     const key = registryObjectKey(this.prefix, ref);
-    // Tombstone (advance the counter) rather than remove the object — keeps the token monotonic for
-    // ABA-safety. Retry the read→tombstone on a cross-process race; it converges, then fails typed rather
-    // than silently leaving the row live.
+    // A row born with an incarnation id is removed from the store, by a delete the store applies only while the
+    // object is still the version read here: a later create draws a new incarnation, so nothing of this row is needed
+    // to keep its tokens apart. Any other row is tombstoned (the counter advanced, the object kept), so a re-create
+    // carries the counter on. Retry the read and the write on a cross-process race; it converges, then fails typed
+    // rather than silently leaving the row live.
     for (let attempt = 0; attempt < MAX_DELETE_ATTEMPTS; attempt++) {
       const current = await this.readRow(key);
-      if (current === null || current.env.deleted) return; // idempotent — already gone
-      const token = String(registryCounterOf(current.env.record) + 1);
-      const env: RegistryEnvelope = {
-        deleted: true,
-        record: { ...current.env.record, token, updatedAt: this.now() },
-      };
+      if (expected !== undefined) {
+        // Fenced: the row must still carry the token the caller read. Re-checked on every attempt, so a row
+        // that was swapped, or deleted and re-created, between two attempts is refused rather than tombstoned.
+        if (current === null || current.env.deleted || current.env.record.token !== expected) {
+          throw new WriteConflictError(`OCC token mismatch for registry row ${ref.segment}`);
+        }
+      } else if (current === null || current.env.deleted) {
+        return; // idempotent — already gone
+      }
       try {
+        const remove = this.removesRows() ? this.store.delete : undefined;
+        if (remove !== undefined && incarnationOf(current.env.record.token) !== undefined) {
+          // The version read above is the row the caller's token names, so this removes that row and no later one.
+          await remove.call(this.store, key, { version: current.version });
+          return;
+        }
+        const token = nextRegistryToken(current.env.record, this.entropy);
+        const env: RegistryEnvelope = {
+          deleted: true,
+          record: { ...current.env.record, token, updatedAt: this.now() },
+        };
         await this.putRow(key, env, { version: current.version });
         return;
       } catch (err) {
-        if (isWriteConflictError(err)) continue; // raced — re-read and re-tombstone
+        if (isWriteConflictError(err)) continue; // raced — re-read and try again
         throw err;
       }
     }
-    throw new WriteConflictError(
-      `registry delete: contention tombstoning "${ref.segment}" — retry`,
-    );
+    throw new WriteConflictError(`registry delete: contention deleting "${ref.segment}" — retry`);
   }
 
   /**
@@ -253,7 +322,7 @@ export class ObjectStoreRegistry implements IRegistryDriver {
    * A store that pins a version to read consistently ({@link ObjectVersionRaced}) loses that pin whenever a
    * concurrent writer lands mid-read. Re-reading is the whole answer — the next read simply observes the
    * newer version — and it is bounded so a row under permanent write saturation fails typed instead of
-   * spinning. Only a store racing itself gets here; S3 never does.
+   * spinning. Only a store that reads in two calls gets here; none of the shipped stores does.
    */
   private async readRow(
     objectKey: string,

@@ -1,5 +1,5 @@
 /**
- * Frozen `.crbm` v1.0 layout constants.
+ * Frozen `.crbm` v1 layout constants (format 1.0, with its optional extension block).
  *
  * These byte widths/offsets are pinned by the golden corpus and must never change for v1 —
  * a new layout is a new format version. All multi-byte integers are little-endian (v1 fixes LE).
@@ -26,7 +26,7 @@ export const FOOTER = {
   indexLength: 8, // u64
   indexCrc32c: 16, // u32
   flags: 20, // u32
-  payloadCodecId: 24, // u16 — was `roaringSerializationId`; same offset, same width, wider meaning
+  payloadCodecId: 24, // u16 — which codec wrote the chunk payloads
   elementWidth: 26, // u8
   containerCodec: 27, // u8
   versionMajor: 28, // u8
@@ -49,9 +49,15 @@ export const FOOTER_CRC_COVERAGE = FOOTER.footerCrc32c; // 96
 export const FLAG_ENCRYPTED = 1 << 0;
 export const FLAG_INDEX_COMPRESSED = 1 << 1; // reserved
 export const FLAG_LITTLE_ENDIAN = 1 << 2; // =1 in v1
+/**
+ * The object carries an extension block just before its index (a generation's metadata). Set only when there is
+ * something to put in it, so an object without metadata is the same bytes as before the block existed; a reader that
+ * does not know the bit refuses the object rather than reading past what it cannot see.
+ */
+export const FLAG_EXTENSION = 1 << 3;
 
 /** Flag bits a v1 reader understands; any bit outside this mask is an unsupported feature. */
-export const KNOWN_FLAGS = FLAG_ENCRYPTED | FLAG_LITTLE_ENDIAN;
+export const KNOWN_FLAGS = FLAG_ENCRYPTED | FLAG_LITTLE_ENDIAN | FLAG_EXTENSION;
 
 /**
  * Default element width: 32-bit ids (the u32 member space). `64` is the *reserved* escape above the
@@ -70,12 +76,10 @@ export const ELEMENT_WIDTH_32 = 32;
  * see the `.crbm` format section of the API reference). This field is what lets one container hold either, the same way ZIP tags each member
  * with a compression method.
  *
- * **Why this is not named `roaringSerializationId` any more.** It was, and the name was a trap waiting for the
- * `1.0` format freeze. A second codec is genuinely expected — `soaring` is a planned Roaring *variant*, so its
- * serialized bytes are unlikely to be roaring-portable, and it lands *after* `1.0`. A field frozen under a
- * codec-specific name cannot be reinterpreted later without a major format version, so generalizing it is a
- * one-line change now and an expensive one after the freeze. The byte layout is untouched: same offset (24),
- * same width (u16), same golden corpus.
+ * **A codec id, not a roaring-specific one.** A second codec is genuinely expected — `soaring` is a planned
+ * Roaring *variant*, so its serialized bytes are unlikely to be roaring-portable, and it lands *after* the `1.0`
+ * format freeze. A field frozen under a codec-specific meaning could not be reinterpreted later without a major
+ * format version.
  *
  * **Ids are permanent once published.** Add to {@link KNOWN_PAYLOAD_CODEC_IDS} when a codec ships; never
  * reuse or renumber. Ids are deliberately *not* pre-allocated for codecs that do not exist — a reserved number
@@ -86,8 +90,8 @@ export const PAYLOAD_CODEC_ROARING_PORTABLE = 1;
 /**
  * Every payload codec id this reader can decode.
  *
- * The reader validates membership rather than equality with a single constant. That is the whole point of the
- * generalization: an unknown id is rejected with a typed error naming it, so an old reader meeting a
+ * The reader validates membership rather than equality with a single constant. That is the whole point of an
+ * id registry: an unknown id is rejected with a typed error naming it, so an old reader meeting a
  * future-codec generation **fails closed** — the correct direction, and the reason a store built on one codec
  * can never silently misread another's bytes as its own. (The homogeneity contract means one store is one
  * codec, so meeting a foreign generation implies misconfiguration, and a loud rejection is exactly what you
@@ -118,20 +122,56 @@ export const DEFAULT_TAIL_BYTES = 256 * 1024;
  */
 export const DEFAULT_MAX_INDEX_BYTES = 8 * 1024 * 1024;
 
-/** Hard cap on a single chunk payload, defending the native deserializer against oversized input. */
-export const DEFAULT_MAX_PAYLOAD_BYTES = 16 * 1024 * 1024;
+/**
+ * Largest serialized bitmap the engine decodes (1 MiB, per chunk). A well-formed 16-bit chunk serializes to at most
+ * about 8.2 KiB, so no legitimate chunk is near it; both the read engine and the erase path decode under this one cap.
+ */
+export const DEFAULT_MAX_BITMAP_BYTES = 1 << 20;
 
 /** A chunk's cardinality is in `[1, 65536]` (empty chunks are never written). */
 export const MAX_CHUNK_CARDINALITY = 0x1_0000;
+
+/**
+ * The extension block, present when the footer sets {@link FLAG_EXTENSION}: `section* ‖ u32 sectionsLength ‖ u32
+ * crc32c ‖ "CRBX"`, between the last payload and the index, so the index starts right after it. A reader finds it from
+ * `indexOffset`: the trailer is the {@link EXT_TRAILER_BYTES} bytes before the index, and the CRC32C covers the sections
+ * and the length field. Each section is `u8 type ‖ u32 length ‖ bytes`, in strictly ascending type order; a reader
+ * skips a type it does not know, so a section must be safe to ignore.
+ */
+export const EXT_MAGIC = Uint8Array.of(0x43, 0x52, 0x42, 0x58); // "CRBX"
+/** The trailer: the sections' length (u32), their CRC32C (u32) and {@link EXT_MAGIC}. */
+export const EXT_TRAILER_BYTES = 12;
+/** A section's header: its type (u8) and its length (u32). */
+export const EXT_SECTION_HEADER_BYTES = 5;
+/**
+ * Cap on the sections of one block, in bytes. A reader refuses a larger block from its trailer alone, before it reads
+ * any sections beyond what it already holds (the read that brings the index may already hold up to this much before
+ * it), and a writer of any 1.x minor keeps within it, so a later section type stays readable by this reader.
+ */
+export const MAX_EXT_BYTES = 4 * 1024;
+/**
+ * Section type 1: the generation's metadata, its canonical JSON in UTF-8. On an encrypted object the section is
+ * `nonce ‖ ciphertext ‖ tag`, sealed under the segment's key with the metadata scope of the associated data.
+ * Type 0 is not a section type: a reader refuses it.
+ */
+export const EXT_SECTION_METADATA = 1;
 
 /** Fixed width of a per-chunk CRC32C field in the index (high-entropy → not varint). */
 export const CRC32C_BYTES = 4;
 
 /**
- * v1 AEAD framing sizes (AES-256-GCM), fixed by the format exactly like the roaring serialization id — a
+ * v1 AEAD framing sizes (AES-256-GCM), fixed by the format exactly like the payload codec id — a
  * different cipher is a new format version. An encrypted chunk payload is stored as `nonce ‖ ciphertext ‖ tag`;
  * the encrypted **index**'s nonce/tag live in the footer's reserved `indexNonce`/`indexTag` slots. Matches
  * {@link FOOTER.indexNonce} (12 B) and {@link FOOTER.indexTag} (16 B).
  */
 export const AEAD_NONCE_BYTES = 12;
 export const AEAD_TAG_BYTES = 16;
+
+/**
+ * Hard cap on one encrypted chunk's stored payload (a cleartext one is capped at the decode cap): the decode cap plus the AEAD framing, so an
+ * entry the engine would refuse to decode is refused when the object is opened, before any payload is read. No writer
+ * exceeds it: a stored payload is a serialized 16-bit chunk (at most about 8.2 KiB) plus, when encrypted, that framing.
+ */
+export const DEFAULT_MAX_PAYLOAD_BYTES =
+  DEFAULT_MAX_BITMAP_BYTES + AEAD_NONCE_BYTES + AEAD_TAG_BYTES;

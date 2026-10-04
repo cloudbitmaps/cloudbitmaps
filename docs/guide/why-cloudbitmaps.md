@@ -1,10 +1,7 @@
 # What it saves, and where it doesn't
 
-For anyone deciding whether to keep large bitmap sets in CloudBitmaps or in an always-on Redis. Every cost here
-comes from the library's own `estimateCost()`. Every dollar amount, share, multiple and request count on the page
-written in digits, AWS's published prices among them, is written into it by `bench/sizing.cjs` and checked against it
-by CI. CI refuses any other digit on the page, bar a few names such as `us-east-1`, and the HTML, images and code
-fences that could hide one; a figure written in words, it refuses in the spellings it knows. The prices are AWS's
+For anyone deciding whether to keep large bitmap sets in CloudBitmaps or in an always-on Redis. [The short
+answer](#the-short-answer) is first. Every cost here comes from the library's own `estimateCost()`. The prices are AWS's
 `us-east-1` list prices, on demand unless a sentence says otherwise, and the three deployments are illustrative
 workloads, not anyone's measured system. There is no latency figure, because none has been measured inside a region
 yet.
@@ -42,23 +39,23 @@ What that is worth at three sizes, each against the cheapest on-demand Redis OSS
 ```text
                       $1        $10       $100      $1K       $10K      $100K   a month, log scale
                       │         │         │         │         │         │
-Small   CloudBitmaps       ●                                               $3.35
+Small   CloudBitmaps       ●                                               $3.29
         Redis                        ●                                     $35.04
-Medium  CloudBitmaps                          ●                            $281
+Medium  CloudBitmaps                          ●                            $280
         Redis                                       ●                      $900
-Large   CloudBitmaps                                        ●              $6,771
+Large   CloudBitmaps                                        ●              $6,703
         Redis                                                     ●        $27,325
         Redis in RAM                                                   ●   $85,509
 ```
 
-- **Small**, 200 MB: $3.35 a month against $35.04 for 3 × t4g.micro, so CloudBitmaps costs **90% less**.
-- **Medium**, 20 GB: $281 a month against $900 for 3 × r6g.xlarge, so CloudBitmaps costs **69% less**.
-- **Large**, 2 TB: $6,771 a month against $27,325 for 3 × r6gd.16xlarge, so CloudBitmaps costs **75% less**.
+- **Small**, 200 MB: $3.29 a month against $35.04 for 3 × t4g.micro, so CloudBitmaps costs **91% less**.
+- **Medium**, 20 GB: $280 a month against $900 for 3 × r6g.xlarge, so CloudBitmaps costs **69% less**.
+- **Large**, 2 TB: $6,703 a month against $27,325 for 3 × r6gd.16xlarge, so CloudBitmaps costs **75% less**.
 - The large deployment's Redis keeps the values read least recently on its SSD. All in memory it would be $85,509 a month, for 285 × r6g.xlarge, 95 shards, past ElastiCache's default quota of 90 nodes a cluster, and CloudBitmaps 92% less.
 <!-- SIZING:WHY_DEPLOYMENTS:END -->
 
 <!-- SIZING:WHY_LEANINGS:START -->
-Each Redis is the cheapest on-demand ElastiCache for Redis OSS cluster in the estimator's catalogue that holds the data, every shard a primary and two replicas: the cheapest of one kind, not the least Redis could cost. Against [ElastiCache for Valkey](https://aws.amazon.com/elasticache/pricing/), which AWS prices 20% lower a node, CloudBitmaps costs 88% less, 61% less and 69% less; with one replica a shard, 86% less, 53% less and 63% less; with both, 82% less, 41% less and 54% less. Reserved nodes cost less again, and stack on both: on a one-year term with nothing upfront, CloudBitmaps costs 74% less, 14% less and 32% less, and on three years paid upfront, 60% less, 1.3× as much and 1.03× as much, so a Redis bought all three ways costs less than CloudBitmaps at the medium and large sizes.
+Each Redis is the cheapest on-demand ElastiCache for Redis OSS cluster in the estimator's catalogue that holds the data, every shard a primary and two replicas: the cheapest of one kind, not the least Redis could cost. Against [ElastiCache for Valkey](https://aws.amazon.com/elasticache/pricing/), which AWS prices 20% lower a node, CloudBitmaps costs 88% less, 61% less and 69% less; with one replica a shard, 86% less, 53% less and 63% less; with both, 82% less, 42% less and 54% less. Reserved nodes cost less again, and stack on both: on a one-year term with nothing upfront, CloudBitmaps costs 74% less, 15% less and 32% less, and on three years paid upfront, 61% less, 1.3× as much and 1.02× as much, so a Redis bought all three ways costs less than CloudBitmaps at the medium and large sizes.
 
 The large deployment's 200,000 segments are past the roughly 100,000 the library has been validated at, and its readers would need an index budget and a chunk cache far past their defaults ([what each reader holds](sizing.md#what-each-reader-holds)), in memory not priced here.
 <!-- SIZING:WHY_LEANINGS:END -->
@@ -87,7 +84,7 @@ The two bills charge for different things:
  │ the hot part    ──► your readers' memory, a slice of it      │ ──► your own machines
  │ each cold read  ──► S3 GETs, $0.40 a million                 │ ──► grows with the queries
  │ each refresh    ──► a reader's pointer GET, after genTtlMs   │ ──► at most one a read, and one a genTtlMs
- │ each load       ──► S3 PUTs and LISTs, GETs, a pointer write │ ──► grows with how often the data changes
+ │ each load       ──► S3 PUTs and GETs, a pointer write        │ ──► grows with how often the data changes
  └──────────────────────────────────────────────────────────────┘
 ```
 <!-- SIZING:MONEY:END -->
@@ -96,7 +93,7 @@ So each bill grows with something different:
 
 <!-- SIZING:WHY_MOVES:START -->
 - **Redis grows with how much data you have**: in steps while the data fits a few nodes, then in proportion to it, every replica with it.
-- **CloudBitmaps grows with its reads.** Storage is 0.63% of the large deployment's bill, for one copy of its data; `load()` also keeps the generation it replaced by default, which would make it 1.3%. The rest is the cold reads that miss a reader's cache; the pointer refresh, at most one a read and one per segment per reader each `cache.genTtlMs`, which is 31% of the large bill and 19% of the medium's; and the loads, 3.4% of the large bill ([what moves the large bill](sizing.md#what-moves-the-large-bill)).
+- **CloudBitmaps grows with its reads.** Storage is 0.64% of the large deployment's bill, for one copy of its data; `load()` also keeps the generation it replaced by default, which would make it 1.3%. The rest is the cold reads that miss a reader's cache; the pointer refresh, at most one a read and one per segment per reader each `cache.genTtlMs`, which is 31% of the large bill and 19% of the medium's; and the loads, 2.4% of the large bill ([what moves the large bill](sizing.md#what-moves-the-large-bill)).
 <!-- SIZING:WHY_MOVES:END -->
 
 ## What each bill grows with
@@ -135,7 +132,7 @@ The 20 TB cluster's 471 nodes are past ElastiCache's [default quotas](https://do
 <!-- SIZING:WHY_CHART_WHERE:END -->
 
 <!-- SIZING:WHY_LINE:START -->
-The line is the table's last column. It climbs with the data because the Redis it is measured against does. In this model an extra cold intersect costs CloudBitmaps the same at any size: every segment keeps the [calibration run](../../bench/calibration/2026-09-23-94416.md)'s shape, 2,000 chunks with 100 shared, so a larger store is more segments of that shape, not larger ones. Segments that grow by sharing more chunks cost more, as [overlap](#where-it-loses) shows. The chart counts cold intersects alone; the three deployments also make point reads and refresh pointers, which [the next section](#how-much-room-each-deployment-has) counts in.
+The line is the table's last column. It climbs with the data because the Redis it is measured against does. In this model an extra cold intersect costs CloudBitmaps the same at any size: every segment keeps the [calibration run](../../bench/calibration/2026-09-23-94416.md)'s shape, about 2,000 chunks with 100 shared, so a larger store is more segments of that shape, not larger ones. Segments that grow by sharing more chunks cost more, as [overlap](#where-it-loses) shows. The chart counts cold intersects alone; the three deployments also make point reads and refresh pointers, which [the next section](#how-much-room-each-deployment-has) counts in.
 <!-- SIZING:WHY_LINE:END -->
 
 ## How much room each deployment has
@@ -147,8 +144,8 @@ it is. It is where the bills cross, not a capacity: S3's own request rate is a l
 <!-- SIZING:WHY_ROOM:START -->
 | | data | cold intersects a second | where the bill meets its Redis | room |
 |---|---:|---:|---:|---:|
-| **Small** | 200 MB | 0.00761 | 0.155 | **20×** |
-| **Medium** | 20 GB | 1 | 3.88 | **3.9×** |
+| **Small** | 200 MB | 0.00761 | 0.156 | **20×** |
+| **Medium** | 20 GB | 1 | 3.89 | **3.9×** |
 | **Large** | 2 TB | 20 | 116 | **5.8×** |
 <!-- SIZING:WHY_ROOM:END -->
 
@@ -163,10 +160,10 @@ A dashboard running 100 cold intersects a second over 5 GB costs **$21,445** a m
 **Latency.** Redis answers from memory. A cold intersect waits on object storage, request after request:
 
 <!-- SIZING:DEPTH:START -->
-A cold intersect of two segments sharing 100 chunks waits on a chain of requests **15 deep**: both operands' pointers, then both indexes, then the shared chunks, 8 at a time, each read from both operands together, so 16 requests are in flight, and the next chunk starts as the oldest finishes. At an even latency that is 15 request times end to end. A slow request holds up those queued behind it, so what the chain takes is for a measurement to say. A repeat served from the chunk cache makes no request within `cache.genTtlMs`, and one round of pointer reads after it.
+A cold intersect of two segments sharing 100 chunks waits on a chain of requests, derived from the engine's constants, **6 deep**: both operands' pointers, then both indexes, then the shared chunks, opening 8 at a time and widening to 32, each read from both operands together, so up to 64 requests are in flight, and the next chunk starts as the oldest finishes. At an even latency that is 6 request times end to end. A slow request holds up those queued behind it. The in-region run of 2026-10-04 measured 7.1 request times for this shape, 290.06 ms at the median, above the derived 6, with a mean of 29.1 requests in flight against its client's 50 sockets. It did not vary the socket count, so it does not say what part of any gap is socket wait. A repeat served from the chunk cache makes no request within `cache.genTtlMs`, and one round of pointer reads after it.
 <!-- SIZING:DEPTH:END -->
 
-Neither is timed yet: the in-region run is owed.
+The in-region run timed one shape of cold intersect, its sweep over the overlap, an `andNot` and the point reads; the [benchmarks page](../benchmarks.md#real-cloud-calibration--aws) has the figures, and sets the wider window against the model that predicted it. The other shapes are not timed.
 
 **S3's request rate.**
 
@@ -177,7 +174,7 @@ AWS documents [at least 5,500 GET requests a second per partitioned prefix](http
 **Overlap.**
 
 <!-- SIZING:WHY_OVERLAP:START -->
-A cold intersect costs 4 + 2k GETs for k shared chunks, so segments that share most of their chunks cost far more to intersect than their size suggests. At 1,000 shared chunks of 2,000, where the tables above assume 100, the medium deployment's bill comes to **2.4×** its Redis's price, and the large one's to **1.6×**; they pass it at 395 and 589 shared chunks.
+A cold intersect costs 4 + 2k GETs for k shared chunks, so segments that share most of their chunks cost far more to intersect than their size suggests. At 1,000 shared chunks of 2,000, where the tables above assume 100, the medium deployment's bill comes to **2.4×** its Redis's price, and the large one's to **1.6×**; they pass it at 396 and 591 shared chunks.
 <!-- SIZING:WHY_OVERLAP:END -->
 
 ## What is planned for each weakness
@@ -189,11 +186,9 @@ proposed in an issue on this repo before it is built.
 | --- | --- | --- |
 | Overlap, and the requests of a cold intersect | **Coalesced reads**: fetch neighbouring chunks, or a small segment whole, in one ranged GET, still checking each chunk's checksum | A cold intersect's requests, and the chain they wait on, stop growing with the overlap where the shared chunks lie together; layouts that spread them are to be measured first |
 | Small data queried hard | **A reader cache sized by bytes**, not by chunk count, and a small segment kept whole after its first read | A repeat stays cached however many small chunks it touches, bounded by bytes rather than a count; pointers are still re-read after `cache.genTtlMs` |
-| Many stateless readers | **A shared cache tier**: a port that a Valkey, Redis or local-disk adapter implements, holding only the hot set | A fleet shares one warm copy of the hot set instead of each reader paying for its own |
+| Many stateless readers | **A shared cache tier**: an interface that a Valkey, Redis or local-disk adapter implements, holding only the hot set | A fleet shares one warm copy of the hot set instead of each reader paying for its own |
 | The pointer refresh | **Push invalidation**: object-store events tell readers a segment changed, with a longer refresh as the backstop | Most of the refresh bill goes, and a change reaches readers as fast as the events do: [typically seconds, sometimes a minute or longer](https://docs.aws.amazon.com/AmazonS3/latest/userguide/EventNotifications.html), with the backstop as the bound |
 | Retries in a throttling storm | **Retrying at one layer**, the SDK's, for throttling | One throttled request stops multiplying into many |
-| Reader memory | **Measuring the index's real heap**, and storing it compactly | The memory bound becomes exact, and holds more segments open |
-| GCS and Azure reads | **One request per pointer read** on both, and a one-request tail read on GCS | Their pointer reads cost what S3's do, and so do GCS's index reads; an Azure tail read does not change, since Azure Blob takes no suffix range |
 
 ## Beyond the bill
 
@@ -208,11 +203,14 @@ proposed in an issue on this repo before it is built.
   segment's distinct ids in memory, and ids are 32-bit; 64-bit ids and an external-merge load are
   [planned](../ROADMAP.md#planned--exploring).
 - **A portable format, and a one-command exit.** Each chunk is standard portable Roaring, which every maintained
-  Roaring library reads, and `store.exportSegments(sink)` writes every segment out.
+  Roaring library reads, and `store.exportSegments(sink)` writes every segment out ([export your data](export.md)). A
+  pure Roaring library has no lock-in because it manages no storage: you persist its bytes, in the same format. A
+  bitmap database or service, such as FeatureBase, ClickHouse, Doris or Redis, manages storage for you and keeps your
+  data in its engine, behind its own export. CloudBitmaps sits between these: a library over storage you own.
 
 ## What this page does not establish
 
-- **Latency.** Nothing here says how fast a query returns; the in-region run is owed.
+- **Latency.** Nothing here says how fast a query returns; the [in-region run](../benchmarks.md#real-cloud-calibration--aws) measured one shape.
 - **A warm reader's intersects.** They are priced cold: an upper bound on their requests, but for what a call reads
   again when it outlives `cache.genTtlMs` (a pointer, and an index once the segment's row has changed, as a load's
   publish changes it) or the reader cache evicts its reader part-way through (a pointer and an index), and a second
@@ -222,3 +220,8 @@ proposed in an issue on this repo before it is built.
   modeled.
 - **What running Redis takes besides its price**: the operations, the failovers, and its speed, which is Redis's to
   win.
+
+**How the figures are kept honest.** Every dollar amount, share, multiple and request count on this page written in
+digits, AWS's published prices among them, is written into it by `bench/sizing.cjs` and checked against it by CI. CI
+refuses any other digit on the page, bar a few names such as `us-east-1`, and the HTML, images and code fences that
+could hide one; a figure written in words, it refuses in the spellings it knows.

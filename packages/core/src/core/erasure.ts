@@ -8,7 +8,7 @@
  * segment/namespace). A `destroyed` segment reads as empty (its DEK is gone). Only works on an **encrypted**
  * segment; a cleartext segment has no key to shred.
  *
- * The tombstone is also the fence every writer respects: `publishGeneration` and `bulkLoadCrbmGeneration` refuse
+ * The tombstone is also the fence every writer respects: a load refuses
  * a `destroyed` row, so a load racing an erasure cannot resurrect the segment. A single id's erasure is a different
  * operation — `eraseIdFromSegment` rewrites the generation without it.
  */
@@ -16,6 +16,8 @@ import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
 import { mapWithConcurrency } from './concurrency';
 import { ValidationError, WriteConflictError, isWriteConflictError } from './errors';
 import type { IStorageDriver, IRegistryDriver, SegmentRef } from './ports';
+import { validateUserNamespace, validateUserRef } from './validate';
+import { DEFAULT_MAX_SCAN_SEGMENTS, drainRegistry } from './registry-scan';
 
 export interface EraseDeps {
   readonly registry: IRegistryDriver;
@@ -56,10 +58,10 @@ const ERASE_CONCURRENCY = 8;
  * Storage list-then-delete passes a drop will make before giving up and reporting the residual.
  *
  * Two is the honest floor and three is the working value: pass 1 clears what was there, pass 2 catches an object
- * a load was still writing when the tombstone landed (its publish is then refused, but the object write
- * completes), pass 3 covers a second such writer. It terminates regardless — the tombstone hard-fences
- * *publishing* a new generation, so the supply of late objects is whatever was already mid-write, and any
- * residual is reported rather than silently dropped.
+ * a load that had read the row before the tombstone landed went on to write (its publish is then refused, but the
+ * object write completes), pass 3 covers a second such writer. It terminates regardless — the tombstone
+ * hard-fences *publishing* a new generation, and any residual is reported rather than silently dropped. A load still
+ * consuming its ids can write after the last pass; it deletes its own object once its publish is refused.
  */
 const MAX_STORAGE_SWEEPS = 3;
 
@@ -74,6 +76,7 @@ export async function destroySegment(
   deps: EraseDeps,
   options: { confirmSegment: string; allowCleartext?: boolean; audit?: IAuditSink },
 ): Promise<DestroyResult> {
+  validateUserRef(ref);
   if (options.confirmSegment !== ref.segment) {
     throw new ValidationError(
       `destroySegment: confirmSegment must equal the segment name "${ref.segment}" (guard against accidental crypto-shred)`,
@@ -95,24 +98,44 @@ export async function destroySegment(
 /**
  * Crypto-shred every segment in a namespace. **Irreversible.** `confirmNamespace` must equal `namespace`.
  * Returns a per-segment result (skips cleartext segments unless `allowCleartext`).
+ *
+ * **Bounded.** It lists the whole namespace before it destroys anything, and holds the listing resident, so the
+ * listing is capped at `maxScanSegments` (default {@link DEFAULT_MAX_SCAN_SEGMENTS}, 250,000), the ceiling every
+ * other fleet scan keeps. A namespace over it throws `BudgetExceededError` **before any segment is destroyed**,
+ * never part-way through; raise `maxScanSegments` when the namespace really is that large and the memory is there.
+ * A `maxScanSegments` that is not a finite number >= 1 throws `ValidationError`, again before anything is destroyed.
  */
 export async function eraseNamespace(
   namespace: string,
   deps: EraseDeps,
-  options: { confirmNamespace: string; allowCleartext?: boolean; audit?: IAuditSink },
+  options: {
+    confirmNamespace: string;
+    allowCleartext?: boolean;
+    audit?: IAuditSink;
+    maxScanSegments?: number;
+  },
 ): Promise<{ destroyed: DestroyResult[] }> {
   if (typeof namespace !== 'string' || namespace.length === 0) {
     throw new ValidationError('eraseNamespace: namespace must be a non-empty string');
   }
+  validateUserNamespace(namespace);
   if (options.confirmNamespace !== namespace) {
     throw new ValidationError(
       `eraseNamespace: confirmNamespace must equal the namespace "${namespace}" (guard against accidental erasure)`,
     );
   }
-  const refs: SegmentRef[] = [];
-  for await (const rec of deps.registry.list(namespace)) {
-    refs.push({ namespace: rec.namespace, segment: rec.segment });
-  }
+  // The whole listing is drained, and bounded, before the first segment is destroyed: a namespace over the
+  // ceiling is refused with nothing erased, not abandoned part-way through an irreversible loop.
+  const rows = await drainRegistry(deps.registry, {
+    namespace,
+    maxScanSegments: options.maxScanSegments ?? DEFAULT_MAX_SCAN_SEGMENTS,
+    op: 'eraseNamespace',
+    narrowable: false, // already one namespace: the only remedy is a higher ceiling
+  });
+  const refs: SegmentRef[] = rows.map((rec) => ({
+    namespace: rec.namespace,
+    segment: rec.segment,
+  }));
   const audit = safeAudit(options.audit ?? NOOP_AUDIT);
   const destroyed: DestroyResult[] = [];
   let segmentsShredded = 0;
@@ -180,12 +203,12 @@ export interface DropResult {
    * Generations still present in Storage when the sweep gave up, ascending. **Empty is the normal outcome** — a
    * non-empty value means the storage was NOT fully reclaimed and the drop should be re-run.
    *
-   * This field exists because its absence was a defect. A drop used to return `dropped: true` with a populated
-   * `generationsDeleted` and no `reason` even when an object holding the **complete set** had just been left in
-   * the bucket by a writer that was already mid-write when the tombstone landed (its publish is refused, but the
-   * object survives). For a cleartext segment those bytes are readable — and `gcOrphanGenerations` only collects
-   * a destroyed segment's generations when something runs it. The result was indistinguishable from a clean
-   * drop, so an operator got no signal to re-run. Now they do.
+   * Without it, a drop would return `dropped: true` with a populated `generationsDeleted` and no `reason` even
+   * when an object holding the **complete set** had just been left in the bucket by a writer that was already
+   * mid-write when the tombstone landed (its publish is refused, but the object survives). For a cleartext
+   * segment those bytes are readable — and the collection only takes a destroyed segment's generations
+   * when something runs it. That result would look like a clean drop, and an operator would get no signal to
+   * re-run.
    */
   readonly generationsRemaining: readonly number[];
   /**
@@ -235,9 +258,8 @@ export interface DropResult {
  * - `dropSegment` **removes the storage**. It works on a cleartext segment, and on an encrypted one it *also*
  *   drops the DEKs, so it is a strict superset there.
  *
- * Before this existed there was no supported way to delete a segment and stop paying for it, and the obvious
- * workaround — an object-store lifecycle rule on the key prefix — deletes the bytes while the registry still
- * points at them. That is exactly the `missing-storage-generation` state the DR runbook says not to serve traffic
+ * It is the supported way to delete a segment and stop paying for it. The obvious workaround — an object-store
+ * lifecycle rule on the key prefix — deletes the bytes while the registry still points at them. That is exactly the `missing-storage-generation` state the DR runbook says not to serve traffic
  * on, and it surfaces *intermittently*, because a read consults the cache before Storage: cached chunks answer
  * correctly and evicted ones throw. The whole value of this function is that the ordering below cannot be got
  * wrong by a caller.
@@ -245,17 +267,21 @@ export interface DropResult {
  * **THE ORDER IS THE CONTRACT — registry first, then Storage.**
  *
  * 1. **Registry first.** After the tombstone nothing resolves a generation for this segment, so no reader can
- *    reach for bytes that are about to disappear, and no writer can publish onto it (`publishGeneration` and
- *    `bulkLoadCrbmGeneration` refuse a `destroyed` row).
+ *    reach for bytes that are about to disappear, and no writer can publish onto it (a
+ *    load refuses a `destroyed` row).
  * 2. **Storage second, best-effort, and re-swept.** Once the pointer is a tombstone the segment resolves as empty,
  *    so a failure part-way through leaves **orphaned bytes, not a wrong answer.** Orphans cost money and are
  *    cleaned up by re-running; a torn pointer costs correctness and is not self-healing. Given the choice, leak
  *    bytes — but say so: whatever survives the sweep is reported in {@link DropResult.generationsRemaining}.
  *
- * **Why step 2 sweeps more than once.** A load that was already writing its object when the tombstone landed
- * still finishes the write — its publish is then refused, but the object survives, and it holds the complete
- * set. A single list-then-delete misses it entirely. The re-sweep converges because the tombstone *is* a hard
- * fence on **publishing**, so only already-in-flight writes can appear and they are finite.
+ * **Why step 2 sweeps more than once.** A load that had read the row before the tombstone landed, whether it was
+ * already writing its object or still consuming its ids, still finishes the write — its publish is then refused,
+ * but the object exists, and it holds the complete set. A single list-then-delete misses it entirely. The re-sweep
+ * converges because the tombstone *is* a hard fence on **publishing**, so only loads already under way can write
+ * and they are finite. One that writes after the last pass deletes its own object when its publish is refused, as a
+ * refused load does under a `destroyed` row; only one whose process stops in between, or whose publish fails without
+ * a definite answer (a lost response, a timeout), leaves it behind, for a re-run of the drop, and
+ * `generationsRemaining` cannot report an object written after this call returned.
  *
  * **When "reads as empty" starts being true.** Not instantly, for a store that has already read this segment: a
  * resolved generation is cached and decoded chunks sit in the cache, so an in-flight reader can answer from
@@ -276,6 +302,7 @@ export async function dropSegment(
   deps: DropDeps,
   options: { confirmSegment: string; dryRun?: boolean; audit?: IAuditSink },
 ): Promise<DropResult> {
+  validateUserRef(ref);
   if (options.confirmSegment !== ref.segment) {
     throw new ValidationError(
       `dropSegment: confirmSegment must equal the segment name "${ref.segment}" (guard against accidental deletion)`,
@@ -310,20 +337,20 @@ export async function dropSegment(
   let shred = await shredSegment(ref, deps, true, 'dropSegment');
 
   // ── THE ABSENT CASE. ───────────────────────────────────────────────────────────────────────────────────────
-  // `shredSegment` returns `absent` having written NOTHING when there is no registry row — and this function used
-  // to go on and delete every Storage generation anyway. That skipped the one step that makes the ordering safe
-  // while still running the destructive one: a drop landing between a load's object write and its publish
-  // (minutes apart on a large load) left a published pointer with no object behind it — precisely the
+  // `shredSegment` returns `absent` having written NOTHING when there is no registry row — and going on to delete
+  // every Storage generation anyway would skip the one step that makes the ordering safe while still running the
+  // destructive one: a drop landing between a load's object write and its publish (minutes apart on a large
+  // load) would leave a published pointer with no object behind it — precisely the
   // `missing-storage-generation` state this function exists to PREVENT.
   //
-  // The fix is to claim the identity before deleting anything. A `destroyed` row is exactly the fence the
-  // writers already respect — `publishGeneration` and `bulkLoadCrbmGeneration` both refuse one — so creating it
+  // So the identity is claimed before anything is deleted. A `destroyed` row is exactly the fence the
+  // writers already respect — a load refuses one — so creating it
   // converts the race into "the writer is refused and the bytes are collected".
   //
   // Only when Storage actually holds something, though. A drop against a *genuinely* nonexistent segment (the
   // typo the facade docs warn about) must not leave a `destroyed` row behind: that is registry litter, and worse,
   // it would refuse a later legitimate load of that name forever. No row and no objects ⇒ nothing existed ⇒ say
-  // `absent` and touch nothing, which is what that reason has always been documented to mean.
+  // `absent` and touch nothing, which is what that reason is documented to mean.
   if (shred.reason === 'absent') {
     const orphans = await listGenerations(deps.storage, ref);
     if (orphans.length === 0) {
@@ -355,7 +382,7 @@ export async function dropSegment(
   // `segment.erase` ONLY on a genuine crypto-shred — exactly the condition `destroySegment` uses, and
   // deliberately NOT `|| generationsDeleted.length > 0`.
   //
-  // It read that way in the first draft, and it was wrong in a way that matters. Four documents — including
+  // Adding that disjunct would be wrong in a way that matters. Four documents — including
   // `docs/guide/dashboards.md`, which calls this event the compliance *receipt* — define `segment.erase` as
   // proof of an irreversible crypto-shred: bytes unreadable everywhere, backups included. Deleting an object is
   // a weaker guarantee, because a noncurrent version, a cross-region replica or a PITR snapshot still holds the
@@ -484,6 +511,9 @@ async function shredSegment(
         status: 'destroyed',
         wrappedDeks: undefined, // ← the crypto-shred: the only copy of the DEK wrappings is gone
         keyId: undefined,
+        // The current generation's cached count and metadata go with it: sealed, they cannot be opened without
+        // the wrappings; clear, they would outlive the segment on its tombstone.
+        summary: undefined,
       });
       // A genuine crypto-shred only when there were wrappings to drop; a cleartext opt-in tombstone leaves the
       // Storage bytes readable, so it is not an irreversible destruction (and does not emit `segment.erase`).

@@ -5,12 +5,12 @@ import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import type { BlobSink } from '@/core/blob';
 
-// The safety property used to come from REFUSING names like `../../etc`. It now comes from ENCODING them, and
-// that swap is only sound if containment is demonstrated rather than assumed — a rejected name obviously
-// cannot escape, an accepted one has to be shown not to.
+// The safety property comes from ENCODING names like `../../etc` rather than refusing them, and that is only
+// sound if containment is demonstrated rather than assumed — a rejected name obviously cannot escape, an
+// accepted one has to be shown not to.
 //
-// So these drive the real drivers with the nastiest names the old grammar existed to keep out, against a real
-// temp directory, and assert that nothing lands outside the storage root.
+// So these drive the real drivers with the nastiest names there are, against a real temp directory, and
+// assert that nothing lands outside the storage root.
 
 let root: string;
 let outside: string;
@@ -102,9 +102,9 @@ describe('a hostile name is contained, not refused', () => {
   });
 
   it('a user namespace called `_default` does not collide with the absent namespace', async () => {
-    // The bug this prevents: `_default` is the physical stand-in for "no namespace". Dropping the grammar made
-    // a leading underscore spellable, so without the encoder's leading-`_` escape a caller naming their
-    // namespace `_default` would read and write everyone else's un-namespaced data.
+    // The bug this prevents: `_default` is the physical stand-in for "no namespace", and a name may begin with
+    // an underscore, so without the encoder's leading-`_` escape a caller naming their namespace `_default`
+    // would read and write everyone else's un-namespaced data.
     const registry = new LocalFsRegistryDriver(root);
     await registry.create({ segment: 'mine' }, { currentGen: 1 }); // absent namespace
     await registry.create({ segment: 'theirs', namespace: '_default' }, { currentGen: 2 });

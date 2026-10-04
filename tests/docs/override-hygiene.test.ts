@@ -5,24 +5,19 @@ import { join } from 'node:path';
  * Every `pnpm.overrides` entry binds to something, and SECURITY.md describes exactly the entries that exist.
  *
  * WHY THIS EXISTS. An override is a security claim: *this forced version still works, and it is protecting
- * something*. Both halves rot silently, and both did.
+ * something*. Both halves rot silently. When the dependency an override was pinned for leaves the tree, the
+ * override stays in the manifest, because nothing fails; and its SECURITY.md row goes on attributing it to a
+ * toolchain that does not pull it in (a tool run through `pnpm dlx`, whose graph never enters this lockfile),
+ * or on pinning a major that is not in the tree.
  *
- * `adm-zip` reached the project through `cassandra-driver`, a dependency of a tier removed two releases
- * earlier. The dependency left; the override stayed. SECURITY.md labelled it honestly — "*nothing, now*" —
- * and it still sat in the manifest for two releases, because nothing failed. When a human finally removed it,
- * the same test that condemned it turned out to condemn **four more rows** that were not labelled honestly:
- * `fast-uri` attributed to `ajv` (which is on v6 and uses `uri-js`), `js-yaml` to "the eslint / stryker
- * toolchains" (eslint 10 dropped eslintrc, and stryker is `pnpm dlx`-only so its graph never enters this
- * lockfile at all), `qs` to `@stryker-mutator/core` for the same reason, and a `brace-expansion@1` pin for a
- * major that is no longer in the tree.
- *
- * A security document that attributes four dead pins to live toolchains is worse than one that omits them: it
+ * A security document that attributes dead pins to live toolchains is worse than one that omits them: it
  * reads as a maintained inventory. So the check runs in both directions — no override without a package, and
- * no table row without an override.
+ * no table row without an override. It binds an override to a package by name, not by major, so a pin on a
+ * major the tree does not hold passes while any version of the package resolves.
  *
  * WHAT IT DELIBERATELY DOES NOT DO. It does not judge whether a *version range* is still the right one; only
- * a human reading an advisory can. It answers the cheaper question that had gone unasked for two releases:
- * is this entry protecting anything at all?
+ * a human reading an advisory can. It answers the cheaper question: is this entry protecting anything at
+ * all?
  */
 
 const ROOT = join(__dirname, '..', '..');
@@ -44,7 +39,7 @@ const packageOf = (override: string): string => override.replace(/@\d+$/, '');
  * Parsed from `  name@version:` keys in the packages/snapshots sections — NOT a substring search. The
  * `overrides:` block at the top of the lockfile echoes every override back verbatim, so a naive
  * `lockfile.includes(name)` would find every entry protecting nothing and call it live. That is precisely the
- * failure this gate exists to catch, and it would have caught none of them.
+ * failure this gate exists to catch, and a substring search catches none of it.
  */
 const RESOLVED = new Set(
   [...lockfile.matchAll(/^ {2}((?:@[^/\s]+\/)?[^@\s/][^@\s]*)@\d[^:\s]*:/gm)].map(
@@ -81,7 +76,7 @@ describe('pnpm overrides are live, and SECURITY.md matches them', () => {
 
   it.each(OVERRIDES)('%s has a row in the SECURITY.md table', (override) => {
     // The package must head a TABLE ROW, not merely appear somewhere in the file. A substring search over the
-    // whole document passed a pin for `vitest` because another row's prose says "`vitest` -> `vite`" — the
+    // whole document passes a pin for `vitest` because another row's prose says "`vitest` -> `vite`" — the
     // document mentions most of these names in passing, so "is it written down?" and "is it documented?" are
     // different questions and only the second one is worth asking.
     expect(

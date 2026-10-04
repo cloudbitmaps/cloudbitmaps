@@ -1,33 +1,32 @@
+import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { randomBytes } from 'node:crypto';
 import { eraseIdFromSegment } from '@/core/erase-id';
-import { publishGeneration } from '@/core/crbm-storage-source';
+import { loadSegment } from '@/core/load';
+import { aadFor } from '@/core/crypto';
+import { summaryAgrees, usableSummary } from '@/core/summary';
+import { openGenerationReader, publishGeneration } from '@/core/crbm-storage-source';
+import { rollbackSegment } from '@/core/rollback';
 import { IntegrityError, ValidationError, WriteConflictError } from '@/core/errors';
 import { InProcessKeystore } from '@/drivers/crypto';
-import {
-  createBackend,
-  CloudRoaring,
-  MemoryStorageChunkSource,
-  bulkLoadCrbmGeneration,
-} from '@/index';
-import type { ChunkRef, IStorageDriver, IKeystore, SegmentRef } from '@/index';
+import { CloudRoaring } from '@/index';
+import type { ChunkRef, IRegistryDriver, IStorageDriver, IKeystore, SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { collect, loadedStore, seedSegment } from '../helpers/loaded';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { brandAsBackend } from '@/core/ports';
 
 /**
- * The two fences that stand between the write-once protocol and a wrong answer, plus the three guards the suite
- * was found to be carrying without testing.
- *
- * Both fences were added after this change's own adversarial review, and neither was visible to the 1,114 tests
- * that already passed — which is the reason this file exists as its own suite rather than as cases bolted onto
- * the modules' happy paths.
+ * The two fences that stand between the write-once protocol and a wrong answer, plus three guards. None of the
+ * five is visible from a module's happy path — which is the reason this file exists as its own suite rather than
+ * as cases bolted onto those paths.
  *
  *  1 · **A publish that DERIVED its content from a generation must land only on that generation.** Forward-only
- *      is right for a load (its ids come from upstream, so it loses nothing by winning), and wrong for the
+ *      is right for an unguarded load (its ids come from upstream, so it loses nothing by winning), and wrong for the
  *      erasure rewrite (its content is `from` minus one bit, so winning over a newer generation silently
  *      discards whatever that generation added). `publishGeneration`'s `expectFrom` is that distinction.
  *  2 · **A segment's encryption posture is decided once, at its first generation.** A keystore is wired on the
  *      store, so it is in scope for segments deliberately left cleartext; minting a DEK on that basis alone
- *      published generations encrypted under a key that was never stored — unrecoverable, and with no race
+ *      publishes generations encrypted under a key that is never stored — unrecoverable, and with no race
  *      required.
  *
  * The guards: `verifyGeneration` on the erasure rewrite, the chunk-key range check on the index-only `count()`
@@ -70,12 +69,10 @@ async function generations(storage: IStorageDriver, ref: SegmentRef): Promise<nu
  * rewrite ends up numbered *above* it and its forward-only publish would win. After the numbering, the
  * interloper collides on the same number and takes a loud write-once conflict.
  *
- * The instant *before* the chunk read used to be dismissed here as an already-safe case — the interloper's
- * `keep: 0` collection deletes the generation this call is still reading, and this comment called the resulting
- * `NotFoundError` "the documented cost of physical deletion on return". No shipped doc said that; the guide and
- * the facade both promised `'superseded'`. It is now reported as `'superseded'`, covered in
- * `erase-swept-generation.test.ts` at all three exposed round trips. Note also that the case below passes with
- * a **single-chunk** fixture, which is why it never reached the rewrite's own re-reads: that suite spans three
+ * The instant *before* the chunk read is a different race: the interloper's `keep: 0` collection deletes the
+ * generation this call is still reading. The guide and the facade both promise `'superseded'` for it, and
+ * `erase-swept-generation.test.ts` covers it at all three exposed round trips. Note also that the case below
+ * passes with a **single-chunk** fixture, which never reaches the rewrite's own re-reads: that suite spans three
  * chunks deliberately.
  */
 function afterFirstChunkRead(base: IStorageDriver, hook: () => Promise<void>): IStorageDriver {
@@ -97,11 +94,33 @@ function afterFirstChunkRead(base: IStorageDriver, hook: () => Promise<void>): I
   };
 }
 
+/** Wrap a registry so `hook` runs once, right after the compare-and-swap that makes `generation` current. */
+function afterPublishOf(
+  base: IRegistryDriver,
+  generation: number,
+  hook: () => Promise<unknown>,
+): IRegistryDriver {
+  let fired = false;
+  return new Proxy(base, {
+    get(t, p, rx) {
+      if (p !== 'compareAndSwap') return Reflect.get(t, p, rx) as unknown;
+      return async (...args: Parameters<IRegistryDriver['compareAndSwap']>) => {
+        const out = await t.compareAndSwap(...args);
+        if (!fired && args[2].currentGen === generation) {
+          fired = true;
+          await hook();
+        }
+        return out;
+      };
+    },
+  });
+}
+
 describe('a publish derived from one generation lands only on that generation', () => {
   it('a load that publishes mid-rewrite is not clobbered: the erasure reports superseded', async () => {
-    // The finding: `nextGeneration` picks a number above everything in the bucket, so the rewrite's publish used
-    // to out-rank the load's and win — and the `keep: 0` collection then deleted the load's object. The load
-    // returns a normal result and emits `segment.publish`, so nothing anywhere would have said the set was lost.
+    // `nextGeneration` picks a number above everything in the bucket, so an unfenced rewrite's publish out-ranks
+    // the load's and wins — and the `keep: 0` collection then deletes the load's object. The load returns a
+    // normal result and emits `segment.publish`, so nothing anywhere would say the set was lost.
     const w = await world();
     await w.load(SEG, [1, 2, 3]);
 
@@ -122,10 +141,10 @@ describe('a publish derived from one generation lands only on that generation', 
   });
 
   it('two erasures racing: the loser reports superseded instead of resurrecting the first id', async () => {
-    // The worst output this module can produce is a FALSE Art. 17 receipt. Before the fence, both calls returned
+    // The worst output this module can produce is a FALSE Art. 17 receipt. Without the fence, both calls return
     // `erased: true` with a `segment.rewrite` event, and the second one's generation — derived from gen 0 —
-    // put the first one's id back while collecting the generation that had evidenced its removal. The tell was
-    // that both receipts named `fromGeneration: 0`.
+    // puts the first one's id back while collecting the generation that evidenced its removal. The tell is
+    // that both receipts name `fromGeneration: 0`.
     const w = await world();
     await w.load(SEG, [1, 2, 3]);
 
@@ -140,6 +159,98 @@ describe('a publish derived from one generation lands only on that generation', 
     expect(outer).toMatchObject({ erased: false, reason: 'superseded', fromGeneration: 0 });
     // Exactly one erasure is attested, and the id it erased is really gone.
     expect(await collect(w.reader().segment('s').iterate())).toEqual([2, 3]);
+  });
+
+  it('the loser deletes the rewrite it wrote — which still holds the winner’s id', async () => {
+    // The loser numbered its rewrite AFTER the winner's object was in the bucket, so it sits ABOVE the winner's
+    // pointer, where no collection ever looks. And it was derived from generation 0, so it still holds the id
+    // the winner has just attested gone. Left behind, it is one `rollback({ allowForward: true })` from being
+    // served, and a later load's grace window keeps it as the newest superseded generation.
+    const w = await world();
+    await w.load(SEG, [1, 2, 3]);
+
+    let inner: Awaited<ReturnType<typeof eraseIdFromSegment>> | undefined;
+    const storage = afterFirstChunkRead(w.storage, async () => {
+      inner = await eraseIdFromSegment(SEG, 1, w.deps); // wins, as generation 1
+    });
+    const outer = await eraseIdFromSegment(SEG, 2, { ...w.deps, storage });
+
+    expect(inner).toMatchObject({ erased: true, generation: 1 });
+    expect(outer).toMatchObject({ erased: false, reason: 'superseded', generation: 2 });
+    expect(await generations(w.storage, SEG)).toEqual([1]); // the loser's generation 2 is gone
+    expect(await collect(w.reader().segment('s').iterate())).toEqual([2, 3]);
+  });
+
+  it('the loser leaves its object alone when the pointer has been rolled onto it', async () => {
+    // The delete's bound is what keeps the invariant that nothing deletes the current generation: an operator who
+    // rolls forward onto the loser's unpublished object between its refusal and its cleanup has made it current.
+    const w = await world();
+    await w.load(SEG, [1, 2, 3]);
+
+    let inner: Awaited<ReturnType<typeof eraseIdFromSegment>> | undefined;
+    let written = false;
+    let readsAfterWrite = 0;
+    const hooked = afterFirstChunkRead(w.storage, async () => {
+      inner = await eraseIdFromSegment(SEG, 1, w.deps); // wins, as generation 1
+    });
+    const storage: IStorageDriver = {
+      ...hooked,
+      capabilities: () => hooked.capabilities(),
+      getTail: (k, m) => hooked.getTail(k, m),
+      getRange: (k, o, l) => hooked.getRange(k, o, l),
+      delete: (k) => hooked.delete(k),
+      list: (r) => hooked.list(r),
+      putImmutable: async (k, fn) => {
+        const out = await hooked.putImmutable(k, fn);
+        written = k.generation === 2;
+        return out;
+      },
+    };
+    const registry = new Proxy(w.registry, {
+      get(t, p, rx) {
+        if (p !== 'get') return Reflect.get(t, p, rx) as unknown;
+        return async (...a: Parameters<IRegistryDriver['get']>) => {
+          // The first read after the write is the pre-verify check; the second is the cleanup's.
+          if (written && ++readsAfterWrite === 2) {
+            await rollbackSegment(SEG, 2, w.deps, { allowForward: true });
+          }
+          return t.get(...a);
+        };
+      },
+    });
+    const outer = await eraseIdFromSegment(SEG, 2, { ...w.deps, storage, registry });
+
+    expect(inner).toMatchObject({ erased: true, generation: 1 });
+    expect(outer).toMatchObject({ erased: false, reason: 'superseded', generation: 2 });
+    expect((await w.registry.get(SEG))!.currentGen).toBe(2);
+    expect(await generations(w.storage, SEG)).toEqual([1, 2]); // the pointer names an object that exists
+  });
+
+  it('the receipt looks at every generation in the bucket, not only the one this call replaced', async () => {
+    // A generation holding the id that appears ABOVE the new pointer while the rewrite is collecting — what a
+    // concurrent writer that derived its content from the pre-erasure generation leaves — is still a generation
+    // of the segment holding the id, and `erased: true` may not be said over it.
+    const w = await world();
+    await w.load(SEG, [1, 2, 3]);
+    const registry = afterPublishOf(w.registry, 1, () =>
+      bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 7 }, [1, 2, 3]),
+    );
+    await expect(eraseIdFromSegment(SEG, 2, { ...w.deps, registry })).rejects.toBeInstanceOf(
+      WriteConflictError,
+    );
+    expect((await w.registry.get(SEG))!.currentGen).toBe(1); // the rewrite itself did land
+  });
+
+  it('…and a generation that appears without the id does not trip it', async () => {
+    // The other direction. A concurrent load's object that does not hold the id is no reason to refuse.
+    const w = await world();
+    await w.load(SEG, [1, 2, 3]);
+    const registry = afterPublishOf(w.registry, 1, () =>
+      bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 7 }, [1, 3]),
+    );
+    const res = await eraseIdFromSegment(SEG, 2, { ...w.deps, registry });
+    expect(res).toMatchObject({ erased: true, fromGeneration: 0, generation: 1 });
+    expect(await generations(w.storage, SEG)).toEqual([1, 7]);
   });
 
   it('a publish that lands DURING the verification read is still fenced out', async () => {
@@ -216,9 +327,9 @@ describe('a publish derived from one generation lands only on that generation', 
     expect((await w.registry.get(SEG))!.currentGen).toBe(5);
   });
 
-  it('a load still publishes forward-only — the fence is opt-in, not the new default', async () => {
+  it('a load publishes forward-only — the fence is opt-in, not the default', async () => {
     // The counter-test. A load's ids come from upstream, so it must keep winning over a newer generation; if
-    // `expectFrom` had been made unconditional this would fail, and re-running a batch job would start throwing.
+    // `expectFrom` were unconditional this would fail, and re-running a batch job would throw.
     const w = await world();
     await w.load(SEG, [1]);
     await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 1 }, [7, 8], {
@@ -231,10 +342,10 @@ describe('a publish derived from one generation lands only on that generation', 
 
 describe("a segment's encryption posture is decided at its first generation", () => {
   it('a keystore-wired load onto a cleartext segment stays cleartext and stays readable', async () => {
-    // The bug two independent reviews reproduced, and it needed no race: the load minted a DEK because the row
-    // carried none, encrypted the generation, and the publish's advance branch dropped the wrapping — so the
-    // pointer advanced to an object encrypted under a key that existed in no persistent store. The data was
-    // unrecoverable the moment the call returned, and the call reported success.
+    // Without the posture rule this needs no race: the load mints a DEK because the row carries none, encrypts
+    // the generation, and an advance that drops the wrapping moves the pointer to an object encrypted under a
+    // key that exists in no persistent store. The data is unrecoverable the moment the call returns, and the
+    // call reports success.
     const keystore = new InProcessKeystore({ keys: { k1: key32() }, activeKeyId: 'k1' });
     const w = await world(keystore);
     await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [1, 2, 3], {
@@ -317,8 +428,9 @@ describe("a segment's encryption posture is decided at its first generation", ()
   });
 
   it('intersectInto on a keystore-wired store leaves a cleartext destination readable', async () => {
-    // The second entry point the review found: `materialize` passes the store's keystore unconditionally, so a
-    // `*Into` onto a destination that already had a cleartext generation destroyed it and returned a success.
+    // The second entry point: `materialize` passes the store's keystore unconditionally, so without the posture
+    // rule a `*Into` onto a destination that already has a cleartext generation destroys it and returns a
+    // success.
     const keystore = new InProcessKeystore({ keys: { k1: key32() }, activeKeyId: 'k1' });
     const w = await world(keystore);
     await w.load('a', [1, 2, 3]);
@@ -341,9 +453,9 @@ describe('a materialisation reports whether it actually landed', () => {
   it('throws instead of naming a generation that never became current', async () => {
     // `MaterializeResult.generation` is documented as "the destination's new current generation". A `*Into` is
     // not derived from `dest`'s content, so forward-only is the right publish rule for it — but the REPORTING
-    // was wrong: `bulkLoadCrbmGeneration` used its publish outcome only to gate the audit event and did not
-    // return it, so a materialisation whose publish lost the race resolved successfully, naming an orphan.
-    // The destination held the other writer's content and the caller was told otherwise.
+    // has to follow the publish outcome: a materialisation whose publish lost the race and still resolved
+    // successfully would name an orphan, while the destination holds the other writer's content and the
+    // caller is told otherwise.
     const w = await world();
     await w.load('a', [1, 2, 3]);
     await w.load('b', [2, 3, 4]);
@@ -367,13 +479,18 @@ describe('a materialisation reports whether it actually landed', () => {
       },
     };
     const store = new CloudRoaring({
-      storage: createBackend({ storage: storage, registry: w.registry }),
+      storage: brandAsBackend({ storage: storage, registry: w.registry }),
       retry: false,
     });
 
-    await expect(
-      store.segment('a').intersectInto(store.segment('dest'), [store.segment('b')]),
-    ).rejects.toBeInstanceOf(WriteConflictError);
+    const err = await store
+      .segment('a')
+      .intersectInto(store.segment('dest'), [store.segment('b')])
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(WriteConflictError);
+    // What it says is true whether or not the write ever was current: the generation is not current now.
+    expect((err as Error).message).toMatch(/generation 1 was written and is not current/);
+    expect((err as Error).message).not.toMatch(/never became current/);
 
     // The winner's content is what `dest` holds, and our object is the orphan.
     expect((await w.registry.get({ segment: 'dest' }))!.currentGen).toBe(2);
@@ -381,10 +498,9 @@ describe('a materialisation reports whether it actually landed', () => {
   });
 
   it('emits segment.publish for the generation it published, like the load it is', async () => {
-    // A `*Into` is a load in disguise, and it was the one write path that could make a generation current and
-    // leave nothing in the compliance trail: `materialize` never threaded an audit sink and the verbs exposed
-    // no way to pass one. `docs/guide/dashboards.md` reads `segment.publish` as "a loaded generation became
-    // current", which this is.
+    // A `*Into` is a load in disguise: it makes a generation current, so it has to leave `segment.publish` in
+    // the compliance trail as a load does, through an audit sink the verbs take. `docs/guide/dashboards.md`
+    // reads `segment.publish` as "a loaded generation became current", which this is.
     const w = await world();
     await w.load('a', [1, 2, 3]);
     await w.load('b', [2, 3, 4]);
@@ -400,10 +516,9 @@ describe('a materialisation reports whether it actually landed', () => {
   });
 
   it('a streaming combine cannot even be handed an audit sink', async () => {
-    // This used to be a RUNTIME counter-test: `audit` sat on the shared options type, so a read verb had to
-    // ignore it rather than attest to a publish that never happened. It now lives on `MaterializeOptions`,
-    // which only the writing verbs take — so the mistake is a compile error instead of a silent no-op, and
-    // the `@ts-expect-error` below fails the build the day that regresses.
+    // `audit` lives on `MaterializeOptions`, which only the writing verbs take, so handing a sink to a read verb
+    // (which could only ignore it, never attest to a publish that did not happen) is a compile error rather than
+    // a silent no-op. The `@ts-expect-error` below fails the build if a read verb ever takes one.
     const w = await world();
     await w.load('a', [1, 2, 3]);
     await w.load('b', [2, 3, 4]);
@@ -454,12 +569,12 @@ describe('a materialisation reports whether it actually landed', () => {
   });
 });
 
-describe('the guards the suite was carrying untested', () => {
+describe('the guards no happy-path test reaches', () => {
   it('the erasure rewrite verifies what it wrote before publishing (IntegrityError, pointer unmoved)', async () => {
-    // Deleting the `verifyGeneration` call left all 1,114 tests passing. It is the integrity gate on the one path
-    // that rewrites a whole segment for a GDPR erasure: without it, a rewrite that silently dropped a chunk would
-    // be published as the erasure's authoritative generation, and `keep: 0` would then collect the generation
-    // that held the true data.
+    // `verifyGeneration` is the integrity gate on the one path that rewrites a whole segment for a GDPR erasure,
+    // and a happy-path test passes whether it runs or not. Without it, a rewrite that silently dropped a chunk
+    // would be published as the erasure's authoritative generation, and `keep: 0` would then collect the
+    // generation that held the true data.
     const w = await world();
     await w.load(SEG, [1, 2, 70_000, 140_000]); // three chunks, so a dropped one is detectable
     // Truncate the re-read: the freshly written object reports a short chunk-key set on verification.
@@ -487,8 +602,8 @@ describe('the guards the suite was carrying untested', () => {
 
   it('count() range-checks a chunk key that came from the index, not just from a chunk list', async () => {
     // Invariant 5 ("range-check every chunk key that comes back from storage") is enforced in exactly two
-    // places, and the index-only `count()` path — the headline read verb on a loaded segment — had no coverage:
-    // the existing out-of-range test uses a source with no `cardinalities`, so it exercises the other one.
+    // places, and this test covers the index-only `count()` path — the headline read verb on a loaded segment:
+    // the other out-of-range test uses a source with no `cardinalities`, so it exercises the other place.
     const storage = new MemoryStorageChunkSource();
     seedSegment(storage, 's', [1, 2, 3]);
     const hostile: MemoryStorageChunkSource = Object.create(storage) as MemoryStorageChunkSource;
@@ -504,8 +619,8 @@ describe('the guards the suite was carrying untested', () => {
 
   it('a rewrite that published but could not collect throws rather than attesting the erasure', async () => {
     // `EraseIdResult.collected`'s contract: "a rewrite that published but could not collect throws instead of
-    // reporting `erased: true` over bytes that are still there". Nothing exercised it, and it is the branch that
-    // decides whether an Art. 17 ledger over-attests.
+    // reporting `erased: true` over bytes that are still there". It is the branch that decides whether an
+    // Art. 17 ledger over-attests, and only a collect that fails after the publish reaches it.
     const w = await world();
     await w.load(SEG, [1, 2, 3]);
     const storage: IStorageDriver = {
@@ -522,5 +637,197 @@ describe('the guards the suite was carrying untested', () => {
     // current generation but the object that held it is still in the bucket.
     expect((await w.registry.get(SEG))!.currentGen).toBe(1);
     expect(await generations(w.storage, SEG)).toEqual([0, 1]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// A row's summary describes the generation the row names as current, and each write that moves the pointer writes the
+// summary of the generation it moves it to. Whichever of a load, a rollback and an erasure wins a race, the row ends
+// holding a summary of the generation it names, with the count and metadata that generation's object holds: never one
+// writer's pointer over another's count, and never the summary of a write that lost.
+// ---------------------------------------------------------------------------------------------------------------
+describe('a summary never describes another generation than the one the row names', () => {
+  const META_A = { run: 'a' };
+  const META_B = { run: 'b' };
+
+  /** The row's summary, as the key holder reads it, and what the object it names actually holds. */
+  async function agreement(w: Awaited<ReturnType<typeof world>>) {
+    const row = (await w.registry.get(SEG))!;
+    const aead =
+      row.wrappedDeks === undefined ? undefined : await w.deps.keystore!.openDek(row.wrappedDeks);
+    const crypto =
+      aead === undefined
+        ? undefined
+        : {
+            aead,
+            aadFor: (scope: number | 'index' | 'metadata') => aadFor(SEG, row.currentGen!, scope),
+          };
+    const reader = await openGenerationReader(
+      w.storage,
+      { ...SEG, generation: row.currentGen! },
+      crypto,
+    );
+    const described = usableSummary(SEG, row, aead);
+    return {
+      row,
+      described,
+      object: { cardinality: reader.count(), metadata: reader.metadata },
+      agrees:
+        described !== undefined &&
+        summaryAgrees(described, { cardinality: reader.count(), metadata: reader.metadata }),
+    };
+  }
+
+  it.each([
+    ['cleartext', undefined],
+    ['encrypted', new InProcessKeystore({ keys: { k: key32() }, activeKeyId: 'k' })],
+  ] as const)(
+    'a load that publishes mid-rewrite leaves its own summary, on a %s segment',
+    async (_name, keystore) => {
+      const w = await world(keystore);
+      await loadSegment(SEG, [1, 2, 3], w.deps, { metadata: META_A, keep: 9 });
+      const storage = afterFirstChunkRead(w.storage, async () => {
+        await loadSegment(SEG, [1, 2, 3, 99], w.deps, { metadata: META_B, keep: 9 });
+      });
+      const res = await eraseIdFromSegment(SEG, 2, { ...w.deps, storage });
+      expect(res).toMatchObject({ erased: false, reason: 'superseded' });
+      const a = await agreement(w);
+      expect(a.row.currentGen).toBe(1);
+      expect(a.described).toEqual({ cardinality: 4, metadata: META_B });
+      expect(a.agrees).toBe(true);
+    },
+  );
+
+  it('an erasure that publishes between a guarded load and its publish leaves the erasure summary', async () => {
+    const w = await world();
+    await loadSegment(SEG, [1, 2, 3], w.deps, { metadata: META_A, keep: 9 });
+    // The load's object is written, and an erasure of 2 publishes before the load does.
+    let erased = false;
+    const racing: IStorageDriver = {
+      ...w.storage,
+      capabilities: () => w.storage.capabilities(),
+      getTail: (k, m) => w.storage.getTail(k, m),
+      getRange: (k, o, l) => w.storage.getRange(k, o, l),
+      delete: (k) => w.storage.delete(k),
+      list: (r) => w.storage.list(r),
+      putImmutable: async (k, fn) => {
+        const out = await w.storage.putImmutable(k, fn);
+        if (!erased) {
+          erased = true;
+          const inner = await eraseIdFromSegment(SEG, 2, w.deps);
+          expect(inner).toMatchObject({ erased: true });
+        }
+        return out;
+      },
+    };
+    const r = await loadSegment(
+      SEG,
+      [5, 6],
+      { ...w.deps, storage: racing },
+      { metadata: META_B, keep: 9 },
+    );
+    expect(r).toMatchObject({ published: false, reason: 'superseded' });
+    const a = await agreement(w);
+    expect(a.described).toEqual({ cardinality: 2, metadata: META_A });
+    expect(a.agrees).toBe(true);
+  });
+
+  it('a rollback that lands between a load writing its object and publishing it leaves the rollback summary', async () => {
+    const w = await world();
+    await loadSegment(SEG, [1, 2, 3], w.deps, { metadata: META_A, keep: 9 });
+    await loadSegment(SEG, [1, 2, 3, 4], w.deps, { metadata: META_B, keep: 9 });
+    let rolled = false;
+    const racing: IStorageDriver = {
+      ...w.storage,
+      capabilities: () => w.storage.capabilities(),
+      getTail: (k, m) => w.storage.getTail(k, m),
+      getRange: (k, o, l) => w.storage.getRange(k, o, l),
+      delete: (k) => w.storage.delete(k),
+      list: (r) => w.storage.list(r),
+      putImmutable: async (k, fn) => {
+        const out = await w.storage.putImmutable(k, fn);
+        if (!rolled) {
+          rolled = true;
+          await rollbackSegment(SEG, 0, w.deps);
+        }
+        return out;
+      },
+    };
+    const r = await loadSegment(
+      SEG,
+      [7, 8, 9, 10, 11],
+      { ...w.deps, storage: racing },
+      { metadata: { run: 'c' }, keep: 9 },
+    );
+    expect(r).toMatchObject({ published: false, reason: 'superseded' });
+    const a = await agreement(w);
+    expect(a.row.currentGen).toBe(0);
+    expect(a.described).toEqual({ cardinality: 3, metadata: META_A });
+    expect(a.agrees).toBe(true);
+  });
+
+  it('a load that lands between a rollback reading its target and publishing leaves the load summary', async () => {
+    const w = await world();
+    await loadSegment(SEG, [1, 2, 3], w.deps, { metadata: META_A, keep: 9 });
+    await loadSegment(SEG, [1, 2, 3, 4], w.deps, { metadata: META_B, keep: 9 });
+    let loaded = false;
+    const racing: IStorageDriver = {
+      ...w.storage,
+      capabilities: () => w.storage.capabilities(),
+      getRange: (k, o, l) => w.storage.getRange(k, o, l),
+      delete: (k) => w.storage.delete(k),
+      list: (r) => w.storage.list(r),
+      putImmutable: (k, fn) => w.storage.putImmutable(k, fn),
+      getTail: async (k, m) => {
+        const out = await w.storage.getTail(k, m);
+        if (!loaded && k.generation === 0 && m > 0) {
+          loaded = true;
+          await loadSegment(SEG, [1, 2, 3, 4, 5], w.deps, { metadata: { run: 'c' }, keep: 9 });
+        }
+        return out;
+      },
+    };
+    // The rollback's compare-and-swap is fenced on the row it read, so the load that moved it wins.
+    await expect(rollbackSegment(SEG, 0, { ...w.deps, storage: racing })).rejects.toBeInstanceOf(
+      WriteConflictError,
+    );
+    const a = await agreement(w);
+    expect(a.row.currentGen).toBe(2);
+    expect(a.described).toEqual({ cardinality: 5, metadata: { run: 'c' } });
+    expect(a.agrees).toBe(true);
+  });
+
+  it('an unguarded load fences on the row too, so a load that published first keeps its summary', async () => {
+    const w = await world();
+    await loadSegment(SEG, [1, 2, 3], w.deps, { metadata: META_A, keep: 9 });
+    let other = false;
+    const racing: IStorageDriver = {
+      ...w.storage,
+      capabilities: () => w.storage.capabilities(),
+      getTail: (k, m) => w.storage.getTail(k, m),
+      getRange: (k, o, l) => w.storage.getRange(k, o, l),
+      delete: (k) => w.storage.delete(k),
+      list: (r) => w.storage.list(r),
+      putImmutable: async (k, fn) => {
+        const out = await w.storage.putImmutable(k, fn);
+        if (!other) {
+          other = true;
+          // Another load publishes, one above this one's object, with other ids and other metadata.
+          await loadSegment(SEG, [50], w.deps, { metadata: META_B, keep: 9, allowEmpty: true });
+        }
+        return out;
+      },
+    };
+    const r = await loadSegment(
+      SEG,
+      [1, 2, 3, 4, 5, 6],
+      { ...w.deps, storage: racing },
+      { allowEmpty: true, metadata: { run: 'c' }, keep: 9 },
+    );
+    expect(r).toMatchObject({ published: false, reason: 'superseded' });
+    const a = await agreement(w);
+    expect(a.row.currentGen).toBe(2);
+    expect(a.described).toEqual({ cardinality: 1, metadata: META_B });
+    expect(a.agrees).toBe(true);
   });
 });

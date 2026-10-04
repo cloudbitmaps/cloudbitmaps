@@ -21,8 +21,17 @@
  * exact real run whose parts reconcile: the per-command counts sum to the billed classes, each class's price
  * reproduces its recorded cost, the chunk and tail reads match the planned layout and the library's tail size, the
  * median intersect's GETs are its chunk, tail and pointer reads, the bytes read back and sent up sum to their
- * parts, and the uncategorised reads divide evenly across the loads. A figure derived from a file that fails any of
- * those would be about a run that did not happen the way it says.
+ * parts, and the uncategorised reads divide evenly across the loads. A run that timed `store.load()` is also refused
+ * for what it reports as wrong itself: leftovers, a missed expected count, a stage off its expected requests, or a
+ * shell in another region than the bucket's. A figure derived from a file that fails any of those would be about a
+ * run that did not happen the way it says.
+ *
+ * A RUN THAT DISCARDED A SAMPLE IS EVIDENCE, within the harness's bounds. A sample that met a transient fault was
+ * discarded whole and run again from the start (`calibrate-samples.cjs`): its requests are in its stage's and in the
+ * bill, which counts them, and out of every latency and request-count figure, which is what the samples the stage
+ * kept made. Those are held to their expected counts exactly, as a fault-free run's are, and the count of discards is
+ * stated beside the figures. A run that met more faults than its bounds allow did not finish, and is refused as any
+ * partial run is.
  *
  * WHAT THE REVERSE CHECK CAN AND CANNOT SEE. It reads a figure by its unit, or by the noun it counts, and accepts it
  * only at the precision it is written. A value the evidence holds is not enough where the same number could make
@@ -37,19 +46,65 @@ const path = require('node:path');
 
 const { classify } = require('./aws-meter.cjs');
 const { planLayout, DEFAULT_LAYOUT, EVIDENCE_DIR, CHUNK_SPAN } = require('./calibrate-guards.cjs');
+const { windowRounds } = require('./calibrate-stages.cjs');
+
+/**
+ * The last release whose engine held a combine's window at a fixed 8 keys. A run's depth is the depth of the engine
+ * that ran, so a run of that release or an earlier one is read against 8 keys, whatever the engine here does now; a
+ * later release is read against the window the engine's source names.
+ */
+const FIXED_WINDOW_THROUGH = Object.freeze({ version: [0, 12, 0], keys: 8 });
+
+/**
+ * `0.12.0` as numbers, a pre-release counting as the release it precedes (`0.12.0-rc.1` ran 0.12.0's engine); null for
+ * anything else, which is read as the current engine. A run reports the version of the packages it ran: an evidence run
+ * installs a published release, so that is the engine that ran. A rehearsal of unreleased source made before its version
+ * bump reports the last release instead, and is read against that release's window.
+ */
+function releaseOf(version) {
+  const m = /^(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?$/.exec(String(version));
+  return m === null ? null : [Number(m[1]), Number(m[2]), Number(m[3])];
+}
+
+/** The window the engine of `packageVersion` ran with: how wide it opened and the most it held. */
+function windowOfRun(packageVersion, src) {
+  const release = releaseOf(packageVersion);
+  if (release !== null) {
+    const [a, b, c] = FIXED_WINDOW_THROUGH.version;
+    const through =
+      release[0] < a ||
+      (release[0] === a && (release[1] < b || (release[1] === b && release[2] <= c)));
+    if (through) return { limit: FIXED_WINDOW_THROUGH.keys, start: FIXED_WINDOW_THROUGH.keys };
+  }
+  return { limit: src.intersectConcurrency, start: src.combineWindowStart };
+}
+const { STAGES, sampleBounds } = require('./calibrate-stages.cjs');
+const {
+  keptRequests,
+  discardedRequests,
+  DISCARDS_PER_RUN,
+  DISCARDS_PER_STAGE,
+} = require('./calibrate-samples.cjs');
 
 /**
  * What `store.load()` bills, in requests, as `tests/bench/calibrate-guards.test.ts` counts them against local
- * drivers and the real registry protocol — which the harness does not time, since it calls
- * `bulkLoadCrbmGeneration` with the generation given. PUT-class: the object, two listings (one to choose the
- * generation, one to collect after the publish) and the pointer. GETs: seven pointer reads on a segment's first
- * load; a reload also reads the current generation's index; from the third load on, the collection pass re-reads
- * the pointer before its delete. The test asserts these numbers, so the prices below cannot drift from what runs.
+ * drivers and the real registry protocol. A run whose load stage timed `store.load()` records each load's own
+ * requests, and its loads are priced from those; this table is what a reload and a load that collects cost, which a
+ * run that loads each segment once does not measure. PUT-class: the object and the pointer. GETs: on a segment's
+ * first load, three pointer reads (it found no row, so it reads it again after its ids, and the create reads once
+ * more) and one check that the generation number is free (a HeadObject); a reload reads the pointer twice (its row,
+ * and the compare-and-swap's read of the row's version) and makes the one check, and sizes the current generation
+ * from its row's summary, so it opens no object; from the third load on, collection deletes the generation the
+ * window pushed out, by name, after a second check that the current generation's object is there, and re-reads the
+ * pointer before its delete, so a collecting load lists nothing. Every sixteenth load lists instead, `listing`: a
+ * listing, and the pointer read before and after it, and it needs no check that the current object is there. The test
+ * asserts these numbers, so the prices below cannot drift from what runs.
  */
 const STORE_LOAD_REQUESTS = Object.freeze({
-  first: Object.freeze({ put: 4, get: 7 }),
-  reload: Object.freeze({ put: 4, get: 8 }),
-  collecting: Object.freeze({ put: 4, get: 9 }),
+  first: Object.freeze({ put: 2, get: 4 }),
+  reload: Object.freeze({ put: 2, get: 3 }),
+  collecting: Object.freeze({ put: 2, get: 5 }),
+  listing: Object.freeze({ put: 3, get: 6 }),
 });
 
 /** Roaring's portable format stores a chunk of at most this many ids as an array: a header, then 2 bytes an id. */
@@ -108,6 +163,7 @@ function readSources(root) {
     engine,
     'DEFAULT_INTERSECT_CONCURRENCY',
   );
+  const windowStart = need(/const COMBINE_WINDOW_START = (\d+);/, engine, 'COMBINE_WINDOW_START');
   return {
     pricing: {
       name: profile[1],
@@ -122,6 +178,7 @@ function readSources(root) {
     preambleBytes: Number(preamble[1]),
     genTtlMs: Number(ttl[1]),
     intersectConcurrency: Number(fanOut[1]),
+    combineWindowStart: Number(windowStart[1]),
   };
 }
 
@@ -129,8 +186,8 @@ function readSources(root) {
  * Every committed run, oldest first. A partial file — a run that did not finish — is not evidence and is skipped.
  * Order is the time a run started where its file records one, and its id otherwise: the id starts with the date,
  * but two runs on one date differ only by a random suffix, which says nothing about which came later. A file from
- * before the start was recorded counts as starting at the beginning of its date. Its bare date once sorted after
- * every later run started the same day, because `T` sorts before `|`.
+ * before the start was recorded counts as starting at the beginning of its date. Keyed by its bare date, it would
+ * sort after every later run started the same day, because `T` sorts before `|`.
  */
 function evidenceFiles(root) {
   const dir = path.join(root, EVIDENCE_DIR);
@@ -182,6 +239,28 @@ function derive(run, src) {
   );
   check(run.projectionExceeded === undefined, 'the run exceeded its own projection');
   check(it.cold === true && it.exact === true, 'its intersects are not recorded as cold and exact');
+  // A run whose load stage timed `store.load()` records each load's own requests, and every stage's. A load makes
+  // a check of its generation number and more pointer reads than a write and publish does, and on a later load its
+  // collection pass reads the pointer where the intersects do, so a run's totals cannot be divided between its
+  // stages after the fact. Anything else a load stage timed is not one this derivation prices.
+  const via = run.phases?.load?.via;
+  const storeLoadRun = via === 'store.load()';
+  check(
+    via === undefined || storeLoadRun,
+    `its load stage timed ${via}, which this derivation does not price`,
+  );
+  if (storeLoadRun) {
+    for (const name of STAGES) {
+      check(
+        typeof run.phases[name]?.requests?.get === 'number',
+        `it records no requests for its ${name} stage`,
+      );
+    }
+    check(
+      Array.isArray(run.phases.load.perLoad) && run.phases.load.perLoad.length > 0,
+      'its load stage records no per-load requests',
+    );
+  }
   check(
     run.pricing === src.pricing.name,
     `it was priced with "${run.pricing}", which is not the library's profile "${src.pricing.name}"`,
@@ -193,11 +272,18 @@ function derive(run, src) {
   const multi = run.phases.load.multipart;
   const ops = run.cost.ops;
   const cmd = ops.byCommand;
-  const rd = ops.reads;
+  // The reads the intersect checks count. A store.load() run records its calibration intersects' own, because its
+  // loads read pointers too, and of those the ones its kept intersects made; a run that timed the write and publish
+  // alone has loads the meter files no read of.
+  const rd = storeLoadRun ? keptRequests(it).reads : ops.reads;
+  // The samples each stage discarded after a transient fault: none in a file from before a sample could be.
+  const discardedIn = (name) => run.phases?.[name]?.discarded ?? [];
   const n = (name) => cmd[name] ?? 0;
   const getUSD = src.pricing.getPerMillion / 1e6;
   const putUSD = src.pricing.putPerMillion / 1e6;
-  const close = (a, b) => Math.abs(a - b) < 1e-12;
+  // A results file records dollars to nine decimals, so two figures that agree differ by a few billionths at most.
+  // One request costs at least 400 billionths, so a file that is off by a single request still fails.
+  const close = (a, b) => Math.abs(a - b) < 1e-8;
 
   // ── the evidence has to reconcile with itself ───────────────────────────────────────────────────────────────
   const byClass = { put: 0, get: 0, free: 0 };
@@ -254,29 +340,198 @@ function derive(run, src) {
       `(${chunkReadsPerIntersect} + ${tailReadsPerIntersect} + ${it.pointerReadsPerIntersect})`,
   );
   check(
-    ops.bytesDown === rd.whole.bytes + rd.suffix.bytes + rd.range.bytes,
+    ops.bytesDown === ops.reads.whole.bytes + ops.reads.suffix.bytes + ops.reads.range.bytes,
     'the bytes it read back are not the sum of its pointer, tail and chunk reads',
   );
   // What went up is the loads' uploads. The file records medians, so the sum is checked to a thousandth: tight
-  // enough to catch an edit, loose enough for loads of one kind that differ by a byte or two.
+  // enough to catch an edit, loose enough for loads of one kind that differ by a byte or two. A store.load() run
+  // records every load's own upload, so its sum is exact.
   const uploadOf = (phase) => phase.medianUploadBytes ?? phase.medianObjectBytes;
-  const uploaded = single.runs * uploadOf(single) + multi.runs * uploadOf(multi);
-  check(
-    Math.abs(ops.bytesUp - uploaded) <= ops.bytesUp / 1000,
-    `the ${ops.bytesUp} bytes it sent up are not its loads' uploads (${uploaded})`,
-  );
   const loads = single.runs + multi.runs;
-  const loadGets = n('GetObjectCommand') - (rd.whole.n + rd.suffix.n + rd.range.n);
-  check(
-    loads > 0 && loadGets % loads === 0,
-    `its ${loadGets} uncategorised reads do not divide evenly across ${loads} loads`,
-  );
-  check(
-    n('PutObjectCommand') === 2 * single.runs + multi.runs &&
-      n('CreateMultipartUploadCommand') === multi.runs &&
-      n('CompleteMultipartUploadCommand') === multi.runs,
-    'its PUTs are not one object and one pointer per load',
-  );
+  // Every load the run made, the stages' own included, each with the requests it made.
+  const loadRecords = storeLoadRun
+    ? [
+        ...run.phases.load.perLoad,
+        ...(run.phases.spread?.setup?.perLoad ?? []),
+        ...(run.phases.sweep?.setup?.entries ?? []).flatMap((e) => e.perLoad ?? []),
+      ]
+    : [];
+  const sumOf = (xs, key) => xs.reduce((acc, x) => acc + x[key], 0);
+  if (storeLoadRun) {
+    check(
+      Math.abs(ops.bytesUp - sumOf(loadRecords, 'uploadBytes')) === 0,
+      `the ${ops.bytesUp} bytes it sent up are not its ${loadRecords.length} loads' recorded uploads`,
+    );
+  } else {
+    const uploaded = single.runs * uploadOf(single) + multi.runs * uploadOf(multi);
+    check(
+      Math.abs(ops.bytesUp - uploaded) <= ops.bytesUp / 1000,
+      `the ${ops.bytesUp} bytes it sent up are not its loads' uploads (${uploaded})`,
+    );
+  }
+  // The pointer reads the loads made: for a store.load() run, what its load stage's own records add up to; for a run
+  // that timed the write and publish, what the intersects' categorised reads leave of the GETs, since a load's 404s
+  // are filed under no kind of read.
+  const loadGets = storeLoadRun
+    ? sumOf(run.phases.load.perLoad, 'get')
+    : n('GetObjectCommand') - (rd.whole.n + rd.suffix.n + rd.range.n);
+  if (storeLoadRun) {
+    const main = run.phases.load.perLoad;
+    check(
+      main.filter((l) => l.kind === 'single').length === single.runs &&
+        main.filter((l) => l.kind === 'multipart').length === multi.runs,
+      "its per-load records are not the load stage's single-part and multipart runs",
+    );
+    // Each load's own requests add up to its stage's, and every load's PUT-class requests are the object's and the
+    // pointer's, a segment's first load having nothing to collect and so no listing: a record that disagrees with the
+    // meter would price a load wrongly.
+    check(
+      sumOf(main, 'put') === run.phases.load.requests.put &&
+        sumOf(main, 'get') === run.phases.load.requests.get,
+      "its loads' own requests do not add up to its load stage's",
+    );
+    check(
+      loadRecords.every((l) => l.put === (l.kind === 'single' ? 2 : 3 + l.parts) && l.get >= 4),
+      "a load's requests are not an object and a pointer write, and at least three pointer reads and a check",
+    );
+    // Every stage's requests, with its setup's, and what is left is the bucket's: the probe, the round-trip samples,
+    // its creation and teardown's listings. Nothing a stage did is missing, and nothing else is in the bill.
+    const used = STAGES.reduce(
+      (acc, name) => {
+        const r = run.phases[name].requests;
+        const setup = run.phases[name].setup?.requests ?? { put: 0, get: 0 };
+        return { put: acc.put + r.put + setup.put, get: acc.get + r.get + setup.get };
+      },
+      { put: 0, get: 0 },
+    );
+    check(
+      ops.get - used.get === n('HeadBucketCommand') &&
+        ops.put - used.put ===
+          n('CreateBucketCommand') +
+            n('ListMultipartUploadsCommand') +
+            n('ListObjectVersionsCommand'),
+      "its stages' requests and the bucket's own do not add up to what it billed",
+    );
+    check(
+      n('PutObjectCommand') ===
+        2 * loadRecords.filter((l) => l.kind === 'single').length +
+          loadRecords.filter((l) => l.kind === 'multipart').length &&
+        n('ListObjectsV2Command') === 0 &&
+        n('CreateMultipartUploadCommand') ===
+          loadRecords.filter((l) => l.kind === 'multipart').length &&
+        n('CompleteMultipartUploadCommand') ===
+          loadRecords.filter((l) => l.kind === 'multipart').length &&
+        n('UploadPartCommand') === sumOf(loadRecords, 'parts'),
+      'its PUT-class commands are not what its loads make: the object or its parts and the pointer, and no listing',
+    );
+    check(
+      run.phases.warm.warmGets === 0 && run.phases.warm.exact === true,
+      'its warm intersects are not recorded as exact and at no requests',
+    );
+    // What the run itself reports as wrong is refused, not read past, however well its ledger reconciles: anything
+    // teardown left behind, a count the engine was expected to make and did not, a stage whose requests are not the
+    // ones it expected, and a shell that says it ran in another region than the bucket's.
+    const left = run.leftovers ?? [];
+    check(
+      left.length === 0,
+      `teardown left ${left.length} resource${left.length === 1 ? '' : 's'} behind`,
+    );
+    const missed = run.expectedMissed ?? [];
+    check(missed.length === 0, `it missed an expected count: ${missed.join('; ')}`);
+    // Every stage's record exists here: the first refusal above stops a file that lacks one. A stage is held to what
+    // its kept samples made, and its discarded ones only to having been reads that stopped short.
+    for (const name of STAGES) {
+      const { expectedGets } = run.phases[name];
+      const kept = keptRequests(run.phases[name]);
+      const discarded = discardedIn(name);
+      check(typeof expectedGets === 'number', `it records no expected count for its ${name} stage`);
+      if (typeof expectedGets === 'number') {
+        check(
+          kept.get === expectedGets,
+          `its ${name} stage made ${int(kept.get)} GET-class requests` +
+            `${discarded.length === 0 ? '' : ' in the samples it kept'}, not the ${int(expectedGets)} it expected`,
+        );
+      }
+      check(
+        discarded.every(
+          (d) =>
+            typeof d.name === 'string' &&
+            Number.isInteger(d.sample) &&
+            d.requests?.put === 0 &&
+            Number.isInteger(d.requests?.get),
+        ),
+        `its ${name} stage records a discard that is not a read sample with its requests`,
+      );
+    }
+    // Loads are not samples: a write that failed may have landed, so the harness never runs one again.
+    check(discardedIn('load').length === 0, 'its load stage discarded a load');
+    // The run's own count of its discards, and its bounds: a file whose stages discarded more than it counted, or more
+    // than it allowed, is not the run the harness would have let finish.
+    // The bounds are the harness's, not the file's: a file stating looser ones of its own is not the run the harness
+    // would have let finish. They are held to the plan the run projected from too, and its allowance to them.
+    const counted = run.discards;
+    const plan = run.workload?.plan;
+    const discardCount = STAGES.reduce((n, name) => n + discardedIn(name).length, 0);
+    check(
+      (counted?.count ?? 0) === discardCount,
+      `its stages record ${discardCount} discarded samples, not the ${counted?.count ?? 0} it counted`,
+    );
+    check(
+      counted?.unfinished === undefined,
+      `it records a stage cut short (${counted?.unfinished?.stage}), which a run that finished has none of`,
+    );
+    check(
+      discardCount <= DISCARDS_PER_RUN &&
+        STAGES.every((name) => discardedIn(name).length <= DISCARDS_PER_STAGE),
+      `it discarded more samples than the harness allows (${DISCARDS_PER_RUN} a run, ${DISCARDS_PER_STAGE} a stage)`,
+    );
+    if (counted !== undefined) {
+      check(
+        counted.perRun === DISCARDS_PER_RUN &&
+          counted.perStage === DISCARDS_PER_STAGE &&
+          plan?.discards?.perRun === DISCARDS_PER_RUN &&
+          plan?.discards?.perStage === DISCARDS_PER_STAGE,
+        `its bounds on discards (${counted.perRun} a run, ${counted.perStage} a stage, and its plan's ` +
+          `${plan?.discards?.perRun} and ${plan?.discards?.perStage}) are not the harness's ` +
+          `(${DISCARDS_PER_RUN} a run, ${DISCARDS_PER_STAGE} a stage)`,
+      );
+      const allowed = run.projectedDiscards;
+      const costliest =
+        plan?.discards === undefined ? null : Math.max(...Object.values(sampleBounds(plan)));
+      check(
+        allowed?.put === 0 &&
+          allowed?.costliestSample === costliest &&
+          allowed?.get === DISCARDS_PER_RUN * (costliest ?? Number.NaN),
+        `its allowance for discards (${allowed?.get} GET-class, at a costliest sample of ${allowed?.costliestSample}) ` +
+          `is not ${DISCARDS_PER_RUN} samples at the costliest its plan makes (${costliest})`,
+      );
+    }
+    const clientRegion = run.network?.clientRegion ?? null;
+    check(
+      clientRegion === null || clientRegion === run.region,
+      `it ran from ${clientRegion}, not the bucket's ${run.region}`,
+    );
+    for (const [name, record] of [
+      ['spread', run.phases.spread],
+      ...(run.phases.sweep?.entries ?? []).map((e) => [`sweep k = ${e.k}`, e]),
+    ]) {
+      check(
+        record.runs === 0 || (record.cold === true && record.exact === true),
+        `its ${name} intersects are not recorded as cold and exact`,
+      );
+    }
+  } else {
+    check(
+      loads > 0 && loadGets % loads === 0,
+      `its ${loadGets} uncategorised reads do not divide evenly across ${loads} loads`,
+    );
+    check(
+      n('PutObjectCommand') === 2 * single.runs + multi.runs &&
+        n('CreateMultipartUploadCommand') === multi.runs &&
+        n('CompleteMultipartUploadCommand') === multi.runs,
+      'its PUTs are not one object and one pointer per load',
+    );
+  }
   const pointerBytesPerRead = rd.whole.bytes / rd.whole.n;
   // The payload fraction as the harness computed it, from its own byte field — a check of its arithmetic.
   check(
@@ -286,10 +541,27 @@ function derive(run, src) {
   refuseIfAny();
 
   // ── requests ────────────────────────────────────────────────────────────────────────────────────────────────
-  const getsPerLoad = loadGets / loads;
-  const partsPerMultipart = n('UploadPartCommand') / multi.runs;
-  const putsPerSingle = 2; // the object, then the pointer — reconciled above
-  const putsPerMultipart = 2 + partsPerMultipart + 1; // create, the parts, complete — then the pointer
+  // Each load priced from its own recorded requests when the run has them; from the run's totals divided across its
+  // loads when it timed the write and publish alone.
+  const mainLoads = storeLoadRun ? run.phases.load.perLoad : [];
+  const ofKind = (kind) => mainLoads.filter((l) => l.kind === kind);
+  const medianOf = (xs) => {
+    const sorted = [...xs].sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)];
+  };
+  const getsPerLoad = storeLoadRun
+    ? medianOf(ofKind('single').map((l) => l.get))
+    : loadGets / loads;
+  const getsPerMultipart = storeLoadRun
+    ? medianOf(ofKind('multipart').map((l) => l.get))
+    : getsPerLoad;
+  const partsPerMultipart = storeLoadRun
+    ? medianOf(ofKind('multipart').map((l) => l.parts))
+    : n('UploadPartCommand') / multi.runs;
+  const putsPerSingle = storeLoadRun ? medianOf(ofKind('single').map((l) => l.put)) : 2; // the object, then the pointer — reconciled above
+  const putsPerMultipart = storeLoadRun
+    ? medianOf(ofKind('multipart').map((l) => l.put))
+    : 2 + partsPerMultipart + 1; // create, the parts, complete — then the pointer
   const chunksPerOperand = it.chunksFetchedPerOperand;
   const tailPerOperand = rd.suffix.n / operandReads;
   // Expected, from measured parts: each operand's pointer read once, as the library does when an intersect ends
@@ -305,7 +577,8 @@ function derive(run, src) {
   // once. So its requests queue this many deep. A pointer refresh part-way through holds every chunk read that
   // starts while it is in flight, so each one the median intersect made adds one more.
   const refreshes = (measuredGets - expectedGets) / 2;
-  const requestsDeepPinned = 2 + Math.ceil(chunksPerOperand / src.intersectConcurrency);
+  const window = windowOfRun(run.measured.packageVersion, src);
+  const requestsDeepPinned = 2 + windowRounds(chunksPerOperand, window.limit, window.start);
   const requestsDeep = requestsDeepPinned + refreshes;
 
   // ── bytes ───────────────────────────────────────────────────────────────────────────────────────────────────
@@ -331,7 +604,7 @@ function derive(run, src) {
   // A large segment's ids. A later harness records them; for an earlier file they come back from its two rates —
   // ids a second over bytes a second, times the bytes — which is exact to well under one id, and is checked. The
   // rate is of what went UP, the object and its pointer's body, so it is paired with the upload and not with the
-  // object: paired with the object, it refused every file a harness recording the two apart would write.
+  // object: paired with the object, it would refuse every file a harness recording the two apart writes.
   const idsFromRates = (uploadOf(multi) * multi.medianIdsPerSec) / multi.medianBytesPerSec;
   const multipartIds = w.largeIdsPerSegment ?? Math.round(idsFromRates);
   if (Math.abs(idsFromRates - multipartIds) > 0.5) {
@@ -365,7 +638,7 @@ function derive(run, src) {
   const measuredIntersectUSD = cost(measuredGets);
   const expectedIntersectUSD = cost(expectedGets);
   const singleLoadUSD = cost(getsPerLoad, putsPerSingle);
-  const multipartLoadUSD = cost(getsPerLoad, putsPerMultipart);
+  const multipartLoadUSD = cost(getsPerMultipart, putsPerMultipart);
   const storeLoadUSD = Object.fromEntries(
     Object.entries(STORE_LOAD_REQUESTS).map(([k, r]) => [k, cost(r.get, r.put)]),
   );
@@ -389,7 +662,9 @@ function derive(run, src) {
     packageVersion: run.measured.packageVersion,
     harness: run.measured.harness,
     node: run.measured.node,
-    remote: !/^in-region/.test(run.network.client),
+    // A floor under the line keeps another continent out, not a neighbouring region, so a run's latency is in-region
+    // only when its shell's own region is the bucket's as well.
+    remote: !(/^in-region/.test(run.network.client) && run.network.clientRegion === run.region),
     workload: { ...w, sharedIds: layout.shared, overlap: DEFAULT_LAYOUT.overlap },
     intersects: it.runs,
     chunksPerOperand,
@@ -406,9 +681,41 @@ function derive(run, src) {
     refreshes,
     requestsDeep,
     requestsDeepPinned,
-    intersectConcurrency: src.intersectConcurrency,
+    intersectConcurrency: window.limit,
     projected: { ...run.projected },
+    // `store.load()` when the loads were priced from their own recorded requests; null when they were the write and
+    // publish, priced from the run's totals.
+    loadVia: storeLoadRun ? via : null,
+    // Each stage's own requests, setup included, beside what the engine is expected to make and the stage's bound:
+    // the figures a report on the stages states. `put` and `get` are what the stage billed; `keptGet` is what its kept
+    // samples made, which its expected count is held to, and `discarded` how many samples it discarded.
+    stageLedger: storeLoadRun
+      ? Object.fromEntries(
+          STAGES.map((name) => {
+            const r = run.phases[name].requests;
+            const setup = run.phases[name].setup?.requests ?? { put: 0, get: 0 };
+            return [
+              name,
+              {
+                put: r.put,
+                get: r.get,
+                keptGet: keptRequests(run.phases[name]).get,
+                discarded: discardedIn(name).length,
+                setupPut: setup.put,
+                setupGet: setup.get,
+                expectedGets: run.phases[name].expectedGets ?? null,
+                boundPut: run.projectedStages?.[name]?.put ?? null,
+                boundGet: run.projectedStages?.[name]?.get ?? null,
+              },
+            ];
+          }),
+        )
+      : null,
+    // The samples the run discarded after a transient fault and ran again, stated beside the figures: how many, in
+    // which stages, and what they requested. Its latency and its counts are the kept samples'.
+    discards: discardsOf(run, storeLoadRun ? STAGES.map((name) => [name, discardedIn(name)]) : []),
     getsPerLoad,
+    getsPerMultipart,
     putsPerSingle,
     putsPerMultipart,
     partsPerMultipart,
@@ -477,6 +784,7 @@ function derive(run, src) {
       sequentialFloorMs: (putsPerSingle + getsPerLoad) * run.network.rttFloorMs,
     },
     elapsedMs: run.elapsedMs,
+    stages: stageFiguresOf(run, src.pricing),
     price: { getUSD, putUSD, ...src.pricing },
     genTtlMs: src.genTtlMs,
     secondsPerMonth: src.secondsPerMonth,
@@ -517,6 +825,21 @@ function derive(run, src) {
   return f;
 }
 
+/** What a run's discarded samples come to, stage by stage: see {@link derive}. */
+function discardsOf(run, byStage) {
+  const samples = byStage.flatMap(([stage, list]) => list.map((d) => ({ stage, ...d })));
+  const requests = discardedRequests(samples);
+  return {
+    count: samples.length,
+    perRun: run.discards?.perRun ?? null,
+    perStage: run.discards?.perStage ?? null,
+    byStage: Object.fromEntries(byStage.map(([stage, list]) => [stage, list.length])),
+    put: requests.put,
+    get: requests.get,
+    samples,
+  };
+}
+
 /** The figures a run report must state, in the form a reader sees. Each is matched as a whole figure. */
 function anchorsOf(f) {
   return [
@@ -538,10 +861,18 @@ function anchorsOf(f) {
       'per million cold intersects with each pointer read once',
       usd(1e6 * f.usd.expectedIntersect, 2),
     ],
-    ['a single-part write and publish', `${f.putsPerSingle} PUT + ${f.getsPerLoad} GET`],
-    ['per million single-part write-and-publishes', usd(1e6 * f.usd.singleLoad, 2)],
-    ['per million multipart write-and-publishes', usd(1e6 * f.usd.multipartLoad, 2)],
-    ["per million of a segment's first store.load()", usd(1e6 * f.usd.storeLoad.first, 2)],
+    ...(f.loadVia === null
+      ? [
+          ['a single-part write and publish', `${f.putsPerSingle} PUT + ${f.getsPerLoad} GET`],
+          ['per million single-part write-and-publishes', usd(1e6 * f.usd.singleLoad, 2)],
+          ['per million multipart write-and-publishes', usd(1e6 * f.usd.multipartLoad, 2)],
+          ["per million of a segment's first store.load()", usd(1e6 * f.usd.storeLoad.first, 2)],
+        ]
+      : [
+          ['a single-part store.load()', `${f.putsPerSingle} PUT-class + ${f.getsPerLoad} GET`],
+          ['per million single-part store.load() calls', usd(1e6 * f.usd.singleLoad, 2)],
+          ['per million multipart store.load() calls', usd(1e6 * f.usd.multipartLoad, 2)],
+        ]),
     ['the run', usd(f.usd.run, 7)],
     ['round-trip floor', `${int(f.network.rttFloorMs)} ms`],
     ['tail read', `${f.bytes.tailBytesPerRead / 1024} KiB`],
@@ -550,6 +881,15 @@ function anchorsOf(f) {
       `${fixed(f.parity.intersectsPerMonth / 1e6, 1)} million`,
     ],
     ['loads the Redis line buys a month', `${fixed(f.parity.loadsPerMonth / 1e6, 1)} million`],
+    // A run that discarded a sample says so beside its figures; one that discarded none has nothing to state.
+    ...(f.discards.count === 0
+      ? []
+      : [
+          [
+            'samples discarded after a transient fault',
+            `${f.discards.count} discarded sample${f.discards.count === 1 ? '' : 's'}`,
+          ],
+        ]),
   ];
 }
 
@@ -575,27 +915,47 @@ function rowsOf(f) {
       label: 'expected',
       says: /\bonce\b|\bexpected\b|\binside the region\b/i,
     },
-    {
-      requests: `${put(f.putsPerSingle)} + ${f.getsPerLoad} GET`,
-      one: usd(f.usd.singleLoad, 7),
-      perMillion: usd(1e6 * f.usd.singleLoad, 2),
-      label: 'derived',
-      says: /\bpublish/i,
-    },
-    {
-      requests: `${put(f.putsPerMultipart)} + ${f.getsPerLoad} GET`,
-      one: usd(f.usd.multipartLoad, 7),
-      perMillion: usd(1e6 * f.usd.multipartLoad, 2),
-      label: 'derived',
-      says: /\bmultipart\b/i,
-    },
-    {
-      requests: `${put(f.storeLoad.first.put)} + ${f.storeLoad.first.get} GET`,
-      one: usd(f.usd.storeLoad.first, 7),
-      perMillion: usd(1e6 * f.usd.storeLoad.first, 2),
-      label: 'expected',
-      says: /store\.load\(\)/,
-    },
+    ...(f.loadVia === null
+      ? [
+          {
+            requests: `${put(f.putsPerSingle)} + ${f.getsPerLoad} GET`,
+            one: usd(f.usd.singleLoad, 7),
+            perMillion: usd(1e6 * f.usd.singleLoad, 2),
+            label: 'derived',
+            says: /\bpublish/i,
+          },
+          {
+            requests: `${put(f.putsPerMultipart)} + ${f.getsPerMultipart} GET`,
+            one: usd(f.usd.multipartLoad, 7),
+            perMillion: usd(1e6 * f.usd.multipartLoad, 2),
+            label: 'derived',
+            says: /\bmultipart\b/i,
+          },
+          {
+            requests: `${put(f.storeLoad.first.put)} + ${f.storeLoad.first.get} GET`,
+            one: usd(f.usd.storeLoad.first, 7),
+            perMillion: usd(1e6 * f.usd.storeLoad.first, 2),
+            label: 'expected',
+            says: /store\.load\(\)/,
+          },
+        ]
+      : [
+          // Each load priced from its own recorded requests, so the label is the same as the intersect's: derived.
+          {
+            requests: `${put(f.putsPerSingle)} + ${f.getsPerLoad} GET`,
+            one: usd(f.usd.singleLoad, 7),
+            perMillion: usd(1e6 * f.usd.singleLoad, 2),
+            label: 'derived',
+            says: /single-part/i,
+          },
+          {
+            requests: `${put(f.putsPerMultipart)} + ${f.getsPerMultipart} GET`,
+            one: usd(f.usd.multipartLoad, 7),
+            perMillion: usd(1e6 * f.usd.multipartLoad, 2),
+            label: 'derived',
+            says: /\bmultipart\b/i,
+          },
+        ]),
   ];
 }
 
@@ -603,7 +963,7 @@ function rowsOf(f) {
 function shapesOf(f) {
   return [
     [f.putsPerSingle, f.getsPerLoad],
-    [f.putsPerMultipart, f.getsPerLoad],
+    [f.putsPerMultipart, f.getsPerMultipart],
     ...Object.values(f.storeLoad).map((r) => [r.put, r.get]),
   ];
 }
@@ -634,6 +994,7 @@ const WORDS = {
   object: /\bobjects?'?/gi,
   storeLoad: /store\.load\(\)|\bloadSegment\b/g,
   median: /\bmedian\b/gi,
+  discard: /\bdiscard\w*|\b(?:ran|run|runs) again\b/gi,
 };
 /**
  * A bound value: the claim it makes is the nearest word of `group`'s families, which must be one `allow` names.
@@ -646,6 +1007,77 @@ const MEASURED = ['measured', 'expected'];
 const SHARES = ['chunkShare', 'byteShare', 'getShare'];
 const measuredValue = (v) => bind(v, MEASURED, ['measured'], false);
 const expectedValue = (v) => bind(v, MEASURED, ['expected']);
+const discardValue = (v) => bind(v, ['discard'], ['discard']);
+
+/**
+ * What a run's stages measured beyond the packed cold intersect, read out of `run.phases`: every stage's percentiles
+ * and request counts, the load rates, the sweep's overlaps, and the figures that follow from them: a GET round (a
+ * stage's median over the rounds it measured), the sweep's scaling, and the projected allowance at list price. A
+ * report may state each one and no other; nothing here is a literal.
+ */
+function stageFiguresOf(run, pricing) {
+  const out = {
+    ms: [],
+    millions: [],
+    gets: [],
+    puts: [],
+    chunkReads: [],
+    tailReads: [],
+    pointerReads: [],
+    bytes: [],
+    chunks: [],
+    segments: [],
+    ids: [],
+    intersects: [],
+    ratios: [],
+    usd: [],
+  };
+  const walk = (o) => {
+    if (o === null || typeof o !== 'object') return;
+    if (Array.isArray(o)) {
+      for (const e of o) walk(e);
+      return;
+    }
+    for (const [k, v] of Object.entries(o)) {
+      // A discarded sample's requests are the report's to state beside the words for a discard, not a stage's.
+      if (k === 'discarded') continue;
+      if (typeof v !== 'number') {
+        walk(v);
+        continue;
+      }
+      if (/^p(50|95|99)ms$/.test(k)) out.ms.push(v);
+      else if (k === 'get' || k === 'gets' || k === 'expectedGets' || k === 'medianGets')
+        out.gets.push(v);
+      else if (k === 'put') out.puts.push(v);
+      else if (k === 'chunkReadsPerCall') out.chunkReads.push(v);
+      else if (k === 'tailReadsPerCall') out.tailReads.push(v);
+      else if (k === 'pointerReadsPerCall') out.pointerReads.push(v);
+      else if (k === 'medianPeakInFlight') out.gets.push(v);
+      else if (k === 'medianIdsPerSec') {
+        out.millions.push(v / 1e6);
+        out.ids.push(Math.round(v));
+      } else if (k === 'medianBytesPerSec') out.bytes.push(Math.round(v));
+      else if (k === 'segments' || k === 'segmentsEach') out.segments.push(v);
+      else if (k === 'k') out.chunks.push(v);
+      else if (k === 'intersects') out.intersects.push(v);
+    }
+    if (typeof o.p50ms === 'number' && typeof o.medianRounds === 'number') {
+      out.ms.push(o.p50ms / o.medianRounds);
+    }
+    if (typeof o.medianUploadBytes === 'number' && typeof o.medianObjectBytes === 'number') {
+      out.bytes.push(o.medianUploadBytes - o.medianObjectBytes);
+    }
+  };
+  walk(run.phases);
+  const sweep = run.phases?.sweep?.entries ?? [];
+  if (sweep.length === 2) out.ratios.push(sweep[1].p50ms / sweep[0].p50ms);
+  if (run.projected) {
+    out.usd.push(
+      (run.projected.put * pricing.putPerMillion + run.projected.get * pricing.getPerMillion) / 1e6,
+    );
+  }
+  return out;
+}
 
 /** Every value a page may state for this run, by unit and by counted noun — what the reverse check accepts. */
 function valuesOf(f, { withLatency }) {
@@ -654,6 +1086,7 @@ function valuesOf(f, { withLatency }) {
   const u = f.upload;
   if (withLatency) {
     ms.push(f.latency.p50, f.latency.p95, f.latency.p99, f.elapsedMs, f.latency.perRequestOnPath);
+    ms.push(...f.stages.ms);
     ms.push(u.singleSeconds * 1000, u.multipartSeconds * 1000, u.sequentialFloorMs);
   }
   const sl = f.storeLoad;
@@ -663,6 +1096,7 @@ function valuesOf(f, { withLatency }) {
     1,
     f.chunksPerOperand,
     2 * f.chunksPerOperand,
+    ...(withLatency ? f.stages.gets : []),
     f.fixedGets,
     f.fixedGets + 1,
     f.fixedGets + 2,
@@ -671,14 +1105,28 @@ function valuesOf(f, { withLatency }) {
     ...f.kRows.map((r) => expectedValue(r.gets)),
     // Per load, as measured; per store.load(), as counted; the run's totals, and what it projected.
     f.getsPerLoad,
+    f.getsPerMultipart,
     sl.first.get,
     sl.reload.get,
     sl.collecting.get,
     f.ledger.get,
     f.byCommand.GetObjectCommand,
     f.projected.get,
+    // What the discarded samples requested, each and together: beside the words for a discard only, since a small
+    // count would otherwise pass for any other GET figure it happens to equal.
+    ...(f.discards.count === 0
+      ? []
+      : [f.discards.get, ...f.discards.samples.map((d) => d.requests.get)].map(discardValue)),
   ];
-  const put = [1, f.putsPerSingle, f.putsPerMultipart, sl.first.put, f.ledger.put, f.projected.put];
+  const put = [
+    ...(withLatency ? f.stages.puts : []),
+    1,
+    f.putsPerSingle,
+    f.putsPerMultipart,
+    sl.first.put,
+    f.ledger.put,
+    f.projected.put,
+  ];
   return {
     usd: [
       f.price.getUSD,
@@ -693,21 +1141,29 @@ function valuesOf(f, { withLatency }) {
       f.usd.segmentMonth,
       f.usd.multipartMonth,
       f.usd.pointerRefreshMonth,
+      ...(withLatency ? f.stages.usd : []),
       bind(1e6 * f.usd.singleLoadPuts, ['puts', 'gets'], ['puts']),
       bind(1e6 * f.usd.loadGets, ['puts', 'gets'], ['gets']),
       bind(1e6 * f.usd.loadRereads, ['rereads'], ['rereads']),
       ...[f.usd.measuredIntersect, 1e6 * f.usd.measuredIntersect].map(measuredValue),
       ...f.kRows.flatMap((r) => [r.usd, 1e6 * r.usd]).map(expectedValue),
-      // The write and the publish, which is not store.load(): the same pages price that at about twice, so a load's
-      // price stated without either word reads as store.load()'s.
+      // The write and the publish, which is not store.load(): the same pages price that at about a tenth more on average, so a load's
+      // price stated without either word reads as store.load()'s. A run whose loads were `store.load()` has no write
+      // and publish to say it of: its loads are store.load(), and the price must stand beside that name.
       ...[f.usd.singleLoad, f.usd.multipartLoad]
         .flatMap((v) => [v, 1e6 * v])
-        .map((v) => bind(v, ['write'], ['write'])),
-      // store.load() is counted by a test, not measured: stated near "measured", it is wrong.
-      ...Object.values(f.usd.storeLoad)
-        .flatMap((v) => [v, 1e6 * v])
         .map((v) =>
-          // Nor is it the write and the publish, which the same pages price at about half.
+          f.loadVia === null
+            ? bind(v, ['write'], ['write'])
+            : bind(v, ['storeLoad'], ['storeLoad']),
+        ),
+      // store.load() is counted by a test, not measured: stated near "measured", it is wrong. For a run that timed it,
+      // the first load is what the run measured, so only a reload and a collecting load are the test's.
+      ...Object.entries(f.usd.storeLoad)
+        .filter(([kind]) => f.loadVia === null || kind !== 'first')
+        .flatMap(([, v]) => [v, 1e6 * v])
+        .map((v) =>
+          // Nor is it the write and the publish, which the same pages price at about a tenth less on average.
           bind(v, MEASURED, ['expected'], false, [
             { group: ['write', 'storeLoad'], allow: ['storeLoad'], require: false },
           ]),
@@ -755,6 +1211,7 @@ function valuesOf(f, { withLatency }) {
       b.up,
       b.perIdSingle,
       b.perIdMultipart,
+      ...(withLatency ? f.stages.bytes : []),
       b.chunkBytesPerOperand,
       BITMAP_CONTAINER_BYTES,
       ...(withLatency ? [f.upload.singleBytesPerSec, f.upload.multipartBytesPerSec] : []),
@@ -765,9 +1222,10 @@ function valuesOf(f, { withLatency }) {
     bits: withLatency ? [8 * f.upload.singleBytesPerSec, 8 * f.upload.multipartBytesPerSec] : [],
     ratio: [
       2, // two operands
+      ...(withLatency ? f.stages.ratios : []),
       f.price.putPerMillion / f.price.getPerMillion,
       b.multipartObject / b.object,
-      f.usd.storeLoad.first / f.usd.singleLoad,
+      ...(f.loadVia === null ? [f.usd.storeLoad.first / f.usd.singleLoad] : []),
       ...(withLatency
         ? [f.latency.overFloor, f.latency.perRequestOnPath / f.network.rttFloorMs]
         : []),
@@ -781,7 +1239,7 @@ function valuesOf(f, { withLatency }) {
         f.ledger.put + f.ledger.get,
         f.ledger.put + f.ledger.get + f.ledger.free,
         f.putsPerSingle + f.getsPerLoad,
-        f.putsPerMultipart + f.getsPerLoad,
+        f.putsPerMultipart + f.getsPerMultipart,
         ...Object.values(sl).map((r) => r.put + r.get),
         // The median's depth, with its pointer re-read, is not the depth with each pointer read once.
         bind(f.requestsDeep, ['once'], [], false),
@@ -794,6 +1252,7 @@ function valuesOf(f, { withLatency }) {
         f.chunksPerSegment,
         f.workload.largeChunks,
         f.intersectConcurrency,
+        ...(withLatency ? f.stages.chunks.map((k) => bind(k, ['overlap'], ['overlap'])) : []),
         // The table's overlaps: a count of chunks the two segments SHARE, and nothing else.
         ...f.kRows.map((r) => bind(r.k, ['overlap'], ['overlap'])),
         Math.round(f.chunksPerSegment / 100), // the chunk-skipping diagram's scale: a hundred squares
@@ -805,6 +1264,7 @@ function valuesOf(f, { withLatency }) {
         f.workload.sharedIds,
         f.multipartIds,
         f.largeIdsPerChunk,
+        ...(withLatency ? f.stages.ids : []),
         ARRAY_CONTAINER_MAX,
         CHUNK_SPAN,
       ],
@@ -813,6 +1273,7 @@ function valuesOf(f, { withLatency }) {
       // at each overlap in the table as a rate.
       intersects: [
         f.intersects,
+        ...(withLatency ? f.stages.intersects : []),
         f.parity.intersectsPerMonth,
         // At ten shared chunks the table is expected throughout, so none of it is "as measured".
         bind(f.parity.kTen.perMonth, MEASURED, ['expected'], false),
@@ -823,8 +1284,16 @@ function valuesOf(f, { withLatency }) {
         // …and at each overlap in the table, expected, and whole ones: a dollar does not buy a fraction.
         ...f.kRows.map((r) => bind(Math.floor(1 / r.usd), MEASURED, ['expected'], false)),
       ],
-      segments: [f.workload.segments, f.workload.largeSegments, 1],
+      segments: [
+        f.workload.segments,
+        f.workload.largeSegments,
+        1,
+        ...(withLatency ? f.stages.segments : []),
+      ],
+      // How many samples the run discarded, and in each stage.
+      discards: [f.discards.count, ...Object.values(f.discards.byStage)],
       pointerReads: [
+        ...(withLatency ? f.stages.pointerReads : []),
         f.ledger.pointerReads,
         f.ledger.loadPointerReads,
         f.pointerReadsMeasured,
@@ -834,8 +1303,13 @@ function valuesOf(f, { withLatency }) {
         2,
         1,
       ],
-      tailReads: [f.ledger.tailReads, 2, 1],
-      chunkReads: [f.ledger.chunkReads, 2 * f.chunksPerOperand, f.chunksPerOperand],
+      tailReads: [f.ledger.tailReads, 2, 1, ...(withLatency ? f.stages.tailReads : [])],
+      chunkReads: [
+        f.ledger.chunkReads,
+        2 * f.chunksPerOperand,
+        f.chunksPerOperand,
+        ...(withLatency ? f.stages.chunkReads : []),
+      ],
       getObjects: [
         f.byCommand.GetObjectCommand,
         f.ledger.loadPointerReads,
@@ -853,6 +1327,7 @@ function valuesOf(f, { withLatency }) {
     // The parity at ten shared chunks is from the table of cost by overlap, expected throughout, so it is never "as
     // measured", in millions or a second.
     million: [
+      ...(withLatency ? f.stages.millions : []),
       f.parity.intersectsPerMonth / 1e6,
       f.parity.loadsPerMonth / 1e6,
       bind(f.parity.kTen.perMonth / 1e6, MEASURED, ['expected'], false),
@@ -1000,6 +1475,7 @@ const BYTE_UNIT = Object.keys(BYTE_UNITS)
   .join('|');
 // Longest first, so "chunk reads" is read as chunk reads and not as chunks.
 const COUNTED = [
+  ['discarded samples?', 'discards'],
   ['pointer reads?|pointer GETs?', 'pointerReads'],
   ['tail reads?|tail GETs?', 'tailReads'],
   ['chunk reads?|chunk GETs?', 'chunkReads'],
@@ -1267,7 +1743,7 @@ function unaccounted(text, values) {
         const at = m.index + m[0].indexOf(token);
         if (claimed.has(at)) continue;
         claimed.add(at);
-        // "1M loads" is the unit a price is quoted per — "$11.20 / 1M loads" — not a count of a million loads.
+        // "1M loads" is the unit a price is quoted per — "$N / 1M loads" — not a count of a million loads.
         if (key === 'counts' && m[3] === 'M' && token === '1') continue;
         let candidates;
         if (key === 'counts') {
@@ -1362,7 +1838,7 @@ function paragraphsNaming(doc, runId, aliases = []) {
 
 /**
  * What a markdown page says about a run: its section, and every other paragraph that names it, other runs'
- * sections aside — a paragraph about the July run that mentions the September one is still about July.
+ * sections aside — a paragraph about one run that mentions another is still about the first.
  */
 function claimsAbout(doc, runId, aliases = []) {
   const section = runSection(doc, runId);
@@ -1398,5 +1874,6 @@ module.exports = {
   mergeValues,
   unbound,
   STORE_LOAD_REQUESTS,
+  windowOfRun,
   format: { int, fixed, usd, pct },
 };

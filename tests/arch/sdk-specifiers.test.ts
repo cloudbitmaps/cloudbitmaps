@@ -5,14 +5,14 @@ import { createRequire } from 'node:module';
  *
  * This repo's rule, from `import-boundaries.test.ts`: a rule that never matched would be a silent gap, and
  * `pnpm lint` passing proves nothing about it. The detector behind the SDK-free gate earns the same
- * treatment — an adversarial review of its first draft found one false positive and three false negatives,
- * and no suite would have noticed any of them, because the gate was green either way.
+ * treatment: a green gate does not show whether it misses a specifier or would match a comment, so each form it
+ * must and must not match is planted here.
  *
  * The false positive is the one worth naming: esbuild preserves JSDoc on class members, and this repo
- * documents invariant 7 *in prose, in the files it governs* — so a comment reading `takes its client from
- * "@aws-sdk/client-s3"` shipped in `dist/` and failed CI with a message asserting something false. The
- * remedy a contributor reaches for is to water the comment down, which is the erosion the gate exists to
- * prevent.
+ * documents invariant 7 *in prose, in the files it governs* — so a detector that reads comments fails the
+ * gate on a comment in `dist/` reading `takes its client from "@aws-sdk/client-s3"`, with a message
+ * asserting something false. The remedy a contributor reaches for is to water the comment down, which is
+ * the erosion the gate exists to prevent.
  */
 const { findSdkSpecifiers } = createRequire(import.meta.url)(
   '../../scripts/sdk-specifiers.cjs',
@@ -45,7 +45,7 @@ describe('the SDK-free gate detects a specifier', () => {
       'type C = import("@aws-sdk/client-s3").S3Client;',
     ],
     [
-      'OUR OWN driver subpath — stays external so no SDK string appears, but a bundler follows it',
+      'a driver name as a subpath of our own package — stays external, but a bundler follows it',
       'await import("@cloudbitmaps/core/s3")',
     ],
     // The live package names. Naming a driver package IS reaching its SDK — a consumer's bundler follows
@@ -53,8 +53,9 @@ describe('the SDK-free gate detects a specifier', () => {
     ['a driver package', 'require("@cloudbitmaps/s3")'],
     ['a driver package, dynamic', 'import("@cloudbitmaps/azure-blob")'],
     ['a driver package deep path', 'require("@cloudbitmaps/gcs/whatever")'],
-    // The retired subpath spelling stays matched: a stale import of it should be caught, not silently pass.
-    ['a retired driver subpath', 'require("@cloudbitmaps/roaring/azure")'],
+    // A driver name as a subpath of the flavor is matched too: it would reach an SDK the same way.
+    ['a driver name as a subpath of the flavor', 'require("@cloudbitmaps/roaring/azure")'],
+    ['a driver package name as a subpath of core', 'require("@cloudbitmaps/core/azure-blob")'],
   ])('%s', (_label, source) => {
     expect(findSdkSpecifiers(source).length).toBeGreaterThan(0);
   });
@@ -62,10 +63,7 @@ describe('the SDK-free gate detects a specifier', () => {
 
 describe('the SDK-free gate does NOT fire on', () => {
   it.each([
-    [
-      'JSDoc prose — the false positive that redded CI',
-      '/** takes its client from "@aws-sdk/client-s3" */',
-    ],
+    ['JSDoc prose naming the SDK', '/** takes its client from "@aws-sdk/client-s3" */'],
     ['a URL in a comment', '// see https://npmjs.com/package/@aws-sdk/client-s3'],
     ['backticked prose', '/** the `@aws-sdk/client-s3` optional peer */'],
     ['a line comment naming the peer', '// requires @aws-sdk/client-s3 to be installed'],
@@ -76,6 +74,8 @@ describe('the SDK-free gate does NOT fire on', () => {
     ['a package we do not guard', 'require("@smithy/node-http-handler")'],
     ['an unrelated scoped package', 'require("@cloudbitmaps/core")'],
     ['the flavor main entry, which is not a driver', 'require("@cloudbitmaps/roaring")'],
+    ['the driver contract, which carries no SDK', 'import("@cloudbitmaps/core/driver-kit")'],
+    ['a subpath that only starts with a driver name', 'require("@cloudbitmaps/core/azure-blobs")'],
   ])('%s', (_label, source) => {
     expect(findSdkSpecifiers(source)).toEqual([]);
   });

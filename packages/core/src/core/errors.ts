@@ -1,7 +1,7 @@
 /**
- * Typed errors — callers learn *why* something failed, never by parsing strings. Retry is the driver
- * decorators' job, not the engine's: a driver classifies its backend's failures into this vocabulary, and
- * `withRetry` decides what is transient.
+ * Typed errors — callers learn *why* something failed, never by parsing strings. Retry is not the engine's job: a
+ * driver classifies its backend's failures into this vocabulary, and the store's read wrapper retries the
+ * transient ones through `withRetry`.
  */
 
 /**
@@ -19,8 +19,8 @@
  * `Symbol.for` is identity-stable across copies, bundles and realms, so classify errors with the exported
  * predicates below (never `instanceof`) anywhere an error may cross that boundary.
  */
-const ERROR_BRAND: unique symbol = Symbol.for('cloud-roaring.error');
-const TRANSIENT_BRAND: unique symbol = Symbol.for('cloud-roaring.error.transient');
+const ERROR_BRAND: unique symbol = Symbol.for('cloudbitmaps.error');
+const TRANSIENT_BRAND: unique symbol = Symbol.for('cloudbitmaps.error.transient');
 
 /** Base class for every error CloudRoaring throws. */
 export class CloudRoaringError extends Error {
@@ -44,16 +44,16 @@ export class WriteConflictError extends CloudRoaringError {}
 export class IntegrityError extends CloudRoaringError {}
 
 /**
- * A requested object/row does not exist. Part of the driver error vocabulary; thrown by
- * the persistent drivers (S3, GCS, Azure Blob, local filesystem) — the in-memory drivers return
- * `null` instead.
+ * A requested object/row does not exist. Part of the driver error vocabulary: every storage driver this
+ * library ships, the in-memory one included, throws it for a read of a generation object that is not there.
+ * A registry `get` of a row that is not there returns `null` instead.
  */
 export class NotFoundError extends CloudRoaringError {}
 
 /**
  * This build/configuration cannot perform the requested operation, though nothing is malformed. Two uses:
- * (1) **format** — the bytes are well-formed but unreadable here (an unknown `.crbm` major version, an
- * encrypted file before the crypto path exists) — distinct from `IntegrityError` (corruption); and (2)
+ * (1) **format** — the bytes are well-formed but unreadable here (an unknown `.crbm` major version) —
+ * distinct from `IntegrityError` (corruption); and (2)
  * **store configuration** — an operation this store's wiring doesn't support (e.g. a lifecycle helper like
  * `eraseSubject`/`retireExpired` called on a store built without a storage backend). Raised at
  * operation time, before any mutation.
@@ -87,8 +87,9 @@ export class BudgetExceededError extends CloudRoaringError {}
 export class KeyUnavailableError extends CloudRoaringError {}
 
 /**
- * A **transient** infrastructure fault that is safe to retry — throttling, a 5xx, a dropped connection,
- * a client-side request timeout. Drivers classify their backend's retryable faults and raise this (the
+ * A **transient** infrastructure fault — throttling, a 5xx, a dropped connection, a client-side request
+ * timeout. Retrying a read that failed this way is safe; a write that failed this way may still have landed, so
+ * its caller re-runs the call rather than replaying the request. Drivers classify their backend's retryable faults and raise this (the
  * SDK-specific knowledge stays in the SDK-specific driver); the retry layer (`core/retry`) retries **only**
  * this class, never a deterministic error like {@link ValidationError}, {@link IntegrityError},
  * {@link NotFoundError}, or {@link WriteConflictError} (retrying those is pointless or wrong). The original
@@ -99,7 +100,7 @@ export class KeyUnavailableError extends CloudRoaringError {}
  * to log; if you serialize the whole error *chain*, be aware you're including that metadata.
  */
 export class TransientError extends CloudRoaringError {
-  /** A second brand so the whole transient subtree (incl. {@link TimeoutError}) is classifiable cross-bundle. */
+  /** A second brand so a transient fault is classifiable cross-bundle. */
   readonly [TRANSIENT_BRAND] = true as const;
   constructor(message: string, options?: { cause?: unknown }) {
     super(message);
@@ -108,16 +109,8 @@ export class TransientError extends CloudRoaringError {
 }
 
 /**
- * A single attempt exceeded its time budget. Subclass of {@link TransientError} so the retry layer treats a
- * timeout as retryable by default — a stalled request often succeeds on a fresh connection. Raised by a
- * driver whose injected client reports a request timeout — setting one on your injected client is the
- * recommended way to bound a hang.
- */
-export class TimeoutError extends TransientError {}
-
-/**
  * Bundle-safe error predicates — use these, not `instanceof`, wherever an error may cross the core↔driver
- * (`./s3` / `./gcs` / `./azure`) boundary (and prefer them in consumer `catch` blocks too, for the same reason). They
+ * package boundary (and prefer them in consumer `catch` blocks too, for the same reason). They
  * match the {@link ERROR_BRAND} registry brand + the runtime `name`, both of which survive separate bundling.
  */
 function hasBrand(err: unknown, brand: symbol): boolean {
@@ -136,7 +129,7 @@ export function isWriteConflictError(err: unknown): err is WriteConflictError {
   return isCloudRoaringError(err) && err.name === 'WriteConflictError';
 }
 
-/** A retryable transient infrastructure fault (incl. {@link TimeoutError}). The retry layer keys on this. */
+/** A retryable transient infrastructure fault. The retry layer keys on this. */
 export function isTransientError(err: unknown): err is TransientError {
   return hasBrand(err, TRANSIENT_BRAND);
 }

@@ -21,7 +21,13 @@
  * on some other handle. That is why the routing is by segment identity here rather than by which object the
  * caller happened to start from.
  */
-import type { ChunkRef, StorageChunkSource, SegmentRef, SegmentSize } from './ports';
+import type {
+  ChunkRef,
+  GenerationSummary,
+  StorageChunkSource,
+  SegmentRef,
+  SegmentSize,
+} from './ports';
 import type { CrbmStorageChunkSource, PinnedObject } from './crbm-storage-source';
 import { segmentKey } from './keys';
 
@@ -105,6 +111,14 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
     return pin.generation === null
       ? Promise.resolve(null)
       : this.inner.cardinalitiesAt(ref, pin.generation, heldBy(pin));
+  }
+
+  summary(ref: SegmentRef): Promise<GenerationSummary | null> {
+    const pin = this.pinFor(ref);
+    if (pin === undefined) return this.inner.summary(ref);
+    return pin.generation === null
+      ? Promise.resolve(null)
+      : this.inner.summaryAt(ref, pin.generation, heldBy(pin));
   }
 
   currentGeneration(ref: SegmentRef): Promise<number | null> {

@@ -7,23 +7,22 @@ import { fileURLToPath } from 'node:url';
  * Every name our own `scripts/`, `bench/` and `fuzz/` code imports from a workspace package must actually be
  * exported by it.
  *
- * WHY THIS FILE EXISTS. Curating core's public surface removed `drainRegistry`, `DEFAULT_MAX_SCAN_SEGMENTS`,
- * `CrbmWriter` and `BufferSink`. `packages/roaring` re-exports core with `export *`, so they vanished from the
- * flavor too — and two committed scripts destructure them from exactly there:
+ * WHY THIS FILE EXISTS. `packages/roaring` re-exports from core by name, so a name core keeps internal —
+ * `drainRegistry`, `DEFAULT_MAX_SCAN_SEGMENTS`, `CrbmWriter`, `BufferSink` — and a name core exports but the
+ * flavor leaves on core — `collectWithinBudget`, `estimateCost` — are absent from the flavor. A script that
+ * destructures one from there gets `undefined`, which throws only when the script uses it:
  *
- *   bench/scale.cjs   → TypeError: drainRegistry is not a function
- *   fuzz/seed-corpus.cjs → TypeError: BufferSink is not a constructor
+ *   const { drainRegistry } = require('@cloudbitmaps/roaring') → TypeError: drainRegistry is not a function
+ *   const { BufferSink } = require('@cloudbitmaps/roaring')    → TypeError: BufferSink is not a constructor
  *
- * Both shipped on `main` through a full green gate and fourteen CI checks, because nothing in this repo
- * compares these three directories against the published surface. They are plain `.cjs`/`.mjs`, so
- * `tsc` never sees them; they are not imported by any test, so `vitest` never loads them; and the workflows
- * that run them are nightly or manual, so no PR check executes them. The failure is a *runtime* one in files
- * the type system has no opinion about.
+ * Nothing else in this repo compares these three directories against the published surface. They are plain
+ * `.cjs`/`.mjs`, so `tsc` never sees them; a check that loads one without running the path that uses the name
+ * sees nothing wrong, since destructuring a missing name does not throw; and much of what they run runs
+ * nightly, by hand or on a tag, so no PR check executes it. The failure is a *runtime* one in files the type
+ * system has no opinion about.
  *
- * What made it worth a gate rather than more care is that this is the THIRD time. `harness-options.test.ts`
- * exists because `bench/scale.cjs` shipped broken once before — but it compares *store-option keys*, has no
- * notion of imported symbol names, and does not glob `fuzz/` at all. So the sibling gate was in place and
- * still could not see this.
+ * `harness-options.test.ts` reads the same `scripts/` and `bench/` files, but for *store-option keys*: it has
+ * no notion of imported symbol names, and does not glob `fuzz/` at all, so it cannot see this.
  *
  * Resolution is against the SOURCE barrels, not `dist/`, so this runs in a clean checkout without a build.
  *
@@ -34,11 +33,11 @@ import { fileURLToPath } from 'node:url';
  * rather than the package's `exports` map, so it would green-light a deep path Node refuses with
  * `ERR_PACKAGE_PATH_NOT_EXPORTED`. It cannot tell a type-only export destructured as a value from a real
  * one, because the barrel parser folds `export type {…}` in with values. And `fuzz/targets/*.mjs` import
- * from `fuzz/build/fuzz-core.js`, a bundled artifact rather than a workspace specifier, so those three files
- * are scanned and matched by nothing.
+ * from `fuzz/build/fuzz-core.js`, a bundled artifact rather than a workspace specifier, so those files are scanned
+ * and matched by nothing here; `fuzz-wiring.test.ts` checks what they import against the fuzz build's sources.
  *
- * That is a deliberate floor, not an aspiration: it catches the destructured form, which is the one that has
- * broken three times, and under-coverage is the safe direction for a guard whose false positives would teach
+ * That is a deliberate floor, not an aspiration: it catches the destructured form, which is the form most of
+ * these files use, and under-coverage is the safe direction for a guard whose false positives would teach
  * people to route around it.
  */
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -55,10 +54,8 @@ function barrelFor(spec: string): string | null {
   return existsSync(abs) ? abs : null;
 }
 
-/** Names a barrel exports, following the one `export *` form the repo permits (the flavor re-exporting core). */
-function exportedNames(barrel: string, seen = new Set<string>()): Set<string> {
-  if (seen.has(barrel)) return new Set();
-  seen.add(barrel);
+/** Names a barrel exports. No barrel uses `export *`, so its own text names every one. */
+function exportedNames(barrel: string): Set<string> {
   const code = readFileSync(barrel, 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/\/\/.*$/gm, '');
@@ -76,12 +73,6 @@ function exportedNames(barrel: string, seen = new Set<string>()): Set<string> {
     /export\s+(?:abstract\s+)?(?:interface|class|type|function|const)\s+([A-Za-z0-9_$]+)/g,
   ))
     if (decl[1]) names.add(decl[1]);
-  // `export * from '@cloudbitmaps/core'` — the flavor's wholesale re-export. Follow it, or every name a
-  // script legitimately reaches through the flavor would look unexported.
-  for (const star of code.matchAll(/export\s+\*\s+from\s+'([^']+)'/g)) {
-    const target = barrelFor(star[1] ?? '');
-    if (target !== null) for (const n of exportedNames(target, seen)) names.add(n);
-  }
   return names;
 }
 
@@ -123,8 +114,8 @@ const files = execFileSync('git', ['ls-files', 'scripts/*', 'bench/*', 'fuzz/*']
   .filter((f) => /\.(cjs|mjs|js)$/.test(f));
 
 describe('scripts/, bench/ and fuzz/ import only names the workspace actually exports', () => {
-  it('is reaching all three directories, and the two files that broke', () => {
-    // A guard that stopped globbing one of these would pass silently, which is how this got through twice.
+  it('is reaching all three directories, and a bench and a fuzz file by name', () => {
+    // A guard that stopped globbing one of these would pass silently.
     expect(files).toContain('bench/scale.cjs');
     expect(files).toContain('fuzz/seed-corpus.cjs');
     expect(files.some((f) => f.startsWith('scripts/'))).toBe(true);

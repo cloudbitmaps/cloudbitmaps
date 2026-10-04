@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import * as core from '@cloudbitmaps/core';
 
 /**
- * `pnpm bench:sizing:check` is the gate that holds the sizing guide, the getting-started guide, the explainer, the
+ * `pnpm bench:sizing:check` is the gate that holds the sizing guide, the cost guide, the explainer, the
  * README and the two charts to the estimator, and CI only ever runs it on pages that pass. This holds it to failing: each case edits the pages the way a
  * regression would and expects the check to refuse. It runs the script itself, in-process over the real tree, with
  * the edited pages laid over it and `@cloudbitmaps/core` served from the source the rest of the suite tests, so it
@@ -16,8 +16,41 @@ const SCRIPT = join(ROOT, 'bench', 'sizing.cjs');
 // Resolves as the script would, so a module it requires beside itself is found where it lives.
 const requireFromScript = createRequire(SCRIPT);
 const SIZING = 'docs/guide/sizing.md';
-const GUIDE = 'docs/guide/getting-started.md';
+const GUIDE = 'docs/guide/cost.md';
 const page = (rel: string): string => readFileSync(join(ROOT, rel), 'utf8');
+
+function deepFreeze<T>(value: T): T {
+  if (typeof value === 'object' && value !== null && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const v of Object.values(value)) deepFreeze(v);
+  }
+  return value;
+}
+/**
+ * The script prices the same few thousand workloads on every run, and every case below runs it, so the prices are the
+ * bulk of a run. `estimateCost` is a pure function of its input, so a result is kept by the input that made it. It is
+ * kept frozen: the script is strict, so a change it tried to make to a shared result would throw rather than reach
+ * the next case. A case that serves another estimator through `mods` does not go through this, and every page and
+ * figure a case edits is still compared with the estimator's own answer.
+ */
+const priced = new Map<string, ReturnType<typeof core.estimateCost>>();
+const cachedCore: typeof core = {
+  ...core,
+  estimateCost: (input) => {
+    // A non-finite number would otherwise print as `null`, the same key as an input that has a `null` there.
+    const key = JSON.stringify(input, (_k, v: unknown) =>
+      typeof v === 'number' && !Number.isFinite(v) ? { nonFinite: String(v) } : v,
+    );
+    let report = priced.get(key);
+    if (report === undefined) {
+      report = deepFreeze(core.estimateCost(input));
+      priced.set(key, report);
+    }
+    return report;
+  },
+};
+// What git lists is the tree as committed, which the cases never change (they lay pages over it).
+const listed = new Map<string, string>();
 
 class Exit extends Error {
   constructor(readonly code: number) {
@@ -66,7 +99,10 @@ function sizingCheck(
   const childProcess = {
     ...realCp,
     execFileSync: (cmd: string, args: string[], options: object) => {
-      const out = String(realCp.execFileSync(cmd, args, options));
+      const listKey = JSON.stringify([cmd, args]);
+      if (!listed.has(listKey))
+        listed.set(listKey, String(realCp.execFileSync(cmd, args, options)));
+      const out = listed.get(listKey)!;
       const kinds = args.filter((a) => a.startsWith('*.')).map((a) => a.slice(1));
       const extra = Object.keys(pages).filter(
         (p) => !realFs.existsSync(join(ROOT, p)) && kinds.some((k) => p.endsWith(k)),
@@ -77,7 +113,7 @@ function sizingCheck(
   const modules: Record<string, unknown> = {
     'node:fs': fs,
     'node:child_process': childProcess,
-    '@cloudbitmaps/core': core,
+    '@cloudbitmaps/core': cachedCore,
     ...mods,
   };
   const lines: string[] = [];
@@ -134,15 +170,15 @@ describe('bench:sizing:check fails what it exists to catch', () => {
   });
 
   it('fails a generated figure edited by hand', () => {
-    expect(sizing).toContain('**$281**');
-    refused({ [SIZING]: sizing.replace('**$281**', '**$280**') }, /not what the shipped estimator/);
+    expect(sizing).toContain('**$280**');
+    refused({ [SIZING]: sizing.replace('**$280**', '**$281**') }, /not what the shipped estimator/);
   });
 
   it('fails a hand-edited figure in the README, and a hand-edited or missing chart', () => {
     const readme = page('README.md');
-    expect(readme).toContain('**90% less**');
+    expect(readme).toContain('**91% less**');
     refused(
-      { 'README.md': readme.replace('**90% less**', '**91% less**') },
+      { 'README.md': readme.replace('**91% less**', '**90% less**') },
       /README\.md \(WHY_SIZES\)/,
     );
     const CHART = 'bench/bill-as-data-grows.svg';
@@ -254,7 +290,6 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       for (const text of [
         ' See [what S3 sends](https://docs.aws.amazon.com/AmazonS3/latest/userguide/EventNotifications.html).',
         ' See [the storage classes](https://aws.amazon.com/s3/storage-classes/).',
-        ' [§11 of the guide](getting-started.md#11-cost-estimate-it-then-ground-it) has the model.',
       ]) {
         const r = sizingCheck({ [WHY]: intoWhy(text) });
         expect(r.code, r.out).toBe(0);
@@ -262,9 +297,9 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       for (const text of [
         ' See [AWS](https://aws.amazon.com/?off=20%).',
         ' See [the guide](getting-started.md#12-other).',
-        ' See [the guide](getting-started.md#11-cost-estimate-it-then-ground-it#2).',
-        ' It is getting-started.md#11-cost-estimate-it-then-ground-it.',
-        ' See (getting-started.md#11-cost-estimate-it-then-ground-it).',
+        ' See [the storage classes](https://aws.amazon.com/s3/storage-classes/#2).',
+        ' It is https://aws.amazon.com/s3/storage-classes/.',
+        ' See (https://aws.amazon.com/s3/storage-classes/).',
         ' See [the prices](https://aws.amazon.com/s3/pricing/).',
         ' See [the guide](https://docs.aws.amazon.com/AmazonS3/latest/userguide/optimizing-performance.html).',
       ]) {
@@ -272,8 +307,8 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       }
     });
 
-    // A link's target was once passed wherever `](` began one, and these showed their digits: a target is passed
-    // only when the list names it, whole.
+    // A reading that exempts a link's target wherever `](` begins one lets each of these through, and each shows
+    // its digits: a target is exempt only when the list names it, whole.
     it.each([
       ['a code span holding a link', ' It costs `[x](85,509)` a month.'],
       ['escaped brackets', ' It costs \\[x\\](85,509) a month.'],
@@ -400,7 +435,7 @@ describe('bench:sizing:check fails what it exists to catch', () => {
         ['&divide', ' It is the bill &divide two.'],
         ['&sup2', ' It grows as n&sup2 does.'],
         ['&COPY', ' It is &COPY the vendor.'],
-      ])('refuses the legacy name %s, capitals and all', (name, text) => {
+      ])('refuses %s, a legacy entity name, capitals and all', (name, text) => {
         refused({ [WHY]: intoWhy(text) }, new RegExp(`holds an entity, "${name}`));
       });
 
@@ -632,7 +667,7 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       ['ninety per  cent less'],
       ['ninety per\u00A0\u00A0cent less'],
       ['ninety per- cent less'],
-      // Spellings the patterns once did not know.
+      // Multiples, folds, fractions and shares, in words, compound numbers among them.
       ['a ten-fold saving'],
       ['sixty times as much'],
       ['sixty-five times as much'],
@@ -693,7 +728,7 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       ['ids are 32-bits'],
       ['a 128-bit id'],
       ['us-east-1 prices'],
-      ['[§12 of the guide](getting-started.md#what-each-term-counts)'],
+      ['[§12 of the guide](cost.md#what-each-term-counts)'],
       ['§11 a month'],
       ['3.4 billion customers'],
       ['1-2 billion customers'],
@@ -712,10 +747,6 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       ['an engine', " V8's heap holds the index."],
       ['the width of an id', ' Its ids are 32-bit; 64-bit ids need a new format.'],
       ['the ids a chunk holds', ' A chunk holds up to 65,536 ids.'],
-      [
-        'a section of the guide',
-        ' [§11 of the\nguide](getting-started.md#11-cost-estimate-it-then-ground-it) has more.',
-      ],
       ['"S3 times out"', ' If S3 times out, the reader retries.'],
       ['a service as the subject of "times"', ' S3 times each request from its first byte.'],
       ['"double as", which is a use', ' It can double as a lock.'],
@@ -735,7 +766,7 @@ describe('bench:sizing:check fails what it exists to catch', () => {
     // What it cannot read, it refuses, whether or not a reader would be shown a figure: a number, HTML, an entity, an
     // image, a fence.
     it.each([
-      ['a version', ' From 0.9.x on.', /holds a number, "0\.9\.x"/],
+      ['a version', ' From 2.3.x on.', /holds a number, "2\.3\.x"/],
       ['a year', ' Since December 2020, reads included.', /holds a number, "2020,"/],
       ['a protocol version', ' Over HTTP/2 requests.', /holds a number, "HTTP\/2"/],
       ['a bare address with a digit', ' See https://example.org/a/50 for more.', /holds a number/],
@@ -771,7 +802,7 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       refused({ [WHY]: intoWhy(text) }, message);
     });
 
-    // Each way a figure got past a reading of markdown, refused before any is read.
+    // Each way a figure can hide from a reading of markdown, refused before any is read.
     it.each([
       ['a fence in a blockquote', `\n\n> ~~~\n> <!--\n> ~~~\n\n${F}\n\n`],
       ['a fence in a list item', `\n\n- \`\`\`\n  <!--\n  \`\`\`\n\n${F}\n\n`],
@@ -856,10 +887,10 @@ describe('bench:sizing:check fails what it exists to catch', () => {
         {
           [README]: readme.replace(
             '## Your data stays yours',
-            '## Your data stays yours\n\nOn-demand Redis costs about twice the load figure.',
+            '## Your data stays yours\n\nTwo segments overlapping in 5% of chunks.',
           ),
         },
-        /"twice the load", outside its "Why CloudBitmaps" section/,
+        /"5%", outside its "Why CloudBitmaps" section/,
       );
       // Shares are read in any case, as they are written and with their tags taken out.
       for (const [line, figure] of [
@@ -903,9 +934,12 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       );
       expect(readme).toContain('?logo=npm&label=');
       // A listed phrase is read as written: with its figure in bold it is another phrase, and the listed one is gone.
-      const bolded = readme.replace('LIST bills at 12.5× a GET', 'LIST bills at **12.5×** a GET');
+      const bolded = readme.replace(
+        'overlapping in 5% of chunks',
+        'overlapping in **5%** of chunks',
+      );
       expect(bolded).not.toBe(readme);
-      refused({ [README]: bolded }, /no longer says "LIST bills at 12\.5× a GET"/);
+      refused({ [README]: bolded }, /no longer says "overlapping in 5% of chunks"/);
       // Nor is it in compatibility forms, which a reader is shown as the same phrase and this reads as another.
       refused(
         { [README]: readme.replace('overlapping in 5% of chunks', 'overlapping in 5％ of chunks') },
@@ -927,8 +961,8 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       expect(edited).not.toBe(readme);
       return edited;
     };
-    // Each was once read as it is written, and passed: emphasis, an escape, a code span, an invisible character, a
-    // comment or a tag holding a `>` split a share or a multiple that a reader is shown whole.
+    // Read as it is written, each of these passes: emphasis, an escape, a code span, an invisible character, a
+    // comment or a tag holding a `>` splits a share or a multiple that a reader is shown whole.
     it.each([
       ['Redis costs *twice* as much.', 'twice as much'],
       ['Redis costs _twice_ as much.', 'twice as much'],
@@ -1017,8 +1051,8 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       );
     });
 
-    // The Why section is read from its one `## Why CloudBitmaps` line. Each of these once let the section a reader
-    // sees start above that line, so the figure between the two was held to the rest of the README's weaker rule.
+    // The Why section is read from its one `## Why CloudBitmaps` line. Each of these starts the section a reader
+    // sees above that line, which would hold the figure between the two to the rest of the README's weaker rule.
     const FIG =
       'Kept all in memory, the large deployment would be 285 nodes and USD 85,509 a month, making 4,140 GETs a second.';
     it.each([
@@ -1055,8 +1089,6 @@ describe('bench:sizing:check fails what it exists to catch', () => {
         ['<![CDATA[ x ]]>', 'HTML'],
         ['<!X a declaration >', 'HTML'],
         ['<?x an instruction ?>', 'HTML'],
-        ['```text\nx\n```', 'a code fence'],
-        ['- ```text\n  x', 'a code fence'],
       ]) {
         refused(
           {
@@ -1082,6 +1114,176 @@ describe('bench:sizing:check fails what it exists to catch', () => {
         const r = sizingCheck({ [README]: hidden });
         expect(r.code, r.out).not.toBe(0);
       }
+    });
+
+    // Only a fence still open when the heading line is reached can hide it, by showing it as code. One closed before it
+    // hides nothing, and a fence inside a blockquote or a list item ends where that container does, which is before
+    // a heading at the left margin.
+    describe('a code fence above the Why section', () => {
+      const above = (text: string): string =>
+        readme.replace('## Why CloudBitmaps\n', () => `${text}\n\n## Why CloudBitmaps\n`);
+      const FENCE_ABOVE = /holds a code fence above its "Why CloudBitmaps" section/;
+
+      it.each([
+        ['a closed backtick fence', '```text\nx\n```'],
+        ['a closed tilde fence', '~~~text\nx\n~~~'],
+        ['a fence closed by a longer one', '```\nx\n`````'],
+        ['a fence closed by a longer tilde one, with spaces after', '~~~\nx\n~~~~~  '],
+        ['a four-backtick fence holding a three-backtick line', '````\n```\nx\n```\n````'],
+        ['two closed fences', '```\nx\n```\n\n~~~\ny\n~~~'],
+        ['a fence opened and closed indented three spaces', '   ```\nx\n   ```'],
+        ['a fence holding a heading, a quote and a list marker', '```\n## Other\n> - x\n```'],
+        ['a closer after a line that looks like an opener', '```\n```js\n```'],
+        ['a fence closed inside a blockquote', '> ```\n> x\n> ```'],
+        ['a fence left open in a blockquote, which the heading ends', '> ```\n> x'],
+        ['a fence left open in a list item, which the heading ends', '- ```text\n  x'],
+        ['a tilde fence left open in a nested quote and list', '> - ~~~\n>   x'],
+        ['indented code that looks like a fence', '    ```\n    x'],
+        ['a tab-indented line that looks like a fence', '\t```\n\tx'],
+        ['backticks with a backtick in the info string, which is no fence', '```a`b\nx'],
+        ['a one-line code span of three backticks', '```x```'],
+      ])('passes %s', (_what, text) => {
+        const r = sizingCheck({ [README]: above(text) });
+        expect(r.code, r.out).toBe(0);
+      });
+
+      it.each([
+        ['one never closed', '```text\nx'],
+        ['a tilde one never closed', '~~~\nx'],
+        ['a backtick fence "closed" by tildes', '```\nx\n~~~'],
+        ['a tilde fence "closed" by backticks', '~~~\nx\n```'],
+        ['a fence "closed" by a shorter one', '````\nx\n```'],
+        ['a fence "closed" by a line with text after it', '```\nx\n``` y'],
+        ['a fence "closed" by a line indented four spaces', '```\nx\n    ```'],
+        ['a fence "closed" by a tab-indented line', '```\nx\n\t```'],
+        ['a second fence left open after a closed one', '```\nx\n```\n\n~~~\ny'],
+        ['a tilde fence with a backtick in its info string, which is a fence', '~~~ a`b\nx'],
+        ['a fence opened indented three spaces', '   ```\nx'],
+        [
+          'a fence whose closer is a list continuation it cannot tell from its own',
+          '- a\n\n  ```\n  x\n  ```',
+        ],
+        [
+          'a list item whose fence a left-margin fence ends and opens another',
+          '- a\n  ```\n  x\n```\ny',
+        ],
+        ['a fence that follows a closed one inside a list', '- a\n\n  ```\n  x'],
+      ])('refuses %s', (_what, text) => {
+        refused({ [README]: above(text) }, FENCE_ABOVE);
+      });
+
+      it('ends a line as CommonMark does, at a carriage return alone too, and drops a leading byte order mark', () => {
+        const cr = String.fromCharCode(13);
+        refused({ [README]: above(['x', '```', 'y'].join(cr)) }, FENCE_ABOVE);
+        const closed = sizingCheck({ [README]: above(['x', '```', 'y\n```'].join(cr)) });
+        expect(closed.code, closed.out).toBe(0);
+        refused({ [README]: '\uFEFF~~~~\n' + readme }, FENCE_ABOVE);
+      });
+
+      it('says why it refuses a fence indented inside a list item, which it cannot place, and passes it at the margin', () => {
+        const step = '1. Install:\n\n   ```sh\n   pnpm add x\n   ```';
+        refused(
+          { [README]: above(step) },
+          /indented inside a list item, which this check cannot place: write it at the left margin/,
+        );
+        const margin = sizingCheck({ [README]: above('1. Install:\n\n```sh\npnpm add x\n```') });
+        expect(margin.code, margin.out).toBe(0);
+        // An open fence is worded as one.
+        refused({ [README]: above('```sh\nx') }, /that is not closed before the section's heading/);
+      });
+
+      it('still refuses HTML above the section, inside a closed fence or not', () => {
+        for (const text of ['<!-- a note -->', '```\n<b>x</b>\n```', '> <details>\n> x']) {
+          refused({ [README]: above(text) }, /holds HTML above its "Why CloudBitmaps" section/);
+        }
+      });
+
+      it('still refuses a fence inside the section, closed or not', () => {
+        for (const text of ['```\nx\n```', '~~~\nx']) {
+          refused(
+            { [README]: readme.replace('Where it loses:', () => `${text}\n\nWhere it loses:`) },
+            /holds a code fence/,
+          );
+        }
+      });
+    });
+
+    // A scan that is linear in the page takes eight times as long on eight times the text; one that rescans for each
+    // match takes sixty-four. The best of a few runs, and a margin of three, keep a slow or busy machine from failing
+    // a linear scan, and a floor keeps a scan too quick to time from failing at all.
+    describe('reads a page in time linear in its size', () => {
+      const best = (pages: Record<string, string>): number => {
+        let least = Infinity;
+        for (let i = 0; i < 3; i++) {
+          const started = performance.now();
+          sizingCheck(pages);
+          least = Math.min(least, performance.now() - started);
+        }
+        return least;
+      };
+      const SMALL = 8;
+      const why = page('docs/guide/why-cloudbitmaps.md');
+      const WHY_PAGE = 'docs/guide/why-cloudbitmaps.md';
+      const rest = (text: string): Record<string, string> => ({
+        [README]: readme.replace(
+          '## Your data stays yours',
+          () => `## Your data stays yours\n\n${text}\n`,
+        ),
+      });
+      const aboveWhy = (text: string): Record<string, string> => ({
+        [README]: readme.replace('## Why CloudBitmaps\n', () => `${text}\n\n## Why CloudBitmaps\n`),
+      });
+      it.each([
+        [
+          'a long word before the first digit of a page that is all generated',
+          10_000,
+          (n: number) => ({
+            [WHY_PAGE]: why.replace('has the rest.', () => `has the rest. ${'a'.repeat(n)} x 1`),
+          }),
+        ],
+        [
+          'a heading line with a long run of blanks and hashes',
+          12_000,
+          (n: number) => rest(`## x ${' #'.repeat(n / 2)}x`),
+        ],
+        ['a run of underlines', 2000, (n: number) => rest(`x\n${'=\n'.repeat(n / 2)}`)],
+        ['a run of dashes', 2000, (n: number) => rest(`x\n${'- \n'.repeat(n / 2)}`)],
+        [
+          'fences, one after another, above the section',
+          6000,
+          (n: number) => aboveWhy('```\n~~~\n'.repeat(n / 8)),
+        ],
+        [
+          'list items, one after another, above the section',
+          6000,
+          (n: number) => aboveWhy('- a\n'.repeat(n / 4)),
+        ],
+        ['digits, in the rest of the README', 12_500, (n: number) => rest('1'.repeat(n))],
+      ] as Array<[string, number, (n: number) => Record<string, string>]>)(
+        'for %s',
+        (_what, size, build) => {
+          const small = best(build(size));
+          const big = best(build(size * SMALL));
+          expect(big).toBeLessThan(3 * SMALL * Math.max(small, 20));
+        },
+      );
+
+      // A page read in one section order must not be slow in another: the same text, with the section that holds the
+      // fences first and last.
+      it('takes as long to read the README with its code first as with its code last', () => {
+        const install = /## Install & entry points[\s\S]*?(?=\n## The whole surface)/.exec(
+          readme,
+        )![0];
+        const without = readme.replace(install, '');
+        const last = without.replace('## How it works', () => `${install}\n## How it works`);
+        expect(last).not.toBe(readme);
+        const digits = '1'.repeat(100_000);
+        const into = (text: string): string =>
+          text.replace('## Your data stays yours', () => `## Your data stays yours\n\n${digits}\n`);
+        const first = best({ [README]: into(readme) });
+        const later = best({ [README]: into(last) });
+        expect(Math.max(first, later)).toBeLessThan(5 * Math.max(Math.min(first, later), 20));
+      });
     });
 
     it.each([['## '], ['## #'], ['## ##'], ['## <!-- -->'], ['## <b></b>'], ['## \u200B']])(
@@ -1208,7 +1410,7 @@ describe('bench:sizing:check fails what it exists to catch', () => {
     ])('fails a page that spells an image path %s with an entity', (image) => {
       refused(
         { [GUIDE]: intoGuide(`<img alt="a chart" src="../../${image}">`) },
-        /getting-started\.md holds an entity/,
+        /cost\.md holds an entity/,
       );
     });
 
@@ -1233,10 +1435,7 @@ describe('bench:sizing:check fails what it exists to catch', () => {
         ['It is 9&#48; here.', '&#48'],
       ];
       for (const [text, entity] of decoded) {
-        refused(
-          { [GUIDE]: intoGuide(text) },
-          new RegExp(`getting-started\\.md holds an entity, "${entity}"`),
-        );
+        refused({ [GUIDE]: intoGuide(text) }, new RegExp(`cost\\.md holds an entity, "${entity}"`));
       }
     });
 

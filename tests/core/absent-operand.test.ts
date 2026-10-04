@@ -1,14 +1,10 @@
-import {
-  createBackend,
-  MemoryStorage,
-  CloudRoaring,
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
-  bulkLoadCrbmGeneration,
-} from '@/index';
+import { MemoryStorage, CloudRoaring } from '@/index';
 import { setSegmentRetention } from '@/core/retention';
 import { ValidationError } from '@/core/errors';
 import type { SegmentRef } from '@/index';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { brandAsBackend } from '@/core/ports';
+import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 
 /**
  * A segment that resolves to nothing is ambiguous in a way that matters only as an **operand**.
@@ -102,7 +98,7 @@ describe('a combine refuses an operand that names a segment which does not exist
     ]);
   });
 
-  it('reading an absent segment directly is unchanged — it answers empty', async () => {
+  it('reading an absent segment directly is not refused — it answers empty', async () => {
     const w = await world();
     const missing = w.store.segment('never-created', { namespace: 'audiences' });
     expect(await missing.count()).toBe(0);
@@ -128,7 +124,7 @@ describe('a combine refuses an operand that names a segment which does not exist
     }) as unknown as MemoryRegistryDriver;
 
     const store = new CloudRoaring({
-      storage: createBackend({ storage: real, registry: counting }),
+      storage: brandAsBackend({ storage: real, registry: counting }),
       cache: { genTtlMs: 0 },
     });
     const audience = store.segment('active-30d', { namespace: 'audiences' });
@@ -140,5 +136,47 @@ describe('a combine refuses an operand that names a segment which does not exist
     await collect(audience.andNot([optout]));
     expect(registryGets).toBe(0); // no timed refresh, both operands non-empty: no existence check at all
     expect(baseline).toBeGreaterThan(0);
+  });
+});
+
+describe('a combine whose other operands have all expired still checks its own segment', () => {
+  // `seg.union([expired])` and `seg.andNot([expired])` read `seg` alone, as a one-operand combine, so they hold `seg`
+  // to the rule every combine holds its operands to. A base that names no segment is refused, as it is when the
+  // other operand is live, rather than read as empty.
+  async function expiring() {
+    const w = await world();
+    const expired = w.store.segment('global-opt-out', {
+      namespace: 'suppression',
+      expiresAt: Date.now() - 86_400_000,
+    });
+    const never = w.store.segment('never-loaded', { namespace: 'audiences' });
+    return { ...w, expired, never };
+  }
+
+  it('refuses a base that does not exist, on union, andNot and a union with an expired exclude', async () => {
+    const w = await expiring();
+    for (const read of [
+      () => w.never.union([w.expired]),
+      () => w.never.andNot([w.expired]),
+      () => w.never.union([w.expired], { exclude: [w.expired] }),
+      // The same base with a live operand, which these must agree with.
+      () => w.never.union([w.audience]),
+    ]) {
+      await expect(collect(read())).rejects.toThrow(ValidationError);
+      await expect(collect(read())).rejects.toThrow(/"audiences\/never-loaded" names a segment/);
+    }
+  });
+
+  it('reads it as empty under `allowAbsentOperands: true`', async () => {
+    const w = await expiring();
+    const options = { allowAbsentOperands: true };
+    expect(await collect(w.never.union([w.expired], options))).toEqual([]);
+    expect(await collect(w.never.andNot([w.expired], options))).toEqual([]);
+  });
+
+  it('reads a base that exists alone, subtracting nothing for an expired exclusion', async () => {
+    const w = await expiring();
+    expect(await collect(w.audience.union([w.expired]))).toEqual([1, 2, 3, 4]);
+    expect(await collect(w.audience.andNot([w.expired]))).toEqual([1, 2, 3, 4]);
   });
 });

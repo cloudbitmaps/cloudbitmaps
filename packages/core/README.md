@@ -1,44 +1,40 @@
 # @cloudbitmaps/core
 
-> **ESM-only, Node ≥ 22.12.** This package ships as ES modules; there is no CommonJS bundle.
-> `require()` works on Node 22.12+ through `require(esm)`, but a runner with its own CommonJS loader
-> (notably Jest in its default configuration) does not get that and needs `import` instead. On TypeScript,
-> a CommonJS project needs `"module": "nodenext"` or `"node20"`. See the
-> [repository README](https://github.com/cloudbitmaps/cloudbitmaps#install--entry-points) for the details.
-
-
-The **codec-agnostic cloud engine** behind the [CloudBitmaps](https://github.com/cloudbitmaps/cloudbitmaps) family:
-a bounded RAM cache over immutable `.crbm` objects in STORAGE, serverless chunk-skipping intersection, the segment
-registry, the write-once load-and-publish write path, generation GC, encryption-at-rest + crypto-shred, subject
-erasure by generation rewrite, segment lifecycle (disposal, and a per-segment retention policy with the sweep
-that enforces it), and the **in-memory and local-filesystem drivers**. It contains **no cloud SDK at all**: the
-cloud drivers are their own packages (`@cloudbitmaps/s3` · `/gcs` · `/azure-blob`), each hosting both the
-generations and the registry, and each built against `@cloudbitmaps/core/driver-kit` — the declared contract a
-driver package depends on, which a third-party driver can use too.
-
-## You probably want a flavor, not this package
-
-This package holds no bitmap codec — that lives in a *flavor* package which depends on this one and supplies it
-through the `CodecInterface` seam, and it holds no cloud driver either — those are packages of their own.
-Install a codec and a storage; `@cloudbitmaps/core` is a dependency of both and never named by you:
+**Most people do not install this package.** It is the engine underneath [CloudBitmaps](https://github.com/cloudbitmaps/cloudbitmaps), and it arrives on its own
+when you install the two packages you want. Install those instead:
 
 ```bash
-pnpm add @cloudbitmaps/roaring @cloudbitmaps/s3   # the roaring flavor (flagship), and the storage you have
-# npm i @cloudbitmaps/roaring @cloudbitmaps/s3     # the same, with npm
+pnpm add @cloudbitmaps/roaring @cloudbitmaps/s3   # the store, and the storage you have (or /gcs, or /azure-blob)
 ```
 
-> **On pnpm 10+, allow the one build script.** pnpm 10 skips dependency build scripts by default, so
-> the `roaring` native addon never downloads and the package throws at `import` — while the install
-> itself prints a warning and **exits 0**. Add this to your `package.json`, then install:
->
-> ```json
-> { "pnpm": { "onlyBuiltDependencies": ["roaring"] } }
-> ```
->
-> pnpm 9 and npm run it already. [Full symptoms and fixes](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#cannot-find-module-buildreleaseroaringnode-after-a-successful-install).
+On npm 12 and pnpm 10 and later, allow `roaring`'s one install script first, or the install exits 0 and the package throws at `import`. Put this in your `package.json`: `{ "allowScripts": { "roaring": true }, "pnpm": { "onlyBuiltDependencies": ["roaring"] } }`. npm 11 runs the script but warns until you allow it the same way; pnpm 9 needs nothing extra. [Details](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#cannot-find-module-buildreleaseroaringnode-after-a-successful-install).
 
-Depend on `@cloudbitmaps/core` directly only to **author a flavor or a driver**. It has **zero runtime
-dependencies** of its own.
+Depend on `@cloudbitmaps/core` directly only to write a flavor or a driver.
 
-Full docs, guides, and the design corpus live in the
-[repository](https://github.com/cloudbitmaps/cloudbitmaps). Licensed Apache-2.0.
+> **ESM-only, Node ≥ 22.12.** Use `import`; for `require()`, Jest and TypeScript, see
+> [CommonJS, Jest and TypeScript](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#commonjs-jest-and-typescript).
+
+> Pre-1.0: the API and the on-disk format can still change. These docs describe `main`, ahead of the npm release.
+
+## What it is
+
+The codec-agnostic cloud engine: a bounded in-memory cache over immutable `.crbm` objects, chunk-skipping
+intersection, the segment registry, the write-once load-and-publish path, generation collection, encryption at rest
+and crypto-shred, erasure by rewrite, retention, and the in-memory and local-filesystem backends. It has **zero runtime
+dependencies and no cloud SDK**. The cloud backends are their own packages, built against
+`@cloudbitmaps/core/driver-kit`, the declared contract a driver depends on. A third-party driver can use it too.
+
+Its main entry is the flavor-author kit: the read engine, the standalone forms of the store's methods (`loadSegment`,
+`dropSegment`, `retireExpired` and the rest), and the retry and budget internals. `@cloudbitmaps/roaring` re-exports,
+by name, what an application uses.
+
+## Documentation
+
+- [API reference](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/api-reference.md), including the
+  [driver kit](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/api-reference.md#driver-kit--what-you-need-to-implement-a-driver)
+- [Getting started](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md)
+- [Changelog](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/CHANGELOG.md)
+
+## License
+
+Apache-2.0

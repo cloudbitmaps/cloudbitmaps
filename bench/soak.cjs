@@ -17,8 +17,8 @@
  *                 `exclude` operands are read only at surviving keys. The *structural* half of that bound is proven
  *                 deterministically in `tests/core/intersect-window-bounded.test.ts`; this file covers what a unit
  *                 test cannot — that nothing accumulates across many combines over time. A run that performed no
- *                 combines is INCONCLUSIVE, never PASS: this harness once reported clean PASSes while issuing zero
- *                 combines, and the RSS gate built on it claimed to bound the window anyway.
+ *                 combines is INCONCLUSIVE, never PASS: a clean PASS from a run that issued zero combines would let
+ *                 the RSS gate built on it claim to bound the window without ever exercising it.
  *   - re-loads    publish a new generation of a live segment. That is what makes the reader cache's generation
  *                 refresh (`cache.genTtlMs`) and the cache's generation-keyed entries do real work: a stale reader
  *                 must be swapped, not stacked, and the old generation's cached chunks must age out. A soak with
@@ -55,13 +55,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const {
-  CloudRoaring,
-  LocalFsStorage,
-  bulkLoadCrbmGeneration,
-  gcOrphanGenerations,
-  nextGeneration,
-} = require('@cloudbitmaps/roaring');
+const { CloudRoaring, LocalFsStorage } = require('@cloudbitmaps/roaring');
 // The roaring addon allocates bitmap containers OUTSIDE the V8 heap, so heapUsed can't see them. This is the
 // process-wide live native byte count — the off-heap component the memory verdict must watch.
 const { getRoaringUsedMemory } = require('roaring');
@@ -133,14 +127,10 @@ function openBackend(dir) {
 /** Seed a LocalFs fleet: one generation per segment, published through the registry. */
 async function seedFleet(dir) {
   const backend = openBackend(dir);
-  const { storage, registry } = backend;
   const rand = rng(SEED);
-  for (let i = 0; i < SEGMENTS; i++) {
-    await bulkLoadCrbmGeneration(storage, { segment: segName(i), generation: 1 }, randIds(rand), {
-      registry,
-    });
-  }
-  return { backend, storage, registry };
+  const writer = new CloudRoaring({ storage: backend });
+  for (let i = 0; i < SEGMENTS; i++) await writer.load({ segment: segName(i) }, randIds(rand));
+  return { backend };
 }
 
 // ── the reader-only child: open the post-soak fleet, read across all of it, report isolated heap+RSS ──
@@ -187,9 +177,9 @@ async function readerChild() {
 async function soak() {
   const dir = mkTmp();
   try {
-    const { backend, storage, registry } = await seedFleet(dir);
+    const { backend } = await seedFleet(dir);
     const store = new CloudRoaring({ storage: backend, cache: { readerMax: CAP } });
-    const deps = { storage, registry };
+    const writer = new CloudRoaring({ storage: backend });
     const rand = rng(SEED ^ 0x9e3779b9);
 
     const samples = [];
@@ -204,20 +194,14 @@ async function soak() {
 
     while (Date.now() - startedAt < SECONDS * 1000) {
       // Re-loads — every few iterations, publish a NEW generation over a handful of random segments (the only
-      // write path the store has). Then GC the superseded generation (keep the newest one as the grace window
-      // for a reader still pinned to it) so on-disk storage stays bounded over a long run. `nextGeneration` is
-      // the library's own bookkeeping for "which number comes next", so the re-load takes the same path a real
-      // loader does — including the forward-only publish.
+      // write path the store has). `store.load()` takes the next generation number, publishes, and collects the
+      // superseded generation, keeping the newest one as the grace window for a reader still on it, so on-disk
+      // storage stays bounded over a long run. Nothing else writes these segments, so a collection that throws is a
+      // fault of the library's, and it fails the soak rather than being passed over.
       if (iters % RELOAD_EVERY === 0) {
         for (let r = 0; r < RELOADS_PER_ROUND; r++) {
-          const ref = { segment: segName(pick(rand)) };
-          const generation = await nextGeneration(ref, deps);
-          await bulkLoadCrbmGeneration(storage, { ...ref, generation }, randIds(rand), {
-            registry,
-          });
+          await writer.load({ segment: segName(pick(rand)) }, randIds(rand));
           reloads++;
-          // Best-effort: a transient FS fault here must not abort the soak — it's disk hygiene, not the verdict.
-          await gcOrphanGenerations(ref, deps, { keep: 1 }).catch(() => undefined);
         }
       }
       // Reads — count + has across random segments (exercises the bounded storage reader cache AND, right after a

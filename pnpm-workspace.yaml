@@ -7,8 +7,8 @@
 #                                                    package builds against.
 #   packages/roaring     → @cloudbitmaps/roaring     the CODEC axis: the roaring codec + CloudRoaring facade
 #   packages/s3          → @cloudbitmaps/s3          the STORAGE axis: one package per storage service, each
-#   packages/gcs         → @cloudbitmaps/gcs         depending on its cloud SDK for real rather than as an
-#   packages/azure-blob  → @cloudbitmaps/azure-blob  optional peer. Users install one of each axis.
+#   packages/gcs         → @cloudbitmaps/gcs         with its cloud SDK as a real dependency, not a peer.
+#   packages/azure-blob  → @cloudbitmaps/azure-blob  Users install one package of each axis.
 #
 # Every dependent depends on `@cloudbitmaps/core` via `workspace:^`, which pnpm resolves to a symlink into
 # `packages/core` locally and rewrites to a real semver range at publish. The dependency arrow is one-way —

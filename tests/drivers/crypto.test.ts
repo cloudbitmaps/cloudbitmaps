@@ -107,7 +107,7 @@ describe('InProcessKeystore (envelope BYOK)', () => {
   });
 
   it('multi-wrap: a CORRUPT active-KEK wrapping falls through to the valid recovery wrapping', async () => {
-    // Regression: openDek must try EVERY held wrapping. If the active-KEK wrapping is corrupt/tampered but the
+    // openDek must try EVERY held wrapping. If the active-KEK wrapping is corrupt/tampered but the
     // operator holds a valid recovery wrapping, the DEK must still open — the recovery KEK is insurance
     // against exactly this, and returning on (or throwing at) the first held keyId would defeat it.
     const activeKek = key();
@@ -127,7 +127,7 @@ describe('InProcessKeystore (envelope BYOK)', () => {
       { keyId: 'active', wrapped: Buffer.from('garbage').toString('base64') },
       wrapped[1]!,
     ];
-    // Operator holds BOTH KEKs — before the fix, the corrupt active unwrap threw before recovery was tried.
+    // Operator holds BOTH KEKs, so an openDek that let the corrupt active unwrap throw would never try recovery.
     const holdsBoth = new InProcessKeystore({
       keys: { active: activeKek, recovery: recoveryKek },
       activeKeyId: 'active',

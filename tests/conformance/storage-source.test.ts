@@ -1,8 +1,9 @@
+import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { storageChunkSourceConformance, CONFORMANCE_SEGMENT } from '@/testing/conformance';
-import { MemoryStorageChunkSource, MemoryStorageDriver } from '@/drivers/memory';
+import { MemoryStorageDriver } from '@/drivers/memory';
 import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 import { CrbmStorageChunkSource, writeCrbmGeneration } from '@/core/crbm-storage-source';
 

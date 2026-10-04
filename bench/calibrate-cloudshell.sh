@@ -1,35 +1,70 @@
 #!/usr/bin/env bash
 # In-region calibration: run this from AWS CloudShell, in the region being measured.
 #
-# WHY CLOUDSHELL. Latency measured from outside the region is internet transit, not the library. The first real
-# run of this harness went from a laptop and produced a p50 that described the network. CloudShell sits inside
-# the region, needs no instance to provision, and costs nothing.
+# WHY CLOUDSHELL. Latency measured from outside the region is internet transit, not the library: a run from a
+# laptop produces a p50 that describes the network. CloudShell sits inside the region, needs no instance to
+# provision, and costs nothing.
 #
 # WHY THE PUBLISHED PACKAGES. This installs @cloudbitmaps/roaring and @cloudbitmaps/s3 from npm into a scratch
 # directory and runs the harness against those, not against a build of this checkout. The figures then describe
 # what a consumer actually installs, and CloudShell never needs this repository's toolchain.
 #
 # Usage, from a clone of this repository inside CloudShell:
-#   CR_CALIBRATE_CONFIRM=yes-spend-money CR_CALIBRATE_MAX_USD=0.25 bash bench/calibrate-cloudshell.sh
+#   CR_CALIBRATE_CONFIRM=yes-spend-money CR_CALIBRATE_MAX_USD=0.05 bash bench/calibrate-cloudshell.sh
 #
 # Optional: CR_CALIBRATE_EXPECT_ACCOUNT=<12-digit id> refuses to run anywhere else.
-#           CR_CALIBRATE_PACKAGE_VERSION=0.10.0 pins the release measured (default: latest).
-#           CR_CALIBRATE_REHEARSE=1 runs the same install path against local MinIO, to test this script.
+#           CR_CALIBRATE_PACKAGE_VERSION=0.11.0 overrides the release measured (default: this clone's version).
+#           CR_CALIBRATE_REHEARSE=1 runs the same install path against local MinIO, to test this script. Any
+#           other value than unset, 0 or 1 is refused.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-PKG_VERSION="${CR_CALIBRATE_PACKAGE_VERSION:-latest}"
+# Only unset, empty, 0 or 1 say which target this is. Anything else, `true` or ` 1` or `yes`, would fall through to the
+# run that spends money with a ceiling and a phrase already exported, so it is refused before anything else is read.
+refuse_bad_rehearse() {
+  case "${CR_CALIBRATE_REHEARSE:-}" in
+    '' | 0 | 1) ;;
+    *)
+      echo "cloudshell: CR_CALIBRATE_REHEARSE must be 1 or unset, not \"${CR_CALIBRATE_REHEARSE}\"" >&2
+      exit 2
+      ;;
+  esac
+}
+refuse_bad_rehearse
+
+# The shell must be IN the region measured: a latency taken from another region is labelled in-region by a floor under
+# 30 ms, which a neighbouring region can also make. So the shell's own region, which CloudShell exports, has to exist,
+# and a region asked for has to be it.
+refuse_foreign_region() {
+  if [ -z "${AWS_REGION:-}" ]; then
+    echo "cloudshell: this script is for CloudShell, which exports AWS_REGION; it is not set here" >&2
+    exit 2
+  fi
+  if [ -n "${CR_CALIBRATE_REGION:-}" ] && [ "$CR_CALIBRATE_REGION" != "$AWS_REGION" ]; then
+    echo "cloudshell: this shell runs in ${AWS_REGION}; open CloudShell in ${CR_CALIBRATE_REGION}" >&2
+    exit 2
+  fi
+}
+
+# The release measured is the one this clone's expectations were written for, so a release cut since cannot change
+# what is measured. CR_CALIBRATE_PACKAGE_VERSION overrides it.
+default_package_version() {
+  sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' packages/roaring/package.json | head -n 1
+}
+PKG_VERSION="${CR_CALIBRATE_PACKAGE_VERSION:-$(default_package_version)}"
+if [ -z "$PKG_VERSION" ]; then
+  echo "cloudshell: could not read this clone's version from packages/roaring/package.json" >&2
+  exit 2
+fi
+echo "cloudshell: measuring @cloudbitmaps/roaring and @cloudbitmaps/s3 at ${PKG_VERSION}"
 MODE_FLAG="--run"
 if [ "${CR_CALIBRATE_REHEARSE:-}" = "1" ]; then
   MODE_FLAG="--rehearse"
 else
-  # CloudShell exports AWS_REGION for the region it was opened in. Stating the region twice is deliberate
-  # elsewhere in the harness; here the shell already knows it, and it must be the region the shell runs IN.
-  export CR_CALIBRATE_REGION="${CR_CALIBRATE_REGION:-${AWS_REGION:-}}"
-  if [ -z "$CR_CALIBRATE_REGION" ]; then
-    echo "cloudshell: set CR_CALIBRATE_REGION — AWS_REGION is not exported here" >&2
-    exit 2
-  fi
+  refuse_foreign_region
+  export CR_CALIBRATE_REGION="${CR_CALIBRATE_REGION:-$AWS_REGION}"
+  # Recorded with the results, so the file says which region the shell ran in.
+  export CR_CALIBRATE_CLIENT_REGION="$AWS_REGION"
 fi
 # Which harness ran is part of the result: the numbers mean nothing without the code that produced them. A clone
 # with uncommitted edits to the files this script runs is marked -dirty, because the commit alone would name a harness
@@ -38,7 +73,8 @@ harness_ref() {
   local ref
   ref="$(git rev-parse --short HEAD 2>/dev/null)" || { echo unknown; return; }
   if [ -n "$(git status --porcelain -- bench/calibrate-aws.cjs bench/calibrate-cloudshell.sh bench/lib/aws-meter.cjs \
-    bench/lib/calibrate-guards.cjs bench/lib/calibrate-process.cjs 2>/dev/null)" ]; then
+    bench/lib/calibrate-guards.cjs bench/lib/calibrate-process.cjs bench/lib/calibrate-samples.cjs \
+    bench/lib/calibrate-spread.cjs bench/lib/calibrate-stages.cjs 2>/dev/null)" ]; then
     ref="${ref}-dirty"
   fi
   echo "$ref"
@@ -75,12 +111,24 @@ node_ok() {
 if ! node_ok; then
   echo "cloudshell: installing Node 22 with nvm (the packages require Node >= 22.12)"
   export NVM_DIR="$HOME/.nvm"
-  [ -s "$NVM_DIR/nvm.sh" ] || curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+  if [ ! -s "$NVM_DIR/nvm.sh" ]; then
+    curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash || {
+      echo "cloudshell: could not install nvm from GitHub — install Node >= 22.12 by hand, then re-run" >&2
+      exit 2
+    }
+  fi
+  # nvm is not written for `set -eu`: sourcing nvm.sh returns 3 while no default Node is installed, which under `set -e`
+  # ended this script here without a word. So nvm runs with both off, and what it did is checked by hand.
+  set +eu
   # shellcheck source=/dev/null
   . "$NVM_DIR/nvm.sh"
-  nvm install 22 >/dev/null
-  nvm use 22 >/dev/null
-  node_ok || { echo "cloudshell: still no Node >= 22.12 — install it by hand, then re-run" >&2; exit 2; }
+  nvm install 22 >/dev/null && nvm use 22 >/dev/null
+  nvm_rc=$?
+  set -eu
+  if [ "$nvm_rc" -ne 0 ] || ! node_ok; then
+    echo "cloudshell: still no Node >= 22.12 (nvm exited ${nvm_rc}) — install it by hand, then re-run" >&2
+    exit 2
+  fi
 fi
 
 WORK="$(mktemp -d)"
@@ -124,11 +172,11 @@ finish() {
 trap finish EXIT
 
 # Runs the harness as a job of its own, passes on every signal that would stop this script, and returns only once
-# the harness has exited. Run in the foreground, a SIGTERM or a hang-up stopped the script at once: the exit trap
-# ran while the harness was still tearing down, copied nothing, and deleted the scratch directory under it. And a
-# SIGTERM to the script alone never reached the harness, which went on to run the whole paid workload. A process
-# group of its own (`set -m`) means a Ctrl-C reaches the harness once, from here, and not a second time from the
-# terminal.
+# the harness has exited. Were the harness run in the foreground, a SIGTERM or a hang-up would stop the script at
+# once, and the exit trap would run while the harness was still tearing down, copy nothing, and delete the scratch
+# directory under it. And a SIGTERM to the script alone would never reach the harness, which would go on to run the
+# whole paid workload. A process group of its own (`set -m`) means a Ctrl-C reaches the harness once, from here, and
+# not a second time from the terminal.
 run_harness() {
   # The traps come first: a signal in the moment before the harness has a pid is held, and passed on as soon as it
   # has one, rather than killing this script with the harness left running unwatched.
@@ -158,14 +206,19 @@ run_harness() {
 
 mkdir -p "$WORK/bench/lib"
 cp bench/calibrate-aws.cjs "$WORK/bench/"
-cp bench/lib/aws-meter.cjs bench/lib/calibrate-guards.cjs bench/lib/calibrate-process.cjs "$WORK/bench/lib/"
+cp bench/lib/aws-meter.cjs bench/lib/calibrate-guards.cjs bench/lib/calibrate-process.cjs bench/lib/calibrate-samples.cjs bench/lib/calibrate-spread.cjs bench/lib/calibrate-stages.cjs "$WORK/bench/lib/"
 echo "cloudshell: installing the published packages at ${PKG_VERSION}"
 (
   cd "$WORK"
   npm init -y >/dev/null
+  # npm 12 runs a dependency's install script only where the project allows it, and roaring's is the one that fetches
+  # its native binary; without this the install exits 0 and the first import throws. npm 10 and 11 run it anyway.
+  node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json","utf8"));p.allowScripts={roaring:true};fs.writeFileSync("package.json",JSON.stringify(p,null,2))'
   npm i --no-audit --no-fund --loglevel=error \
     "@cloudbitmaps/roaring@${PKG_VERSION}" "@cloudbitmaps/s3@${PKG_VERSION}" \
     @aws-sdk/client-s3 @aws-sdk/client-sts
+  # Fail here, before anything is created or spent, if the native binary did not arrive.
+  node -e 'import("@cloudbitmaps/roaring").catch((e)=>{console.error("cloudshell: @cloudbitmaps/roaring does not load: "+e.message.split("\n")[0]);process.exit(2)})'
 )
 
 rc=0

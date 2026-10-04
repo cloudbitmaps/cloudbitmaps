@@ -5,15 +5,17 @@ import { fileURLToPath } from 'node:url';
 /**
  * A driver package's cloud-SDK range is a CORRECTNESS claim, and it is stated in three places that can drift.
  *
- * `@cloudbitmaps/s3` requires `@aws-sdk/client-s3 >= 3.645.0` because below that the SDK does not model the
- * conditional write this library's write-once guarantee is built on. That is measured, not inferred: against
- * MinIO, 3.640.0 drops the unmodeled `IfNoneMatch: "*"` and a second PUT to the same key SUCCEEDS — hard
- * invariant 2 silently lost — while 3.641.0 rejects it. The pinned floor sits a small margin above.
+ * `@cloudbitmaps/s3` requires `@aws-sdk/client-s3 >= 3.700.0` because below that the SDK does not model a
+ * conditional header this library is built on, and an SDK drops a header it does not model, without an error. Two
+ * boundaries, both measured rather than inferred: against MinIO, 3.640.0 drops `IfNoneMatch: "*"` and a second PUT
+ * to the same key SUCCEEDS — hard invariant 2 silently lost — while 3.641.0 rejects it; and the published
+ * serializers of 3.645.0 to 3.699.0 omit `If-Match` on `PutObject` (3.700.0 is the first to send it), so the
+ * registry's compare-and-swap goes out unconditionally and can land over a concurrent writer's row.
  *
- * Nothing checked it. The manifest range, the README's statement of it and the CHANGELOG's rationale were
- * three independent strings; lowering the manifest floor (a careless `pnpm up`, a merge, a "widen it for
- * compatibility") left the whole suite green while reintroducing silent data loss. `version-claims` cannot
- * help — it EXEMPTS `3.645.0` as a foreign version so the site check does not trip on it.
+ * The manifest range, the README's statement of it and the CHANGELOG's rationale are three independent
+ * strings. Without this, lowering the manifest floor (a careless `pnpm up`, a merge, a "widen it for
+ * compatibility") leaves the whole suite green while opening the way to silent data loss. `version-claims`
+ * cannot help — it EXEMPTS `3.700.0` as a foreign version so the site check does not trip on it.
  *
  * So this derives the floor from each driver manifest and asserts the package's own README states the same
  * range. Deriving means a sixth driver package is covered the day it is added.
@@ -55,8 +57,8 @@ describe('a driver package states its SDK range identically in the manifest and 
     // bounded by a backtick, a bracket, whitespace or the end of the line — so a longer range around it
     // cannot satisfy it.
     // The trailing boundary is a LOOKAHEAD that rejects any version character, not a character class that
-    // includes `.`. A class containing `.` still lets `^12` match inside `^12.5.0` — the exact substring
-    // hole this replaced — because the dot itself satisfies the boundary.
+    // includes `.`. A class containing `.` still lets `^12` match inside `^12.5.0` — the very substring
+    // hole this check closes — because the dot itself satisfies the boundary.
     const bounded = new RegExp(
       `(^|[\\s\`(\\[])${range.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w.-])`,
     );
@@ -70,9 +72,9 @@ describe('a driver package states its SDK range identically in the manifest and 
   it.each(RANGES.flatMap((r) => ['site', 'site-next'].map((dir) => ({ ...r, dir }))))(
     "$name: $dir/usage.html quotes $sdk's range verbatim",
     ({ sdk, range, dir }) => {
-      // The site's driver table states these ranges too, and nothing read it. The S3 cell said `>=3.645` while
-      // the manifest declared `>=3.645.0 <4` — semver-equivalent, but it dropped the upper bound this very file
-      // insists on for the READMEs, so a reader could conclude SDK v4 was supported. Same rule, same corpus.
+      // The site's driver table states these ranges too. An S3 cell saying `>=3.700` where the manifest declares
+      // `>=3.700.0 <4` has the same floor but drops the upper bound this very file insists on for the READMEs,
+      // so a reader could conclude SDK v4 is supported. Same rule, same corpus.
       const page = readFileSync(join(ROOT, dir, 'usage.html'), 'utf8')
         .replace(/&gt;/g, '>')
         .replace(/&lt;/g, '<')
@@ -88,6 +90,26 @@ describe('a driver package states its SDK range identically in the manifest and 
     },
   );
 
+  it('the docs say the registry checks the client it is given for the headers it sends, whatever the floor', () => {
+    // The floor stops an install from resolving an SDK that drops `If-None-Match` (below 3.641.0), `If-Match` on a
+    // `DeleteObject` (below 3.698.0) or `If-Match` on a `PutObject`, the registry's compare-and-swap (below 3.700.0). A
+    // `client` the caller passes, or an SDK a package manager pins, can still be older, and an SDK drops a member its
+    // model lacks without a word. So `@cloudbitmaps/s3` asks the client at run time (`probeClient`), and says so
+    // wherever it states the floor.
+    const claims = [
+      join(ROOT, 'packages', 's3', 'README.md'),
+      join(ROOT, 'docs', 'guide', 'production.md'),
+      join(ROOT, 'docs', 'guide', 'api-reference.md'),
+    ];
+    for (const file of claims) {
+      const text = readFileSync(file, 'utf8').replace(/\s+/g, ' ');
+      expect(text, `${file} never says the registry checks the SDK's headers`).toMatch(
+        /(checks|serialises)[\s\S]{0,500}If-Match[\s\S]{0,200}PutObject/,
+      );
+      expect(text, `${file} never names the DeleteObject header`).toMatch(/DeleteObject/);
+    }
+  });
+
   it('the S3 write-once floor has not been lowered', () => {
     // Named explicitly, and separately from the derived check above, because this one number is the
     // difference between refusing a colliding write and silently overwriting a published generation. A
@@ -99,11 +121,12 @@ describe('a driver package states its SDK range identically in the manifest and 
     expect(s3Packages.length, 'no package depends on @aws-sdk/client-s3 any more').toBeGreaterThan(
       0,
     );
-    // 3.641.0 is the first version that rejects a colliding conditional write; below it the SDK silently
-    // overwrites. Raising a floor is fine; lowering one past the measured boundary is not. Compared as a
+    // 3.700.0 is the first version whose PutObject sends If-Match, the registry's compare-and-swap; below it the
+    // fence is dropped and a row write lands unconditionally (and below 3.641.0 If-None-Match too, so write-once is
+    // lost). Raising a floor is fine; lowering one past the measured boundary is not. Compared as a
     // TUPLE, not a packed number: the SDK's minor is already 645 and climbing, so any fixed-width encoding
     // eventually carries into the major slot and starts comparing the wrong thing.
-    const BOUNDARY: readonly [number, number, number] = [3, 641, 0];
+    const BOUNDARY: readonly [number, number, number] = [3, 700, 0];
     for (const { name, range } of s3Packages) {
       const floor = /^>=\s*(\d+)\.(\d+)\.(\d+)/.exec(range);
       expect(floor, `${name}: expected a >=x.y.z floor, got "${range}"`).not.toBeNull();
@@ -112,7 +135,9 @@ describe('a driver package states its SDK range identically in the manifest and 
         v[0] > BOUNDARY[0] ||
         (v[0] === BOUNDARY[0] &&
           (v[1] > BOUNDARY[1] || (v[1] === BOUNDARY[1] && v[2] >= BOUNDARY[2])));
-      expect(atOrAbove, `${name}: ${range} is below the write-once boundary (3.641.0)`).toBe(true);
+      expect(atOrAbove, `${name}: ${range} is below the conditional-write boundary (3.700.0)`).toBe(
+        true,
+      );
       expect(range, `${name}: the range must stay inside AWS SDK v3`).toContain('<4');
     }
   });

@@ -1,9 +1,11 @@
+import { randomBytes } from 'node:crypto';
 import { CrbmWriter } from '@/core/crbm/writer';
 import { CrbmReader } from '@/core/crbm/reader';
 import { BufferSink, BufferReader } from '@/core/blob';
 import { crc32c } from '@/core/crbm/crc32c';
 import {
   FLAG_ENCRYPTED,
+  FLAG_EXTENSION,
   FLAG_LITTLE_ENDIAN,
   FOOTER,
   FOOTER_BYTES,
@@ -11,6 +13,9 @@ import {
   PAYLOAD_START,
 } from '@/core/crbm/format';
 import { IntegrityError, UnsupportedError, ValidationError } from '@/core/errors';
+import { aadFor } from '@/core/crypto';
+import type { CrbmCrypto } from '@/core/crypto';
+import { NodeAead } from '@/drivers/crypto';
 
 interface Chunk {
   chunkKey: number;
@@ -157,12 +162,39 @@ describe('version & feature gating', () => {
     await expect(CrbmReader.open(new BufferReader(bytes))).rejects.toBeInstanceOf(UnsupportedError);
   });
 
-  it('tolerates an unknown minor version', async () => {
+  it('tolerates an unknown minor version, and finds the extension block by its flag', async () => {
+    const sink = new BufferSink();
+    const writer = new CrbmWriter(sink, { generation: 1, metadata: { def: 'v9' } });
+    for (const c of SAMPLE) await writer.addChunk(c.chunkKey, c.payload, c.cardinality);
+    await writer.finish();
+    const bytes = patchFooter(sink.bytes(), (_view, footer) => {
+      footer[FOOTER.versionMinor] = 9;
+    });
+    bytes[5] = 9; // the preamble's minor, which must agree with the footer's
+    const reader = await CrbmReader.open(new BufferReader(bytes));
+    expect(reader.chunkKeys()).toEqual([0, 5, 65_535]);
+    expect(reader.metadata).toEqual({ def: 'v9' });
+  });
+
+  it('finds the extension block by its flag, not the minor: a minor above 0 without the flag reads no block', async () => {
     const bytes = patchFooter(await build(SAMPLE), (_view, footer) => {
       footer[FOOTER.versionMinor] = 9;
     });
+    bytes[5] = 9;
     const reader = await CrbmReader.open(new BufferReader(bytes));
-    expect(reader.chunkKeys()).toEqual([0, 5, 65_535]);
+    expect(reader.metadata).toBeUndefined();
+    expect(reader.chunkKeys()).toEqual(
+      (await CrbmReader.open(new BufferReader(await build(SAMPLE)))).chunkKeys(),
+    );
+  });
+
+  it('refuses the extension flag with no block before the index', async () => {
+    const bytes = patchFooter(await build(SAMPLE), (view) => {
+      view.setUint32(FOOTER.flags, view.getUint32(FOOTER.flags, true) | FLAG_EXTENSION, true);
+    });
+    await expect(CrbmReader.open(new BufferReader(bytes))).rejects.toThrow(
+      /extension block trailer magic/,
+    );
   });
 
   it('rejects an encrypted file when no decryption key is provided', async () => {
@@ -226,4 +258,45 @@ describe('reader hardening', () => {
       expect([...(await straddle.getChunk(k))!]).toEqual([...(await full.getChunk(k))!]);
     }
   });
+});
+
+// Every rule `parseIndex` holds an index to is one the writer keeps, at the edges of the format: nothing the
+// writer produces may be refused when it is opened.
+describe('what the writer writes always opens', () => {
+  const crypto: CrbmCrypto = {
+    aead: new NodeAead(randomBytes(32)),
+    aadFor: (scope) => aadFor({ segment: 'edge' }, 1, scope),
+  };
+  const sealedBuild = async (chunks: Chunk[]): Promise<Uint8Array> => {
+    const sink = new BufferSink();
+    const writer = new CrbmWriter(sink, { generation: 1, crypto });
+    for (const c of chunks) await writer.addChunk(c.chunkKey, c.payload, c.cardinality);
+    await writer.finish();
+    return sink.bytes();
+  };
+  const all65536: Chunk[] = Array.from({ length: 65_536 }, (_, chunkKey) => ({
+    chunkKey,
+    payload: Uint8Array.of(chunkKey & 0xff),
+    cardinality: chunkKey === 65_535 ? 65_536 : 1,
+  }));
+  const shapes: Array<[string, Chunk[], number]> = [
+    ['an empty segment', [], 0],
+    ['one chunk of one byte', [{ chunkKey: 7, payload: Uint8Array.of(1), cardinality: 1 }], 1],
+    ['a full chunk', [{ chunkKey: 0, payload: Uint8Array.of(1, 2), cardinality: 65_536 }], 65_536],
+    ['65,536 chunks', all65536, 65_535 + 65_536],
+  ];
+
+  // Writing and sealing 65,536 chunks one by one took 0.8 to 5.1 s on CI runners, against the 5 s default timeout.
+  it.each(shapes)(
+    'opens %s, unencrypted and encrypted',
+    async (_what, chunks, total) => {
+      const plain = await CrbmReader.open(new BufferReader(await build(chunks)));
+      expect(plain.chunkKeys()).toEqual(chunks.map((c) => c.chunkKey));
+      expect(plain.count()).toBe(total);
+      const sealed = await CrbmReader.open(new BufferReader(await sealedBuild(chunks)), { crypto });
+      expect(sealed.chunkKeys()).toEqual(chunks.map((c) => c.chunkKey));
+      expect(sealed.count()).toBe(total);
+    },
+    30_000,
+  );
 });

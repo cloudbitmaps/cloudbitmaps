@@ -9,21 +9,26 @@
  *   node fuzz/seed-corpus.cjs            # seed every target
  *   node fuzz/seed-corpus.cjs crbm-reader   # seed one target
  *
- * Needs a build first (`pnpm build`) — it drives the public writer/serializer from dist/.
+ * Needs a build first (`pnpm build`) — it drives the public `CloudRoaring.load` from dist/.
  *
- * It builds each archive through `writeCrbmGeneration` into an in-memory driver and reads the object back,
- * rather than driving the `.crbm` writer class directly. That class is not public — and this is the better
- * seed anyway, because the bytes then come off exactly the code path that writes a real generation, so a
- * corpus entry cannot drift from the format the library actually emits.
+ * It builds each archive with `store.load()` into an in-memory backend and reads the object back, rather than
+ * driving the `.crbm` writer class directly. That class is not public — and this is the better seed anyway,
+ * because the bytes then come off exactly the code path that writes a real generation, so a corpus entry
+ * cannot drift from the format the library actually emits. The bitmaps for the `safe-deserialize` target come
+ * from the native `roaring` addon's portable serializer, which is what the library's codec calls.
  *
- * ONE CONSEQUENCE WORTH KNOWING: that path calls `optimize()` before serializing, which the writer class did
+ * Objects with an extension block, which carry a generation's metadata, come from the `.crbm` writer itself, through the fuzz
+ * build (`fuzz/build/fuzz-core.js`): a load is not given metadata, so it writes format 1.0 only.
+ *
+ * ONE CONSEQUENCE WORTH KNOWING: a load calls `runOptimize()` before serializing, which the writer class did
  * not. Run-encodable payloads therefore serialize much smaller here, and the layouts below are chosen so the
  * corpus still covers both container shapes — a strided `dense-chunk` that stays an array container and keeps
  * a multi-KB payload in the corpus, alongside the small run-encoded ones.
  */
 const fs = require('node:fs');
 const path = require('node:path');
-const { SafeBitmap, writeCrbmGeneration, MemoryStorageDriver } = require('@cloudbitmaps/roaring');
+const { CloudRoaring, MemoryStorage } = require('@cloudbitmaps/roaring');
+const { RoaringBitmap32, SerializationFormat } = require('roaring');
 
 const CORPUS = path.join(__dirname, 'corpus');
 
@@ -58,7 +63,7 @@ function valueSets() {
 function seedSafeDeserialize() {
   const sets = valueSets();
   for (const [name, vals] of Object.entries(sets)) {
-    const ser = SafeBitmap.fromValues(vals).serialize();
+    const ser = new RoaringBitmap32(vals).serialize(SerializationFormat.portable);
     writeSeed('safe-deserialize', `valid-${name}.bin`, ser);
     // A couple of near-miss mutants of each valid seed — great libFuzzer springboards toward the error paths.
     if (ser.length > 4) {
@@ -70,18 +75,25 @@ function seedSafeDeserialize() {
   }
 }
 
+/**
+ * The bytes of generation `generation` of a segment holding `chunks`, as `store.load()` writes them. A load takes
+ * the next generation number itself, so generation `n` is the `n + 1`th load of the segment.
+ */
 async function validCrbm(chunks, generation) {
-  const driver = new MemoryStorageDriver();
+  const backend = new MemoryStorage({ now: () => 0 });
+  const store = new CloudRoaring({ storage: backend });
+  const ref = { segment: 'seed' };
+  // A chunk key is an id's high 16 bits and `vals` are the low 16 bits under it.
+  const ids = chunks.flatMap(({ key, vals }) => vals.map((v) => key * 65536 + v));
+  for (let n = 0; n <= generation; n++) {
+    const result = await store.load(ref, ids);
+    if (!result.published || result.generation !== n) {
+      throw new Error(`seed load ${n} did not publish generation ${n}: ${JSON.stringify(result)}`);
+    }
+  }
   const key = { segment: 'seed', generation };
-  const { size } = await writeCrbmGeneration(
-    driver,
-    key,
-    chunks.map(({ key: chunkKey, vals }) => ({
-      chunkKey,
-      bitmap: SafeBitmap.fromValues(vals),
-    })),
-  );
-  return driver.getRange(key, 0, size);
+  const { size } = await backend.storage.getTail(key, 1);
+  return backend.storage.getRange(key, 0, size);
 }
 
 async function seedCrbmReader() {
@@ -110,6 +122,75 @@ async function seedCrbmReader() {
     flipped[10] = flipped[10] ^ 0xff; // corrupt a preamble/payload byte
     writeSeed('crbm-reader', `flip-${l.name}.bin`, flipped);
   }
+  // The extension block between the last payload and the index, flagged in the footer. A flip in the block's trailer reaches
+  // the trailer checks; one in its sections reaches the block CRC.
+  for (const [name, metadata] of Object.entries(metadataSets())) {
+    const bytes = await validCrbmWithMetadata(metadata);
+    writeSeed('crbm-reader', `valid-ext-${name}.bin`, bytes);
+    const { indexOffset } = extensionOf(bytes);
+    for (const [where, at] of [
+      ['magic', indexOffset - 1],
+      ['length', indexOffset - 12],
+      ['section', indexOffset - 13],
+    ]) {
+      const flipped = bytes.slice();
+      flipped[at] = flipped[at] ^ 0xff;
+      writeSeed('crbm-reader', `flip-ext-${where}-${name}.bin`, flipped);
+    }
+  }
+}
+
+/** Metadata records spanning the value types, the key and value shapes, and the 1 KiB cap. */
+function metadataSets() {
+  return {
+    small: { def: 'v41' },
+    mixed: {
+      def: 'v41',
+      landedAt: 1790000000000,
+      ratio: -1.5,
+      zero: 0,
+      unicode: '\u65e5\u{1F600}',
+    },
+    escapes: { 'quote"key': 'line\nbreak\ttab\\', '\u0001': '\u001f' },
+    cap: { k: 'x'.repeat(1024 - 8) },
+  };
+}
+
+/** Where an object's index starts, and its extension block's sections (the bytes before the block's trailer). */
+function extensionOf(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const indexOffset = Number(view.getBigUint64(bytes.length - 104, true));
+  const sectionsLength = view.getUint32(indexOffset - 12, true);
+  return {
+    indexOffset,
+    sections: bytes.subarray(indexOffset - 12 - sectionsLength, indexOffset - 12),
+  };
+}
+
+/**
+ * Refuse to write a seed whose sections are not what the writer wrote: the parser must read `metadata` back from
+ * them. A slip in `extensionOf` would otherwise leave a corpus of seeds that are not valid sections, and nothing
+ * would say so.
+ */
+async function assertSectionsHold(sections, metadata, name) {
+  const { parseExtension } = await import('./build/fuzz-core.js');
+  const sorted = (m) => JSON.stringify(Object.fromEntries(Object.entries(m ?? {}).sort()));
+  if (sorted(parseExtension(sections, undefined)) !== sorted(metadata)) {
+    throw new Error(`seed ${name}: the sections cut from its object do not hold its metadata`);
+  }
+}
+
+/** A `.crbm` with an extension block, holding three chunks and `metadata`, written by the `.crbm` writer from the fuzz build. */
+async function validCrbmWithMetadata(metadata) {
+  const { CrbmWriter, BufferSink } = await import('./build/fuzz-core.js');
+  const sink = new BufferSink();
+  const writer = new CrbmWriter(sink, { generation: 5, metadata });
+  for (const key of [0, 256, 65535]) {
+    const payload = new RoaringBitmap32([1, 2, key + 3]).serialize(SerializationFormat.portable);
+    await writer.addChunk(key, payload, 3);
+  }
+  await writer.finish();
+  return sink.bytes();
 }
 
 /** A strided set: dense enough to be a large array container, never a run. See `dense-chunk` above. */
@@ -166,12 +247,32 @@ function seedCrbmIndex() {
   }
 }
 
+// ── crbm-ext target: raw extension-block sections fed straight to parseExtension (no CRC wall) ──
+// Taken from real objects with metadata, so a seed is exactly what the writer emits: one metadata section (u8 type 1, a u32
+// length, the canonical JSON).
+async function seedCrbmExt() {
+  // A section of a type a later build might add (u8 type 9, u32 length 1, one byte), which the parser skips.
+  const later = Uint8Array.of(9, 1, 0, 0, 0, 0x78);
+  for (const [name, metadata] of Object.entries(metadataSets())) {
+    const { sections } = extensionOf(await validCrbmWithMetadata(metadata));
+    await assertSectionsHold(sections, metadata, name);
+    writeSeed('crbm-ext', `valid-${name}.bin`, sections);
+    const withLater = new Uint8Array(sections.length + later.length);
+    withLater.set(sections, 0);
+    withLater.set(later, sections.length);
+    writeSeed('crbm-ext', `later-section-${name}.bin`, withLater);
+    writeSeed('crbm-ext', `trunc-${name}.bin`, sections.subarray(0, sections.length - 2));
+  }
+  writeSeed('crbm-ext', 'empty.bin', new Uint8Array(0));
+}
+
 async function main() {
   const only = process.argv[2];
   if (!only || only === 'safe-deserialize') seedSafeDeserialize();
   if (!only || only === 'crbm-reader') await seedCrbmReader();
   if (!only || only === 'crbm-index') seedCrbmIndex();
-  const targets = only ? [only] : ['safe-deserialize', 'crbm-reader', 'crbm-index'];
+  if (!only || only === 'crbm-ext') await seedCrbmExt();
+  const targets = only ? [only] : ['safe-deserialize', 'crbm-reader', 'crbm-index', 'crbm-ext'];
   for (const t of targets) {
     const dir = path.join(CORPUS, t);
     const n = fs.existsSync(dir) ? fs.readdirSync(dir).length : 0;

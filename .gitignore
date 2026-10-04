@@ -58,7 +58,7 @@ bench/calibrate-aws-rehearsal.json
 bench/calibration/*.partial.json
 
 # Local review artifact from `pnpm site:screenshots` — regenerable, and 12 MB of PNGs that go stale
-# silently: the committed set still showed a tier removed two releases earlier.
+# silently: a committed set would keep showing pages long after they changed.
 .site-screenshots/
 
 # Python bytecode, should a maintenance script's import ever leave one

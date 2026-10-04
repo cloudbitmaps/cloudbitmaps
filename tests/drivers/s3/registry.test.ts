@@ -1,6 +1,7 @@
-import type { S3Client } from '@aws-sdk/client-s3';
-import { registryConformance } from '@/testing/conformance';
+import { S3Client } from '@aws-sdk/client-s3';
+import { registryConformance, registryDeleteConformance } from '@/testing/conformance';
 import { S3RegistryDriver } from '@/s3/registry';
+import { registryObjectKey } from '@/drivers/_shared/object-registry-keys';
 import { ValidationError, WriteConflictError } from '@/core/errors';
 
 /**
@@ -22,6 +23,18 @@ class FakeS3 {
   private seq = 0;
   /** If set, the next `PutObjectCommand` throws this instead of writing (models a mid-flight S3 rejection). */
   putErrorOnce: Error | undefined;
+  /** Every `DeleteObjectCommand` received, with the precondition it carried. */
+  readonly deletes: Array<{ Key: string; IfMatch?: string }> = [];
+
+  /** Whether an object is stored at `key`, a tombstone included. */
+  has(key: string): boolean {
+    return this.objects.has(key);
+  }
+
+  /** Put `text` at `key` as a new version, as another writer left it. */
+  plant(key: string, text: string): void {
+    this.objects.set(key, { bytes: new TextEncoder().encode(text), etag: this.nextEtag() });
+  }
   /** Small page size to exercise the driver's ListObjectsV2 continuation loop (default: single page). */
   constructor(private readonly pageSize = Infinity) {}
   private nextEtag(): string {
@@ -63,6 +76,16 @@ class FakeS3 {
       this.objects.set(input.Key!, { bytes: Uint8Array.from(input.Body!), etag });
       return { ETag: etag };
     }
+    if (name === 'DeleteObjectCommand') {
+      this.deletes.push({ Key: input.Key!, IfMatch: input.IfMatch });
+      const cur = this.objects.get(input.Key!);
+      // S3 applies `If-Match` on a delete as on a write: an object that moved on, or is gone, is a 412.
+      if (input.IfMatch !== undefined && (cur === undefined || cur.etag !== input.IfMatch)) {
+        throw s3Error('PreconditionFailed', 412);
+      }
+      this.objects.delete(input.Key!);
+      return {};
+    }
     if (name === 'ListObjectsV2Command') {
       const prefix = input.Prefix ?? '';
       const all = [...this.objects.keys()].filter((k) => k.startsWith(prefix)).sort();
@@ -93,7 +116,82 @@ const ticking = (): (() => number) => {
 // ABA-safe token across delete→recreate, which its tombstone-object + monotonic counter provide.
 registryConformance('S3RegistryDriver (fake S3)', () => {
   const client = new FakeS3() as unknown as S3Client;
-  return new S3RegistryDriver({ client, bucket: 'b', prefix: 'cloudroaring', now: ticking() });
+  return new S3RegistryDriver({ client, bucket: 'b', prefix: 'cloudbitmaps', now: ticking() });
+});
+
+// What a delete leaves behind: with the gate on, a row born with an incarnation id is removed by a DeleteObject under
+// If-Match; off, it is tombstoned as before. The fake is a double the registry cannot ask where it sends, so the gate is
+// set rather than defaulted; what the default does is in `conditional-delete-gate.test.ts`.
+for (const conditionalDelete of [true, false] as const) {
+  registryDeleteConformance(
+    `S3RegistryDriver (fake S3, conditionalDelete: ${String(conditionalDelete)})`,
+    () => {
+      const fake = new FakeS3();
+      const driver = new S3RegistryDriver({
+        client: fake as unknown as S3Client,
+        bucket: 'b',
+        prefix: 'cloudbitmaps',
+        now: ticking(),
+        conditionalDelete,
+      });
+      return {
+        driver,
+        stored: async (ref) => fake.has(registryObjectKey('cloudbitmaps', ref)),
+        plantRow: async (ref, text) => fake.plant(registryObjectKey('cloudbitmaps', ref), text),
+      };
+    },
+  );
+}
+
+describe('S3RegistryDriver — the conditional delete on the wire', () => {
+  it('sends the delete with If-Match set to the ETag it read', async () => {
+    const fake = new FakeS3();
+    const driver = new S3RegistryDriver({
+      client: fake as unknown as S3Client,
+      bucket: 'b',
+      now: ticking(),
+      conditionalDelete: true,
+    });
+    const ref = { segment: 's' };
+    const { token } = await driver.create(ref, { currentGen: 0 });
+    const key = registryObjectKey(undefined, ref);
+    const { ETag } = await fake.send({
+      constructor: { name: 'GetObjectCommand' },
+      input: { Key: key },
+    });
+    await driver.delete(ref, token);
+    expect(fake.deletes).toEqual([{ Key: key, IfMatch: ETag }]);
+    expect(fake.has(key)).toBe(false);
+  });
+
+  it('a 412 on the delete is a lost race: WriteConflictError, and the row stays', async () => {
+    const fake = new FakeS3();
+    const a = new S3RegistryDriver({
+      client: fake as unknown as S3Client,
+      bucket: 'b',
+      now: ticking(),
+      conditionalDelete: true,
+    });
+    const b = new S3RegistryDriver({
+      client: fake as unknown as S3Client,
+      bucket: 'b',
+      now: ticking(),
+    });
+    const ref = { segment: 's' };
+    const { token } = await a.create(ref, { currentGen: 0 });
+    const realSend = fake.send.bind(fake);
+    let swapped = '';
+    // Another writer lands between the delete's read and its DeleteObject.
+    fake.send = async (command: { constructor: { name: string } }) => {
+      if (command.constructor.name === 'DeleteObjectCommand' && swapped === '') {
+        fake.send = realSend;
+        swapped = (await b.compareAndSwap(ref, token, { currentGen: 1 })).token;
+      }
+      return realSend(command);
+    };
+    await expect(a.delete(ref, token)).rejects.toBeInstanceOf(WriteConflictError);
+    expect(await a.get(ref)).toMatchObject({ currentGen: 1, token: swapped });
+  });
 });
 
 describe('S3RegistryDriver — construction + S3 specifics', () => {
@@ -108,6 +206,7 @@ describe('S3RegistryDriver — construction + S3 specifics', () => {
   it('advertises strongRead', () => {
     expect(new S3RegistryDriver({ client, bucket: 'b' }).capabilities()).toEqual({
       strongRead: true,
+      conditionalDelete: false,
     });
   });
 

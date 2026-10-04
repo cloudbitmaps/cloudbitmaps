@@ -13,10 +13,6 @@
  * and the two are cross-checked against each other first. If the benchmark's reported totals stop matching what
  * its construction implies, this fails rather than vouching for the page.
  *
- * It used to write `site/assets/replay.json` as well, a copy of those figures for the page to replay. The page
- * never loaded it, since the stepper reads the figures from the markup's own data attributes, so the file was a
- * second published copy nothing used. It is gone; the checks that held both to the benchmark hold the page.
- *
  * THE CONSTRUCTION, from bench/scale.cjs::measureIntersect
  *
  *   Segment A: chunk keys [0, CHUNKS), DENSITY ids each.
@@ -30,7 +26,7 @@
  *   ids in common = sharedChunks * DENSITY   (B's shared prefix carries A's ids exactly)
  *
  * Usage: node scripts/site-replay.cjs [--check] — it only checks, and writes nothing; `--check` is accepted for
- * the `site:replay:check` script and CI, which have always passed it.
+ * the `site:replay:check` script and CI, which pass it.
  */
 'use strict';
 
@@ -161,10 +157,9 @@ function checkPage(dir) {
     }
   }
 
-  // Presence alone is NOT enough, and finding that out is the reason this block exists. A check that only
-  // asserts "each right number appears somewhere" cannot see a WRONG number being added: swapping one
-  // instance of 100,000 for 41,208 left the other instances intact and the check passed. That is the same
-  // shape of hole this project keeps writing down — an observable that cannot distinguish the two cases.
+  // Presence alone is NOT enough. A check that only asserts "each right number appears somewhere" cannot see a
+  // WRONG number being added: swap one instance of 100,000 for 41,208 and the other instances stay intact, so
+  // the check passes. It is an observable that cannot distinguish the two cases.
   //
   // So the page's grouped numbers are also checked the other way round: every thousands-separated figure in
   // the visible text must be one the benchmark can account for. Ungrouped integers are not policed — 100, 99

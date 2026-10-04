@@ -1,16 +1,13 @@
+import { gcOrphanGenerations } from '@/core/generation-gc';
 import {
   MemoryStorage,
   CloudRoaring,
-  createBackend,
   CrbmStorageChunkSource,
   InProcessKeystore,
   IntegrityError,
   NotFoundError,
   TransientError,
   ValidationError,
-  bulkLoadCrbmGeneration,
-  gcOrphanGenerations,
-  setSegmentRetention,
 } from '@/index';
 import type { CacheOptions, Clock, IMetricsSink, Segment, SegmentRef } from '@/index';
 import { SegmentEngine } from '@/core/engine';
@@ -20,6 +17,9 @@ import { PinnedStorageChunkSource } from '@/core/pinned-storage-source';
 import type { PinnedAt } from '@/core/pinned-storage-source';
 import { BoundedLru } from '@/core/lru';
 import { roaringCodec } from '@/roaring-codec';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { setSegmentRetention } from '@cloudbitmaps/core';
+import { brandAsBackend } from '@/core/ports';
 
 /**
  * A pinned handle must only ever be handed chunks of the generation it pinned.
@@ -569,7 +569,7 @@ describe('a pin across incarnations, a segment held twice, and a transient fault
     const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, GEN0, { registry });
     const crbm = new CrbmStorageChunkSource(storage, { registry });
-    // Typed without a `fingerprint`: if the field became required again, this file would stop compiling.
+    // Typed without a `fingerprint`: if the field became required, this file would stop compiling.
     const pin: PinnedAt = { generation: 0, version: await crbm.currentVersion(REF), ...extra };
     const engine = new SegmentEngine({
       storage: new PinnedStorageChunkSource(crbm, new Map([[segmentKey(REF), pin]])),
@@ -660,7 +660,7 @@ describe('a pin knows its object on any store, and fails rather than tear', () =
     });
     const clock = manualClock();
     const store = new CloudRoaring({
-      storage: createBackend({
+      storage: brandAsBackend({
         storage: counted(backend.storage, 'storage', calls),
         registry: counted(backend.registry, 'registry', calls),
       }),
@@ -745,7 +745,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
       range(key, offset, length).catch((err: Error) => {
         throw Object.assign(new Error(err.message), {
           name: 'ValidationError',
-          [Symbol.for('cloud-roaring.error')]: true,
+          [Symbol.for('cloudbitmaps.error')]: true,
         });
       });
     await expect(snap.has(11 * C + 1)).rejects.toThrow(/no longer the object this handle pinned/);
@@ -763,8 +763,8 @@ describe('what a pin says when its object changes under it, and what pinning cos
       faults -= 1;
       return Promise.reject(new TransientError('tail blip'));
     };
-    // The fault is the check's, and is retried as a store's read is. Reported as the chunk's checksum, it was taken
-    // for damage and never retried.
+    // The fault is the check's, and is retried as a store's read is. Reported as the chunk's checksum error, it
+    // would be taken for damage and never retried.
     await expect(snap.has(C + 1)).rejects.toThrow(/no longer the object this handle pinned/);
     expect(faults).toBe(0);
   });
@@ -896,7 +896,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
     });
     const calls: string[] = [];
     const store = new CloudRoaring({
-      storage: createBackend({
+      storage: brandAsBackend({
         storage: counted(backend.storage, 'storage', calls),
         registry: backend.registry,
       }),
@@ -930,7 +930,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
     });
     const calls: string[] = [];
     const store = new CloudRoaring({
-      storage: createBackend({
+      storage: brandAsBackend({
         storage: counted(backend.storage, 'storage', calls),
         registry: backend.registry,
       }),
@@ -946,7 +946,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
     const w = await purgeable(OLD);
     const calls: string[] = [];
     const store = new CloudRoaring({
-      storage: createBackend({
+      storage: brandAsBackend({
         storage: counted(w.backend.storage, 'storage', calls),
         registry: counted(w.backend.registry, 'registry', calls),
       }),
@@ -978,7 +978,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
     });
     const calls: string[] = [];
     const store = new CloudRoaring({
-      storage: createBackend({
+      storage: brandAsBackend({
         storage: counted(storage, 'storage', calls),
         registry: counted(registry, 'registry', calls),
       }),
@@ -1017,7 +1017,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
     });
     const calls: string[] = [];
     const store = new CloudRoaring({
-      storage: createBackend({
+      storage: brandAsBackend({
         storage: counted(storage, 'storage', calls),
         registry: counted(registry, 'registry', calls),
       }),
@@ -1060,7 +1060,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
     const w = await purgeable(OLD);
     const calls: string[] = [];
     const store = new CloudRoaring({
-      storage: createBackend({
+      storage: brandAsBackend({
         storage: counted(w.backend.storage, 'storage', calls),
         registry: counted(w.backend.registry, 'registry', calls),
       }),
@@ -1109,7 +1109,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
     const w = await purgeable(OLD);
     const calls: string[] = [];
     const store = new CloudRoaring({
-      storage: createBackend({
+      storage: brandAsBackend({
         storage: counted(w.backend.storage, 'storage', calls),
         registry: counted(w.backend.registry, 'registry', calls),
       }),
@@ -1178,8 +1178,8 @@ describe('what a pin says when its object changes under it, and what pinning cos
         faults -= 1;
         const err = Object.assign(new Error(`${name} from another copy`), {
           name,
-          [Symbol.for('cloud-roaring.error')]: true,
-          ...(transient ? { [Symbol.for('cloud-roaring.error.transient')]: true } : {}),
+          [Symbol.for('cloudbitmaps.error')]: true,
+          ...(transient ? { [Symbol.for('cloudbitmaps.error.transient')]: true } : {}),
         });
         return Promise.reject(err);
       };
@@ -1268,7 +1268,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
       Promise.reject(
         Object.assign(new Error('checksum mismatch'), {
           name: 'IntegrityError',
-          [Symbol.for('cloud-roaring.error')]: true,
+          [Symbol.for('cloudbitmaps.error')]: true,
         }),
       );
     await expect(snap.has(C + 1)).rejects.toThrow(/no longer the object this handle pinned/);
@@ -1540,7 +1540,7 @@ describe('what a pin found out about its object, and how it forgets', () => {
     const backend = new MemoryStorage();
     const calls: string[] = [];
     const store = new CloudRoaring({
-      storage: createBackend({
+      storage: brandAsBackend({
         storage: counted(backend.storage, 'storage', calls),
         registry: counted(backend.registry, 'registry', calls),
       }),
@@ -1667,7 +1667,7 @@ describe('what a pin found out about its object, and how it forgets', () => {
     });
     const calls: string[] = [];
     const store = new CloudRoaring({
-      storage: createBackend({
+      storage: brandAsBackend({
         storage: counted(backend.storage, 'storage', calls),
         registry: counted(backend.registry, 'registry', calls),
       }),
@@ -1908,9 +1908,9 @@ describe('what a pin found out about its object, and how it forgets', () => {
       const foreign = Object.assign(Object.create(Error.prototype) as Error, {
         name,
         message: `foreign ${name}`,
-        [Symbol.for('cloud-roaring.error')]: true,
+        [Symbol.for('cloudbitmaps.error')]: true,
         ...(name === 'TransientError'
-          ? { [Symbol.for('cloud-roaring.error.transient')]: true }
+          ? { [Symbol.for('cloudbitmaps.error.transient')]: true }
           : {}),
       });
       let tails = 0;
@@ -2006,17 +2006,17 @@ describe('what a pin found out about its object, and how it forgets', () => {
     };
     const inner = source as unknown as {
       snapshots: Memo;
-      install(key: string, reader: Promise<unknown>): unknown;
+      install(key: string, snapshot: unknown): unknown;
     };
     const key = `${segmentKey(REF)}@${held.version}`;
     const get = inner.snapshots.get.bind(inner.snapshots);
     inner.snapshots.get = (k: string) => {
-      const entry = get(k) as { reader: Promise<unknown> } | undefined;
+      const entry = get(k);
       if (k === key && entry !== undefined) {
         inner.snapshots.get = get;
         queueMicrotask(() => {
           inner.snapshots.delete(key);
-          inner.install(key, entry.reader);
+          inner.install(key, entry);
         });
       }
       return entry;

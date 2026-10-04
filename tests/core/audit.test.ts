@@ -2,20 +2,21 @@ import { randomBytes } from 'node:crypto';
 import {
   CloudRoaring,
   CrbmStorageChunkSource,
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
   RecordingAuditSink,
-  bulkLoadCrbmGeneration,
   destroySegment,
-  eraseIdFromSegment,
   eraseNamespace,
 } from '@/index';
 import type { AuditEvent, IKeystore, SegmentRef } from '@/index';
 import { NOOP_AUDIT, safeAudit } from '@/core/audit';
 import { InProcessKeystore } from '@/drivers/crypto';
+import { roaringCodec } from '@/roaring-codec';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { eraseIdFromSegment } from '@cloudbitmaps/core';
+import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 
 /**
  * The audit sink and every event the library emits: `segment.publish` (a load became current),
+ * `segment.rollback` (the pointer moved back), `segment.load-refused` (a load's guard refused it),
  * `segment.rewrite` (a subject erasure), `segment.erase` (a crypto-shred), `segment.dispose` (storage
  * reclaimed) and `namespace.erase`.
  *
@@ -32,8 +33,8 @@ function world(keystore?: IKeystore) {
   const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver();
   // Wide enough for every emitter here: `{ registry }` is all the crypto-shred paths need, and the erasure
-  // rewrite additionally reads/writes objects. The codec is pre-bound by the facade's `eraseIdFromSegment`.
-  const deps = { storage, registry, keystore };
+  // rewrite additionally reads/writes objects, and core's `eraseIdFromSegment` takes the codec it builds bitmaps with.
+  const deps = { storage, registry, keystore, codec: roaringCodec };
   const store = (): CloudRoaring =>
     new CloudRoaring({
       storage: new CrbmStorageChunkSource(storage, { registry, keystore }),
@@ -363,8 +364,9 @@ describe('audit: segment.erase / namespace.erase', () => {
   });
 });
 
-// A real compile-time exhaustiveness guard over the AuditEvent union (replaces a hand-written literal list):
-// if a variant is added/removed without updating this switch, `tsc` fails on the `never` assignment.
+// A real compile-time exhaustiveness guard over the AuditEvent union, where a hand-written literal list of kinds
+// would drift silently: if a variant is added/removed without updating this switch, `tsc` fails on the `never`
+// assignment.
 describe('AuditEvent union', () => {
   it('is exhaustively handled', () => {
     const label = (e: AuditEvent): string => {

@@ -13,16 +13,51 @@ release.
 ## Trust boundary (what the library defends)
 
 CloudBitmaps treats **all bytes read back from storage as untrusted input**. Every `.crbm` object — its chunk
-payloads, its index and its footer — is length-checked and CRC-verified, and deserialized with the **safe**
+payloads, its index, its footer and, when its footer flags one, the extension block that carries a generation's
+metadata — is
+length-checked and CRC-verified, and deserialized with the **safe**
 RoaringBitmap reader (never the
-trusting variant) behind a hard size cap, before the native addon sees it. The decoded **values** are then
-range-checked too: a chunk payload holds 16-bit remainders, and one outside `[0, 65535]` is rejected rather
-than silently masked into a fabricated id in another chunk's space. That last check matters because size caps
-and CRCs do not catch it — a CRC proves the bytes are the bytes that were written, which an attacker able to
-write your storage satisfies by construction. A hostile or corrupted object fails
-closed with a typed `IntegrityError` on read — it can neither crash the process nor return a wrong answer. This
+trusting variant) behind a hard size cap, before the native addon sees it. The cap is 1 MiB per chunk, and an
+index entry above it (above 1 MiB plus the 28 bytes of nonce and tag, on an encrypted object) is refused when the
+object is opened, before any payload is read. That reader only keeps its reads inside
+the buffer, so each payload's **structure** is checked before the reader runs: containers and values in order,
+runs disjoint and inside their container, and every cardinality matching the bits. A payload that fails is
+rejected, not decoded into a bitmap whose `has`, `size` and iteration disagree, or, for some of those shapes, one
+that crashes the process when it is used. The decoded **values** are then range-checked too: a chunk payload holds
+16-bit remainders, and one outside `[0, 65535]` is rejected rather than silently masked into a fabricated id in
+another chunk's space. The last two checks matter because size caps and CRCs catch neither — a CRC proves the
+bytes are the bytes that were written, which an attacker able to write your storage satisfies by construction.
+A hostile or corrupted object fails
+closed with a typed `IntegrityError` on read — it can neither crash the process nor return a wrong answer from a
+payload it decodes. `count()` is the exception to the second half: it answers from the registry row's summary of the
+current generation, or from the index when the row has none it can use, without decoding a payload. The row's summary is
+used only for the generation it names, on an active row, in the shape the keys call for (a sealed one only if it opens
+under its generation's associated data), and is not confirmed against the object on the cold path, so a party who can
+write the registry row can make a count wrong, as they can already repoint the generation; whenever an object is opened
+anyway, the store holds the summary against it and stops using one that disagrees. Opening an object checks the index
+for internal consistency (key order and range, each cardinality in
+`1..65536`, payloads inside the payload region, and the footer's chunk count and total against the index on an
+unencrypted object), and an index that is corrupt yet still internally consistent yields a wrong count. The
+metadata in an extension block is held to the same rules a caller's metadata is (string keys of at most 128 bytes,
+string or finite-number values, at most 1 KiB as canonical JSON) and must be exactly its canonical form, so a record
+that only parses is refused. On an encrypted object its content is sealed and authenticated like the index, but
+its presence is not: the minor, the block's trailer and its section types are covered by CRCs, which take no key, so
+whoever can write the object can remove the block, and the generation then reads as one without metadata. An object
+opened with an encrypted segment's key that is not itself encrypted is refused rather than read in the clear. This
 boundary is exercised by coverage-guided fuzzing (`pnpm fuzz:*`, nightly) and the DR drill's byte-corruption
 scenario (`pnpm dr-drill`).
+
+**Bytes a caller loads are untrusted the same way.** A load from `{ serialized }` portable Roaring bytes, or from a
+`{ bitmap }` through its own `serialize('portable')`, puts them behind a size cap of their own (537,403,396 bytes,
+more than any canonical 32-bit bitmap serializes to), the same structural check and the same safe reader before the
+native addon sees them, and refuses bytes after the bitmap's end. They are read through the typed array's own
+accessors, so a subclass cannot show the check other bytes than the reader reads. Bytes in a `SharedArrayBuffer`
+are copied first. A plain buffer can still be written by another thread during the call (an unfinished `fs.read`,
+`crypto.randomFill` or asynchronous addon call into it), so the decode can see bytes the check did not: the load
+therefore checks every container of the bitmap again, by the same rules, as it writes it, and refuses one that does
+not hold what its header says with `IntegrityError`, before anything is published. Bytes that fail the first check
+are a `ValidationError`, since they are the caller's input rather than a stored object, and nothing is read or
+written.
 
 Encryption-at-rest (opt-in) is envelope AES-256-GCM with a per-segment DEK wrapped under operator-held KEK(s);
 the AEAD wiring is pinned to published known-answer vectors and the envelope/rotation/crypto-shred paths are
@@ -81,13 +116,10 @@ through a package a consumer installs.
 
 **Currently empty.** No advisory is being ignored — every one the gate sees is either fixed or absent.
 
-Three `tar` advisories (`GHSA-23hp-3jrh-7fpw` critical, `GHSA-8x88-c5mf-7j5w` high, `GHSA-w8wr-v893-vjvp`
-moderate) were previously accepted here on reachability grounds: `tar` is pulled in only by `roaring`'s
-**install-time** native-build chain (`@mapbox/node-pre-gyp` → `node-gyp`), which uses it to extract `roaring`'s
-own trusted prebuilt binary, and is never on CloudBitmaps' runtime path. That entry carried an explicit revisit
-condition — *"`tar` ships a fixed release"* — which upstream met, so the ignores were removed and `tar` upgraded
-to a patched release (2026-07-25) rather than left accepted. Reachability is a reason to **not panic**, never a
-reason to stay unpatched when a patch exists.
+`tar` shows the policy at work. It is pulled in only by `roaring`'s **install-time** native-build chain
+(`@mapbox/node-pre-gyp` → `node-gyp`), which uses it to extract `roaring`'s own trusted prebuilt binary, and it is
+never on CloudBitmaps' runtime path, yet it is kept on a patched release: reachability is a reason to **not
+panic**, never a reason to stay unpatched when a patch exists.
 
 **The bar for adding an entry here:** a rationale that names the exact path the advisory would have to travel to
 matter, plus a concrete condition under which the entry gets removed. An accepted advisory with no revisit
@@ -100,17 +132,17 @@ CloudBitmaps is published through a hardened pipeline so that a consumer can ver
 produced the package they installed**. The controls:
 
 - **Build provenance (SLSA).** The [release workflow](.github/workflows/release.yml) publishes with
-  `--provenance` and `NPM_CONFIG_PROVENANCE=true`, set at the call site rather than in the manifests. (It was
-  briefly also `publishConfig.provenance: true`, which is strictly worse: a manifest flag cannot be overridden
-  by the CLI *or* the environment, so it silently made every non-CI publish — the bootstrap and the break-glass
-  path both — abort with `EUSAGE: … not supported for provider: null`. Opting in where provenance is actually
-  achievable keeps the guarantee and drops the trap.) npm records a **signed,
+  `--provenance` and `NPM_CONFIG_PROVENANCE=true`, set at the call site rather than in the manifests. (A
+  manifest's `publishConfig.provenance: true` would be strictly worse: it cannot be overridden by the CLI *or*
+  the environment, so every non-CI publish — the bootstrap and the break-glass path both — would abort with
+  `EUSAGE: … not supported for provider: null`. Opting in where provenance is actually achievable keeps the
+  guarantee without the trap.) npm records a **signed,
   publicly-verifiable attestation** linking the tarball to the exact GitHub Actions workflow, repository, and
   commit that built it, minted via GitHub **OIDC** (the job runs on a GitHub-hosted runner with
   `id-token: write` and no other write scope). Verify an installed copy with **`npm audit signatures`**, or
   read the "Provenance" panel on the package's npm page. A tarball whose provenance doesn't trace to this repo's
   release workflow should be treated as untrusted. A *publicly-verifiable* attestation requires the source repository to
-  be public and the package published under a real version — both true from `0.1.0` onward, so every tarball
+  be public and the package published under a real version — both true of every release, so every tarball
   **published by the release workflow** carries an attestation you can check yourself.
   **One deliberate exception, and it is visible on the registry.** Creating a package name needs a first
   publish, and npm's Trusted Publisher cannot be bound to a name that does not yet exist — so a new name is
@@ -122,8 +154,10 @@ produced the package they installed**. The controls:
   (`lint · lint:arch · format:check · typecheck · test · audit · build · smoke`, plus a `leak-scan` of the
   packed tarball) against the exact commit being published before the tarball is created — a green `main` is
   necessary but not sufficient. CI's site and fuzz-lockfile checks are not repeated here; they guard what is
-  served from `main`, not what is published. A `vX.Y.Z` tag must also match `package.json`
-  version, or the release fails.
+  served from `main`, not what is published. A pushed `vX.Y.Z` tag must also match every package's
+  version, or the release fails. A manual dispatch with `dryRun: false` publishes for real too, and checks less: run
+  from a branch, it skips the tag/version check and the release-notes check and ships whatever versions the
+  manifests declare, and from any ref it creates no GitHub Release.
 - **Reproducible, frozen installs.** Both CI and the release build use `pnpm install --frozen-lockfile` (fails
   on a stale lockfile). Consumers get the same guarantee with **`npm ci`** against a committed lockfile.
 - **SHA-pinned GitHub Actions.** Every third-party `uses:`, in every workflow and in the composite actions under
@@ -152,15 +186,15 @@ produced the package they installed**. The controls:
 - **The published tarball is scanned, not just the source.** Before publishing, the release workflow packs each
   package, unpacks the `.tgz` and scans **what actually ships**
   ([`scripts/leak-scan-tarballs.cjs`](scripts/leak-scan-tarballs.cjs)) for credentials, private keys, real email
-  addresses and absolute local machine paths. This is deliberately a different surface from scanning the repo:
+  addresses, absolute local machine paths, AWS account ids and ARNs. This is deliberately a different surface from scanning the repo:
   `dist/` is gitignored, so a source-tree or git-history scan cannot see the majority of the published bytes —
   and the sourcemaps carry every `src` comment verbatim in `sourcesContent`. It runs **before** the publish
   because an npm tarball is immutable outside the 72-hour unpublish window; there is no fixing a string that
   has already shipped.
-- **Recoverable checks run before the irreversible one.** Every gate above — the re-run test suite, the audit,
-  the tag/version agreement, the release-notes check, the tarball scan — precedes `pnpm publish`, and
-  [`tests/ci/release-workflow.test.ts`](tests/ci/release-workflow.test.ts) fails if any of them is ever moved
-  after it. A release is also never cancelled in flight (`cancel-in-progress: false`), so the five packages
+- **Recoverable checks run before the irreversible one.** Every gate above that a run performs — the re-run test
+  suite, the audit, the tag/version agreement, the release-notes check, the tarball scan — precedes `pnpm publish`,
+  and [`tests/ci/release-workflow.test.ts`](tests/ci/release-workflow.test.ts) fails if the audit, the tag/version
+  agreement, the release-notes check or the tarball scan is ever moved after it. A release is also never cancelled in flight (`cancel-in-progress: false`), so the five packages
   cannot be left half-published.
 - **Least-privilege CI.** Workflows declare minimal `permissions:`: the workflow-level default is
   `contents: read`, and the release workflow adds `id-token: write` for provenance. **Exactly one job holds
@@ -170,6 +204,9 @@ produced the package they installed**. The controls:
   [`tests/ci/release-workflow.test.ts`](tests/ci/release-workflow.test.ts) resolves **effective** permissions
   (job-level, falling back to workflow-level) and fails if the publish job can ever write to the repo.
 
-Releases run through the workflow only. It can also be dispatched in **dry-run**
-(`workflow_dispatch` with `dryRun: true`), which exercises the **full gate + tarball pack** without
-publishing — a dry run mints no attestation, by design.
+Releases run through the workflow, apart from the two hand-run paths named above — a new name's bootstrap
+prerelease, and the [break-glass release](RELEASING.md#manual--break-glass-release) — neither of which carries
+provenance. The workflow can also be dispatched by hand (`workflow_dispatch`): with `dryRun: true`, the default, it
+runs as a **dry run**, which exercises the **full gate + tarball pack** without publishing — a dry run mints no
+attestation, by design; with `dryRun: false` it publishes, with the differences described under *Publish only a
+re-verified tree* above.

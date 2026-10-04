@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import { CrbmWriter } from '@/core/crbm/writer';
-import { CrbmReader } from '@/core/crbm/reader';
+import { CrbmReader, parseExtension } from '@/core/crbm/reader';
 import { BufferSink, BufferReader } from '@/core/blob';
 import { CloudRoaringError } from '@/core/errors';
 
@@ -32,9 +32,9 @@ async function exercise(bytes: Uint8Array): Promise<void> {
   }
 }
 
-async function validFile(): Promise<Uint8Array> {
+async function validFile(metadata?: Record<string, string | number>): Promise<Uint8Array> {
   const sink = new BufferSink();
-  const writer = new CrbmWriter(sink, { generation: 3 });
+  const writer = new CrbmWriter(sink, { generation: 3, metadata });
   await writer.addChunk(0, Uint8Array.of(1, 2, 3, 4, 5, 6, 7, 8), 4);
   await writer.addChunk(256, Uint8Array.of(9, 10, 11), 2);
   await writer.addChunk(65_535, Uint8Array.of(12), 1);
@@ -65,6 +65,53 @@ describe('fuzz the .crbm read boundary (hard invariant 5: tier bytes are untrust
         },
       ),
       { numRuns: 400, seed: SEED },
+    );
+  });
+
+  it('a single flipped byte in a file with an extension block, block included, never crashes the reader', async () => {
+    const base = await validFile({ def: 'v41', landedAt: 1_790_000_000_000 });
+    await fc.assert(
+      fc.asyncProperty(
+        fc.nat({ max: base.length - 1 }),
+        fc.integer({ min: 1, max: 255 }),
+        async (index, xor) => {
+          const corrupted = base.slice();
+          corrupted[index] = corrupted[index]! ^ xor;
+          await exercise(corrupted);
+        },
+      ),
+      { numRuns: 400, seed: SEED },
+    );
+  });
+
+  it('arbitrary extension-block sections only ever raise typed CloudRoaringErrors', () => {
+    // Past the block's CRC, as the fuzz harness drives it: random bytes, and a metadata section around random bytes.
+    const section = (body: Uint8Array): Uint8Array => {
+      const out = new Uint8Array(5 + body.length);
+      out[0] = 1;
+      new DataView(out.buffer).setUint32(1, body.length, true);
+      out.set(body, 5);
+      return out;
+    };
+    const typedOnly = (bytes: Uint8Array): void => {
+      try {
+        parseExtension(bytes, undefined);
+      } catch (err) {
+        if (!(err instanceof CloudRoaringError)) throw err;
+      }
+    };
+    fc.assert(
+      fc.property(fc.uint8Array({ maxLength: 300 }), (bytes) => {
+        typedOnly(bytes);
+        typedOnly(section(bytes));
+      }),
+      { numRuns: 600, seed: SEED },
+    );
+    fc.assert(
+      fc.property(fc.json({ maxDepth: 2 }), (json) => {
+        typedOnly(section(new TextEncoder().encode(json)));
+      }),
+      { numRuns: 600, seed: SEED },
     );
   });
 });

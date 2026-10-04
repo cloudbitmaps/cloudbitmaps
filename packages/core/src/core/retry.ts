@@ -11,7 +11,7 @@
  * It deliberately does **not** retry deterministic failures ({@link WriteConflictError},
  * {@link ValidationError}, {@link IntegrityError}, {@link NotFoundError}, …): retrying those either can't
  * help or would be incorrect. A pointer conflict is retried by a *separate* loop inside
- * `publishGeneration`, because each attempt must re-read the row and re-decide — a blind replay of the same
+ * the publish, because each attempt must re-read the row and re-decide — a blind replay of the same
  * compare-and-swap would either fail again on a stale token or, worse, advance a pointer whose state has
  * changed underneath it. A write-once object collision is never replayed at all: the generation number is
  * taken, so the caller has to pick a new one.
@@ -38,7 +38,8 @@ export interface RetryPolicy {
 /**
  * Conservative defaults: 4 attempts, 50ms → 100 → 200 (×2), capped at 2s, full jitter. Tuned for a cloud
  * backend's brief throttle/5xx blip — enough to ride out a transient fault without turning a hard outage
- * into a long hang. Override per store/driver if your latency budget differs.
+ * into a long hang. Override per store (`retry`) or per read source (`RetryingStorageChunkSource`) if your latency
+ * budget differs.
  */
 export const DEFAULT_RETRY_POLICY: RetryPolicy = {
   maxAttempts: 4,
@@ -51,9 +52,12 @@ export const DEFAULT_RETRY_POLICY: RetryPolicy = {
 export interface RetryDeps {
   readonly clock: Clock;
   readonly rng: Rng;
-  /** Override which errors are retryable. Default: any {@link TransientError} (incl. `TimeoutError`). */
+  /** Override which errors are retryable. Default: any {@link TransientError}. */
   readonly isRetryable?: (err: unknown) => boolean;
-  /** Optional hook (observability) fired before each backoff wait. `attempt` is 1-based (the one that failed). */
+  /**
+   * Optional hook (observability) fired before each backoff wait. `attempt` is 1-based (the one that failed).
+   * Best-effort: an error it throws is swallowed, so it can neither stop the retry nor change the error thrown.
+   */
   readonly onRetry?: (info: { attempt: number; delayMs: number; err: unknown }) => void;
 }
 
@@ -73,6 +77,22 @@ export function applyJitter(policy: RetryPolicy, delayMs: number, rng: Rng): num
 }
 
 /**
+ * The store's read retry, as a write path takes it for the reads it makes along the way: a policy (the default when
+ * absent) and what {@link withRetry} needs to run it.
+ */
+export type ReadRetry = RetryDeps & { readonly policy?: RetryPolicy };
+
+/**
+ * Run a read under `retry`, or once when there is none. For the reads a write makes along the way (a load guard's
+ * read of the current generation, an erasure's reads of the generations it rewrites and verifies): a read is safe
+ * to repeat, so a transient fault on one is retried under the store's policy rather than failing the whole write.
+ * The write itself is never passed here.
+ */
+export function retryRead<T>(op: () => Promise<T>, retry: ReadRetry | undefined): Promise<T> {
+  return retry === undefined ? op() : withRetry(op, retry.policy ?? DEFAULT_RETRY_POLICY, retry);
+}
+
+/**
  * Run `op`, retrying transient failures per `policy`. Resolves with `op`'s result, or rejects with the last
  * error once attempts are exhausted (or immediately for a non-retryable error). The thrown error is always
  * the *operation's* error — never a wrapper — so callers keep their typed-error branching.
@@ -85,8 +105,8 @@ export async function withRetry<T>(
   const retryable = deps.isRetryable ?? isTransientError;
   // `Math.max(1, x)` guards 0 and negatives but NOT NaN — `Math.max(1, NaN)` is NaN, and `1 <= NaN` is false,
   // so the loop below would never execute: `op()` never called, and the function rejects with the literal
-  // `undefined` from `lastErr`. Every write would silently no-op without touching the backend, and callers
-  // would catch a non-Error. Reachable from ordinary wiring — `maxAttempts: Number(process.env.X)` with the
+  // `undefined` from `lastErr`. Every retried read would fail without touching the backend, and callers would
+  // catch a non-Error. Reachable from ordinary wiring — `maxAttempts: Number(process.env.X)` with the
   // var unset is NaN. Fail loudly instead, and floor it so a fractional value can't sleep on a final attempt
   // that never happens.
   if (!Number.isFinite(policy.maxAttempts) || policy.maxAttempts < 1) {
@@ -103,7 +123,12 @@ export async function withRetry<T>(
       lastErr = err;
       if (attempt >= attempts || !retryable(err)) throw err;
       const delayMs = applyJitter(policy, backoffDelayMs(policy, attempt), deps.rng);
-      deps.onRetry?.({ attempt, delayMs, err });
+      try {
+        deps.onRetry?.({ attempt, delayMs, err });
+      } catch {
+        // Observability is best-effort, as for a metrics sink (`safeMetrics`): a throwing hook must neither abort
+        // the retry nor replace the operation's error with its own. This module has no sink to report it to.
+      }
       await deps.clock.sleep(delayMs);
     }
   }

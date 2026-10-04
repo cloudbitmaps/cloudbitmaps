@@ -2,7 +2,7 @@
  * `CrbmReader` — speculative-tail-read reader for one `.crbm` generation.
  *
  * `open()` fetches the object's tail in **one GET** (footer + usually the whole index), verifies the
- * footer/index CRCs, and parses the delta+varint index into a map. `getChunk()` then range-GETs a single
+ * footer/index CRCs, and parses the delta+varint index into parallel typed arrays. `getChunk()` then range-GETs a single
  * payload and verifies its CRC32C **before** any native deserialize — every byte from storage is
  * untrusted.
  *
@@ -11,10 +11,17 @@
  * on-disk CRC passes. The footer's `chunkCount`/`totalCardinality` are zero on an encrypted object (metadata is
  * hidden), so both are derived from the decrypted index; AEAD authentication (incl. the per-location AAD)
  * replaces the cleartext-count cross-check.
+ *
+ * **The extension block.** An object whose footer sets `FLAG_EXTENSION` carries an extension block just before the
+ * index, found from the trailer at `indexOffset - 12`. `open()` reads it with the index, from the tail or from the same range read,
+ * checks its trailer, its CRC32C, its sections and the metadata in them before anything trusts them, and holds payloads
+ * to the bytes before it. An object without the flag has no block, and is read exactly as before.
  */
-import { IntegrityError, UnsupportedError, ValidationError } from '../errors';
+import { IntegrityError, isIntegrityError, UnsupportedError, ValidationError } from '../errors';
 import type { BlobReader } from '../blob';
 import type { CrbmCrypto } from '../crypto';
+import { MAX_METADATA_BYTES, metadataFromBytes } from '../metadata';
+import type { GenerationMetadata } from '../ports';
 import { crc32c } from './crc32c';
 import { readVarint } from './varint';
 import {
@@ -23,10 +30,16 @@ import {
   CONTAINER_CODEC_NONE,
   CRC32C_BYTES,
   DEFAULT_MAX_INDEX_BYTES,
+  DEFAULT_MAX_BITMAP_BYTES,
   DEFAULT_MAX_PAYLOAD_BYTES,
   DEFAULT_TAIL_BYTES,
   ELEMENT_WIDTH_32,
+  EXT_MAGIC,
+  EXT_SECTION_HEADER_BYTES,
+  EXT_SECTION_METADATA,
+  EXT_TRAILER_BYTES,
   FLAG_ENCRYPTED,
+  FLAG_EXTENSION,
   FLAG_LITTLE_ENDIAN,
   FOOTER,
   FOOTER_BYTES,
@@ -37,37 +50,67 @@ import {
   PAYLOAD_START,
   PREAMBLE_BYTES,
   KNOWN_PAYLOAD_CODEC_IDS,
+  MAX_EXT_BYTES,
   PAYLOAD_CODEC_ROARING_PORTABLE,
   VERSION_MAJOR,
 } from './format';
 
-export interface CrbmIndexEntry {
-  readonly chunkKey: number;
-  readonly offset: number;
-  readonly length: number;
-  readonly cardinality: number;
-  readonly crc32c: number;
+/**
+ * A parsed index as parallel typed arrays, one slot per entry, ascending by key. Typed arrays hold each field at
+ * its own width with no per-entry object, so the retained heap is the arrays' byte length and nothing else.
+ * `cardinalityMinusOne` stores `cardinality - 1` because a chunk's cardinality runs `[1, 65536]` and 65,536 does
+ * not fit a `u16`; an offset is a `f64` because an object past 4 GiB puts a payload beyond a `u32`.
+ */
+export interface ParsedIndex {
+  readonly keys: Uint16Array;
+  readonly cardinalityMinusOne: Uint16Array;
+  readonly lengths: Uint32Array;
+  readonly crcs: Uint32Array;
+  readonly offsets: Float64Array;
+  /** Σ cardinality over every entry. */
+  readonly cardinalitySum: number;
 }
 
 /**
- * Estimated retained JS heap for one parsed index entry, used to weight the reader-cache byte bound
- * ({@link CrbmReader.retainedIndexBytes}). In V8 an entry costs: a `Map` slot (~48–64 B: two pointer slots +
- * hash chaining), the {@link CrbmIndexEntry} object (~40–56 B: header + 5 fields, where `offset`/`crc32c`
- * routinely exceed the 2³¹ SMI range and box as heap doubles, +16 B each), and one `orderedKeys` array slot
- * (~8 B) — realistically ~130–160 B, and rounded up to 160. It is reasoned from V8's object layout, not measured
- * on the heap, so the bound it gives is a proxy: it can count the real heap high or low, and a measurement is owed
- * before it is called exact.
+ * Retained JS heap for one parsed index entry, in bytes: the `u16` key, the `u16` cardinality-minus-one, the `u32`
+ * length, the `u32` CRC and the `f64` offset of {@link ParsedIndex}. It is the exact byte length of the arrays
+ * (checked against the measured heap by a test), and weights the reader-cache byte bound
+ * ({@link CrbmReader.retainedIndexBytes}).
  */
-const RETAINED_BYTES_PER_INDEX_ENTRY = 160;
+export const RETAINED_BYTES_PER_INDEX_ENTRY = 20;
+
+/**
+ * The weight of a decoded metadata record, per byte of its canonical JSON and per key: what the record retains,
+ * measured (`tests/core/crbm/metadata-heap.test.ts`) at about one byte a byte, plus about 130 a key when its keys are
+ * unique to it, as each segment's own keys are. Counting both, with room, keeps the reader cache's byte bound honest
+ * for the costly shape and over-counts the cheap ones.
+ */
+const RETAINED_BYTES_PER_METADATA_BYTE = 2;
+const RETAINED_BYTES_PER_METADATA_KEY = 160;
+
+/** The fewest bytes one index record takes: four one-byte varints and the four-byte payload CRC. */
+const MIN_INDEX_RECORD_BYTES = 4 + CRC32C_BYTES;
+
+/**
+ * How many entries `parseIndex` makes room for, from the index's length alone: what its bytes could hold at the
+ * smallest record, and never more than one entry per 16-bit key. A hostile index cannot make the reader allocate more.
+ */
+export function indexCapacity(indexLength: number): number {
+  return Math.min(0x1_0000, Math.floor(indexLength / MIN_INDEX_RECORD_BYTES));
+}
 
 export interface CrbmReaderOptions {
   /** Speculative tail size in bytes (default 256 KB; clamped up to at least the footer size). */
   readonly tailBytes?: number;
-  /** Hard cap on a single chunk payload length (default 16 MB). */
+  /** Hard cap on a single chunk payload length (default: the 1 MiB decode cap, plus the 28-byte nonce and tag on an encrypted object). The engine decodes under `maxBitmapBytes`; raise this with it. */
   readonly maxPayloadBytes?: number;
   /** Hard cap on the whole index region fetched/parsed from one object (default 8 MB). */
   readonly maxIndexBytes?: number;
-  /** Decryption context for an encrypted object (its DEK's AEAD + AAD builder). Required iff `FLAG_ENCRYPTED`. */
+  /**
+   * Decryption context for an encrypted object (its DEK's AEAD + AAD builder). Required iff the object's footer sets
+   * `FLAG_ENCRYPTED`: an encrypted object opened without one throws {@link ValidationError}, and an object that is
+   * not encrypted, opened with one, is refused with {@link IntegrityError}.
+   */
   readonly crypto?: CrbmCrypto;
   /**
    * Opaque marker for the *incarnation of the name* this object belongs to — the caller's own identity for the
@@ -89,7 +132,9 @@ function magicMatches(bytes: Uint8Array, offset: number): boolean {
 
 /** What names an object: its size, then its footer's CRC. One spelling, for an open reader and a footer read alone. */
 const sizePart = (size: number): string => `${size}:`;
-const fingerprintFor = (size: number, footerCrc: number): string => `${sizePart(size)}${footerCrc}`;
+/** An object's fingerprint, from its size and its footer's CRC (see {@link CrbmReader.fingerprint}). */
+export const fingerprintFor = (size: number, footerCrc: number): string =>
+  `${sizePart(size)}${footerCrc}`;
 
 /**
  * Refuses a `size` that is not a whole byte count its own tail fits in. The size is the tier's word too: one that
@@ -122,6 +167,18 @@ function checkedFooter(
   return { footer, fview, storedFooterCrc };
 }
 
+/**
+ * Whether the object behind `blob` says it is encrypted, from one tail read of a footer's worth, with no key and no
+ * index; a footer that fails its own checks throws, as an open would. For a caller that must not open an object with
+ * the key it holds: an erasure looking for an id in a cleartext object under an encrypted segment, and a rollback
+ * checking that its target is what the row says.
+ */
+export async function footerSaysEncrypted(blob: BlobReader): Promise<boolean> {
+  const { bytes: tail, size } = await blob.getTail(FOOTER_BYTES);
+  const { fview } = checkedFooter(tail, size);
+  return (fview.getUint32(FOOTER.flags, true) & FLAG_ENCRYPTED) !== 0;
+}
+
 /** Read a u64 footer field, rejecting values past JS safe-integer range (precision would be lost). */
 function readU64(view: DataView, offset: number, field: string): number {
   const big = view.getBigUint64(offset, true);
@@ -139,14 +196,23 @@ export class CrbmReader {
     /** See {@link CrbmReaderOptions.lineage} — carried, never interpreted. */
     readonly lineage: unknown,
     readonly totalCardinality: number,
-    private readonly entries: Map<number, CrbmIndexEntry>,
-    private readonly orderedKeys: number[],
-    /** True when `open()` satisfied the index from the tail GET alone (no second range read). */
+    private readonly index: ParsedIndex,
+    /**
+     * True when `open()` satisfied the index, and any extension block, from the tail GET alone (no second range
+     * read).
+     */
     readonly servedFromTail: boolean,
     /** Set iff the object is encrypted — used to decrypt each chunk payload in {@link getChunk}. */
     private readonly crypto: CrbmCrypto | undefined,
     /** The footer's own CRC, as verified at open: it covers the index's CRC, the chunk count and the generation. */
     private readonly footerCrc: number,
+    /**
+     * The metadata the generation was written with, checked and decrypted at open; `undefined` when it has none
+     * (every format 1.0 object). Frozen: every caller shares one copy.
+     */
+    readonly metadata: GenerationMetadata | undefined,
+    /** What that metadata adds to {@link retainedBytes}; 0 when there is none. */
+    private readonly metadataWeight: number,
   ) {}
 
   /**
@@ -164,18 +230,36 @@ export class CrbmReader {
   }
 
   /**
-   * Estimated retained JS heap of this reader's parsed index — the weight the storage reader cache bounds on
-   * (a wide segment's parsed index, not its payloads, dominates the reader's footprint). `entries.size` scales with the number
-   * of resident chunks (≤ 65536), so this is `entries.size × {@link RETAINED_BYTES_PER_INDEX_ENTRY}`.
+   * Retained JS heap of this reader's parsed index — the weight the storage reader cache bounds on (a wide
+   * segment's parsed index, not its payloads, dominates the reader's footprint): the exact byte length of the
+   * arrays that hold it, {@link RETAINED_BYTES_PER_INDEX_ENTRY} per entry.
    */
   get retainedIndexBytes(): number {
-    return this.entries.size * RETAINED_BYTES_PER_INDEX_ENTRY;
+    const { keys, cardinalityMinusOne, lengths, crcs, offsets } = this.index;
+    return (
+      keys.byteLength +
+      cardinalityMinusOne.byteLength +
+      lengths.byteLength +
+      crcs.byteLength +
+      offsets.byteLength
+    );
+  }
+
+  /**
+   * What this reader holds, the weight the storage reader cache bounds on: its parsed index
+   * ({@link retainedIndexBytes}), plus a weight for the metadata it decoded, from its canonical length and its number
+   * of keys. Equal to {@link retainedIndexBytes} for a generation with no metadata. A cache heuristic, not a contract:
+   * how the metadata is weighed may change in any release.
+   */
+  get retainedBytes(): number {
+    return this.retainedIndexBytes + this.metadataWeight;
   }
 
   /** Per-chunk cardinality (`chunkKey → count`) from the parsed index — no payload reads. */
   cardinalities(): Map<number, number> {
+    const { keys, cardinalityMinusOne } = this.index;
     const out = new Map<number, number>();
-    for (const [chunkKey, entry] of this.entries) out.set(chunkKey, entry.cardinality);
+    for (let i = 0; i < keys.length; i++) out.set(keys[i]!, cardinalityMinusOne[i]! + 1);
     return out;
   }
 
@@ -197,7 +281,6 @@ export class CrbmReader {
   static async open(blob: BlobReader, options: CrbmReaderOptions = {}): Promise<CrbmReader> {
     // Always fetch at least a footer's worth, regardless of a smaller caller request.
     const tailBytes = Math.max(options.tailBytes ?? DEFAULT_TAIL_BYTES, FOOTER_BYTES);
-    const maxPayloadBytes = options.maxPayloadBytes ?? DEFAULT_MAX_PAYLOAD_BYTES;
     const maxIndexBytes = options.maxIndexBytes ?? DEFAULT_MAX_INDEX_BYTES;
     const { bytes: tail, size } = await blob.getTail(tailBytes);
     const { footer, fview, storedFooterCrc } = checkedFooter(tail, size);
@@ -254,6 +337,19 @@ export class CrbmReader {
     const chunkCount = fview.getUint32(FOOTER.chunkCount, true);
     const totalCardinality = readU64(fview, FOOTER.totalCardinality, 'total_cardinality');
     const generation = readU64(fview, FOOTER.generation, 'generation');
+    // A key is given only for an encrypted segment. A cleartext object under one was never one of its generations:
+    // a publish never adds a key to a segment that has generations, and refuses a cleartext object onto a row with
+    // one. So it is forged, corrupt, a cleartext write that never published, or one an earlier release published
+    // while racing the segment's first keyed load, and its index and metadata are not believed.
+    if (!encrypted && options.crypto !== undefined) {
+      throw new IntegrityError(
+        `.crbm generation ${generation} is not encrypted, but it was opened with a key: a cleartext object where an ` +
+          'encrypted one belongs is forged, corrupt, or a write that never published (a crash, before the ' +
+          "segment's key was made); a load's collection, dropSegment or deleting the object removes it",
+      );
+    }
+    const versionMinor = footer[FOOTER.versionMinor]!;
+    const hasExtension = (flags & FLAG_EXTENSION) !== 0;
 
     // Bounds + size cap on the index region before trusting/fetching it.
     if (indexOffset < PAYLOAD_START || indexOffset + indexLength > size - FOOTER_BYTES) {
@@ -268,28 +364,40 @@ export class CrbmReader {
     // Validate the front preamble too, but only when this GET already covers it (no extra request).
     const tailCoversFrom = size - tail.length;
     if (tailCoversFrom === 0) {
-      if (!magicMatches(tail, 0) || tail[4] !== versionMajor) {
+      if (!magicMatches(tail, 0) || tail[4] !== versionMajor || tail[5] !== versionMinor) {
         throw new IntegrityError('.crbm preamble magic/version mismatch with footer');
       }
     }
 
     // --- Index: already in the tail, or one more GET ---
-    let indexBytes: Uint8Array;
+    // With the block flagged, the range read starts a whole block's worth before the index, so a block of any size it may hold comes
+    // with the index: the block costs bytes, never a request, unless the tail ends inside it.
+    const lowest = hasExtension
+      ? Math.max(PAYLOAD_START, indexOffset - EXT_TRAILER_BYTES - MAX_EXT_BYTES)
+      : indexOffset;
+    let region: Uint8Array;
+    let regionStart: number;
     let servedFromTail: boolean;
     if (indexOffset >= tailCoversFrom) {
-      const start = indexOffset - tailCoversFrom;
-      indexBytes = tail.subarray(start, start + indexLength);
+      region = tail;
+      regionStart = tailCoversFrom;
       servedFromTail = true;
     } else {
-      indexBytes = await blob.getRange(indexOffset, indexLength);
+      region = await blob.getRange(lowest, indexOffset + indexLength - lowest);
+      regionStart = lowest;
       servedFromTail = false;
     }
+    const indexBytes = region.subarray(
+      indexOffset - regionStart,
+      indexOffset - regionStart + indexLength,
+    );
     if (crc32c(indexBytes) !== indexCrc) {
       throw new IntegrityError('.crbm index CRC mismatch');
     }
 
     // Decrypt the index (nonce/tag from the footer) before parsing; AAD binds it to this (segment, generation).
-    // A wrong key / tampered index / wrong context fails here as an IntegrityError — never a wrong parse.
+    // A wrong key / tampered index / wrong context fails here as an IntegrityError — never a wrong parse. Before the
+    // extension block, so a wrong key is reported here, as one, and not at the sealed metadata.
     const indexForParse = encrypted
       ? options.crypto!.aead.open(
           {
@@ -301,10 +409,64 @@ export class CrbmReader {
         )
       : indexBytes;
 
-    const { entries, orderedKeys, cardinalitySum } = parseIndex(
+    // --- Extension block (flagged): sections ‖ u32 sectionsLength ‖ u32 crc32c ‖ "CRBX", just before the index ---
+    let payloadEnd = indexOffset;
+    let metadata: GenerationMetadata | undefined;
+    let metadataLength = 0;
+    if (hasExtension) {
+      const trailerStart = indexOffset - EXT_TRAILER_BYTES;
+      if (trailerStart < PAYLOAD_START) {
+        throw new IntegrityError('.crbm flags an extension block, but has no room for one');
+      }
+      // The block's bytes come from what is already fetched, or, when the tail ends inside the block, from one read.
+      let window = { bytes: region, start: regionStart };
+      if (trailerStart < regionStart) {
+        window = { bytes: await blob.getRange(lowest, indexOffset - lowest), start: lowest };
+        servedFromTail = false;
+      }
+      const trailer = within(window.bytes, window.start, trailerStart, indexOffset);
+      const tview = new DataView(trailer.buffer, trailer.byteOffset, trailer.byteLength);
+      if (!EXT_MAGIC.every((b, i) => trailer[8 + i] === b)) {
+        throw new IntegrityError('.crbm extension block trailer magic mismatch');
+      }
+      const sectionsLength = tview.getUint32(0, true);
+      if (sectionsLength > MAX_EXT_BYTES) {
+        throw new IntegrityError(
+          `.crbm extension block ${sectionsLength}B exceeds cap ${MAX_EXT_BYTES}B`,
+        );
+      }
+      const extStart = trailerStart - sectionsLength;
+      if (extStart < PAYLOAD_START) {
+        throw new IntegrityError(`.crbm extension block of ${sectionsLength}B out of bounds`);
+      }
+      // The CRC covers the sections and the length field after them.
+      let covered: Uint8Array;
+      if (extStart >= window.start) {
+        covered = within(window.bytes, window.start, extStart, trailerStart + 4);
+      } else {
+        covered = await blob.getRange(extStart, sectionsLength + 4);
+        servedFromTail = false;
+        if (covered.length !== sectionsLength + 4) {
+          throw new IntegrityError('.crbm extension block read short');
+        }
+      }
+      if (crc32c(covered) !== tview.getUint32(4, true)) {
+        throw new IntegrityError('.crbm extension block CRC mismatch');
+      }
+      ({ metadata, metadataLength } = extensionContents(
+        covered.subarray(0, sectionsLength),
+        options.crypto,
+      ));
+      payloadEnd = extStart;
+    }
+
+    // Payloads live in [PAYLOAD_START, payloadEnd), which ends at the extension block when there is one; an
+    // encrypted payload is at least its nonce and tag.
+    const index = parseIndex(
       indexForParse,
-      size,
-      maxPayloadBytes,
+      payloadEnd,
+      options.maxPayloadBytes ?? (encrypted ? DEFAULT_MAX_PAYLOAD_BYTES : DEFAULT_MAX_BITMAP_BYTES),
+      encrypted ? AEAD_NONCE_BYTES + AEAD_TAG_BYTES : 1,
     );
     if (encrypted) {
       // Footer count/cardinality are zeroed on an encrypted object; the decrypted index is authoritative (and
@@ -316,14 +478,14 @@ export class CrbmReader {
       }
     } else {
       // Cleartext: the footer total + count must match the index — don't trust the footer blindly.
-      if (entries.size !== chunkCount) {
+      if (index.keys.length !== chunkCount) {
         throw new IntegrityError(
-          `.crbm chunk_count ${chunkCount} != ${entries.size} index entries`,
+          `.crbm chunk_count ${chunkCount} != ${index.keys.length} index entries`,
         );
       }
-      if (cardinalitySum !== totalCardinality) {
+      if (index.cardinalitySum !== totalCardinality) {
         throw new IntegrityError(
-          `.crbm total_cardinality ${totalCardinality} != Σ index cardinality ${cardinalitySum}`,
+          `.crbm total_cardinality ${totalCardinality} != Σ index cardinality ${index.cardinalitySum}`,
         );
       }
     }
@@ -333,18 +495,22 @@ export class CrbmReader {
       size,
       generation,
       options.lineage,
-      cardinalitySum,
-      entries,
-      orderedKeys,
+      index.cardinalitySum,
+      index,
       servedFromTail,
       options.crypto,
       storedFooterCrc,
+      metadata,
+      metadata === undefined
+        ? 0
+        : RETAINED_BYTES_PER_METADATA_BYTE * metadataLength +
+            RETAINED_BYTES_PER_METADATA_KEY * Object.keys(metadata).length,
     );
   }
 
   /** Chunk keys present in this generation, ascending. */
   chunkKeys(): number[] {
-    return this.orderedKeys.slice();
+    return Array.from(this.index.keys);
   }
 
   /** Segment cardinality from the footer (no payload reads) — the cheap `count()` path. */
@@ -352,8 +518,23 @@ export class CrbmReader {
     return this.totalCardinality;
   }
 
+  /** The slot holding `chunkKey` (binary search over the ascending keys), or -1 when this generation has none. */
+  private slotOf(chunkKey: number): number {
+    const keys = this.index.keys;
+    let lo = 0;
+    let hi = keys.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >>> 1;
+      const k = keys[mid]!;
+      if (k === chunkKey) return mid;
+      if (k < chunkKey) lo = mid + 1;
+      else hi = mid - 1;
+    }
+    return -1;
+  }
+
   has(chunkKey: number): boolean {
-    return this.entries.has(chunkKey);
+    return this.slotOf(chunkKey) >= 0;
   }
 
   /**
@@ -363,14 +544,16 @@ export class CrbmReader {
    * not mutate it.
    */
   async getChunk(chunkKey: number): Promise<Uint8Array | null> {
-    const e = this.entries.get(chunkKey);
-    if (e === undefined) return null;
+    const slot = this.slotOf(chunkKey);
+    if (slot < 0) return null;
+    const offset = this.index.offsets[slot]!;
+    const length = this.index.lengths[slot]!;
     // Re-validate bounds at read time (defense in depth — a buggy caller or future mutable index path).
-    if (e.offset < PAYLOAD_START || e.offset + e.length > this.objectSize - FOOTER_BYTES) {
+    if (offset < PAYLOAD_START || offset + length > this.objectSize - FOOTER_BYTES) {
       throw new IntegrityError(`chunk ${chunkKey} payload out of bounds`);
     }
-    const bytes = await this.blob.getRange(e.offset, e.length);
-    if (crc32c(bytes) !== e.crc32c) {
+    const bytes = await this.blob.getRange(offset, length);
+    if (crc32c(bytes) !== this.index.crcs[slot]) {
       throw new IntegrityError(`chunk ${chunkKey} payload CRC mismatch`);
     }
     if (this.crypto === undefined) return bytes;
@@ -390,16 +573,133 @@ export class CrbmReader {
   }
 }
 
+/** `bytes[from, to)` of a buffer that starts at object offset `start`, or an IntegrityError when it holds less. */
+function within(bytes: Uint8Array, start: number, from: number, to: number): Uint8Array {
+  if (from < start || to > start + bytes.length) {
+    throw new IntegrityError('.crbm extension block read short');
+  }
+  return bytes.subarray(from - start, to - start);
+}
+
+function extensionCorrupt(message: string): never {
+  throw new IntegrityError(`.crbm extension block: ${message}`);
+}
+
+/**
+ * Read the sections of an extension block, its bytes before the trailer, once their CRC has passed. Each section is
+ * `u8 type ‖ u32 length ‖ bytes`, in strictly ascending type order, and together they fill the region exactly. Type 1
+ * is the generation's metadata, held to the metadata rules and its canonical form (and opened first with `crypto`,
+ * under the metadata scope, when the object is encrypted); a type this build does not know is a later build's, and
+ * is skipped. Returns the metadata, or `undefined` when the block has none. Every other shape is an
+ * {@link IntegrityError}.
+ *
+ * Exported for the coverage-guided fuzz harness, which drives it directly, past the block's CRC; not public API.
+ */
+export function parseExtension(
+  sections: Uint8Array,
+  crypto: CrbmCrypto | undefined,
+): GenerationMetadata | undefined {
+  return extensionContents(sections, crypto).metadata;
+}
+
+/** {@link parseExtension}'s walk, with the canonical length of the metadata it decoded, for the reader's weight. */
+function extensionContents(
+  sections: Uint8Array,
+  crypto: CrbmCrypto | undefined,
+): { metadata: GenerationMetadata | undefined; metadataLength: number } {
+  const view = new DataView(sections.buffer, sections.byteOffset, sections.byteLength);
+  let metadata: GenerationMetadata | undefined;
+  let metadataLength = 0;
+  let lastType = 0;
+  let pos = 0;
+  while (pos < sections.length) {
+    if (sections.length - pos < EXT_SECTION_HEADER_BYTES)
+      extensionCorrupt('a section header is cut off');
+    const type = sections[pos]!;
+    const length = view.getUint32(pos + 1, true);
+    pos += EXT_SECTION_HEADER_BYTES;
+    // Starting from 0 refuses type 0, a repeated type and a type out of order with one comparison.
+    if (type <= lastType) {
+      extensionCorrupt(
+        type === 0
+          ? 'section type 0 is not a section type'
+          : `section type ${type} after ${lastType}`,
+      );
+    }
+    if (length > sections.length - pos) extensionCorrupt(`section ${type} runs past the block`);
+    const body = sections.subarray(pos, pos + length);
+    pos += length;
+    lastType = type;
+    if (type === EXT_SECTION_METADATA)
+      ({ metadata, metadataLength } = metadataSection(body, crypto));
+  }
+  return { metadata, metadataLength };
+}
+
+/** The metadata section's record: its canonical JSON, opened first when the object is encrypted. */
+function metadataSection(
+  body: Uint8Array,
+  crypto: CrbmCrypto | undefined,
+): { metadata: GenerationMetadata; metadataLength: number } {
+  if (crypto === undefined) {
+    return { metadata: metadataFromBytes(body, extensionCorrupt), metadataLength: body.length };
+  }
+  const framing = AEAD_NONCE_BYTES + AEAD_TAG_BYTES;
+  if (body.length <= framing || body.length > framing + MAX_METADATA_BYTES) {
+    extensionCorrupt(`sealed metadata of ${body.length}B is not a nonce, up to 1 KiB and a tag`);
+  }
+  let plain: Uint8Array;
+  try {
+    plain = crypto.aead.open(
+      {
+        nonce: body.subarray(0, AEAD_NONCE_BYTES),
+        ciphertext: body.subarray(AEAD_NONCE_BYTES, body.length - AEAD_TAG_BYTES),
+        tag: body.subarray(body.length - AEAD_TAG_BYTES),
+      },
+      crypto.aadFor('metadata'),
+    );
+  } catch (err) {
+    if (!isIntegrityError(err)) throw err;
+    // The index has opened under the same key and generation, so the key is right: the causes left are these, and a
+    // CrbmCrypto written before the extension block existed, which maps only chunk keys and the index, is one of them.
+    extensionCorrupt(
+      "the sealed metadata does not open: tampered bytes, a block moved from another object, or a CrbmCrypto whose aadFor does not map the 'metadata' scope",
+    );
+  }
+  return { metadata: metadataFromBytes(plain, extensionCorrupt), metadataLength: plain.length };
+}
+
 // Exported for the coverage-guided fuzz harness, which fuzzes the hand-written index parser
 // directly on raw bytes — bypassing the CRC wall that mutational fuzzing can't cross. NOT part of the public
-// API surface (`src/index.ts`); reached only via `src/testing/fuzz-support.ts` → the gitignored `fuzz/build/`.
+// API surface (`src/index.ts`); reached only via `src/testing/fuzz-core.ts` → the gitignored `fuzz/build/`.
+//
+// This is where an index is checked for internal consistency, once per open: `count()` and every other read that
+// answers from the index alone trust what it records without decoding a payload. Every entry's key is in range
+// and strictly above the last; its cardinality is in `[1, 65536]`; its payload is non-empty (at least
+// `minPayloadBytes`), within `maxPayloadBytes`, and lies inside the payload region `[PAYLOAD_START, payloadEnd)`.
+// Offsets are stored as unsigned gaps after the previous payload, so payloads ascend and never overlap by
+// construction. `open` then holds the sum and the count to the footer's, where the footer records them.
+//
+// Not checked here, because the format does not record enough: an encrypted footer hides the count and the total
+// (the index's AEAD tag stands in for them), and a cardinality is not compared with its payload, since only the
+// codec can read a payload, and no read compares them afterwards: a payload whose bits disagree with its entry's
+// cardinality decodes to what it holds, and `count()` still reports the entry's.
 export function parseIndex(
   indexBytes: Uint8Array,
-  objectSize: number,
+  payloadEnd: number,
   maxPayloadBytes: number,
-): { entries: Map<number, CrbmIndexEntry>; orderedKeys: number[]; cardinalitySum: number } {
-  const entries = new Map<number, CrbmIndexEntry>();
-  const orderedKeys: number[] = [];
+  minPayloadBytes = 1,
+): ParsedIndex {
+  // The arrays are sized from what the index could hold, never from what it claims: every record takes at least
+  // MIN_INDEX_RECORD_BYTES and keys are unique within 16 bits, so a hostile index cannot make this allocate more
+  // than its own bytes (and 65,536 slots) could fill.
+  const capacity = indexCapacity(indexBytes.length);
+  const keys = new Uint16Array(capacity);
+  const cardinalityMinusOne = new Uint16Array(capacity);
+  const lengths = new Uint32Array(capacity);
+  const crcs = new Uint32Array(capacity);
+  const offsets = new Float64Array(capacity);
+  let count = 0;
   let pos = 0;
   let prevKey = 0;
   let prevEnd = PAYLOAD_START;
@@ -408,11 +708,15 @@ export function parseIndex(
   // Parse entries until the index region is exactly consumed (chunk_count is hidden on encrypted objects, so
   // the byte length is the bound — readVarint throws on any overrun, so a malformed index fails cleanly).
   for (let i = 0; pos < indexBytes.length; i++) {
-    const keyDelta = readVarint(indexBytes, pos);
-    const offDelta = readVarint(indexBytes, keyDelta.next);
-    const len = readVarint(indexBytes, offDelta.next);
-    const card = readVarint(indexBytes, len.next);
-    pos = card.next;
+    const keyDeltaRead = readVarint(indexBytes, pos);
+    const offDeltaRead = readVarint(indexBytes, keyDeltaRead.next);
+    const lenRead = readVarint(indexBytes, offDeltaRead.next);
+    const cardRead = readVarint(indexBytes, lenRead.next);
+    const keyDelta = keyDeltaRead.value;
+    const offDelta = offDeltaRead.value;
+    const len = lenRead.value;
+    const card = cardRead.value;
+    pos = cardRead.next;
     if (pos + CRC32C_BYTES > indexBytes.length) {
       throw new IntegrityError('.crbm index truncated (missing payload CRC)');
     }
@@ -424,36 +728,48 @@ export function parseIndex(
       0;
     pos += CRC32C_BYTES;
 
-    const chunkKey = prevKey + keyDelta.value;
-    const offset = prevEnd + offDelta.value;
+    const chunkKey = prevKey + keyDelta;
+    const offset = prevEnd + offDelta;
     // Unsigned deltas mean keys can only stay flat or rise; a 0 delta after the first is a duplicate.
-    if (i > 0 && keyDelta.value === 0) {
+    if (i > 0 && keyDelta === 0) {
       throw new IntegrityError(`.crbm index has a duplicate chunkKey ${chunkKey}`);
     }
     if (chunkKey > 0xffff) throw new IntegrityError(`.crbm chunkKey ${chunkKey} out of range`);
-    if (len.value === 0 || len.value > maxPayloadBytes) {
-      throw new IntegrityError(`.crbm chunk ${chunkKey} length ${len.value} invalid`);
+    if (len < minPayloadBytes || len > maxPayloadBytes) {
+      throw new IntegrityError(
+        `.crbm chunk ${chunkKey} length ${len} invalid (most is ${maxPayloadBytes})`,
+      );
     }
-    if (card.value < 1 || card.value > MAX_CHUNK_CARDINALITY) {
-      throw new IntegrityError(`.crbm chunk ${chunkKey} cardinality ${card.value} invalid`);
+    if (card < 1 || card > MAX_CHUNK_CARDINALITY) {
+      throw new IntegrityError(`.crbm chunk ${chunkKey} cardinality ${card} invalid`);
     }
-    if (offset < PAYLOAD_START || offset + len.value > objectSize - FOOTER_BYTES) {
+    // `offset` cannot start below the preamble: it is the previous payload's end plus an unsigned gap.
+    if (offset + len > payloadEnd) {
       throw new IntegrityError(`.crbm chunk ${chunkKey} payload out of bounds`);
     }
 
-    entries.set(chunkKey, {
-      chunkKey,
-      offset,
-      length: len.value,
-      cardinality: card.value,
-      crc32c: crc,
-    });
-    orderedKeys.push(chunkKey);
-    cardinalitySum += card.value;
+    keys[count] = chunkKey;
+    cardinalityMinusOne[count] = card - 1;
+    lengths[count] = len;
+    crcs[count] = crc;
+    offsets[count] = offset;
+    count++;
+    cardinalitySum += card;
     prevKey = chunkKey;
-    prevEnd = offset + len.value;
+    prevEnd = offset + len;
   }
   // The loop ends only when pos === indexBytes.length exactly (each entry consumes a whole record; a partial
   // trailing record makes readVarint or the CRC bound throw), so there are never unconsumed trailing bytes.
-  return { entries, orderedKeys, cardinalitySum };
+  // Trim to the entries parsed, so the arrays' byte length is exactly what the reader retains.
+  if (count === capacity) {
+    return { keys, cardinalityMinusOne, lengths, crcs, offsets, cardinalitySum };
+  }
+  return {
+    keys: keys.slice(0, count),
+    cardinalityMinusOne: cardinalityMinusOne.slice(0, count),
+    lengths: lengths.slice(0, count),
+    crcs: crcs.slice(0, count),
+    offsets: offsets.slice(0, count),
+    cardinalitySum,
+  };
 }

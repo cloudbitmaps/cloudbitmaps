@@ -1,19 +1,15 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  CloudRoaring,
-  CrbmStorageChunkSource,
-  IntegrityError,
-  eraseIdFromSegment,
-  LocalFsStorageDriver,
-  MemoryRegistryDriver,
-  bulkLoadCrbmGeneration,
-  createBackend,
-} from '@/index';
+import { CloudRoaring, CrbmStorageChunkSource, IntegrityError } from '@/index';
 import { SafeBitmap, roaringCodec } from '@/roaring-codec';
 import { verifyGeneration } from '@/core/crbm-storage-source';
 import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from '@/index';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { eraseIdFromSegment } from '@cloudbitmaps/core';
+import { brandAsBackend } from '@/core/ports';
+import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
+import { MemoryRegistryDriver } from '@/drivers/memory';
 
 const SEG: SegmentRef = { segment: 's' };
 
@@ -137,7 +133,7 @@ describe('CrbmStorageChunkSource heals a generation swept before the reader open
       await storage.delete({ ...SEG, generation: 0 });
     });
 
-    const store = new CloudRoaring({ storage: createBackend({ storage, registry }) });
+    const store = new CloudRoaring({ storage: brandAsBackend({ storage, registry }) });
     await expect(store.segment('s').has(3)).resolves.toBe(true); // generation 1 holds it
   });
 });
@@ -146,7 +142,8 @@ describe('CrbmStorageChunkSource heals a generation swept before the reader open
  * A driver + registry pair that counts the round trips a single call spends. The heal's doc-comment calls the
  * retry "bounded to exactly two resolve-and-open round trips", and that is a cost contract rather than a
  * detail: the retry re-reads the **registry**, the shared throttle-prone resource, and an N-way `intersect`
- * pays it per operand. Nothing gated it — raising the bound to 1,000 left all 1,483 tests green.
+ * pays it per operand. A retry bounded at 1,000 answers exactly as one bounded at two does, so only a count of
+ * round trips can see the bound — which is what these tests are.
  */
 function counting(storage: LocalFsStorageDriver, registry: MemoryRegistryDriver) {
   const calls = { regGet: 0, getTail: 0 };
@@ -229,8 +226,8 @@ describe('the heal is bounded to exactly two resolve-and-open round trips', () =
   });
 
   it('an error that is NOT NotFound propagates on the first attempt, unretried', async () => {
-    // The widened `try` now encloses the registry read and the reader open, so it could have swallowed faults
-    // that have nothing to do with a swept generation. Only `NotFoundError` may be retried.
+    // The `try` encloses the registry read and the reader open, so it could swallow faults that have nothing to
+    // do with a swept generation. Only `NotFoundError` may be retried.
     const storage = freshStorage();
     const registry = new MemoryRegistryDriver();
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2], { registry });
@@ -302,7 +299,7 @@ describe("a generation's footer must name the generation it is stored as", () =>
 
   it('refuses it in the load guard, which reads the current generation before a load replaces it', async () => {
     const { storage, registry } = await misfiled(0, 1);
-    const store = new CloudRoaring({ storage: createBackend({ storage, registry }) });
+    const store = new CloudRoaring({ storage: brandAsBackend({ storage, registry }) });
     await expect(store.load(SEG, [1, 2, 3])).rejects.toThrow(IntegrityError);
     expect((await registry.get(SEG))!.currentGen).toBe(1); // nothing was published over it
   });

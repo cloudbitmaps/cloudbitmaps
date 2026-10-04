@@ -14,12 +14,11 @@
  * diagnostic, no autocomplete, and none of the compile-time guards meant to refuse a bad wiring. Since an
  * entry re-exports nearly everything, that is nearly the whole published surface.
  *
- * The convention of extracting a detector is this repo's own: `tests/arch/import-boundaries.test.ts` says a
- * rule mistranslated during a move "would be a silent gap — `pnpm lint` passing proves nothing about a rule
- * that never matched", and `scripts/sdk-specifiers.cjs` / `no-circular.test.ts` are extracted for the same
- * reason. An adversarial review of THIS matcher's first draft — a bare regex inlined in both files — found
- * one false positive and four false negatives, none of which any suite would have caught, because the gate
- * was green either way.
+ * The convention of extracting a detector is this repo's own: as `tests/arch/import-boundaries.test.ts` puts
+ * it, a rule written wrong is a silent gap, and `pnpm lint` passing proves nothing about a rule that never
+ * matched; `scripts/sdk-specifiers.cjs` / `no-circular.test.ts` are extracted for the same reason. A bare
+ * regex inlined in both files reads specifiers inside comments, so the build silently edits documentation, and
+ * misses forms `SPECIFIER` covers; no suite notices a miss, because the gate stays green.
  */
 
 /**
@@ -28,9 +27,9 @@
  * Two jobs at once. Comments must not be scanned: tsc preserves JSDoc into the `.d.ts` (70 of core's 71
  * declaration files carry a `/**`), so a doc-comment showing `import { X } from './my-app/wiring'` would
  * both trip the gate with an error asserting something false AND get silently rewritten by the build,
- * editing published documentation. That is the identical false positive the SDK gate hit and documented —
- * and the remedy a contributor reaches for is to water the comment down, which is the erosion these gates
- * exist to prevent.
+ * editing published documentation. The SDK gate guards against the same false positive (see
+ * `sdk-specifiers.cjs`) — and the remedy a contributor reaches for is to water the comment down, which is
+ * the erosion these gates exist to prevent.
  *
  * Same-LENGTH (rather than `sdk-specifiers.cjs`'s single space) because this scanner's callers rewrite the
  * ORIGINAL source at the offsets found here; collapsing a comment would shift every offset after it.
@@ -58,9 +57,9 @@ function blankComments(source) {
  *
  * `from` alone covers `import … from`, `export … from`, `export * from` and `export * as ns from`; `import`
  * covers the side-effect form, the dynamic/type form `import('./x').Foo`, and the leading half of
- * `import X = require('./x')`; `require` covers that form's tail, which the first draft missed entirely
- * (legal in a `.d.ts`, needs the extension exactly like `from`, and appears the moment anyone writes an
- * `export =` interop shim); `declare module` covers augmenting a relative module.
+ * `import X = require('./x')`; `require` covers that form's tail (legal in a `.d.ts`, needs the extension
+ * exactly like `from`, and appears the moment anyone writes an `export =` interop shim); `declare module`
+ * covers augmenting a relative module.
  *
  * `\b` before `require` is what keeps `createRequire` out. The optional `\(?` is shared by the call forms.
  *

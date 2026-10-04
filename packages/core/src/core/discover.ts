@@ -12,7 +12,7 @@
  */
 import type { IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
 import { excludingReservedRows } from './registry-scan';
-import { validateSegmentRef } from './validate';
+import { validateUserNamespace, validateUserRef } from './validate';
 
 /** One segment the registry knows about. */
 export interface SegmentInfo extends SegmentRef {
@@ -51,7 +51,7 @@ export interface SegmentInfo extends SegmentRef {
  * has to hold, use the fences that exist for it — `load`'s guard, or `expectFrom`/`expectToken` on a publish.
  */
 export async function segmentExists(ref: SegmentRef, registry: IRegistryDriver): Promise<boolean> {
-  validateSegmentRef(ref);
+  validateUserRef(ref);
   const record = await registry.get(ref);
   return record !== null && record.status !== 'destroyed' && record.currentGen !== null;
 }
@@ -66,11 +66,13 @@ export async function segmentExists(ref: SegmentRef, registry: IRegistryDriver):
  * **Scoping to a namespace narrows the LIST prefix**, so it really is the difference between reading one
  * tenant and reading all of them.
  *
- * Streams, so a large fleet need not be held at once, and stopping the iteration stops the scan — **with one
- * exception that matters**: a driver that buffers its enumeration defeats both properties, and
- * `RetryingRegistryDriver` does exactly that (it must, to retry a `list` as a unit). Wrapped in it, the whole
- * scan is paid for and resident before the first row reaches you. On the four native drivers the guarantee
- * holds; on S3 the granularity is a page, so one LIST page and its in-flight row reads complete regardless.
+ * Streams, so a large fleet need not be held at once, and stopping the iteration stops the scan — as long as the
+ * registry driver's own `list` streams. One that collects its whole enumeration before yielding defeats both
+ * properties, since the scan is then paid for and resident before the first row reaches you, so a custom driver's
+ * `list` should yield each row as it reads it. The registry drivers this library ships all stream; on S3, GCS and
+ * Azure Blob the granularity is a page, so one LIST page and its in-flight row reads complete regardless. Nothing
+ * here retries the scan: a transient fault part-way through ends the iteration with that error, and calling
+ * `listSegments` again scans from the start, since the iterable one call returns is used up.
  *
  * Yields `destroyed` tombstones, and rows whose `currentGen` is `null`, because hiding either would make this
  * disagree with the registry it reports on — a filtered enumeration that looks complete is how a retention
@@ -86,8 +88,7 @@ export async function* listSegments(
   // Validated here rather than only at the facade: this is a public export of `@cloudbitmaps/core`, and its
   // sibling `segmentExists` validates. Without it a typo'd or externally-supplied tenant id reads as "this
   // tenant has no segments" — an empty result is the most dangerous possible answer to a malformed question.
-  if (options.namespace !== undefined)
-    validateSegmentRef({ segment: 'x', namespace: options.namespace });
+  if (options.namespace !== undefined) validateUserNamespace(options.namespace);
   const raw = registry.list(options.namespace);
   const source = options.namespace === undefined ? excludingReservedRows(raw) : raw;
   for await (const record of source) {

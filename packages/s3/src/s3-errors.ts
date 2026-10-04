@@ -3,7 +3,7 @@
  *
  * Kept SDK-free and side-effect-free (they only read structural shapes — `err.name`,
  * `$metadata.httpStatusCode`, a `Content-Range` string) so the subtle S3-specific translation logic is
- * unit-testable without a live MinIO/S3 or even the AWS SDK. Shared AWS shapes come from `_shared/aws-errors`.
+ * unit-testable without a live MinIO/S3 or even the AWS SDK. The AWS error shapes come from `./aws-errors`.
  */
 
 import {
@@ -12,7 +12,7 @@ import {
   isNetworkOrTimeout,
   isSdkRetryable,
   isServerSide,
-} from '@cloudbitmaps/core/driver-kit';
+} from './aws-errors';
 
 /** A conditional `If-None-Match: *` PUT lost the write-once race (the object already existed). */
 export function isPreconditionFailed(err: unknown): boolean {
@@ -34,6 +34,20 @@ export function isConditionalConflict(err: unknown): boolean {
   );
 }
 
+/**
+ * S3 asked the client to slow down: `503 SlowDown`, or any other `503` (`ServiceUnavailable`). The SDK raises it with
+ * `name` set to the code and `$metadata.httpStatusCode` to 503, and no `$retryable` marker. S3 does not document that a
+ * throttled request was not applied, so a write sent again after one must still tell a landed first send apart.
+ */
+export function isThrottle(err: unknown): boolean {
+  return errorName(err) === 'SlowDown' || httpStatus(err) === 503;
+}
+
+/** A multipart upload id S3 no longer knows: completed, aborted or expired (`404 NoSuchUpload`). */
+export function isNoSuchUpload(err: unknown): boolean {
+  return errorName(err) === 'NoSuchUpload';
+}
+
 /** The object / generation does not exist (GetObject → `NoSuchKey`, HeadObject → `NotFound`; both 404). */
 export function isNotFound(err: unknown): boolean {
   const name = errorName(err);
@@ -46,9 +60,20 @@ export function isInvalidRange(err: unknown): boolean {
 }
 
 /**
+ * S3 refused the request's signature because the client's clock was off by minutes, and the SDK has corrected the
+ * clock for the next request. Nothing was applied, and a second request is signed right. The SDK's own retry treats
+ * this as transient; a conditional write is sent once without that retry, so the driver has to say so itself.
+ */
+function isClockSkewCorrected(err: unknown): boolean {
+  const e = err as { $metadata?: { clockSkewCorrected?: unknown } } | null;
+  return e?.$metadata?.clockSkewCorrected === true;
+}
+
+/**
  * A transient S3 fault that is safe to retry: throttling (`SlowDown` / 503), any 5xx, a dropped/timed-out
- * connection, or anything the SDK itself marks retryable. Excludes the deterministic outcomes above
- * (412/404/416) — those are caller-meaningful and must never be retried/reclassified.
+ * connection, a clock-skew refusal the SDK has corrected for, or anything the SDK itself marks retryable. Excludes
+ * the deterministic outcomes above (412/404/416) — those are caller-meaningful and must never be
+ * retried/reclassified.
  */
 export function isTransient(err: unknown): boolean {
   // A conditional-write conflict (412/409) is caller-meaningful OCC, not a blind-retryable transient.
@@ -57,7 +82,8 @@ export function isTransient(err: unknown): boolean {
     errorName(err) === 'SlowDown' ||
     isServerSide(err) ||
     isNetworkOrTimeout(err) ||
-    isSdkRetryable(err)
+    isSdkRetryable(err) ||
+    isClockSkewCorrected(err)
   );
 }
 

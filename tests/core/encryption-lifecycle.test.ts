@@ -1,19 +1,15 @@
+import { nextGeneration } from '@/core/generation-gc';
+import { publishGeneration } from '@/core/crbm-storage-source';
 import { randomBytes } from 'node:crypto';
-import {
-  CloudRoaring,
-  CrbmStorageChunkSource,
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
-  bulkLoadCrbmGeneration,
-  destroySegment,
-  eraseIdFromSegment,
-  eraseNamespace,
-  nextGeneration,
-  publishGeneration,
-} from '@/index';
+import { CloudRoaring, CrbmStorageChunkSource, destroySegment, eraseNamespace } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
+import { roaringCodec } from '@/roaring-codec';
 import { KeyUnavailableError, ValidationError, WriteConflictError } from '@/core/errors';
-import type { EraseIdDeps, IKeystore, SegmentRef } from '@/index';
+import type { IKeystore, SegmentRef } from '@/index';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { eraseIdFromSegment } from '@cloudbitmaps/core';
+import type { EraseIdDeps } from '@cloudbitmaps/core';
+import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 
 const SEG: SegmentRef = { segment: 's' };
 const k = (): Uint8Array => randomBytes(32);
@@ -29,7 +25,7 @@ const k = (): Uint8Array => randomBytes(32);
 function world(keystore?: IKeystore) {
   const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver();
-  const deps: EraseIdDeps = { storage, registry, keystore };
+  const deps: EraseIdDeps = { storage, registry, keystore, codec: roaringCodec };
   const store = (ks = keystore): CloudRoaring =>
     new CloudRoaring({
       storage: new CrbmStorageChunkSource(storage, { registry, keystore: ks }),
@@ -194,7 +190,7 @@ describe('crypto-shred — destroySegment / eraseNamespace', () => {
   });
 
   it('reports contention rather than a destruction it could not finish', async () => {
-    // The registry CAS is now the only step a shred takes, and it is bounded. A row that keeps moving under it
+    // The registry CAS is the only step a shred takes, and it is bounded. A row that keeps moving under it
     // — a concurrent publish, a policy write — must surface as a `WriteConflictError` with the segment left
     // ACTIVE and still holding its key, so a retry can finish the job. The failure mode being guarded is the
     // opposite: reporting `destroyed: true` while the key (and therefore the data) is still there.
@@ -255,11 +251,11 @@ describe('crypto-shred — destroySegment / eraseNamespace', () => {
   });
 
   it('eraseNamespace keeps a complete ledger when one segment cannot be erased', async () => {
-    // Before this, a single failing segment aborted the loop: the caller got an exception, no ledger, and no way
+    // A single failing segment that aborted the loop would leave the caller an exception, no ledger, and no way
     // to learn which segments had ALREADY been destroyed before the throw — the worst answer available on an
     // erasure command, because some data really was destroyed and the record of which is gone.
     //
-    // The fix isolates per segment, matching `eraseSubject` ("one failure never aborts the ledger"). Note this
+    // So each segment is isolated, matching `eraseSubject` ("one failure never aborts the ledger"). Note this
     // trades loud-but-empty for quiet-but-complete, so the assertions below check BOTH halves: the healthy
     // segments really were destroyed, and the failing one is recorded as not-destroyed with a reason rather
     // than omitted or silently counted as a success.

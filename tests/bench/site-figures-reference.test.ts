@@ -1128,40 +1128,8 @@ describe("site:figures holds site-next/'s homepage to its sources", () => {
   });
 });
 
-/**
- * `site-next/` describes the current release only, so the July run's figures, run id and date are refused in every
- * file of the tree, including those the money scan does not read, while `site/` and the docs keep the receipt.
- */
-describe('site:figures keeps the July run off every file in site-next/', () => {
-  it.each([
-    [
-      'site-next/demo.html',
-      '</main>',
-      '<p>Recorded as run 2026-07-25-60291.</p></main>',
-      'calibration run id',
-    ],
-    [
-      'site-next/flavors/roaring.html',
-      '</main>',
-      '<p>Measured on 2026-07-25.</p></main>',
-      'calibration date',
-    ],
-    ['site-next/llms.txt', '\n', '\nA count() is $0.14 per million.\n', 'July · 1M count() calls'],
-    ['site-next/demo.js', '\n', '\n// run 2026-07-25-60291\n', 'calibration run id'],
-    [
-      'site-next/usage.html',
-      '</main>',
-      '<p>A count() is &#36;0.14 per million.</p></main>',
-      'July · 1M count() calls',
-    ],
-  ])('fails %s when it states the July run', (file, at, planted, says) => {
-    const text = readFileSync(join(ROOT, file), 'utf8');
-    expect(text).toContain(at);
-    const r = siteFigures('site-next', { [file]: text.replace(at, () => planted) });
-    expect(r.code, r.out).toBe(1);
-    expect(r.out).toContain(`${file} states ${says}`);
-  });
-
+/** The money scan reads every page of both trees, /demo included, as a reader gets it. */
+describe('site:figures reads every page of a tree', () => {
   it('refuses an unaccounted dollar figure on /demo too', () => {
     const file = 'site-next/demo.html';
     const text = readFileSync(join(ROOT, file), 'utf8');
@@ -1212,18 +1180,6 @@ describe('site:figures keeps the July run off every file in site-next/', () => {
     });
     expect(r.code, r.out).toBe(1);
     expect(r.out).toContain('"9 storage drivers"');
-  });
-
-  it('leaves the receipt where the docs keep it', () => {
-    const file = 'docs/benchmarks.md';
-    const text = readFileSync(join(ROOT, file), 'utf8');
-    const r = siteFigures('site-next', {
-      [file]: text.replace(
-        '\n## ',
-        () => '\nThe July count() figure, $0.14 per million, left the pointer out.\n\n## ',
-      ),
-    });
-    expect(r.code, r.out).toBe(0);
   });
 });
 

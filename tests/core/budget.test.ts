@@ -1,7 +1,8 @@
-import { BudgetExceededError, DEFAULT_BUDGET } from '@/index';
+import { BudgetExceededError } from '@/index';
 import { resolveBudget, resolvePerOpBudget, checkBudget } from '@/core/budget';
 import { ValidationError } from '@/core/errors';
 import { collect, loadedStore, seededStore } from '../helpers/loaded';
+import { DEFAULT_BUDGET } from '@cloudbitmaps/core';
 
 /**
  * The denial-of-wallet budget, in the units the loaded store actually bills: **storage chunk fetches**. `count` /
@@ -44,7 +45,7 @@ describe('budget helper (core/budget)', () => {
     expect(resolvePerOpBudget(undefined, null)).toBeNull(); // inherit a disabled store
     expect(resolvePerOpBudget({ maxRequests: 2 }, store)).toEqual({ maxRequests: 2 }); // replace
     expect(resolvePerOpBudget(false, store)).toBeNull(); // disable
-    // The security fix: an empty/partial override must NOT silently lift the tight store ceiling to DEFAULT.
+    // The security property: an empty/partial override must NOT silently lift the tight store ceiling to DEFAULT.
     expect(resolvePerOpBudget({}, store)).toEqual({ maxRequests: 5 });
     // Only when the store itself has no ceiling does a partial override fall back to the generous default.
     expect(resolvePerOpBudget({}, null)).toEqual(DEFAULT_BUDGET);

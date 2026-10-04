@@ -1,11 +1,9 @@
+import { SafeBitmap } from '@/roaring-codec';
+import { writeCrbmGeneration } from '@/core/crbm-storage-source';
 import {
   CloudRoaring,
   CountingMetricsSink,
-  MemoryStorageDriver,
   CrbmStorageChunkSource,
-  SafeBitmap,
-  writeCrbmGeneration,
-  estimateCost,
   AWS_US_EAST_1_ONDEMAND,
   ONE_REDIS_HA_CLUSTER,
   type MetricsSnapshot,
@@ -13,6 +11,8 @@ import {
 } from '@/index';
 import { joinId } from '@/core/bit-route';
 import { collect, loadedStore, seededStore } from '../helpers/loaded';
+import { estimateCost } from '@cloudbitmaps/core';
+import { MemoryStorageDriver } from '@/drivers/memory';
 
 /**
  * Benchmark-as-test anchors. These are the **defensible-floor** cost/perf claims turned into CI

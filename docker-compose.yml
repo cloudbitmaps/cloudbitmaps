@@ -2,13 +2,13 @@
 # from the directory, so a second worktree gets its own project — `down -v` there wipes nothing, while
 # the first project's containers keep the ports and their data. The tests then read a dirty store and
 # fail with `generation already exists (write-once)`, which reads exactly like a real regression.
-name: cloud-roaring
+name: cloudbitmaps
 
 # Local integration backends — no real AWS needed.
 # Usage: `docker compose up -d` then `pnpm test:integration`.
 #
 # REGISTRIES: everything that can avoid Docker Hub does. GitHub-hosted runners share an IP pool that sits
-# permanently over Docker Hub's anonymous pull limit, and pulling nine images from there used to fail the
+# permanently over Docker Hub's anonymous pull limit, so pulling nine images from there would fail the
 # integration job with HTTP 429 on every run. Azurite comes from mcr, first-party, and MinIO from Chainguard's
 # build of it (below). `fake-gcs-server` is the lone exception — it has no non-Docker-Hub home — and one anonymous
 # pull is a far smaller target than a whole compose file's worth. If Docker Hub 429s return, that image is the one
@@ -22,9 +22,8 @@ services:
     # what a MinIO release could change — producing a red integration job with nothing in our diff to point
     # at. Bump deliberately, and re-run `pnpm test:integration` when you do.
     #
-    # FROM CHAINGUARD, because MinIO's own image can no longer be pulled without a login: quay.io/minio/minio
-    # began answering `unauthorized` to anonymous pulls in late September 2026 (this job passed on 2026-09-23 and
-    # failed on every run from 2026-09-25), and the tag pinned here was never on Docker Hub.
+    # FROM CHAINGUARD, because MinIO's own image cannot be pulled without a login: quay.io/minio/minio answers
+    # `unauthorized` to an anonymous pull, and the tag pinned here is not on Docker Hub.
     # cgr.dev/chainguard/minio is MinIO itself, built from source by Chainguard, and pulls without a login. Its
     # free tier publishes only `latest` and `latest-dev`, so this pins the multi-arch index DIGEST that
     # `latest` was on 2026-09-25 (MinIO RELEASE.2026-09-22T19-25-18Z). Chainguard lets anyone pull by digest but
@@ -32,7 +31,7 @@ services:
     # re-run the integration suite; do not switch to `:latest` itself. CI would not go red first: it keeps a copy,
     # asks for the digest once a month, and warns on the run that asks if the registry refuses it.
     image: cgr.dev/chainguard/minio@sha256:bd014394a80898e68c149f2311fdf8d5a2c2f3bb2c33b9327ae6d02b4b065ae1
-    container_name: cloud-roaring-minio
+    container_name: cloudbitmaps-minio
     ports:
       - '9000:9000'
       - '9001:9001'
@@ -61,14 +60,14 @@ services:
       retries: 15
       start_period: 2s
 
-  # Google Cloud Storage emulator for the GcsStorageDriver integration lane. The client reaches it by
+  # Google Cloud Storage emulator for the GcsStorage integration lane. The client reaches it by
   # passing `apiEndpoint: http://127.0.0.1:4443` (see tests/integration/gcs.test.ts) — no real GCP, no auth.
   # `-external-url` must match that host so resumable-upload session URLs point back at the emulator.
   # PINNED (not `:latest`): 1.52.2 is verified to enforce `ifGenerationMatch: 0` on the simple (non-resumable)
   # upload path the driver uses for small objects — the write-once assertion depends on it. Bump deliberately.
   fake-gcs:
     image: fsouza/fake-gcs-server:1.52.2
-    container_name: cloud-roaring-fake-gcs
+    container_name: cloudbitmaps-fake-gcs
     ports:
       - '4443:4443'
     command:
@@ -83,7 +82,7 @@ services:
       - '-backend'
       - 'memory'
 
-    # Azure Blob Storage emulator (Azurite) for the AzureBlobStorageDriver integration lane. The client
+    # Azure Blob Storage emulator (Azurite) for the AzureBlobStorage integration lane. The client
     # reaches it via the well-known dev connection string (see tests/integration/azure.test.ts) — no real Azure,
     # no auth. PINNED (not `:latest`): 3.35.0 is a known-good build; `--skipApiVersionCheck` lets a newer SDK
     # `x-ms-version` through (the SDK ships a more recent API version than a pinned Azurite recognizes).
@@ -98,7 +97,7 @@ services:
 
   azurite:
     image: mcr.microsoft.com/azure-storage/azurite:3.35.0
-    container_name: cloud-roaring-azurite
+    container_name: cloudbitmaps-azurite
     ports:
       - '10000:10000'
     command:

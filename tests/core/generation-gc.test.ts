@@ -1,7 +1,8 @@
 import { gcOrphanGenerations, nextGeneration } from '@/core/generation-gc';
-import { bulkLoadCrbmGeneration } from '@/index';
+import { ValidationError } from '@/core/errors';
 import type { IStorageDriver, SegmentRef } from '@/index';
 import { loadedStore } from '../helpers/loaded';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 /**
  * Generation bookkeeping for the loaded store: which number the next object takes, and which superseded objects
@@ -82,12 +83,17 @@ describe('gcOrphanGenerations', () => {
     expect(await generations(w.storage, SEG)).toEqual([2]);
   });
 
-  it('a negative keep behaves like 0', async () => {
-    const w = await loadedStore();
-    await w.load(SEG, [1]);
-    await w.load(SEG, [1, 2]);
-    expect(await gcOrphanGenerations(SEG, w, { keep: -1 })).toEqual([0]);
-  });
+  it.each([-1, Number.NaN, 1.5, Number.POSITIVE_INFINITY])(
+    'refuses keep: %s with a ValidationError and deletes nothing',
+    async (keep) => {
+      const w = await loadedStore();
+      await w.load(SEG, [1]);
+      await w.load(SEG, [1, 2]);
+      await w.load(SEG, [1, 2, 3]); // currentGen 2; the helper collects nothing
+      await expect(gcOrphanGenerations(SEG, w, { keep })).rejects.toBeInstanceOf(ValidationError);
+      expect(await generations(w.storage, SEG)).toEqual([0, 1, 2]);
+    },
+  );
 
   it('never touches the current generation or anything above it', async () => {
     // An object above the pointer is either a load about to publish or a crashed load's orphan; the two are

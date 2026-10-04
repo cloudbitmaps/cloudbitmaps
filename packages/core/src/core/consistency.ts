@@ -2,15 +2,15 @@
  * Fail-safe cross-store disaster-recovery check. The registry (`currentGen`) and the immutable `.crbm`
  * generations can be restored **independently**, so a failover can recover the registry *ahead of* the storage
  * objects — leaving `currentGen` pointing at a generation whose `.crbm` isn't present yet. That is likelier
- * than it sounds even now that both usually live in one bucket: a restore scoped to a prefix, or replayed
+ * than it sounds even with both in one bucket: a restore scoped to a prefix, or replayed
  * per-object from a version history, recovers the two prefixes at different points. That's a torn restore: reads of the affected segment then throw. This scan
  * detects it up front (run it at startup after a restore) instead of discovering it on the first read.
  *
  * Read-only; bounded fan-out. `destroyed` (crypto-shredded) segments are skipped — their Storage is intentionally
  * gone/unreadable, not a torn restore. A segment whose Storage/registry can't be read this pass is recorded in
  * `errored` (never aborts the scan). Each segment is checked against its **authoritative live pointer** — one
- * strong `registry.get` per segment — never the enumeration snapshot from `registry.list`, which can be
- * eventually-consistent (an unindexed Scan) and lag a recent in-place pointer advance: trusting it would both
+ * strong `registry.get` per segment — never the enumeration snapshot from `registry.list`, which a driver may
+ * serve eventually-consistently and so lag a recent in-place pointer advance: trusting it would both
  * miss a torn *live* generation and cry torn on a generation the pointer has already advanced past (GC'd during
  * the scan). Residual: a load's publish plus a GC landing in the tiny per-segment get→list gap can still yield a
  * transient false positive — run the scan against a quiesced fleet (the documented restore procedure), or re-run
@@ -18,9 +18,14 @@
  */
 
 import { mapWithConcurrency } from './concurrency';
-import { ValidationError } from './errors';
+import { ValidationError, isCloudRoaringError, isIntegrityError } from './errors';
 import { DEFAULT_MAX_SCAN_SEGMENTS, drainRegistry } from './registry-scan';
-import type { IStorageDriver, IRegistryDriver, SegmentRef } from './ports';
+import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
+import { openGenerationReader } from './crbm-storage-source';
+import type { Aead, IKeystore, WrappedDek } from './crypto';
+import { aadFor } from './crypto';
+import { summaryAgrees, usableSummary } from './summary';
+import { validateUserNamespace } from './validate';
 
 /** Default in-flight fan-out for the consistency scan — bounded, no thundering herd. */
 /**
@@ -36,8 +41,8 @@ import type { IStorageDriver, IRegistryDriver, SegmentRef } from './ports';
  */
 // Re-exported from its original home because this module is where the ceiling is documented; the value and the
 // loop that enforces it live in `registry-scan.ts`, shared with the retention sweep. This is an INTERNAL
-// re-export: the name left `@cloudbitmaps/core`'s main entry in 0.10.0 along with the other two defaults, and
-// `MIGRATING.md` tells callers to pass their own `maxScanSegments` rather than read ours.
+// re-export: it is not on `@cloudbitmaps/core`'s main entry, and a caller passes their own `maxScanSegments` rather
+// than read ours.
 export { DEFAULT_MAX_SCAN_SEGMENTS } from './registry-scan';
 const DEFAULT_CHECK_CONCURRENCY = 8;
 
@@ -46,8 +51,13 @@ export interface ConsistencyIssue {
   readonly namespace?: string;
   /** The registry's `currentGen` for the segment — the generation whose `.crbm` is missing from Storage. */
   readonly currentGen: number;
-  /** The only issue class today: `currentGen` references a Storage generation that is not present (torn restore). */
-  readonly issue: 'missing-storage-generation';
+  /**
+   * `missing-storage-generation`: `currentGen` references a Storage generation that is not present (torn restore).
+   * `summary-mismatch` (only when asked for): the generation is there, but its row's summary says a different id
+   * count or metadata than the object holds (a row restored from another point than its bucket, or a number re-taken
+   * since). A count answers from that summary until a read opens the object, so it is what a restore leaves wrong.
+   */
+  readonly issue: 'missing-storage-generation' | 'summary-mismatch';
 }
 
 /** A segment that could not be checked this pass (Storage/registry read fault) — not proof of a torn restore. */
@@ -69,6 +79,12 @@ export interface ConsistencyReport {
    * clean pass.
    */
   readonly errored: ConsistencyErrorEntry[];
+  /**
+   * With `summaries: true`, the segments whose row's summary could not be held against its object because it is
+   * sealed and no keystore was given, or does not open under the one given: neither checked nor found wrong. Present
+   * only when summaries were asked for.
+   */
+  readonly summariesUnchecked?: number;
 }
 
 /** Collect the set of generations the object store currently lists for a segment. */
@@ -79,20 +95,78 @@ async function generationsPresent(storage: IStorageDriver, ref: SegmentRef): Pro
 }
 
 type Outcome =
-  | { readonly kind: 'ok' }
+  | { readonly kind: 'ok'; readonly unchecked?: boolean }
   | { readonly kind: 'issue'; readonly issue: ConsistencyIssue }
   | { readonly kind: 'error'; readonly error: ConsistencyErrorEntry };
+
+/** Hold a row's summary against the object it describes, which is present. */
+async function checkSummary(
+  ref: SegmentRef,
+  live: RegistryRecord,
+  deps: { readonly storage: IStorageDriver; readonly keystore?: IKeystore },
+): Promise<Outcome> {
+  const generation = live.currentGen as number;
+  const keyed = live.wrappedDeks !== undefined && live.wrappedDeks.length > 0;
+  let aead: Aead | undefined;
+  if (keyed) {
+    if (deps.keystore === undefined) return { kind: 'ok', unchecked: true };
+    try {
+      aead = await deps.keystore.openDek(live.wrappedDeks as readonly WrappedDek[]);
+    } catch (err) {
+      if (isIntegrityError(err) || (isCloudRoaringError(err) && err.name === 'KeyUnavailableError'))
+        return { kind: 'ok', unchecked: true };
+      throw err;
+    }
+  }
+  const described = usableSummary(ref, live, aead);
+  if (described === undefined) return { kind: 'ok', unchecked: keyed };
+  const reader = await openGenerationReader(
+    deps.storage,
+    { namespace: ref.namespace, segment: ref.segment, generation },
+    aead === undefined ? undefined : { aead, aadFor: (scope) => aadFor(ref, generation, scope) },
+  );
+  let cardinality = 0;
+  for (const n of reader.cardinalities().values()) cardinality += n;
+  if (summaryAgrees(described, { cardinality, metadata: reader.metadata })) return { kind: 'ok' };
+  return {
+    kind: 'issue',
+    issue: {
+      segment: ref.segment,
+      namespace: ref.namespace,
+      currentGen: generation,
+      issue: 'summary-mismatch',
+    },
+  };
+}
 
 /**
  * Verify every registered segment's `currentGen` `.crbm` actually exists in Storage. Enumerates the registry
  * (optionally one namespace) and, for each non-`destroyed` segment, checks the object store lists that
  * generation. Returns the torn segments in `inconsistent` (empty ⇒ coherent) and any unreadable segments in
  * `errored`.
+ *
+ * With `summaries: true` it also opens each segment's current object (one tail read, and a second for an index longer
+ * than it) and holds the row's summary against it, reporting `summary-mismatch` where they disagree. A sealed summary
+ * needs `deps.keystore`; without it the segment is counted in `summariesUnchecked`. Off by default, since the
+ * default check only lists.
  */
 export async function runConsistencyCheck(
-  deps: { readonly storage: IStorageDriver; readonly registry: IRegistryDriver },
-  options: { namespace?: string; concurrency?: number; maxScanSegments?: number } = {},
+  deps: {
+    readonly storage: IStorageDriver;
+    readonly registry: IRegistryDriver;
+    readonly keystore?: IKeystore;
+  },
+  options: {
+    namespace?: string;
+    concurrency?: number;
+    maxScanSegments?: number;
+    summaries?: boolean;
+  } = {},
 ): Promise<ConsistencyReport> {
+  if (options.namespace !== undefined) validateUserNamespace(options.namespace);
+  if (options.summaries !== undefined && typeof options.summaries !== 'boolean') {
+    throw new ValidationError(`summaries must be a boolean; got ${String(options.summaries)}`);
+  }
   const concurrency = options.concurrency ?? DEFAULT_CHECK_CONCURRENCY;
   if (!Number.isInteger(concurrency) || concurrency < 1) {
     // Fail fast before the (possibly huge) registry scan, not after.
@@ -100,11 +174,17 @@ export async function runConsistencyCheck(
   }
   const maxScanSegments = options.maxScanSegments ?? DEFAULT_MAX_SCAN_SEGMENTS;
   // Bounded enumeration, shared with the retention sweep — see `registry-scan.ts` for why a fleet-wide scan is
-  // drained rather than streamed, and why the ceiling is not optional. This used to be an inline copy of that loop.
+  // drained rather than streamed, and why the ceiling is not optional.
   const recs = await drainRegistry(deps.registry, {
     namespace: options.namespace,
     maxScanSegments,
     op: 'checkConsistency',
+    // Two callers reach this refusal, and only one of them can raise the ceiling: `store.checkConsistency` takes
+    // no `maxScanSegments`, so the advice names the call that does.
+    raise:
+      'raise `maxScanSegments` on `runConsistencyCheck` (`store.checkConsistency` takes no ceiling, so run ' +
+      '`runConsistencyCheck({ storage: backend.storage, registry: backend.registry }, { maxScanSegments })` ' +
+      'over the same backend instead)',
   });
   const results = await mapWithConcurrency(recs, concurrency, async (rec): Promise<Outcome> => {
     if (rec.status === 'destroyed') return { kind: 'ok' }; // Storage intentionally gone — not a torn restore
@@ -121,7 +201,10 @@ export async function runConsistencyCheck(
       // opposite of what a DR triage needs: the one real signal drowned in expected noise.
       if (live.currentGen === null) return { kind: 'ok' };
       const present = await generationsPresent(deps.storage, ref);
-      if (present.has(live.currentGen)) return { kind: 'ok' };
+      if (present.has(live.currentGen)) {
+        if (options.summaries !== true || live.summary === undefined) return { kind: 'ok' };
+        return await checkSummary(ref, live, deps);
+      }
       return {
         kind: 'issue',
         issue: {
@@ -146,9 +229,13 @@ export async function runConsistencyCheck(
   });
   const inconsistent: ConsistencyIssue[] = [];
   const errored: ConsistencyErrorEntry[] = [];
+  let summariesUnchecked = 0;
   for (const r of results) {
     if (r.kind === 'issue') inconsistent.push(r.issue);
     else if (r.kind === 'error') errored.push(r.error);
+    else if (r.unchecked === true) summariesUnchecked += 1;
   }
-  return { checked: recs.length, inconsistent, errored };
+  return options.summaries === true
+    ? { checked: recs.length, inconsistent, errored, summariesUnchecked }
+    : { checked: recs.length, inconsistent, errored };
 }

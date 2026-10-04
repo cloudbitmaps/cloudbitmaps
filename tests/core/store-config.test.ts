@@ -1,28 +1,24 @@
+import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { randomBytes } from 'node:crypto';
-import {
-  isStorageBackend,
-  createBackend,
-  MemoryStorage,
-  CloudRoaring,
-  CrbmStorageChunkSource,
-  MemoryStorageChunkSource,
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
-  bulkLoadCrbmGeneration,
-} from '@/index';
+import { MemoryStorage, CloudRoaring, CrbmStorageChunkSource } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { CapabilityError, KeyUnavailableError, ValidationError } from '@/core/errors';
 import type { IStorageDriver, SegmentRef } from '@/index';
 import { seededStore } from '../helpers/loaded';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { isStorageBackend } from '@cloudbitmaps/core';
+import { brandAsBackend } from '@/core/ports';
+import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 
-// PR A: the store takes ONE config shape — `storage` is a raw IStorageDriver (wrapped into the .crbm storage source
-// here, so drivers are wired once) OR an already-built StorageChunkSource (for source-only / pre-configured
-// backends). `registry`/`keystore`/`requireEncryption` move up to the config and apply on the raw-driver path.
-// These tests pin the resolution, that each option is actually threaded through the wrap, and the fail-fast guards.
+// The store takes ONE config shape: `storage` is a backend (a driver and its registry, wrapped into the .crbm
+// storage source here, so drivers are wired once), a raw IStorageDriver (no registry, so a list-scan), OR an
+// already-built StorageChunkSource (for source-only / pre-configured backends). The backend's registry and the
+// `encryption` group reach the wrapped source. These tests pin the resolution, that each option is actually
+// threaded through the wrap, and the fail-fast guards.
 const SEG: SegmentRef = { segment: 's' };
 const k = (): Uint8Array => randomBytes(32);
 
-describe('CloudRoaring constructor — one config shape (storage: raw driver | source)', () => {
+describe('CloudRoaring constructor — one config shape (storage: a backend, a raw driver or a source)', () => {
   it("wraps a raw IStorageDriver and reads the registry's currentGen (not the max on disk)", async () => {
     const backend = new MemoryStorage();
     const { storage, registry } = backend;
@@ -31,7 +27,7 @@ describe('CloudRoaring constructor — one config shape (storage: raw driver | s
     // …and a HIGHER gen 1 written but NOT published. A list-scan would resolve gen 1 (→ 5); the registry pins 0.
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 1 }, [1, 2, 3, 4, 5]);
 
-    // The point of PR A: pass the RAW driver + registry — no manual CrbmStorageChunkSource wrap. If `registry`
+    // The point: pass the backend (driver + registry) — no manual CrbmStorageChunkSource wrap. If `registry`
     // were dropped when wrapping, this would read the max gen (5) instead of the pinned gen 0 (3).
     const store = new CloudRoaring({ storage: backend });
     expect(await store.segment('s').count()).toBe(3);
@@ -111,8 +107,8 @@ describe('CloudRoaring constructor — one config shape (storage: raw driver | s
   });
 
   describe('fail-fast wiring guards', () => {
-    // `registry` is no longer an option — a backend carries its own — so the pairing that used to be rejected
-    // is now unexpressible. What is left to reject is the pair that is still expressible and still inert.
+    // A backend carries its own registry, so the pairing to reject is the one that is expressible and inert:
+    // encryption settings beside a pre-built source, which never reads them.
     it('rejects keystore/requireEncryption paired with a pre-built StorageChunkSource', () => {
       const source = (): MemoryStorageChunkSource => new MemoryStorageChunkSource();
       const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
@@ -177,12 +173,12 @@ describe('CloudRoaring constructor — one config shape (storage: raw driver | s
       }
     });
 
-    // A driver that WRAPS another driver — for auditing, metrics, tenant scoping, client-side encryption —
-    // is the natural thing to build, and now that the tier is called storage the natural name for the field it
-    // wraps is `storage`. Before the brand that made it indistinguishable from a backend, so the store read
-    // straight THROUGH it to the halves and the wrapper's own methods never ran: the layer silently removed,
-    // every answer still correct-looking. The brand settles it — an unbranded object is not a backend, so a
-    // wrapper is unambiguously a driver and actually gets used.
+    // A driver that WRAPS another driver — for auditing, metrics, tenant scoping, client-side encryption — is the
+    // natural thing to build, and since the tier is called storage the natural name for the field it wraps is
+    // `storage`. Without the brand that would make it indistinguishable from a backend, so the store would read
+    // straight THROUGH it to the halves and the wrapper's own methods would never run: the layer silently removed,
+    // every answer still correct-looking. The brand settles it — an unbranded object is not a backend, so a wrapper
+    // is unambiguously a driver and actually gets used.
     it('uses a driver that wraps another, rather than reading through it', async () => {
       const inner = new MemoryStorageDriver();
       await bulkLoadCrbmGeneration(inner, { ...SEG, generation: 0 }, [1, 2, 3]);
@@ -217,7 +213,7 @@ describe('CloudRoaring constructor — one config shape (storage: raw driver | s
     });
 
     // …and to keep a registry alongside an instrumented half, you say so.
-    it('`createBackend` is how an instrumented half keeps its registry', async () => {
+    it('`brandAsBackend` is how an instrumented half keeps its registry', async () => {
       const backend = new MemoryStorage();
       await bulkLoadCrbmGeneration(backend.storage, { ...SEG, generation: 0 }, [1, 2, 3], {
         registry: backend.registry,
@@ -235,22 +231,22 @@ describe('CloudRoaring constructor — one config shape (storage: raw driver | s
         list: (...a) => backend.storage.list(...a),
       };
       const store = new CloudRoaring({
-        storage: createBackend({ storage: counted, registry: backend.registry }),
+        storage: brandAsBackend({ storage: counted, registry: backend.registry }),
       });
-      expect(await store.segment('s').count()).toBe(3);
+      expect(await store.segment('s').has(1)).toBe(true);
       expect(tails).toBeGreaterThan(0);
     });
 
-    // A half-built backend is now caught where it is built, by `createBackend`, rather than at the store.
+    // A half-built backend is caught where it is built, by `brandAsBackend`, rather than at the store.
     it('names which half of a near-miss backend failed its check', () => {
       expect(() =>
-        createBackend({
+        brandAsBackend({
           storage: new MemoryStorageDriver(),
           registry: {} as unknown as MemoryRegistryDriver, // no compareAndSwap
         }),
       ).toThrow(/registry.*IRegistryDriver/);
       expect(() =>
-        createBackend({
+        brandAsBackend({
           storage: {} as unknown as IStorageDriver,
           registry: new MemoryRegistryDriver(),
         }),
@@ -269,14 +265,13 @@ describe('CloudRoaring constructor — one config shape (storage: raw driver | s
       expect(() => new CloudRoaring({ storage: literal })).toThrow(/MemoryStorage/);
     });
 
-    // The bug the brand exists for: halves from two UNRELATED stores. Before it, this constructed happily and
-    // answered 0 for a segment holding 3 ids — data in one place, pointer read from another.
+    // The bug the brand exists for: halves from two UNRELATED stores. Without it, this constructs happily and
+    // answers 0 for a segment holding 3 ids — data in one place, pointer read from another.
     //
-    // Three spellings, because the first version of this test asserted only the object literal — and the
-    // brand was an ENUMERABLE class field, so `{ ...backend, registry: other }` copied it and sailed through.
-    // Spread is the idiomatic way to vary an object in JS, so that was not an exotic bypass: it is the form
-    // the audience for `createBackend` would reach for first, and the test named "unconstructible" said
-    // nothing about it.
+    // Three spellings, because a test that asserts only the object literal passes while an ENUMERABLE brand is
+    // copied by `{ ...backend, registry: other }` and sails through. Spread is the idiomatic way to vary an
+    // object in JS, so that is not an exotic bypass: it is the form the audience for `brandAsBackend` would
+    // reach for first.
     it.each(['literal', 'spread', 'Object.assign'])(
       'makes the mismatched-halves store unconstructible — %s',
       async (how) => {
@@ -304,11 +299,11 @@ describe('CloudRoaring constructor — one config shape (storage: raw driver | s
       expect(isStorageBackend(Object.assign({}, backend))).toBe(false);
     });
 
-    // A driver that wraps another AND carries a registry used to be refused as ambiguous. Branding made it
-    // unambiguously a driver — which is right — but it then fell through to the BARE-driver path, where there
-    // is no pointer at all: generations resolve by list-scan, so the store serves the highest object in the
-    // bucket. A generation written but never published would be read as if it had been, silently, with the
-    // wrapper's own registry sitting unused.
+    // Branding makes a driver that wraps another AND carries a registry unambiguously a driver — which is right —
+    // but on the BARE-driver path there is no pointer at all: generations resolve by list-scan, so the store
+    // serves the highest object in the bucket. A generation written but never published would be read as if it
+    // had been, silently, with the wrapper's own registry sitting unused. So the store refuses it and names the
+    // way to keep the registry.
     it('refuses a driver that also carries a registry, rather than ignoring the pointer', async () => {
       const backend = new MemoryStorage();
       await bulkLoadCrbmGeneration(backend.storage, { ...SEG, generation: 0 }, [1, 2, 3], {
@@ -332,10 +327,10 @@ describe('CloudRoaring constructor — one config shape (storage: raw driver | s
       } as unknown as IStorageDriver;
 
       expect(() => new CloudRoaring({ storage: wrapper })).toThrow(/also carries a .registry/);
-      expect(() => new CloudRoaring({ storage: wrapper })).toThrow(/createBackend/);
+      expect(() => new CloudRoaring({ storage: wrapper })).toThrow(/brandAsBackend/);
       // …and the named door works, resolving the PUBLISHED generation rather than the highest object.
       const store = new CloudRoaring({
-        storage: createBackend({ storage: wrapper, registry: backend.registry }),
+        storage: brandAsBackend({ storage: wrapper, registry: backend.registry }),
       });
       expect(await store.segment('s').count()).toBe(3);
     });
@@ -351,12 +346,50 @@ describe('CloudRoaring constructor — one config shape (storage: raw driver | s
       ).toThrow(/`registry` half is not an IRegistryDriver/);
     });
 
-    // The wall must route the caller to the door, or it teaches "this library cannot do what I need".
-    it('the refusal names `createBackend`', () => {
+    // The wall must route the caller to the door, or it teaches "this library cannot do what I need". An
+    // application is told to use a backend class; a driver author is told where the pairing door is.
+    it('the refusal names the backend classes and `brandAsBackend`, and no removed name', () => {
       const a = new MemoryStorage();
+      const attempt = (): unknown =>
+        new CloudRoaring({ storage: { storage: a.storage, registry: a.registry } as never });
+      expect(attempt).toThrow(
+        /S3Storage, GcsStorage, AzureBlobStorage, LocalFsStorage or MemoryStorage/,
+      );
+      expect(attempt).toThrow(/brandAsBackend.*@cloudbitmaps\/core\/driver-kit/);
       expect(
-        () => new CloudRoaring({ storage: { storage: a.storage, registry: a.registry } as never }),
-      ).toThrow(/createBackend/);
+        (() => {
+          try {
+            attempt();
+          } catch (e) {
+            return String(e);
+          }
+          return '';
+        })(),
+      ).not.toContain('createBackend');
+    });
+
+    // `brandAsBackend` is the driver author's pairing door: it takes a plain object, brands that same object
+    // non-enumerably, and refuses a half that is not a driver.
+    it('`brandAsBackend` brands a plain `{ storage, registry }` object in place', () => {
+      const a = new MemoryStorage();
+      const halves = { storage: a.storage, registry: a.registry };
+      const backend = brandAsBackend(halves);
+      expect(backend).toBe(halves);
+      expect(isStorageBackend(backend)).toBe(true);
+      expect(Object.keys(backend)).toEqual(['storage', 'registry']);
+      expect(isStorageBackend({ ...backend })).toBe(false);
+      for (const bad of [null, undefined, 'x']) {
+        expect(() => brandAsBackend(bad as never)).toThrow(/brandAsBackend needs/);
+      }
+    });
+
+    it('`brandAsBackend` refuses a frozen or non-extensible object with a ValidationError, not a raw TypeError', () => {
+      const a = new MemoryStorage();
+      for (const lock of [Object.freeze, Object.seal, Object.preventExtensions]) {
+        const halves = lock({ storage: a.storage, registry: a.registry });
+        expect(() => brandAsBackend(halves)).toThrow(ValidationError);
+        expect(() => brandAsBackend(halves)).toThrow(/frozen or non-extensible/);
+      }
     });
 
     it('rejects an ambiguous `storage` exposing both getChunk and putImmutable', () => {

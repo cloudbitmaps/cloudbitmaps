@@ -1,32 +1,39 @@
 import { randomUUID } from 'node:crypto';
+import { createRequire } from 'node:module';
+import http from 'node:http';
 // Runs against fake-gcs-server from docker-compose (see docker-compose.yml): `docker compose up -d` then
 // `pnpm test:integration`. No real GCP needed. Passing `apiEndpoint` (with any `projectId`) targets the
 // emulator and skips auth — do NOT also set `STORAGE_EMULATOR_HOST` (empirically it makes the JSON-API calls
 // 404 against fake-gcs-server; apiEndpoint alone is the working config).
+import { Writable } from 'node:stream';
 import { Storage } from '@google-cloud/storage';
 import {
   storageChunkSourceConformance,
+  storageDriverConformance,
   registryConformance,
   registryConcurrency,
   CONFORMANCE_SEGMENT,
 } from '@/testing/conformance';
 import { GcsStorageDriver } from '@/gcs/storage';
+import { storageObjectName } from '@/gcs/keys';
 import { GcsRegistryDriver } from '@/gcs/registry';
 import { GcsStorage } from '@cloudbitmaps/gcs';
 import { CrbmStorageChunkSource, writeCrbmGeneration } from '@/core/crbm-storage-source';
-// bulk-load is codec-bound: import the public (flavor) entry point, exactly as an application would.
-import { CloudRoaring, bulkLoadCrbmGeneration } from '@/index';
+import { CloudRoaring } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
 import { NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
-import type { GenKey } from '@/core/ports';
+import { brandAsBackend, type GenKey } from '@/core/ports';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { forwardingProxy } from '../helpers/forwarding-proxy';
 
 /**
  * A keyspace unique to THIS run.
  *
- * Every prefix below is numbered from a counter that restarts at 0, so a second run against the same LIVE
- * container replays the same write-once keys and fails with `WriteConflictError: generation already exists`
- * — 78 failures that read exactly like a real write-once regression rather than like a dirty container. CI
- * never saw it because each job gets fresh containers; every local re-run did.
+ * Every prefix below is numbered from a counter that restarts at 0. Under a fixed root, a second run against
+ * the same LIVE container would replay the same write-once keys and fail with
+ * `WriteConflictError: generation already exists` — failures that read exactly like a real write-once
+ * regression rather than like a dirty container. CI would never see them, because each job gets fresh
+ * containers; every local re-run would.
  *
  * `GITHUB_RUN_ID` plus `GITHUB_RUN_ATTEMPT` in CI, a random token locally. The attempt matters: re-running
  * a failed job keeps the same run id, so the id alone would replay the very keys that just failed.
@@ -37,8 +44,22 @@ const RUN =
     : `${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT ?? '1'}`;
 
 const ENDPOINT = process.env.GCS_ENDPOINT ?? 'http://127.0.0.1:4443';
-const BUCKET = 'cloud-roaring-it';
+const BUCKET = 'cloudbitmaps-it';
 const storage = new Storage({ projectId: 'test', apiEndpoint: ENDPOINT });
+// fake-gcs-server closes the connection after it answers a 416 (a range starting past EOF) without saying so, and
+// the SDK keeps that socket in its keep-alive pool. The next request on it, whatever it is, fails with ECONNRESET
+// before the server reads a byte. The driver sends a conditional write once, so it reports that reset as a
+// `TransientError` where an SDK retry would have hidden it.
+//
+// The SDK exposes no client option for its HTTP agent: its transport (`teeny-request`) takes the agent from a
+// module-level pool keyed by scheme, and only creates the keep-alive one when the key is absent. Seeding the key
+// with an agent that does not keep sockets makes every request open a fresh connection, so the emulator's quirk
+// cannot reach a test. It applies to this test file only (vitest gives each file its own worker); the driver is untouched.
+const sdkRequire = createRequire(createRequire(import.meta.url).resolve('@google-cloud/storage'));
+(sdkRequire('teeny-request/build/src/agents') as { pool: Map<string, http.Agent> }).pool.set(
+  'http:forever',
+  new http.Agent({ keepAlive: false, maxSockets: Infinity }),
+);
 
 beforeAll(async () => {
   // `docker compose up --wait` returns when the container is *running*, not necessarily accepting HTTP — poll
@@ -62,8 +83,9 @@ beforeAll(async () => {
 
 // The GCS registry must pass the SAME registry contract as memory / LocalFs / S3 — against real object
 // preconditions (`ifGenerationMatch: 0` for create-only, `ifGenerationMatch: <generation>` for CAS) via
-// fake-gcs-server. This is what makes a GCS-only topology viable: before it, a GCS user had to point the
-// registry at a separate AWS-hosted table and hold an AWS account purely to store which generation is current.
+// fake-gcs-server. This is what makes a GCS-only topology viable: the pointer to the current generation lives
+// in the same bucket as the objects, so a GCS user needs no second service, and no second cloud account, to
+// store it.
 let rn = 0;
 const ticking = (): (() => number) => {
   let t = 1_000;
@@ -97,6 +119,24 @@ const freshDriver = (): GcsStorageDriver =>
   new GcsStorageDriver({ storage, bucket: BUCKET, prefix: `${RUN}/conf/${n++}` });
 
 // The GCS driver must pass the SAME storage-source contract as in-memory + LocalFs + S3.
+// The same IStorageDriver contract memory and LocalFs pass: write-once, typed errors, true tail size, idempotent
+// delete, read-after-delete listing.
+storageDriverConformance('GcsStorageDriver (fake-gcs-server)', freshDriver);
+// The same cases with a 100-byte threshold, so every object takes the resumable upload. fake-gcs-server does not
+// enforce `ifGenerationMatch` on a resumable upload (a second write to the key succeeds and overwrites), so the
+// collision is skipped here: a real GCS answers it with 412, and the driver maps that the same way as the simple path.
+storageDriverConformance(
+  'GcsStorageDriver, resumable (fake-gcs-server)',
+  () =>
+    new GcsStorageDriver({
+      storage,
+      bucket: BUCKET,
+      prefix: `${RUN}/conf-resumable/${n++}`,
+      simpleUploadThresholdBytes: 100,
+    }),
+  { skip: ['collision'] },
+);
+
 storageChunkSourceConformance('GcsStorageDriver (fake-gcs-server)', async (chunks) => {
   const driver = freshDriver();
   await writeCrbmGeneration(driver, { segment: CONFORMANCE_SEGMENT, generation: 1 }, chunks);
@@ -122,7 +162,7 @@ describe('GcsStorageDriver specifics (fake-gcs-server)', () => {
   // The write-once test above stays under the 8 MiB threshold, so it exercises only the SIMPLE upload path.
   // Force the RESUMABLE (large-object, constant-memory) path with a tiny threshold and prove it round-trips
   // end-to-end against a real emulator — catching a broken resumable stream / backpressure / finalize / read
-  // path the simple path can't. This is the large-generation load path, previously exercised only
+  // path the simple path can't. This is the large-generation load path, which the unit suite exercises only
   // against an in-process mock.
   //
   // NOTE ON WRITE-ONCE ENFORCEMENT: this test does NOT assert the second write conflicts, because
@@ -198,10 +238,125 @@ describe('GcsStorageDriver specifics (fake-gcs-server)', () => {
   });
 });
 
+// A resumable upload is a session the SDK retries within, so a commit that landed and lost its response can be
+// answered 412 by its own replay. fake-gcs-server does not enforce `ifGenerationMatch` on a resumable commit (see the
+// note above), so it can produce neither answer. The proxy below stands in for the service's 412 and keeps the rest
+// real: a resumable stream that sends the object to the emulator, with the metadata the driver attached, and then
+// fails its commit with a 412, as the replay of a write that landed does (`'replay'`), or fails its commit with a 412
+// without sending anything, as a write that lost to another does (`'refuse'`). The driver's read-back is real: it
+// reads the stored object's metadata from the emulator.
+function resumableAnswering412(mode: 'replay' | 'refuse'): Storage {
+  return new Proxy(storage, {
+    get(target, prop, receiver) {
+      if (prop !== 'bucket') return Reflect.get(target, prop, receiver) as unknown;
+      return (name: string) => {
+        const bucket = target.bucket(name);
+        return new Proxy(bucket, {
+          get(b, p) {
+            if (p !== 'file') {
+              const v = Reflect.get(b, p) as unknown;
+              return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(b) : v;
+            }
+            return (objectName: string) => {
+              const file = b.file(objectName);
+              return new Proxy(file, {
+                get(f, q) {
+                  if (q !== 'createWriteStream') {
+                    const v = Reflect.get(f, q) as unknown;
+                    return typeof v === 'function'
+                      ? (v as (...a: unknown[]) => unknown).bind(f)
+                      : v;
+                  }
+                  return (options: Parameters<typeof f.createWriteStream>[0]) => {
+                    const chunks: Buffer[] = [];
+                    return new Writable({
+                      write(chunk: Buffer, _enc, cb) {
+                        chunks.push(chunk);
+                        cb();
+                      },
+                      final(cb) {
+                        const lost = Object.assign(new Error('precondition failed'), { code: 412 });
+                        if (mode === 'refuse') return cb(lost);
+                        const real = f.createWriteStream(options);
+                        real.once('error', cb);
+                        real.once('finish', () => cb(lost));
+                        real.end(Buffer.concat(chunks));
+                      },
+                    });
+                  };
+                },
+              });
+            };
+          },
+        });
+      };
+    },
+  });
+}
+
+describe('GCS resumable conflict against the write own id (fake-gcs-server)', () => {
+  const bm = (...v: number[]): SafeBitmap => SafeBitmap.fromValues(v);
+  const gen = (generation: number): GenKey => ({ segment: 's', generation });
+  const resumable = (client: Storage, prefix: string): GcsStorageDriver =>
+    new GcsStorageDriver({
+      storage: client,
+      bucket: BUCKET,
+      prefix,
+      simpleUploadThresholdBytes: 8, // any real .crbm object exceeds this: resumable
+    });
+
+  it('stores the id in the object custom metadata, outside its bytes', async () => {
+    const prefix = `${RUN}/wid-meta/${n++}`;
+    await writeCrbmGeneration(resumable(storage, prefix), gen(1), [
+      { chunkKey: 0, bitmap: bm(1, 2, 3) },
+    ]);
+    const [files] = await storage.bucket(BUCKET).getFiles({ prefix });
+    expect(files).toHaveLength(1);
+    const [meta] = await files[0]!.getMetadata();
+    expect((meta.metadata as { cbwid?: string }).cbwid).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  it('is a success when the 412 is the upload meeting its own object', async () => {
+    const prefix = `${RUN}/wid-own/${n++}`;
+    await writeCrbmGeneration(resumable(resumableAnswering412('replay'), prefix), gen(1), [
+      { chunkKey: 0, bitmap: bm(1, 2, 3) },
+    ]);
+    const source = new CrbmStorageChunkSource(resumable(storage, prefix));
+    const bytes = await source.getChunk({ segment: 's', chunkKey: 0 });
+    expect(SafeBitmap.safeDeserialize(bytes!, 1 << 20).toArray()).toEqual([1, 2, 3]);
+  });
+
+  it('stays a conflict when another writer holds the key', async () => {
+    const prefix = `${RUN}/wid-other/${n++}`;
+    await writeCrbmGeneration(resumable(storage, prefix), gen(1), [
+      { chunkKey: 0, bitmap: bm(1, 2, 3) },
+    ]);
+    await expect(
+      writeCrbmGeneration(resumable(resumableAnswering412('refuse'), prefix), gen(1), [
+        { chunkKey: 0, bitmap: bm(9) },
+      ]),
+    ).rejects.toBeInstanceOf(WriteConflictError);
+  });
+
+  it('stays a conflict when the object was written with no id', async () => {
+    const prefix = `${RUN}/wid-noid/${n++}`;
+    const name = storageObjectName(prefix, gen(1));
+    await storage
+      .bucket(BUCKET)
+      .file(name)
+      .save(Buffer.from([1]), { resumable: false });
+    await expect(
+      writeCrbmGeneration(resumable(resumableAnswering412('refuse'), prefix), gen(1), [
+        { chunkKey: 0, bitmap: bm(9) },
+      ]),
+    ).rejects.toBeInstanceOf(WriteConflictError);
+  });
+});
+
 describe('GcsStorageDriver end-to-end through the engine (fake-gcs-server)', () => {
   // Proves the driver works behind a real `CloudRoaring` store — not just the low-level storage-source contract:
-  // bulk-load two segments to GCS, then count + chunk-skipping intersect via the engine's public API.
-  it('bulk-load → GCS → engine count / iterate / intersect (multi-chunk, chunk-skipping)', async () => {
+  // load two segments to GCS, then count + chunk-skipping intersect via the engine's public API.
+  it('load → GCS → engine count / iterate / intersect (multi-chunk, chunk-skipping)', async () => {
     const driver = new GcsStorageDriver({ storage, bucket: BUCKET, prefix: `${RUN}/e2e/${n++}` });
     // Ids straddle two 16-bit chunks (0 and 3), so intersect must chunk-skip, not read everything.
     await bulkLoadCrbmGeneration(driver, { segment: 'a', generation: 1 }, [1, 2, 3, 200_000]);
@@ -239,5 +394,192 @@ describe('GcsStorage (fake-gcs-server) — the backend builds its own client', (
     );
     expect(await store.segment('via-backend').count()).toBe(2);
     expect(await backend.registry.get({ segment: 'via-backend' })).not.toBeNull();
+  });
+
+  // The size settings are options of the backend, and reach the storage half that writes the objects. A
+  // threshold of 8 bytes puts every real generation on the resumable path; a ceiling of 16 bytes refuses one.
+  it('takes simpleUploadThresholdBytes and loads a generation through the resumable path', async () => {
+    const prefix = `${RUN}/backend-threshold/${n++}`;
+    const backend = new GcsStorage({
+      bucket: BUCKET,
+      prefix,
+      projectId: 'test',
+      apiEndpoint: ENDPOINT,
+      simpleUploadThresholdBytes: 8,
+    });
+    const store = new CloudRoaring({ storage: backend });
+    const ids = Array.from({ length: 2000 }, (_, i) => i * 3);
+    expect((await store.load({ segment: 'sized' }, ids)).published).toBe(true);
+    expect(await store.segment('sized').count()).toBe(2000);
+    expect(await store.segment('sized').has(5997)).toBe(true);
+    // A resumable upload tags its object with a write id in custom metadata; a simple upload does not.
+    const [files] = await storage.bucket(BUCKET).getFiles({ prefix });
+    const [meta] = await files[0]!.getMetadata();
+    expect((meta.metadata as { cbwid?: string } | undefined)?.cbwid).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  // A timeout well above the emulator's answers leaves a healthy store alone: the load, then its reads of the
+  // pointer, the generation's tail and its chunk ranges, all complete under it.
+  it('takes readTimeoutMs, and a load and its reads complete under it', async () => {
+    const backend = new GcsStorage({
+      bucket: BUCKET,
+      prefix: `${RUN}/backend-timeout/${n++}`,
+      projectId: 'test',
+      apiEndpoint: ENDPOINT,
+      readTimeoutMs: 10_000,
+    });
+    const store = new CloudRoaring({ storage: backend });
+    const ids = Array.from({ length: 2000 }, (_, i) => i * 3);
+    expect((await store.load({ segment: 'timed' }, ids)).published).toBe(true);
+    expect(await store.exists({ segment: 'timed' })).toBe(true);
+    expect(await store.segment('timed').count()).toBe(2000);
+    expect(await store.segment('timed').has(5997)).toBe(true);
+    expect(await store.segment('timed').has(5998)).toBe(false);
+  });
+
+  it('takes maxObjectBytes, advertises it, and refuses a generation past it', async () => {
+    const backend = new GcsStorage({
+      bucket: BUCKET,
+      prefix: `${RUN}/backend-ceiling/${n++}`,
+      projectId: 'test',
+      apiEndpoint: ENDPOINT,
+      maxObjectBytes: 16,
+    });
+    expect(backend.storage.capabilities().maxObjectBytes).toBe(16);
+    const store = new CloudRoaring({ storage: backend });
+    await expect(store.load({ segment: 'sized' }, [1, 2, 3])).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    expect(await store.exists({ segment: 'sized' })).toBe(false);
+  });
+});
+
+describe('GCS (fake-gcs-server): a single-request upload the client is told was throttled', () => {
+  const bm = (...v: number[]): SafeBitmap => SafeBitmap.fromValues(v);
+  const gen = (generation: number): GenKey => ({ segment: 's', generation });
+
+  /** A client whose first upload of a generation object is applied by the emulator and then answered `status`. */
+  function throttledAfterLanding(status: number): Storage {
+    let fired = false;
+    return new Proxy(storage, {
+      get(target, prop, receiver) {
+        if (prop !== 'bucket') return Reflect.get(target, prop, receiver) as unknown;
+        return (name: string) => {
+          const bucket = target.bucket(name);
+          return new Proxy(bucket, {
+            get(b, p) {
+              if (p !== 'file') {
+                const v = Reflect.get(b, p) as unknown;
+                return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(b) : v;
+              }
+              return (objectName: string) => {
+                const file = b.file(objectName);
+                return new Proxy(file, {
+                  get(f, q) {
+                    if (q !== 'createWriteStream' || fired || !objectName.includes('/segments/')) {
+                      const v = Reflect.get(f, q) as unknown;
+                      return typeof v === 'function'
+                        ? (v as (...a: unknown[]) => unknown).bind(f)
+                        : v;
+                    }
+                    fired = true;
+                    return (options: Parameters<typeof f.createWriteStream>[0]) => {
+                      const chunks: Buffer[] = [];
+                      return new Writable({
+                        write(chunk: Buffer, _enc, cb) {
+                          chunks.push(chunk);
+                          cb();
+                        },
+                        final(cb) {
+                          const throttled = Object.assign(new Error('rateLimitExceeded'), {
+                            code: status,
+                            errors: [{ reason: 'rateLimitExceeded' }],
+                          });
+                          const real = f.createWriteStream(options);
+                          real.once('error', cb);
+                          real.once('finish', () => cb(throttled));
+                          real.end(Buffer.concat(chunks));
+                        },
+                      });
+                    };
+                  },
+                });
+              };
+            },
+          });
+        };
+      },
+    });
+  }
+
+  it('stores the write id in the custom metadata of a single-request upload', async () => {
+    const prefix = `${RUN}/simple-wid/${n++}`;
+    const driver = new GcsStorageDriver({ storage, bucket: BUCKET, prefix });
+    await writeCrbmGeneration(driver, gen(1), [{ chunkKey: 0, bitmap: bm(1, 2, 3) }]);
+    const [meta] = await storage
+      .bucket(BUCKET)
+      .file(storageObjectName(prefix, gen(1)))
+      .getMetadata();
+    expect((meta.metadata as { cbwid?: string }).cbwid).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  it.each([429, 503])(
+    'an upload the emulator applied and the client was told was %i is sent again, and is its own',
+    async (status) => {
+      const prefix = `${RUN}/simple-throttle/${n++}`;
+      const driver = new GcsStorageDriver({
+        storage: throttledAfterLanding(status),
+        bucket: BUCKET,
+        prefix,
+        clock: { sleep: async () => {} },
+      });
+      await writeCrbmGeneration(driver, gen(1), [{ chunkKey: 0, bitmap: bm(4, 5) }]);
+      const source = new CrbmStorageChunkSource(
+        new GcsStorageDriver({ storage, bucket: BUCKET, prefix }),
+      );
+      const bytes = await source.getChunk({ segment: 's', chunkKey: 0 });
+      expect(SafeBitmap.safeDeserialize(bytes!, 1 << 20).toArray()).toEqual([4, 5]);
+    },
+  );
+});
+
+// A cold count is one request on the wire: the pointer row's GET, and no read of the object, however wide its index is.
+// Counted by a forwarding proxy in front of fake-gcs-server, with a reader store that has read nothing.
+describe('GCS (fake-gcs-server): a cold count is one request', () => {
+  const storeOver = (apiEndpoint: string, prefix: string): CloudRoaring => {
+    const client = new Storage({ projectId: 'test', apiEndpoint });
+    return new CloudRoaring({
+      storage: brandAsBackend({
+        storage: new GcsStorageDriver({ storage: client, bucket: BUCKET, prefix }),
+        registry: new GcsRegistryDriver({ storage: client, bucket: BUCKET, prefix }),
+      }),
+    });
+  };
+
+  it.each([
+    ['a medium index', 200],
+    ['an index wider than the 256 KiB tail read', 40_000],
+  ])('%s: one GET of the row', async (_, chunks) => {
+    const prefix = `${RUN}/cold-count/${n++}`;
+    const ref = { namespace: 'ns', segment: 's' };
+    await storeOver(ENDPOINT, prefix).load(
+      ref,
+      Array.from({ length: chunks }, (_, c) => c * 65_536),
+    );
+    const proxy = await forwardingProxy(ENDPOINT);
+    try {
+      const reader = storeOver(proxy.url, prefix);
+      expect(await reader.segment('s', { namespace: 'ns' }).count()).toBe(chunks);
+      expect(proxy.requests.map((r) => r.method)).toEqual(['GET']);
+      expect(decodeURIComponent(proxy.requests[0]!.path)).toContain('registry');
+      proxy.requests.length = 0;
+      expect(await reader.segment('s', { namespace: 'ns' }).stat()).toMatchObject({
+        generation: 0,
+        cardinality: chunks,
+      });
+      expect(proxy.requests).toEqual([]);
+    } finally {
+      await proxy.close();
+    }
   });
 });

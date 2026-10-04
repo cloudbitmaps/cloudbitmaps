@@ -1,17 +1,14 @@
+import { SafeBitmap } from '@/roaring-codec';
+import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { randomBytes } from 'node:crypto';
-import {
-  createBackend,
-  MemoryStorage,
-  CloudRoaring,
-  MemoryStorageChunkSource,
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
-  SafeBitmap,
-  bulkLoadCrbmGeneration,
-} from '@/index';
+import { MemoryStorage, CloudRoaring } from '@/index';
 import type { ExportSink, ExportWriter, IKeystore, SegmentRef } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { UnsupportedError } from '@/core/errors';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { brandAsBackend } from '@/core/ports';
+import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
+import type { IRegistryDriver, IStorageDriver } from '@/core/ports';
 
 // `store.exportSegments` — dump every registered segment's current generation to a portable file via an injected sink. These
 // tests use an in-memory sink so they assert the actual bytes (roaring decodes back; ndjson parses back).
@@ -64,15 +61,15 @@ const ndjsonIds = (bytes: Uint8Array): number[] =>
 
 /** A store over a raw MemoryStorageDriver + registry (so `export` works), with the seeded storage already in place. */
 function freshStore(
-  registry: MemoryRegistryDriver,
-  storage: MemoryStorageDriver,
+  registry: IRegistryDriver,
+  storage: IStorageDriver,
   keystore?: IKeystore,
 ): CloudRoaring {
   // `cache.genTtlMs: 0` turns off the timed refresh, so a run reads the generations this store first resolved:
   // nothing in these tests evicts, sweeps or invalidates a segment mid-run. That is the fixture's property, not
   // the export's — `runExport` reads each segment live, so a real store gets no such hold from this setting.
   return new CloudRoaring({
-    storage: createBackend({ storage, registry }),
+    storage: brandAsBackend({ storage, registry }),
     retry: false,
     cache: { genTtlMs: 0 },
     encryption: { keystore },
@@ -323,11 +320,11 @@ describe('store.exportSegments', () => {
   });
 
   it('enumerates the registry, so a segment loaded without one is absent rather than half-exported', async () => {
-    // What replaced the `candidates` option. Every load that is given a registry publishes a row, so the
-    // registry is a complete index of the loaded segments and enumeration cannot miss one. A load with NO
-    // registry writes an object nothing points at: still readable by any roaring library (the format's own
-    // promise), but not part of this store's set, so it is omitted — and omitted *cleanly*, not recorded as a
-    // failure, because it was never enumerated in the first place.
+    // Every load that is given a registry publishes a row, so the registry is a complete index of the loaded
+    // segments and enumeration cannot miss one. A load with NO registry writes an object nothing points at:
+    // still readable by any roaring library (the format's own promise), but not part of this store's set, so it
+    // is omitted — and omitted *cleanly*, not recorded as a failure, because it was never enumerated in the first
+    // place.
     const backend = new MemoryStorage();
     const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { segment: 'registered', generation: 0 }, [1, 2], {

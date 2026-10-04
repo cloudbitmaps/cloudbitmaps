@@ -1,17 +1,13 @@
 import { cpSync, mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  createBackend,
-  CloudRoaring,
-  IntegrityError,
-  LocalFsStorageDriver,
-  LocalFsRegistryDriver,
-  NotFoundError,
-  bulkLoadCrbmGeneration,
-  runConsistencyCheck,
-} from '@/index';
-import type { Segment, SegmentRef } from '@/index';
+import { CloudRoaring, IntegrityError, NotFoundError } from '@/index';
+import type { AuditEvent, Segment, SegmentRef } from '@/index';
+import { bulkLoadCrbmGeneration } from './helpers/bulk-load';
+import { runConsistencyCheck } from '@cloudbitmaps/core';
+import { brandAsBackend } from '@/core/ports';
+import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
+import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 
 /**
  * Executable DR drill — the [disaster-recovery runbook](docs/guide/disaster-recovery.md)
@@ -52,7 +48,7 @@ function stores(root: string) {
   const storage = new LocalFsStorageDriver(root);
   const registry = new LocalFsRegistryDriver(root, { now: () => Date.now() });
   const store = new CloudRoaring({
-    storage: createBackend({ storage, registry }),
+    storage: brandAsBackend({ storage, registry }),
     retry: false,
   });
   return { storage, registry, store };
@@ -115,9 +111,19 @@ describe('DR drill — backup → corrupt → restore → verify', () => {
     // A read of the torn segment fails closed — its currentGen points at an absent generation.
     await expect(members(store, 'beta')).rejects.toBeInstanceOf(NotFoundError);
 
-    // Resolve per the runbook: roll currentGen back to the generation storage actually has (0).
-    const now = (await registry.get(ref))!;
-    await registry.compareAndSwap(ref, now.token, { currentGen: 0 });
+    // Resolve per the runbook (remedy (b)): roll currentGen back to the generation storage actually has (0), with the call it
+    // names and the audit sink it passes, so the move is on the record.
+    const events: AuditEvent[] = [];
+    await store.rollback(ref, 0, { audit: { onEvent: (e) => events.push(e) } });
+    expect(events).toEqual([
+      {
+        kind: 'segment.rollback',
+        segment: 'beta',
+        namespace: undefined,
+        fromGeneration: 1,
+        generation: 0,
+      },
+    ]);
 
     const healed = await runConsistencyCheck({ storage, registry });
     expect(healed).toEqual({ checked: 3, inconsistent: [], errored: [] });
@@ -143,7 +149,7 @@ describe('DR drill — backup → corrupt → restore → verify', () => {
       await expect(members(store, 'gamma')).rejects.toBeInstanceOf(NotFoundError);
     }
 
-    // Restore the missing object from backup (storage is immutable + write-once, so the backed-up bytes are exact).
+    // Restore the missing object from backup (remedy (a); storage is immutable + write-once, so the backed-up bytes are exact).
     cpSync(crbmPath(backup, 'gamma', 0), gammaCrbm);
 
     const { storage, registry, store } = stores(root);
