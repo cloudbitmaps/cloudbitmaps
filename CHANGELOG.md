@@ -11,6 +11,10 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Changed
+
+- **A combine or an `iterate` over chunks the cache already holds looks each one up once and opens no stream**, so a warm read costs what a read of each chunk alone costs.
+
 ## [0.15.0] — 2026-10-04
 
 ### Added
