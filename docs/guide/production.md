@@ -311,8 +311,8 @@ its reads past the 50th are not refused: they wait for a socket, and the wait co
 `maxSockets` (on the store, or on your own client) to match your concurrent combines (256 covers four two-operand
 combines or one `eraseSubject`), or pass a lower `concurrency` to the combine.
 
-`eraseSubject` has up to `concurrency × 32` range reads open (256 by default, since it erases 8 segments at once, each
-with a window of 32 chunk reads), and `iterate` and the storage-path `count` read up to 32 keys ahead. Its 256 needs
+`eraseSubject` has up to `concurrency × 32` range requests open (256 by default, since it erases 8 segments at once, each
+reading its segment through a stream of at most 32 ranges, each up to 1 MiB), and `iterate` and the storage-path `count` read up to 32 keys ahead. Its 256 needs
 `maxSockets: 256`, or a lower `concurrency`.
 
 Raise `readTimeoutMs` too on a link too slow to deliver a read inside the timeout, since such a read fails on every attempt. The

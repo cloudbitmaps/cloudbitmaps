@@ -28,6 +28,18 @@ so, and so do the module headers in the code.
   a buffer of up to 1 MiB with its neighbours, so do not write to it, and copy one to keep it. Nothing in the
   library's reads calls it yet, so no request count changes.
 
+### Changed
+
+- **Erasing an id reads its segment in a few range requests rather than one request per chunk.** The rewrite reads
+  the generation it rewrites through the reader's coalesced chunk stream: chunks within 256 KiB of each other share one
+  range request of at most 1 MiB, still in key order, each chunk checked exactly as before (CRC32C, AEAD with its own
+  associated data on an encrypted segment, the payload cap), each range retried on its own under the store's read
+  retry. A segment of 2,000 chunks of about 8 KiB takes about 16 range requests to read, where it took 2,000 (expected,
+  from a test that counts them); 100 such chunks take 1, where they took 100. What the rewrite writes, how it publishes
+  (fenced), the ledger and the receipt are unchanged. The stream holds at most 32 ranges at once, so an erasure holds up
+  to 32 MiB of a segment (`concurrency` × 32 MiB for `eraseSubject`), where it held up to 32 chunks, about 256 KiB for a
+  well-formed segment; the sockets an `eraseSubject` can have open are still `concurrency` × 32, now ranges.
+
 ## [0.14.0] — 2026-10-04
 
 ### Added
