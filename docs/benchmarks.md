@@ -145,8 +145,8 @@ keys are taken, and `andNot` and `union` read an exclude's chunk in the same rou
 took. Before the run of 2026-10-04 the wider window was only **derived**, from a model that draws each GET's latency
 from a lognormal distribution with a median of 26 ms and caps the open requests at 50, as the S3 SDK's default sockets
 do. That run is the measurement of it, and [`0.12.0`'s run](#the-previous-in-region-run--run-2026-10-03-e13c7) is
-what it is measured against. The same harness ran the same workload on both: the requests are the same ones, 204 GETs
-for the cold intersect and 3,021 for the `andNot`, and the bill is the same to the request.
+what it is measured against. The same harness ran the same workload on both: the requests are the same ones, and the bill is the same
+to the request.
 
 **Measured, in region, on S3**, the median of each:
 
@@ -162,7 +162,7 @@ for the cold intersect and 3,021 for the `andNot`, and the bill is the same to t
 widened window. The measured medians are lower on both engines: 8.69 s and 3.34 s for the `andNot`, 4.24 s and 1.81 s
 for the intersect. So the model overstated the time of each, and it overstated the gain too: the model has the
 `andNot` 3.5 times faster, and the run 2.6 times, and for the intersect the model has 3.0 times and the run 2.3. The
-direction and the cause hold: the same requests in about a sixth of the rounds for the `andNot`, a third for the
+direction and the cause hold: the same requests in about an eighth of the rounds for the `andNot`, a third for the
 intersect, because the window is wider and the exclude's read joins the include's.
 
 **The measured rounds sit above the engine's model of them, because the run kept more requests in flight than the
@@ -196,11 +196,12 @@ up to 32 keys per operand ahead, where a window of 8 had requested up to 8. Pass
 > [`bench/calibration/2026-10-03-e13c7.md`](../bench/calibration/2026-10-03-e13c7.md). It is kept here as what
 > [the run above](#the-window-of-32--measured-against-the-model) is measured against.
 
-A cold intersect of two 500,000-id segments sharing 100 of 1,999 chunks took 492.69 ms at the median (p95 559.30 ms) and
-made 204 GETs; at 1,000 shared chunks 4,238.82 ms and at 2,000 8,658.44 ms; the `andNot` against ten excludes 8,687.10 ms
-and 3,021 GETs, at a mean of 10.3 requests in flight; a warm intersect 3.96 ms; a cold `count()` 27.48 ms and a `has()` on
-an open segment 25.60 ms; a single-part load 2.86 million ids a second and a multipart load 11.3 million. It cost
-$0.0376350 over 101 PUT-class and 92,825 GET-class requests, the same as the run above.
+- A cold intersect of two 500,000-id segments sharing 100 chunks took 492.69 ms at the median (p95 559.30 ms).
+- With 1,000 shared chunks the median was 4,238.82 ms, and with 2,000 it was 8,658.44 ms.
+- The `andNot` against ten excludes took 8,687.10 ms at the median, at a mean of 10.3 requests in flight.
+- A warm intersect took 3.96 ms, a cold `count()` 27.48 ms and a `has()` on an open segment 25.60 ms.
+- A single-part load ran at 2.86 million ids a second and a multipart load at 11.3 million.
+- It made the same requests as the run above, and its bill is the same to the request.
 
 ## At scale — measured (1K → 10K → 100K segments)
 
