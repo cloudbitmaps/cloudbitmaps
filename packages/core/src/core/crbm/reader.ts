@@ -637,7 +637,7 @@ export class CrbmReader {
     chunkKeys: readonly number[],
     options: {
       readonly concurrency?: number;
-      readonly ramp?: boolean;
+      readonly ramp?: boolean | number;
       readonly readRange?: <T>(read: () => Promise<T>) => Promise<T>;
       readonly now?: () => number;
     } = {},
@@ -649,6 +649,10 @@ export class CrbmReader {
       );
     }
     validateChunkKeyOrder(chunkKeys);
+    const ramp = options.ramp ?? false;
+    if (typeof ramp === 'number' && (!Number.isInteger(ramp) || ramp < 1)) {
+      throw new ValidationError(`ramp must be a boolean or a positive integer; got ${ramp}`);
+    }
     const readRange = options.readRange ?? (<T>(read: () => Promise<T>): Promise<T> => read());
     const now = options.now ?? ((): number => 0);
     const slots = chunkKeys.map((key) => this.slotOf(key));
@@ -679,7 +683,8 @@ export class CrbmReader {
         return { bytes, ms: Math.max(0, now() - startedAt) };
       },
       width,
-      options.ramp === true,
+      ramp !== false,
+      typeof ramp === 'number' ? ramp : 1,
     );
     let next = 0; // the next range to take
     // The range being handed out, and where in it. It is let go of with its last chunk, before the next range is

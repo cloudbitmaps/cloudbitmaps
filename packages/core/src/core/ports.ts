@@ -82,9 +82,9 @@ export interface ReadChunksOptions {
   readonly concurrency?: number;
   /**
    * Open the window 1, 2, 4 … ranges wide up to `concurrency` instead of at full width, so a reader that stops early
-   * has asked for little.
+   * has asked for little; a number starts it that wide instead of at 1 (a positive integer), and it doubles from there.
    */
-  readonly ramp?: boolean;
+  readonly ramp?: boolean | number;
 }
 
 /** Per-chunk read view of the immutable Storage tier (implemented by the `.crbm` reader). */

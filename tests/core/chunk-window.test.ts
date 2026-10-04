@@ -88,4 +88,27 @@ describe('ChunkWindow', () => {
       process.off('unhandledRejection', on);
     }
   });
+
+  it('with a ramp start, opens at that width and doubles from it, up to the maximum', async () => {
+    const started: number[] = [];
+    const w = new ChunkWindow<number>(
+      Array.from({ length: 40 }, (_, i) => i),
+      async (k) => {
+        started.push(k);
+        return k;
+      },
+      16,
+      true,
+      4,
+    );
+    await w.take();
+    expect(started).toHaveLength(4); // taken 0: width 4
+    await w.take();
+    await w.take();
+    await w.take();
+    expect(started).toHaveLength(3 + 8); // taken 3: width 8
+    for (let i = 0; i < 8; i++) await w.take();
+    expect(started.length - 11).toBeLessThanOrEqual(16); // never past the maximum
+    expect(started.length).toBeLessThanOrEqual(11 + 16);
+  });
 });

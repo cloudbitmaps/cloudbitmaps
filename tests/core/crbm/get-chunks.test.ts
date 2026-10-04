@@ -475,6 +475,21 @@ describe('CrbmReader.readChunks: what a stream holds and has in flight', () => {
     await stream.return(undefined);
   });
 
+  it('a numeric ramp opens the window that wide and doubles from there; anything else is refused', async () => {
+    const parking = new Parking(new BufferReader(await object(keysOf(40).map(() => MIB))));
+    const reader = await CrbmReader.open(parking);
+    parking.requests = 0;
+    const stream = reader.readChunks(keysOf(40), { ramp: 4 });
+    await stream.next();
+    expect(parking.requests).toBe(4);
+    await stream.return(undefined);
+    for (const ramp of [0, -1, 1.5, Number.NaN]) {
+      await expect(collect(reader.readChunks([0], { ramp }))).rejects.toBeInstanceOf(
+        ValidationError,
+      );
+    }
+  });
+
   it('stops launching ranges when the consumer stops, and a range that fails afterwards is never raised', async () => {
     const unhandled: unknown[] = [];
     const onUnhandled = (reason: unknown): void => {

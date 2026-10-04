@@ -309,6 +309,11 @@ export class SegmentEngine {
    * promise per distinct key in flight.
    */
   private readonly openReads = new Map<string, OpenRead>();
+  /**
+   * Bumped by every {@link invalidate}. A chunk stream records it when it opens and caches no chunk it delivers after
+   * it has moved, as a read whose entry an invalidation dropped does not (streams hold no `openReads` entry).
+   */
+  private invalidations = 0;
 
   constructor(deps: EngineDeps) {
     this.storage = deps.storage;
@@ -899,6 +904,7 @@ export class SegmentEngine {
    * Called by the destructive verbs on the facade. Synchronous and best-effort — forgetting cannot fail.
    */
   invalidate(ref: SegmentRef): void {
+    this.invalidations += 1;
     const prefix = segmentPrefix(ref);
     this.cache?.deleteWhere((key) => key.startsWith(prefix));
     // A read already open was asked for before this call, so a caller after it must not join it.
@@ -973,6 +979,16 @@ export class SegmentEngine {
     return entry.read;
   }
 
+  /**
+   * A chunk's stored bytes decoded under the size cap (invariant 5) and range-checked: the one place a chunk becomes a
+   * bitmap, whether its bytes came from a request of its own or from a stream of coalesced ranges.
+   */
+  private decodeChunk(bytes: Uint8Array, chunkKey: number): CodecBitmap {
+    const bitmap = this.codec.safeDeserialize(bytes, this.maxBitmapBytes);
+    this.assertChunkPayloadInRange(bitmap, chunkKey);
+    return bitmap;
+  }
+
   /** One request for one chunk, decoded, range-checked and cached. */
   private async fetchChunk(
     ref: ChunkRef,
@@ -991,8 +1007,7 @@ export class SegmentEngine {
       });
     }
     if (!bytes) return null;
-    const bitmap = this.codec.safeDeserialize(bytes, this.maxBitmapBytes);
-    this.assertChunkPayloadInRange(bitmap, ref.chunkKey);
+    const bitmap = this.decodeChunk(bytes, ref.chunkKey);
     // A read whose entry an invalidation dropped is not cached: its bytes may be older than what a newer read cached.
     if (this.openReads.get(cacheKey)?.token === token) this.cache?.set(cacheKey, bitmap);
     return bitmap;
