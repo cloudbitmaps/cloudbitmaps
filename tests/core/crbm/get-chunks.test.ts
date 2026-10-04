@@ -8,8 +8,12 @@ import { AEAD_NONCE_BYTES, AEAD_TAG_BYTES, PAYLOAD_START } from '@/core/crbm/for
 import { aadFor } from '@/core/crypto';
 import type { CrbmCrypto } from '@/core/crypto';
 import { NodeAead } from '@/drivers/crypto';
-import { IntegrityError } from '@/core/errors';
-import { MAX_COALESCE_GAP_BYTES, MAX_COALESCED_READ_BYTES } from '@/core/crbm/plan-reads';
+import { IntegrityError, ValidationError } from '@/core/errors';
+import {
+  MAX_COALESCE_GAP_BYTES,
+  MAX_COALESCED_READ_BYTES,
+  MAX_GET_CHUNKS_BYTES,
+} from '@/core/crbm/plan-reads';
 
 const KIB = 1024;
 const SEG = { segment: 'coalesce' };
@@ -177,6 +181,17 @@ describe.each(variants)('CrbmReader.getChunks ($name)', ({ encrypted, crypto }) 
     expect(last.offset + last.length).toBe(end);
   });
 
+  it('hands back writable views that share the range they were read in, and one view for a repeated key', async () => {
+    const { reader } = await open(await build(crypto));
+    const got = await reader.getChunks([0, 1, 0]);
+    expect(got[0]).toBe(got[2]);
+    if (!encrypted) {
+      // Documented: a plain chunk is a view into its range, so a caller that keeps one copies it.
+      expect(got[0]!.buffer.byteLength).toBeGreaterThan(got[0]!.byteLength);
+      expect(got[0]!.buffer).toBe(got[1]!.buffer);
+    }
+  });
+
   it('runs every range read through the retry runner it is given', async () => {
     const { reader, spy } = await open(await build(crypto));
     let runs = 0;
@@ -236,5 +251,107 @@ describe('CrbmReader.getChunks: payload cap and associated data', () => {
       const reader = await CrbmReader.open(new BufferReader(swapped), crypto ? { crypto } : {});
       await expect(reader.getChunks([1, 2])).rejects.toBeInstanceOf(IntegrityError);
     }
+  });
+});
+
+/** A blob parking each range read until released, to see how many are in flight at once. */
+class Parking implements BlobReader {
+  inFlight = 0;
+  peak = 0;
+  requests = 0;
+  constructor(private readonly inner: BlobReader) {}
+  async getRange(offset: number, length: number): Promise<Uint8Array> {
+    this.requests++;
+    this.inFlight++;
+    this.peak = Math.max(this.peak, this.inFlight);
+    await new Promise((r) => setTimeout(r, 5));
+    this.inFlight--;
+    return this.inner.getRange(offset, length);
+  }
+  getTail(maxBytes: number) {
+    return this.inner.getTail(maxBytes);
+  }
+}
+
+describe('CrbmReader.getChunks: the bytes one call may plan', () => {
+  const MIB = 1024 * KIB;
+  /** `sizes.length` chunks of the given sizes, keys 0 up, each its own range when sizes are a full MiB. */
+  async function object(sizes: readonly number[]): Promise<Uint8Array> {
+    const sink = new BufferSink();
+    const writer = new CrbmWriter(sink, { generation: 1 });
+    const payload = new Uint8Array(randomBytes(MIB));
+    for (const [key, size] of sizes.entries()) {
+      await writer.addChunk(key, payload.subarray(0, size), 1);
+    }
+    await writer.finish();
+    return sink.bytes();
+  }
+  const keysOf = (n: number): number[] => Array.from({ length: n }, (_, i) => i);
+
+  it('reads exactly the cap and refuses one byte over it, before sending any request', async () => {
+    expect(MAX_GET_CHUNKS_BYTES).toBe(32 * MIB);
+    const atCap = Array.from({ length: 32 }, () => MIB);
+    const parking = new Parking(new BufferReader(await object(atCap)));
+    const reader = await CrbmReader.open(parking);
+    parking.requests = 0;
+    expect(await reader.getChunks(keysOf(32))).toHaveLength(32);
+    expect(parking.requests).toBe(32);
+
+    const over = new Parking(new BufferReader(await object([...atCap, 1])));
+    const overReader = await CrbmReader.open(over);
+    over.requests = 0;
+    const err = await overReader.getChunks(keysOf(33)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ValidationError);
+    expect((err as Error).message).toContain(String(MAX_GET_CHUNKS_BYTES));
+    expect((err as Error).message).toContain(String(32 * MIB + 1));
+    expect(over.requests).toBe(0);
+    // The same object is read in two calls under the cap.
+    expect(await overReader.getChunks(keysOf(32))).toHaveLength(32);
+  });
+
+  it('counts the gaps a merged read carries, not only the chunks asked for', async () => {
+    // 30 chunks of a MiB, then two merged reads of exactly a MiB each (512 KiB, an unwanted 256 KiB, 256 KiB), then
+    // one byte. The chunks asked for add up to under 32 MiB; the bytes read, gaps included, are one over the cap.
+    const sizes = [
+      ...Array.from({ length: 30 }, () => MIB),
+      ...[512 * KIB, 256 * KIB, 256 * KIB, 512 * KIB, 256 * KIB, 256 * KIB, 1],
+    ];
+    const reader = await CrbmReader.open(new BufferReader(await object(sizes)));
+    const asked = [...keysOf(30), 30, 32, 33, 35];
+    expect(await reader.getChunks(asked)).toHaveLength(asked.length);
+    await expect(reader.getChunks([...asked, 36])).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it('keeps no more ranges in flight than the cap allows, and does run them together', async () => {
+    const parking = new Parking(
+      new BufferReader(await object(Array.from({ length: 32 }, () => MIB))),
+    );
+    const reader = await CrbmReader.open(parking);
+    parking.peak = 0;
+    await reader.getChunks(keysOf(32));
+    expect(parking.peak).toBe(32);
+  });
+});
+
+describe('CrbmReader.getChunks: an object with the metadata extension block', () => {
+  it('reads every chunk and no byte past the last of them', async () => {
+    const sink = new BufferSink();
+    const writer = new CrbmWriter(sink, { generation: 3, metadata: { source: 'test' } });
+    for (const k of KEYS) await writer.addChunk(k, PAYLOADS.get(k)!, 1 + k);
+    await writer.finish();
+    const bytes = sink.bytes();
+    const spy = new Spy(new BufferReader(bytes));
+    const reader = await CrbmReader.open(spy);
+    expect(reader.metadata).toEqual({ source: 'test' });
+    spy.ranges.length = 0;
+    const got = await reader.getChunks(KEYS);
+    for (const [i, k] of KEYS.entries()) {
+      expect(Buffer.from(got[i]!)).toEqual(Buffer.from(PAYLOADS.get(k)!));
+    }
+    const last = spy.ranges[spy.ranges.length - 1]!;
+    const end = stored(20, false).offset + stored(20, false).length;
+    expect(last.offset + last.length).toBe(end);
+    // The extension block follows the last chunk, so the object is longer than the chunk region.
+    expect(bytes.length - 104).toBeGreaterThan(end);
   });
 });

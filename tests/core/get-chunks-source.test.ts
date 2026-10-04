@@ -5,7 +5,7 @@
  */
 import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { CrbmStorageChunkSource, TransientError } from '@/index';
+import { CrbmStorageChunkSource, NotFoundError, TransientError } from '@/index';
 import { RetryingStorageChunkSource } from '@/drivers/retry/retrying-chunk-source';
 import type { Clock, GenKey, SegmentRef } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
@@ -48,6 +48,12 @@ function manualClock(): Clock & { advance(ms: number): void } {
 class CountingStorage extends MemoryStorageDriver {
   ranges: { generation: number; offset: number; length: number }[] = [];
   beforeRange: ((n: number) => Promise<void>) | undefined;
+  /** Runs before each tail read, which is how an object's footer is read. */
+  beforeTail: (() => Promise<void>) | undefined;
+  override async getTail(key: GenKey, maxBytes: number) {
+    await this.beforeTail?.();
+    return super.getTail(key, maxBytes);
+  }
   override async getRange(key: GenKey, offset: number, length: number): Promise<Uint8Array> {
     this.ranges.push({ generation: key.generation, offset, length });
     await this.beforeRange?.(this.ranges.length);
@@ -191,6 +197,85 @@ describe('CrbmStorageChunkSource.getChunks', () => {
   });
 });
 
+/** The object under generation 0 swapped for another with the same number: what a purge and a reload leaves. */
+async function replaceGen0(storage: CountingStorage): Promise<void> {
+  await storage.delete({ ...REF, generation: 0 });
+  await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, idsOf(1), {});
+}
+
+describe('CrbmStorageChunkSource.getChunks: the call stays on one generation through each way a segment moves', () => {
+  it('a sweep of the generation mid-call heals to the generation now current, whole', async () => {
+    const { source, storage, publishGen1 } = await world();
+    storage.beforeRange = async (n) => {
+      if (n !== 1) return;
+      await publishGen1();
+      await storage.delete({ ...REF, generation: 0 });
+    };
+    const got = await source.getChunks(REF, [0, 44]);
+    expect(got.chunks.map(parityOf)).toEqual([1, 1]);
+    expect(got.version).toMatch(/^1:/);
+  });
+
+  it('an object replaced under the same number mid-call heals to one generation', async () => {
+    const { source, storage } = await world();
+    const swapped = replaceGen0(storage);
+    storage.beforeRange = () => swapped; // every request waits for the swap, as one that lands after it would
+    const got = await source.getChunks(REF, [0, 44]);
+    expect(got.chunks.map(parityOf)).toEqual([1, 1]);
+  });
+
+  it('an invalidation mid-call leaves the call on the reader it opened, whole and verified', async () => {
+    const { source, storage, publishGen1 } = await world();
+    storage.beforeRange = async (n) => {
+      if (n !== 1) return;
+      await publishGen1();
+      source.invalidate(REF);
+    };
+    const got = await source.getChunks(REF, [0, 44]);
+    expect(got.chunks.map(parityOf)).toEqual([0, 0]);
+    expect(got.version).toMatch(/^0:/);
+    expect((await source.getChunks(REF, [0])).version).toMatch(/^1:/);
+  });
+
+  it('retries a transient fault in the check that the object was replaced', async () => {
+    const { source, storage } = await world();
+    const retrying = new RetryingStorageChunkSource(source, {
+      clock: manualClock(),
+      rng: { next: () => 0.5 },
+    });
+    let failures = 0;
+    const swapped = replaceGen0(storage);
+    storage.beforeRange = async (n) => {
+      await swapped;
+      if (n !== 1) return;
+      storage.beforeTail = async () => {
+        storage.beforeTail = undefined;
+        failures++;
+        throw new TransientError('throttled');
+      };
+    };
+    const got = await retrying.getChunks!(REF, [0, 44]);
+    expect(failures).toBe(1);
+    expect(got.chunks.map(parityOf)).toEqual([1, 1]);
+  });
+
+  it('runs each request through the runner of a caller that wraps another retrying source', async () => {
+    const { source } = await world();
+    const inner = new RetryingStorageChunkSource(source, {
+      clock: manualClock(),
+      rng: { next: () => 0.5 },
+    });
+    let outer = 0;
+    await inner.getChunks!(REF, [0, 44], {
+      retry: (request) => {
+        outer++;
+        return request();
+      },
+    });
+    expect(outer).toBeGreaterThanOrEqual(2); // the resolution and each range
+  });
+});
+
 describe('PinnedStorageChunkSource.getChunks', () => {
   async function pinned() {
     const w = await world();
@@ -211,6 +296,17 @@ describe('PinnedStorageChunkSource.getChunks', () => {
     expect(storage.ranges.every((r) => r.generation === 0)).toBe(true);
     expect(got.version).toBe(await wrapper.currentVersion(REF));
     expect(got.version).toMatch(/^pin /);
+  });
+
+  it('refuses a pin whose object was replaced, whether the reader was open before or not', async () => {
+    const warm = await pinned();
+    await warm.wrapper.getChunks(REF, [0]); // the pin's reader is open and remembered
+    await replaceGen0(warm.storage);
+    await expect(warm.wrapper.getChunks(REF, [0, 44])).rejects.toBeInstanceOf(NotFoundError);
+
+    const cold = await pinned();
+    await replaceGen0(cold.storage);
+    await expect(cold.wrapper.getChunks(REF, [0, 44])).rejects.toBeInstanceOf(NotFoundError);
   });
 
   it('passes an unpinned segment to the live source, with the live version', async () => {

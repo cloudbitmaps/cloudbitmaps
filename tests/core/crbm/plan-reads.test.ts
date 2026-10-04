@@ -104,6 +104,18 @@ describe('planChunkReads: properties', () => {
 });
 
 describe('planChunkReads: cases', () => {
+  it('refuses an offset or length that is not a safe integer', () => {
+    const region = { start: 8, end: 1_000_000 };
+    for (const bad of [Number.NaN, 10.5, -1, Number.POSITIVE_INFINITY, 2 ** 53]) {
+      expect(() => planChunkReads([{ key: 0, offset: bad, length: 10 }], region)).toThrow(
+        IntegrityError,
+      );
+      expect(() => planChunkReads([{ key: 0, offset: 100, length: bad }], region)).toThrow(
+        IntegrityError,
+      );
+    }
+  });
+
   it('plans nothing for no chunks', () => {
     expect(planChunkReads([], REGION)).toEqual([]);
   });
