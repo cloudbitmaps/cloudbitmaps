@@ -65,7 +65,7 @@ function instrument(
   return { storage, counts };
 }
 
-/** The `request`-marked items a stream yields: one per range request it made. */
+/** The range requests a stream sends, heard through `onRequest`: one per request, taken or not. */
 function countStreamRanges(): { ranges: () => number; keys: () => number[][] } {
   const real = CrbmReader.prototype.readChunks;
   let ranges = 0;
@@ -76,14 +76,14 @@ function countStreamRanges(): { ranges: () => number; keys: () => number[][] } {
     options,
   ) {
     keys.push([...k]);
-    const stream = real.call(this, k, options);
-    const next = stream.next.bind(stream);
-    stream.next = async () => {
-      const step = await next();
-      if (step.done !== true && step.value.request !== undefined) ranges++;
-      return step;
-    };
-    return stream;
+    const heard = options?.onRequest;
+    return real.call(this, k, {
+      ...options,
+      onRequest: (request) => {
+        ranges++;
+        heard?.(request);
+      },
+    });
   });
   return { ranges: () => ranges, keys: () => keys };
 }
