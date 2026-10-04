@@ -1,0 +1,168 @@
+# CloudBitmaps
+
+> Distributed, cloud-native Roaring Bitmaps. Query and intersect large integer sets straight out of
+> object storage — a bounded RAM cache over immutable `.crbm` generations in your own bucket — at a fraction
+> of an always-on cache, with the familiar bitmap API: `has`, `count`, `iterate`, `intersect`, `union`,
+> `andNot`. Ids are unsigned 32-bit integers.
+
+## A first example
+
+Save as a `.mjs` file (the packages are ESM-only, Node 22.12 or later) after `pnpm add @cloudbitmaps/roaring`:
+
+```js
+import { CloudRoaring, MemoryStorage } from '@cloudbitmaps/roaring';
+
+// For S3 instead: import { S3Storage } from '@cloudbitmaps/s3'; storage: new S3Storage({ bucket: 'my-bitmaps' })
+const store = new CloudRoaring({ storage: new MemoryStorage() });
+
+await store.load({ segment: 'shoppers' }, [5, 99_999, 1_234_567_890]); // a load replaces the segment
+await store.load({ segment: 'active' }, [5, 7, 1_234_567_890]);
+
+const shoppers = store.segment('shoppers');
+console.log(await shoppers.has(99_999), await shoppers.count()); // true 3
+for await (const id of shoppers.intersect([store.segment('active')])) console.log(id); // 5, then 1234567890
+```
+
+CloudBitmaps maps each 16-bit Roaring chunk onto pluggable cloud storage: an in-process LRU cache over a storage
+tier of write-once `.crbm` generations, with one small registry row per segment saying which generation is
+current. The distinguishing capability is **serverless chunk-skipping intersection**: `A ∩ B` fetches only the
+chunks that can possibly contribute, so intersecting two 2,000,000-id segments touches only the shared chunks,
+and `count()` on a published segment does zero payload reads.
+
+Install two packages: a codec and a storage — `pnpm add @cloudbitmaps/roaring @cloudbitmaps/s3` (or `npm i` the
+same two). `@cloudbitmaps/core` (the codec-agnostic engine, the `.crbm` format and the storage interfaces) is a
+dependency of both and is never installed directly; it contains no cloud SDK at all. Four storage backends: S3
+(`@cloudbitmaps/s3`, which also serves an S3-compatible store such as R2 or MinIO, given its endpoint, if it
+honours S3's conditional writes; MinIO is the one the integration suite runs against), GCS (`@cloudbitmaps/gcs`)
+and Azure Blob (`@cloudbitmaps/azure-blob`) as packages of their own, each depending on its cloud SDK for real
+rather than as an optional peer, and the local filesystem (`LocalFsStorage`, from `@cloudbitmaps/roaring`, for
+development); plus the in-memory `MemoryStorage`, also from `@cloudbitmaps/roaring`, for tests. Each of the three clouds hosts both the storage generations and the registry, so a
+deployment needs exactly one cloud account.
+
+A store is wired with ONE backend object — `new CloudRoaring({ storage: new S3Storage({ bucket }) })` — which
+carries both the generations and the currentGen pointer, from one bucket and one prefix. MemoryStorage
+and LocalFsStorage come from the flavor's main entry; S3Storage, GcsStorage and AzureBlobStorage from
+`@cloudbitmaps/s3`, `@cloudbitmaps/gcs` and `@cloudbitmaps/azure-blob` respectively. There is no separate
+`registry` option.
+
+## How data gets in
+
+Only by loading a whole new generation. `store.load(ref, ids)` writes one immutable object, checks the result is
+plausible (an empty result over a non-empty segment is refused, reported as `published: false` with a `reason`),
+moves the pointer to it by a compare-and-swap fenced on the registry row it read, and collects what the move
+superseded, keeping one generation below the new pointer. It takes an array, a Set or an async cursor. A backend
+(MemoryStorage / LocalFsStorage / S3Storage / GcsStorage / AzureBlobStorage) carries both the generations and the pointer and is what
+`storage` normally takes; a hand-written `{ storage, registry }` object is refused. `storage` also accepts a
+bare `IStorageDriver` (a storage driver, not a backend), which has no registry, so the store is read-only and cleartext; or an already-built
+StorageChunkSource for advanced reader wiring, which is read-only too and reads with whatever registry and
+keystore it was built with. A driver author who wants a storage and a registry of their own — an instrumented storage, a registry
+elsewhere — pairs them with `brandAsBackend({ storage, registry })` from `@cloudbitmaps/core/driver-kit`.
+Nothing mutates a stored bitmap, so a crash before the publish leaves the previous generation authoritative, a rerun is idempotent, and there is no partially-visible write. There is
+no per-id write. `intersectInto`/`unionInto`/`andNotInto` use the same protocol, publishing their result as a
+new generation of the destination segment — and check the result is plausible the same way `load` does: an empty
+or implausible combine over a non-empty destination is refused (`published: false` + `reason`) rather than
+wiping it, with `allowEmpty`/`guard` to override. Unlike `load` they collect nothing by default, so a rollback
+target survives a materialization.
+
+Every chunk a read fetches is whole and checksum-verified, from one generation, resolved once before any
+fan-out; a long read can move to a newer generation part-way (a `cache.genTtlMs` refresh, an eviction, a sweep,
+an invalidation), and `seg.pin()` holds one generation for as long as a job needs it. The reads: has (cache,
+else one ranged GET once the segment's pointer and index are read), count (exact, from the registry row's summary,
+one request when cold, else summed from the .crbm index, with zero payload reads), iterate, and the composites — intersect and andNot, which skip every chunk that cannot
+contribute, and union, which reads every chunk of every operand — with `exclude` suppression folded into the
+same pass. A combine refuses an operand that names no segment (`ValidationError`) rather than reading it as
+empty, unless `allowAbsentOperands: true`. `iterate`, `intersect`, `union` and `andNot` return a stream you `for await` one id at a time, or call `.batches()` on for one `Uint32Array` per chunk (the same ids, ascending). An id-range read, `iterate({ after, through })` and the same options
+on every combine, yields only the ids in (after, through] and fetches only the chunks the range overlaps.
+
+## Measured, expected and modelled
+
+Benchmarked against real S3 in us-east-1 — not an emulator — with the request counts read off the AWS SDK layer.
+With the pointer in the same bucket as the data, the topology that ships: the median cold intersect of two
+500,000-id segments sharing 100 of their 1,999 chunks made 204 GETs as measured, $81.60 per million, requesting
+only the shared chunks, and took 290.06 ms at the median from inside the region (run of 2026-10-04, whose client had 50 sockets; the client this release builds allows 128, and its effect is not measured). Its rounds sit a fifth to a half above the engine's rounds model, which assumes no socket limit; the run did not vary its 50 sockets, so it does not say why. A segment's first store.load() is
+2 PUTs and 4 GETs, $11.60 per million. For comparison: an always-on
+Redis-HA line of $346/month standing, and a modelled $0.03/month for 1.2 GiB of segments at rest. The run was
+driven from AWS CloudShell inside the region. One crossover is published, in GETs: past 329.15
+sustained GETs a second, with every read missing the cache, metered GETs pass the standing cluster — a warmer
+cache moves that line up. For cold intersects of the shape above, at 204 GETs each, that line is 1.6 intersects
+a second.
+
+## Coming from Redis bitmaps
+
+A durable home for set-shaped work — audiences, dedup, suppression, membership, eligibility — where the sets are
+large, mostly read, must survive a restart, and are computed in batches upstream. The read side maps
+one-for-one: GETBIT/BITCOUNT become has/count, BITOP AND/OR/DIFF become intersect/union/andNot, and intersect
+skips the chunks that cannot contribute. You are not giving up the bitmap either: past 4,096 ids in a 65,536-id
+chunk (6.25% of it) Roaring stores that chunk as a flat bit array, one bit per possible id, unless the ids run
+contiguously, when it stores runs. Not the same bytes as a Redis bitmap, though: Redis numbers a byte's bits
+from the most significant, and Roaring packs a chunk's bits into 64-bit words from the least.
+
+Not a drop-in replacement, and the two limits are load-bearing rather than footnotes:
+
+1. No per-id write, and that is the difference. SETBIT has no equivalent: a segment changes only by publishing
+   a new generation, so a SETBIT loop has nothing to port to. If the set is defined by a query, run the query
+   and load the result; if it is defined by events arriving one at a time, accumulate them where they arrive
+   (Redis is genuinely good at that) and load the set on a cadence. A load bills per object, not per id — ten
+   million ids are a handful of PUTs. Removing one id everywhere is a compliance operation (eraseSubject, a
+   generation rewrite), not a hot-path verb.
+2. No addressable-bit surface. BITPOS, BITFIELD, byte-range BITCOUNT and BITOP NOT have no equivalent — this is
+   a set of ids, not a positional bit buffer, and NOT has no bounded universe to complement against. The raw
+   bytes are not interoperable either: a .crbm object is not a flat bit array, and raw bit-position import is
+   not built.
+
+Retention is per segment and built in: setRetention(ref, {expiresAt}) records when a segment becomes eligible
+for retirement, and retireExpired() is the sweep that acts on it, retiring each expired segment through
+dropSegment. The expiry is an absolute instant the writer sets, not a duration derived from anything observed,
+because every load rewrites the basis such a duration would use. The sweep is a function you schedule -- this
+library starts no timer, so the sweep behaves the same in a Lambda and in a long-running server. (An edge
+isolate runs none of it: the roaring codec is a native addon, which no isolate can load.) A handle can also
+carry its own deadline, store.segment(name, { expiresAt }), and reads empty past it with no I/O; that reclaims
+nothing and binds that handle alone. There is no per-id TTL: a bitmap stores ids, not timestamps, and a per-id
+timestamp costs more than the compression saves.
+
+## No background process, and nothing to seed
+
+There is no daemon and no lifecycle worker. A segment exists once a generation has been loaded into it -- there
+is no create verb, segment(name) is just a validated address that does no I/O, and exists(ref) /
+segments({namespace}) ask the registry what is there rather than you keeping your own list of names beside the
+store. The only scheduled work is the retention sweep above (a load collects the generations it supersedes itself, and an
+*Into does when given keep; neither touches the current generation). An operator can move a pointer back with
+store.rollback(ref, generation), to a generation still in the bucket (store.generations(ref) lists them); it
+deletes nothing. Compliance is built in: subjectReport (Art. 15) and eraseSubject (Art. 17 -- a generation
+rewrite that deletes the generation holding the bit, so for every segment its ledger reports `erased: true` the
+bit is physically gone from the bucket when the call returns), both scoped by a `namespace` or
+`{ allNamespaces: true }`; dropSegment; checkConsistency; exportSegments -- eject every segment to portable roaring or ndjson,
+which is the exit path; and the crypto-shred free functions destroySegment and eraseNamespace, which take the
+backend's registry rather than the store, so a store beside them is told with store.invalidate(ref).
+
+## When NOT to use it
+
+If you need a sub-millisecond p99, use Redis. Our cache is in-process RAM, so on a hit there is nothing between
+us; the limit is the tail: a check that misses the cache costs a ranged GET against object storage, where an
+in-process RAM store costs a memory read. CloudBitmaps is for sets that are large, mostly read, and shouldn't
+cost $346/month to keep warm. The in-region run of 2026-10-04 measured a cold intersect of two segments at 290.06 ms and a cold count() at 27.82 ms.
+
+## Status
+
+v0.14.0, Apache-2.0, published tokenlessly with SLSA build provenance. Pre-1.0: breaking changes are possible in
+a minor bump until the .crbm format freezes at 1.0.
+
+## Links
+
+- Repository: https://github.com/cloudbitmaps/cloudbitmaps
+- Package (codec): https://www.npmjs.com/package/@cloudbitmaps/roaring
+- Getting-started guide: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md
+- Before production (permissions, lifecycle rules, timeouts): https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md
+- Loading in depth: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/loading.md
+- Reading in depth: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/reading.md
+- Errors and what to do: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/api-reference.md#errors-typed--you-catch-these
+- API reference: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/api-reference.md
+- Privacy and erasure: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/PRIVACY.md
+- Benchmarks + method: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/benchmarks.md
+- Site: https://cloudbitmaps.pages.dev/
+- Usage (install, backends, the API): https://cloudbitmaps.pages.dev/usage
+- Architecture (generations, the pointer, chunk-skipping, errors): https://cloudbitmaps.pages.dev/architecture
+- Benchmarks (costs, the crossover, what is owed): https://cloudbitmaps.pages.dev/benchmarks
+- Flavors (choose a codec): https://cloudbitmaps.pages.dev/flavors
+- Roaring flavor: https://cloudbitmaps.pages.dev/flavors/roaring
+- Chunk-skipping, stepped through on a recorded run: https://cloudbitmaps.pages.dev/demo

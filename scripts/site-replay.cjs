@@ -53,7 +53,7 @@ const need = [
   'resultCount',
   'fetchedChunks',
   'skippedChunks',
-  'storageBytesRead',
+  'chunkBytesRead',
 ];
 for (const k of need) {
   if (typeof m[k] !== 'number') fail(`\`intersect.${k}\` missing or not a number`);
@@ -115,10 +115,10 @@ for (const [name, measured, derived, why] of checks) {
   }
 }
 
-if (m.storageBytesRead % shared !== 0) {
-  fail(`storageBytesRead (${m.storageBytesRead}) is not divisible by the ${shared} fetched chunks`);
+if (m.chunkBytesRead % shared !== 0) {
+  fail(`chunkBytesRead (${m.chunkBytesRead}) is not divisible by the ${shared} fetched chunks`);
 }
-const bytesPerChunk = m.storageBytesRead / shared;
+const bytesPerChunk = m.chunkBytesRead / shared;
 
 // ── key-space geometry, entirely derived ──────────────────────────────────────────────────────────────────
 const axisKeys = 2 * chunks; // A occupies the low half, B's disjoint tail the high half
@@ -129,8 +129,8 @@ const axisKeys = 2 * chunks; // A occupies the low half, B's disjoint tail the h
  * `file://`. The cost is a second place a number can live, so the check covers it: if the page and the
  * benchmark disagree, the gate fails rather than the argument.
  */
-function checkPage() {
-  const PAGE = path.join(ROOT, 'site', 'demo.html');
+function checkPage(dir) {
+  const PAGE = path.join(ROOT, dir, 'demo.html');
   let html;
   try {
     html = fs.readFileSync(PAGE, 'utf8');
@@ -145,7 +145,7 @@ function checkPage() {
     ['chunksPerSegment', grouped(chunks)],
     ['idsPerSegment', grouped(m.idsPerSegment)],
     ['skippedChunks', grouped(m.skippedChunks)],
-    ['storageBytesRead', grouped(m.storageBytesRead)],
+    ['chunkBytesRead', grouped(m.chunkBytesRead)],
     ['resultCount', grouped(m.resultCount)],
     ['intersectMs', String(m.intersectMs)],
     ['bytesPerFetchedChunk', grouped(bytesPerChunk)],
@@ -175,7 +175,7 @@ function checkPage() {
       axisKeys - 1, // B's last key
       density,
       bytesPerChunk,
-      m.storageBytesRead,
+      m.chunkBytesRead,
       m.skippedChunks,
       m.resultCount,
       // format constants, sourced above rather than allow-listed
@@ -204,7 +204,7 @@ function checkPage() {
     ['data-b-from', chunks + shared],
     ['data-shared', shared],
     ['data-skipped', m.skippedChunks],
-    ['data-bytes', m.storageBytesRead],
+    ['data-bytes', m.chunkBytesRead],
     ['data-ids', m.resultCount],
     ['data-bytes-per-chunk', bytesPerChunk],
     ['data-density', density],
@@ -248,12 +248,15 @@ function checkPage() {
   return problems;
 }
 
-const pageProblems = checkPage();
-if (pageProblems.length) {
-  fail(`site/demo.html disagrees with the benchmark:\n  - ${pageProblems.join('\n  - ')}`);
+// `site-next/` is the display-tier rebuild beside `site/` until it replaces it; its demo replays the same run.
+for (const dir of ['site', 'site-next']) {
+  const pageProblems = checkPage(dir);
+  if (pageProblems.length) {
+    fail(`${dir}/demo.html disagrees with the benchmark:\n  - ${pageProblems.join('\n  - ')}`);
+  }
 }
 console.log(
   `site-replay: demo.html agrees with the benchmark — ${shared}/${chunks} keys aligned · ` +
-    `${m.storageBytesRead.toLocaleString()} bytes read · ${m.resultCount.toLocaleString()} ids · ` +
+    `${m.chunkBytesRead.toLocaleString()} chunk bytes read · ${m.resultCount.toLocaleString()} ids · ` +
     `${m.intersectMs} ms.`,
 );

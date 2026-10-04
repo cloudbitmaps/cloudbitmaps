@@ -18,4 +18,5 @@ tests/bench/fixtures/calibration-rehearsal*.json
 # site/ pages are matched pixel-for-pixel against the delivered design; Prettier reflows the <i> runs in the
 # chunk-key grid and the <pre> code samples, which changes what renders.
 site/*.html
+site-next/*.html
 

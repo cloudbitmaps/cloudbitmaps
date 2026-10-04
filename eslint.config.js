@@ -392,7 +392,7 @@ export default tseslint.config(
   {
     // The site's scripts. Browser globals, not Node — `site/` is hand-written static HTML, so this is plain
     // ES5-compatible JS rather than anything that goes through the build.
-    files: ['site/**/*.js'],
+    files: ['site/**/*.js', 'site-next/**/*.js'],
     languageOptions: {
       sourceType: 'script',
       globals: {

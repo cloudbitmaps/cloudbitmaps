@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -16,7 +17,14 @@ import { fileURLToPath } from 'node:url';
 // It covers two surfaces, `site/` and the markdown docs, because a stale version can sit in either. See
 // MARKDOWN_DOCS for why the second half is scoped differently from the first.
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const SITE = join(ROOT, 'site');
+/** The site gate's reader of markup, so a comment ends here where the browser ends it: `<!-->` is a whole comment. */
+const { withoutComments } = createRequire(import.meta.url)(
+  '../../scripts/lib/home-figures.cjs',
+) as {
+  withoutComments: (html: string) => string;
+};
+/** Both trees: `site/`, which Pages publishes, and `site-next/`, the display-tier rebuild beside it until it replaces it. */
+const SITE_DIRS = ['site', 'site-next'];
 
 const version = (
   JSON.parse(readFileSync(join(ROOT, 'packages/roaring/package.json'), 'utf8')) as {
@@ -168,14 +176,16 @@ const NEXT_MINOR = ((): string => {
 const MARKS_UNRELEASED = /\b(not on npm yet|unreleased|not yet released|is not published)\b/i;
 
 /**
- * Version tokens a reader can actually see, excluding HTML comments.
+ * Version tokens a reader can actually see, excluding HTML comments, which end where the browser ends them.
  *
  * Comments are stripped because they are not rendered, so they cannot mislead anyone — and because they may
  * legitimately discuss other releases, which a bare-token match would otherwise flag forever.
  */
-function badgeVersions(html: string): string[] {
-  return html
-    .replace(/<!--[\s\S]*?-->/g, '')
+function badgeVersions(
+  html: string,
+  foreign: ReadonlyMap<string, string> = FOREIGN_VERSIONS,
+): string[] {
+  return withoutComments(html)
     .split('\n')
     .flatMap((line) => {
       const short = [...line.matchAll(SHORT_VERSION_RE)]
@@ -188,7 +198,7 @@ function badgeVersions(html: string): string[] {
         ...[...line.matchAll(VERSION_RE)]
           .filter((m) => {
             const v = m[1] as string;
-            if (FOREIGN_VERSIONS.has(v)) return false;
+            if (foreign.has(v)) return false;
             if (v !== NEXT_MINOR) return true;
             // ADJACENT, not merely same-line. On an HTML page a "line" can be a whole markup region, so a
             // stray "unreleased" anywhere on it would exempt a stale badge.
@@ -232,7 +242,7 @@ function filesUnder(dir: string, exts: readonly string[], prefix = ''): string[]
   });
 }
 
-const pages = htmlPagesUnder(SITE);
+const pages = SITE_DIRS.flatMap((dir) => htmlPagesUnder(join(ROOT, dir), dir));
 
 /**
  * Non-HTML files under `site/` that must name the release.
@@ -242,7 +252,7 @@ const pages = htmlPagesUnder(SITE);
  * covers some of the files carrying a version is a gate with a hole in it. Every other `.txt`, `.xml`, `.js` and
  * `.json` file served from `site/` is read below, derived rather than listed.
  */
-const VERSIONED_TEXT_FILES = ['llms.txt'];
+const VERSIONED_TEXT_FILES = SITE_DIRS.map((dir) => `${dir}/llms.txt`);
 
 /**
  * Every other non-HTML file served from `site/`.
@@ -256,9 +266,9 @@ const VERSIONED_TEXT_FILES = ['llms.txt'];
  * is precisely what stops being true on the day one does. Enumerating the directory means a new served file is
  * covered on the day it is added.
  */
-const OTHER_SERVED_FILES = filesUnder(SITE, ['.txt', '.xml', '.js', '.json']).filter(
-  (f) => !VERSIONED_TEXT_FILES.includes(f),
-);
+const OTHER_SERVED_FILES = SITE_DIRS.flatMap((dir) =>
+  filesUnder(join(ROOT, dir), ['.txt', '.xml', '.js', '.json'], dir),
+).filter((f) => !VERSIONED_TEXT_FILES.includes(f));
 
 /**
  * Markdown that describes the CURRENT release, and therefore must name the current release.
@@ -316,6 +326,17 @@ const MARKDOWN_DOCS = [
   ...markdownUnder(join(ROOT, 'docs'), 'docs'),
 ];
 
+// site-next/ describes the current release only, so none of our own releases is exempt anywhere in it: the
+// previous release's number is exactly what a release bump leaves behind. Third-party versions stay exempt.
+const OUR_RELEASES = new Set(
+  [...readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8').matchAll(/^## \[(\d+\.\d+\.\d+)\]/gm)].map(
+    (m) => m[1] as string,
+  ),
+);
+const THIRD_PARTY = new Map([...FOREIGN_VERSIONS].filter(([v]) => !OUR_RELEASES.has(v)));
+const foreignFor = (file: string): ReadonlyMap<string, string> =>
+  file.startsWith('site-next/') ? THIRD_PARTY : FOREIGN_VERSIONS;
+
 describe('site version badges', () => {
   it('finds the pages at all, so a rename cannot turn this suite into a no-op', () => {
     // Without this, moving or renaming site/ leaves zero pages, every it.each below generates zero cases,
@@ -327,7 +348,7 @@ describe('site version badges', () => {
     // Named explicitly because a depth-one walk passes while silently excluding a nested page. "Every page"
     // has to mean every page at any depth, and the assertion that says so should fail if the
     // walk ever regresses to one level — not merely cover fewer files without comment.
-    const nested = pages.filter((p) => p.includes('/'));
+    const nested = pages.filter((p) => p.split('/').length > 2);
     expect(
       nested.length,
       `no nested page found under site/ — did the walk stop recursing?`,
@@ -336,7 +357,7 @@ describe('site version badges', () => {
 
   it.each(VERSIONED_TEXT_FILES)('%s advertises the current version', (file) => {
     // Same line-scoped forward-reference rule as the HTML pages: see NEXT_MINOR.
-    const found = badgeVersions(readFileSync(join(SITE, file), 'utf8'));
+    const found = badgeVersions(readFileSync(join(ROOT, file), 'utf8'), foreignFor(file));
     expect(
       found.length,
       `${file} names no version at all — did its wording change?`,
@@ -347,7 +368,7 @@ describe('site version badges', () => {
   });
 
   it.each(OTHER_SERVED_FILES)('%s names no version but ours', (file) => {
-    for (const v of badgeVersions(readFileSync(join(SITE, file), 'utf8'))) {
+    for (const v of badgeVersions(readFileSync(join(ROOT, file), 'utf8'), foreignFor(file))) {
       expect(
         v,
         `${file} names ${v}, but the packages are at ${version}. It is served from the same origin as the ` +
@@ -357,7 +378,8 @@ describe('site version badges', () => {
   });
 
   it.each(pages)('%s advertises the current version everywhere it names one', (page) => {
-    const found = badgeVersions(readFileSync(join(SITE, page), 'utf8'));
+    const foreign = foreignFor(page);
+    const found = badgeVersions(readFileSync(join(ROOT, page), 'utf8'), foreign);
     for (const v of found) {
       expect(
         v,
@@ -367,13 +389,18 @@ describe('site version badges', () => {
     }
   });
 
+  it('reads a comment where the browser ends it, so `<!-->` hides nothing after it', () => {
+    expect(badgeVersions('<p><!-->v0.13.0 is out<!-- --></p>', new Map())).toEqual(['0.13.0']);
+    expect(badgeVersions('<p><!-- v0.13.0 is out --></p>', new Map())).toEqual([]);
+  });
+
   it('every page carries the release at least once', () => {
     // Guards the inverse mistake: the per-page loop above is vacuously true for a page with no badge at all,
     // so deleting one would pass. Every page currently names the release in a footer line, and a page that
     // stops doing so is either a copy regression or a deliberate change that should come here first.
     for (const p of pages) {
       expect(
-        badgeVersions(readFileSync(join(SITE, p), 'utf8')).length,
+        badgeVersions(readFileSync(join(ROOT, p), 'utf8')).length,
         `${p} names no version anywhere — was a footer badge dropped?`,
       ).toBeGreaterThan(0);
     }
@@ -389,7 +416,7 @@ describe('site version badges', () => {
     // how one rule becomes two that drift.
     const all = [
       ...[...pages, ...VERSIONED_TEXT_FILES, ...OTHER_SERVED_FILES].map((f) =>
-        readFileSync(join(SITE, f), 'utf8'),
+        readFileSync(join(ROOT, f), 'utf8'),
       ),
       ...MARKDOWN_DOCS.map((f) => readFileSync(join(ROOT, f), 'utf8')),
     ].join('\n');

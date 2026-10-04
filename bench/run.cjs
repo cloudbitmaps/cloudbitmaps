@@ -17,6 +17,8 @@
  *   - bench/crossover.svg           self-contained chart (used by docs/benchmarks.md)
  *   - bench/results.json            the numbers behind the chart
  *   - site/benchmarks.html          chart inlined (between BENCH markers)
+ *   - site-next/benchmarks.html     the same chart in the display tier's register (BENCH:CHART)
+ *   - site-next/index.html          the homepage's crossover, generated (BENCH:HOMECHART)
  *   - docs/benchmarks.md            chart <img> + stats table (between BENCH markers)
  *
  * `require()` loads @cloudbitmaps/core, which ships ESM only, through Node's `require(esm)` — unflagged from 22.12,
@@ -261,6 +263,158 @@ function panel(top, title, xLabel, costFn, crossover, xTicks, xMax) {
   return out.join('\n');
 }
 
+// ── The display-tier chart, for site-next/ ───────────────────────────────────────────────────────
+// site-next/ is the Instrument display-tier rebuild that sits beside site/ until it replaces it, and it draws charts
+// in that tier's register: structure in the foreground at 1px, our line in --cb-cyan, the flat cluster in the
+// foreground at the same 2.5 stroke, the half where the cluster wins hatched rather than tinted, since a loss is a
+// peer and not an alert, and every label in mono. Only classes, which that sheet defines, so the chart follows the
+// page's theme. It is drawn from the same curve, crossover and baseline as the chart above, and inlined at a width
+// where its 13px labels render at 13px. Same two marks the figures gate reads: the crossover and the baseline.
+function instrumentChart() {
+  const VW = 1176;
+  const VH = 440;
+  const plotL = 72;
+  const plotR = VW - 24;
+  const plotT = 40;
+  const plotB = 360;
+  const plotW = plotR - plotL;
+  const plotH = plotB - plotT;
+  const px = (x) => plotL + (x / X_MAX_READS) * plotW;
+  const py = (v) => plotB - (Math.min(v, Y_MAX) / Y_MAX) * plotH;
+  const pts = [];
+  for (let i = 0; i <= 80; i++) {
+    const x = (i / 80) * X_MAX_READS;
+    pts.push(`${px(x).toFixed(1)},${py(costReads(x)).toFixed(1)}`);
+  }
+  const crX = px(readCross);
+  const redisY = py(REDIS);
+  const f = (n) => n.toFixed(1);
+  return [
+    `<svg class="cb-svg is-wide" viewBox="0 0 ${VW} ${VH}" role="img" aria-label="CloudBitmaps against one Redis-HA cluster: pay-per-use rises with sustained reads and crosses the flat $${REDIS} a month at ${readCross.toFixed(0)} reads a second, past which the cluster is cheaper">`,
+    `<defs><pattern id="bench-hatch" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><path class="hatch" d="M0 0 V8"/></pattern></defs>`,
+    `<rect x="${f(crX)}" y="${plotT}" width="${f(plotR - crX)}" height="${plotH}" fill="url(#bench-hatch)"/>`,
+    `<path class="s sd guide" d="M${f(crX)} ${plotT} V${plotB}"/>`,
+    `<path class="line-node" d="M${plotL} ${f(redisY)} H${plotR}"/>`,
+    `<polyline class="line-ours" points="${pts.join(' ')}"/>`,
+    `<path class="s" d="M${plotL} ${plotT} V${plotB} H${plotR}"/>`,
+    `<text class="tl" x="${plotL + 16}" y="${plotT + 24}">CLOUDBITMAPS COSTS LESS</text>`,
+    `<text class="tl on-hatch" x="${f(crX + 16)}" y="${plotT + 24}">A FLAT CLUSTER COSTS LESS</text>`,
+    `<text class="t" x="${plotL + 16}" y="${f(redisY - 12)}">Redis-HA cluster · flat · $${REDIS}/mo</text>`,
+    `<text class="t is-ours" x="${f(px(X_MAX_READS * 0.3))}" y="${f(py(costReads(X_MAX_READS * 0.3)) + 28)}">CloudBitmaps · pay-per-use</text>`,
+    `<rect class="hot" x="${f(crX - 6)}" y="${f(redisY - 6)}" width="12" height="12" rx="2"/>`,
+    `<text class="t crossing" x="${f(crX + 16)}" y="${f(redisY + 32)}">crossover ≈ ${readCross.toFixed(readCross < 100 ? 1 : 0)} /s</text>`,
+    ...Y_TICKS.map(
+      (t) =>
+        `<text class="tf" x="${plotL - 10}" y="${f(py(t) + 4)}" text-anchor="end">$${t}</text>`,
+    ),
+    ...X_TICKS_READS.map(
+      (t) => `<text class="tf" x="${f(px(t))}" y="${plotB + 22}" text-anchor="middle">${t}</text>`,
+    ),
+    `<text class="tf" x="${plotL}" y="${plotT - 16}">$ / MONTH</text>`,
+    `<text class="tf" x="${plotR}" y="${plotB + 52}" text-anchor="end">SUSTAINED POINT READS · OBJECT GETS, CACHE OFF · ${esc(P.name).toUpperCase()} · READS/S →</text>`,
+    `</svg>`,
+  ].join('\n');
+}
+
+// ── The homepage's crossover, for site-next/ ─────────────────────────────────────────────────────
+// The display-tier homepage's chart, drawn the full width of its band: 1,176 units, each line labelled with what
+// it costs where it runs, and what each side of the crossover means written under the axis. The x axis runs to twice
+// the crossover, so the lines meet mid-plot, and the y axis holds our line from nothing to where it ends: the line is
+// GETs alone, with every read a cache miss, which is why it starts at $0 rather than at the storage cost. Every text
+// run is 13 units or more, so the chart keeps the 9.5px floor down to 860px of screen and scrolls in its frame below
+// that. Generated rather than hand-drawn so its geometry is the estimator's. Its reveal (`x-cover`, `x-dot`) is one
+// of the homepage's two animations; the cover slides its own width, so the plot's size is not written in the sheet.
+function homeChart() {
+  const W = 1176;
+  const H = 414;
+  const plotL = 92;
+  const plotR = 1160;
+  const plotT = 56;
+  const plotB = 350;
+  const xMax = 2 * readCross;
+  const px = (x) => plotL + (x / xMax) * (plotR - plotL);
+  const yScale = (plotB - plotT - 12) / costReads(xMax);
+  const py = (v) => plotB - v * yScale;
+  const f = (n) => n.toFixed(1);
+  const crX = px(readCross);
+  const redisY = py(REDIS);
+  const rate = readCross.toFixed(2);
+  const getPrice = P.storage.getPerMillion.toFixed(2);
+  // Our label sits wholly under our line and left of the crossover guide: its top clears the line where the line is
+  // lowest over it, its left edge, and its longest run, 22 characters at 20 units, ends before the guide.
+  const oursX = 350;
+  const oursY = py(costReads(((oursX - plotL) / (plotR - plotL)) * xMax)) + 22;
+  return [
+    `<svg class="cb-svg is-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Cost per month against GETs a second, every read a cache miss. CloudBitmaps rises from nothing at $${getPrice} per million GETs; the Redis cluster is flat at $${REDIS}; they cross at ${rate} GETs a second, above which the cluster is cheaper.">`,
+    `<defs><pattern id="hx" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><path class="hatch" d="M0 0 V8"/></pattern><clipPath id="plot"><rect x="${plotL}" y="${plotT - 2}" width="${plotR - plotL + 2}" height="${plotB - plotT + 1}"/></clipPath></defs>`,
+    `<rect x="${f(crX)}" y="${plotT}" width="${f(plotR - crX)}" height="${plotB - plotT}" fill="url(#hx)"/>`,
+    `<path class="s sd guide" d="M${f(crX)} ${plotT} V${plotB}"/>`,
+    `<path class="line-node" d="M${plotL} ${f(redisY)} H${plotR}"/>`,
+    `<path class="line-ours" d="M${plotL} ${f(py(costReads(0)))} L${plotR} ${f(py(costReads(xMax)))}"/>`,
+    `<g clip-path="url(#plot)"><rect class="cover x-cover" x="${plotL}" y="${plotT - 2}" width="${plotR - plotL + 2}" height="${plotB - plotT + 1}"/></g>`,
+    `<path class="s" d="M${plotL - 1} ${plotT} V${plotB} H${plotR}"/>`,
+    `<text class="tl" x="${plotL}" y="24">$ / MONTH</text>`,
+    `<text class="tl" x="${plotR}" y="24" text-anchor="end">GETS / SECOND, EVERY READ A CACHE MISS</text>`,
+    `<text class="t is-fig" x="${plotL + 16}" y="${f(redisY - 30)}">$${REDIS}/mo</text>`,
+    `<text class="t" x="${plotL + 16}" y="${f(redisY - 10)}">a Redis-HA cluster, flat, whether read or not</text>`,
+    `<text class="t is-fig is-ours" x="${oursX}" y="${f(oursY)}">$${getPrice} per million GETs</text>`,
+    `<text class="t" x="${oursX}" y="${f(oursY + 20)}">CloudBitmaps, metered</text>`,
+    `<g class="x-dot"><rect class="hot" x="${f(crX - 6)}" y="${f(redisY - 6)}" width="12" height="12" rx="2"/><text class="tl on-hatch" x="${f(crX + 18)}" y="${f(redisY + 30)}">THE CROSSOVER</text><text class="t crossing on-hatch" x="${f(crX + 18)}" y="${f(redisY + 58)}">${rate} GETs/s</text></g>`,
+    `<text class="tf" x="${plotL - 12}" y="${f(redisY + 5)}" text-anchor="end">$${REDIS}</text>`,
+    `<text class="tf" x="${plotL - 12}" y="${plotB + 5}" text-anchor="end">$0</text>`,
+    `<text class="tf" x="${plotL}" y="${plotB + 24}" text-anchor="middle">0</text>`,
+    `<text class="tf" x="${f(crX)}" y="${plotB + 24}" text-anchor="middle">${rate}</text>`,
+    `<text class="tl" x="${plotL}" y="${plotB + 56}">LEFT OF THE CROSSOVER, METERED READS COST LESS</text>`,
+    `<text class="tl" x="${plotR}" y="${plotB + 56}" text-anchor="end">RIGHT OF IT, THE STANDING CLUSTER DOES · USE REDIS</text>`,
+    `</svg>`,
+  ].join('\n');
+}
+
+// The same chart for a phone: 330 units wide with no label under 10, so it keeps the 9.5px floor from 314px of
+// screen, where the full-width one would show a third of itself in its scroll frame. There is no room to label the
+// lines where they run, so a legend under the axis names them. The sheet shows one or the other by width.
+function homeChartNarrow() {
+  // 262 wide so that at its smallest label, 10 units, it keeps 9.5px on a 320px phone: 262 × 9.5 ÷ 10 is 249px, and
+  // the frame there is 254px. The axis title takes a row of its own and the legend starts at the left edge.
+  const W = 262;
+  const H = 314;
+  const plotL = 40;
+  const plotR = 252;
+  const plotT = 26;
+  const plotB = 190;
+  const xMax = 2 * readCross;
+  const px = (x) => plotL + (x / xMax) * (plotR - plotL);
+  const yScale = (plotB - plotT - 8) / costReads(xMax);
+  const py = (v) => plotB - v * yScale;
+  const f = (n) => n.toFixed(1);
+  const crX = px(readCross);
+  const redisY = py(REDIS);
+  const rate = readCross.toFixed(2);
+  const getPrice = P.storage.getPerMillion.toFixed(2);
+  return [
+    `<svg class="cb-svg is-chart-narrow" viewBox="0 0 ${W} ${H}" role="img" aria-label="Cost per month against GETs a second, every read a cache miss. CloudBitmaps rises from nothing at $${getPrice} per million GETs; the Redis cluster is flat at $${REDIS}; they cross at ${rate} GETs a second, above which the cluster is cheaper.">`,
+    `<defs><pattern id="hxn" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><path class="hatch" d="M0 0 V8"/></pattern><clipPath id="plotn"><rect x="${plotL}" y="${plotT - 2}" width="${plotR - plotL + 2}" height="${plotB - plotT + 1}"/></clipPath></defs>`,
+    `<rect x="${f(crX)}" y="${plotT}" width="${f(plotR - crX)}" height="${plotB - plotT}" fill="url(#hxn)"/>`,
+    `<path class="s sd guide" d="M${f(crX)} ${plotT} V${plotB}"/>`,
+    `<path class="line-node" d="M${plotL} ${f(redisY)} H${plotR}"/>`,
+    `<path class="line-ours" d="M${plotL} ${f(py(costReads(0)))} L${plotR} ${f(py(costReads(xMax)))}"/>`,
+    `<g clip-path="url(#plotn)"><rect class="cover x-cover" x="${plotL}" y="${plotT - 2}" width="${plotR - plotL + 2}" height="${plotB - plotT + 1}"/></g>`,
+    `<path class="s" d="M${plotL - 1} ${plotT} V${plotB} H${plotR}"/>`,
+    `<text class="tl" x="0" y="12">$ / MONTH</text>`,
+    `<g class="x-dot"><rect class="hot" x="${f(crX - 5)}" y="${f(redisY - 5)}" width="10" height="10" rx="2"/><text class="t is-bold on-hatch" x="${f(crX + 10)}" y="${f(redisY + 24)}">${rate} GETs/s</text></g>`,
+    `<text class="tf" x="${plotL - 6}" y="${f(redisY + 4)}" text-anchor="end">$${REDIS}</text>`,
+    `<text class="tf" x="${plotL - 6}" y="${plotB + 4}" text-anchor="end">$0</text>`,
+    `<text class="tf" x="${plotL}" y="${plotB + 16}" text-anchor="middle">0</text>`,
+    `<text class="tf" x="${f(crX)}" y="${plotB + 16}" text-anchor="middle">${rate}</text>`,
+    `<text class="tl" x="${plotR}" y="${plotB + 34}" text-anchor="end">GETS/S, EVERY READ A MISS</text>`,
+    `<text class="tl" x="${plotL}" y="${plotB + 54}">← METERED COSTS LESS</text>`,
+    `<text class="tl" x="${plotR}" y="${plotB + 72}" text-anchor="end">USE REDIS →</text>`,
+    `<path class="line-node" d="M0 ${plotB + 92} H18"/><text class="tf" x="26" y="${plotB + 96}">$${REDIS}/mo · a Redis-HA cluster, flat</text>`,
+    `<path class="line-ours" d="M0 ${plotB + 112} H18"/><text class="tf" x="26" y="${plotB + 116}">$${getPrice} per million GETs · CloudBitmaps</text>`,
+    `</svg>`,
+  ].join('\n');
+}
+
 // ── Stats tables ─────────────────────────────────────────────────────────────────────────────────
 const rows = [
   [
@@ -306,6 +460,9 @@ write('bench/results.json', JSON.stringify(results, null, 2) + '\n');
 // carry the stats table the site hand-writes. Only the regions passed are touched, so a file is not required
 // to host every marker pair — but a marker pair that IS named must exist, or replaceRegion throws.
 inject('site/benchmarks.html', { CHART: svg });
+// `site-next/` is the display-tier rebuild beside `site/` until it replaces it: the same figures, drawn in its register.
+inject('site-next/benchmarks.html', { CHART: instrumentChart() });
+inject('site-next/index.html', { HOMECHART: homeChart() + '\n' + homeChartNarrow() });
 inject('docs/benchmarks.md', {
   CHART: `![CloudBitmaps against one Redis-HA cluster: where the cost crosses](../bench/crossover.svg)`,
   STATS: mdTable,
@@ -325,7 +482,10 @@ function replaceRegion(s, name, body, rel) {
   // Throwing rather than warning is deliberate: a silently-skipped region publishes a page with a stale or
   // empty figure, which is worse than a failed run. Were this a warning, a page rebuilt without its markers
   // would go stale with every run passing.
-  if (i === -1 || j === -1) throw new Error(`missing BENCH:${name} markers in ${rel}`);
+  if (i === -1 || j === -1 || j < i) throw new Error(`missing BENCH:${name} markers in ${rel}`);
+  if (s.indexOf(start, i + 1) !== -1 || s.indexOf(end, j + 1) !== -1) {
+    throw new Error(`more than one BENCH:${name} region in ${rel}`);
+  }
   return s.slice(0, i + start.length) + '\n' + body + '\n' + s.slice(j);
 }
 function write(rel, body) {
@@ -362,8 +522,8 @@ if (check) {
     process.exit(1);
   }
   console.log(
-    'bench:check: bench/crossover.svg, bench/results.json and the BENCH regions of site/benchmarks.html and ' +
-      'docs/benchmarks.md are current.',
+    'bench:check: bench/crossover.svg, bench/results.json and the BENCH regions of site/benchmarks.html, ' +
+      'site-next/benchmarks.html, site-next/index.html and docs/benchmarks.md are current.',
   );
 } else {
   console.log(
