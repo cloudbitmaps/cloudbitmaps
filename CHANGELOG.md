@@ -11,6 +11,14 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Added
+
+- **`StorageChunkSource.getChunks(ref, keys, options?)`, optional, for the authors of a chunk source.** It reads several
+  chunks of one segment from one generation and answers the chunks, lined up with the keys, with the version of the
+  generation they came from (`ChunksRead`). `CrbmStorageChunkSource` implements it by merging chunks that sit within
+  256 KiB of each other into one range read, up to 1 MiB, and checks each chunk exactly as a read of it alone is
+  checked; the in-memory source omits it. Nothing in the library's reads calls it yet, so no request count changes.
+
 ## [0.14.0] — 2026-10-04
 
 ### Added

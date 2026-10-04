@@ -779,7 +779,12 @@ otherwise throws the registry's `TransientError` and deletes nothing.
 (`ClearRegistrySummary` `{ generation, cardinality, metadata? }` or `SealedRegistrySummary` `{ generation, sealed }`,
 the row's cached description of its current generation) · `GenerationMetadata` (string keys, string or finite-number
 values, at most 1 KiB as canonical JSON) · `GenerationSummary` (`{ generation, cardinality, metadata? }`, what a
-`StorageChunkSource`'s optional `summary()` answers for a segment's current generation)
+`StorageChunkSource`'s optional `summary()` answers for a segment's current generation) · `ChunksRead` (`{ version,
+chunks }`, what the optional `getChunks(ref, keys, options?)` answers: the chunks, lined up with the keys, and the
+version of the one generation they were all read from) · `ReadChunksOptions` (`{ retry? }`, a runner for each storage
+request the call makes, so a caller that retries repeats the one request that failed). A source that implements
+`getChunks` reads several chunks of one segment from one generation in fewer requests; one that omits it is read
+chunk by chunk, as before
 
 ---
 
@@ -898,7 +903,7 @@ Values: `SegmentEngine` · `BoundedLru` · `safeMetrics` · `NOOP_METRICS` · `g
 `setSegmentRetention` · `getSegmentRetention` · `clearSegmentRetention` · `retireExpired` · `estimateCost`
 
 Types: `EngineDeps` · `EngineCombineOptions` · `RetryDeps` · `RetryingOptions` · `LoadDeps` ·
-`GenerationListDeps` · `GenerationSummary` · `EraseIdDeps` · `EraseIdResult` · `RetentionDeps` · `DropDeps` · `Entropy`
+`GenerationListDeps` · `GenerationSummary` · `ChunksRead` · `ReadChunksOptions` · `EraseIdDeps` · `EraseIdResult` · `RetentionDeps` · `DropDeps` · `Entropy`
 
 ### `@cloudbitmaps/core/driver-kit`
 
