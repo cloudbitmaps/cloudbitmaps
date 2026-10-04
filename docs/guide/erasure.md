@@ -141,7 +141,8 @@ deletes the generation that held the bit (a collection with `keep: 0`). The bit 
 when the call returns. It reads ahead through a window of 32 chunk reads, in key order, so a segment of `n` chunks
 takes about `n / 32` request times in sequence rather than `n`; the requests are the same ones. Memory is bounded by
 the window, never the segment: up to 32 raw chunk payloads are held ahead of the writer, about 8 KiB each for a
-well-formed segment and never more than the reader's per-chunk cap ([SECURITY](../../SECURITY.md)) for a corrupt one.
+well-formed segment and no more than the reader's cap of 1 MiB each ([SECURITY](../../SECURITY.md)) for a corrupt one,
+32 MiB per segment and `concurrency` × 32 MiB for `eraseSubject`.
 `eraseSubject` erases up to `concurrency` segments at once (8 by default), so it can have up to `concurrency × 32` range
 reads open together, 256 by default. On S3 that is more than the SDK's default of 50 sockets: the reads past the 50th
 wait for one ([production](production.md)).

@@ -108,7 +108,7 @@ means being an early user.
   by loading a new generation. If events arrive one at a time, collect them where they arrive (Redis is good at that)
   and load the set on a schedule. Removing one id everywhere is a compliance operation (`eraseSubject`), not a
   hot-path call.
-- You need sub-millisecond answers on a small working set. A read that misses the cache is a ranged GET against
+- You need sub-millisecond answers on a small working set. A read that misses the cache makes at most one ranged GET against
   object storage.
 - You want an addressable bit buffer. `BITPOS`, `BITFIELD` and `BITOP NOT` have no equivalent, and the stored bytes
   are not a flat bit array.

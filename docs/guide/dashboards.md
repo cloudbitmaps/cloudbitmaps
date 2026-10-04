@@ -23,7 +23,7 @@ The metrics sink pushes raw observations on the I/O path. There are five event k
 | `kind` | When | Payload |
 | --- | --- | --- |
 | `storage.get` | one object-store GET for a chunk | `bytes` (0 if the chunk was absent — a GET still happened), `ms` (includes any retry backoff) |
-| `cache` | one cache lookup (only when a cache is configured) | `hit`. A miss that then waits on a read another caller already has open still counts as a miss and adds no `storage.get`, so `misses` is at least the `storage.get` count |
+| `cache` | one cache lookup (only when a cache is configured) | `hit`. With a cache, a miss that waits on a read another caller already has open adds no `storage.get`, so `misses` can exceed the `storage.get` count; `storage.get` is the number of requests |
 | `retry` | a transient infrastructure fault (throttling, 5xx, a dropped connection) is about to be retried — the one kind of retry the store does | `reason: 'transient'`, `attempt`, `delayMs` |
 | `intersect` | one chunk-aligned combine | `op` (`intersect` / `union` / `andNot`; absent means `intersect`), `operands`, `fetchedChunks`, `skippedChunks` |
 | `op` | one timed segment operation | `name` (`has` / `count` / `intersectInto` / `unionInto` / `andNotInto`), `ms` |
@@ -35,6 +35,7 @@ import { metrics as otel } from '@opentelemetry/api';
 import { CloudRoaring } from '@cloudbitmaps/roaring';
 
 const meter = otel.getMeter('cloudbitmaps');
+const storageGets = meter.createCounter('cloudbitmaps.storage.gets');
 const storageBytes = meter.createCounter('cloudbitmaps.storage.bytes');
 const cacheHit = meter.createCounter('cloudbitmaps.cache.hits');
 const cacheMiss = meter.createCounter('cloudbitmaps.cache.misses');
@@ -49,6 +50,7 @@ const store = new CloudRoaring({
     onEvent(e) {
       switch (e.kind) {
         case 'storage.get':
+          storageGets.add(1);
           storageBytes.add(e.bytes);
           break;
         case 'cache':
@@ -72,7 +74,7 @@ const store = new CloudRoaring({
 });
 ```
 
-**Panels worth having:** cache hit rate (`hits / (hits + misses)` — the single biggest cost lever), storage bytes
+**Panels worth having:** cache hit rate (`hits / (hits + misses)` — the single biggest cost lever), storage GETs and bytes
 read/min, `has` / `count` p50/p99 latency, `*Into` latency on its own panel (each one writes a whole generation,
 so it lives on a different scale from a read), the chunk-skipping ratio
 (`skipped / (skipped + fetched)` per `op` — the number that says whether your intersections are actually cheap;
