@@ -57,7 +57,8 @@ generation of another segment. See [Loading in depth](loading.md#write-a-result-
   24.6 ms, on in-memory storage on an Apple M3 Pro, so that figure times the engine and not object storage.
 - **A `has()` that misses the cache is a ranged GET against object storage.** Callers that miss the same chunk of the
   same generation while a request for it is open wait on that request, with or without a cache, so fifty concurrent
-  cold `has()` calls of one chunk make one GET. If you need sub-millisecond answers on
+  cold `has()` calls of one chunk make one GET. A combine or `iterate` does not join those requests: it reads each
+  operand as a stream of ranges, so concurrent identical cold combines each make their own few range requests. If you need sub-millisecond answers on
   a working set that fits a bounded cache, an in-process store is the right tool.
 
 What a load costs is on the [benchmarks page](../benchmarks.md#real-cloud-calibration--aws), and
@@ -138,17 +139,19 @@ bound is stated; other pages link here.
 
 **A long call can describe two instants.** Within one read, such as one `count` or one `intersect`, the generation is
 resolved once, before any chunk is fetched, and every chunk is a whole, checksum-verified chunk of one generation. A
-load landing mid-call never tears a chunk. A combine or `iterate` reads each operand as one stream of ranges of the
-generation it opened on, so a `cache.genTtlMs` boundary, the reader cache evicting the segment and the store
-invalidating it do not move a stream that is running. A sweep that collects the generation it was reading, or an object
-replaced under its number, does: the stream goes on from the generation that is current then, and the chunks it had
-already read stay the earlier generation's. The reads that are not part of a stream still re-resolve for each of those
-four: an `exclude` read after an AND of two or more includes, a point read, and every read of a source that reads chunk
-by chunk (a custom one). And because a read requests ahead of the chunk it is on, the chunks it had already requested
-are still the earlier generation's: up to `concurrency` ranges per operand (32 by default, each holding every chunk the
-read needs from a stretch of the object) for a combine, up to 32 for `iterate`, and up to 32 chunk keys on a source
-that reads chunk by chunk and for `count` where it reads chunks. Its answer then describes two
-instants. `dropSegment` and `retireExpired` invalidate too: a read of a segment that then no longer resolves ends rather than moves on, and a read of one `retireExpired` lists but leaves live moves on. [Pin the segment](#read-one-fixed-point-in-time)
+load landing mid-call never tears a chunk. A long call can still re-resolve: a `cache.genTtlMs` boundary after a publish,
+the reader cache evicting the segment, a sweep that collects the generation it was reading or an object replaced under
+its number, and an invalidation (the store's own `load`, `rollback`, `eraseSubject` and `*Into` writes, `dropSegment`,
+`retireExpired`, and `invalidate()`) each move the rest of it to the generation that is current then. A combine or
+`iterate` reads each operand's chunks as ranges of the object and does this before it serves each chunk, exactly where
+a read of one chunk would, so a range it had already requested of the earlier generation is dropped, not served; an
+`exclude` read after an AND of two or more includes, a point read and every read of a source that reads chunk by chunk
+(a custom one) re-resolve the same way. What a read can still serve from the earlier generation is what it had already
+taken: up to `concurrency` keys per operand (32 by default) for a combine, up to 32 chunks for `iterate`, and up to 32
+chunk keys on a source that reads chunk by chunk and for `count` where it reads chunks. Its answer then describes two
+instants. A running combine or `iterate` holds the reader of the generation it is reading (its parsed index and, on an
+encrypted segment, the key it unwrapped) until it moves on or ends, outside the reader cache's `readerMax` and
+`readerMaxBytes`: one reader per streamed operand, for as long as the read runs. [Pin the segment](#read-one-fixed-point-in-time)
 when that matters.
 
 ## Read one fixed point in time
@@ -311,6 +314,5 @@ ranges of each operand takes about `n / 32` round trips in sequence), and a read
 shape does, is one round trip. An `andNot`, and a `union` with `exclude`, also read an exclude's chunks in the same round
 as the include's, where an `intersect` of two or more segments reads an exclude's chunk only once the intersection of
 that chunk is known to be non-empty. A range already requested is not cancelled when the caller stops: it finishes and
-is billed, what it carries is dropped, and it is not retried, and the store reports a `storage.get` only for the ranges a
-read took. On a source that reads chunk by chunk, a fetch already started finishes, lands in the chunk cache and is metered, and on one
+is billed, what it carries is dropped, and it is not retried, and the store reports a `storage.get` for it when it settles. On a source that reads chunk by chunk, a fetch already started finishes, lands in the chunk cache and is metered, and on one
 that retries a transient failure, its retries run to their limit after the caller has gone.

@@ -50,15 +50,21 @@ so, and so do the module headers in the code.
   on a source that reads chunk by chunk it still means chunk keys. A combine's stream opens 4 ranges wide and `iterate`'s 1,
   doubling as ranges are taken, so a read that stops early has asked for little past where it stopped, though a range is up
   to 1 MiB where a chunk was a few hundred bytes.
-- **A stream keeps to the generation it opened on.** A `cache.genTtlMs` boundary, the reader cache evicting the segment and
-  an invalidation no longer move a combine or `iterate` between its ranges; a sweep of its generation, or an object replaced
-  under its number, still does, and the read goes on from the generation then current. A read that straddled a publish
-  and read both generations before may now read one.
+- **A running combine or `iterate` re-resolves its segment where a read of one chunk does.** Before it serves each chunk
+  the stream resolves the segment again: a `cache.genTtlMs` boundary after a publish, the reader cache evicting the
+  segment, a sweep of its generation or an object replaced under its number, and an invalidation (the store's own
+  `load`, `rollback`, `eraseSubject` and `*Into` writes, `dropSegment`, `retireExpired`, and `invalidate()`) each move
+  the rest of the read to the generation then current, and the ranges already requested of the earlier one are dropped,
+  not served. What a read can yield from the earlier generation is what it had already taken. The unit of read-ahead is
+  what changes: up to `concurrency` range requests per operand are held ahead (32 by default), where it was chunk keys.
+  A running read holds the reader of the generation it is reading outside `cache.readerMax` and `cache.readerMaxBytes`,
+  one per streamed operand, until it ends or moves on.
 - **A combine's or `iterate`'s requests for chunks are not shared with another read that needs the same chunks.** Two point
   reads of one chunk still share one request. Two cold combines that need the same chunks each make their own few range requests.
 - **`storage.get` is one event per request for chunks**, a range of a combine or `iterate` or the one chunk of a point read;
-  `bytes` is the range's, gaps between its chunks included. A range already requested when a read stops is billed and is not
-  reported. The per-op budget still counts chunk reads, which is an upper bound on the requests a coalesced read makes.
+  `bytes` is the range's, gaps between its chunks included. Every range request a read sent is reported, including those
+  still in flight when it stopped, which are billed all the same. The per-op budget still counts chunk reads, which is an
+  upper bound on the requests a coalesced read makes.
 - **The cost model's `chunksPerIntersect` is the chunk range requests of an intersect**, not the chunks it needs; the field
   keeps its name. `bench/range-counts.cjs` counts them from the engine, and the sizing and cost pages, their charts and the
   calibration harness's expected counts are derived from that. The published measurements of the previous engine stay as

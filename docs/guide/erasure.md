@@ -87,11 +87,11 @@ reaches them.
 
 The erasure is immediate in storage, and immediate in the store that performed it for every read that starts after it
 returns: that store drops what it had cached about the segment before returning, so it cannot keep answering from
-memory. A read of that store already in progress moves to the rewritten generation, but what it had already requested is the old
-generation's, so it can still yield the id from it: a combine or `iterate` reads each operand as a stream of ranges, and
-every chunk in a range it had already requested can yield the id, up to `concurrency` ranges per operand (32 by default; a
-range holds every chunk the read needs from a stretch of the object, so a small segment is one range) for a combine and up to
-32 for `iterate`, and up to 32 chunk keys on a source that reads chunk by chunk ([a long call can describe two
+memory. A read of that store already in progress moves to the rewritten generation, but what it had already taken is the old
+generation's, so it can still yield the id from it: up to 32 chunks for `iterate` and `count`, and up to `concurrency`
+keys (32 by default) for a combine. A combine or `iterate` reads each operand's chunks as ranges of the object, and
+resolves the segment again before it serves each chunk, as a read of that chunk alone does, so the ranges it had already
+requested are dropped when the erasure has landed, not served ([a long call can describe two
 instants](reading.md#how-soon-a-reader-sees-a-new-load)). Every other store is a different
 question, in this process or another. This library ships nothing that could answer it for you: there is no daemon,
 no bus, and no connection between two stores that happen to point at the same bucket.
