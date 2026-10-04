@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { BufferReader, BufferSink } from '@/core/blob';
 import type { BlobReader } from '@/core/blob';
 import { CrbmReader } from '@/core/crbm/reader';
@@ -179,9 +179,13 @@ describe.each(variants)('CrbmReader.getChunks ($name)', ({ encrypted, crypto }) 
 
   it('runs every range read through the retry runner it is given', async () => {
     const { reader, spy } = await open(await build(crypto));
-    const run = vi.fn(<T>(read: () => Promise<T>) => read());
-    await reader.getChunks([0, 9], run);
-    expect(run).toHaveBeenCalledTimes(spy.ranges.length);
+    let runs = 0;
+    await reader.getChunks([0, 9], (read) => {
+      runs++;
+      return read();
+    });
+    expect(runs).toBe(spy.ranges.length);
+    expect(runs).toBe(2);
   });
 });
 
