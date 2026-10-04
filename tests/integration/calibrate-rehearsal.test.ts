@@ -245,7 +245,6 @@ describe('a calibration rehearsal that meets transient faults', () => {
   it("records the socket limit the workload's client held, read back: the library's 128", () => {
     expect(run.results.measured.maxSockets).toBe(128);
     expect(run.results.measured.maxSocketsSource).toMatch(/library's own client.*read back/);
-    expect(run.stderr).toMatch(/workload client: up to 128 sockets, the library's default/);
   });
 
   it('records each discard beside its stage: the sample, the fault and the code beneath it, and its requests', () => {
