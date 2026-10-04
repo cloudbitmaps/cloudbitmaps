@@ -16,13 +16,12 @@ import { InProcessKeystore } from '@/drivers/crypto';
 import { randomBytes } from 'node:crypto';
 
 /**
- * The erasure rewrite reads the generation's chunks through a bounded, ordered window rather than one round trip
+ * The erasure rewrite reads the generation's chunks through the reader's coalesced stream rather than one round trip
  * per chunk. These tests hold the reads open so that overlap, the bound on it, and everything the serial loop
  * guaranteed (order, the replaced chunk's absence from the wire, refusal naming the first bad chunk, errors from a
  * failed read, no stray rejection) are observable.
  */
 const SEG = { segment: 's' };
-const WINDOW = 32;
 
 interface Probe {
   readonly storage: IStorageDriver;
@@ -116,28 +115,7 @@ async function idsOf(p: Probe, keystore?: InProcessKeystore): Promise<number[]> 
 
 afterEach(() => vi.restoreAllMocks());
 
-describe('the erasure rewrite reads ahead through a bounded window', () => {
-  it('has more than one chunk read in flight, and never more than the window', async () => {
-    const p = await probe(100);
-    const res = await erase(p, joinId(50, 1 + 50));
-    expect(res).toMatchObject({ erased: true });
-    expect(p.stats.peak).toBeGreaterThan(1);
-    expect(p.stats.peak).toBeLessThanOrEqual(WINDOW);
-  });
-
-  it('issues the same requests as one read per chunk: the replaced chunk is read once, never again', async () => {
-    const p = await probe(100);
-    await erase(p, joinId(50, 1 + 50));
-    // One tail read to open the object; one payload read of the target, 99 for the others, and the
-    // verification read of the new generation (a tail read and its payload reads).
-    const serial = await probe(100, { delay: () => 0 });
-    await erase(serial, joinId(50, 1 + 50));
-    expect(p.stats.ranges).toBe(serial.stats.ranges);
-    expect(p.stats.tails).toBe(serial.stats.tails);
-    expect(p.stats.ranges).toBeGreaterThanOrEqual(100); // 99 pass-through reads plus the target
-    expect(p.stats.ranges).toBeLessThanOrEqual(102);
-  });
-
+describe('the erasure rewrite reads through the coalesced chunk stream', () => {
   it('writes the chunks in ascending order though reads finish in the opposite order', async () => {
     // Earlier offsets sleep longer, so the window's reads complete newest first.
     const p = await probe(40, { delay: (offset) => Math.max(1, 60 - Math.floor(offset / 8)) });
@@ -152,26 +130,36 @@ describe('the erasure rewrite reads ahead through a bounded window', () => {
 
   it('skips a chunk that is listed but absent, and carries the rest', async () => {
     const p = await probe(10);
-    const real = CrbmReader.prototype.getChunk;
-    vi.spyOn(CrbmReader.prototype, 'getChunk').mockImplementation(async function (
+    const real = CrbmReader.prototype.readChunks;
+    vi.spyOn(CrbmReader.prototype, 'readChunks').mockImplementation(function (
       this: CrbmReader,
-      k: number,
+      keys,
+      options,
     ) {
-      return k === 4 ? null : real.call(this, k);
+      const stream = real.call(this, keys, options);
+      const next = stream.next.bind(stream);
+      stream.next = async () => {
+        const step = await next();
+        return step.done === true || step.value.key !== 4
+          ? step
+          : { done: false, value: { key: 4, bytes: null } };
+      };
+      return stream;
     });
-    // Chunk 0 is the target (read by the caller, not the window); chunk 4 is absent from the window.
+    // Chunk 0 is the target (read by the caller, not the stream); chunk 4 is absent from the stream.
     await erase(p, joinId(0, 1));
     vi.restoreAllMocks();
     const keys = new Set((await idsOf(p)).map((id) => id >>> 16));
     expect([...keys]).toEqual([0, 1, 2, 3, 5, 6, 7, 8, 9]);
   });
 
-  it('puts the replacement in place without reading the replaced chunk through the window', async () => {
+  it('puts the replacement in place without asking the stream for the replaced chunk', async () => {
     const p = await probe(5);
-    const spy = vi.spyOn(CrbmReader.prototype, 'getChunk');
+    const single = vi.spyOn(CrbmReader.prototype, 'getChunk');
+    const stream = vi.spyOn(CrbmReader.prototype, 'readChunks');
     await erase(p, joinId(2, 1 + 2));
-    const read = spy.mock.calls.map(([k]) => k);
-    expect(read.filter((k) => k === 2)).toHaveLength(1); // only the caller's own read of the target
+    expect(single.mock.calls.map(([k]) => k).filter((k) => k === 2)).toHaveLength(1); // the caller's own read
+    expect(stream.mock.calls[0]![0]).toEqual([0, 1, 3, 4]); // every other chunk, ascending; never the target
     expect(await idsOf(p)).not.toContain(joinId(2, 3));
     expect(await idsOf(p)).toContain(joinId(2, 4));
   });
@@ -212,11 +200,11 @@ describe('the erasure rewrite reads ahead through a bounded window', () => {
     await expect(erase(overFirst, joinId(0, 1))).rejects.toBeInstanceOf(IntegrityError);
   });
 
-  it("reads each window chunk through the caller's read retry", async () => {
+  it("reads each range through the caller's read retry", async () => {
     const clock = { now: () => 0, sleep: () => Promise.resolve(), yield: () => Promise.resolve() };
     const clean = await probe(20);
     await erase(clean, joinId(0, 1));
-    const p = await probe(20, { flakyRead: 8 });
+    const p = await probe(20, { flakyRead: 2 });
     const res = await erase(p, joinId(0, 1), { readRetry: { clock, rng: { next: () => 0 } } });
     expect(res).toMatchObject({ erased: true });
     // The one failed read is repeated alone: a retry of the whole attempt would repeat every read.
@@ -257,61 +245,11 @@ describe('the erasure rewrite reads ahead through a bounded window', () => {
     }
   });
 
-  it('opens the window at full width at once: min(32, chunks - 1) reads before any resolves', async () => {
-    for (const n of [20, 60]) {
-      const p = await probe(n, { hold: true });
-      const done = erase(p, joinId(0, 1));
-      await vi.waitFor(() => expect(p.held.length).toBe(1)); // the target chunk's own read
-      p.held.shift()!();
-      await new Promise((r) => setTimeout(r, 30));
-      expect(p.held.length).toBe(Math.min(WINDOW, n - 1));
-      while (p.stats.inflight > 0 || p.held.length > 0) {
-        p.held.splice(0).forEach((r) => r());
-        await new Promise((r) => setTimeout(r, 5));
-      }
-      await done;
-    }
-  });
-
-  it('decodes a chunk only as the writer consumes it, not as its read resolves', async () => {
-    let decodes = 0;
-    const codec = {
-      ...roaringCodec,
-      safeDeserialize: (b: Uint8Array, max: number) => {
-        decodes++;
-        return roaringCodec.safeDeserialize(b, max);
-      },
-    };
-    const p = await probe(40, { hold: true });
-    const done = eraseIdFromSegment(SEG, joinId(0, 1), {
-      storage: p.storage,
-      registry: p.registry,
-      codec,
-    });
-    await vi.waitFor(() => expect(p.held.length).toBe(1));
-    p.held.shift()!();
-    await vi.waitFor(() => expect(p.held.length).toBe(WINDOW));
-    const decodedTarget = decodes; // the target chunk, decoded ahead of the window
-    // Every read ahead resolves except the first one in key order, which the writer is waiting on.
-    const first = p.held.shift()!;
-    p.held.splice(0).forEach((r) => r());
-    await new Promise((r) => setTimeout(r, 30));
-    expect(decodes).toBe(decodedTarget);
-    first();
-    while (p.stats.inflight > 0 || p.held.length > 0) {
-      p.held.splice(0).forEach((r) => r());
-      await new Promise((r) => setTimeout(r, 5));
-    }
-    await done;
-  });
-
-  it('rewrites an encrypted segment exactly, with the reads overlapping', async () => {
+  it('rewrites an encrypted segment exactly, through the coalesced stream', async () => {
     const keystore = new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
     const p = await probe(60, { keystore });
     const res = await erase(p, joinId(30, 31), { keystore });
     expect(res).toMatchObject({ erased: true });
-    expect(p.stats.peak).toBeGreaterThan(1);
-    expect(p.stats.peak).toBeLessThanOrEqual(WINDOW);
     const expected: number[] = [];
     for (let k = 0; k < 60; k++) {
       for (const r of [1 + k, 2 + k]) if (!(k === 30 && r === 31)) expected.push(joinId(k, r));

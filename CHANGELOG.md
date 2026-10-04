@@ -50,6 +50,17 @@ so, and so do the module headers in the code.
   that generation is not noticed by a read it serves, and the timed pointer refresh moves the read on within
   `cache.genTtlMs`. A store with no timed refresh (`cache.genTtlMs: 0`, or no registry) keeps nothing. There is no new
   option: the limit follows `cache.readerMax` and `cache.readerMaxBytes`.
+- **Erasing an id reads its segment in a few range requests rather than one request per chunk.** The rewrite reads
+  the generation it rewrites through the reader's coalesced chunk stream: chunks within 256 KiB of each other share one
+  range request of at most 1 MiB, still in key order, each chunk checked exactly as before (CRC32C, AEAD with its own
+  associated data on an encrypted segment, the payload cap), each range retried on its own under the store's read
+  retry. A segment of 2,000 chunks of about 8 KiB takes about 16 range requests to read, where it took 2,000 (expected,
+  from a test that counts them); 100 such chunks take 1, where they took 100. What the rewrite writes, how it publishes
+  (fenced), the ledger and the receipt are unchanged. The stream holds at most 4 ranges at once, so an erasure holds at
+  most 4 × (1 MiB + 28 B) = 4 MiB + 112 B of a segment (`concurrency` times that for `eraseSubject`, 32 MiB + 224 B at the default 8), below the 32 MiB a
+  corrupt segment could make the per-chunk path hold; a well-formed segment of chunks of about 8 KiB reads ahead up to
+  4 MiB, where the per-chunk path held about 256 KiB. The requests an `eraseSubject` can have open fall to
+  `concurrency` × 4, and are ranges.
 - **Combines and `iterate` read each operand's chunks as coalesced ranges, so a cold read makes far fewer requests.**
   `intersect`, `union` and `andNot`, their `.batches()` forms, `iterate` and the `*Into` verbs that read them now open one
   stream per operand through `getChunks` (every store the library ships reads through a source that has it), over the
@@ -58,8 +69,8 @@ so, and so do the module headers in the code.
   6 requests (a pointer and a tail read an operand, and one range each) where it was 204; an `andNot` of one such
   segment against ten that share 100 of its chunks is 33 where it was 3,021; an `iterate` of 1,999 chunks is 3 where it was
   2,001. These are counts from running the engine, expected and not measured on a cloud. An `exclude` that waits on an AND of two or more
-  includes, `count`, erasure and a source with no `getChunks` are read chunk by chunk, and a point read is a stream of
-  one chunk.
+  includes, `count` and a source with no `getChunks` are read chunk by chunk, and a point read is a stream of one
+  chunk.
 - **A read of chunks spread over an object reads most of it.** The bytes between two chunks within 256 KiB are read and never
   looked at, so chunks that are spread over a segment can be read in a few requests that together cover most of its
   object. In the bucket's region S3 Standard does not bill the bytes; across regions and to the internet it does, and the
