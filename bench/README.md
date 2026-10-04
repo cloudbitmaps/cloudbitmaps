@@ -109,9 +109,8 @@ in `lib/calibrate-stages.cjs`, stepped at an even latency from the engine's two 
 the window. A peak of 64 is the full window, 32 chunks each read from both operands; rounds above the model with a
 mean in flight well under that is a slow request holding the window. A run made before the window widened ran a fixed window of 8
 chunks, a model of 2 + ⌈k / 8⌉ and a peak of 16, and its figures are read against that. In flight counts requests the library issued, including any waiting for a free socket, so a mean or a peak above the
-client's sockets (`maxSockets`, which the record carries; 50 is the SDK's default) means requests queued, and the
-rounds then sit above the model, which assumes no limit. The run of 2026-10-04 did: an `andNot` mean of 80.6 in flight
-against 50 sockets.
+client's sockets (`maxSockets`, which the record carries; 50 is the SDK's default) means requests queued, a wait the rounds model, which assumes no limit, does not count.
+The run of 2026-10-04 held an `andNot` mean of 80.6 in flight against 50 sockets, and its rounds sit above the model.
 
 `andNot` reads every chunk of the segment it filters, since any of them can survive, and each exclude only where it
 overlaps, so what it costs scales with the include operand and not with the size of the exclude list.

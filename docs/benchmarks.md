@@ -97,11 +97,11 @@ and a load cost, and how long they take.
 - **Load throughput.** A single-part `store.load()` of a 1.05 MB segment ran at 2.42 million ids a second, 5,100,414
   bytes a second; a multipart load of a 12.6 MB segment at 10.4 million ids a second, 10,432,654 bytes a second.
 - **`andNot`** of a 1,999-chunk segment against ten excludes took 3,335.85 ms at the median and 3,021 GETs.
-- **The run kept more requests open than the client has sockets.** The client had 50, the SDK default. The `andNot`
-  held a mean of 80.6 in flight and a peak of 352, the sweeps a mean of 41.3 and 43.4, and the cold intersect a peak
-  of 64. The rounds it measured are above the engine's model of them (7.1 against 6 for the cold intersect, 50.2
-  against 34 and 92.4 against 66 for the sweeps), because that model assumes no socket limit. This is a finding, not
-  a tuning: the run did not vary the socket count, so no figure is claimed for any other.
+- **The rounds sit above the rounds model.** They are a fifth to a half above it (7.1 against 6 for the cold intersect, 50.2
+  against 34 and 92.4 against 66 for the sweeps), and the model assumes no socket limit. The client had 50 sockets, the
+  SDK default. Only the `andNot` held more requests in flight than that (mean 80.6, stage-median peak 352); the cold
+  intersect and the sweeps averaged 29.1, 41.3 and 43.4. The run did not vary the socket count, so it does not say
+  what part of the gap is socket wait, and no figure is claimed for any other count.
 
 **Every latency above was measured on `0.13.0`, whose combine window opens 8 keys wide and widens to 32**; the
 [section below](#the-window-of-32--measured-against-the-model) sets it against the previous run's, and against the
@@ -142,9 +142,9 @@ refresh, for the segments a long-lived reader keeps reading. The
 **The release before this one kept a fixed window of 8 chunk keys; `0.13.0` opens a combine's window 8 keys wide and widens it to 32 as
 keys are taken, and `andNot` and `union` read an exclude's chunk in the same round trip as the include's.** A read of
 `n` chunks took about `n / 8` request times in sequence, and that window, not the network, set how long a long read
-took. Before the run of 2026-10-04 the wider window was only **derived**, from a model that draws each GET's latency
-from a lognormal distribution with a median of 26 ms and caps the open requests at 50, as the S3 SDK's default sockets
-do. That run is the measurement of it, and [the previous release's run](#the-previous-in-region-run--run-2026-10-03-e13c7) is
+took. Before the run of 2026-10-04 the wider window was only **derived**, from a latency model that draws each GET's
+latency from a lognormal distribution with a median of 26 ms and caps the open requests at 50, as the S3 SDK's default
+sockets do. That run is the measurement of it, and [the previous release's run](#the-previous-in-region-run--run-2026-10-03-e13c7) is
 what it is measured against. The same harness ran the same workload on both: the requests are the same ones, and the bill is the same
 to the request.
 
@@ -157,24 +157,25 @@ to the request.
 | cold intersect, 2,000 shared chunks | 8,658.44 ms · 324.0 rounds | 3,291.35 ms · 92.4 rounds · mean 43.4 in flight |
 | `andNot`, a 1,999-chunk include against 10 excludes | 8,687.10 ms · 303.9 rounds · mean 10.3 in flight, peak 80 | 3,335.85 ms · 37.5 rounds · mean 80.6 in flight, peak 352 |
 
-**How the measurement compares with the model.** The model's two figures for the shapes the run timed are 13.1 s and
+**How the measurement compares with the latency model.** The latency model's two figures for the shapes the run timed are 13.1 s and
 3.7 s for the `andNot`, and 6.3 s and 2.1 s for an intersect of 1,000 shared chunks, for a window of 8 and for the
 widened window. The measured medians are lower on both engines: 8.69 s and 3.34 s for the `andNot`, 4.24 s and 1.81 s
-for the intersect. So the model overstated the time of each, and it overstated the gain too: the model has the
-`andNot` 3.5 times faster, and the run 2.6 times, and for the intersect the model has 3.0 times and the run 2.3. The
-direction and the cause hold: the same requests in about an eighth of the rounds for the `andNot`, a third for the
-intersect, because the window is wider and the exclude's read joins the include's.
+for the intersect. So the latency model overstated the time of each, and it overstated the gain too: it has the
+`andNot` 3.5 times faster, and the run 2.6 times, and for the intersect 3.0 times against the run's 2.3. The
+direction holds: the same requests in about an eighth of the rounds for the `andNot`, a third for the
+intersect, with a wider window and the exclude's read joining the include's.
 
-**The measured rounds sit above the engine's model of them, because the run kept more requests in flight than the
-client's 50 sockets.** The harness's model of a cold intersect is 6 rounds, of the two sweeps 34 and 66, and assumes no
-socket limit; the run measured 7.1, 50.2 and 92.4. The `andNot` held a mean of 80.6 in flight and a peak of 352, and
-the sweeps a mean of 41 to 43, so a request waited for a socket, and the wait counts in its duration: a round took
-about 36 to 41 ms for the intersects and about 89 ms for the `andNot`, where the previous run's took about 26 to 27.
-The run did not vary the socket count, so it cannot say how much of the difference is the wait: S3's own time to
-answer and the client's connection handling are other candidates. A client with more sockets is an open change, and
+**The measured rounds sit above the rounds model, and the run does not say why.** The rounds model is the engine's own
+count of requests in line, and assumes no socket limit: 6 rounds for the cold intersect, 34 and 66 for the two sweeps.
+The run measured 7.1, 50.2 and 92.4, a fifth to a half more. The client had 50
+sockets. Only the `andNot` held more in flight than that, a mean of 80.6 and a stage-median peak of 352 (the run-wide
+peak was 351); the cold intersect and the sweeps averaged 29.1, 41.3 and 43.4. A round took about 36 to 41 ms for the
+intersects and about 89 ms for the `andNot`, where the previous run's took about 26 to 29 ms. The run did not vary the
+socket count, so it does not say what part of the gap is socket wait: S3's own time to answer and the client's
+connection handling are other candidates. The built client's socket count is changing in a separate change, and
 **no figure is claimed for it here**.
 
-**Still derived, not measured.** The rows below are the model's, for shapes the run did not time. The model draws the
+**Still derived, not measured.** The rows below are the latency model's, for shapes the run did not time. It draws the
 requests in the old and the new engine alike:
 
 | Shape | Window of 8 | Window of 8 widening to 32 | Requests (both) |
@@ -186,7 +187,7 @@ requests in the old and the new engine alike:
 | `intersect` page that stops after 50 ids (25 keys) | 178 ms | 117 ms | 66 to 114 |
 | `iterate` page that stops after 50 ids (10 chunks) | 102 ms | 103 ms | 17 to 41 |
 
-The model overstated the timed shapes, so read these as upper bounds on the time, not as predictions. The request counts are the model's chunk reads and leave out index reads: the measured `andNot` made 3,021 GETs, the model's 2,999 plus 22 index reads. The last two rows are the cost: a read that stops early has requested
+The latency model overstated the timed shapes, so read these as upper bounds on the time, not as predictions. The request counts are the model's chunk reads and leave out index reads: the measured `andNot` made 3,021 GETs, the model's 2,999 plus 22 index reads. The last two rows are the cost: a read that stops early has requested
 up to 32 keys per operand ahead, where a window of 8 had requested up to 8. Pass `concurrency` to bound that.
 
 ### The previous in-region run — run `2026-10-03-e13c7`
@@ -200,7 +201,7 @@ up to 32 keys per operand ahead, where a window of 8 had requested up to 8. Pass
 - With 1,000 shared chunks the median was 4,238.82 ms, and with 2,000 it was 8,658.44 ms.
 - The `andNot` against ten excludes took 8,687.10 ms at the median, at a mean of 10.3 requests in flight.
 - A warm intersect took 3.96 ms, a cold `count()` 27.48 ms and a `has()` on an open segment 25.60 ms.
-- A single-part load ran at 2.86 million ids a second and a multipart load at 11.3 million.
+- A single-part load ran at 2.86 million ids a second and a multipart load at 11.3 million. The later run's single-part rate, 2.42 million, is 15% below it; the load path did not change between the releases (from the code, not from either run), and the runs do not say why the rate differs.
 - It made the same requests as the run above, and its bill is the same to the request.
 
 ## At scale — measured (1K → 10K → 100K segments)

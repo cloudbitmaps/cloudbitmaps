@@ -79,7 +79,7 @@ on every combine, yields only the ids in (after, through] and fetches only the c
 Benchmarked against real S3 in us-east-1 — not an emulator — with the request counts read off the AWS SDK layer.
 With the pointer in the same bucket as the data, the topology that ships: the median cold intersect of two
 500,000-id segments sharing 100 of their 1,999 chunks made 204 GETs as measured, $81.60 per million, requesting
-only the shared chunks, and took 290.06 ms at the median from inside the region, on 0.13.0 (run of 2026-10-04). That run kept more requests open than its client's 50 sockets, so its rounds sit above the engine's model, which assumes no socket limit. A segment's first store.load() is
+only the shared chunks, and took 290.06 ms at the median from inside the region, on 0.13.0 (run of 2026-10-04). Its rounds sit a fifth to a half above the engine's rounds model, which assumes no socket limit; the run did not vary its client's 50 sockets, so it does not say why. A segment's first store.load() is
 2 PUTs and 4 GETs, $11.60 per million. For comparison: an always-on
 Redis-HA line of $346/month standing, and a modelled $0.03/month for 1.2 GiB of segments at rest. The run was
 driven from AWS CloudShell inside the region. One crossover is published, in GETs: past 329.15
