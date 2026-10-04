@@ -187,26 +187,127 @@ describe('batches() flattens to exactly the per-id stream', () => {
   });
 });
 
-describe('a result is a stream read twice means two reads', () => {
-  it('per-id and batches() on one result each start their own read', async () => {
+describe('the per-id stream is the generator it was in 0.13.0', () => {
+  const MANY = Array.from({ length: 6 }, (_, k) => k * 65_536 + 1);
+
+  async function reads() {
     const metrics = new CountingMetricsSink();
-    const { store } = await loadedStore(
-      { s: [1, 70_000, 140_000] },
-      { metrics, cache: { genTtlMs: 0 } },
-    );
-    const stream = store.segment('s').iterate();
-    expect(await collect(stream)).toEqual([1, 70_000, 140_000]);
-    expect(flatten(await batchesOf(stream))).toEqual([1, 70_000, 140_000]);
-    expect(await collect(stream)).toEqual([1, 70_000, 140_000]);
-    expect(flatten(await batchesOf(stream))).toEqual([1, 70_000, 140_000]);
+    const { store } = await loadedStore({ s: MANY, t: [1] }, { metrics, cache: { genTtlMs: 0 } });
+    const s = store.segment('s');
+    const t = store.segment('t');
+    const all: Array<[string, () => IdStream]> = [
+      ['iterate', () => s.iterate()],
+      ['ranged iterate', () => s.iterate({ after: 0 })],
+      ['intersect', () => s.intersect([s])],
+      ['union', () => s.union([t])],
+      ['andNot', () => s.andNot([t])],
+    ];
+    return { metrics, all };
+  }
+
+  it('is its own iterator and has next, return and throw', async () => {
+    const { all } = await reads();
+    for (const [name, make] of all) {
+      const stream = make() as unknown as AsyncGenerator<number>;
+      expect(stream[Symbol.asyncIterator](), name).toBe(stream);
+      for (const m of ['next', 'return', 'throw'] as const) {
+        expect(typeof stream[m], `${name}.${m}`).toBe('function');
+      }
+      expect(Object.prototype.toString.call(stream), name).toBe('[object AsyncGenerator]');
+    }
   });
 
-  it('nothing is read until a read starts', async () => {
+  it('next() walks the ids, return() ends it, throw() rejects and ends it', async () => {
+    const { all } = await reads();
+    for (const [name, make] of all) {
+      const g = make() as unknown as AsyncGenerator<number>;
+      const first = await g.next();
+      expect(first.done, name).toBe(false);
+      expect(await g.return(undefined), name).toEqual({ value: undefined, done: true });
+      expect(await g.next(), name).toEqual({ value: undefined, done: true });
+
+      const h = make() as unknown as AsyncGenerator<number>;
+      await h.next();
+      await expect(h.throw(new Error('boom')), name).rejects.toThrow('boom');
+      expect((await h.next()).done, name).toBe(true);
+    }
+  });
+
+  it('is single-use: a second for-await over it yields nothing', async () => {
+    const { all } = await reads();
+    for (const [name, make] of all) {
+      const stream = make();
+      expect((await collect(stream)).length, name).toBeGreaterThan(0);
+      expect(await collect(stream), name).toEqual([]);
+    }
+  });
+
+  it('creating it reads nothing, and batches() is a separate read that starts when called', async () => {
+    const { metrics, all } = await reads();
+    for (const [name, make] of all) {
+      metrics.reset?.();
+      const before = metrics.snapshot().storage.gets;
+      const stream = make();
+      const it = stream.batches()[Symbol.asyncIterator]();
+      expect(metrics.snapshot().storage.gets, name).toBe(before);
+      await it.next();
+      // The per-id stream was never pulled, yet batches() read; and after a full per-id read batches() still reads.
+      const perId = await collect(stream);
+      const again = flatten(await batchesOf(stream));
+      expect(again, name).toEqual(perId);
+      await it.return?.();
+    }
+  });
+
+  it('expired and failing results are as in 0.13.0 for the per-id path, plus batches()', async () => {
+    const { store } = await loadedStore({ s: [1, 2] });
+    const dead = store.segment('s', { expiresAt: 1_700_000_000_000 }); // long past, on the system clock
+    const empty = dead.iterate();
+    expect(await collect(empty)).toEqual([]);
+    expect(await collect(empty)).toEqual([]); // a shared, re-iterable empty stream
+    expect(await batchesOf(empty)).toEqual([]);
+    const bad = store.segment('s').intersect([]);
+    await expect(collect(bad)).resolves.toEqual([1, 2]); // an empty operand list is just this segment
+    const failing = store.segment('s').iterate({ after: -1 });
+    await expect(collect(failing)).rejects.toBeInstanceOf(ValidationError);
+    await expect(batchesOf(failing)).rejects.toBeInstanceOf(ValidationError);
+  });
+});
+
+describe('a batches() iterator driven by hand', () => {
+  it('return() stops the read, and later next() is done', async () => {
+    const ids = Array.from({ length: 200 }, (_, k) => k * 65_536 + 1);
     const metrics = new CountingMetricsSink();
-    const { store } = await loadedStore({ s: [1, 70_000] }, { metrics, cache: { genTtlMs: 0 } });
-    const stream = store.segment('s').iterate();
-    stream.batches();
-    expect(metrics.snapshot().storage.gets).toBe(0);
+    const { store } = await loadedStore({ s: ids }, { metrics, cache: { genTtlMs: 0 } });
+    const it = store.segment('s').iterate().batches()[Symbol.asyncIterator]();
+    expect((await it.next()).done).toBe(false);
+    await it.return?.();
+    expect((await it.next()).done).toBe(true);
+    const gets = metrics.snapshot().storage.gets;
+    expect(gets).toBeLessThan(200);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(metrics.snapshot().storage.gets).toBe(gets); // nothing further is started
+  });
+});
+
+describe('each batch owns exactly its ids', () => {
+  it('has its own buffer, edge chunks included', async () => {
+    const { store } = await loadedStore({
+      s: [1, 2, 3, 70_000, 70_001, 140_000, 140_001, 140_002],
+    });
+    const seg = store.segment('s');
+    const reads = [
+      seg.iterate(),
+      seg.iterate({ after: 1, through: 140_001 }), // both edges cut
+      seg.union([seg], { after: 2, through: 140_000 }),
+      seg.andNot([store.segment('s')], { allowAbsentOperands: true, after: 0 }),
+    ];
+    for (const read of reads) {
+      for await (const b of read.batches()) {
+        expect(b.byteOffset).toBe(0);
+        expect(b.buffer.byteLength).toBe(b.length * 4);
+      }
+    }
   });
 });
 

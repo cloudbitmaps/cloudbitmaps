@@ -1976,10 +1976,12 @@ export interface MaterializeOptions extends CombineOptions {
  * What a streaming read returns: the ids, ascending, one at a time under `for await`, or one chunk at a time from
  * {@link IdStream.batches}.
  *
- * It is an `AsyncIterable<number>`, so every consumer of an id stream takes it as it always did. **Each way of
- * reading it starts its own read**: every `for await` over it, and every call of `batches()`, resolves the segment
- * and fetches its chunks afresh, and charges the per-op budget again. A stream is therefore safe to read twice, and
- * two reads of it are two reads (invariant 3 applies to each separately). Nothing is fetched until one starts.
+ * It is an `AsyncIterable<number>`, so every consumer of an id stream takes it as it always did. A live read is the
+ * engine's async generator itself, with `batches` attached: `for await` it, or drive it with `next()`, `return()` and
+ * `throw()`, exactly as before, and it is single-use (a second `for await` over it yields nothing). `batches()` is a
+ * separate, new read: it starts when called, fetches its chunks afresh and charges the per-op budget again, whether or
+ * not the per-id stream was read, and reading both is two reads (invariant 3 applies to each separately). Nothing is
+ * fetched until a read is first pulled.
  */
 export interface IdStream extends AsyncIterable<number> {
   /**
@@ -2001,33 +2003,23 @@ export interface IdStream extends AsyncIterable<number> {
   batches(): AsyncIterable<Uint32Array>;
 }
 
-/** An {@link IdStream} over two lazy openers, one per way of reading it. */
-class Ids implements IdStream {
-  constructor(
-    private readonly ids: () => AsyncIterator<number>,
-    private readonly chunks: () => AsyncIterable<Uint32Array>,
-  ) {}
-
-  // The engine's own generator is what the loop calls `next()` on: this adds nothing per id.
-  [Symbol.asyncIterator](): AsyncIterator<number> {
-    return this.ids();
-  }
-
-  /** {@link IdStream.batches}: a new read of the same segment, yielding its chunks. */
-  batches(): AsyncIterable<Uint32Array> {
-    return this.chunks();
-  }
-}
+/** A generator the engine just made, with the batch read that goes with it attached. Adds nothing per id. */
+const withBatches = (
+  gen: AsyncGenerator<number>,
+  batches: () => AsyncIterable<Uint32Array>,
+): IdStream => Object.assign(gen, { batches });
 
 /**
  * A stream that fails when it is first read, either way. A combine refuses its arguments this way, as the engine's
  * own checks do, so a caller's try/catch around the iteration catches it.
  */
-const failing = (err: unknown): IdStream =>
-  new Ids(
-    () => ({ next: () => Promise.reject(err) }),
-    () => ({ [Symbol.asyncIterator]: () => ({ next: () => Promise.reject(err) }) }),
-  );
+const failing = (err: unknown): IdStream => {
+  const rejecting = (): AsyncIterator<never> => ({ next: () => Promise.reject(err) });
+  return {
+    [Symbol.asyncIterator]: rejecting,
+    batches: () => ({ [Symbol.asyncIterator]: rejecting }),
+  };
+};
 
 /** Whether two handles of one segment read it at one generation: both live, or both pinned to one object. */
 const samePin = (a: PinnedAt | undefined, b: PinnedAt | undefined): boolean =>
@@ -2068,14 +2060,14 @@ const readOptions = (options: BaseCombineOptions): EveryField<BaseCombineOptions
 const NO_SEGMENTS: readonly Segment[] = [];
 
 /** The empty id stream every expired read path returns — allocated once, so an expired read costs nothing. */
-const EMPTY_IDS: IdStream = new Ids(
-  async function* () {
+const EMPTY_IDS: IdStream = {
+  async *[Symbol.asyncIterator]() {
     // deliberately yields nothing
   },
-  async function* () {
+  async *batches() {
     // deliberately yields nothing
   },
-);
+};
 
 /**
  * What `andNotInto` takes: the write options without `exclude`, because its `excludes` argument IS the
@@ -2414,10 +2406,7 @@ export class Segment {
     const none = range === undefined || (range.after === undefined && range.through === undefined);
     const { engine, ref } = this;
     const bounds = none ? undefined : range;
-    return new Ids(
-      () => engine.iterate(ref, bounds),
-      () => engine.iterateBatches(ref, bounds),
-    );
+    return withBatches(engine.iterate(ref, bounds), () => engine.iterateBatches(ref, bounds));
   }
 
   /**
@@ -2478,10 +2467,7 @@ export class Segment {
     }
     const refs = [this.ref, ...others.map((o) => o.ref)];
     const opts = this.refsIn(options, exclude);
-    return new Ids(
-      () => engine.intersect(refs, opts),
-      () => engine.intersectBatches(refs, opts),
-    );
+    return withBatches(engine.intersect(refs, opts), () => engine.intersectBatches(refs, opts));
   }
 
   /**
@@ -2556,10 +2542,7 @@ export class Segment {
     }
     const refs = [this.ref, ...others.map((o) => o.ref)];
     const opts = this.refsIn(options, exclude);
-    return new Ids(
-      () => engine.union(refs, opts),
-      () => engine.unionBatches(refs, opts),
-    );
+    return withBatches(engine.union(refs, opts), () => engine.unionBatches(refs, opts));
   }
 
   /** Materialize `this ∪ others…` (minus `exclude`) as a **new generation of `dest`** — see {@link intersectInto}. */
@@ -2613,9 +2596,8 @@ export class Segment {
     const base = this.ref;
     const refs = excludes.map((o) => o.ref);
     const opts = options == null ? undefined : readOptions(options);
-    return new Ids(
-      () => engine.andNot(base, refs, opts),
-      () => engine.andNotBatches(base, refs, opts),
+    return withBatches(engine.andNot(base, refs, opts), () =>
+      engine.andNotBatches(base, refs, opts),
     );
   }
 

@@ -15,7 +15,7 @@ so, and so do the module headers in the code.
 
 - **`.batches()` on every streaming read: the same ids, one `Uint32Array` per chunk.** `iterate`, `intersect`, `union`
   and `andNot` (a pinned handle's included) return an `IdStream`, which is still an `AsyncIterable<number>` that
-  `for await` reads one id at a time, and now has `.batches()`, yielding each chunk's ids as one ascending array: the
+  `for await` reads one id at a time exactly as before (it is still the same single-use generator), and now has `.batches()`, yielding each chunk's ids as one ascending array: the
   same ids in the same order, a range cut at its edges the same way, no empty arrays. It reads the same chunks, charges
   the same budget and stops the same way on `break`; each array is at most 65,536 ids (256 KiB) and is the caller's to
   keep. Measured locally, on an in-memory segment of 10 million ids, the per-id stream ran at about 6 million ids per

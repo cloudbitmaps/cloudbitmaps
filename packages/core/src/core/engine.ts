@@ -266,7 +266,8 @@ function chunkIds(chunk: CodecBitmap, chunkKey: number, w: IdWindow | null): Uin
   if (w !== null && isEdge(chunkKey, w)) {
     const from = chunkKey === w.loKey ? w.loRem : 0;
     const to = chunkKey === w.hiKey ? w.hiRem : MAX_REMAINDER;
-    rem = rem.subarray(firstAbove(rem, from - 1), firstAbove(rem, to));
+    // A copy, not a view: a batch owns exactly its ids, and does not pin the whole chunk's buffer.
+    rem = rem.slice(firstAbove(rem, from - 1), firstAbove(rem, to));
   }
   // Not `<<`: a key of 32768 or more would wrap negative. A remainder is masked as `joinId` masks it.
   const base = chunkKey * CHUNK_COUNT;

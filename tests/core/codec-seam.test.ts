@@ -171,4 +171,41 @@ describe('bitmap-codec seam: the engine runs on a non-roaring codec', () => {
     for await (const b of engine.iterateBatches(a)) flat.push(...b);
     expect(flat).toEqual(await collect(engine.iterate(a)));
   });
+
+  it('a codec that returns a new array from toUint32Array is never corrupted by repeated batch reads', async () => {
+    // The contract: a NEW array the caller owns each call, since the engine adds the chunk base in place.
+    let exports = 0;
+    const made: Exporting[] = [];
+    class Exporting extends SetBitmap {
+      toUint32Array(): Uint32Array {
+        exports += 1;
+        return Uint32Array.from(this.toArray());
+      }
+    }
+    const codec: CodecInterface = {
+      ...setCodec,
+      fromValues: (vs) => new Exporting(new Set(vs)),
+      safeDeserialize: (b, m) => {
+        const plain = setCodec.safeDeserialize(b, m) as SetBitmap;
+        const bitmap = new Exporting(plain.s);
+        made.push(bitmap);
+        return bitmap;
+      },
+    };
+    const storage = new MemoryStorageChunkSource();
+    seed(storage, 'a', 3, [1, 2, 3]);
+    const engine = new SegmentEngine({ storage, codec });
+    const read = async (): Promise<number[]> => {
+      const out: number[] = [];
+      for await (const b of engine.iterateBatches({ segment: 'a' })) out.push(...b);
+      return out;
+    };
+    const first = await read();
+    expect(first).toEqual([3 * 65_536 + 1, 3 * 65_536 + 2, 3 * 65_536 + 3]);
+    expect(await read()).toEqual(first); // the cached chunk was not rewritten in place
+    expect(await collect(engine.iterate({ segment: 'a' }))).toEqual(first);
+    expect(exports).toBeGreaterThan(0);
+    // What the codec holds is untouched by the engine's in-place rewrite of the array it was given.
+    for (const bitmap of made) expect([...bitmap.toUint32Array()]).toEqual([1, 2, 3]);
+  });
 });
