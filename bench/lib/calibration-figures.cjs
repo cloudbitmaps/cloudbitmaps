@@ -55,9 +55,14 @@ const { windowRounds } = require('./calibrate-stages.cjs');
  */
 const FIXED_WINDOW_THROUGH = Object.freeze({ version: [0, 12, 0], keys: 8 });
 
-/** `0.12.0` as numbers; null for anything else, which is read as the current engine. */
+/**
+ * `0.12.0` as numbers, a pre-release counting as the release it precedes (`0.12.0-rc.1` ran 0.12.0's engine); null for
+ * anything else, which is read as the current engine. A run reports the version of the packages it ran: an evidence run
+ * installs a published release, so that is the engine that ran. A rehearsal of unreleased source made before its version
+ * bump reports the last release instead, and is read against that release's window.
+ */
 function releaseOf(version) {
-  const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(String(version));
+  const m = /^(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?$/.exec(String(version));
   return m === null ? null : [Number(m[1]), Number(m[2]), Number(m[3])];
 }
 
@@ -1869,5 +1874,6 @@ module.exports = {
   mergeValues,
   unbound,
   STORE_LOAD_REQUESTS,
+  windowOfRun,
   format: { int, fixed, usd, pct },
 };

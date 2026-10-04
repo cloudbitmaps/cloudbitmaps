@@ -250,7 +250,7 @@ so a cursor that reaches the end of its window needs no special case.
 
 **Cost.** The per-op budget is charged once, before the first fetch, for every chunk in the range, so a page with
 `after` alone is charged to the end of the segment however early it stops. A combine also fetches ahead: it starts
-8 chunk keys at once (or `concurrency`, if that is lower), widens by one more per key it takes until the window is
+8 chunk keys at once (or `concurrency`, if that is lower), doubles with each key it takes until the window is
 `concurrency` wide (32 by default), and starts one more each time it yields a key's ids, on every segment it reads.
 A page that stops early has already fetched up to `concurrency` keys past the one holding its last id: up to 32 keys
 per operand by default, and fewer when it stops in its first keys, since the window opens narrow. Those chunks land

@@ -24,7 +24,7 @@ so, and so do the module headers in the code.
   past the last one it used, where it had requested up to 8 (a page of 50 ids from an `intersect` is modelled at 66 to
   114 requests, and from `iterate` at 17 to 41). Pass a lower `concurrency` to a combine to bound it. Memory is still
   bounded by `concurrency × operands × chunk`, now 4 times larger by default, and a two-operand combine can hold up to
-  64 reads open against the S3 SDK's default of 50 sockets; the extra wait for a socket counts against `readTimeoutMs`
+  64 reads open against the S3 SDK's default of 50 sockets; on S3 the extra wait for a socket counts against `readTimeoutMs`
   (see [production](docs/guide/production.md)). The chunks a read had already requested when its segment re-resolved
   are the earlier generation's: up to 32 for `iterate` and `count`, up to `concurrency` for a combine.
 - **`andNot`, and `union` with `exclude`, read an exclude's chunk in the same round trip as the include's.** Where the

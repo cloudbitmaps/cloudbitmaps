@@ -286,7 +286,7 @@ import { NodeHttpHandler } from '@smithy/node-http-handler';
 
 const client = new S3Client({
   region: 'us-east-1',
-  requestHandler: new NodeHttpHandler({ httpsAgent: { maxSockets: 200 } }),
+  requestHandler: new NodeHttpHandler({ httpsAgent: { maxSockets: 256 } }),
 });
 ```
 
@@ -294,7 +294,7 @@ A combine keeps up to `concurrency` chunk keys in flight (32 by default once its
 every operand of a key at once: an `intersect` of two segments has up to 64 reads open, and an `andNot` against
 excludes up to 32 times the include plus the excludes that hold each key. That can exceed the S3 SDK's default of 50
 sockets. The reads past the 50th are not refused: they wait for a socket, and the wait counts against
-`readTimeoutMs`, so a deployment that sets one should raise the client's `maxSockets` to match (200 above covers four
+`readTimeoutMs`, so a deployment that sets one should raise the client's `maxSockets` to match (256 above covers four
 concurrent two-operand combines), or pass a lower `concurrency` to the combine.
 
 Raise `readTimeoutMs` too on a link too slow to deliver a read inside the timeout, since such a read fails on every attempt. The
