@@ -332,7 +332,7 @@ export async function loadSegment(
   // destroyed check, and the publish's first attempt all come from it. Reusing it is sound because the publish is
   // fenced on this row (its token, the pointer the guard judged, or its absence), so a row that changes before then
   // makes the publish lose rather than land on the strength of a stale read. The write reads the row again after
-  // the ids when this read found none, or found key material (see `bulkLoadCrbmGeneration`'s `row`).
+  // the ids when this read found none, or found key material (see the `row` option of `bulkLoadCrbmGeneration`, whose write `bulkLoadAhead` shares).
   const row = await deps.registry.get(ref);
   const fromToken: Token | undefined = row?.token;
   const fromGeneration = row?.currentGen ?? undefined;

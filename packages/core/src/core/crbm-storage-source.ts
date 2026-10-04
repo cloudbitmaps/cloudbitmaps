@@ -2090,60 +2090,16 @@ export interface LoadAhead {
   };
 }
 
-/** {@link bulkLoadCrbmGeneration} for a load whose number, and perhaps its key, are still being fetched. */
+/**
+ * {@link bulkLoadCrbmGeneration} for a load whose number, and perhaps its key, are still being fetched: the same
+ * options, with the same meaning, and the same writes. The number is joined only where the object is written.
+ */
 export async function bulkLoadAhead(
   driver: IStorageDriver,
   ref: SegmentRef,
   ahead: LoadAhead,
   ids: Iterable<number> | AsyncIterable<number> | DecodedLoadInput,
-  options: {
-    registry?: IRegistryDriver;
-    keystore?: IKeystore;
-    requireEncryption?: boolean;
-    audit?: IAuditSink;
-    /** Bitmap codec. Optional in the type; a **flavor** package binds it ({@link requireCodec}). */
-    codec?: CodecInterface;
-    /**
-     * Injected clock. Supplying one makes bulk-load **cooperative**: it yields the event loop periodically so a
-     * long load does not stall everything else on the process. Without it the load still completes, just
-     * without yielding — which is the pre-existing behaviour, kept so this is purely additive.
-     *
-     * `@cloudbitmaps/roaring` supplies a real clock by default, so flavor users get cooperative behaviour with
-     * no wiring. `core/` cannot default it: it is timer-free by lint, which is exactly why waiting goes through
-     * this seam rather than `setTimeout`.
-     */
-    clock?: Clock;
-    /**
-     * Write the object but do **not** advance the pointer (default: publish when a `registry` is wired).
-     *
-     * For a caller that has to inspect what it wrote before deciding whether it should become current — a
-     * guarded {@link loadSegment} is the one in-tree case — because the check is only meaningful while the old
-     * generation is still authoritative. The `registry` is still required for an encrypted segment and still
-     * consulted: it is where an existing segment's DEK lives, and reusing that key is not optional. The wrapped
-     * DEK comes back on the result so the deferred publish can store it.
-     *
-     * A caller that defers the publish owns what it wrote: an unpublished object sits ABOVE `currentGen`, where
-     * generation collection deliberately never looks, so nothing reclaims it until a later generation above it is
-     * current.
-     */
-    publish?: boolean;
-    /**
-     * The generation's metadata (see {@link GenerationMetadata}), written into the object and carried in the summary.
-     * The caller has checked it against the metadata rules; the writer checks it again, and refuses a record that breaks
-     * one before a byte is written.
-     */
-    metadata?: GenerationMetadata;
-    /**
-     * The segment's row as the caller already read it (`null`: it found none), for a caller that defers the
-     * publish (`publish: false`) and fences it on that same row. A present cleartext row is then used as read,
-     * rather than read again: a row that changes in between (a publish, a drop, a purge and re-create) makes the
-     * fenced publish lose, so the object is never published on the strength of the stale read. A row read as
-     * absent, or one carrying key material, is read again after the ids, as with no row passed: a first load must
-     * see a row another writer created meanwhile, and an encrypted segment's key is unwrapped only from a row read
-     * after the ids, so a segment shredded while they streamed is refused before its key is used.
-     */
-    row?: RegistryRecord | null;
-  } = {},
+  options: NonNullable<Parameters<typeof bulkLoadCrbmGeneration>[3]> = {},
 ): Promise<BulkLoadResult> {
   if (options.keystore === undefined && options.requireEncryption === true) {
     throw new ValidationError('requireEncryption: a load needs a keystore to write encrypted');

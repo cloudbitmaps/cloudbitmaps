@@ -63,6 +63,9 @@ A refused load also emits `segment.load-refused` to the `audit` sink you pass.
 
 The `*Into` verbs throw on the same superseded condition instead of reporting it.
 
+A load that throws may already have consumed its input, a one-shot iterable included: retry with a fresh source, not the
+one that was passed.
+
 ### When a write is throttled or gets no answer
 
 A load makes two writes, and the backend handles each on its own terms.
@@ -545,9 +548,16 @@ row's token, and a reader that finds the object under its number replaced re-rea
 **A load overlaps its round trips with its encoding.** The existence check, and the keystore's unwrap of an encrypted
 segment's key, are sent before the ids are bucketed and encoded, and the write waits for their answers only when it
 needs them. The keystore is asked for the key once per load, and that one key serves both the guard's read of the
-current generation and the write. What a fence rests on keeps its order: the row the guard judges is read first, a
-first load or an encrypted segment reads the row again after the ids, and the publish is fenced on the row the guard
-judged. A check or an unwrap that fails fails the load, with nothing written.
+current generation and the write; it is used only if the row the write reads after the ids still carries the same
+wrappings, and a load of a crypto-shredded row never asks for it. What a fence rests on keeps its order: the row the
+guard judges is read first, a first load or an encrypted segment reads the row again after the ids, and the publish is
+fenced on the row the guard judged.
+
+What changes is the order in which a failure surfaces, never whether anything is written. A failed existence check
+(and the listing it falls back to) is raised after the ids have been consumed, so the encoding's error, or the refusal
+of the second row read (a crypto-shredded segment), can be raised instead of it; either way nothing is written or
+published. A load that fails or is refused after its first row read may already have made its one keystore call for an
+existing encrypted segment, which a load that failed earlier did not.
 
 **Publish is forward-only, so a rerun is safe.** The object is written first. Only once it is durable does the load
 advance the registry pointer, with a compare-and-swap that never moves backwards. Run the same job twice and the second

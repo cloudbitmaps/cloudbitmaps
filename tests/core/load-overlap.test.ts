@@ -1,7 +1,9 @@
 import { randomBytes } from 'node:crypto';
 import { loadSegment, type LoadOptions } from '@/core/load';
+import { destroySegment } from '@/core/erasure';
 import { KeyUnavailableError, TransientError, ValidationError } from '@/core/errors';
 import type { SegmentRef } from '@/core/ports';
+import type { WrappedDek } from '@/core/crypto';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
@@ -17,7 +19,7 @@ const SEG: SegmentRef = { namespace: 'ns', segment: 's' };
 
 type Log = string[];
 /** Delays (a promise to wait for) or fails (a rejected one) the named request; `undefined` lets it through. */
-type Hook = (label: string) => Promise<void> | undefined;
+type Hook = (label: string, args: unknown[]) => Promise<void> | undefined;
 
 /** `target`, with each call to the methods in `names` logged, and `hook` given the chance to hold or fail it. */
 function logged<T extends object>(
@@ -36,7 +38,7 @@ function logged<T extends object>(
       return (...args: unknown[]) => {
         const label = p === 'getTail' && args[1] === 0 ? `${prefix}.check` : `${prefix}.${p}`;
         log.push(label);
-        const held = hook?.(label);
+        const held = hook?.(label, args);
         if (p === 'list') {
           // A listing is an async iterable: hold or fail it when it is first pulled.
           return (async function* () {
@@ -73,7 +75,7 @@ function world() {
   const seed = async (encrypted: boolean) => {
     await loadSegment(SEG, [1, 2], direct(encrypted), { keep: 9 });
   };
-  return { memory, registry, log, through, seed };
+  return { memory, registry, keys, log, through, seed };
 }
 
 /** `ids`, noting in `log` when they are first pulled and when they have all been consumed. */
@@ -268,6 +270,80 @@ describe('the existence check and the unwrap are in flight while the ids are con
     expect(state).toEqual([]);
     probe.open();
     expect((await pending).published).toBe(true);
+  });
+});
+
+describe('the early key is used only for the row the write sees', () => {
+  /** The keystore calls a load made, with the wrappings each unwrap was asked about. */
+  const opens = (w: ReturnType<typeof world>, wrapped: Array<readonly WrappedDek[]>) =>
+    w.through(true, undefined, (label, args) => {
+      if (label === 'keystore.openDek') wrapped.push(args[0] as readonly WrappedDek[]);
+      return undefined;
+    });
+
+  it('wrappings swapped between the two row reads: the write unwraps again, and the publish fences as before', async () => {
+    const w = world();
+    await w.seed(true);
+    const asked: Array<readonly WrappedDek[]> = [];
+    const deps = opens(w, asked);
+    const first = (await w.registry.get(SEG))!.wrappedDeks!;
+    const swapped = (await w.keys.createDek()).wrapped;
+    const ids = (async function* () {
+      yield 1;
+      const row = (await w.registry.get(SEG))!;
+      await w.registry.compareAndSwap(SEG, row.token, { wrappedDeks: swapped });
+      yield 2;
+    })();
+    const r = await loadSegment(SEG, ids, deps, { allowEmpty: true, keep: 9 });
+    // One unwrap for the row the load first read, and a second for the row it wrote under.
+    expect(asked).toEqual([first, swapped]);
+    expect(r).toMatchObject({ published: false, reason: 'superseded' });
+  });
+
+  it('a shred between the two row reads refuses the load: nothing is put', async () => {
+    const w = world();
+    await w.seed(true);
+    const ids = (async function* () {
+      yield 1;
+      await destroySegment(SEG, { registry: w.registry }, { confirmSegment: SEG.segment });
+      yield 2;
+    })();
+    await expect(
+      loadSegment(SEG, ids, w.through(true), { allowEmpty: true, keep: 9 }),
+    ).rejects.toThrow(/destroyed/);
+    expect(w.log.filter((l) => l === 'storage.putImmutable')).toEqual([]);
+  });
+
+  it('a destroyed row never starts the unwrap', async () => {
+    const w = world();
+    await w.seed(true);
+    // Destroyed, with its wrappings still on the row.
+    const row = (await w.registry.get(SEG))!;
+    await w.registry.compareAndSwap(SEG, row.token, { status: 'destroyed' });
+    w.log.length = 0;
+    await expect(
+      loadSegment(SEG, marked([1], w.log), w.through(true), { allowEmpty: true }),
+    ).rejects.toThrow(/destroyed/);
+    expect(w.log.filter((l) => l.startsWith('keystore.'))).toEqual([]);
+    expect(w.log.filter((l) => l === 'storage.putImmutable')).toEqual([]);
+  });
+});
+
+describe('the guard finishes before the check starts and before the ids are consumed', () => {
+  it('an existing encrypted segment, guarded: held on the guard, neither the check nor the ids have started', async () => {
+    const w = world();
+    await w.seed(true);
+    const unwrap = gate();
+    const deps = w.through(true, undefined, (label) =>
+      label === 'keystore.openDek' ? unwrap.promise : undefined,
+    );
+    const pending = loadSegment(SEG, marked([1, 2, 3], w.log), deps, { keep: 9 });
+    for (let i = 0; i < 4; i++) await new Promise((resolve) => setImmediate(resolve));
+    // The guard needs the key to open the current generation's summary, so it is what the load is waiting for.
+    expect(w.log).toEqual(['registry.get', 'keystore.openDek']);
+    unwrap.open();
+    expect((await pending).published).toBe(true);
+    expect(w.log.indexOf('storage.check')).toBeLessThan(w.log.indexOf('ids:start'));
   });
 });
 
