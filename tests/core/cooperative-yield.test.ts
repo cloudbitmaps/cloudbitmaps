@@ -1,3 +1,4 @@
+import { vi } from 'vitest';
 import { yieldEvery, YIELD_EVERY } from '@/core/cooperative';
 import type { Clock } from '@/core/determinism';
 import { SystemClock } from '@/system-clock';
@@ -107,28 +108,23 @@ describe('SystemClock.yieldNow', () => {
   });
 
   it('does not wait for a timer, so periodic yielding stays cheap', async () => {
-    // `setTimeout(1)` also yields, and costs ~1 ms of dead wall-clock each time — measured at +10% over a 1M-id
+    // `setTimeout(1)` also yields, and costs ~1 ms of dead wall-clock each time -- measured at +10% over a 1M-id
     // load for no extra relief.
     //
-    // Compared against a timer rather than against an absolute budget. A bound such as "200 yields in under
-    // 100 ms" is a wall-clock oracle: on a loaded box it fails for reasons unrelated to what it names, and in a
-    // mutation run that failure is a FALSE KILL — a mutant elsewhere is recorded as caught when this test is what
-    // broke. A relative comparison is robust to load, because load inflates both sides.
-    const clock = new SystemClock();
-    const N = 100;
-
-    const yieldStart = Date.now();
-    for (let i = 0; i < N; i++) await clock.yieldNow();
-    const yieldMs = Date.now() - yieldStart;
-
-    const timerStart = Date.now();
-    for (let i = 0; i < N; i++) await new Promise((r) => setTimeout(r, 1));
-    const timerMs = Date.now() - timerStart;
-
-    // A timer costs at least ~1 ms per iteration; `yieldNow` costs a loop turn. Half is a generous margin —
-    // the real ratio is an order of magnitude — and it cannot be met by anything that waits on a timer.
-    expect(yieldMs, `yieldNow ${yieldMs}ms vs setTimeout(1) ${timerMs}ms over ${N}`).toBeLessThan(
-      timerMs / 2,
-    );
+    // Asserted without reading a clock: the timer functions are replaced by ones that never fire, so a yield that
+    // waits on a timer can never settle, however fast or loaded the machine is. A wall-clock bound, even a relative
+    // one, is decided by scheduling noise rather than by what the yield is built on.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const clock = new SystemClock();
+      let settled = 0;
+      const yields = Array.from({ length: 20 }, () => clock.yieldNow().then(() => (settled += 1)));
+      // A few real loop turns: `setImmediate` is not faked, so a yield built on it settles in the first of them.
+      for (let turn = 0; turn < 3; turn++) await new Promise((r) => setImmediate(r));
+      expect(settled, 'yieldNow must settle on a loop turn, with every timer held back').toBe(20);
+      await Promise.all(yields);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
