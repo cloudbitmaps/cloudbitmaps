@@ -9,7 +9,8 @@
  */
 import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import fc from 'fast-check';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { chunkReads } from '../helpers/chunk-reads';
 import { CloudRoaring, CountingMetricsSink, MemoryStorage } from '@/index';
 import type { CloudRoaringOptions, IdRange, Segment } from '@/index';
 import { BudgetExceededError, IntegrityError, NotFoundError, ValidationError } from '@/core/errors';
@@ -18,6 +19,11 @@ import { collect, seedSegment } from '../helpers/loaded';
 import { SafeBitmap } from '@/roaring-codec';
 import { SegmentEngine } from '@cloudbitmaps/core';
 import { brandAsBackend } from '@/core/ports';
+
+/** The chunks each read asked the reader for: coalescing makes the request count smaller than the chunk count. */
+const reads = chunkReads();
+beforeEach(reads.start);
+afterEach(reads.stop);
 
 const K = 65_536;
 const U32_MAX = 0xffff_ffff;
@@ -116,11 +122,11 @@ describe('a range read fetches only the chunks the range spans', () => {
     it(name, async () => {
       const w = await world();
       for (const kind of ['live', 'pinned'] as const) {
-        const { store, metrics } = w.fresh();
+        const { store } = w.fresh();
         const seg = kind === 'live' ? store.segment('a') : await store.segment('a').pin();
-        metrics.reset();
+        reads.reset();
         await collect(seg.iterate({ after, through }));
-        expect(metrics.snapshot().storage.gets, kind).toBe(chunksIn(IDS, after, through));
+        expect(reads.total(), kind).toBe(chunksIn(IDS, after, through));
       }
     });
   }
@@ -248,7 +254,7 @@ describe('every combine takes the range, on every operand and every exclude', ()
     const w = await world({ a: A, b: B, s: S });
     const { store, metrics } = w.fresh();
     const [after, through] = [K + 1, 3 * K + 5];
-    metrics.reset();
+    reads.reset();
     await collect(
       store.segment('a').intersect([store.segment('b')], {
         after,
@@ -257,7 +263,7 @@ describe('every combine takes the range, on every operand and every exclude', ()
       }),
     );
     // Keys 1, 2 and 3 are in both includes; the exclude holds keys 1 and 2 of them. Nothing outside is fetched.
-    expect(metrics.snapshot().storage.gets).toBe(3 + 3 + 2);
+    expect(reads.total()).toBe(3 + 3 + 2);
     expect(metrics.snapshot().intersect.fetchedChunks).toBe(3);
   });
 
@@ -532,11 +538,11 @@ describe('union, andNot and excludes fetch, and are charged, only in range — l
         const w = await world({ a: A, b: B, s: S });
         const handle = (st: CloudRoaring) => (n: string) =>
           kind === 'live' ? Promise.resolve(st.segment(n)) : st.segment(n).pin();
-        const { store, metrics } = w.fresh();
+        const { store } = w.fresh();
         const stream = await run(handle(store), range);
-        metrics.reset();
+        reads.reset();
         await collect(stream);
-        expect(metrics.snapshot().storage.gets).toBe(gets);
+        expect(reads.total()).toBe(gets);
         const exact = w.fresh({ budget: { maxRequests: gets } }).store;
         await expect(collect(await run(handle(exact), {}))).rejects.toThrow(BudgetExceededError);
         await collect(await run(handle(exact), range)); // exactly the in-range reads fit

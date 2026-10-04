@@ -76,6 +76,7 @@ const {
   leftoversHint,
 } = require('./lib/calibrate-guards.cjs');
 const { planSpread, spreadIds } = require('./lib/calibrate-spread.cjs');
+const { coldIntersectIds, coldAndNotIds } = require('./lib/range-counts.cjs');
 const {
   DISCARDS_PER_RUN,
   DISCARDS_PER_STAGE,
@@ -236,25 +237,34 @@ function largePartsBound() {
  * What each stage loads and reads, from the layouts: the one input both the projection and the stages' own
  * expectations are computed from.
  */
-function planWorkload({ layout, spread, sweep }) {
+function planWorkload({ layout, spread, sweep, ranges }) {
   const sharedChunks = layout.sharedChunks;
   return {
     loads: { segments: SEGMENTS, largeSegments: LARGE, partsBound: largePartsBound() },
-    intersect: { reads: READS, sharedChunks },
+    intersect: { reads: READS, sharedChunks, rangesPerOperand: ranges.intersect },
     spread: {
       segments: spread === null ? 0 : SPREAD_SEGMENTS,
       reads: spread === null ? 0 : SPREAD_READS,
       sharedChunks: spread === null ? 0 : spread.sharedChunks,
+      rangesPerOperand: ranges.spread,
     },
-    sweep: { segments: SWEEP_SEGMENTS, entries: sweep },
+    sweep: {
+      segments: SWEEP_SEGMENTS,
+      entries: sweep.map((e, j) => ({ ...e, rangesPerOperand: ranges.sweep[j] })),
+    },
     // The warm stage repeats the calibration intersects' pairs, which touch this many segments.
-    warm: { segments: READS === 0 ? 0 : Math.min(SEGMENTS, READS + 1), sharedChunks },
+    warm: {
+      segments: READS === 0 ? 0 : Math.min(SEGMENTS, READS + 1),
+      sharedChunks,
+      rangesPerOperand: ranges.intersect,
+    },
     pointReads: { segments: POINT_SEGMENTS, sharedChunks },
     andNot: {
       calls: ANDNOT_CALLS,
       excludes: ANDNOT_EXCLUDES,
       includeChunks: layout.chunksPerSegment,
       sharedChunks,
+      ranges: ranges.andNot,
     },
     retryBound: RETRY_BOUND,
     // The samples a run may discard after a transient fault, and run again (`calibrate-samples.cjs`).
@@ -264,6 +274,29 @@ function planWorkload({ layout, spread, sweep }) {
     fixedGets: 1 + RTT_SAMPLES,
     fixedPuts: 1 /* CreateBucket */ + TEARDOWN_PUTS,
   };
+}
+
+/**
+ * The range requests the engine makes of the layouts this run will load, counted by running the engine over the in-memory
+ * backend on the same ids (`bench/lib/range-counts.cjs`) before anything is created: what the exact counts the stages are
+ * held to expect of a real object store. Nothing is requested of a cloud; the ids are built and read in memory.
+ */
+async function rehearseRanges({ layout, spread, sweepLayouts }) {
+  const pairRanges = async (idsOf) => (await coldIntersectIds(idsOf(0), idsOf(1))).rangesPerOperand;
+  const intersect = READS === 0 ? 0 : await pairRanges((i) => layoutIds(layout, i));
+  const spreadRanges =
+    spread === null || SPREAD_READS === 0 ? 0 : await pairRanges((i) => spreadIds(spread, i));
+  const sweep = [];
+  for (const L of sweepLayouts) sweep.push(await pairRanges((i) => layoutIds(L, i)));
+  let andNot = 0;
+  if (ANDNOT_CALLS > 0) {
+    const counted = await coldAndNotIds(
+      layoutIds(layout, 0),
+      Array.from({ length: ANDNOT_EXCLUDES }, (_, i) => layoutIds(layout, i + 1)),
+    );
+    andNot = counted.getRange;
+  }
+  return { intersect, spread: spreadRanges, sweep, andNot };
 }
 
 /**
@@ -483,7 +516,12 @@ async function main() {
         stride: DEFAULT_LAYOUT.stride,
       }),
     );
-    plan = planWorkload({ layout, spread, sweep });
+    // The projection is an upper bound that asks for no count, so it reads the engine for none; a run's exact expectations do.
+    const ranges =
+      MODE === 'project'
+        ? { intersect: 0, spread: 0, sweep: sweepLayouts.map(() => 0), andNot: 0 }
+        : await rehearseRanges({ layout, spread, sweepLayouts });
+    plan = planWorkload({ layout, spread, sweep, ranges });
     ({
       ops,
       stages: stageBounds,
@@ -1247,10 +1285,10 @@ async function main() {
       return reads;
     };
     // The figures of a set of cold intersects. Two operands, so per-operand figures are half the per-intersect ones.
-    const describeReads = (reads, { sharedChunks, chunksPerSegment, withPayload = false }) => {
+    const describeReads = (reads, { rangesPerOperand, chunksPerSegment, withPayload = false }) => {
       if (reads.length === 0) return { runs: 0 };
       const ms = reads.map((r) => r.ms);
-      const expectedGets = coldIntersectGets(sharedChunks);
+      const expectedGets = coldIntersectGets(rangesPerOperand);
       return {
         runs: reads.length,
         cold: true,
@@ -1258,7 +1296,9 @@ async function main() {
         p50ms: q(ms, 0.5),
         p95ms: q(ms, 0.95),
         p99ms: q(ms, 0.99),
-        chunksFetchedPerOperand: median(reads.map((r) => r.chunkReads)) / 2,
+        // The chunk range requests made of each operand: a range holds every chunk within the gap of the one before
+        // it, so this is not the number of chunks the intersect needed (`sharedChunks`).
+        rangesPerOperand: median(reads.map((r) => r.chunkReads)) / 2,
         chunksPerSegment,
         // The published claim: payload bytes fetched as a share of the two objects. The tail read is NOT in it.
         ...(withPayload
@@ -1277,7 +1317,7 @@ async function main() {
         medianPeakInFlight: median(reads.map((r) => r.peakInFlight)),
         medianMeanInFlight: median(reads.map((r) => r.meanInFlight)),
         medianRounds: median(reads.map((r) => r.rounds)),
-        modelRounds: modelRounds(sharedChunks),
+        modelRounds: modelRounds(rangesPerOperand),
         expectedGets,
         // Intersects whose request count was not the one the engine is expected to make: zero unless a read found
         // something.
@@ -1291,7 +1331,7 @@ async function main() {
       if (it.runs > 0) {
         log(
           `  ${it.runs} cold, all exact — p50 ${it.p50ms.toFixed(1)} ms, p99 ${it.p99ms.toFixed(1)} ms; ` +
-            `${it.chunksFetchedPerOperand} of ${it.chunksPerSegment} chunks per operand, median ${it.medianGets} GETs`,
+            `${it.rangesPerOperand} range request(s) per operand of ${it.chunksPerSegment} chunks, median ${it.medianGets} GETs`,
         );
       }
       return it;
@@ -1310,6 +1350,7 @@ async function main() {
             }),
             {
               sharedChunks: layout.sharedChunks,
+              rangesPerOperand: plan.intersect.rangesPerOperand,
               chunksPerSegment: layout.chunksPerSegment,
               withPayload: true,
             },
@@ -1345,7 +1386,11 @@ async function main() {
                   expected: spread.expected,
                   label: 'spread-layout',
                 }),
-                { sharedChunks: spread.sharedChunks, chunksPerSegment: spread.chunksPerSegment },
+                {
+                  sharedChunks: spread.sharedChunks,
+                  rangesPerOperand: plan.spread.rangesPerOperand,
+                  chunksPerSegment: spread.chunksPerSegment,
+                },
               ),
             ),
     });
@@ -1377,7 +1422,11 @@ async function main() {
                   expected: L.expected,
                   label: `sweep k = ${e.k}`,
                 }),
-                { sharedChunks: L.sharedChunks, chunksPerSegment: L.chunksPerSegment },
+                {
+                  sharedChunks: L.sharedChunks,
+                  rangesPerOperand: plan.sweep.entries[sweepLayouts.indexOf(L)].rangesPerOperand,
+                  chunksPerSegment: L.chunksPerSegment,
+                },
               ),
             ),
           });

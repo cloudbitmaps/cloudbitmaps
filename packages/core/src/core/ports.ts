@@ -76,9 +76,9 @@ export interface ReadChunksOptions {
   readonly concurrency?: number;
   /**
    * Open the window 1, 2, 4 … ranges wide up to `concurrency` instead of at full width, so a reader that stops early
-   * has asked for little.
+   * has asked for little; a number starts it that wide instead of at 1 (a positive integer), and it doubles from there.
    */
-  readonly ramp?: boolean;
+  readonly ramp?: boolean | number;
   /**
    * Called once for every range request the stream sends, when it settles: a request the consumer took, one that was
    * still in flight when the consumer stopped, and one that failed. `bytes` is what the request moved, the gaps between

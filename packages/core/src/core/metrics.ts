@@ -29,20 +29,27 @@ export type MetricEvent =
       readonly kind: 'storage.get';
       readonly namespace?: string;
       readonly segment: string;
-      /** One event per request, however many callers were waiting on it. Bytes returned (0 if the chunk was absent — a GET still happened). */
+      /**
+       * One event per request for chunks: a range request of a combine or `iterate`, which carries every chunk the read
+       * needs from a stretch of the object, or the one chunk of a read made on its own, however many callers were waiting
+       * on it. Bytes returned: the range's, the gaps between its chunks included (0 if a single chunk was absent — a GET
+       * still happened).
+       */
       readonly bytes: number;
       /**
-       * Elapsed wall time of the read — includes any transient-retry backoff on the storage call. From the
-       * injected clock, clamped to ≥ 0 (0 under the no-wait test clock).
+       * Elapsed wall time of the request — includes any transient-retry backoff on the storage call. From the
+       * injected clock, clamped to ≥ 0 (0 under the no-wait test clock). For a range of a stream, the time from the
+       * range being asked for to its answer, which the source measures.
        */
       readonly ms: number;
     }
   | {
       /**
        * One decoded-chunk cache lookup (emitted only when a cache is configured). `hit: false` means the lookup found
-       * no cached chunk. A caller that missed while another caller's read of the same chunk was open waits on that
-       * read and adds no `storage.get`, so the misses can outnumber the `storage.get` events; the `storage.get`
-       * count is the number of requests.
+       * no cached chunk. A combine or `iterate` looks up every chunk it needs when it opens its streams. A caller that
+       * missed while another caller's read of the same chunk was open waits on that read and adds no `storage.get`, and a
+       * range carries several chunks, so the misses can outnumber the `storage.get` events; the `storage.get` count is
+       * the number of requests for chunks.
        */
       readonly kind: 'cache';
       readonly hit: boolean;

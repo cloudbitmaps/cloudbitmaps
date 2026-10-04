@@ -489,7 +489,7 @@ otherwise. Five properties follow from "a write is a load":
   ids inside `(after, through]`. Whatever it held outside the range is superseded with the rest. Materializing a range
   page by page into one destination leaves only the last page.
 - **Readers of the destination see the old generation or the new one, never a partial.** The result streams into one
-  immutable object under a bounded memory window (`concurrency × operands × chunk`), and the pointer moves only once
+  immutable object under a bounded memory window (`concurrency × operands × chunk`, a range being at most a chunk's cap), and the pointer moves only once
   the object is durable.
 - **It deletes nothing**, unlike `load()`. The destination's previous generations stay in the bucket until you collect
   them (see [Generations and `keep`](#generations-and-keep)), so a `rollback` target is still there afterwards. Pass

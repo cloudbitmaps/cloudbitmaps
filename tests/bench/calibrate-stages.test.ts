@@ -18,12 +18,21 @@ const require_ = createRequire(import.meta.url);
 type Bound = { put: number; get: number };
 type Plan = {
   loads: { segments: number; largeSegments: number; partsBound: number };
-  intersect: { reads: number; sharedChunks: number };
-  spread: { segments: number; reads: number; sharedChunks: number };
-  sweep: { segments: number; entries: { k: number; intersects: number }[] };
-  warm: { segments: number; sharedChunks: number };
+  intersect: { reads: number; sharedChunks: number; rangesPerOperand: number };
+  spread: { segments: number; reads: number; sharedChunks: number; rangesPerOperand: number };
+  sweep: {
+    segments: number;
+    entries: { k: number; intersects: number; rangesPerOperand: number }[];
+  };
+  warm: { segments: number; sharedChunks: number; rangesPerOperand: number };
   pointReads: { segments: number; sharedChunks: number };
-  andNot: { calls: number; excludes: number; includeChunks: number; sharedChunks: number };
+  andNot: {
+    calls: number;
+    excludes: number;
+    includeChunks: number;
+    sharedChunks: number;
+    ranges: number;
+  };
   discards: { perRun: number; perStage: number };
   retryBound: number;
   fixedPuts: number;
@@ -38,7 +47,7 @@ const stages = require_(join(ROOT, 'bench', 'lib', 'calibrate-stages.cjs')) as {
   windowRounds: (keys: number, limit: number, start: number) => number;
   windowPeak: (keys: number, limit: number, start: number) => number;
   modelRounds: (k: number) => number;
-  coldIntersectGets: (k: number) => number;
+  coldIntersectGets: (ranges: number) => number;
   coldIntersectBound: (k: number) => number;
   projectStages: (w: Plan) => {
     stages: Record<string, Bound>;
@@ -116,16 +125,20 @@ function defaultPlan(): Plan {
   });
   return {
     loads: { segments: 20, largeSegments: 5, partsBound: 3 },
-    intersect: { reads: 40, sharedChunks: layout.sharedChunks },
-    spread: { segments: 10, reads: 40, sharedChunks: layout.sharedChunks },
-    sweep: { segments: 3, entries: stages.DEFAULT_SWEEP },
-    warm: { segments: 20, sharedChunks: layout.sharedChunks },
+    intersect: { reads: 40, sharedChunks: layout.sharedChunks, rangesPerOperand: 1 },
+    spread: { segments: 10, reads: 40, sharedChunks: layout.sharedChunks, rangesPerOperand: 1 },
+    sweep: {
+      segments: 3,
+      entries: stages.DEFAULT_SWEEP.map((e) => ({ ...e, rangesPerOperand: 1 })),
+    },
+    warm: { segments: 20, sharedChunks: layout.sharedChunks, rangesPerOperand: 1 },
     pointReads: { segments: 10, sharedChunks: layout.sharedChunks },
     andNot: {
       calls: 10,
       excludes: 10,
       includeChunks: layout.chunksPerSegment,
       sharedChunks: layout.sharedChunks,
+      ranges: 11,
     },
     discards: { perRun: samples.DISCARDS_PER_RUN, perStage: samples.DISCARDS_PER_STAGE },
     retryBound: guards.RETRY_BOUND,
@@ -205,23 +218,27 @@ describe('the stage table', () => {
     expect(base).toEqual({ put: 0, get: 0 });
     const one = stages.projectStages({
       ...w,
-      sweep: { ...w.sweep, entries: [{ k: 1_000, intersects: 10 }] },
+      sweep: { ...w.sweep, entries: [{ k: 1_000, intersects: 10, rangesPerOperand: 1 }] },
     }).stages.sweep;
     const both = stages.projectStages(w).stages.sweep;
     // Every entry loads its own segments and reads its own pairs, so a second entry adds its own and only its own.
     const second = stages.projectStages({
       ...w,
-      sweep: { ...w.sweep, entries: [{ k: 2_000, intersects: 5 }] },
+      sweep: { ...w.sweep, entries: [{ k: 2_000, intersects: 5, rangesPerOperand: 1 }] },
     }).stages.sweep;
     expect(both?.get).toBe((one?.get ?? 0) + (second?.get ?? 0));
     expect(both?.put).toBe((one?.put ?? 0) + (second?.put ?? 0));
+    // The bound is a request for every shared chunk, which no coalescing read makes more than.
     expect(both?.get).toBeGreaterThanOrEqual(
-      10 * stages.coldIntersectGets(1_000) + 5 * stages.coldIntersectGets(2_000),
+      10 * stages.coldIntersectBound(1_000) + 5 * stages.coldIntersectBound(2_000),
     );
     // A further value of k raises the bound; it is not absorbed by the others.
     const three = stages.projectStages({
       ...w,
-      sweep: { ...w.sweep, entries: [...stages.DEFAULT_SWEEP, { k: 500, intersects: 4 }] },
+      sweep: {
+        ...w.sweep,
+        entries: [...w.sweep.entries, { k: 500, intersects: 4, rangesPerOperand: 1 }],
+      },
     }).stages.sweep;
     expect(three?.get).toBeGreaterThan(both?.get ?? 0);
   });
@@ -229,20 +246,21 @@ describe('the stage table', () => {
 
 describe('the depth the harness measures', () => {
   // The window is the engine's, so it is read out of the engine's source and not retyped.
-  it('models the engine: a pointer and a tail first, then a window that opens at 8 and widens to 32', () => {
+  it('models the engine: a pointer and a tail first, then a stream of ranges that opens 4 wide and widens to 32', () => {
     const src = readFileSync(join(ROOT, 'packages', 'core', 'src', 'core', 'engine.ts'), 'utf8');
     const window = /const DEFAULT_INTERSECT_CONCURRENCY = (\d+);/.exec(src);
     expect(window, 'the engine no longer names its window this way').not.toBeNull();
     expect(stages.ENGINE_WINDOW).toBe(Number(window?.[1]));
-    const start = /const COMBINE_WINDOW_START = (\d+);/.exec(src);
+    const start = /const COMBINE_RANGE_START = (\d+);/.exec(src);
     expect(start, 'the engine no longer names its opening window this way').not.toBeNull();
     expect(stages.ENGINE_WINDOW_START).toBe(Number(start?.[1]));
-    // Stepped at an even latency: 8 keys at once, widening to 16 then 32 as keys are taken.
+    // Stepped at an even latency, in ranges: 4 at once, widening as ranges are taken. A calibration-shaped intersect
+    // is one range an operand, so it waits on a pointer, a tail and one range.
     expect(stages.modelRounds(1)).toBe(2 + 1);
-    expect(stages.modelRounds(8)).toBe(2 + 1);
-    expect(stages.modelRounds(100)).toBe(2 + 4);
-    expect(stages.modelRounds(1_000)).toBe(2 + 32);
-    expect(stages.modelRounds(2_000)).toBe(2 + 64);
+    expect(stages.modelRounds(4)).toBe(2 + 1);
+    expect(stages.modelRounds(5)).toBe(2 + 2);
+    expect(stages.modelRounds(100)).toBe(2 + 5);
+    expect(stages.modelRounds(1_000)).toBe(2 + 33);
   });
 
   it('steps a fixed window as ceil(k / window), and a widening one in fewer rounds', () => {
@@ -516,15 +534,18 @@ describe('what the stages request, counted against the engine', () => {
   };
   const plan = (): Plan => ({
     ...defaultPlan(),
-    intersect: { reads: 6, sharedChunks: layout.sharedChunks },
+    // The layouts here are small: each operand's shared chunks are one range, and so is each exclude's overlap with the
+    // include (counted against the engine below, which holds these numbers to what it makes).
+    intersect: { reads: 6, sharedChunks: layout.sharedChunks, rangesPerOperand: 1 },
     // Six pairs, each a segment and the next: seven segments.
-    warm: { segments: 7, sharedChunks: layout.sharedChunks },
+    warm: { segments: 7, sharedChunks: layout.sharedChunks, rangesPerOperand: 1 },
     pointReads: { segments: 4, sharedChunks: layout.sharedChunks },
     andNot: {
       calls: 2,
       excludes: 3,
       includeChunks: layout.chunksPerSegment,
       sharedChunks: layout.sharedChunks,
+      ranges: 4,
     },
   });
   const loaded = (async () => {
@@ -535,7 +556,7 @@ describe('what the stages request, counted against the engine', () => {
   })();
   const expected = stages.expectedReads(plan());
 
-  it('a cold intersect makes 4 + 2k, and a first load makes its counted 2 PUT-class and 4 GET', async () => {
+  it('a cold intersect makes 4 + 2r for r ranges of each operand, and a first load makes its counted 2 PUT-class and 4 GET', async () => {
     await loaded;
     expect(stages.FIRST_LOAD).toEqual({ put: 2, get: 4 });
     expect(stages.firstLoadRequests(0)).toEqual({ put: 2, get: 4 });
@@ -552,7 +573,9 @@ describe('what the stages request, counted against the engine', () => {
       });
     }
     expect(total).toBe(expected.intersect);
-    expect(stages.coldIntersectGets(layout.sharedChunks)).toBe(4 + 2 * layout.sharedChunks);
+    // One range an operand here: the shared chunks sit side by side. Each intersect is 6 requests, not 4 + 2k.
+    expect(stages.coldIntersectGets(1)).toBe(6);
+    expect(total).toBe(6 * 6);
   });
 
   it('a warm store reads each segment once and then nothing', async () => {
@@ -783,12 +806,15 @@ describe('the ceiling covers every stage', () => {
     const w = defaultPlan();
     const expected = stages.expectedReads(w);
     expect(expected).toEqual({
-      intersect: 8_160,
-      spread: 8_160,
-      sweep: 40_060,
-      warm: 2_040,
+      // A cold intersect is 4 + 2 requests, one range an operand, where each shared chunk was a request: 40 x 6.
+      intersect: 240,
+      spread: 240,
+      sweep: 90,
+      warm: 60,
+      // Point reads are one chunk each, per key: unchanged.
       pointReads: 4_020,
-      andNot: 30_210,
+      // An include and ten excludes: eleven operands' pointer and tail, and a range each.
+      andNot: 330,
     });
     const single = stages.firstLoadRequests(0);
     const multi = stages.firstLoadRequests(2);
@@ -808,10 +834,11 @@ describe('the ceiling covers every stage', () => {
     const get =
       loads.get + setup.get + Object.values(expected).reduce((n, g) => n + g, 0) + fixed.get;
     const put = loads.put + setup.put + fixed.put;
-    expect({ put, get }).toEqual({ put: 101, get: 92_825 });
+    expect({ put, get }).toEqual({ put: 101, get: 5_155 });
     const expectedUSD = meterLib.priceTally({ put, get }, pricing).totalUSD;
-    expect(expectedUSD).toBeCloseTo(0.037635, 6);
-    // The bound is above it, and under the ceiling: the stages' bounds, the fixed requests, and three discarded samples
+    expect(expectedUSD).toBeCloseTo(0.002567, 6);
+    // The bounds are unchanged by coalescing: each is what a request for every chunk would cost, which a read of
+    // ranges never exceeds, so they are far above what is expected now. The bound is above it, and under the ceiling: the stages' bounds, the fixed requests, and three discarded samples
     // at the costliest sample's bound, a cold intersect sharing 2,000 chunks.
     const projected = stages.projectStages(w);
     expect(projected.costliestSample).toBe(stages.coldIntersectBound(2_000));

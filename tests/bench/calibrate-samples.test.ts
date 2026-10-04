@@ -294,9 +294,9 @@ describe('a sample that meets a transient fault', () => {
     const discarded = ledger.begin('intersect');
     const s0 = m.snap();
     let rangeAtThrow = -1;
-    // The fifth chunk read of the stage fails: the first intersect's third shared chunk, with the rest of its window
-    // of reads still in flight.
-    m.failRange(5);
+    // The second chunk range read of the stage fails at once: the first intersect's second operand, while the first
+    // operand's range is still in flight.
+    m.failRange(2);
     const reads: Array<Record<string, number>> = [];
     for (let i = 0; i < 4; i += 1) {
       reads.push(
@@ -335,8 +335,9 @@ describe('a sample that meets a transient fault', () => {
     // Every sample the stage kept made exactly what a fault-free cold intersect makes.
     for (const r of reads) {
       expect(r).toEqual({
-        gets: stages.coldIntersectGets(k),
-        chunkReads: 2 * k,
+        // One range an operand: the layout's shared chunks sit side by side.
+        gets: stages.coldIntersectGets(1),
+        chunkReads: 2,
         tailReads: 2,
         pointerReads: 2,
       });
@@ -354,17 +355,17 @@ describe('a sample that meets a transient fault', () => {
     });
     // How long the attempt ran before it failed: past its pointer and tail reads, each of which took 20 ms.
     expect(d?.failedAfterMs).toBeGreaterThanOrEqual(30);
-    // Its reads still in flight when it failed answered after, and were counted against it, not against the next one.
-    expect(rangeAtThrow).toBeGreaterThan(0);
+    // Its reads still in flight when it failed answered after, and were counted against it, not against the next one:
+    // the first operand's range, which the failed second operand's stream does not wait for.
     expect(d?.requests.reads.range.n).toBeGreaterThan(rangeAtThrow);
     // It made no more than a finished sample may: the bound a discard is projected at.
     expect(d?.requests.get).toBeLessThanOrEqual(stages.coldIntersectBound(k));
     // The stage billed both, and is held to what it kept.
-    expect(stage.get).toBe(4 * stages.coldIntersectGets(k) + (d?.requests.get ?? 0));
+    expect(stage.get).toBe(4 * stages.coldIntersectGets(1) + (d?.requests.get ?? 0));
     expect(samples.keptRequests({ requests: stage, discarded }).get).toBe(
-      4 * stages.coldIntersectGets(k),
+      4 * stages.coldIntersectGets(1),
     );
-    expect(samples.keptRequests({ requests: stage, discarded }).reads.range.n).toBe(4 * 2 * k);
+    expect(samples.keptRequests({ requests: stage, discarded }).reads.range.n).toBe(4 * 2);
     expect(ledger.count).toBe(1);
   });
 
@@ -437,7 +438,7 @@ describe('a sample that meets a transient fault', () => {
       });
       return { fresh, g };
     });
-    expect(priming.g).toBe(4 * (2 + k));
+    expect(priming.g).toBe(4 * (2 + 1)); // each segment once: a pointer, a tail and one range
     expect(
       await gets(async () => {
         for await (const x of priming.fresh

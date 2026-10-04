@@ -260,6 +260,7 @@ const HARNESS_FILES = [
   'bench/lib/calibrate-samples.cjs',
   'bench/lib/calibrate-spread.cjs',
   'bench/lib/calibrate-stages.cjs',
+  'bench/lib/range-counts.cjs',
   'packages',
 ];
 

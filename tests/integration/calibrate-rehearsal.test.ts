@@ -76,6 +76,7 @@ const guards = require_(join(ROOT, 'bench', 'lib', 'calibrate-guards.cjs')) as {
     sharedChunks: number;
     chunksPerSegment: number;
   };
+  layoutIds: (layout: unknown, i: number) => Iterable<number>;
 };
 const stages = require_(join(ROOT, 'bench', 'lib', 'calibrate-stages.cjs')) as {
   STAGES: string[];
@@ -120,6 +121,23 @@ const layout = guards.planLayout({
   ...guards.DEFAULT_LAYOUT,
 });
 const k = layout.sharedChunks;
+/**
+ * The range requests the engine makes of the workload's layout, counted by running it over the in-memory backend, as
+ * the harness counts them before it loads anything: a cold intersect's of each operand, and one `andNot` call's in all.
+ * The tiny chunks of this workload lie within the gap of each other, so a range holds many of them.
+ */
+const counts = require_(join(ROOT, 'bench', 'lib', 'range-counts.cjs')) as {
+  coldIntersectIds: (a: number[], b: number[]) => Promise<{ rangesPerOperand: number }>;
+  coldAndNotIds: (a: number[], b: number[][]) => Promise<{ getRange: number }>;
+};
+const idsOfSegment = (i: number): number[] => [...guards.layoutIds(layout, i)];
+const RANGES = (await counts.coldIntersectIds(idsOfSegment(0), idsOfSegment(1))).rangesPerOperand;
+const ANDNOT_RANGES = (
+  await counts.coldAndNotIds(
+    idsOfSegment(0),
+    Array.from({ length: W.excludes }, (_, i) => idsOfSegment(i + 1)),
+  )
+).getRange;
 
 /**
  * Which GetObject request, counted from 1 on the workload's client as the fault hook counts them, falls where. Every
@@ -129,10 +147,10 @@ const k = layout.sharedChunks;
  * `has()` on an open segment a chunk, and a first `has()` a pointer, a tail and a chunk.
  */
 const LOADS = (W.segments + W.large) * (stages.FIRST_LOAD.get - 1);
-const COLD = stages.coldIntersectGets(k);
-const PRIMING = W.segments * (2 + k);
+const COLD = stages.coldIntersectGets(RANGES);
+const PRIMING = W.segments * (2 + RANGES);
 /** One `andNot` call: a pointer and a tail per operand, every chunk of the include, the exclude's shared chunks. */
-const ANDNOT_CALL = 2 * (1 + W.excludes) + layout.chunksPerSegment + W.excludes * k;
+const ANDNOT_CALL = 2 * (1 + W.excludes) + ANDNOT_RANGES;
 const AT = (() => {
   // The last request of the first cold intersect: the discard made every request a finished intersect makes, more
   // than the stage's bound leaves above its expected count, so a stage held to its total would overspend.
@@ -269,7 +287,7 @@ describe('a calibration rehearsal that meets transient faults', () => {
       expect.objectContaining({ of: 'andNot call', sample: 0, ...fault }),
     ]);
     // The intersect failed at its last request, so it had made all of them; the first read at its tail, after its pointer.
-    expect(phases.intersect?.discarded[0]?.requests.get).toBe(stages.coldIntersectGets(k));
+    expect(phases.intersect?.discarded[0]?.requests.get).toBe(COLD);
     expect(phases.pointReads?.discarded[0]?.requests.get).toBe(2);
     expect(phases.andNot?.discarded[0]?.requests.get).toBeGreaterThanOrEqual(
       Math.floor(0.9 * ANDNOT_CALL),

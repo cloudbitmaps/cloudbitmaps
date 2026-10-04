@@ -75,6 +75,14 @@ jobs:
       # of a page that says its figures are generated — after a change to the model, the prices or a profile,
       # regenerate them with `pnpm bench:sizing`.
       - run: pnpm bench:sizing:check
+      # The cost model prices a cold intersect at the range requests the engine makes of it, which bench/range-counts.cjs
+      # counts by running the built engine over the in-memory backend. This fails if bench/range-counts.json is not what
+      # it makes now; regenerate with `pnpm bench:range-counts`. It measures nothing on a cloud.
+      - run: pnpm bench:range-counts:check
+      # The site's figures gate holds the pages to the figures the engine is expected to cost, which it reads from
+      # bench/expected-figures.json so it needs no build. This fails if that file is not what the built estimator gives
+      # from bench/range-counts.json and bench/results.json; regenerate with `pnpm bench:expected-figures`.
+      - run: pnpm bench:expected-figures:check
       # And bench/run.cjs writes the crossover chart, bench/results.json and the benchmarks pages' BENCH regions,
       # which scripts/site-figures.cjs then treats as a source: without this, a stale results.json would vouch for
       # the site. Regenerate with `pnpm bench`.

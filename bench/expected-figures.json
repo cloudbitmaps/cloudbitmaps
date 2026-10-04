@@ -1,0 +1,29 @@
+{
+  "coldIntersect": {
+    "gets": 6,
+    "getsText": "6 GETs",
+    "each": "$0.0000024",
+    "perMillion": "$2.40"
+  },
+  "coldIntersectSpread": {
+    "gets": 6,
+    "getsText": "6 GETs",
+    "each": "$0.0000024",
+    "perMillion": "$2.40",
+    "bytesPerOperand": "971 KB",
+    "neededBytesPerOperand": "49 KB"
+  },
+  "andNot": {
+    "gets": 33,
+    "getsText": "33 GETs",
+    "each": "$0.0000132",
+    "perMillion": "$13.20"
+  },
+  "iterate": {
+    "gets": 3,
+    "getsText": "3 GETs",
+    "each": "$0.0000012",
+    "perMillion": "$1.20"
+  },
+  "redisLineIntersectsPerSec": "54.9"
+}
