@@ -149,7 +149,7 @@ a read of one chunk would, so a range it had already requested of the earlier ge
 (a custom one) re-resolve the same way. What a read can still serve from the earlier generation is what it had already
 taken: up to `concurrency` keys per operand (32 by default) for a combine, up to 32 chunks for `iterate`, and up to 32
 chunk keys on a source that reads chunk by chunk and for `count` where it reads chunks. Its answer then describes two
-instants. A running combine or `iterate` holds the reader of the generation it is reading (its parsed index and, on an
+instants. A running combine or `iterate` holds the reader of the generation it is reading (its parsed index, any chunk bytes it kept, and, on an
 encrypted segment, the key it unwrapped) until it moves on or ends, outside the reader cache's `readerMax` and
 `readerMaxBytes`: one reader per streamed operand, for as long as the read runs. [Pin the segment](#read-one-fixed-point-in-time)
 when that matters.

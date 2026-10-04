@@ -184,7 +184,7 @@ proposed in an issue on this repo before it is built.
 
 | Weakness | What is planned | What it should change |
 | --- | --- | --- |
-| Small data queried hard | **A reader cache sized by bytes**, not by chunk count, and a small segment kept whole after its first read | A repeat stays cached however many small chunks it touches, bounded by bytes rather than a count; pointers are still re-read after `cache.genTtlMs` |
+| Small data queried hard | **A chunk cache sized by bytes**, not by chunk count | A repeat stays cached however many small chunks it touches, bounded by bytes rather than a count; pointers are still re-read after `cache.genTtlMs` |
 | Many stateless readers | **A shared cache tier**: an interface that a Valkey, Redis or local-disk adapter implements, holding only the hot set | A fleet shares one warm copy of the hot set instead of each reader paying for its own |
 | The pointer refresh | **Push invalidation**: object-store events tell readers a segment changed, with a longer refresh as the backstop | Most of the refresh bill goes, and a change reaches readers as fast as the events do: [typically seconds, sometimes a minute or longer](https://docs.aws.amazon.com/AmazonS3/latest/userguide/EventNotifications.html), with the backstop as the bound |
 | Retries in a throttling storm | **Retrying at one layer**, the SDK's, for throttling | One throttled request stops multiplying into many |

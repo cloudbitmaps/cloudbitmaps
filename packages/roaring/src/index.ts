@@ -268,14 +268,16 @@ export interface CacheOptions {
   /**
    * Ceiling on how many segments' `.crbm` readers (each holding a parsed index) the store keeps open at once
    * (default 1024) — the steady-state memory bound for a long-running server that reads across many segments.
-   * Past it the least-recently-used segment's reader is evicted; re-opening it later is one cheap tail GET.
+   * Past it the least-recently-used segment's reader is evicted; re-opening it later is one cheap tail GET. A reader of a small generation, one whose whole object came with its tail read,
+   * also holds its chunk bytes, so a read of it makes no further request until the reader is evicted.
    * Applies whenever the store builds its own read path — a backend or a bare `IStorageDriver`. A pre-built
    * `StorageChunkSource` manages its own reader cache.
    */
   readonly readerMax?: number;
   /**
-   * Aggregate byte ceiling on what the open readers hold, their parsed `.crbm` indices and the metadata a
-   * generation carries (default 64 MiB) — the byte half
+   * Aggregate byte ceiling on what the open readers hold, their parsed `.crbm` indices, the metadata a
+   * generation carries, and the chunk bytes a reader keeps when its tail read returned a whole object whose chunks
+   * total at most this ceiling divided by {@link CacheOptions.readerMax} (default 64 MiB) — the byte half
    * of the memory bound, complementing the {@link CacheOptions.readerMax} *count* bound. A wide/dense segment's
    * parsed index can reach about 1.3 MB, so a count-only bound could let the open readers pin over a GB and blow a small
    * heap (e.g. a 128 MB Lambda); this evicts the least-recently-used reader once the summed index footprint

@@ -31,6 +31,19 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **A read of a small generation, whose chunks all arrived with its tail, makes no further request for them.** When a
+  reader's tail read returns the whole object, and the chunk region is at most the reader cache's share per reader
+  (`cache.readerMaxBytes` divided by `cache.readerMax`, 64 KiB by default), the reader keeps a copy of that region, and
+  `getChunk` and `getChunks` serve from it: a cold `has()` of such a segment is its pointer read and its tail read, and a
+  cold intersect of two of them reads two pointers and two tails and no chunk, where a segment over the share, or an object
+  larger than the tail read, reads its chunks by range. A kept chunk is checked exactly as a range-read one is
+  (CRC32C against the index, decryption under its own associated data on an encrypted segment, the payload cap), a
+  read returns a copy so a write to it changes nothing of the next read, and a read of kept bytes is no request and
+  calls no `onRequest`. The kept bytes count in the reader's `retainedBytes`, so the reader cache's count and byte
+  bounds hold as before; `invalidate()`, eviction and erasure drop the reader and the bytes with it, and a pin keeps
+  them as long as it holds its reader. Like a chunk-cache hit, a kept chunk is served from the one verified
+  generation the reader opened, so a sweep of that generation is not noticed by a read it serves. There is no new
+  option: the limit follows `cache.readerMax` and `cache.readerMaxBytes`.
 - **Combines and `iterate` read each operand's chunks as coalesced ranges, so a cold read makes far fewer requests.**
   `intersect`, `union` and `andNot`, their `.batches()` forms, `iterate` and the `*Into` verbs that read them now open one
   stream per operand through `getChunks` (every store the library ships reads through a source that has it), over the
