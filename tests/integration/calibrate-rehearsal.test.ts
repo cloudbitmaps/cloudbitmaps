@@ -168,7 +168,7 @@ afterAll(() => rmSync(OFFLINE_HOME, { recursive: true, force: true }));
 function rehearse(
   faults: string,
   extraEnv: Record<string, string> = {},
-): { status: number | null; stderr: string; results: Results } {
+): { status: number | null; stdout: string; stderr: string; results: Results } {
   const runId = `${new Date().toISOString().slice(0, 10)}-it-${randomUUID().slice(0, 8)}`;
   const out = spawnSync(process.execPath, [HARNESS, '--rehearse'], {
     cwd: ROOT,
@@ -189,7 +189,7 @@ function rehearse(
   const results = JSON.parse(readFileSync(RESULTS, 'utf8')) as Results;
   // A file another run wrote would test nothing.
   expect(results.runId, `the rehearsal wrote no results:\n${out.stderr}`).toBe(runId);
-  return { status: out.status, stderr: out.stderr, results };
+  return { status: out.status, stdout: out.stdout, stderr: out.stderr, results };
 }
 
 beforeAll(async () => {
@@ -245,6 +245,10 @@ describe('a calibration rehearsal that meets transient faults', () => {
   it("records the socket limit the workload's client held, read back: the library's 128", () => {
     expect(run.results.measured.maxSockets).toBe(128);
     expect(run.results.measured.maxSocketsSource).toMatch(/library's own client.*read back/);
+    // The log line prints the limit read back from the agents, before anything is created.
+    expect(run.stdout).toMatch(
+      /^calibrate: workload client: 128 sockets \(read back from its agents\)$/m,
+    );
   });
 
   it('records each discard beside its stage: the sample, the fault and the code beneath it, and its requests', () => {
@@ -359,10 +363,13 @@ describe('a calibration rehearsal that meets transient faults in the samples tha
 
 describe('a calibration rehearsal given a socket limit', () => {
   it('runs with it, and records the value read back from the client, not the one asked for', () => {
-    const { status, stderr, results } = rehearse(`${AT.intersect}`, {
+    const { status, stdout, stderr, results } = rehearse(`${AT.intersect}`, {
       CR_CALIBRATE_MAX_SOCKETS: '7',
     });
     expect(status, stderr).toBe(0);
+    expect(stdout).toMatch(
+      /^calibrate: workload client: 7 sockets \(read back from its agents\)$/m,
+    );
     expect(results.measured.maxSockets).toBe(7);
     expect(results.measured.maxSocketsSource).toMatch(/CR_CALIBRATE_MAX_SOCKETS.*read back/);
   }, 180_000);
