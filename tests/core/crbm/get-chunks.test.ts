@@ -158,7 +158,7 @@ describe.each(variants)('CrbmReader.getChunks ($name)', ({ encrypted, crypto }) 
       bytes,
       new Spy(new BufferReader(bytes), (b) => b.subarray(0, b.length - 1)),
     );
-    await expect(reader.getChunks([0, 1])).rejects.toBeInstanceOf(IntegrityError);
+    await expect(reader.getChunks([0, 1])).rejects.toThrow(/read short/);
   });
 
   it('never reads outside the chunk region, even for every chunk', async () => {
