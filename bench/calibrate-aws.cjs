@@ -556,13 +556,17 @@ async function main() {
   const client = new s3.S3Client(configs.work);
   // The workload's client has the socket limit the library gives the client it builds, so the run measures what a
   // consumer gets by default; teardown's keeps the SDK's own, since it makes a few listings and deletes in turn.
-  let sockets;
-  try {
-    sockets = await limitWorkloadSockets(client, process.env.CR_CALIBRATE_MAX_SOCKETS);
-  } catch (err) {
-    refuse(err.message);
+  // A cleanup tears down with its own client and never sends through this one, so no socket setting, and no SDK handler
+  // that will not take the limit, can refuse it.
+  let sockets = null;
+  if (MODE !== 'cleanup') {
+    try {
+      sockets = await limitWorkloadSockets(client, process.env.CR_CALIBRATE_MAX_SOCKETS);
+    } catch (err) {
+      refuse(err.message);
+    }
+    log(`workload client: ${sockets.observed} sockets (read back from its agents)`);
   }
-  log(`workload client: ${sockets.observed} sockets (read back from its agents)`);
   const tally = meter(client);
   // A rehearsal's injected faults, on the workload's client alone; refused above in every other mode.
   if (faultGets.length > 0) injectFaults(client, faultGets);
