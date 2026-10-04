@@ -74,7 +74,7 @@ and a load cost, and how long they take.
 ### The in-region run — run `2026-10-03-e13c7`
 
 > **Measured** against real S3 in `us-east-1` on 2026-10-03 (UTC), from AWS CloudShell in the same region, with the
-> published `0.12.0` packages: a round-trip floor of 5.07 ms. The run's report explains every figure:
+> packages published before this release: a round-trip floor of 5.07 ms. The run's report explains every figure:
 > [`bench/calibration/2026-10-03-e13c7.md`](../bench/calibration/2026-10-03-e13c7.md). The evidence beside it is the
 > harness's own results file. [`tests/docs/calibration-reports.test.ts`](../tests/docs/calibration-reports.test.ts)
 > holds this section and the report to it in both directions: every dollar amount, percentage, duration, byte size
@@ -98,7 +98,7 @@ and a load cost, and how long they take.
   bytes a second; a multipart load of a 12.6 MB segment at 11.3 million ids a second, 11,339,268 bytes a second.
 - **`andNot`** of a 1,999-chunk segment against ten excludes took 8,687.10 ms at the median and 3,021 GETs.
 
-**Every latency above was measured on 0.12.0, whose combine kept a window of 8 chunk keys**, and the unreleased 0.13.0
+**Every latency above was measured before this release widened the combine window, by an engine that kept 8 chunk keys**, and this release
 widens it to 32; the [section below](#the-window-of-32--derived-not-measured) gives what that is expected to do.
 
 | Operation | Requests | One | Per million | Label |
@@ -132,16 +132,16 @@ refresh, for the segments a long-lived reader keeps reading. The
 
 ### The window of 32 — derived, not measured
 
-**The run above was on 0.12.0, whose combine kept a window of 8 chunk keys.** A read of `n` chunks
+**The run above was made before this release widened the window, so its engine's combine kept 8 chunk keys.** A read of `n` chunks
 then took about `n / 8` request times in sequence, and that window, not the network, set how long a long read took:
-the `andNot` ran at a mean of 10.3 requests in flight, over about 250 rounds of about 27 ms. The unreleased 0.13.0
+the `andNot` ran at a mean of 10.3 requests in flight, over about 250 rounds of about 27 ms. This release
 opens a combine's window 8 keys wide and widens it to 32 as keys are taken, and `andNot` and `union` read an exclude's
 chunk in the same round trip as the include's, so the same requests are expected to be answered in fewer rounds. No
 run has measured that yet; the figures below are **derived** from a model, and the next in-region run is the
 measurement. The model draws each GET's latency from a lognormal distribution with a median of 26 ms and caps the
 open requests at 50, as the S3 SDK's default sockets do. It sends the same requests in the old and the new engine:
 
-| Shape | 0.12.0's window of 8 | Window of 8 widening to 32 | Requests (both) |
+| Shape | The run's window of 8 | Window of 8 widening to 32 | Requests (both) |
 | --- | --- | --- | --- |
 | `andNot`, a 1,999-chunk include against 10 excludes on 100 shared chunks | 13.1 s | 3.7 s | 2,999 |
 | `andNot` against one opt-out list holding every chunk | 18.2 s | 3.9 s | 3,998 |
@@ -153,7 +153,7 @@ open requests at 50, as the S3 SDK's default sockets do. It sends the same reque
 | `iterate` page that stops after 50 ids (10 chunks) | 102 ms | 103 ms | 17 to 41 |
 
 Both columns are derived from the model, not measured on S3. The request counts are the model's chunk reads and leave out index reads: the measured `andNot` made 3,021 GETs, the model's 2,999 plus 22 index reads. The last two rows are the cost: a read that stops early has requested
-up to 32 keys per operand ahead, where 0.12.0 had requested up to 8. Pass `concurrency` to bound that.
+up to 32 keys per operand ahead, where a window of 8 had requested up to 8. Pass `concurrency` to bound that.
 
 ## At scale — measured (1K → 10K → 100K segments)
 

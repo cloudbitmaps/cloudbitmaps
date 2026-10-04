@@ -105,7 +105,7 @@ record carries their medians as `medianPeakInFlight`, `medianMeanInFlight` and `
 engine's model of 2 + the rounds a window that opens 8 chunks wide and widens to 32 takes over k chunks (`windowRounds`
 in `lib/calibrate-stages.cjs`, stepped at an even latency from the engine's two constants), for a pointer, a tail and
 the window. A peak of 64 is the full window, 32 chunks each read from both operands; rounds above the model with a
-mean in flight well under that is a slow request holding the window. A run on 0.12.0 or earlier ran a fixed window of 8
+mean in flight well under that is a slow request holding the window. A run made before the window widened ran a fixed window of 8
 chunks, a model of 2 + ⌈k / 8⌉ and a peak of 16, and its figures are read against that. In flight counts requests the library issued, including any waiting for a free socket.
 
 `andNot` reads every chunk of the segment it filters, since any of them can survive, and each exclude only where it
