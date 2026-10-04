@@ -71,15 +71,13 @@ publishes all three:
 
 1. **Load throughput** — ids/s and bytes/s into a bucket through `store.load()`, the whole write path, for
    objects that fit one PUT and objects large enough to upload multipart. **Paid** by the in-region run,
-   [`2026-10-03-e13c7`](calibration/2026-10-03-e13c7.md), from AWS CloudShell in `us-east-1`, on the release before the one that widened the combine window, and measured
-   again on the engine that widens it by [`2026-10-04-73668`](calibration/2026-10-04-73668.md).
+   [`2026-10-04-f3599`](calibration/2026-10-04-f3599.md), from AWS CloudShell in `us-east-1`, on the published `0.15.0`.
 2. **Cold intersect latency** — wall-clock for a chunk-skipping `A ∩ B` that has to fetch from the object store.
-   **Paid** by the same in-region runs, [`2026-10-03-e13c7`](calibration/2026-10-03-e13c7.md) and, for the engine that
-   widens the window, [`2026-10-04-73668`](calibration/2026-10-04-73668.md).
+   **Paid** by the same in-region run, [`2026-10-04-f3599`](calibration/2026-10-04-f3599.md).
 3. **The single-bucket bill** — the registry pointer lives in the same bucket as the data, so resolving a
-   generation costs an object GET and advancing one costs a conditional PUT. **Paid** by its own run,
-   [`2026-09-23-94416`](calibration/2026-09-23-94416.md), from a laptop, and measured again in-region by
-   [`2026-10-03-e13c7`](calibration/2026-10-03-e13c7.md) and [`2026-10-04-73668`](calibration/2026-10-04-73668.md). A request count, and so the bill for
+   generation costs an object GET and advancing one costs a conditional PUT. **Paid** by the same in-region run,
+   [`2026-10-04-f3599`](calibration/2026-10-04-f3599.md). Every run, with its report, is listed in
+   [`calibration/`](calibration/README.md). A request count, and so the bill for
    requests, does not depend on where the client is, with one exception: an intersect
    slower than the pointer refresh reads each pointer again. The harness's timed store turns the pointer refresh
    off (`cache.genTtlMs: 0`). Bytes read out of the region are billed as transfer, which the harness counts and
@@ -111,9 +109,9 @@ record carries their medians as `medianPeakInFlight`, `medianMeanInFlight` and `
 engine's model of 2 + the rounds a window that opens 4 ranges wide and widens to 32 takes over r ranges (`windowRounds`
 in `lib/calibrate-stages.cjs`, stepped at an even latency from the engine's two constants), for a pointer, a tail and
 the window. A peak of 64 is the full window, 32 range requests held ahead of each operand; rounds above the model with a
-mean in flight well under that is a slow request holding the window. A run made on an earlier engine ran a fixed window of 8 chunk reads, a model of 2 + ⌈k / 8⌉ and a peak of 16, and its figures are read against that. In flight counts requests the library issued, including any waiting for a free socket, so a mean or a peak above the
-client's sockets (`maxSockets`, which the record carries: 50 for runs up to the one of 2026-10-04, which kept the SDK's default; runs from this harness on record what their client held, 128 by default, as the library's built client has) means requests queued, a wait the rounds model, which assumes no limit, does not count.
-The run of 2026-10-04 held an `andNot` mean of 80.6 in flight against 50 sockets, and its rounds sit above the model.
+mean in flight well under that is a slow request holding the window. In flight counts requests the library issued, including any waiting for a free socket, so a mean or a peak above the
+client's sockets (`maxSockets`, which the record carries: what the run's client held, read back from its agents, 128 by default, as the library's built client has) means requests queued, a wait the rounds model, which assumes no limit, does not count.
+The run of 2026-10-04 held at most 11 requests in flight against 128 sockets, and its rounds sit above the model.
 
 `andNot` reads every chunk of the segment it filters, as ranges, since any of them can survive, and each exclude only where it
 overlaps, so what it costs scales with the include operand and not with the size of the exclude list.
