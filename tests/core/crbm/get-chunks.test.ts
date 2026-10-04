@@ -16,6 +16,22 @@ import {
   MAX_RANGES_IN_FLIGHT,
 } from '@/core/crbm/plan-reads';
 
+/**
+ * Two byte arrays are equal, compared natively: the framework's deep equality walks a 100 KiB buffer element by
+ * element, which takes seconds over a test's worth of chunks.
+ */
+function expectSameBytes(
+  got: Uint8Array | null | undefined,
+  want: Uint8Array | null | undefined,
+): void {
+  expect(got, 'a chunk is missing').toBeTruthy();
+  expect(want, 'the expected chunk is missing').toBeTruthy();
+  const a = Buffer.from(got!.buffer, got!.byteOffset, got!.byteLength);
+  const b = Buffer.from(want!.buffer, want!.byteOffset, want!.byteLength);
+  expect(a.length, 'chunk length').toBe(b.length);
+  expect(a.equals(b), 'chunk bytes').toBe(true);
+}
+
 const KIB = 1024;
 const SEG = { segment: 'coalesce' };
 
@@ -78,8 +94,8 @@ describe.each(variants)('CrbmReader.getChunks ($name)', ({ encrypted, crypto }) 
     const keys = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 20];
     const got = await reader.getChunks(keys);
     for (const [i, key] of keys.entries()) {
-      expect(Buffer.from(got[i]!)).toEqual(Buffer.from(PAYLOADS.get(key)!));
-      expect(Buffer.from(got[i]!)).toEqual(Buffer.from((await reader.getChunk(key))!));
+      expectSameBytes(got[i]!, PAYLOADS.get(key)!);
+      expectSameBytes(got[i]!, (await reader.getChunk(key))!);
     }
     expect(spy.ranges.length).toBeGreaterThan(0);
   });
@@ -111,9 +127,7 @@ describe.each(variants)('CrbmReader.getChunks ($name)', ({ encrypted, crypto }) 
     const { reader, spy } = await open(await build(crypto));
     const got = await reader.getChunks([9, 2, 9, 15, 0, 65_535]);
     const same = (i: number, key: number | null) =>
-      key === null
-        ? expect(got[i]).toBeNull()
-        : expect(Buffer.from(got[i]!)).toEqual(Buffer.from(PAYLOADS.get(key)!));
+      key === null ? expect(got[i]).toBeNull() : expectSameBytes(got[i]!, PAYLOADS.get(key)!);
     same(0, 9);
     same(1, 2);
     same(2, 9);
@@ -152,8 +166,8 @@ describe.each(variants)('CrbmReader.getChunks ($name)', ({ encrypted, crypto }) 
     const { reader, spy } = await open(bad);
     const got = await reader.getChunks([0, 3]); // 1 and 2 lie between them, inside the one range
     expect(spy.ranges).toHaveLength(1);
-    expect(Buffer.from(got[0]!)).toEqual(Buffer.from(PAYLOADS.get(0)!));
-    expect(Buffer.from(got[1]!)).toEqual(Buffer.from(PAYLOADS.get(3)!));
+    expectSameBytes(got[0]!, PAYLOADS.get(0)!);
+    expectSameBytes(got[1]!, PAYLOADS.get(3)!);
     await expect(reader.getChunks([0, 1, 3])).rejects.toBeInstanceOf(IntegrityError);
   });
 
@@ -370,7 +384,7 @@ describe('CrbmReader.getChunks: an object with the metadata extension block', ()
     spy.ranges.length = 0;
     const got = await reader.getChunks(KEYS);
     for (const [i, k] of KEYS.entries()) {
-      expect(Buffer.from(got[i]!)).toEqual(Buffer.from(PAYLOADS.get(k)!));
+      expectSameBytes(got[i]!, PAYLOADS.get(k)!);
     }
     const last = spy.ranges[spy.ranges.length - 1]!;
     const end = stored(20, false).offset + stored(20, false).length;

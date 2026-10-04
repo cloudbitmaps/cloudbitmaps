@@ -16,6 +16,22 @@ import { segmentKey } from '@/core/keys';
 import { SafeBitmap } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
+/**
+ * Two byte arrays are equal, compared natively: the framework's deep equality walks a 100 KiB buffer element by
+ * element, which takes seconds over a test's worth of chunks.
+ */
+function expectSameBytes(
+  got: Uint8Array | null | undefined,
+  want: Uint8Array | null | undefined,
+): void {
+  expect(got, 'a chunk is missing').toBeTruthy();
+  expect(want, 'the expected chunk is missing').toBeTruthy();
+  const a = Buffer.from(got!.buffer, got!.byteOffset, got!.byteLength);
+  const b = Buffer.from(want!.buffer, want!.byteOffset, want!.byteLength);
+  expect(a.length, 'chunk length').toBe(b.length);
+  expect(a.equals(b), 'chunk bytes').toBe(true);
+}
+
 const REF: SegmentRef = { segment: 's' };
 const K = 65_536;
 const TTL = 10;
@@ -96,7 +112,7 @@ describe('CrbmStorageChunkSource.getChunks', () => {
     expect(got.version).toBe(await source.currentVersion(REF));
     for (const [i, key] of [0, 1, 2, 44].entries()) {
       const alone = await source.getChunk({ ...REF, chunkKey: key });
-      expect(Buffer.from(got.chunks[i]!)).toEqual(Buffer.from(alone!));
+      expectSameBytes(got.chunks[i]!, alone!);
     }
   });
 
@@ -105,9 +121,7 @@ describe('CrbmStorageChunkSource.getChunks', () => {
     const { source } = await world({ keystore });
     const got = await source.getChunks(REF, [3, 40]);
     expect(remaindersOf(got.chunks[0]!)[0]).toBe(0);
-    expect(Buffer.from(got.chunks[1]!)).toEqual(
-      Buffer.from((await source.getChunk({ ...REF, chunkKey: 40 }))!),
-    );
+    expectSameBytes(got.chunks[1]!, (await source.getChunk({ ...REF, chunkKey: 40 }))!);
   });
 
   it('answers null for an absent key and for a segment with no generation', async () => {

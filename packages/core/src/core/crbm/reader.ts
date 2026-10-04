@@ -598,7 +598,7 @@ export class CrbmReader {
    * the call, as a read of that chunk alone would.
    *
    * A call plans at most {@link MAX_GET_CHUNKS_BYTES} of reads, gaps included, and a call that would plan more is
-   * refused with a {@link ValidationError} before any request is sent. That bounds the ranges in flight and the bytes
+   * refused with a {@link ValidationError} before any range request is sent. That bounds the ranges in flight and the bytes
    * the call holds, which it does until the caller drops what it returns. At most {@link MAX_RANGES_IN_FLIGHT}
    * ranges are in flight at once, and the rest of the plan follows as they finish.
    *

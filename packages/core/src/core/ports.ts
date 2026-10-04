@@ -80,11 +80,12 @@ export interface StorageChunkSource {
    * answer lines up with them ({@link ChunksRead}), and a key the generation does not hold answers `null`, as
    * {@link StorageChunkSource.getChunk} does. Each chunk is checked as a read of it alone is.
    *
-   * **A call holds every chunk it returns until the caller drops them.** Ask for at most a window's worth: a call
-   * that would read more than 32 MiB, the gaps between the chunks it needs included, is refused with a
-   * `ValidationError` before any request is sent, and at most 32 of its range requests are in flight at once. A plain chunk may be a writable view into a buffer of up to 1 MiB
-   * that it shares with its neighbours (and the same view at two positions for a key asked twice), so copy a chunk
-   * to keep it. An empty list of keys still resolves the segment.
+   * **A call holds every chunk it returns until the caller drops them.** It may plan at most 32 MiB of reads, the
+   * gaps between the chunks it needs included: a call that would plan more is refused with a `ValidationError`
+   * before any range request is sent, and at most 32 of its range requests are in flight at once. A plain chunk may
+   * be a view into a buffer of up to 1 MiB that it shares with its neighbours (and the same view at two positions
+   * for a key asked twice), so do not write to it, and copy a chunk to keep it. An empty list of keys still
+   * resolves the segment.
    *
    * A source that cannot read a range of an object omits this, and a caller reads chunk by chunk; the `.crbm`
    * source, which is what the stores the library ships read through, implements it.
