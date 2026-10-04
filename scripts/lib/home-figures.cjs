@@ -1210,7 +1210,7 @@ function refuse({ L, page, fail, ROOT, SITE_DIR }) {
  * `finish()` is called once every other check in site-figures has marked what it verified too.
  */
 function checkHome(ctx) {
-  const { L, page, fail, record, results, scale, sb, sbFigure, MEASURED_1M, WRITE_1M } = ctx;
+  const { L, page, fail, record, results, scale, sb, sbRun, sbFigure, MEASURED_1M, WRITE_1M } = ctx;
   const { baselineTopology, baselineInstance, atRestShown, costSrc, ROOT, SITE_DIR } = ctx;
   const html = L.html;
   const n = (x) => x.toLocaleString('en-US');
@@ -1278,6 +1278,10 @@ function checkHome(ctx) {
   const atRestMo = `$${atRestShown}/mo`;
   const pct = `${results.atRest.pctOfRedis}%`;
   const coldRate = sb ? sb.parity.intersectsPerSec.toFixed(1) : null;
+  // The run's own figures, as its results file records them: the median of a cold intersect, and of a read of one
+  // object on an open segment, which the fit band rounds to whole milliseconds.
+  const latencyP50 = sb ? sb.latency.p50.toFixed(2) : null;
+  const readMs = sbRun ? Math.round(sbRun.phases.pointReads.has.openSegment.p50ms) : null;
   const fleets = [...scale.fleets].sort((a, b) => a.n - b.n);
   const smallest = fleets[0];
   const largest = fleets.at(-1);
@@ -1485,13 +1489,14 @@ function checkHome(ctx) {
         ['The reference set', 'chosen · at rest, no traffic', `${sizeGiB} GiB`],
         [
           `GETs per cold A ∩ B, ${sb?.chunksPerOperand} chunks shared`,
-          `measured · the median of ${sb?.intersects} cold intersects on S3 in ${sb?.region}, from a client outside it`,
+          `measured · the median of ${sb?.intersects} cold intersects on S3 in ${sb?.region}, from a client ` +
+            `${sb?.remote ? 'outside' : 'inside'} it`,
           String(gets),
         ],
         [
-          'Requests per write and publish',
-          'measured · on S3, pointer included; store.load() also lists and collects, about twice this',
-          sbFigure('a single-part write and publish'),
+          'Requests per first load',
+          "measured · a segment's first store.load() on S3, pointer included",
+          `${puts} PUT + ${writeGets} GET`,
         ],
         [
           'S3 GET · PUT, per million',
@@ -1513,8 +1518,8 @@ function checkHome(ctx) {
         ['At rest', `${sizeGiB} GiB × $${storeGiB}`, atRestMo],
         ['Cold A ∩ B, per million', `${gets} GETs × ${usd2(getM)}`, coldPerM],
         [
-          'Write and publish, per million',
-          `${puts} × ${usd2(putM)} + ${writeGets} × ${usd2(getM)}`,
+          "A segment's first store.load(), per million",
+          `${puts} PUT at ${usd2(putM)} + ${writeGets} GET at ${usd2(getM)}`,
           sbFigure(WRITE_1M),
         ],
         ['Against that line', `$${results.atRest.monthlyUSD} ÷ $${REDIS}`, pct],
@@ -1666,9 +1671,11 @@ function checkHome(ctx) {
         `${scan(largest.discoveryMs)} over that fleet, on one machine.`,
     ],
     [
-      'No in-region latency figure yet',
-      `${intersectMs} ms is the recorded run on the memory driver, not a round trip to a bucket. In-region ` +
-        'latency is still owed, and no latency is published here that was not measured.',
+      'Latency is one run on one client',
+      `A cold intersect sharing ${sb?.chunksPerOperand} chunks took ${latencyP50} ms at the median from ` +
+        `${sb?.remote ? 'outside' : 'inside'} ${sb?.region}, in the run of ${sb?.runId.slice(0, 10)} with a client of ` +
+        `${sbRun?.measured?.maxSockets} sockets. The client this release builds allows 128, and what that changes is ` +
+        `not measured. ${intersectMs} ms is the recorded run on the in-memory drivers, not a round trip to a bucket.`,
     ],
     [
       'The prices are AWS list prices, in us-east-1',
@@ -1708,6 +1715,13 @@ function checkHome(ctx) {
     "the fit band's losing case",
     /<h3>(You read past [\s\S]*?)<\/h3>/,
     `You read past ${rate} GETs a second, every one a cache miss.`,
+  );
+  exact(
+    "the fit band's latency item",
+    /<h3>You need a sub-millisecond p99\.<\/h3>\s*<p class="cb-body">([\s\S]*?)<\/p>/,
+    'Our cache tier is in-process RAM, but a miss is a ranged GET against object storage. A sub-millisecond ' +
+      `tail needs the whole set resident — that is a different machine — and an S3 read from ${sb?.remote ? 'outside' : 'inside'} the ` +
+      `region took about ${readMs} ms at the median in the run of ${sb?.runId.slice(0, 10)}.`,
   );
   exact(
     'id width',

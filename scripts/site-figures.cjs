@@ -123,16 +123,16 @@ const calibration = require('../bench/lib/calibration-figures.cjs');
 const homeFigures = require('./lib/home-figures.cjs');
 const calibrationRuns = calibration.evidenceFiles(ROOT);
 let singleBucket = null;
+// The run's own results file, as the harness wrote it, for the few figures the derivation does not carry.
+let singleBucketRun = null;
 if (calibrationRuns.length === 0) {
   fail(
     'bench/calibration/ holds no run evidence, but the benchmarks page publishes a single-bucket bill',
   );
 } else {
   try {
-    singleBucket = calibration.derive(
-      JSON.parse(fs.readFileSync(path.join(ROOT, calibrationRuns.at(-1)), 'utf8')),
-      calibration.readSources(ROOT),
-    );
+    singleBucketRun = JSON.parse(fs.readFileSync(path.join(ROOT, calibrationRuns.at(-1)), 'utf8'));
+    singleBucket = calibration.derive(singleBucketRun, calibration.readSources(ROOT));
   } catch (err) {
     fail(err.message);
   }
@@ -563,7 +563,8 @@ for (const page of PAGES) {
         n.toFixed(2),
       ),
     );
-    for (const m of flat.matchAll(/(?<![$\d,.])\d{3}\.\d{2}(?![\d%])/g)) {
+    // A figure in milliseconds is a duration, not a rate: the run's median of a cold intersect has the shape of one.
+    for (const m of flat.matchAll(/(?<![$\d,.])\d{3}\.\d{2}(?![\d%]| ?ms\b)/g)) {
       if (!rates.has(m[0])) {
         fail(
           `${page.rel} states the rate ${m[0]}, which is neither published crossover (${[...rates].join(', ')})`,
@@ -1013,6 +1014,7 @@ const specAnchors = [];
       results,
       scale: JSON.parse(fs.readFileSync(path.join(ROOT, 'bench', 'scale-results.json'), 'utf8')),
       sb: singleBucket,
+      sbRun: singleBucketRun,
       sbFigure: singleBucketFigure,
       MEASURED_1M,
       WRITE_1M,
@@ -1122,8 +1124,8 @@ const specAnchors = [];
         // On the display tier the line is compared whole, so the words around the count cannot turn what it says.
         const INVARIANT_LINE =
           `Under it, the protocol is written down as ${invariantCount} hard correctness invariants — write-once ` +
-          'generations published forward-only, every chunk from one whole generation and never torn, a GC that ' +
-          'never touches the current one, every tier byte untrusted — each with named tests that run on every commit.';
+          'generations behind a compare-and-swap pointer, a read that is never torn, a GC that never touches the ' +
+          'current generation, every tier byte untrusted — each with named tests that run on every commit.';
         if (homeLedger) {
           const got = homeFigures.textOf(homeHtml.slice(...foot.indices[1]));
           if (got !== INVARIANT_LINE) {

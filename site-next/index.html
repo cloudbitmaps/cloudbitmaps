@@ -162,7 +162,7 @@
     <rect class="hot" x="0" y="0" width="24" height="24" rx="3" />
     <rect class="hot" x="29" y="0" width="24" height="24" rx="3" />
   </svg>
-  <p class="label">Keys compared before any chunk is requested · 3,000 chunk bytes read · 24.6 <span class="u">ms</span> on the memory driver · one recorded run</p>
+  <p class="label">Keys compared before any chunk is requested · 3,000 chunk bytes read · 24.6 <span class="u">ms</span> on the in-memory drivers · one recorded run</p>
 </div>
 <!-- BENCH:HOMESTRIP:END -->
           <div>
@@ -492,12 +492,12 @@
               <tbody>
                 <tr><th scope="row">The reference set<span class="cb-note">chosen · at rest, no traffic</span></th><td>1.2 GiB</td></tr>
                 <tr>
-                  <th scope="row">GETs per cold <span class="m">A&nbsp;∩&nbsp;B</span>, 100 chunks shared<span class="cb-note">measured · the median of 40 cold intersects on S3 in <span class="nw">us-east-1</span>, from a client outside it</span></th>
-                  <td>206</td>
+                  <th scope="row">GETs per cold <span class="m">A&nbsp;∩&nbsp;B</span>, 100 chunks shared<span class="cb-note">measured · the median of 40 cold intersects on S3 in <span class="nw">us-east-1</span>, from a client inside it</span></th>
+                  <td>204</td>
                 </tr>
                 <tr>
-                  <th scope="row">Requests per write and publish<span class="cb-note">measured · on S3, pointer included; store.load() also lists and collects, about twice this</span></th>
-                  <td>2 PUT + 3 GET</td>
+                  <th scope="row">Requests per first load<span class="cb-note">measured · a segment's first store.load() on S3, pointer included</span></th>
+                  <td>2 PUT + 4 GET</td>
                 </tr>
                 <tr>
                   <th scope="row">S3 GET · PUT, per million<span class="cb-note">quoted · AWS <span class="nw">us-east-1</span> list price</span></th>
@@ -518,10 +518,10 @@
               </thead>
               <tbody>
                 <tr><th scope="row">At rest<span class="cb-note">1.2 GiB × $0.023</span></th><td>$0.03/mo</td></tr>
-                <tr><th scope="row">Cold <span class="m">A&nbsp;∩&nbsp;B</span>, per million<span class="cb-note">206 GETs × $0.40</span></th><td>$82.40</td></tr>
+                <tr><th scope="row">Cold <span class="m">A&nbsp;∩&nbsp;B</span>, per million<span class="cb-note">204 GETs × $0.40</span></th><td>$81.60</td></tr>
                 <tr>
-                  <th scope="row">Write and publish, per million<span class="cb-note">2 × $5.00 + 3 × $0.40</span></th>
-                  <td>$11.20</td>
+                  <th scope="row">A segment's first <span class="m">store.load()</span>, per million<span class="cb-note">2 PUT at $5.00 + 4 GET at $0.40</span></th>
+                  <td>$11.60</td>
                 </tr>
                 <tr><th scope="row">Against that line<span class="cb-note">$0.0276 ÷ $346</span></th><td>0.008%</td></tr>
                 <tr>
@@ -529,7 +529,7 @@
                   <td>329.15/s</td>
                 </tr>
                 <tr>
-                  <th scope="row">…as cold <span class="m">A&nbsp;∩&nbsp;B</span><span class="cb-note">$346 ÷ ($82.40 per million × 2,628,000 s a month)</span></th>
+                  <th scope="row">…as cold <span class="m">A&nbsp;∩&nbsp;B</span><span class="cb-note">$346 ÷ ($81.60 per million × 2,628,000 s a month)</span></th>
                   <td>1.6/s</td>
                 </tr>
               </tbody>
@@ -602,7 +602,7 @@
           </p>
           <p class="ba-foot">
             Under it, the protocol is written down as <strong>7 hard correctness invariants</strong> — write-once
-            generations published forward-only, every chunk from one whole generation and never torn, a GC that never touches the current one,
+            generations behind a compare-and-swap pointer, a read that is never torn, a GC that never touches the current generation,
             every tier byte untrusted — each with named tests that run on every commit.
           </p>
         </div>
@@ -611,7 +611,7 @@
       <!-- ── 06 · THE CONDITIONS · quiet band ─────────────────────────────
            What the figures above do not prove, each beside the fact that bounds it, all from the files they come
            from: the crossover is a rate; the cluster is one choice and the estimator's own is cheaper; the skip rate
-           is one overlap; listing grows with the fleet; latency is still owed; the prices are one provider's list. -->
+           is one overlap; listing grows with the fleet; latency is one run on one client; the prices are one provider's list. -->
       <section id="conditions" class="cb-stack">
         <div class="cb-head">
           <p class="label">06 · The conditions</p>
@@ -635,8 +635,8 @@
             <p>Retained heap stays flat to 100,000 segments, but finding them is an O(total) scan: 11.6 s over that fleet, on one machine.</p>
           </div>
           <div class="cb-cell cb-caveat">
-            <h3 class="label">No in-region latency figure yet</h3>
-            <p>24.6 ms is the recorded run on the memory driver, not a round trip to a bucket. In-region latency is still owed, and no latency is published here that was not measured.</p>
+            <h3 class="label">Latency is one run on one client</h3>
+            <p>A cold intersect sharing 100 chunks took 290.06 ms at the median from inside us-east-1, in the run of 2026-10-04 with a client of 50 sockets. The client this release builds allows 128, and what that changes is not measured. 24.6 ms is the recorded run on the in-memory drivers, not a round trip to a bucket.</p>
           </div>
           <div class="cb-cell cb-caveat">
             <h3 class="label">The prices are AWS list prices, in <span class="u">us-east-1</span></h3>
@@ -681,7 +681,8 @@
               <h3>You need a sub-millisecond p99.</h3>
               <p class="cb-body">
                 Our cache tier is in-process RAM, but a miss is a ranged <code>GET</code> against object storage. A
-                sub-millisecond tail needs the whole set resident — that is a different machine.
+                sub-millisecond tail needs the whole set resident — that is a different machine — and an S3 read from
+                inside the region took about 26 ms at the median in the run of 2026-10-04.
               </p>
             </div>
             <div class="cb-fit-item">

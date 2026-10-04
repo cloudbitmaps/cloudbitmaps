@@ -465,7 +465,7 @@ function homeRegions(r) {
       (_, i) => `    <rect class="hot" x="${i * PITCH}" y="0" width="24" height="24" rx="3" />`,
     ),
     `  </svg>`,
-    `  <p class="label">Keys compared before any chunk is requested · ${n(chunkBytesRead)} chunk bytes read · ${intersectMs} <span class="u">ms</span> on the memory driver · one recorded run</p>`,
+    `  <p class="label">Keys compared before any chunk is requested · ${n(chunkBytesRead)} chunk bytes read · ${intersectMs} <span class="u">ms</span> on the in-memory drivers · one recorded run</p>`,
     `</div>`,
   ];
 
