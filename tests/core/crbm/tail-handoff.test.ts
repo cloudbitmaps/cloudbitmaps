@@ -25,9 +25,16 @@ const cryptoFor = (): CrbmCrypto => ({
   aadFor: (scope) => aadFor(SEG, 3, scope),
 });
 
-async function build(crypto?: CrbmCrypto): Promise<Uint8Array> {
+async function build(
+  crypto?: CrbmCrypto,
+  metadata?: Record<string, string | number>,
+): Promise<Uint8Array> {
   const sink = new BufferSink();
-  const writer = new CrbmWriter(sink, { generation: 3, ...(crypto ? { crypto } : {}) });
+  const writer = new CrbmWriter(sink, {
+    generation: 3,
+    ...(crypto ? { crypto } : {}),
+    ...(metadata ? { metadata } : {}),
+  });
   for (const k of KEYS) await writer.addChunk(k, PAYLOADS.get(k)!, 1 + k);
   await writer.finish();
   return sink.bytes();
@@ -116,6 +123,35 @@ describe.each(variants)('a reader that keeps the chunk region ($name)', ({ encry
     await collect(reader.readChunks([1, 2]));
     expect(spy.ranges).toBeGreaterThanOrEqual(2);
     expect(reader.retainedBytes).toBe(reader.retainedIndexBytes);
+  });
+
+  it('keeps the whole object only: a tail one byte short of it, or short of the preamble, keeps nothing', async () => {
+    const bytes = await build(crypto);
+    for (const [tailBytes, keeps] of [
+      [bytes.length + 1, true],
+      [bytes.length, true],
+      [bytes.length - 1, false],
+      [bytes.length - PAYLOAD_START, false],
+      [bytes.length - PAYLOAD_START - 1, false],
+    ] as const) {
+      const spy = new Spy(new BufferReader(bytes));
+      const reader = await openCrbmReaderKeeping(spy, { ...opts, tailBytes }, 1 << 30);
+      expect(reader.retainedBytes === reader.retainedIndexBytes, `tail ${tailBytes}`).toBe(!keeps);
+      for (const k of KEYS) expectSameBytes(await reader.getChunk(k), PAYLOADS.get(k));
+      expect(spy.ranges > 0, `tail ${tailBytes}`).toBe(!keeps);
+    }
+  });
+
+  it('keeps the chunk region of a generation with metadata, not its extension block', async () => {
+    const bytes = await build(crypto, { owner: 'a-fairly-long-value-that-takes-room'.repeat(4) });
+    const open = (limit: number) =>
+      openCrbmReaderKeeping(new Spy(new BufferReader(bytes)), opts, limit);
+    const plain = await open(0);
+    const kept = await open(regionBytes);
+    expect(plain.metadata).toBeDefined();
+    expect(kept.retainedBytes - plain.retainedBytes).toBe(regionBytes);
+    expect((await open(regionBytes - 1)).retainedBytes).toBe(plain.retainedBytes);
+    expectSameBytes(await kept.getChunk(1), PAYLOADS.get(1));
   });
 
   it('counts the kept bytes in retainedBytes', async () => {

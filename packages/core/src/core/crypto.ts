@@ -28,6 +28,7 @@ export interface Aead {
   /**
    * Decrypt + verify. Throws {@link IntegrityError} on **any** mismatch (wrong key, tampered ciphertext/tag,
    * or `aad` that doesn't match what was sealed) — never returns wrong-but-plausible plaintext.
+   * The plaintext is a new buffer: it is never the input, or a view of it, which the reader relies on to read a sealed chunk in place.
    */
   open(sealed: AeadSealed, aad: Uint8Array): Uint8Array;
 }

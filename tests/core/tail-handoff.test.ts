@@ -13,10 +13,13 @@ import {
   IntegrityError,
   MemoryStorage,
 } from '@/index';
-import type { SegmentRef } from '@/index';
+import type { Clock, SegmentRef } from '@/index';
+import { NotFoundError } from '@/index';
 import { BufferReader } from '@/core/blob';
 import { PAYLOAD_START } from '@/core/crbm/format';
 import { openCrbmReaderKeeping } from '@/core/crbm/reader';
+import { withoutRangedReads } from '../helpers/no-ranged-reads';
+import type { MetricEvent } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { collect, expectSameBytes } from '../helpers/chunk-stream';
 
@@ -35,14 +38,21 @@ const OVER_TAIL = idsOf(30, 5000); // about 300 KB: more than the tail holds
 
 async function world(
   segments: Record<string, number[]>,
-  cache: { readerMax?: number; readerMaxBytes?: number } = {},
+  cache: { readerMax?: number; readerMaxBytes?: number; genTtlMs?: number } = {},
+  metrics?: { onEvent(e: MetricEvent): void },
+  clock?: Clock,
 ) {
   const backend = new MemoryStorage();
   const { storage, registry } = backend;
   for (const [segment, ids] of Object.entries(segments)) {
     await bulkLoadCrbmGeneration(storage, { segment, generation: 0 }, ids, { registry });
   }
-  const store = new CloudRoaring({ storage: backend, cache });
+  const store = new CloudRoaring({
+    storage: backend,
+    cache,
+    ...(metrics ? { metrics } : {}),
+    ...(clock ? { seams: { clock } } : {}),
+  });
   const calls = { registry: 0, tails: 0, ranges: 0 };
   const get = registry.get.bind(registry);
   vi.spyOn(registry, 'get').mockImplementation((ref) => {
@@ -185,6 +195,7 @@ describe('the storage chunk source over a small generation', () => {
     const source = new CrbmStorageChunkSource(storage, {
       registry,
       keystore,
+      clock: { now: () => 0 },
       ...(options.limitBytes === undefined
         ? {}
         : { maxOpenSegments: 1, maxOpenIndexBytes: options.limitBytes }),
@@ -241,7 +252,10 @@ describe('the storage chunk source over a small generation', () => {
     const backend = new MemoryStorage();
     const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, SMALL, { registry });
-    const source = new CrbmStorageChunkSource(storage, { registry });
+    const source = new CrbmStorageChunkSource(storage, {
+      registry,
+      clock: { now: () => 0 },
+    });
     const before = await collect(source.getChunks!(REF, [0, 1, 2]));
     await storage.delete({ ...REF, generation: 0 });
     const after = await collect(source.getChunks!(REF, [0, 1, 2]));
@@ -255,5 +269,131 @@ describe('the storage chunk source over a small generation', () => {
     await source.getChunk({ ...REF, chunkKey: 1 });
     await collect(source.getChunks!(REF, [0, 2]));
     expect(ranges.length).toBe(2);
+  });
+});
+
+describe('the storage.get metric counts requests', () => {
+  const gets = (events: MetricEvent[]) => events.filter((e) => e.kind === 'storage.get');
+  const sink = () => {
+    const events: MetricEvent[] = [];
+    return { events, metrics: { onEvent: (e: MetricEvent) => void events.push(e) } };
+  };
+
+  it('a cold has() of a small kept segment emits none, and reads the right answer', async () => {
+    const { events, metrics } = sink();
+    const { store } = await world({ s: SMALL }, {}, metrics);
+    expect(await store.segment('s').has(K + 3)).toBe(true);
+    expect(await store.segment('s').has(K + 4)).toBe(false);
+    expect(gets(events)).toEqual([]);
+  });
+
+  it('a cold has() of a segment over the limit emits exactly one, for its one range', async () => {
+    const { events, metrics } = sink();
+    const { store, calls } = await world({ s: OVER_LIMIT }, {}, metrics);
+    expect(await store.segment('s').has(3)).toBe(true);
+    expect(calls.ranges).toBe(1);
+    expect(gets(events)).toHaveLength(1);
+    expect(gets(events)[0]).toMatchObject({ segment: 's' });
+  });
+
+  describe('a source with no getChunks', () => {
+    const perKey = withoutRangedReads();
+    beforeEach(perKey.off);
+    afterEach(perKey.restore);
+
+    it('emits one per point read, as its per-call event', async () => {
+      const { events, metrics } = sink();
+      const { store } = await world({ s: OVER_LIMIT }, {}, metrics);
+      await store.segment('s').has(3);
+      expect(gets(events)).toHaveLength(1);
+      await store.segment('s').has(5 * K + 3);
+      expect(gets(events)).toHaveLength(2);
+    });
+  });
+});
+
+function manualClock(): Clock & { advance(ms: number): void } {
+  let t = 0;
+  return {
+    now: () => t,
+    sleep: async () => {},
+    advance: (ms) => {
+      t += ms;
+    },
+  };
+}
+
+/** The old data holds `K + 3`; the new holds neither it nor chunk 0's `3`, so a read tells which one answered. */
+const OLD = [3, K + 3, 2 * K + 3];
+const NEW = [4, K + 4, 2 * K + 4];
+
+describe('a swept small generation, with keeping on', () => {
+  /** Another store loads `NEW` over `OLD` with `keep: 0`, which sweeps the old object. */
+  async function swept(cache: { genTtlMs?: number }, bare = false) {
+    const clock = manualClock();
+    const w = await world({ s: OLD }, cache, undefined, clock);
+    const reader = bare ? new CloudRoaring({ storage: w.storage }) : w.store;
+    const writer = new CloudRoaring({ storage: w.backend });
+    // Open the segment and warm chunk 0 only: chunk 1 is not decoded anywhere yet.
+    expect(await reader.segment('s').has(3)).toBe(true);
+    await writer.load({ segment: 's' }, NEW, { keep: 0 });
+    return { ...w, clock, reader };
+  }
+
+  it('with a timed refresh, a read is served from the generation it opened for at most genTtlMs, then sees the new load', async () => {
+    const w = await swept({ genTtlMs: 1000 });
+    expect(await w.reader.segment('s').has(K + 3)).toBe(true); // kept: the swept generation is not noticed
+    expect(w.calls.ranges).toBe(0);
+    w.clock.advance(1001);
+    expect(await w.reader.segment('s').has(K + 3)).toBe(false);
+    expect(await w.reader.segment('s').has(K + 4)).toBe(true);
+  });
+
+  it('with genTtlMs 0, keeps nothing and heals off the swept generation', async () => {
+    const w = await swept({ genTtlMs: 0 });
+    expect(await w.reader.segment('s').has(K + 3)).toBe(false);
+    expect(await w.reader.segment('s').has(K + 4)).toBe(true);
+  });
+
+  it('on a bare storage driver (no registry), keeps nothing and heals off the swept generation', async () => {
+    const w = await swept({}, true);
+    expect(await w.reader.segment('s').has(K + 3)).toBe(false);
+    expect(await w.reader.segment('s').has(K + 4)).toBe(true);
+  });
+
+  it('a source with a registry but no clock keeps nothing', async () => {
+    const backend = new MemoryStorage();
+    await bulkLoadCrbmGeneration(backend.storage, { segment: 's', generation: 0 }, SMALL, {
+      registry: backend.registry,
+    });
+    const source = new CrbmStorageChunkSource(backend.storage, { registry: backend.registry });
+    const ranges: number[] = [];
+    const getRange = backend.storage.getRange.bind(backend.storage);
+    vi.spyOn(backend.storage, 'getRange').mockImplementation((k, o, l) => {
+      ranges.push(l);
+      return getRange(k, o, l);
+    });
+    await source.getChunk({ segment: 's', chunkKey: 1 });
+    expect(ranges).toHaveLength(1);
+  });
+});
+
+describe('a pin of a small segment, with keeping on', () => {
+  const REF: SegmentRef = { segment: 's' };
+  it('keeps reading the object it pinned after the name is purged and loaded again; a new pin reads the new one', async () => {
+    const w = await world({ s: OLD, other: [7] }, { readerMax: 1 });
+    const pin = await w.store.segment('s').pin();
+    expect(await pin.has(3)).toBe(true);
+    for await (const key of w.storage.list(REF)) await w.storage.delete(key);
+    await w.registry.delete(REF);
+    await bulkLoadCrbmGeneration(w.storage, { ...REF, generation: 0 }, NEW, {
+      registry: w.registry,
+    });
+    expect(await pin.has(K + 3)).toBe(true); // the pinned object, held
+    expect(await collect(pin.iterate())).toEqual(OLD);
+    expect(await collect((await w.store.segment('s').pin()).iterate())).toEqual(NEW);
+    // Once its reader is evicted, its reopen finds another object at the number and refuses, as a range-read pin does.
+    expect(await w.store.segment('other').has(7)).toBe(true);
+    await expect(pin.count()).rejects.toBeInstanceOf(NotFoundError);
   });
 });

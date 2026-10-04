@@ -1162,7 +1162,7 @@ export class SegmentEngine {
     const open = this.openReads.get(cacheKey);
     if (open) return open.read;
     const token = {};
-    const entry: OpenRead = { token, read: this.fetchChunk(ref, cacheKey, token) };
+    const entry: OpenRead = { token, read: this.fetchChunk(ref, gen, cacheKey, token) };
     this.openReads.set(cacheKey, entry);
     // Whether it resolves or rejects the entry goes, so a later caller reads again. An invalidation may have dropped
     // this entry and a newer read taken the key: leave that one.
@@ -1183,27 +1183,67 @@ export class SegmentEngine {
     return bitmap;
   }
 
-  /** One request for one chunk, decoded, range-checked and cached. */
+  /**
+   * One chunk, decoded, range-checked and cached. A source with `getChunks` is read through it, as a one-key stream, so
+   * a `storage.get` is reported only for a request that was sent (a chunk the source holds in memory sends none);
+   * the chunk is cached under the version it came from, as a stream's chunk is. A source without it is read by
+   * `getChunk`, one event a call.
+   */
   private async fetchChunk(
     ref: ChunkRef,
+    gen: string | number | null | undefined,
     cacheKey: string,
     token: object,
   ): Promise<CodecBitmap | null> {
-    const startedAt = this.metricsOn ? this.clock.now() : 0;
-    const bytes = await this.storage.getChunk(ref);
-    if (this.metricsOn) {
-      this.metrics.onEvent({
-        kind: 'storage.get',
-        namespace: ref.namespace,
-        segment: ref.segment,
-        bytes: bytes ? bytes.length : 0,
-        ms: Math.max(0, this.clock.now() - startedAt),
-      });
+    const getChunks = this.storage.getChunks;
+    let bytes: Uint8Array | null;
+    let key = cacheKey;
+    if (getChunks === undefined) {
+      const startedAt = this.metricsOn ? this.clock.now() : 0;
+      bytes = await this.storage.getChunk(ref);
+      if (this.metricsOn) {
+        this.metrics.onEvent({
+          kind: 'storage.get',
+          namespace: ref.namespace,
+          segment: ref.segment,
+          bytes: bytes ? bytes.length : 0,
+          ms: Math.max(0, this.clock.now() - startedAt),
+        });
+      }
+    } else {
+      const stream = new ChunkStream(
+        getChunks.call(this.storage, ref, [ref.chunkKey], {
+          ...(this.metricsOn
+            ? {
+                onRequest: (request: { readonly bytes: number; readonly ms: number }): void =>
+                  this.metrics.onEvent({
+                    kind: 'storage.get',
+                    namespace: ref.namespace,
+                    segment: ref.segment,
+                    bytes: request.bytes,
+                    ms: request.ms,
+                  }),
+              }
+            : {}),
+        }),
+      );
+      try {
+        const read = await stream.take(ref.chunkKey);
+        bytes = read.bytes;
+        // Under the version the bytes came from, as a stream's chunk is: a source that re-resolved mid-read answers
+        // newer bytes, which must not sit under the older version's key. None, and so not cached, when it names none.
+        if (gen !== undefined) {
+          if (read.version === null) key = '';
+          else key = this.chunkCacheKey(ref, read.version);
+        }
+      } finally {
+        stream.close();
+      }
     }
     if (!bytes) return null;
     const bitmap = this.decodeChunk(bytes, ref.chunkKey);
     // A read whose entry an invalidation dropped is not cached: its bytes may be older than what a newer read cached.
-    if (this.openReads.get(cacheKey)?.token === token) this.cache?.set(cacheKey, bitmap);
+    if (key !== '' && this.openReads.get(cacheKey)?.token === token) this.cache?.set(key, bitmap);
     return bitmap;
   }
 }
