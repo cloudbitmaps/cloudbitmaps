@@ -122,8 +122,11 @@ export const DEFAULT_TAIL_BYTES = 256 * 1024;
  */
 export const DEFAULT_MAX_INDEX_BYTES = 8 * 1024 * 1024;
 
-/** Hard cap on a single chunk payload, defending the native deserializer against oversized input. */
-export const DEFAULT_MAX_PAYLOAD_BYTES = 16 * 1024 * 1024;
+/**
+ * Largest serialized bitmap the engine decodes (1 MiB, per chunk). A well-formed 16-bit chunk serializes to at most
+ * about 8.2 KiB, so no legitimate chunk is near it; both the read engine and the erase path decode under this one cap.
+ */
+export const DEFAULT_MAX_BITMAP_BYTES = 1 << 20;
 
 /** A chunk's cardinality is in `[1, 65536]` (empty chunks are never written). */
 export const MAX_CHUNK_CARDINALITY = 0x1_0000;
@@ -164,3 +167,11 @@ export const CRC32C_BYTES = 4;
  */
 export const AEAD_NONCE_BYTES = 12;
 export const AEAD_TAG_BYTES = 16;
+
+/**
+ * Hard cap on one chunk's stored payload: the decode cap plus the AEAD framing an encrypted payload carries, so an
+ * entry the engine would refuse to decode is refused when the object is opened, before any payload is read. No writer
+ * exceeds it: a stored payload is a serialized 16-bit chunk (at most about 8.2 KiB) plus, when encrypted, that framing.
+ */
+export const DEFAULT_MAX_PAYLOAD_BYTES =
+  DEFAULT_MAX_BITMAP_BYTES + AEAD_NONCE_BYTES + AEAD_TAG_BYTES;

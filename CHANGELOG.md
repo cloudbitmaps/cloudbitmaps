@@ -11,6 +11,16 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A chunk too large to decode is refused when the object is opened, not after it is read.** The `.crbm` reader accepted
+  an index entry of up to 16 MiB, while every chunk is decoded under a 1 MiB cap, so a corrupt or hostile object could
+  make each slot of a read window hold up to 16 MiB that was then refused. The reader's cap is now that decode cap plus
+  the 28 bytes an encrypted payload adds, and an entry above it is an `IntegrityError` naming the chunk, raised at open
+  before any payload is read. What a read window holds for such an object is bounded by the window times 1 MiB per
+  operand, where it was the window times 16 MiB. No well-formed object is affected: a chunk serializes to at most about
+  8.2 KiB.
+
 ## [0.12.0] — 2026-10-03
 
 ### Breaking

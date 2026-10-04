@@ -101,7 +101,7 @@ export function indexCapacity(indexLength: number): number {
 export interface CrbmReaderOptions {
   /** Speculative tail size in bytes (default 256 KB; clamped up to at least the footer size). */
   readonly tailBytes?: number;
-  /** Hard cap on a single chunk payload length (default 16 MB). */
+  /** Hard cap on a single chunk payload length (default: the 1 MiB decode cap plus the 28-byte encryption framing). */
   readonly maxPayloadBytes?: number;
   /** Hard cap on the whole index region fetched/parsed from one object (default 8 MB). */
   readonly maxIndexBytes?: number;

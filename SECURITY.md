@@ -17,7 +17,9 @@ payloads, its index, its footer and, when its footer flags one, the extension bl
 metadata — is
 length-checked and CRC-verified, and deserialized with the **safe**
 RoaringBitmap reader (never the
-trusting variant) behind a hard size cap, before the native addon sees it. That reader only keeps its reads inside
+trusting variant) behind a hard size cap, before the native addon sees it. The cap is 1 MiB per chunk, and an
+index entry above it (plus the 28 bytes an encrypted payload adds) is refused when the object is opened, before any
+payload is read. That reader only keeps its reads inside
 the buffer, so each payload's **structure** is checked before the reader runs: containers and values in order,
 runs disjoint and inside their container, and every cardinality matching the bits. A payload that fails is
 rejected, not decoded into a bitmap whose `has`, `size` and iteration disagree, or, for some of those shapes, one

@@ -14,6 +14,7 @@ import { checkBudget, DEFAULT_BUDGET, resolvePerOpBudget } from './budget';
 import type { Budget, BudgetOption } from './budget';
 import type { Clock } from './determinism';
 import { IntegrityError, ValidationError } from './errors';
+import { DEFAULT_MAX_BITMAP_BYTES } from './crbm/format';
 import { chunkGenKey, chunkRefKey, segmentPrefix } from './keys';
 import type { BoundedLru } from './lru';
 import { NOOP_METRICS, safeMetrics } from './metrics';
@@ -26,7 +27,6 @@ import type {
   SegmentSize,
 } from './ports';
 
-const DEFAULT_MAX_BITMAP_BYTES = 1 << 20; // 1 MiB per bitmap — generous; real chunks are far smaller
 /** Max overlapping-chunk intersections in flight — bounds memory + concurrent reads (invariant 6). */
 const DEFAULT_INTERSECT_CONCURRENCY = 8;
 

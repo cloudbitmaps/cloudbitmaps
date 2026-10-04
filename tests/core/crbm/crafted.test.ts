@@ -1,4 +1,5 @@
 import { CrbmReader } from '@/core/crbm/reader';
+import { CountingReader } from '../../helpers/crbm-extension';
 import { BufferReader } from '@/core/blob';
 import { crc32c } from '@/core/crbm/crc32c';
 import { writeVarint } from '@/core/crbm/varint';
@@ -24,6 +25,7 @@ import { NodeAead } from '@/drivers/crypto';
 import {
   AEAD_NONCE_BYTES,
   AEAD_TAG_BYTES,
+  DEFAULT_MAX_BITMAP_BYTES,
   DEFAULT_MAX_PAYLOAD_BYTES,
   FLAG_ENCRYPTED,
   MAX_CHUNK_CARDINALITY,
@@ -539,4 +541,58 @@ describe('index consistency — refused at open, before any payload is read', ()
       );
     });
   });
+});
+
+// An entry the engine would refuse to decode (over the 1 MiB decode cap, plus the framing when encrypted) is refused when
+// the object is opened, so a corrupt or hostile index cannot make a read window hold bytes that are refused anyway.
+describe('payload cap matches the decode cap', () => {
+  const FRAME = AEAD_NONCE_BYTES + AEAD_TAG_BYTES;
+  const dek = randomBytes(32);
+  const crypto: CrbmCrypto = {
+    aead: new NodeAead(dek),
+    aadFor: (scope) => aadFor({ segment: 'crafted' }, 1, scope),
+  };
+  const object = (length: number, encrypted: boolean): Uint8Array => {
+    const region = new Uint8Array(length);
+    return assembleCrbm({
+      payloadRegion: region,
+      rawEntries: [{ keyDelta: 7, offDelta: 0, length, cardinality: 5, crc: crc32c(region) }],
+      ...(encrypted ? { crypto } : {}),
+    });
+  };
+  const openCounted = async (
+    bytes: Uint8Array,
+    encrypted: boolean,
+  ): Promise<{ error: unknown; reader: CountingReader }> => {
+    const reader = new CountingReader(bytes);
+    try {
+      await CrbmReader.open(reader, encrypted ? { crypto } : {});
+      return { error: undefined, reader };
+    } catch (error) {
+      return { error, reader };
+    }
+  };
+
+  it('derives the payload cap from the decode cap and the framing', () => {
+    expect(DEFAULT_MAX_PAYLOAD_BYTES).toBe(DEFAULT_MAX_BITMAP_BYTES + FRAME);
+    expect(FRAME).toBe(28);
+  });
+
+  it.each([
+    ['cleartext', false, DEFAULT_MAX_BITMAP_BYTES],
+    ['encrypted', true, DEFAULT_MAX_BITMAP_BYTES + FRAME],
+  ] as const)(
+    '%s: an entry at the cap opens, one byte over is refused naming the chunk',
+    async (_n, enc, cap) => {
+      const ok = await openCounted(object(cap, enc), enc);
+      expect(ok.error).toBeUndefined();
+
+      const over = await openCounted(object(DEFAULT_MAX_BITMAP_BYTES + FRAME + 1, enc), enc);
+      expect(over.error).toBeInstanceOf(IntegrityError);
+      expect((over.error as Error).message).toMatch(/chunk 7 length \d+ invalid/);
+      // The first payload starts at PAYLOAD_START: nothing read it (only the index, at most, was requested).
+      expect(over.reader.rangeReads.some(([offset]) => offset === PAYLOAD_START)).toBe(false);
+      expect(over.reader.ranges).toBeLessThanOrEqual(1);
+    },
+  );
 });

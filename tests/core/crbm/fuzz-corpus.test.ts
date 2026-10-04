@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { CrbmReader, parseExtension, parseIndex } from '@/core/crbm/reader';
 import { BufferReader } from '@/core/blob';
+import { DEFAULT_MAX_PAYLOAD_BYTES } from '@/core/crbm/format';
 import { SafeBitmap } from '@/roaring-codec';
 import { assertConsistentDecode } from '@/testing/fuzz-codec';
 import { CloudRoaringError, IntegrityError } from '@/core/errors';
@@ -21,7 +22,7 @@ import type { CrbmCrypto } from '@/core/crypto';
  * targets: raw serialized bitmaps (native deserializer), raw index regions, raw extension-block sections, and whole
  * `.crbm` objects.
  */
-const MAX_BYTES = 16 * 1024 * 1024;
+const MAX_BYTES = DEFAULT_MAX_PAYLOAD_BYTES; // the cap the fuzz targets run under
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CORPUS = join(HERE, 'fuzz-corpus');
 
