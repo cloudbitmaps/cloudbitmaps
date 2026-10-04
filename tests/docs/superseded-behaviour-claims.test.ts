@@ -1657,36 +1657,63 @@ describe('no document claims behaviour this library does not have', () => {
     for (const reading of readings(src)) expect(lineCount(reading)).toBe(lineCount(src));
   });
 
-  it('reads a 100 KB line with no full stop well inside 2 s, whatever it is made of', () => {
-    // A bracket, a run of stars and a doc-comment link that never close: a transform that retries from each one scans
-    // such a line once per unit, so each must scan it once. The last two work the quote pairing and the rules hardest.
-    for (const unit of [
-      '[a ',
-      '*',
-      '{@link a ',
-      "'a ",
-      'no clock never re-resolves on a timer, and ',
-    ]) {
-      const line = unit.repeat(Math.ceil(102_400 / unit.length)).slice(0, 102_400);
-      const started = performance.now();
-      hitsIn('x.md', line);
-      expect(performance.now() - started, JSON.stringify(unit)).toBeLessThan(2000);
-    }
-    // And a long run of blanks where a pattern could split it among its parts, which costs seconds, growing faster
-    // than the run, when a pattern tries each split.
-    for (const [what, line] of [
-      ['a doc-comment link never closed', `{@link a${' '.repeat(100_000)}`],
-      ['blanks before a label', `${'x'.repeat(50_000)}${' '.repeat(50_000)}Pinned: none`],
-      ['split literals, then blanks', `${"'a' +".repeat(20_000)}${' '.repeat(2_000)}x`],
-      ['one split literal, then blanks', `'a' +${' '.repeat(100_000)}x`],
-      ['blanks after a pin word', `pins${' '.repeat(100_000)}`],
-      ['a wide table', `| pins${' '.repeat(100)}| `.repeat(950)],
-    ] as const) {
-      const started = performance.now();
-      hitsIn('x.md', line);
-      expect(performance.now() - started, what).toBeLessThan(2000);
-    }
-  });
+  it(
+    'reads a 100 KB line with no full stop in time that grows with its length, whatever it is made of',
+    { timeout: 120_000 },
+    () => {
+      // A bracket, a run of stars and a doc-comment link that never close: a transform that retries from each one
+      // scans such a line once per unit, so each must scan it once. The last two work the quote pairing and the rules
+      // hardest.
+      //
+      // Judged by how the time grows, not by a wall-clock bound: each shape is read at a quarter of the length and at
+      // the full length, in this process, so a loaded machine slows both alike. Four times the input is about four
+      // times the time for a single scan and sixteen for a scan per unit, and more for a pattern that tries each
+      // split. A reading is the least of three, so a pause in one run does not decide it; the full length must also
+      // take long enough (over 100 ms) to be told from noise before its growth counts against it.
+      const FULL = 102_400;
+      const timed = (line: string): number => {
+        let least = Infinity;
+        for (let run = 0; run < 3; run++) {
+          const started = performance.now();
+          hitsIn('x.md', line);
+          least = Math.min(least, performance.now() - started);
+        }
+        return least;
+      };
+      const expectLinear = (what: string, build: (length: number) => string): void => {
+        const small = timed(build(FULL / 4));
+        const full = timed(build(FULL));
+        const growth = full / Math.max(small, 1);
+        const verdict = `${what}: ${small.toFixed(1)} ms at a quarter, ${full.toFixed(1)} ms at full, ${growth.toFixed(1)}x`;
+        expect(full > 100 && growth > 9, verdict).toBe(false);
+      };
+      for (const unit of [
+        '[a ',
+        '*',
+        '{@link a ',
+        "'a ",
+        'no clock never re-resolves on a timer, and ',
+      ]) {
+        expectLinear(JSON.stringify(unit), (n) =>
+          unit.repeat(Math.ceil(n / unit.length)).slice(0, n),
+        );
+      }
+      // And a long run of blanks where a pattern could split it among its parts, which costs seconds, growing faster
+      // than the run, when a pattern tries each split.
+      expectLinear('a doc-comment link never closed', (n) => `{@link a${' '.repeat(n - 8)}`);
+      expectLinear(
+        'blanks before a label',
+        (n) => `${'x'.repeat(n / 2)}${' '.repeat(n / 2 - 12)}Pinned: none`,
+      );
+      expectLinear(
+        'split literals, then blanks',
+        (n) => `${"'a' +".repeat(Math.floor(n / 5.12))}${' '.repeat(Math.floor(n / 51.2))}x`,
+      );
+      expectLinear('one split literal, then blanks', (n) => `'a' +${' '.repeat(n - 6)}x`);
+      expectLinear('blanks after a pin word', (n) => `pins${' '.repeat(n - 4)}`);
+      expectLinear('a wide table', (n) => `| pins${' '.repeat(100)}| `.repeat(Math.ceil(n / 108)));
+    },
+  );
 
   it("reads a package's changelog as the root one: its released history is not scanned", () => {
     const changelog =
