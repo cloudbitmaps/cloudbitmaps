@@ -11,6 +11,18 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Added
+
+- **`.batches()` on every streaming read: the same ids, one `Uint32Array` per chunk.** `iterate`, `intersect`, `union`
+  and `andNot` (a pinned handle's included) return an `IdStream`, which is still an `AsyncIterable<number>` that
+  `for await` reads one id at a time exactly as before (it is still the same single-use generator), and now has `.batches()`, yielding each chunk's ids as one ascending array: the
+  same ids in the same order, a range cut at its edges the same way, no empty arrays. It reads the same chunks, charges
+  the same budget and stops the same way on `break`; each array is at most 65,536 ids (256 KiB) and is the caller's to
+  keep. Measured locally, on an in-memory segment of 10 million ids, the per-id stream ran at about 6 million ids per
+  second and `.batches()` at about 90 million; an `andNot` of a tenth of it ran at about 5.7 and 90 million. The per-id
+  throughput is unchanged. `CodecBitmap` gains an optional `toUint32Array()`, which the roaring codec implements; a
+  codec without it is read through its iterator. See [Read a chunk at a time](docs/guide/reading.md#read-a-chunk-at-a-time-batches).
+
 ### Changed
 
 - **The client `S3Storage` builds allows 128 sockets, up from the AWS SDK's default of 50, and a new `maxSockets`
@@ -23,6 +35,13 @@ so, and so do the module headers in the code.
   a client you pass is never changed: it keeps its own limit, so raise it there. Release a built client's sockets with
   `store.client.destroy()`. `eraseSubject`'s 256 reads at once need `maxSockets: 256` or a
   lower `concurrency`.
+
+- **The published in-region latencies are now measured on `0.13.0`.** A run from AWS CloudShell in `us-east-1` on
+  2026-10-04 measured the wider combine window that the benchmarks page had only derived from a model: a cold
+  intersect of two segments sharing 100 chunks took 290.06 ms at the median, and an `andNot` against ten excludes
+  3,335.85 ms, with the same requests and the same bill as the previous release's run. The run's rounds sit a fifth to a half above the engine's rounds model, which assumes no socket limit; it did not vary its client's 50 sockets, so it
+  does not say why. The README, the
+  benchmarks page, the roadmap and the site quote it, and the benchmarks page sets the measurement against the model.
 
 ## [0.13.0] — 2026-10-03
 

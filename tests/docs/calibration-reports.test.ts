@@ -120,20 +120,40 @@ const git = (...args: string[]): string =>
  * would then count that fixture's history as the evidence's. The history is cut at the first commit that adds the
  * file from a path outside `bench/calibration/`.
  */
+/**
+ * Every commit that touched `file` at its own path. No `--follow`: a file that resembles another run's, or that came
+ * back after a removal, keeps every commit made at its path, and a removal or a move away is refused on its own by
+ * {@link evidenceRemovals}, so neither can restart a file's history.
+ */
 function evidenceCommits(file: string, cwd: string = ROOT): string[] {
+  const out = execFileSync('git', ['log', '--no-renames', '--format=%H', '--', file], {
+    cwd,
+    encoding: 'utf8',
+  });
+  return out.split('\n').filter((line) => line.trim() !== '');
+}
+
+/** Every evidence file a commit deleted or moved away, with the commit. Evidence is append-only: this stays empty. */
+function evidenceRemovals(cwd: string = ROOT): string[] {
   const out = execFileSync(
     'git',
-    ['log', '--follow', '--name-status', '--format=%x00%H', '--', file],
+    [
+      'log',
+      '--no-renames',
+      '--diff-filter=D',
+      '--name-only',
+      '--format=%x00%h',
+      '--',
+      'bench/calibration/',
+    ],
     { cwd, encoding: 'utf8' },
   );
-  const commits: string[] = [];
+  const removed: string[] = [];
   for (const block of out.split('\0').filter((b) => b.trim() !== '')) {
-    const [hash, ...rest] = block.trim().split('\n');
-    commits.push(hash ?? '');
-    const moved = rest.map((l) => l.split('\t')).find((c) => /^[RC]\d+$/.test(c[0] ?? ''));
-    if (moved !== undefined && !(moved[1] ?? '').startsWith('bench/calibration/')) break;
+    const [hash, ...files] = block.trim().split('\n');
+    for (const f of files) if (f.endsWith('.json')) removed.push(`${f} (${hash ?? '?'})`);
   }
-  return commits;
+  return removed;
 }
 
 /**
@@ -345,16 +365,84 @@ describe('calibration reports are held to their evidence', () => {
       }
     });
 
-    it('follows a move between evidence paths', () => {
+    it('counts a new run that resembles an earlier run once, and the earlier run still once', () => {
+      // Two runs of one harness share their shape, so git reports the second as a copy of the first. A copy's
+      // source still exists with its own history, so the copy's history starts at the commit that made it.
+      const dir = repo();
+      try {
+        writeFileSync(join(dir, 'bench', 'calibration', 'first.json'), `${body}\n`);
+        commit(dir, 'first run');
+        const second = 'bench/calibration/second.json';
+        writeFileSync(join(dir, second), `${body.replace('line 3"', 'line 3b"')}\n`);
+        commit(dir, 'second run');
+        expect(evidenceCommits(second, dir)).toHaveLength(1);
+        expect(evidenceCommits('bench/calibration/first.json', dir)).toHaveLength(1);
+        writeFileSync(join(dir, second), `${body}\n`);
+        commit(dir, 'edit');
+        expect(evidenceCommits(second, dir)).toHaveLength(2);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('refuses a move between evidence paths as a removal of the old one', () => {
       const dir = repo();
       try {
         writeFileSync(join(dir, 'bench', 'calibration', 'old.json'), `${body}\n`);
         commit(dir, 'evidence');
+        expect(evidenceRemovals(dir)).toEqual([]);
         execFileSync('git', ['mv', 'bench/calibration/old.json', 'bench/calibration/new.json'], {
           cwd: dir,
         });
         commit(dir, 'move');
-        expect(evidenceCommits('bench/calibration/new.json', dir)).toHaveLength(2);
+        expect(evidenceRemovals(dir)).toEqual([
+          expect.stringMatching(/^bench\/calibration\/old\.json /),
+        ]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('counts every commit at the path of a run removed and re-added edited, and refuses the removal', () => {
+      // Re-added beside a similar run, the file reads to `git log --follow` as a copy of that run, which would hide
+      // its first commit and the removal. Counted at its own path, nothing hides.
+      const dir = repo();
+      try {
+        writeFileSync(join(dir, 'bench', 'calibration', 'first.json'), `${body}\n`);
+        const second = 'bench/calibration/second.json';
+        writeFileSync(join(dir, second), `${body.replace('line 3"', 'line 3b"')}\n`);
+        commit(dir, 'two runs');
+        execFileSync('git', ['rm', '-q', second], { cwd: dir });
+        commit(dir, 'remove');
+        writeFileSync(join(dir, second), `${body.replace('line 4"', 'line 4b"')}\n`);
+        commit(dir, 're-add, edited');
+        expect(evidenceCommits(second, dir)).toHaveLength(3);
+        expect(evidenceRemovals(dir)).toEqual([
+          expect.stringMatching(/^bench\/calibration\/second\.json /),
+        ]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('counts every commit at the path of a run moved out and back, and refuses the move out', () => {
+      const dir = repo();
+      try {
+        const file = 'bench/calibration/run.json';
+        writeFileSync(join(dir, file), `${body}\n`);
+        commit(dir, 'evidence');
+        execFileSync('git', ['mv', file, 'fixtures/run.json'], { cwd: dir });
+        commit(dir, 'out');
+        writeFileSync(
+          join(dir, 'fixtures', 'run.json'),
+          `${body.replace('line 5"', 'line 5b"')}\n`,
+        );
+        execFileSync('git', ['mv', 'fixtures/run.json', file], { cwd: dir });
+        commit(dir, 'back, edited');
+        expect(evidenceCommits(file, dir)).toHaveLength(3);
+        expect(evidenceRemovals(dir)).toEqual([
+          expect.stringMatching(/^bench\/calibration\/run\.json /),
+        ]);
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
@@ -851,6 +939,16 @@ describe('calibration reports are held to their evidence', () => {
         /records no requests for its load stage/,
       );
     });
+  });
+
+  // Evidence is append-only. A run's file is never deleted or moved away, which is also what stops a file removed and
+  // re-added from passing as new.
+  it('no commit deletes or moves away an evidence file', () => {
+    expect(
+      git('rev-parse', '--is-shallow-repository'),
+      'a shallow checkout has no history to check; CI checks out with fetch-depth: 0',
+    ).toBe('false');
+    expect(evidenceRemovals()).toEqual([]);
   });
 
   describe.each(EVIDENCE.map((file) => ({ file, id: basename(file, '.json') })))(

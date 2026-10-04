@@ -190,6 +190,11 @@ export class SafeBitmap implements CodecBitmap {
   toArray(): number[] {
     return this.bitmap.toArray();
   }
+
+  /** The values as one fresh ascending `Uint32Array`, exported natively. */
+  toUint32Array(): Uint32Array {
+    return this.bitmap.toUint32Array();
+  }
 }
 
 /**

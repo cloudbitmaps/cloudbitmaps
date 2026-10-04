@@ -259,7 +259,9 @@ npm audit signatures</code></pre>
                   <td class="from">
                     Every id, ascending, reading up to 32 chunks ahead. With a range, only the ids in
                     <span class="m">(after, through]</span>, fetching only the chunks it overlaps — keyset
-                    paging — and every combine takes the same two options.
+                    paging — and every combine takes the same two options. Each of these streams has
+                    <span class="m">.batches()</span>, which yields the same ids one
+                    <span class="m">Uint32Array</span> per chunk.
                   </td>
                   <td class="num">each chunk read</td>
                 </tr>

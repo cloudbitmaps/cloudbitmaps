@@ -193,6 +193,100 @@ function keysWithin(keys: readonly number[], w: IdWindow): number[] {
   return keys.slice(firstAtLeast(w.loKey), firstAtLeast(w.hiKey + 1));
 }
 
+/** What a combine settled before reading: its range window, and the ordered fan-out over the keys that survive. */
+interface CombinePlan {
+  readonly w: IdWindow | null;
+  readonly window: CombineWindow;
+}
+
+/** One key's combined chunk, or the error its read raised, held until the key's turn comes. */
+interface CombineSlot {
+  readonly key: number;
+  readonly result: CodecBitmap | null;
+  readonly error?: unknown;
+}
+
+/**
+ * Surgical streaming AND through a bounded, order-preserving window: fetch+combine at most `limit` keys
+ * concurrently, hand each key's chunk back in ascending order before priming far ahead (bounded Storage footprint).
+ * Each task resolves to a value (never rejects) so an error on one key cannot leave the other in-flight promises
+ * unhandled; it is thrown, in key order, when its slot is taken.
+ *
+ * The window opens COMBINE_WINDOW_START keys wide and doubles with each key taken until it is `limit` wide, so a
+ * read that stops after its first few keys has fetched no further ahead than that, while a long one spends nearly
+ * all of its round trips at the full width.
+ */
+class CombineWindow {
+  private readonly inFlight: Array<Promise<CombineSlot>> = [];
+  private next_ = 0;
+  private taken = 0;
+
+  constructor(
+    private readonly keys: readonly number[],
+    private readonly limit: number,
+    private readonly read: (key: number) => Promise<CodecBitmap | null>,
+  ) {
+    this.fill();
+  }
+
+  private fill(): void {
+    const width = Math.min(
+      this.limit,
+      Math.max(COMBINE_WINDOW_START, 2 ** Math.min(this.taken, 30)),
+    );
+    while (this.next_ < this.keys.length && this.inFlight.length < width) {
+      const key = this.keys[this.next_++]!;
+      this.inFlight.push(
+        this.read(key).then(
+          (result): CombineSlot => ({ key, result }),
+          (error: unknown): CombineSlot => ({ key, result: null, error }),
+        ),
+      );
+    }
+  }
+
+  /** The next key's chunk in ascending key order, `undefined` when the keys are used up; throws that key's error. */
+  async next(): Promise<CombineSlot | undefined> {
+    if (this.inFlight.length === 0) return undefined;
+    const slot = await this.inFlight.shift()!; // FIFO over ascending keys ⇒ ascending output
+    this.taken += 1;
+    this.fill();
+    if (slot.error !== undefined) throw slot.error;
+    return slot;
+  }
+}
+
+/**
+ * The ids of one chunk as one array, ascending: the chunk's remainders (one native export, or the codec's iterator
+ * when it has none) joined with the chunk key in one pass, and, for a read with a range, cut to it. Empty when the
+ * chunk holds nothing the read wants. The array is the caller's to keep: nothing else holds it.
+ */
+function chunkIds(chunk: CodecBitmap, chunkKey: number, w: IdWindow | null): Uint32Array {
+  let rem = chunk.toUint32Array ? chunk.toUint32Array() : Uint32Array.from(chunk);
+  if (w !== null && isEdge(chunkKey, w)) {
+    const from = chunkKey === w.loKey ? w.loRem : 0;
+    const to = chunkKey === w.hiKey ? w.hiRem : MAX_REMAINDER;
+    // A copy, not a view: a batch owns exactly its ids, and does not pin the whole chunk's buffer.
+    rem = rem.slice(firstAbove(rem, from - 1), firstAbove(rem, to));
+  }
+  // Not `<<`: a key of 32768 or more would wrap negative. A remainder is masked as `joinId` masks it.
+  const base = chunkKey * CHUNK_COUNT;
+  for (let i = 0; i < rem.length; i++) rem[i] = base + (rem[i]! & MAX_REMAINDER);
+  return rem;
+}
+
+/** The index of the first element of ascending `a` greater than `value`: a binary search. */
+function firstAbove(a: Uint32Array, value: number): number {
+  let lo = 0;
+  let hi = a.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (a[mid]! <= value) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
 /** A chunk read in flight: `token` tells the read whether its entry is still the registered one. */
 interface OpenRead {
   readonly token: object;
@@ -361,6 +455,28 @@ export class SegmentEngine {
   }
 
   /**
+   * {@link iterate}, one `Uint32Array` per chunk instead of one id at a time: the same chunks, in the same order, with
+   * the same ids (a range cut at its edges the same way), and no array for a chunk that holds none of them. The
+   * reads, the budget charge and the window are the per-id read's. Each array is at most 65,536 ids (256 KiB) and is
+   * the caller's to keep.
+   */
+  async *iterateBatches(seg: SegmentRef, range?: IdRange): AsyncGenerator<Uint32Array> {
+    const w = windowOf(range);
+    if (w === 'empty') return;
+    const chunkKeys =
+      w === null ? await this.chunkKeys(seg) : keysWithin(await this.chunkKeys(seg), w);
+    checkBudget(this.budget, chunkKeys.length, 'iterate'); // one storage fetch per chunk (before fan-out)
+    const gen = await this.cacheVersion(seg); // after the shape read — see `combine`
+    const window = this.chunkWindow(seg, chunkKeys, gen, true);
+    for (const chunkKey of chunkKeys) {
+      const chunk = await window.take();
+      if (chunk === null) continue;
+      const ids = chunkIds(chunk, chunkKey, w);
+      if (ids.length > 0) yield ids;
+    }
+  }
+
+  /**
    * `segs[0] ∩ segs[1] ∩ …`, minus every id in `options.exclude` — streamed ascending.
    *
    * The `exclude` operands are what make suppression **compose without materialising**. Applying suppression
@@ -421,13 +537,40 @@ export class SegmentEngine {
     return this.combine([seg], excludes, 'all', 'andNot', options);
   }
 
-  private async *combine(
+  /** {@link intersect}, one `Uint32Array` per chunk — see {@link iterateBatches}. */
+  intersectBatches(
+    segs: readonly SegmentRef[],
+    options?: CombineOptions,
+  ): AsyncGenerator<Uint32Array> {
+    return this.combineBatches(segs, options?.exclude ?? [], 'all', 'intersect', options);
+  }
+
+  /** {@link union}, one `Uint32Array` per chunk — see {@link iterateBatches}. */
+  unionBatches(segs: readonly SegmentRef[], options?: CombineOptions): AsyncGenerator<Uint32Array> {
+    return this.combineBatches(segs, options?.exclude ?? [], 'any', 'union', options);
+  }
+
+  /** {@link andNot}, one `Uint32Array` per chunk — see {@link iterateBatches}. */
+  andNotBatches(
+    seg: SegmentRef,
+    excludes: readonly SegmentRef[],
+    options?: Omit<CombineOptions, 'exclude'>,
+  ): AsyncGenerator<Uint32Array> {
+    return this.combineBatches([seg], excludes, 'all', 'andNot', options);
+  }
+
+  /**
+   * Everything a combine decides before it reads a chunk: validation, each operand's keys and generation, the
+   * absent-operand refusal, key alignment, the budget and the metric. `null` when the range is empty. The per-id
+   * read and the batch read share it, so the two cannot disagree about what is read or charged.
+   */
+  private async combinePlan(
     segs: readonly SegmentRef[],
     excludeSegs: readonly SegmentRef[],
     mode: 'all' | 'any',
     op: 'intersect' | 'union' | 'andNot',
     options?: Omit<CombineOptions, 'exclude'>,
-  ): AsyncGenerator<number> {
+  ): Promise<CombinePlan | null> {
     // Validated HERE rather than in the public wrappers, deliberately. `combine` is an async generator, so a
     // throw surfaces when the caller first iterates — which is the behaviour `intersect` has always had, and
     // `await expect(collect(engine.intersect([]))).rejects` in the suite depends on it. Guarding in the
@@ -452,7 +595,7 @@ export class SegmentEngine {
     // The range, if any, cuts every operand's keys once, here, so what follows — alignment, the budget, the
     // metrics, the fan-out — sees only chunks inside it. Only the two edge chunks are cut again, where ids leave.
     const w = windowOf(options);
-    if (w === 'empty') return;
+    if (w === 'empty') return null;
 
     // ① Index-map extraction: each operand's chunk-key set + its current generation, resolved ONCE here (not
     // per chunk) so the fan-out below adds no per-chunk generation re-resolve. Only metadata so far.
@@ -540,41 +683,49 @@ export class SegmentEngine {
       });
     }
 
-    // ③–⑤ Surgical streaming AND through a bounded, order-preserving window: fetch+intersect at most
-    // `limit` keys concurrently, yield each key's ids before priming far ahead (bounded Storage footprint).
-    // Each task resolves to a value (never rejects) so an error on one key can't leave the other in-flight
-    // promises unhandled — we surface it, in key order, when its slot is drained.
-    //
-    // The window opens COMBINE_WINDOW_START keys wide and doubles with each key taken until it is `limit` wide,
-    // so a read that stops after its first few keys has fetched no further ahead than that, while a long one
-    // spends nearly all of its round trips at the full width.
-    type Slot = { key: number; result: CodecBitmap | null; error?: unknown };
-    const startAt = (key: number): Promise<Slot> =>
-      this.combineChunk(operands, excludes, mode, key).then(
-        (result) => ({ key, result }),
-        (error: unknown) => ({ key, result: null, error }),
-      );
-
-    const inFlight: Array<Promise<Slot>> = [];
-    let next = 0;
-    let taken = 0;
-    const fill = (): void => {
-      const width = Math.min(limit, Math.max(COMBINE_WINDOW_START, 2 ** Math.min(taken, 30)));
-      while (next < common.length && inFlight.length < width)
-        inFlight.push(startAt(common[next++]!));
+    return {
+      w,
+      window: new CombineWindow(common, limit, (key) =>
+        this.combineChunk(operands, excludes, mode, key),
+      ),
     };
-    fill();
-    while (inFlight.length > 0) {
-      const slot = await inFlight.shift()!; // FIFO over ascending keys ⇒ ascending output
-      taken += 1;
-      fill();
-      if (slot.error !== undefined) throw slot.error;
+  }
+
+  private async *combine(
+    segs: readonly SegmentRef[],
+    excludeSegs: readonly SegmentRef[],
+    mode: 'all' | 'any',
+    op: 'intersect' | 'union' | 'andNot',
+    options?: Omit<CombineOptions, 'exclude'>,
+  ): AsyncGenerator<number> {
+    const plan = await this.combinePlan(segs, excludeSegs, mode, op, options);
+    if (plan === null) return;
+    const { w, window } = plan;
+    for (let slot = await window.next(); slot !== undefined; slot = await window.next()) {
       if (slot.result && !slot.result.isEmpty) {
         if (w !== null && isEdge(slot.key, w)) {
           for (const id of edgeIds(slot.result, slot.key, w)) yield id;
         } else {
           for (const remainder of slot.result) yield joinId(slot.key, remainder);
         }
+      }
+    }
+  }
+
+  private async *combineBatches(
+    segs: readonly SegmentRef[],
+    excludeSegs: readonly SegmentRef[],
+    mode: 'all' | 'any',
+    op: 'intersect' | 'union' | 'andNot',
+    options?: Omit<CombineOptions, 'exclude'>,
+  ): AsyncGenerator<Uint32Array> {
+    const plan = await this.combinePlan(segs, excludeSegs, mode, op, options);
+    if (plan === null) return;
+    const { w, window } = plan;
+    for (let slot = await window.next(); slot !== undefined; slot = await window.next()) {
+      if (slot.result) {
+        const ids = chunkIds(slot.result, slot.key, w);
+        if (ids.length > 0) yield ids;
       }
     }
   }

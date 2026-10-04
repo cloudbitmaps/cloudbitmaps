@@ -71,11 +71,11 @@ One run of the loaded store against real S3 in `us-east-1` is published here, dr
 region. It measured the topology that ships, with the pointer in the same bucket as the data: what a cold intersect
 and a load cost, and how long they take.
 
-### The in-region run — run `2026-10-03-e13c7`
+### The in-region run — run `2026-10-04-73668`
 
-> **Measured** against real S3 in `us-east-1` on 2026-10-03 (UTC), from AWS CloudShell in the same region, with the
-> packages published before this release: a round-trip floor of 5.07 ms. The run's report explains every figure:
-> [`bench/calibration/2026-10-03-e13c7.md`](../bench/calibration/2026-10-03-e13c7.md). The evidence beside it is the
+> **Measured** against real S3 in `us-east-1` on 2026-10-04 (UTC), from AWS CloudShell in the same region, with the
+> published `0.13.0` packages: a round-trip floor of 5.01 ms. The run's report explains every figure:
+> [`bench/calibration/2026-10-04-73668.md`](../bench/calibration/2026-10-04-73668.md). The evidence beside it is the
 > harness's own results file. [`tests/docs/calibration-reports.test.ts`](../tests/docs/calibration-reports.test.ts)
 > holds this section and the report to it in both directions: every dollar amount, percentage, duration, byte size
 > and ratio, every number written before the request, chunk, id or load it counts, and the bill below, row by row.
@@ -85,21 +85,27 @@ and a load cost, and how long they take.
 - **Chunk-skipping works on real S3.** 40 of 40 cold intersects of two 500,000-id segments returned the planned ids,
   checked by count and by sum. Each fetched 100 of 1,999 chunks per segment, the 100 the two share, and skipped the
   other 95.0%.
-- **A cold intersect of that shape took 492.69 ms at the median** (p95 559.30 ms, p99 571.10 ms) and made 204 GETs:
+- **A cold intersect of that shape took 290.06 ms at the median** (p95 416.22 ms, p99 588.99 ms) and made 204 GETs:
   one pointer read and one 256 KiB tail read per operand, and one GET per shared chunk per operand. That is 4 + 2k
   for k shared chunks, whatever the segments' size, while each index fits the tail read: up to about 26,000 chunks
-  of this shape. Each GET round took about 26 to 27 ms (**derived**).
+  of this shape. Each GET round took about 36 to 41 ms (**derived**), longer than the previous run's, with more requests open at once.
 - **Latency grows with the overlap, because each shared chunk is a request.** At 1,000 shared chunks the median was
-  4,238.82 ms, and at 2,000 it was 8,658.44 ms, 2.04 times as long for twice the chunks.
-- **A warm intersect took 3.96 ms** at the median and made no request.
-- **Point reads.** A cold `count()` is one request, 27.48 ms at the median. `has()` on an open segment is one
-  request, 25.60 ms, and microseconds once the chunk is cached.
-- **Load throughput.** A single-part `store.load()` of a 1.05 MB segment ran at 2.86 million ids a second, 6,020,505
-  bytes a second; a multipart load of a 12.6 MB segment at 11.3 million ids a second, 11,339,268 bytes a second.
-- **`andNot`** of a 1,999-chunk segment against ten excludes took 8,687.10 ms at the median and 3,021 GETs.
+  1,808.80 ms, and at 2,000 it was 3,291.35 ms, 1.82 times as long for twice the chunks.
+- **A warm intersect took 4.05 ms** at the median and made no request.
+- **Point reads.** A cold `count()` is one request, 27.82 ms at the median. `has()` on an open segment is one
+  request, 25.94 ms, and microseconds once the chunk is cached.
+- **Load throughput.** A single-part `store.load()` of a 1.05 MB segment ran at 2.42 million ids a second, 5,100,414
+  bytes a second; a multipart load of a 12.6 MB segment at 10.4 million ids a second, 10,432,654 bytes a second.
+- **`andNot`** of a 1,999-chunk segment against ten excludes took 3,335.85 ms at the median and 3,021 GETs.
+- **The rounds sit above the rounds model.** They are a fifth to a half above it (7.1 against 6 for the cold intersect, 50.2
+  against 34 and 92.4 against 66 for the sweeps), and the model assumes no socket limit. The client had 50 sockets, the
+  SDK default. Only the `andNot` held more requests in flight than that (mean 80.6, stage-median peak 352); the cold
+  intersect and the sweeps averaged 29.1, 41.3 and 43.4. The run did not vary the socket count, so it does not say
+  what part of the gap is socket wait, and no figure is claimed for any other count.
 
-**Every latency above was measured before this release widened the combine window, by an engine that kept 8 chunk keys**, and this release
-widens it to 32; the [section below](#the-window-of-32--derived-not-measured) gives what that is expected to do.
+**Every latency above was measured on `0.13.0`, whose combine window opens 8 keys wide and widens to 32**; the
+[section below](#the-window-of-32--measured-against-the-model) sets it against the previous run's, and against the
+model that predicted it.
 
 | Operation | Requests | One | Per million | Label |
 | --- | --- | --- | --- | --- |
@@ -123,37 +129,80 @@ instead for the pointer refresh: at most one GET per segment every 2 s while the
 - **Lambda.** A function's cold start and initialisation need a run from inside one.
 - **Other shapes**: more operands, other combine shapes, the `*Into` verbs.
 - **Other clouds.** GCS and Azure Blob have no in-region run.
-- **One client on one day.** The 26 to 27 ms GET round is this run's, not a guarantee.
+- **One client on one day.** The 36 to 41 ms GET round is this run's, not a guarantee.
+- **A wider client.** The run used 50 sockets; what a client with more would measure is not in it.
 
 **`estimateCost()` counts what this run's bill counted**: each cold operand's pointer and tail read, which prices
 this run's intersect at 204 GETs; what `store.load()` adds to its object's write; and the pointer
 refresh, for the segments a long-lived reader keeps reading. The
 [guide](guide/cost.md#what-each-term-counts) says what each term counts.
 
-### The window of 32 — derived, not measured
+### The window of 32 — measured against the model
 
-**The run above was made before this release widened the window, so its engine's combine kept 8 chunk keys.** A read of `n` chunks
-then took about `n / 8` request times in sequence, and that window, not the network, set how long a long read took:
-the `andNot` ran at a mean of 10.3 requests in flight, over about 250 rounds of about 27 ms. This release
-opens a combine's window 8 keys wide and widens it to 32 as keys are taken, and `andNot` and `union` read an exclude's
-chunk in the same round trip as the include's, so the same requests are expected to be answered in fewer rounds. No
-run has measured that yet; the figures below are **derived** from a model, and the next in-region run is the
-measurement. The model draws each GET's latency from a lognormal distribution with a median of 26 ms and caps the
-open requests at 50, as the S3 SDK's default sockets do. It sends the same requests in the old and the new engine:
+**The release before this one kept a fixed window of 8 chunk keys; `0.13.0` opens a combine's window 8 keys wide and widens it to 32 as
+keys are taken, and `andNot` and `union` read an exclude's chunk in the same round trip as the include's.** A read of
+`n` chunks took about `n / 8` request times in sequence, and that window, not the network, set how long a long read
+took. Before the run of 2026-10-04 the wider window was only **derived**, from a latency model that draws each GET's
+latency from a lognormal distribution with a median of 26 ms and caps the open requests at 50, as the S3 SDK's default
+sockets do. That run is the measurement of it, and [the previous release's run](#the-previous-in-region-run--run-2026-10-03-e13c7) is
+what it is measured against. The same harness ran the same workload on both: the requests are the same ones, and the bill is the same
+to the request.
 
-| Shape | The run's window of 8 | Window of 8 widening to 32 | Requests (both) |
+**Measured, in region, on S3**, the median of each:
+
+| Shape | Previous release, window of 8 | `0.13.0`, window to 32 |
+| --- | --- | --- |
+| cold intersect, 100 shared chunks | 492.69 ms · 18.3 rounds · mean 11.2 in flight, peak 16 | 290.06 ms · 7.1 rounds · mean 29.1 in flight, peak 64 |
+| cold intersect, 1,000 shared chunks | 4,238.82 ms · 160.4 rounds | 1,808.80 ms · 50.2 rounds · mean 41.3 in flight |
+| cold intersect, 2,000 shared chunks | 8,658.44 ms · 324.0 rounds | 3,291.35 ms · 92.4 rounds · mean 43.4 in flight |
+| `andNot`, a 1,999-chunk include against 10 excludes | 8,687.10 ms · 303.9 rounds · mean 10.3 in flight, peak 80 | 3,335.85 ms · 37.5 rounds · mean 80.6 in flight, peak 352 |
+
+**How the measurement compares with the latency model.** The latency model's two figures for the shapes the run timed are 13.1 s and
+3.7 s for the `andNot`, and 6.3 s and 2.1 s for an intersect of 1,000 shared chunks, for a window of 8 and for the
+widened window. The measured medians are lower on both engines: 8.69 s and 3.34 s for the `andNot`, 4.24 s and 1.81 s
+for the intersect. So the latency model overstated the time of each, and it overstated the gain too: it has the
+`andNot` 3.5 times faster, and the run 2.6 times, and for the intersect 3.0 times against the run's 2.3. The
+direction holds: the same requests in about an eighth of the rounds for the `andNot`, a third for the
+intersect, with a wider window and the exclude's read joining the include's.
+
+**The measured rounds sit above the rounds model, and the run does not say why.** The rounds model is the engine's own
+count of requests in line, and assumes no socket limit: 6 rounds for the cold intersect, 34 and 66 for the two sweeps.
+The run measured 7.1, 50.2 and 92.4, a fifth to a half more. The client had 50
+sockets. Only the `andNot` held more in flight than that, a mean of 80.6 and a stage-median peak of 352 (the run-wide
+peak was 351); the cold intersect and the sweeps averaged 29.1, 41.3 and 43.4. A round took about 36 to 41 ms for the
+intersects and about 89 ms for the `andNot`, where the previous run's took about 26 to 29 ms. The run did not vary the
+socket count, so it does not say what part of the gap is socket wait: S3's own time to answer and the client's
+connection handling are other candidates. The built client's socket count is changing in a separate change, and
+**no figure is claimed for it here**.
+
+**Still derived, not measured.** The rows below are the latency model's, for shapes the run did not time. It draws the
+requests in the old and the new engine alike:
+
+| Shape | Window of 8 | Window of 8 widening to 32 | Requests (both) |
 | --- | --- | --- | --- |
-| `andNot`, a 1,999-chunk include against 10 excludes on 100 shared chunks | 13.1 s | 3.7 s | 2,999 |
 | `andNot` against one opt-out list holding every chunk | 18.2 s | 3.9 s | 3,998 |
 | `intersect`, 16 shared chunks | 129 ms | 129 ms | 32 |
 | `intersect`, 128 shared chunks | 866 ms | 338 ms | 256 |
-| `intersect`, 1,000 shared chunks | 6.3 s | 2.1 s | 2,000 |
 | `iterate` over a 1,999-chunk segment | 10.8 s | 3.6 s | 1,999 |
 | `intersect` page that stops after 50 ids (25 keys) | 178 ms | 117 ms | 66 to 114 |
 | `iterate` page that stops after 50 ids (10 chunks) | 102 ms | 103 ms | 17 to 41 |
 
-Both columns are derived from the model, not measured on S3. The request counts are the model's chunk reads and leave out index reads: the measured `andNot` made 3,021 GETs, the model's 2,999 plus 22 index reads. The last two rows are the cost: a read that stops early has requested
+The latency model overstated the timed shapes, so read these as upper bounds on the time, not as predictions. The request counts are the model's chunk reads and leave out index reads: the measured `andNot` made 3,021 GETs, the model's 2,999 plus 22 index reads. The last two rows are the cost: a read that stops early has requested
 up to 32 keys per operand ahead, where a window of 8 had requested up to 8. Pass `concurrency` to bound that.
+
+### The previous in-region run — run `2026-10-03-e13c7`
+
+> **Measured** on 2026-10-03 (UTC), from AWS CloudShell in `us-east-1`, with the packages published before `0.13.0`, whose
+> combine kept a fixed window of 8 chunk keys: a round-trip floor of 5.07 ms. Its report is
+> [`bench/calibration/2026-10-03-e13c7.md`](../bench/calibration/2026-10-03-e13c7.md). It is kept here as what
+> [the run above](#the-window-of-32--measured-against-the-model) is measured against.
+
+- A cold intersect of two 500,000-id segments sharing 100 chunks took 492.69 ms at the median (p95 559.30 ms).
+- With 1,000 shared chunks the median was 4,238.82 ms, and with 2,000 it was 8,658.44 ms.
+- The `andNot` against ten excludes took 8,687.10 ms at the median, at a mean of 10.3 requests in flight.
+- A warm intersect took 3.96 ms, a cold `count()` 27.48 ms and a `has()` on an open segment 25.60 ms.
+- A single-part load ran at 2.86 million ids a second and a multipart load at 11.3 million. The later run's single-part rate, 2.42 million, is 15% below it; the load path did not change between the releases (from the code, not from either run), and the runs do not say why the rate differs.
+- It made the same requests as the run above, and its bill is the same to the request.
 
 ## At scale — measured (1K → 10K → 100K segments)
 
@@ -291,7 +340,7 @@ inside the region and not from a laptop.
 
 ## What is still owed
 
-The [in-region run](#the-in-region-run--run-2026-10-03-e13c7) measured the loaded store's latency and load
+The [in-region run](#the-in-region-run--run-2026-10-04-73668) measured the loaded store's latency and load
 throughput on S3. These are not published yet:
 
 - **A Lambda figure** — a function's cold start and initialisation against a real store, from inside one.
@@ -316,8 +365,8 @@ latency and request-count figure comes from the samples each stage kept, held to
 while the bill counts both; and a run's report states how many it discarded. A fault in a load, or one past the bound,
 fails the run. Every run records its own round-trip floor to the
 region and labels its latency in-region only below 30 ms — a line that keeps another continent out, not a
-neighbouring region, so the raw floor is recorded with it for a reader who wants a stricter one, and so is the region the shell ran in. A page states a run's latency as in-region only when that region is the bucket's too. Each cold intersect also records how many requests were in flight at once and how many it waited for one after another, and every run records the AWS SDK and handler versions and the handler's socket cap. Its run
-`2026-10-03-e13c7`, from AWS CloudShell in `us-east-1`, paid the in-region rows: intersect and point-read latency,
+neighbouring region, so the raw floor is recorded with it for a reader who wants a stricter one, and so is the region the shell ran in. A page states a run's latency as in-region only when that region is the bucket's too. Each cold intersect also records how many requests were in flight at once and how many it waited for one after another, and every run records the AWS SDK and handler versions and the handler's socket cap. Its runs
+`2026-10-03-e13c7` and `2026-10-04-73668`, from AWS CloudShell in `us-east-1`, paid the in-region rows: intersect and point-read latency,
 load throughput, `andNot` with a large `exclude`, the sweep, and what `store.load()` costs on S3. The `*Into` verbs and
 the Lambda figure are not in it yet.
 How it guards against spending more than it says, and how to run it from inside the region:

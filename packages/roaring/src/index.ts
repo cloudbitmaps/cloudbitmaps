@@ -1973,12 +1973,53 @@ export interface MaterializeOptions extends CombineOptions {
 }
 
 /**
- * An id stream that fails when it is first read. A combine refuses its arguments this way, as the engine's own
- * checks do, so a caller's try/catch around the iteration catches it.
+ * What a streaming read returns: the ids, ascending, one at a time under `for await`, or one chunk at a time from
+ * {@link IdStream.batches}.
+ *
+ * It is an `AsyncIterable<number>`, so every consumer of an id stream takes it as it always did. A live read is the
+ * engine's async generator itself, with `batches` attached: `for await` it, or drive it with `next()`, `return()` and
+ * `throw()`, exactly as before, and it is single-use (a second `for await` over it yields nothing). `batches()` is a
+ * separate, new read: it starts when called, fetches its chunks afresh and charges the per-op budget again, whether or
+ * not the per-id stream was read, and reading both is two reads (invariant 3 applies to each separately). Nothing is
+ * fetched until a read is first pulled.
  */
-const failing = (err: unknown): AsyncIterable<number> => ({
-  [Symbol.asyncIterator]: () => ({ next: () => Promise.reject(err) }),
-});
+export interface IdStream extends AsyncIterable<number> {
+  /**
+   * The same ids as the per-id stream, in the same order, one `Uint32Array` per chunk: each array ascending, holding
+   * every id of one chunk the read yields (a range trimmed at its edges exactly as the per-id stream trims it), and
+   * no array is empty. Chunks arrive in ascending order, so the concatenation is the per-id stream.
+   *
+   * One `await` per chunk instead of one per id: measured locally, an in-memory read goes several times faster, and
+   * a large scan stops being bound by the event loop. The reads, the budget and the read-ahead window are the per-id
+   * stream's, and so is stopping early: leaving a `for await` over it (`break`, `return`, a throw) ends the read.
+   *
+   * **Memory:** one array per chunk, at most 65,536 ids (256 KiB), allocated for that chunk alone and yours to
+   * keep, change or hand on; the read holds no reference to it after yielding it.
+   *
+   * ```ts
+   * for await (const ids of seg.andNot([optOut]).batches()) await send(ids);
+   * ```
+   */
+  batches(): AsyncIterable<Uint32Array>;
+}
+
+/** A generator the engine just made, with the batch read that goes with it attached. Adds nothing per id. */
+const withBatches = (
+  gen: AsyncGenerator<number>,
+  batches: () => AsyncIterable<Uint32Array>,
+): IdStream => Object.assign(gen, { batches });
+
+/**
+ * A stream that fails when it is first read, either way. A combine refuses its arguments this way, as the engine's
+ * own checks do, so a caller's try/catch around the iteration catches it.
+ */
+const failing = (err: unknown): IdStream => {
+  const rejecting = (): AsyncIterator<never> => ({ next: () => Promise.reject(err) });
+  return {
+    [Symbol.asyncIterator]: rejecting,
+    batches: () => ({ [Symbol.asyncIterator]: rejecting }),
+  };
+};
 
 /** Whether two handles of one segment read it at one generation: both live, or both pinned to one object. */
 const samePin = (a: PinnedAt | undefined, b: PinnedAt | undefined): boolean =>
@@ -2019,8 +2060,11 @@ const readOptions = (options: BaseCombineOptions): EveryField<BaseCombineOptions
 const NO_SEGMENTS: readonly Segment[] = [];
 
 /** The empty id stream every expired read path returns — allocated once, so an expired read costs nothing. */
-const EMPTY_IDS: AsyncIterable<number> = {
+const EMPTY_IDS: IdStream = {
   async *[Symbol.asyncIterator]() {
+    // deliberately yields nothing
+  },
+  async *batches() {
     // deliberately yields nothing
   },
 };
@@ -2355,12 +2399,14 @@ export class Segment {
    * stream is first read. `after >= through` is an empty range, which reads nothing. An expired handle reads empty
    * without checking its options, as every read of one does.
    */
-  iterate(options?: IdRange): AsyncIterable<number> {
+  iterate(options?: IdRange): IdStream {
     if (this.expired()) return EMPTY_IDS;
     // Neither bound set is no range at all, which the engine reads on its full-read path.
     const range = options == null ? undefined : rangeOf(options);
     const none = range === undefined || (range.after === undefined && range.through === undefined);
-    return this.engine.iterate(this.ref, none ? undefined : range);
+    const { engine, ref } = this;
+    const bounds = none ? undefined : range;
+    return withBatches(engine.iterate(ref, bounds), () => engine.iterateBatches(ref, bounds));
   }
 
   /**
@@ -2407,7 +2453,7 @@ export class Segment {
    * AND is commutative, so `a.intersect([b])` and `b.intersect([a])` yield the same ids. Pass `budget` to
    * override the store's per-op denial-of-wallet budget for this call (or `false` to lift it).
    */
-  intersect(others: Segment[], options?: CombineOptions): AsyncIterable<number> {
+  intersect(others: Segment[], options?: CombineOptions): IdStream {
     // An expired operand is empty, and anything ANDed with the empty set is empty. Guarding here rather than
     // only in `count()` is what keeps the surface coherent: a segment whose `count()` is 0 must not still
     // contribute members to an intersection.
@@ -2419,7 +2465,9 @@ export class Segment {
     } catch (err) {
       return failing(err);
     }
-    return engine.intersect([this.ref, ...others.map((o) => o.ref)], this.refsIn(options, exclude));
+    const refs = [this.ref, ...others.map((o) => o.ref)];
+    const opts = this.refsIn(options, exclude);
+    return withBatches(engine.intersect(refs, opts), () => engine.intersectBatches(refs, opts));
   }
 
   /**
@@ -2466,7 +2514,7 @@ export class Segment {
    * deliberately. If you find yourself unioning the same segments on every read, materializing the combined
    * segment once (`unionInto`, or a load) is the cheaper shape.
    */
-  union(others: Segment[], options?: CombineOptions): AsyncIterable<number> {
+  union(others: Segment[], options?: CombineOptions): IdStream {
     // OR: drop the expired operands and union what is left. All expired ⇒ empty.
     const live = others.filter((o) => !o.expired());
     if (this.expired()) {
@@ -2492,7 +2540,9 @@ export class Segment {
     } catch (err) {
       return failing(err);
     }
-    return engine.union([this.ref, ...others.map((o) => o.ref)], this.refsIn(options, exclude));
+    const refs = [this.ref, ...others.map((o) => o.ref)];
+    const opts = this.refsIn(options, exclude);
+    return withBatches(engine.union(refs, opts), () => engine.unionBatches(refs, opts));
   }
 
   /** Materialize `this ∪ others…` (minus `exclude`) as a **new generation of `dest`** — see {@link intersectInto}. */
@@ -2523,7 +2573,7 @@ export class Segment {
    * To filter the *result of an intersection*, do not chain — pass `exclude` to {@link intersect} instead, so
    * the suppression folds into the same pass rather than materializing an intermediate segment first.
    */
-  andNot(excludes: Segment[], options?: BaseCombineOptions): AsyncIterable<number> {
+  andNot(excludes: Segment[], options?: BaseCombineOptions): IdStream {
     // MINUS: an expired base is empty; an expired exclusion excludes nothing.
     if (this.expired()) return EMPTY_IDS;
     const liveExcludes = excludes.filter((e) => !e.expired());
@@ -2543,10 +2593,11 @@ export class Segment {
     } catch (err) {
       return failing(err);
     }
-    return engine.andNot(
-      this.ref,
-      excludes.map((o) => o.ref),
-      options == null ? undefined : readOptions(options),
+    const base = this.ref;
+    const refs = excludes.map((o) => o.ref);
+    const opts = options == null ? undefined : readOptions(options);
+    return withBatches(engine.andNot(base, refs, opts), () =>
+      engine.andNotBatches(base, refs, opts),
     );
   }
 
