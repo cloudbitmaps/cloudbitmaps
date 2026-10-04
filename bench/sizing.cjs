@@ -95,6 +95,7 @@ const COMBINE_WINDOW_START = sourceConstant(
   'COMBINE_WINDOW_START',
 );
 const { windowRounds, windowPeak } = require('./lib/calibrate-stages.cjs');
+const calibrationFigures = require('./lib/calibration-figures.cjs');
 const { esc, logChart } = require('./lib/log-chart.cjs');
 const { markersOf, regionsOf, withRegions } = require('./lib/sizing-markers.cjs');
 /** The estimator's month, read from it: AWS's 730 hours, of 3,600 seconds. */
@@ -1139,13 +1140,24 @@ function render() {
   const chain = 2 + windowRounds(SHARED_CHUNKS, INTERSECT_CONCURRENCY, COMBINE_WINDOW_START);
   const peakInFlight =
     OPERANDS * windowPeak(SHARED_CHUNKS, INTERSECT_CONCURRENCY, COMBINE_WINDOW_START);
+  // The latest in-region run's measurement of the same chain, read from its evidence: the rounds the median cold
+  // intersect waited through, and the sockets its client had against the requests the window can open.
+  const latestRun = JSON.parse(
+    fs.readFileSync(path.join(ROOT, calibrationFigures.evidenceFiles(ROOT).at(-1)), 'utf8'),
+  );
+  const measuredChain = latestRun.phases.intersect;
+  const measured =
+    `The in-region run of ${latestRun.runId.slice(0, 10)} measured ${measuredChain.medianRounds.toFixed(1)} request times for this shape, ` +
+    `${measuredChain.p50ms.toFixed(2)} ms at the median. Its client had ${int(latestRun.measured.maxSockets)} sockets, ` +
+    `fewer than the ${int(peakInFlight)} requests the window can open, so a request waited for one, which the chain above ` +
+    'does not count: the measured chain sits above the derived one.';
   const depth =
-    `A cold intersect of two segments sharing ${int(SHARED_CHUNKS)} chunks waits on a chain of requests, derived from the engine's constants and not measured, ` +
+    `A cold intersect of two segments sharing ${int(SHARED_CHUNKS)} chunks waits on a chain of requests, derived from the engine's constants, ` +
     `**${int(chain)} deep**: both operands' pointers, then both indexes, then the shared chunks, opening ` +
     `${int(COMBINE_WINDOW_START)} at a time and widening to ${int(INTERSECT_CONCURRENCY)}, each read from both ` +
     `operands together, so up to ${int(peakInFlight)} requests are in flight, and the next chunk starts as the oldest ` +
     `finishes. At an even latency that is ${int(chain)} request times end to end. A slow request holds up those queued ` +
-    'behind it, so what the chain takes is for a measurement to say. A repeat served from the chunk cache makes no ' +
+    `behind it. ${measured} A repeat served from the chunk cache makes no ` +
     'request within `cache.genTtlMs`, and one round of pointer reads after it.';
 
   const whyPrefix =

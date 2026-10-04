@@ -139,18 +139,18 @@ refresh, for the segments a long-lived reader keeps reading. The
 
 ### The window of 32 — measured against the model
 
-**`0.12.0` kept a fixed window of 8 chunk keys; `0.13.0` opens a combine's window 8 keys wide and widens it to 32 as
+**The release before this one kept a fixed window of 8 chunk keys; `0.13.0` opens a combine's window 8 keys wide and widens it to 32 as
 keys are taken, and `andNot` and `union` read an exclude's chunk in the same round trip as the include's.** A read of
 `n` chunks took about `n / 8` request times in sequence, and that window, not the network, set how long a long read
 took. Before the run of 2026-10-04 the wider window was only **derived**, from a model that draws each GET's latency
 from a lognormal distribution with a median of 26 ms and caps the open requests at 50, as the S3 SDK's default sockets
-do. That run is the measurement of it, and [`0.12.0`'s run](#the-previous-in-region-run--run-2026-10-03-e13c7) is
+do. That run is the measurement of it, and [the previous release's run](#the-previous-in-region-run--run-2026-10-03-e13c7) is
 what it is measured against. The same harness ran the same workload on both: the requests are the same ones, and the bill is the same
 to the request.
 
 **Measured, in region, on S3**, the median of each:
 
-| Shape | `0.12.0`, window of 8 | `0.13.0`, window to 32 |
+| Shape | Previous release, window of 8 | `0.13.0`, window to 32 |
 | --- | --- | --- |
 | cold intersect, 100 shared chunks | 492.69 ms · 18.3 rounds · mean 11.2 in flight, peak 16 | 290.06 ms · 7.1 rounds · mean 29.1 in flight, peak 64 |
 | cold intersect, 1,000 shared chunks | 4,238.82 ms · 160.4 rounds | 1,808.80 ms · 50.2 rounds · mean 41.3 in flight |
@@ -191,7 +191,7 @@ up to 32 keys per operand ahead, where a window of 8 had requested up to 8. Pass
 
 ### The previous in-region run — run `2026-10-03-e13c7`
 
-> **Measured** on 2026-10-03 (UTC), from AWS CloudShell in `us-east-1`, with the published `0.12.0` packages, whose
+> **Measured** on 2026-10-03 (UTC), from AWS CloudShell in `us-east-1`, with the packages published before `0.13.0`, whose
 > combine kept a fixed window of 8 chunk keys: a round-trip floor of 5.07 ms. Its report is
 > [`bench/calibration/2026-10-03-e13c7.md`](../bench/calibration/2026-10-03-e13c7.md). It is kept here as what
 > [the run above](#the-window-of-32--measured-against-the-model) is measured against.

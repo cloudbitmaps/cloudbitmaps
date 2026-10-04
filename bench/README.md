@@ -67,13 +67,15 @@ publishes all three:
 
 1. **Load throughput** — ids/s and bytes/s into a bucket through `store.load()`, the whole write path, for
    objects that fit one PUT and objects large enough to upload multipart. **Paid** by the in-region run,
-   [`2026-10-03-e13c7`](calibration/2026-10-03-e13c7.md), from AWS CloudShell in `us-east-1`.
+   [`2026-10-03-e13c7`](calibration/2026-10-03-e13c7.md), from AWS CloudShell in `us-east-1`, on the release before `0.13.0`, and measured
+   again on `0.13.0` by [`2026-10-04-73668`](calibration/2026-10-04-73668.md).
 2. **Cold intersect latency** — wall-clock for a chunk-skipping `A ∩ B` that has to fetch from the object store.
-   **Paid** by the same in-region run, [`2026-10-03-e13c7`](calibration/2026-10-03-e13c7.md).
+   **Paid** by the same in-region runs, [`2026-10-03-e13c7`](calibration/2026-10-03-e13c7.md) and, for the engine that
+   ships in `0.13.0`, [`2026-10-04-73668`](calibration/2026-10-04-73668.md).
 3. **The single-bucket bill** — the registry pointer lives in the same bucket as the data, so resolving a
    generation costs an object GET and advancing one costs a conditional PUT. **Paid** by its own run,
    [`2026-09-23-94416`](calibration/2026-09-23-94416.md), from a laptop, and measured again in-region by
-   [`2026-10-03-e13c7`](calibration/2026-10-03-e13c7.md). A request count, and so the bill for
+   [`2026-10-03-e13c7`](calibration/2026-10-03-e13c7.md) and [`2026-10-04-73668`](calibration/2026-10-04-73668.md). A request count, and so the bill for
    requests, does not depend on where the client is, with one exception: an intersect
    slower than the pointer refresh reads each pointer again. The harness's timed store turns the pointer refresh
    off (`cache.genTtlMs: 0`). Bytes read out of the region are billed as transfer, which the harness counts and
@@ -106,7 +108,10 @@ engine's model of 2 + the rounds a window that opens 8 chunks wide and widens to
 in `lib/calibrate-stages.cjs`, stepped at an even latency from the engine's two constants), for a pointer, a tail and
 the window. A peak of 64 is the full window, 32 chunks each read from both operands; rounds above the model with a
 mean in flight well under that is a slow request holding the window. A run made before the window widened ran a fixed window of 8
-chunks, a model of 2 + ⌈k / 8⌉ and a peak of 16, and its figures are read against that. In flight counts requests the library issued, including any waiting for a free socket.
+chunks, a model of 2 + ⌈k / 8⌉ and a peak of 16, and its figures are read against that. In flight counts requests the library issued, including any waiting for a free socket, so a mean or a peak above the
+client's sockets (`maxSockets`, which the record carries; 50 is the SDK's default) means requests queued, and the
+rounds then sit above the model, which assumes no limit. The run of 2026-10-04 did: an `andNot` mean of 80.6 in flight
+against 50 sockets.
 
 `andNot` reads every chunk of the segment it filters, since any of them can survive, and each exclude only where it
 overlaps, so what it costs scales with the include operand and not with the size of the exclude list.
