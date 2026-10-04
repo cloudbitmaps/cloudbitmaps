@@ -149,8 +149,8 @@ bytes per segment and `concurrency` times that for `eraseSubject`, 32 MiB plus 2
 smaller than that is held whole. A well-formed segment of chunks of about 8 KiB reads ahead up to 4 MiB, where a read
 of one chunk at a time held about 256 KiB. `eraseSubject` erases up to `concurrency` segments at once (8 by default),
 so it can have up to `concurrency × 4` range requests open together, 32 by default, each one range and not one chunk,
-within the 128 sockets the client the store builds allows (50 on a client you pass, by the SDK's default: the requests
-past the limit wait for a socket, unless you set `maxSockets` to match, [production](production.md)).
+which fits both the 128 sockets of the client the store builds and the 50 of the SDK's default on a client you pass, so
+it needs no `maxSockets` ([production](production.md)).
 
 **Every generation that holds the id goes, not only the current one.** A re-seed that drops someone leaves their bit
 in the generation `keep` retains. A `store.rollback` leaves the generations it rolled back from above the pointer,

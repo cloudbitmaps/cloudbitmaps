@@ -309,12 +309,11 @@ excludes up to 32 times the include plus the excludes that hold each key. The cl
 sockets, which covers one two-operand combine with room to spare; a client you pass keeps the SDK's default of 50, and
 its reads past the 50th are not refused: they wait for a socket, and the wait counts against `readTimeoutMs`. Raise
 `maxSockets` (on the store, or on your own client) to match your concurrent combines (256 covers four two-operand
-combines or one `eraseSubject`), or pass a lower `concurrency` to the combine.
+combines), or pass a lower `concurrency` to the combine.
 
 `eraseSubject` has up to `concurrency × 4` range requests open (32 by default, since it erases 8 segments at once, each
 reading its segment through a stream of at most 4 ranges, each up to 1 MiB), and `iterate` and the storage-path `count`
-read up to 32 keys ahead. Its 32 fit the client the store builds; on a client you pass, raise `maxSockets` or pass a lower
-`concurrency`.
+read up to 32 keys ahead. Its 32 range requests fit both the client the store builds (128 sockets) and the SDK's default on a client you pass (50), so they need no `maxSockets`.
 
 Raise `readTimeoutMs` too on a link too slow to deliver a read inside the timeout, since such a read fails on every attempt. The
 timer is set on each request rather than on the client, so a `client` you pass gets it without being changed. On a

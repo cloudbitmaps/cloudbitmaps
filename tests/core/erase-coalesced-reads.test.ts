@@ -7,7 +7,8 @@ import { eraseIdFromSegment } from '@/core/erase-id';
 import { joinId } from '@/core/bit-route';
 import { brandAsBackend } from '@/core/ports';
 import type { GenKey, IStorageDriver } from '@/core/ports';
-import { CloudRoaring, MemoryStorage } from '@/index';
+import { CloudRoaring, MemoryStorage, TransientError } from '@/index';
+import { IntegrityError } from '@/core/errors';
 import { SafeBitmap, roaringCodec } from '@/roaring-codec';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { InProcessKeystore } from '@/drivers/crypto';
@@ -480,5 +481,79 @@ describe('every chunk of the stream passes the checks of a read of it alone', ()
     });
     await expect(eraseFrom(w, joinId(0, 1))).rejects.toThrow(/ended before chunk/);
     expect((await w.registry.get(SEG))!.currentGen).toBe(0);
+  });
+
+  it('refuses a stream that yields a chunk other than the one the rewrite is at', async () => {
+    const w = await packed(12);
+    const real = CrbmReader.prototype.readChunks;
+    vi.spyOn(CrbmReader.prototype, 'readChunks').mockImplementation(function (
+      this: CrbmReader,
+      keys,
+      options,
+    ) {
+      const stream = real.call(this, keys, options);
+      const next = stream.next.bind(stream);
+      stream.next = async () => {
+        const step = await next();
+        return step.done === true
+          ? step
+          : { done: false, value: { ...step.value, key: step.value.key + 1 } };
+      };
+      return stream;
+    });
+    await expect(eraseFrom(w, joinId(0, 1))).rejects.toBeInstanceOf(IntegrityError);
+    expect((await w.registry.get(SEG))!.currentGen).toBe(0);
+  });
+});
+
+describe('a rewrite the writer abandons', () => {
+  it('rejects, publishes nothing, and sends no request after the rejection, a pending retry included', async () => {
+    const unhandled: unknown[] = [];
+    const on = (e: unknown) => unhandled.push(e);
+    process.on('unhandledRejection', on);
+    try {
+      const w = await wide(240);
+      // The first range lands at once and the writer fails to decode its first chunk; the third range then fails
+      // transiently, and its retry waits on a backoff the test holds.
+      const { storage, counts } = instrument(w.inner, {
+        before: async (nth) => {
+          if (nth === 2) return;
+          await tick(nth === 3 ? 10 : 40);
+          if (nth === 3) throw new TransientError('throttled');
+        },
+      });
+      const backoffs: Array<() => void> = [];
+      const clock = {
+        now: () => 0,
+        sleep: () => new Promise<void>((r) => backoffs.push(r)),
+        yield: () => Promise.resolve(),
+      };
+      let decodes = 0;
+      const codec = {
+        ...stub(),
+        safeDeserialize: (b: Uint8Array, max: number) => {
+          if (++decodes === 2) throw new IntegrityError('chunk will not decode');
+          return stub().safeDeserialize(b, max);
+        },
+      };
+      await expect(
+        eraseFrom({ storage, registry: w.registry }, joinId(0, 1), {
+          codec,
+          readRetry: { clock, rng: { next: () => 0 } },
+        }),
+      ).rejects.toThrow('chunk will not decode');
+      await tick(60); // the reads in flight finish; the failed one is now waiting out its backoff
+      const issued = counts.ranges;
+      backoffs.splice(0).forEach((r) => r());
+      await tick(100);
+      expect(counts.ranges).toBe(issued);
+      expect(unhandled).toEqual([]);
+      expect((await w.registry.get(SEG))!.currentGen).toBe(0);
+      const gens: number[] = [];
+      for await (const k of w.inner.list(SEG)) gens.push(k.generation);
+      expect(gens).toEqual([0]);
+    } finally {
+      process.off('unhandledRejection', on);
+    }
   });
 });

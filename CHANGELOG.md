@@ -37,7 +37,7 @@ so, and so do the module headers in the code.
   retry. A segment of 2,000 chunks of about 8 KiB takes about 16 range requests to read, where it took 2,000 (expected,
   from a test that counts them); 100 such chunks take 1, where they took 100. What the rewrite writes, how it publishes
   (fenced), the ledger and the receipt are unchanged. The stream holds at most 4 ranges at once, so an erasure holds at
-  most 4 MiB of a segment (`concurrency` times that for `eraseSubject`, 32 MiB at the default 8), below the 32 MiB a
+  most 4 × (1 MiB + 28 B) = 4 MiB + 112 B of a segment (`concurrency` times that for `eraseSubject`, 32 MiB + 224 B at the default 8), below the 32 MiB a
   corrupt segment could make the per-chunk path hold; a well-formed segment of chunks of about 8 KiB reads ahead up to
   4 MiB, where the per-chunk path held about 256 KiB. The requests an `eraseSubject` can have open fall to
   `concurrency` × 4, and are ranges.
