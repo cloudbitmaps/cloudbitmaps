@@ -15,7 +15,9 @@ so, and so do the module headers in the code.
 
 - **`StorageChunkSource.getChunks(ref, keys, options?)`, optional, for the authors of a chunk source.** It reads several
   chunks of one segment from one generation as a stream, in key order, and yields each chunk with the version of the
-  generation it came from (`ChunkRead`). `CrbmStorageChunkSource`, which the stores the library ships read through,
+  generation it came from (`ChunkRead`). `options.onRequest` hears of every range request the stream sends, once, when it
+  settles (taken, still in flight when the consumer stopped, or failed), with the bytes it moved, the gaps between
+  chunks included, and how long it took, so a caller can count what it is billed for. `CrbmStorageChunkSource`, which the stores the library ships read through,
   implements it by merging chunks that sit within 256 KiB of each other into one range read, up to 1 MiB, and checks
   each chunk exactly as a read of it alone is checked; a custom source that cannot read a range omits it. The stream
   holds at most `options.concurrency` ranges at once (32 by default), in flight or landed and not yet taken, however
