@@ -19,12 +19,12 @@ import { expectSameBytes } from '../helpers/chunk-stream';
 
 /**
  * The erasure rewrite reads the generation it rewrites through the reader's coalesced chunk stream: neighbouring
- * chunks share one range request, the stream holds at most 32 ranges, and everything else about the rewrite (what it
+ * chunks share one range request, the stream holds at most 4 ranges, and everything else about the rewrite (what it
  * writes, how it publishes, the receipt, the collection) is as it was.
  */
 const SEG = { segment: 's' };
 const KIB = 1024;
-const READ_AHEAD = 32;
+const READ_AHEAD = 4;
 
 interface Counts {
   /** Every payload range read the driver served, the one for the target chunk and the verification reads included. */
@@ -296,7 +296,7 @@ const stub = (counter?: { decodes: number }) => ({
 });
 
 describe('the stream holds ranges, not chunks', () => {
-  it('keeps at most 32 range requests open ahead of the writer, and more than one', async () => {
+  it('keeps at most 4 range requests open ahead of the writer, and more than one', async () => {
     const w = await wide(240); // 3 chunks to a range: about 80 ranges
     const { storage, counts } = instrument(w.inner, { before: () => tick(2) });
     const res = await eraseFrom({ storage, registry: w.registry }, joinId(0, 1), { codec: stub() });
@@ -315,7 +315,7 @@ describe('the stream holds ranges, not chunks', () => {
     await vi.waitFor(() => expect(parked.length).toBe(READ_AHEAD));
     await tick(30);
     expect(parked.length).toBe(READ_AHEAD);
-    expect(counts.inflight).toBe(READ_AHEAD + 0);
+    expect(counts.inflight).toBe(READ_AHEAD);
     while (counts.inflight > 0 || parked.length > 0) {
       parked.splice(0).forEach((r) => r());
       await tick(2);
@@ -348,13 +348,11 @@ describe('the stream holds ranges, not chunks', () => {
     await done;
   });
 
-  it('holds at most 32 ranges of 1 MiB chunks while the writer is slow', async () => {
+  it('holds at most 4 ranges of 1 MiB chunks while the writer is slow', async () => {
     const w = await wide(200, KIB * KIB - 28); // one chunk to a range: the hostile layout
     const ranges = new Watched();
     const gate = new Gate();
-    const { storage } = instrument(w.inner, {
-      after: (bytes) => ranges.track(bytes.slice()), // a copy: the memory driver hands out views of one buffer
-    });
+    const { storage } = instrument(w.inner);
     // Every range read after the target's parks once it has allocated its buffer: the writer is waiting on the first
     // of them, and the stream has opened as much as it will.
     let reads = 0;
@@ -363,8 +361,11 @@ describe('the stream holds ranges, not chunks', () => {
       getRange: async (key, offset, length) => {
         const nth = ++reads;
         const bytes = await storage.getRange(key, offset, length);
-        if (nth > 1) await gate.wait();
-        return bytes;
+        if (nth === 1) return bytes; // the target's own read, which is not the stream's
+        // A copy: the memory driver hands out views of one buffer.
+        const held = ranges.track(bytes.slice());
+        await gate.wait();
+        return held;
       },
     };
     gate.close();
@@ -375,8 +376,7 @@ describe('the stream holds ranges, not chunks', () => {
     const held = await ranges.live();
     gate.open();
     await done;
-    expect(held).toBeGreaterThan(READ_AHEAD - 2);
-    expect(held).toBeLessThanOrEqual(READ_AHEAD + 1); // the stream's ranges, and the target's chunk read before it
+    expect(held).toBe(READ_AHEAD);
   }, 60_000);
 
   it('raises a range failing mid-read: nothing is published, nothing unhandled, nothing more is sent', async () => {

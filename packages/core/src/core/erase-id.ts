@@ -665,7 +665,7 @@ export async function eraseIdFromSegment(
 }
 
 /** How many ranges the erasure rewrite keeps open or landed ahead of the writer. */
-const REWRITE_READ_AHEAD = 32;
+const REWRITE_RANGES_AHEAD = 4;
 
 /**
  * The new generation's chunks, ascending: every chunk of the old generation decoded and passed through, except
@@ -675,7 +675,7 @@ const REWRITE_READ_AHEAD = 32;
  * instead of being copied forward — and the writer skips a chunk the removal emptied. Reads run ahead of the writer
  * through the reader's coalesced stream, in key order: neighbouring chunks share one range request, so the erasure
  * costs a few range requests rather than one per chunk. Each chunk is decoded only as the writer reaches it, so a
- * corrupt one still stops the rewrite naming that chunk and not a later one. At most {@link REWRITE_READ_AHEAD}
+ * corrupt one still stops the rewrite naming that chunk and not a later one. At most {@link REWRITE_RANGES_AHEAD}
  * ranges are held ahead of the writer, in flight or landed and not yet taken, each at most 1 MiB plus 28 bytes unless
  * one chunk alone is larger (and no chunk is larger than the reader's per-chunk payload cap, which refuses a longer
  * index entry when the object is opened); a well-formed segment's chunks are about 8 KiB each, so a range of them
@@ -701,11 +701,11 @@ async function* rewrite(
   const keys = [...reader.chunkKeys()].sort((a, b) => a - b);
   // The replaced chunk is never read: it is already in hand. Every other chunk comes through the reader's coalesced
   // stream: neighbouring chunks share one range request, each range goes out under the caller's read retry on its
-  // own, and the stream holds at most REWRITE_READ_AHEAD ranges. It is the same reader, so the whole rewrite reads
+  // own, and the stream holds at most REWRITE_RANGES_AHEAD ranges. It is the same reader, so the whole rewrite reads
   // the one generation the call opened, and each chunk passes the checks a read of it alone passes.
   const stream = reader.readChunks(
     keys.filter((k) => k !== chunkKey),
-    { concurrency: REWRITE_READ_AHEAD, readRange: read },
+    { concurrency: REWRITE_RANGES_AHEAD, readRange: read },
   );
   try {
     for (const k of keys) {

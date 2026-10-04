@@ -36,9 +36,11 @@ so, and so do the module headers in the code.
   associated data on an encrypted segment, the payload cap), each range retried on its own under the store's read
   retry. A segment of 2,000 chunks of about 8 KiB takes about 16 range requests to read, where it took 2,000 (expected,
   from a test that counts them); 100 such chunks take 1, where they took 100. What the rewrite writes, how it publishes
-  (fenced), the ledger and the receipt are unchanged. The stream holds at most 32 ranges at once, so an erasure holds up
-  to 32 MiB of a segment (`concurrency` × 32 MiB for `eraseSubject`), where it held up to 32 chunks, about 256 KiB for a
-  well-formed segment; the sockets an `eraseSubject` can have open are still `concurrency` × 32, now ranges.
+  (fenced), the ledger and the receipt are unchanged. The stream holds at most 4 ranges at once, so an erasure holds at
+  most 4 MiB of a segment (`concurrency` times that for `eraseSubject`, 32 MiB at the default 8), below the 32 MiB a
+  corrupt segment could make the per-chunk path hold; a well-formed segment of chunks of about 8 KiB reads ahead up to
+  4 MiB, where the per-chunk path held about 256 KiB. The requests an `eraseSubject` can have open fall to
+  `concurrency` × 4, and are ranges.
 
 ## [0.14.0] — 2026-10-04
 
