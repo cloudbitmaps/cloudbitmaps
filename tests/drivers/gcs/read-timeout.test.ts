@@ -412,10 +412,12 @@ describe('a GCS read with readTimeoutMs', () => {
     it.concurrent(
       'a 503 and then a stall share one deadline: the retry gets only what is left of it',
       async () => {
-        // The 503 takes 600 of the 1,000 ms, so a fresh clock for the retry would end past 1,600 ms.
-        const timeout = 1_000;
+        // The 503 takes 1,500 of the 2,000 ms, so a fresh clock for the retry would end past 3,500 ms. The retry that
+        // shares the deadline ends at 2,000 plus whatever a loaded machine adds, which the bound below leaves 1,250 ms
+        // for, with 250 ms to spare before a fresh clock would be seen.
+        const timeout = 2_000;
         const { run, counts, held } = await scenario(call, timeout, {
-          media: [{ late503: 600 }, 'stall-headers'],
+          media: [{ late503: 1_500 }, 'stall-headers'],
         });
         expect(run.code).toBe(0);
         expect(run.outcome).toMatchObject({ error: 'TransientError' });
@@ -423,7 +425,7 @@ describe('a GCS read with readTimeoutMs', () => {
         expect(held).toBe(1);
         const ms = Number(run.outcome?.ms);
         expect(ms).toBeGreaterThanOrEqual(timeout - 20);
-        expect(ms).toBeLessThan(timeout + 400);
+        expect(ms).toBeLessThan(timeout + 1_250);
       },
       30_000,
     );

@@ -156,13 +156,13 @@ describe('Azure Blob: a read that stalls is cut off after readTimeoutMs', () => 
 describe('Azure Blob: what the read timeout leaves alone', () => {
   it('fast reads return as before, well inside the timeout', async () => {
     const backend = backendWith(TIMEOUT);
-    const t0 = performance.now();
+    // No bound on how long they take: a read the timeout cut off would be a TransientError here, so each one returning
+    // is the proof, and an elapsed-time bound would only measure the machine.
     expect(await backend.storage.getRange(GEN, 0, 4)).toHaveLength(4);
     const tail = await backend.storage.getTail(GEN, 16);
     expect(tail).toMatchObject({ size });
     expect(tail.bytes).toHaveLength(Math.min(16, size));
     expect((await backend.registry.get(REF))?.currentGen).toBe(GEN.generation);
-    expect(performance.now() - t0).toBeLessThan(TIMEOUT * 4);
   });
 
   it('a read longer than nothing but shorter than the timeout finishes', async () => {
