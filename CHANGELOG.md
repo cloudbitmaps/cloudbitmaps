@@ -11,6 +11,18 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Changed
+
+- **`eraseNamespace` shreds eight segments at a time instead of one.** Each segment keeps its own read and
+  compare-and-swap, a fault in one is recorded against it and stops no other, and `destroyed` comes back in the
+  listing's order. The `segment.erase` events are now emitted as each segment finishes, so their order is no longer the
+  listing's; `namespace.erase` is still last, with the same count.
+- **A registry listing reads 48 rows at a time instead of 16** on the S3, GCS and Azure Blob registries. A full scan
+  of a large fleet takes about a third of the round trips in sequence; 48 stays under the 50 sockets an SDK client has
+  by default. `checkConsistency`'s own default of 8 is unchanged.
+- **The erasure of one id looks through the other generations for a holder a few at a time.** The answer is the same as
+  the one-at-a-time scan's: the newest holder, and the first fault in newest-first order, with none from past a holder.
+
 ## [0.14.0] — 2026-10-04
 
 ### Added
