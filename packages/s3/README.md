@@ -41,6 +41,7 @@ It builds its own client from your usual AWS credentials. Any other key is refus
 | `prefix` | a key prefix for everything this store writes |
 | `client` | your own `S3Client`; it carries its own region, endpoint and credentials |
 | `region`, `endpoint`, `pathStyle`, `credentials` | build a client for you, such as one for MinIO; refused beside `client` |
+| `maxSockets` | most sockets the client you do not pass opens at once, for `https` and plain `http` alike; a positive integer, default 128 (the SDK's own is 50); refused beside `client` |
 | `partBytes`, `maxObjectBytes` | multipart sizing: part size (default 8 MiB; the upload buffers one part at a time) and the largest object (about 80 GiB by default, up to S3's 5 TiB) |
 | `readTimeoutMs` | how long one read (a `GetObject` or `HeadObject`, its body included) may take before it throws `TransientError` and the store retries it; `0`, the default, sets no timeout. Writes are not timed |
 | `conditionalDelete` | whether the registry removes a deleted row with a `DeleteObject` under `If-Match` rather than leaving a tombstone. On by default when the host the client resolves is an AWS S3 host, however its endpoint was set (`endpoint`, `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL`, the shared config file); off for any other host: set it for an S3-compatible store only once you know it applies the header (MinIO ignores it) |
@@ -78,7 +79,8 @@ It builds its own client from your usual AWS credentials. Any other key is refus
   not finished in that many ms throws `TransientError`, and the store runs it again; AWS's guidance is to retry a GET
   of under 512 KB after about 2 seconds. The timer covers the body as well, so a connection that sends its headers and
   then stalls is cut off too. It starts when the read is handed to the SDK, so a burst of reads larger than the
-  client's socket pool (50 by default) can time out while queued: set it above that queueing, or raise `maxSockets`.
+  built client's socket pool (128 by default) can time out while queued: set it above that queueing, or raise `maxSockets`
+  (a `client` you pass carries its own pool).
   For the writes and listings, give your client a timeout of its own.
 
 The [production checklist](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md) covers each item, with a sample IAM policy, and the ones every backend shares: a request timeout on your client for the requests the library does not time, backups of the data and the registry, and a schedule for your loads.

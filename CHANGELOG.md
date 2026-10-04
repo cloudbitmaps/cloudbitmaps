@@ -11,6 +11,17 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Changed
+
+- **The client `S3Storage` builds allows 128 sockets, up from the AWS SDK's default of 50, and a new `maxSockets`
+  option sets it.** At the library's default `concurrency` of 32, one two-operand `intersect` keeps up to 64 reads
+  open, so the built client queued the library behind its own socket pool; a many-exclude `andNot` ran 23% faster on
+  128 sockets (measured locally against a latency-modelled source). `maxSockets` is a positive integer, applies to
+  `https` and plain-`http` endpoints alike, and is refused beside `client`, as `region`, `endpoint`, `pathStyle` and
+  `credentials` are. Keep-alive, timeouts and retry on the built client are unchanged, and a client you pass is never
+  changed: it keeps its own limit, so raise it there. `eraseSubject`'s 256 reads at once need `maxSockets: 256` or a
+  lower `concurrency`.
+
 ## [0.13.0] — 2026-10-03
 
 ### Breaking
