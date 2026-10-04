@@ -2226,7 +2226,7 @@ export interface BulkLoadResult {
  * {@link WriteConflictError} (write-once). Without a registry a `StorageChunkSource` serves the **highest**
  * generation present, so a too-high number silently shadows real data; with one, `publishGeneration` decides.
  */
-export async function bulkLoadCrbmGeneration(
+export function bulkLoadCrbmGeneration(
   driver: IStorageDriver,
   key: GenKey,
   ids: Iterable<number> | AsyncIterable<number> | DecodedLoadInput,
@@ -2279,6 +2279,38 @@ export async function bulkLoadCrbmGeneration(
     row?: RegistryRecord | null;
   } = {},
 ): Promise<BulkLoadResult> {
+  return bulkLoadAhead(driver, key, { generation: Promise.resolve(key.generation) }, ids, options);
+}
+
+/**
+ * What a load has already started when it calls {@link bulkLoadAhead}: its number, and the segment's data key, each
+ * still in flight so their round trips overlap the encoding. Both are joined where the write needs them, and neither
+ * may be left to reject unobserved.
+ */
+export interface LoadAhead {
+  /** The number the generation takes (see {@link nextLoadGeneration}); joined just before the object is written. */
+  readonly generation: PromiseLike<number>;
+  /**
+   * The key a caller already asked the keystore to unwrap, with the wrappings it asked about. Used only when the
+   * row the write reads after the ids carries exactly these wrappings; otherwise the write unwraps for itself.
+   */
+  readonly unwrapped?: {
+    readonly wrapped: readonly WrappedDek[];
+    readonly aead: PromiseLike<Aead>;
+  };
+}
+
+/**
+ * {@link bulkLoadCrbmGeneration} for a load whose number, and perhaps its key, are still being fetched: the same
+ * options, with the same meaning, and the same writes. The number is joined only where the object is written.
+ */
+export async function bulkLoadAhead(
+  driver: IStorageDriver,
+  ref: SegmentRef,
+  ahead: LoadAhead,
+  ids: Iterable<number> | AsyncIterable<number> | DecodedLoadInput,
+  options: NonNullable<Parameters<typeof bulkLoadCrbmGeneration>[3]> = {},
+): Promise<BulkLoadResult> {
   if (options.keystore === undefined && options.requireEncryption === true) {
     throw new ValidationError('requireEncryption: a load needs a keystore to write encrypted');
   }
@@ -2313,11 +2345,11 @@ export async function bulkLoadCrbmGeneration(
     (passed.wrappedDeks === undefined || passed.wrappedDeks.length === 0)
       ? passed
       : options.registry !== undefined
-        ? await options.registry.get(key)
+        ? await options.registry.get(ref)
         : null;
   if (existing?.status === 'destroyed') {
     throw new ValidationError(
-      `segment "${key.segment}" is destroyed (crypto-shredded) — refusing to write; use a new segment`,
+      `segment "${ref.segment}" is destroyed (crypto-shredded) — refusing to write; use a new segment`,
     );
   }
 
@@ -2333,10 +2365,15 @@ export async function bulkLoadCrbmGeneration(
     options.keystore === undefined
   ) {
     throw new KeyUnavailableError(
-      `segment "${key.segment}" is encrypted but this load has no keystore — refusing to write a cleartext ` +
+      `segment "${ref.segment}" is encrypted but this load has no keystore — refusing to write a cleartext ` +
         `generation onto an encrypted segment. Pass the keystore holding its DEK.`,
     );
   }
+
+  // The number is joined only here, after the ids are bucketed and the row is read and judged: its existence check
+  // ran while they did, and a check that failed fails the load now, before anything is written.
+  const generation = await ahead.generation;
+  const key: GenKey = { namespace: ref.namespace, segment: ref.segment, generation };
 
   // Encryption (opt-in): reuse the segment's existing DEK, or mint a fresh one on its FIRST generation.
   //
@@ -2350,7 +2387,13 @@ export async function bulkLoadCrbmGeneration(
   let newWrapped: readonly WrappedDek[] | undefined;
   if (options.keystore !== undefined) {
     if (existing?.wrappedDeks !== undefined && existing.wrappedDeks.length > 0) {
-      const aead = await options.keystore.openDek(existing.wrappedDeks); // reuse the segment's DEK
+      // Reuse the segment's DEK: the one the caller already asked for when the row still carries its wrappings,
+      // otherwise a fresh unwrap of what the row carries now.
+      const early = ahead.unwrapped;
+      const aead =
+        early !== undefined && sameKeys(early.wrapped, existing.wrappedDeks)
+          ? await early.aead
+          : await options.keystore.openDek(existing.wrappedDeks);
       crypto = { aead, aadFor: (scope) => aadFor(key, key.generation, scope) };
     } else if (existing !== null && existing.currentGen !== null) {
       // An existing lineage with no key material on the row: the segment is cleartext, and one segment cannot be
@@ -2359,7 +2402,7 @@ export async function bulkLoadCrbmGeneration(
       // while the older cleartext objects stay readable from any of them.
       if (options.requireEncryption === true) {
         throw new ValidationError(
-          `requireEncryption: segment "${key.segment}" already has generation ${existing.currentGen} in ` +
+          `requireEncryption: segment "${ref.segment}" already has generation ${existing.currentGen} in ` +
             `cleartext, so this load cannot be encrypted — encryption is chosen when a segment is first ` +
             `loaded. Load into a new segment with the keystore wired, then drop this one.`,
         );

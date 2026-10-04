@@ -97,7 +97,7 @@ const MAX_DELETE_ATTEMPTS = 8;
 /** Bounded re-read when a store's pinned version is overwritten mid-read (see {@link ObjectVersionRaced}). */
 const MAX_READ_ATTEMPTS = 8;
 /** In-flight reads per `list()` page — turns the serial N+1 into one list plus bounded parallel reads. */
-const LIST_READ_CONCURRENCY = 16;
+const LIST_READ_CONCURRENCY = 48;
 
 /**
  * Raised by a store when the version it pinned for a read vanished before it could fetch the bytes —

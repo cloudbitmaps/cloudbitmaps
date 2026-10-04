@@ -14,6 +14,8 @@
 #
 # Optional: CR_CALIBRATE_EXPECT_ACCOUNT=<12-digit id> refuses to run anywhere else.
 #           CR_CALIBRATE_PACKAGE_VERSION=0.11.0 overrides the release measured (default: this clone's version).
+#           CR_CALIBRATE_MAX_SOCKETS=64 sets the workload client's socket limit (default 128, the limit the library gives
+#           the client it builds; the AWS SDK's own default is 50). A positive integer of at most 1024, refused otherwise.
 #           CR_CALIBRATE_REHEARSE=1 runs the same install path against local MinIO, to test this script. Any
 #           other value than unset, 0 or 1 is refused.
 set -euo pipefail
@@ -31,6 +33,29 @@ refuse_bad_rehearse() {
   esac
 }
 refuse_bad_rehearse
+
+# The workload client's socket limit, by the harness's own rule: digits, 1 to 1024 (beyond a process's usual
+# file-descriptor limit, 1,024 on Lambda for one, it cannot be held). Whitespace only is unset. Refused here, before
+# anything is installed, and normalised, so the line echoed below is the number the harness will use.
+MAX_SOCKETS_ASKED="${CR_CALIBRATE_MAX_SOCKETS:-}"
+MAX_SOCKETS_ASKED="${MAX_SOCKETS_ASKED#"${MAX_SOCKETS_ASKED%%[![:space:]]*}"}"
+MAX_SOCKETS_ASKED="${MAX_SOCKETS_ASKED%"${MAX_SOCKETS_ASKED##*[![:space:]]}"}"
+MAX_SOCKETS_SHOWN="128 (the library's default)"
+if [ -n "$MAX_SOCKETS_ASKED" ]; then
+  case "$MAX_SOCKETS_ASKED" in
+    *[!0-9]*)
+      echo "cloudshell: CR_CALIBRATE_MAX_SOCKETS is \"${CR_CALIBRATE_MAX_SOCKETS}\"; expected a positive integer of at most 1024 (more than a process's usual file-descriptor limit, 1,024 on Lambda, cannot be held)" >&2
+      exit 2
+      ;;
+  esac
+  MAX_SOCKETS_NUM=$((10#$MAX_SOCKETS_ASKED))
+  if [ "$MAX_SOCKETS_NUM" -lt 1 ] || [ "$MAX_SOCKETS_NUM" -gt 1024 ]; then
+    echo "cloudshell: CR_CALIBRATE_MAX_SOCKETS is \"${CR_CALIBRATE_MAX_SOCKETS}\"; expected a positive integer of at most 1024 (more than a process's usual file-descriptor limit, 1,024 on Lambda, cannot be held)" >&2
+    exit 2
+  fi
+  MAX_SOCKETS_SHOWN="$MAX_SOCKETS_NUM"
+  export CR_CALIBRATE_MAX_SOCKETS="$MAX_SOCKETS_NUM"
+fi
 
 # The shell must be IN the region measured: a latency taken from another region is labelled in-region by a floor under
 # 30 ms, which a neighbouring region can also make. So the shell's own region, which CloudShell exports, has to exist,
@@ -57,6 +82,8 @@ if [ -z "$PKG_VERSION" ]; then
   exit 2
 fi
 echo "cloudshell: measuring @cloudbitmaps/roaring and @cloudbitmaps/s3 at ${PKG_VERSION}"
+# The harness validates the number and records the limit it read back from the client; this line says what was asked.
+echo "cloudshell: the workload client's socket limit is ${MAX_SOCKETS_SHOWN}"
 MODE_FLAG="--run"
 if [ "${CR_CALIBRATE_REHEARSE:-}" = "1" ]; then
   MODE_FLAG="--rehearse"

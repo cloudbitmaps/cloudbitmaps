@@ -112,6 +112,9 @@ export const IDS_ONLY: Readonly<Record<string, string>> = {
   'tests/core/load-row-reuse.test.ts':
     'injects its races from inside the id stream (a row write while the ids are read), which routing drains ' +
     'before the load reads the row, so the race would land before the load starts',
+  'tests/core/load-overlap.test.ts':
+    'observes the requests a load has sent when its ids are first pulled, and injects a race from inside the id ' +
+    'stream, which routing drains before the load reads the row, so neither would be seen at the point it measures',
   'tests/core/load-numbering.test.ts':
     'injects its race from inside the id stream (an object written while the ids are read), which routing ' +
     'drains before the load numbers its generation, so the race would land before the load starts',

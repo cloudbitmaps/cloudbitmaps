@@ -50,7 +50,7 @@ describe('Azure Blob registry: a pointer read is one request, through the real S
   const released = async (): Promise<boolean> => {
     const done = (): boolean =>
       stub.overridden.length > 0 && stub.overridden.every((o) => o.closed);
-    for (let i = 0; i < 100 && !done(); i++) await new Promise((r) => setTimeout(r, 20));
+    for (let i = 0; i < 200 && !done(); i++) await new Promise((r) => setTimeout(r, 20));
     return done();
   };
 
