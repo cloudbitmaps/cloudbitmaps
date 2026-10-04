@@ -660,7 +660,7 @@ export class CrbmReader {
     chunkKeys: readonly number[],
     options: {
       readonly concurrency?: number;
-      readonly ramp?: boolean;
+      readonly ramp?: boolean | number;
       readonly readRange?: <T>(read: () => Promise<T>) => Promise<T>;
       readonly now?: () => number;
       readonly onRequest?: ReadChunksOptions['onRequest'];

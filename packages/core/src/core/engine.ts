@@ -98,7 +98,8 @@ export interface CombineOptions extends IdRange {
    * is larger), about `concurrency × operands` MiB are held, whatever the segment's size. The stream opens 4 ranges wide
    * (or `concurrency`, if lower) and widens as ranges are taken, so a read that stops early has asked for little past
    * where it stopped, and a read that fits one range makes one request however many chunks it needs. A source that
-   * reads chunk by chunk (a custom one) is read as before: `concurrency` chunk keys at once, opening 8 wide.
+   * reads chunk by chunk (a custom one) is read as before: `concurrency` chunk keys at once, opening 8 wide. A running
+   * stream holds its operand's reader outside the reader cache's bounds until it ends or the segment moves on.
    */
   readonly concurrency?: number;
   /** Override the store's per-op budget for this call (`false` lifts it). */
@@ -127,18 +128,20 @@ interface Operand {
 }
 
 /**
- * An operand's chunks read as one stream of coalesced ranges, in key order: the chunks already decoded in the cache
- * when the read opened (taken from there), and a stream over the rest. The stream is opened lazily, by the first
- * chunk asked of it, and holds at most `concurrency` ranges whatever the segment.
+ * An operand's chunks read as one stream of coalesced ranges, in key order, over the chunks the chunk cache did not hold
+ * when the read opened. The stream is opened lazily, by the first chunk asked of it, and holds at most `concurrency`
+ * ranges whatever the segment. The chunks the cache did hold are looked up again when they are asked for, so what an
+ * invalidation or the LRU dropped meanwhile is read afresh, as a read of that chunk alone would.
  */
 interface StreamedChunks {
   readonly seg: SegmentRef;
   /** The version the read planned under; a chunk is cached under the version it was read from, which may be newer. */
   readonly gen: string | number | undefined;
-  readonly cached: Map<number, CodecBitmap>;
+  /** The keys the stream carries; `undefined` when it carries every key of the read (there is no cache to hold any). */
+  readonly inStream: ReadonlySet<number> | undefined;
   readonly stream: ChunkStream | undefined;
-  /** {@link SegmentEngine.invalidations} when the read opened: a chunk delivered after it moved is not cached. */
-  readonly epoch: number;
+  /** Whether the segment was invalidated after the read opened: a chunk delivered after that is not cached. */
+  invalidated: boolean;
 }
 
 /** A validated {@link IdRange}: inclusive id bounds, and the chunk key and remainder at each end. */
@@ -222,7 +225,7 @@ interface CombinePlan {
   readonly w: IdWindow | null;
   readonly window: CombineWindow;
   /** The operands' chunk streams, closed when the read ends or stops. */
-  readonly streams: readonly ChunkStream[];
+  readonly streams: readonly StreamedChunks[];
 }
 
 /** One key's combined chunk, or the error its read raised, held until the key's turn comes. */
@@ -336,10 +339,10 @@ export class SegmentEngine {
    */
   private readonly openReads = new Map<string, OpenRead>();
   /**
-   * Bumped by every {@link invalidate}. A chunk stream records it when it opens and caches no chunk it delivers after
-   * it has moved, as a read whose entry an invalidation dropped does not (streams hold no `openReads` entry).
+   * The chunk streams open right now. An {@link invalidate} of a segment marks its streams, which then cache no chunk
+   * they deliver, as a read whose entry an invalidation dropped does not (streams hold no `openReads` entry).
    */
-  private invalidations = 0;
+  private readonly openStreams = new Set<StreamedChunks>();
 
   constructor(deps: EngineDeps) {
     this.storage = deps.storage;
@@ -455,7 +458,7 @@ export class SegmentEngine {
     if (streamed !== undefined) {
       return {
         take: (chunkKey) => this.streamedChunk(streamed, chunkKey),
-        close: () => streamed.stream?.close(),
+        close: () => this.closeStreamed(streamed),
       };
     }
     const window = this.chunkWindow(seg, chunkKeys, gen, true);
@@ -571,7 +574,9 @@ export class SegmentEngine {
    * waiting for the TTL, so a shorter call can meet them too: **the reader cache evicting an operand mid-call**
    * (`maxOpenSegments`), whose re-read re-resolves fresh; a sweep deleting the generation it was reading, which
    * heals the read forward; and an invalidation, which this store's own `load`, `rollback` and `eraseSubject` make
-   * and `invalidate()` makes on request. Still whole/immutable per read, never torn.
+   * and `invalidate()` makes on request. Still whole/immutable per read, never torn. An operand's stream resolves its
+   * segment again before it serves each chunk, so each of those moves a running read as it would a read of one chunk, and
+   * the ranges it had requested of the earlier generation are dropped, not served.
    */
   intersect(segs: readonly SegmentRef[], options?: CombineOptions): AsyncGenerator<number> {
     return this.combine(segs, options?.exclude ?? [], 'all', 'intersect', options);
@@ -752,7 +757,7 @@ export class SegmentEngine {
     // Each include is read as a stream of coalesced ranges, and so is each exclude that is read with the includes (one
     // include, or a union): their key lists are fixed here. An exclude that waits on an AND of two or more includes
     // stays per key, since an emptied AND never needs its chunk.
-    const streams: ChunkStream[] = [];
+    const streams: StreamedChunks[] = [];
     const streamExcludes = mode === 'any' || operands.length === 1;
     const open = (o: Operand, wanted: (key: number) => boolean): void => {
       o.streamed = this.openStreamed(
@@ -762,7 +767,7 @@ export class SegmentEngine {
         limit,
         COMBINE_RANGE_START,
       );
-      if (o.streamed?.stream) streams.push(o.streamed.stream);
+      if (o.streamed?.stream) streams.push(o.streamed);
     };
     for (const o of operands) open(o, mode === 'all' ? () => true : (k) => o.keys.has(k));
     if (streamExcludes) for (const e of excludes) open(e, (k) => e.keys.has(k));
@@ -797,7 +802,7 @@ export class SegmentEngine {
         }
       }
     } finally {
-      for (const stream of plan.streams) stream.close();
+      for (const stream of plan.streams) this.closeStreamed(stream);
     }
   }
 
@@ -819,7 +824,7 @@ export class SegmentEngine {
         }
       }
     } finally {
-      for (const stream of plan.streams) stream.close();
+      for (const stream of plan.streams) this.closeStreamed(stream);
     }
   }
 
@@ -907,48 +912,68 @@ export class SegmentEngine {
   ): StreamedChunks | undefined {
     const getChunks = this.storage.getChunks;
     if (getChunks === undefined || gen === null || keys.length === 0) return undefined;
-    const cached = new Map<number, CodecBitmap>();
     let wanted: readonly number[] = keys;
+    let inStream: Set<number> | undefined;
     if (this.cache) {
       const misses: number[] = [];
-      wanted = misses;
       for (const chunkKey of keys) {
         const hit = this.cache.get(this.chunkCacheKey({ ...seg, chunkKey }, gen));
-        if (hit) cached.set(chunkKey, hit);
-        else misses.push(chunkKey);
+        if (!hit) misses.push(chunkKey);
         if (this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: hit !== undefined });
       }
+      wanted = misses;
+      if (misses.length < keys.length) inStream = new Set(misses);
     }
+    // Every range request the stream sends is reported, one `storage.get` each, when it settles: the ones a read took,
+    // and the ones still in flight when it stopped, which are billed all the same.
+    const onRequest = this.metricsOn
+      ? (request: { readonly bytes: number; readonly ms: number }): void => {
+          this.metrics.onEvent({
+            kind: 'storage.get',
+            namespace: seg.namespace,
+            segment: seg.segment,
+            bytes: request.bytes,
+            ms: request.ms,
+          });
+        }
+      : undefined;
     const stream =
       wanted.length === 0
         ? undefined
         : new ChunkStream(
-            getChunks.call(this.storage, seg, wanted, { concurrency, ramp: rampStart }),
+            getChunks.call(this.storage, seg, wanted, {
+              concurrency,
+              ramp: rampStart,
+              ...(onRequest === undefined ? {} : { onRequest }),
+            }),
           );
-    return { seg, gen, cached, stream, epoch: this.invalidations };
+    const streamed: StreamedChunks = { seg, gen, inStream, stream, invalidated: false };
+    if (stream) this.openStreams.add(streamed);
+    return streamed;
   }
 
-  /** The decoded chunk at `chunkKey` of a streamed read: the cached instance, or the next chunk of its stream. */
+  private closeStreamed(streamed: StreamedChunks): void {
+    streamed.stream?.close();
+    this.openStreams.delete(streamed);
+  }
+
+  /**
+   * The decoded chunk at `chunkKey` of a streamed read: the next chunk of its stream, or, for a chunk the cache held
+   * when the read opened, the cached instance while it is still there, and a read of that chunk alone once it is not.
+   */
   private streamedChunk(streamed: StreamedChunks, chunkKey: number): Promise<CodecBitmap | null> {
-    const hit = streamed.cached.get(chunkKey);
-    if (hit) return Promise.resolve(hit);
+    if (streamed.inStream !== undefined && !streamed.inStream.has(chunkKey)) {
+      const ref = { ...streamed.seg, chunkKey };
+      const hit = this.cache?.get(this.chunkCacheKey(ref, streamed.gen));
+      return hit ? Promise.resolve(hit) : this.storageChunk(ref, streamed.gen);
+    }
     return streamed.stream!.take(chunkKey).then((read) => {
-      const { request } = read;
-      if (request !== undefined && this.metricsOn) {
-        this.metrics.onEvent({
-          kind: 'storage.get',
-          namespace: streamed.seg.namespace,
-          segment: streamed.seg.segment,
-          bytes: request.bytes,
-          ms: request.ms,
-        });
-      }
       if (read.bytes === null) return null;
       const bitmap = this.decodeChunk(read.bytes, chunkKey);
       // Cached under the version the bytes came from, not the one the read planned under: a source that re-resolved
       // mid-read answers newer bytes, and those must not sit under the older version's key. Not cached at all if the
       // segment was invalidated while the read ran.
-      if (this.cache && this.invalidations === streamed.epoch) {
+      if (this.cache && !streamed.invalidated) {
         const version = streamed.gen === undefined ? undefined : read.version;
         if (version !== null) {
           this.cache.set(this.chunkCacheKey({ ...streamed.seg, chunkKey }, version), bitmap);
@@ -1071,8 +1096,10 @@ export class SegmentEngine {
    * Called by the destructive verbs on the facade. Synchronous and best-effort — forgetting cannot fail.
    */
   invalidate(ref: SegmentRef): void {
-    this.invalidations += 1;
     const prefix = segmentPrefix(ref);
+    for (const streamed of this.openStreams) {
+      if (segmentPrefix(streamed.seg) === prefix) streamed.invalidated = true;
+    }
     this.cache?.deleteWhere((key) => key.startsWith(prefix));
     // A read already open was asked for before this call, so a caller after it must not join it.
     for (const key of this.openReads.keys()) if (key.startsWith(prefix)) this.openReads.delete(key);

@@ -1200,8 +1200,23 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         // Pulled by hand, not by `for await`: a loop binding would keep the chunk just yielded (a view into a range, or
         // a decrypted chunk) alive while the next one is awaited.
         const pull = new ItemPull(chunks);
+        let movedOn = false;
         try {
           while (await pull.advance()) {
+            // Before a chunk is handed out, the segment is resolved as a read of that chunk alone would resolve it: a
+            // `cache.genTtlMs` boundary, the reader cache having let the segment go, and an invalidation each leave
+            // the snapshot this stream was opened on no longer the live one. If that moved the segment to another
+            // generation or incarnation, or to none, nothing more is served from this stream: its ranges are dropped
+            // and the keys not yet yielded are read afresh.
+            const live = this.liveSnapshot(ref);
+            if (live !== snap) {
+              const now = await live.reader;
+              if (now === null || versionOf(now.generation, now.lineage) !== version) {
+                movedOn = true;
+                break;
+              }
+              snap = live;
+            }
             // Counted as it is handed out: the next thing to happen to the stream is the consumer asking for more.
             yield pull.take((chunk) => {
               yielded += 1;
@@ -1212,7 +1227,12 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         } finally {
           await pull.close();
         }
-        return;
+        if (!movedOn) return;
+        // The ranges the dropped stream still has in flight finish first, so the next stream's window does not open
+        // beside them.
+        await chunks.settled();
+        healed = false;
+        continue;
       } catch (err) {
         // Each heal needs a chunk yielded since the last, so a stream heals at most once per range it reads (a heal
         // plans the keys that remain again). The two misses that are recoverable, as for a single chunk: a
