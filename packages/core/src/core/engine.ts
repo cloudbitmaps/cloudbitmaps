@@ -12,6 +12,7 @@ import { splitId, joinId, CHUNK_COUNT, MAX_REMAINDER, U32_MAX } from './bit-rout
 import type { CodecBitmap, CodecInterface } from './codec';
 import { checkBudget, DEFAULT_BUDGET, resolvePerOpBudget } from './budget';
 import type { Budget, BudgetOption } from './budget';
+import { ChunkWindow } from './chunk-window';
 import type { Clock } from './determinism';
 import { IntegrityError, ValidationError } from './errors';
 import { chunkGenKey, chunkRefKey, segmentPrefix } from './keys';
@@ -191,46 +192,6 @@ function keysWithin(keys: readonly number[], w: IdWindow): number[] {
   return keys.slice(firstAtLeast(w.loKey), firstAtLeast(w.hiKey + 1));
 }
 
-/**
- * An ordered window of chunk reads: up to `max` reads open ahead of the one being consumed, handed back in key
- * order. With `ramp`, the window opens 1, 2, 4 … wide up to `max` instead of `max` at once, so a read that stops
- * after a few ids has fetched a handful of chunks, not a full window.
- *
- * Each read is wrapped to resolve and never reject, so a read nobody consumes (the consumer stopped, or an
- * earlier chunk failed) cannot raise an unhandled rejection; its error surfaces from {@link take} only if the
- * read reaches that chunk. Memory is bounded by the window: at most `max` decoded chunks are held ahead.
- */
-class ChunkWindow {
-  private readonly open: Array<Promise<{ chunk: CodecBitmap | null; error?: { cause: unknown } }>> =
-    [];
-  private launched = 0;
-  private taken = 0;
-
-  constructor(
-    private readonly keys: readonly number[],
-    private readonly fetch: (chunkKey: number) => Promise<CodecBitmap | null>,
-    private readonly max: number,
-    private readonly ramp: boolean,
-  ) {}
-
-  /** The next chunk in key order (null if the source holds none), or the error its read raised. */
-  async take(): Promise<CodecBitmap | null> {
-    const width = this.ramp ? Math.min(this.max, 2 ** Math.min(this.taken, 30)) : this.max;
-    while (this.launched < this.keys.length && this.launched - this.taken < width) {
-      this.open.push(
-        this.fetch(this.keys[this.launched++]!).then(
-          (chunk) => ({ chunk }),
-          (cause: unknown) => ({ chunk: null, error: { cause } }),
-        ),
-      );
-    }
-    const slot = await this.open.shift()!;
-    this.taken += 1;
-    if (slot.error) throw slot.error.cause;
-    return slot.chunk;
-  }
-}
-
 export class SegmentEngine {
   private readonly storage: StorageChunkSource;
   private readonly cache: BoundedLru<string, CodecBitmap> | undefined;
@@ -333,7 +294,7 @@ export class SegmentEngine {
     chunkKeys: readonly number[],
     gen: string | number | null | undefined,
     ramp: boolean,
-  ): ChunkWindow {
+  ): ChunkWindow<CodecBitmap | null> {
     return new ChunkWindow(
       chunkKeys,
       (chunkKey) => this.storageChunk({ ...seg, chunkKey }, gen),
