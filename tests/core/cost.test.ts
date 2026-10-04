@@ -1,4 +1,8 @@
 import { writeCrbmGeneration } from '@/core/crbm-storage-source';
+vi.mock('@/core/crbm/reader', async (original) =>
+  (await import('../helpers/chunks-not-kept')).withoutKeptChunks(await original()),
+);
+
 import { SafeBitmap } from '@/roaring-codec';
 import {
   CloudRoaring,

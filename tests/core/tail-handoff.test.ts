@@ -237,6 +237,19 @@ describe('the storage chunk source over a small generation', () => {
     expect(plain.ranges).toEqual([]);
   });
 
+  it('serves a kept chunk of the one generation it opened, as a chunk-cache hit does, though the object is swept', async () => {
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, SMALL, { registry });
+    const source = new CrbmStorageChunkSource(storage, { registry });
+    const before = await collect(source.getChunks!(REF, [0, 1, 2]));
+    await storage.delete({ ...REF, generation: 0 });
+    const after = await collect(source.getChunks!(REF, [0, 1, 2]));
+    expect(after.map((i) => i.version)).toEqual(before.map((i) => i.version));
+    for (const [i, item] of after.entries()) expectSameBytes(item.bytes, before[i]!.bytes);
+    expectSameBytes(await source.getChunk({ ...REF, chunkKey: 1 }), before[1]!.bytes);
+  });
+
   it('keeps nothing when the share is below the chunk region, and reads ranges', async () => {
     const { source, ranges } = await make(undefined, { limitBytes: 100 });
     await source.getChunk({ ...REF, chunkKey: 1 });

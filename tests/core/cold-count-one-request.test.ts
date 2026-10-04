@@ -1,4 +1,8 @@
 import { randomBytes } from 'node:crypto';
+vi.mock('@/core/crbm/reader', async (original) =>
+  (await import('../helpers/chunks-not-kept')).withoutKeptChunks(await original()),
+);
+
 import { NotFoundError } from '@/core/errors';
 import type { IRegistryDriver, IStorageDriver, RegistryRecord, SegmentRef } from '@/core/ports';
 import { brandAsBackend } from '@/core/ports';

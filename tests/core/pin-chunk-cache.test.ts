@@ -1,4 +1,8 @@
 import { gcOrphanGenerations } from '@/core/generation-gc';
+vi.mock('@/core/crbm/reader', async (original) =>
+  (await import('../helpers/chunks-not-kept')).withoutKeptChunks(await original()),
+);
+
 import {
   MemoryStorage,
   CloudRoaring,
