@@ -2016,9 +2016,85 @@ export interface BulkLoadResult {
  * {@link WriteConflictError} (write-once). Without a registry a `StorageChunkSource` serves the **highest**
  * generation present, so a too-high number silently shadows real data; with one, `publishGeneration` decides.
  */
-export async function bulkLoadCrbmGeneration(
+export function bulkLoadCrbmGeneration(
   driver: IStorageDriver,
   key: GenKey,
+  ids: Iterable<number> | AsyncIterable<number> | DecodedLoadInput,
+  options: {
+    registry?: IRegistryDriver;
+    keystore?: IKeystore;
+    requireEncryption?: boolean;
+    audit?: IAuditSink;
+    /** Bitmap codec. Optional in the type; a **flavor** package binds it ({@link requireCodec}). */
+    codec?: CodecInterface;
+    /**
+     * Injected clock. Supplying one makes bulk-load **cooperative**: it yields the event loop periodically so a
+     * long load does not stall everything else on the process. Without it the load still completes, just
+     * without yielding — which is the pre-existing behaviour, kept so this is purely additive.
+     *
+     * `@cloudbitmaps/roaring` supplies a real clock by default, so flavor users get cooperative behaviour with
+     * no wiring. `core/` cannot default it: it is timer-free by lint, which is exactly why waiting goes through
+     * this seam rather than `setTimeout`.
+     */
+    clock?: Clock;
+    /**
+     * Write the object but do **not** advance the pointer (default: publish when a `registry` is wired).
+     *
+     * For a caller that has to inspect what it wrote before deciding whether it should become current — a
+     * guarded {@link loadSegment} is the one in-tree case — because the check is only meaningful while the old
+     * generation is still authoritative. The `registry` is still required for an encrypted segment and still
+     * consulted: it is where an existing segment's DEK lives, and reusing that key is not optional. The wrapped
+     * DEK comes back on the result so the deferred publish can store it.
+     *
+     * A caller that defers the publish owns what it wrote: an unpublished object sits ABOVE `currentGen`, where
+     * generation collection deliberately never looks, so nothing reclaims it until a later generation above it is
+     * current.
+     */
+    publish?: boolean;
+    /**
+     * The generation's metadata (see {@link GenerationMetadata}), written into the object and carried in the summary.
+     * The caller has checked it against the metadata rules; the writer checks it again, and refuses a record that breaks
+     * one before a byte is written.
+     */
+    metadata?: GenerationMetadata;
+    /**
+     * The segment's row as the caller already read it (`null`: it found none), for a caller that defers the
+     * publish (`publish: false`) and fences it on that same row. A present cleartext row is then used as read,
+     * rather than read again: a row that changes in between (a publish, a drop, a purge and re-create) makes the
+     * fenced publish lose, so the object is never published on the strength of the stale read. A row read as
+     * absent, or one carrying key material, is read again after the ids, as with no row passed: a first load must
+     * see a row another writer created meanwhile, and an encrypted segment's key is unwrapped only from a row read
+     * after the ids, so a segment shredded while they streamed is refused before its key is used.
+     */
+    row?: RegistryRecord | null;
+  } = {},
+): Promise<BulkLoadResult> {
+  return bulkLoadAhead(driver, key, { generation: Promise.resolve(key.generation) }, ids, options);
+}
+
+/**
+ * What a load has already started when it calls {@link bulkLoadAhead}: its number, and the segment's data key, each
+ * still in flight so their round trips overlap the encoding. Both are joined where the write needs them, and neither
+ * may be left to reject unobserved.
+ */
+export interface LoadAhead {
+  /** The number the generation takes (see {@link nextLoadGeneration}); joined just before the object is written. */
+  readonly generation: PromiseLike<number>;
+  /**
+   * The key a caller already asked the keystore to unwrap, with the wrappings it asked about. Used only when the
+   * row the write reads after the ids carries exactly these wrappings; otherwise the write unwraps for itself.
+   */
+  readonly unwrapped?: {
+    readonly wrapped: readonly WrappedDek[];
+    readonly aead: PromiseLike<Aead>;
+  };
+}
+
+/** {@link bulkLoadCrbmGeneration} for a load whose number, and perhaps its key, are still being fetched. */
+export async function bulkLoadAhead(
+  driver: IStorageDriver,
+  ref: SegmentRef,
+  ahead: LoadAhead,
   ids: Iterable<number> | AsyncIterable<number> | DecodedLoadInput,
   options: {
     registry?: IRegistryDriver;
@@ -2103,11 +2179,11 @@ export async function bulkLoadCrbmGeneration(
     (passed.wrappedDeks === undefined || passed.wrappedDeks.length === 0)
       ? passed
       : options.registry !== undefined
-        ? await options.registry.get(key)
+        ? await options.registry.get(ref)
         : null;
   if (existing?.status === 'destroyed') {
     throw new ValidationError(
-      `segment "${key.segment}" is destroyed (crypto-shredded) — refusing to write; use a new segment`,
+      `segment "${ref.segment}" is destroyed (crypto-shredded) — refusing to write; use a new segment`,
     );
   }
 
@@ -2123,10 +2199,15 @@ export async function bulkLoadCrbmGeneration(
     options.keystore === undefined
   ) {
     throw new KeyUnavailableError(
-      `segment "${key.segment}" is encrypted but this load has no keystore — refusing to write a cleartext ` +
+      `segment "${ref.segment}" is encrypted but this load has no keystore — refusing to write a cleartext ` +
         `generation onto an encrypted segment. Pass the keystore holding its DEK.`,
     );
   }
+
+  // The number is joined only here, after the ids are bucketed and the row is read and judged: its existence check
+  // ran while they did, and a check that failed fails the load now, before anything is written.
+  const generation = await ahead.generation;
+  const key: GenKey = { namespace: ref.namespace, segment: ref.segment, generation };
 
   // Encryption (opt-in): reuse the segment's existing DEK, or mint a fresh one on its FIRST generation.
   //
@@ -2140,7 +2221,13 @@ export async function bulkLoadCrbmGeneration(
   let newWrapped: readonly WrappedDek[] | undefined;
   if (options.keystore !== undefined) {
     if (existing?.wrappedDeks !== undefined && existing.wrappedDeks.length > 0) {
-      const aead = await options.keystore.openDek(existing.wrappedDeks); // reuse the segment's DEK
+      // Reuse the segment's DEK: the one the caller already asked for when the row still carries its wrappings,
+      // otherwise a fresh unwrap of what the row carries now.
+      const early = ahead.unwrapped;
+      const aead =
+        early !== undefined && sameKeys(early.wrapped, existing.wrappedDeks)
+          ? await early.aead
+          : await options.keystore.openDek(existing.wrappedDeks);
       crypto = { aead, aadFor: (scope) => aadFor(key, key.generation, scope) };
     } else if (existing !== null && existing.currentGen !== null) {
       // An existing lineage with no key material on the row: the segment is cleartext, and one segment cannot be
@@ -2149,7 +2236,7 @@ export async function bulkLoadCrbmGeneration(
       // while the older cleartext objects stay readable from any of them.
       if (options.requireEncryption === true) {
         throw new ValidationError(
-          `requireEncryption: segment "${key.segment}" already has generation ${existing.currentGen} in ` +
+          `requireEncryption: segment "${ref.segment}" already has generation ${existing.currentGen} in ` +
             `cleartext, so this load cannot be encrypted — encryption is chosen when a segment is first ` +
             `loaded. Load into a new segment with the keystore wired, then drop this one.`,
         );
