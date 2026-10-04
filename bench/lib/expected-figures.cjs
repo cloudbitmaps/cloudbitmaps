@@ -10,12 +10,11 @@
  */
 const fs = require('node:fs');
 const path = require('node:path');
-const { estimateCost, AWS_US_EAST_1_ONDEMAND } = require('@cloudbitmaps/core');
 
 const COUNTS = path.join(__dirname, '..', 'range-counts.json');
 const RESULTS = path.join(__dirname, '..', 'results.json');
+const FILE = path.join(__dirname, '..', 'expected-figures.json');
 const SECONDS_PER_MONTH = 730 * 3600;
-const GET_USD = AWS_US_EAST_1_ONDEMAND.storage.getPerMillion / 1e6;
 /** A dollar amount as a page writes it: cents to two places, or, below a cent, to its last significant digit. */
 const usd = (n) => (n >= 0.01 ? `$${n.toFixed(2)}` : `$${Number(n.toFixed(10)).toString()}`);
 const MB = 1_000_000;
@@ -24,6 +23,8 @@ const mb = (n) => (n < MB ? `${Math.round(n / 1000)} KB` : `${Number((n / MB).to
 
 /** The GETs a cold intersect makes when it makes `chunkRequests` range requests of its two operands in all. */
 function intersectGets(chunkRequests) {
+  const { estimateCost, AWS_US_EAST_1_ONDEMAND } = require('@cloudbitmaps/core');
+  const GET_USD = AWS_US_EAST_1_ONDEMAND.storage.getPerMillion / 1e6;
   const r = estimateCost({
     segments: [],
     workload: { intersectsPerSec: 1, chunksPerIntersect: chunkRequests, operandsPerIntersect: 2 },
@@ -34,8 +35,13 @@ function intersectGets(chunkRequests) {
   return Math.round(gets);
 }
 
-/** The figures, each as the string a page states and the number behind it. */
-function expectedFigures() {
+/**
+ * The figures, each as the string a page states and the number behind it, computed from the counts and the BUILT
+ * estimator. `bench/expected-figures.cjs` writes them to `bench/expected-figures.json`; everything else reads that file.
+ */
+function computeExpectedFigures() {
+  const { AWS_US_EAST_1_ONDEMAND } = require('@cloudbitmaps/core');
+  const GET_USD = AWS_US_EAST_1_ONDEMAND.storage.getPerMillion / 1e6;
   const counts = JSON.parse(fs.readFileSync(COUNTS, 'utf8'));
   const small = counts.profiles.small.coldIntersect;
   const at = (shared, layout) => small.find((c) => c.shared === shared && c.layout === layout);
@@ -72,4 +78,9 @@ function expectedFigures() {
   };
 }
 
-module.exports = { expectedFigures, intersectGets, usd };
+/** The committed figures (`bench/expected-figures.json`): readable with no build, which the tests and the site gate need. */
+function expectedFigures() {
+  return JSON.parse(fs.readFileSync(FILE, 'utf8'));
+}
+
+module.exports = { expectedFigures, computeExpectedFigures, intersectGets, usd, FILE };

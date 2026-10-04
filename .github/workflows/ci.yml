@@ -59,6 +59,10 @@ jobs:
       # The at-scale table on /benchmarks and in docs/benchmarks.md is rendered from the same file. This fails
       # if either copy is not what that file renders: a hand edit, or new results rendered into one page only.
       - run: pnpm bench:scale:check
+      # /benchmarks claims every figure on it is gated. This is that gate: each cost anchor is checked against
+      # bench/results.json and docs/benchmarks.md, and the check ALSO fails on a figure the sources cannot
+      # account for — so a number cannot quietly improve without evidence.
+      - run: pnpm site:figures
       # Markup must not reference a class the stylesheet never declares, and no internal link may 404.
       - run: python3 scripts/site-classes.py
       - run: python3 scripts/site-links.py
@@ -75,11 +79,10 @@ jobs:
       # counts by running the built engine over the in-memory backend. This fails if bench/range-counts.json is not what
       # it makes now; regenerate with `pnpm bench:range-counts`. It measures nothing on a cloud.
       - run: pnpm bench:range-counts:check
-      # /benchmarks claims every figure on it is gated. This is that gate: each cost anchor is checked against
-      # bench/results.json and docs/benchmarks.md, and the check ALSO fails on a figure the sources cannot
-      # account for — so a number cannot quietly improve without evidence. It runs after the build: the expected
-      # figures it checks are priced by the built estimator.
-      - run: pnpm site:figures
+      # The site's figures gate holds the pages to the figures the engine is expected to cost, which it reads from
+      # bench/expected-figures.json so it needs no build. This fails if that file is not what the built estimator gives
+      # from bench/range-counts.json and bench/results.json; regenerate with `pnpm bench:expected-figures`.
+      - run: pnpm bench:expected-figures:check
       # And bench/run.cjs writes the crossover chart, bench/results.json and the benchmarks pages' BENCH regions,
       # which scripts/site-figures.cjs then treats as a source: without this, a stale results.json would vouch for
       # the site. Regenerate with `pnpm bench`.
