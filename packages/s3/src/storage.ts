@@ -118,10 +118,11 @@ export interface S3StorageDriverOptions {
    * 2,147,483,647. Writes and listings are not timed.
    *
    * The clock starts when the read is handed to the SDK, so it also counts the time the read waits for one of the
-   * client's sockets (128 by default on the client the store builds, 50 on the SDK's own) and the time spent fetching credentials, and under `retryMode: 'adaptive'` the
-   * SDK's rate-limiter wait. A burst of concurrent reads larger than the socket pool can therefore time out with
-   * nothing slow on the wire: size the timeout above the worst queueing your concurrency implies, or raise
-   * `maxSockets` (the store's option, or your own client's). On a client built with `cacheMiddleware: true`, a timed read resolves its middleware each time.
+   * client's sockets (128 by default on the client the store builds, 50 on the SDK's own) and the time spent fetching
+   * credentials, and under `retryMode: 'adaptive'` the SDK's rate-limiter wait. A burst of concurrent reads larger than
+   * the socket pool can therefore time out with nothing slow on the wire: size the timeout above the worst queueing
+   * your concurrency implies, or raise `maxSockets` (the store's option, or your own client's). On a client built with
+   * `cacheMiddleware: true`, a timed read resolves its middleware each time.
    */
   readonly readTimeoutMs?: number;
   /** What the backoff before re-sending a throttled commit waits on; real time when absent. */

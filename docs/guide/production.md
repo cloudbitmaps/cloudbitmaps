@@ -288,7 +288,10 @@ const backend = new S3Storage({ bucket: 'my-bitmaps', maxSockets: 256 });
 The limit is the only thing that differs from the SDK's own client; free keep-alive sockets do not hold the process open,
 and `backend.client.destroy()` closes them.
 
-On a client of your own, set it on the request handler:
+On a client of your own, set it on the request handler. A handler built this way replaces the SDK's own, so it also drops
+the settings the SDK's defaults mode would have given it (the `connectionTimeout` that `AWS_DEFAULTS_MODE` sets, for
+one): pass those yourself if you rely on them, or let `S3Storage` build the client and set `maxSockets` on it, which
+changes the limit and nothing else.
 
 ```ts
 import { S3Client } from '@aws-sdk/client-s3';

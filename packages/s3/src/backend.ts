@@ -82,10 +82,11 @@ export interface S3StorageOptions {
    * 2 seconds. Must be a non-negative safe integer no larger than 2,147,483,647.
    *
    * The clock starts when the read is handed to the SDK, so it also counts the time the read waits for one of the
-   * client's sockets (128 by default, `maxSockets`) and the time spent fetching credentials, and under `retryMode: 'adaptive'` the
-   * SDK's rate-limiter wait. A burst of concurrent reads larger than the socket pool can therefore time out with
-   * nothing slow on the wire: size the timeout above the worst queueing your concurrency implies, or raise
-   * `maxSockets` (the client you pass carries its own). On a client built with `cacheMiddleware: true`, a timed read resolves its middleware each time.
+   * client's sockets (128 by default, `maxSockets`) and the time spent fetching credentials, and under `retryMode:
+   * 'adaptive'` the SDK's rate-limiter wait. A burst of concurrent reads larger than the socket pool can therefore time
+   * out with nothing slow on the wire: size the timeout above the worst queueing your concurrency implies, or raise
+   * `maxSockets` (the client you pass carries its own). On a client built with `cacheMiddleware: true`, a timed read
+   * resolves its middleware each time.
    *
    * Writes and listings are never timed: a write that hangs needs a timeout on the client (its `requestHandler`). The
    * timeout is applied per request, so a `client` you pass gets it without being changed.
@@ -161,6 +162,8 @@ export function limitSockets(client: S3Client, maxSockets: number): void {
     const abort = new AbortController();
     abort.abort();
     try {
+      // An `http:` request makes the handler build both agents; on a client that only ever speaks https the http
+      // agent stays idle, and `client.destroy()` frees it with the rest.
       await handle({ protocol: 'http:' }, { abortSignal: abort.signal }).catch(() => undefined);
       const { httpAgent, httpsAgent } = agents();
       if (httpAgent) httpAgent.maxSockets = maxSockets;
