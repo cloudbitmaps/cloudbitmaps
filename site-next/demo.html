@@ -22,7 +22,7 @@
     <title>CloudBitmaps — a measured intersection, replayed</title>
     <meta
       name="description"
-      content="Step through a real intersection of two 2,000,000-id segments. 100 of 2,000 chunk keys align, 3,800 chunk reads never happen, and 3,000 bytes of chunks are fetched in 24.6 ms — replayed from a recorded benchmark run, not simulated."
+      content="Step through a real intersection of two 2,000,000-id segments. 100 of 2,000 chunk keys align, 3,800 chunk reads never happen, and 3,000 bytes of chunks are fetched in 24.6 ms on the in-memory drivers — replayed from a recorded benchmark run, not simulated."
     />
     <link rel="stylesheet" href="cloudbitmaps.css" />
     <meta name="google-site-verification" content="UpdnyEE0wCiY5rHqUovfc-lRkEa9ZN9M-F67eTRNKhE" />
@@ -98,14 +98,15 @@
         <p class="hero-lede">
           Two segments of <strong>2,000,000 ids</strong> each. Intersecting them fetches
           <strong>3,000 bytes</strong> of chunks and returns <strong>100,000 ids</strong> in
-          <strong>24.6 ms</strong> — because keys are compared before any chunk is requested, and
-          <strong>3,800</strong> chunk reads simply never happen.
+          <strong>24.6 ms</strong> on the in-memory drivers — because keys are compared before any chunk is
+          requested, and <strong>3,800</strong> chunk reads simply never happen.
         </p>
         <p class="note">
           Every measured number on this page comes from one recorded run of
-          <span class="m">SCALE_INJECT=1 pnpm bench:scale</span>, checked into the repository. Nothing here is simulated,
-          and nothing is computed live — this is a replay, and it says so because the distinction is the
-          point.
+          <span class="m">SCALE_INJECT=1 pnpm bench:scale</span>, checked into the repository; the rest is
+          arithmetic on that run or on the format, and the panels below say which is which. Nothing here is
+          simulated, and nothing is computed live — this is a replay, and it says so because the distinction is
+          the point.
         </p>
       </section>
 
@@ -155,7 +156,8 @@
 
         <p class="note">
           That asymmetry is the entire trick. Keys are small and comparable; remainders are the payload. The
-          replay below compares 4,000 keys and fetches 100 payloads from each segment.
+          replay below compares the two segments' 4,000 keys and fetches 200 payloads: the 100 shared chunks,
+          from each segment.
         </p>
 
         <h3>Then each chunk picks its own shape</h3>
@@ -193,8 +195,8 @@
         <p class="note">
           The two costs cross at <strong>4,096 ids</strong>, and that is arithmetic rather than a tuning
           choice: 4,096 &times; 2 bytes is <strong>8 KiB</strong>, exactly what a bitset costs. Below it an
-          array is smaller; above it a bitset is. <a href="flavors.html">The flavors page</a> walks all three
-          shapes and the conversions between them.
+          array is smaller; above it a bitset is — unless the ids run contiguously, when runs beat both.
+          <a href="flavors/roaring.html">The roaring flavor's page</a> walks how a chunk picks among the three.
         </p>
       </section>
 
@@ -414,15 +416,15 @@
               </tbody>
             </table>
             <p class="cb-ftable-foot cb-note">A derived number is only as good as the construction behind it &mdash;
-              <strong>measureIntersect</strong>, in <strong>bench/scale.cjs</strong>, is about 45 lines, and worth
-              reading.</p>
+              <strong>measureIntersect</strong> in <strong>bench/scale.cjs</strong> builds both segments, and it is
+              short enough to read.</p>
           </div>
         </div>
         <p class="note">
           The check is a build gate rather than a promise:
           <span class="m">scripts/site-replay.cjs</span> fails if the reads the benchmark
           <em>reported</em> stop matching what its construction <em>implies</em>, fails if this page drifts
-          from either, and fails if the page states any figure the benchmark cannot account for at all.
+          from either, and fails if the page states a figure written with thousands separators that the benchmark cannot account for.
         </p>
       </section>
 

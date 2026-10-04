@@ -52,8 +52,8 @@ below 9.5px, no external anything, and the point where we lose shown as a peer o
   measured, quoted or chosen, beside what comes out with its arithmetic. The chunk grid draws one cell per ten
   chunks; the memory band sets the flat heap beside the two that grow; and a band of conditions says what the
   figures do not prove.
-- **Nothing describes an older release**: no figure from a run of a design that no longer ships, and no "used to".
-  Where a comparison is needed, it is against an alternative, not against our own history.
+- **Nothing describes an older release**: the figures are the current release's, and no sentence compares it with
+  an earlier one. Where a comparison is needed, it is against an alternative, not against our own history.
 - **The inner pages keep their content** and take the language: the h1 at the display tier beside a figure table,
   each section a band on the alternating ground, card grids as seams, long prose in sans.
 - **Two animations, and nothing else moves**: the crossover drawing itself and chunk-skipping resolving its

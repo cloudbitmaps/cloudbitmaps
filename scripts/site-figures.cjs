@@ -1052,7 +1052,7 @@ const specAnchors = [];
       [`${results.atRest.sizeGiB} GiB at rest, no traffic`, `$${atRestShown} /mo`],
       [/^Share of (?:a Redis node|the Redis cluster)$/, `${results.atRest.pctOfRedis}%`],
       [`1M cold A ∩ B, ${sb?.chunksPerOperand} chunks shared`, singleBucketFigure(MEASURED_1M)],
-      ['1M writes + publishes · store.load() ≈ 2×', singleBucketFigure(WRITE_1M)],
+      ['1M single-part loads · store.load(), pointer included', singleBucketFigure(WRITE_1M)],
       ['Crossover, in GETs', `${results.readCrossoverPerSec.toFixed(2)} /s`],
       [
         `…as cold A ∩ B, ${sb?.measuredGets} GETs each`,

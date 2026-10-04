@@ -147,13 +147,13 @@ describe("site:figures holds site-next/'s homepage to its sources", () => {
   it.each([
     [
       'a derived figure its arithmetic does not give',
-      '<td>$11.20</td>',
       '<td>$11.60</td>',
+      '<td>$11.20</td>',
       'table of what comes out, row 3, reads',
     ],
     [
       'an operand the figure beside it does not follow from',
-      '206 GETs × $0.40',
+      '204 GETs × $0.40',
       '205 GETs × $0.40',
       'table of what comes out, row 2, reads',
     ],
