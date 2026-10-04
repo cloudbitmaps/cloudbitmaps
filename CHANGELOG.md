@@ -13,6 +13,19 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **A load starts its existence check and its key unwrap while it encodes, and asks the keystore for a segment's key
+  once.** The check that numbers the generation and the unwrap of an encrypted segment's key no longer wait for the
+  ids to be bucketed and encoded: they are sent first and joined where the write needs them, so their round trips
+  overlap the encoding. A guarded load of an encrypted segment used to unwrap the same key twice, once to read the
+  current generation and once to write; it now unwraps once, for that load only (nothing is kept between loads). The
+  requests a load makes are the same on success, and so is their order where a fence rests on it: the guard's row read
+  comes first, the row a first load or an encrypted segment reads again still comes after the ids, and the publish is
+  still fenced on the row the guard judged. What changes is how a failure surfaces: a failed existence check (and its
+  listing fallback) is now raised after the ids are consumed, so the encoding's error or the second row read's refusal
+  can be raised instead, and a load of an existing encrypted segment asks the keystore for its key even when it then
+  fails or is refused (never for a crypto-shredded row). Nothing is written or published in any of these cases, and an
+  abandoned check or unwrap leaves no unhandled rejection. A load that throws may have consumed its input, so retry
+  with a fresh source.
 - **`eraseNamespace` shreds eight segments at a time instead of one.** Each segment keeps its own read and
   compare-and-swap, a fault in one is recorded against it and stops no other, and `destroyed` comes back in the
   listing's order. The `segment.erase` events are now emitted as each segment finishes, so their order is no longer the
