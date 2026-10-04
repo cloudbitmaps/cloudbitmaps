@@ -73,7 +73,7 @@ pointer — configured from one bucket and one prefix, which is what makes them 
 |---|---|---|
 | `MemoryStorage` (`MemoryStorageOptions`) | `@cloudbitmaps/roaring` | `new MemoryStorage({ now? }?)` |
 | `LocalFsStorage` (`LocalFsStorageOptions`) | `@cloudbitmaps/roaring` | `new LocalFsStorage('/var/lib/cloudbitmaps', { now? }?)` — generations under `<root>/storage`, pointers under `<root>/registry`, which is also the layout `export-segments` expects. A root is for one process: instances in a process share a lock per row, two processes on one root are not fenced |
-| `S3Storage` | `@cloudbitmaps/s3` | `new S3Storage({ bucket, prefix?, client?, region?, endpoint?, pathStyle?, credentials?, maxObjectBytes?, partBytes?, readTimeoutMs?, conditionalDelete?, now? })` — `client` or the four settings that build one, and both is refused |
+| `S3Storage` | `@cloudbitmaps/s3` | `new S3Storage({ bucket, prefix?, client?, region?, endpoint?, pathStyle?, credentials?, maxSockets?, maxObjectBytes?, partBytes?, readTimeoutMs?, conditionalDelete?, now? })` — `client` or the five settings that build one, and both is refused |
 | `GcsStorage` | `@cloudbitmaps/gcs` | `new GcsStorage({ bucket, prefix?, client?, projectId?, apiEndpoint?, maxObjectBytes?, simpleUploadThresholdBytes?, readTimeoutMs?, conditionalDelete?, now? })` — `client` or the two settings that build one, and both is refused |
 | `AzureBlobStorage` | `@cloudbitmaps/azure-blob` | `new AzureBlobStorage({ containerClient, prefix?, maxObjectBytes?, blockBytes?, readTimeoutMs?, conditionalDelete?, now? })` or `({ connectionString, container, prefix?, maxObjectBytes?, blockBytes?, readTimeoutMs?, conditionalDelete?, now? })` — one or the other, and both is refused |
 
@@ -88,6 +88,7 @@ is built:
 
 | Backend | Option | Default | What it does |
 |---|---|---|---|
+| `S3Storage` | `maxSockets` | 128 (the AWS SDK's own default is 50) | most sockets the client the backend builds opens at once, for `https` and for a plain-`http` endpoint; only the limit differs from the SDK's own client: its request handler, defaults-mode timeouts, keep-alive and retry are the SDK's; a positive safe integer; refused beside `client`, which carries its own |
 | `S3Storage` | `partBytes` | 8 MiB; a smaller value is raised to S3's 5 MiB minimum | multipart part size, and so the peak write memory; a positive safe integer |
 | `S3Storage` | `maxObjectBytes` | `partBytes` × 10,000 (about 80 GiB at the default) | the largest object the backend will write and advertise; raise it and `partBytes` grows so the 10,000-part limit still covers it, up to S3's 5 TiB; a positive safe integer |
 | `S3Storage` | `readTimeoutMs` | `0`: no timeout | how long each `GetObject` and `HeadObject`, the SDK's own retries of it included, may take, the response body included, before it is aborted and throws `TransientError` for the store's read retry; an integer from 0 to 2,147,483,647 |
@@ -364,7 +365,7 @@ job non-deterministic — so being ignored would be worse than being rejected. `
 `AzureBlobStorage` each refuse a key they do not take the same way, naming it and the keys they take: a client
 goes in `client` (`containerClient` on Azure), so `GcsStorage` refuses `storage`, and each refuses another
 backend's size setting, such as `S3Storage` refusing `blockBytes`. They refuse a setting beside a client the same way: a `client` carries its own
-connection settings, so `S3Storage` refuses `region`, `endpoint`, `pathStyle` and `credentials` beside it, and
+connection settings, so `S3Storage` refuses `region`, `endpoint`, `pathStyle`, `credentials` and `maxSockets` beside it, and
 `GcsStorage` refuses `projectId` and `apiEndpoint`, each named. Configure them on the client, or drop `client`.
 
 ### Generation bookkeeping & erasure

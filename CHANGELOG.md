@@ -25,6 +25,17 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **The client `S3Storage` builds allows 128 sockets, up from the AWS SDK's default of 50, and a new `maxSockets`
+  option sets it.** At the library's default `concurrency` of 32, one two-operand `intersect` keeps up to 64 reads
+  open, so the built client queued the library behind its own socket pool; a many-exclude `andNot` ran 23% faster on
+  128 sockets (measured locally against a latency-modelled source). `maxSockets` is a positive integer, applies to
+  `https` and plain-`http` endpoints alike, and is refused beside `client`, as `region`, `endpoint`, `pathStyle` and
+  `credentials` are. Only the socket limit differs from the SDK's own client: its request handler, defaults-mode timeouts,
+  keep-alive, retry and the separate connection for a part of 2 MiB or more (`Expect: 100-continue`) are the SDK's, and
+  a client you pass is never changed: it keeps its own limit, so raise it there. Release a built client's sockets with
+  `store.client.destroy()`. `eraseSubject`'s 256 reads at once need `maxSockets: 256` or a
+  lower `concurrency`.
+
 - **The published in-region latencies are now measured on `0.13.0`.** A run from AWS CloudShell in `us-east-1` on
   2026-10-04 measured the wider combine window that the benchmarks page had only derived from a model: a cold
   intersect of two segments sharing 100 chunks took 290.06 ms at the median, and an `andNot` against ten excludes

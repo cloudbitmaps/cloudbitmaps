@@ -22,6 +22,7 @@ import type {
 import { S3Client } from '@aws-sdk/client-s3';
 import { S3StorageDriver } from './storage';
 import { S3RegistryDriver } from './registry';
+import { describe } from './read-timeout';
 
 export interface S3StorageOptions {
   /** Target bucket (must already exist). */
@@ -54,6 +55,16 @@ export interface S3StorageOptions {
     readonly sessionToken?: string;
   };
   /**
+   * Most sockets the built client opens at once to one scheme, for `https` and for a plain-`http` endpoint alike
+   * (default 128). The AWS SDK's own default is 50, which a window of 32 reads per operand outgrows on the first
+   * two-operand `intersect`. Only this limit differs from the SDK's own client: its request handler, keep-alive,
+   * timeouts and retry are the SDK's. If a future SDK changes its handler, the built client keeps the SDK's own
+   * limit rather than failing to build. A positive safe integer. Release a built client's sockets with
+   * `store.client.destroy()`. Refused beside `client`, which carries its own request handler. A deployment
+   * that runs `eraseSubject`'s 256 reads at once needs `256`, or a lower `concurrency`.
+   */
+  readonly maxSockets?: number;
+  /**
    * Largest object the backend will write and advertise. Default = `partBytes × 10,000` (≈ 80 GiB at the default
    * 8 MiB part) — the honest ceiling reachable within S3's 10,000-part limit. Set it higher and `partBytes`
    * auto-grows so 10,000 parts still cover it (raising peak write memory to ~one part); up to the 5 TiB S3 max.
@@ -71,10 +82,11 @@ export interface S3StorageOptions {
    * 2 seconds. Must be a non-negative safe integer no larger than 2,147,483,647.
    *
    * The clock starts when the read is handed to the SDK, so it also counts the time the read waits for one of the
-   * client's sockets (50 by default) and the time spent fetching credentials, and under `retryMode: 'adaptive'` the
-   * SDK's rate-limiter wait. A burst of concurrent reads larger than the socket pool can therefore time out with
-   * nothing slow on the wire: size the timeout above the worst queueing your concurrency implies, or raise the client's
-   * `maxSockets`. On a client built with `cacheMiddleware: true`, a timed read resolves its middleware each time.
+   * client's sockets (128 by default, `maxSockets`) and the time spent fetching credentials, and under `retryMode:
+   * 'adaptive'` the SDK's rate-limiter wait. A burst of concurrent reads larger than the socket pool can therefore time
+   * out with nothing slow on the wire: size the timeout above the worst queueing your concurrency implies, or raise
+   * `maxSockets` (the client you pass carries its own). On a client built with `cacheMiddleware: true`, a timed read
+   * resolves its middleware each time.
    *
    * Writes and listings are never timed: a write that hangs needs a timeout on the client (its `requestHandler`). The
    * timeout is applied per request, so a `client` you pass gets it without being changed.
@@ -105,6 +117,7 @@ export const S3_STORAGE_OPTION_KEYS = [
   'endpoint',
   'pathStyle',
   'credentials',
+  'maxSockets',
   'maxObjectBytes',
   'partBytes',
   'readTimeoutMs',
@@ -113,7 +126,58 @@ export const S3_STORAGE_OPTION_KEYS = [
 ] as const;
 
 /** The settings that build a client, which a supplied `client` already carries and so cannot be given beside. */
-const CLIENT_SETTINGS = ['region', 'endpoint', 'pathStyle', 'credentials'] as const;
+const CLIENT_SETTINGS = ['region', 'endpoint', 'pathStyle', 'credentials', 'maxSockets'] as const;
+
+/** Default socket limit of a client the store builds: two operands at the default window of 32 reads each, doubled. */
+const DEFAULT_MAX_SOCKETS = 128;
+
+/** What of the SDK's request handler the limit needs: its one `handle` and the agents it exposes once it has run. */
+interface PooledHandler {
+  handle(request: unknown, options?: unknown): Promise<unknown>;
+  httpHandlerConfigs?: () => {
+    httpAgent?: { maxSockets: number };
+    httpsAgent?: { maxSockets: number };
+  };
+}
+
+/**
+ * Cap the sockets the SDK's own request handler opens, and change nothing else about it. The handler stays the SDK's
+ * default one, so its other defaults hold: its defaults-mode connection timeout, keep-alive, and a request that
+ * sends `Expect: 100-continue` (a part of 2 MiB or more) still goes on its own connection outside this pool. Only the
+ * `maxSockets` of its two pooled agents is set, before the first request goes out. The handler makes its agents on
+ * that first request (the http one even later, per request, so a first burst to a plain-http endpoint would get one
+ * pool each), so the first request first runs an aborted one through it, which makes them, then sets the limit on
+ * the agents it made.
+ */
+export function limitSockets(client: S3Client, maxSockets: number): void {
+  const handler = client.config.requestHandler as unknown as PooledHandler;
+  // A handler of another shape is left as it is: a tuning setting never stops the store from being built, and the
+  // client then keeps the SDK's own limit.
+  if (typeof handler?.handle !== 'function' || typeof handler.httpHandlerConfigs !== 'function')
+    return;
+  const handle = handler.handle.bind(handler);
+  const agents = handler.httpHandlerConfigs.bind(handler);
+  let ready: Promise<void> | undefined;
+  const warm = async (): Promise<void> => {
+    const abort = new AbortController();
+    abort.abort();
+    try {
+      // An `http:` request makes the handler build both agents; on a client that only ever speaks https the http
+      // agent stays idle, and `client.destroy()` frees it with the rest.
+      await handle({ protocol: 'http:' }, { abortSignal: abort.signal }).catch(() => undefined);
+      const { httpAgent, httpsAgent } = agents();
+      if (httpAgent) httpAgent.maxSockets = maxSockets;
+      if (httpsAgent) httpsAgent.maxSockets = maxSockets;
+    } catch {
+      // The handler is not the shape this expects: the limit stays the SDK's own.
+    }
+  };
+  handler.handle = async (request, options) => {
+    ready ??= warm();
+    await ready;
+    return handle(request, options);
+  };
+}
 
 /** Refuse an options bag that is not an object, or that holds a key not in `keys`, naming each such key. */
 function refuseUnknown(
@@ -161,12 +225,19 @@ export class S3Storage implements StorageBackend {
       }
       this.client = options.client;
     } else {
+      const { maxSockets = DEFAULT_MAX_SOCKETS } = options;
+      if (!Number.isSafeInteger(maxSockets) || maxSockets < 1) {
+        throw new ValidationError(
+          `maxSockets must be a positive safe integer; got ${describe(options.maxSockets)}`,
+        );
+      }
       this.client = new S3Client({
         ...(options.region === undefined ? {} : { region: options.region }),
         ...(options.endpoint === undefined ? {} : { endpoint: options.endpoint }),
         ...(options.pathStyle === undefined ? {} : { forcePathStyle: options.pathStyle }),
         ...(options.credentials === undefined ? {} : { credentials: options.credentials }),
       });
+      limitSockets(this.client, maxSockets);
     }
     const shared = {
       client: this.client,

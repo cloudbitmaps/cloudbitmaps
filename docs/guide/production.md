@@ -271,14 +271,27 @@ const backend = new S3Storage({ bucket: 'my-bitmaps', readTimeoutMs: 2_000 }); /
 ```
 
 **The clock starts when the read is handed to the SDK**, not when it reaches the wire. It counts the time the read
-waits for one of the client's sockets (50 by default) and the time spent fetching credentials, and under
+waits for one of the client's sockets (128 by default on the client the store builds) and the time spent fetching credentials, and under
 `retryMode: 'adaptive'` the SDK's rate-limiter wait. So a burst of concurrent reads larger than the socket pool can
 time out with nothing slow on the wire: measured against a local stub that answers each request in 50 ms, 8,000
 concurrent `has()` calls with `readTimeoutMs: 2_000` lost most of their reads to the timeout. It counts time the process spends
 busy too: Node runs a due timer before it reads a socket, so a synchronous stretch longer than the timeout fails the
 reads in flight even when their responses have arrived. Size `readTimeoutMs` above the
 worst queueing your concurrency implies, which is about the concurrent reads divided by the sockets, times what one
-read takes (8,000 ÷ 50 × 50 ms is 8 s; derived), or raise the client's `maxSockets`:
+read takes (8,000 ÷ 50 × 50 ms is 8 s on a client with 50 sockets; derived), or raise `maxSockets`. The client the store builds takes it
+as an option; a client you pass is yours to set:
+
+```ts
+const backend = new S3Storage({ bucket: 'my-bitmaps', maxSockets: 256 });
+```
+
+The limit is the only thing that differs from the SDK's own client; free keep-alive sockets do not hold the process open,
+and `backend.client.destroy()` closes them.
+
+On a client of your own, set it on the request handler. A handler built this way replaces the SDK's own, so it also drops
+the settings the SDK's defaults mode would have given it (the `connectionTimeout` that `AWS_DEFAULTS_MODE` sets, for
+one): pass those yourself if you rely on them, or let `S3Storage` build the client and set `maxSockets` on it, which
+changes the limit and nothing else.
 
 ```ts
 import { S3Client } from '@aws-sdk/client-s3';
@@ -292,14 +305,15 @@ const client = new S3Client({
 
 A combine keeps up to `concurrency` chunk keys in flight (32 by default once its window has widened), and it reads
 every operand of a key at once: an `intersect` of two segments has up to 64 reads open, and an `andNot` against
-excludes up to 32 times the include plus the excludes that hold each key. That can exceed the S3 SDK's default of 50
-sockets. The reads past the 50th are not refused: they wait for a socket, and the wait counts against
-`readTimeoutMs`, so a deployment that sets one should raise the client's `maxSockets` to match (256 above covers four
-concurrent two-operand combines or one `eraseSubject`), or pass a lower `concurrency` to the combine.
+excludes up to 32 times the include plus the excludes that hold each key. The client the store builds allows 128
+sockets, which covers one two-operand combine with room to spare; a client you pass keeps the SDK's default of 50, and
+its reads past the 50th are not refused: they wait for a socket, and the wait counts against `readTimeoutMs`. Raise
+`maxSockets` (on the store, or on your own client) to match your concurrent combines (256 covers four two-operand
+combines or one `eraseSubject`), or pass a lower `concurrency` to the combine.
 
 `eraseSubject` has up to `concurrency × 32` range reads open (256 by default, since it erases 8 segments at once, each
-with a window of 32 chunk reads), and `iterate` and the storage-path `count` read up to 32 keys ahead. Raise
-`maxSockets` to match, or pass a lower `concurrency`.
+with a window of 32 chunk reads), and `iterate` and the storage-path `count` read up to 32 keys ahead. Its 256 needs
+`maxSockets: 256`, or a lower `concurrency`.
 
 Raise `readTimeoutMs` too on a link too slow to deliver a read inside the timeout, since such a read fails on every attempt. The
 timer is set on each request rather than on the client, so a `client` you pass gets it without being changed. On a
