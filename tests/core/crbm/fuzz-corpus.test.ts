@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { CrbmReader, parseExtension, parseIndex } from '@/core/crbm/reader';
 import { BufferReader } from '@/core/blob';
-import { DEFAULT_MAX_PAYLOAD_BYTES } from '@/core/crbm/format';
+import { DEFAULT_MAX_BITMAP_BYTES, DEFAULT_MAX_PAYLOAD_BYTES } from '@/core/crbm/format';
 import { SafeBitmap } from '@/roaring-codec';
 import { assertConsistentDecode } from '@/testing/fuzz-codec';
 import { CloudRoaringError, IntegrityError } from '@/core/errors';
@@ -22,7 +22,7 @@ import type { CrbmCrypto } from '@/core/crypto';
  * targets: raw serialized bitmaps (native deserializer), raw index regions, raw extension-block sections, and whole
  * `.crbm` objects.
  */
-const MAX_BYTES = DEFAULT_MAX_PAYLOAD_BYTES; // the cap the fuzz targets run under
+const MAX_BYTES = DEFAULT_MAX_BITMAP_BYTES; // the decode cap the fuzz targets run under
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CORPUS = join(HERE, 'fuzz-corpus');
 
@@ -41,7 +41,7 @@ function deserialize(bytes: Uint8Array): void {
 
 /** The index-parser target's contract: raw index bytes → self-consistent entries or a typed error. */
 function parseRawIndex(bytes: Uint8Array): void {
-  parseIndex(bytes, 1 << 24, MAX_BYTES); // fixed generous payload-region end, matching fuzz/targets/crbm-index.mjs
+  parseIndex(bytes, 1 << 24, DEFAULT_MAX_PAYLOAD_BYTES); // fixed generous payload-region end, matching fuzz/targets/crbm-index.mjs
 }
 
 /** A key whose every open fails, as the extension-block target uses for its encrypted pass. */

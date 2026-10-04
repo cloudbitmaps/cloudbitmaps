@@ -169,7 +169,7 @@ export const AEAD_NONCE_BYTES = 12;
 export const AEAD_TAG_BYTES = 16;
 
 /**
- * Hard cap on one chunk's stored payload: the decode cap plus the AEAD framing an encrypted payload carries, so an
+ * Hard cap on one encrypted chunk's stored payload (a cleartext one is capped at the decode cap): the decode cap plus the AEAD framing, so an
  * entry the engine would refuse to decode is refused when the object is opened, before any payload is read. No writer
  * exceeds it: a stored payload is a serialized 16-bit chunk (at most about 8.2 KiB) plus, when encrypted, that framing.
  */

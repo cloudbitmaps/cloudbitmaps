@@ -136,7 +136,7 @@ export interface EraseIdDeps {
    * source is used if it has one, and otherwise each wait is its bound.
    */
   readonly rng?: Rng;
-  /** Per-chunk decode ceiling (invariant 5); defaults to 1 MiB. */
+  /** Per-chunk decode ceiling (invariant 5); defaults to 1 MiB. The `.crbm` reader refuses an entry above its own `maxPayloadBytes` (1 MiB, plus 28 bytes when encrypted) at open, so raise that on the chunk source too. */
   readonly maxBitmapBytes?: number;
   /**
    * The store's read retry, for the reads the rewrite makes along the way: the generation it rewrites and each of its

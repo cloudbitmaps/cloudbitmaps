@@ -587,9 +587,11 @@ describe('payload cap matches the decode cap', () => {
       const ok = await openCounted(object(cap, enc), enc);
       expect(ok.error).toBeUndefined();
 
-      const over = await openCounted(object(DEFAULT_MAX_BITMAP_BYTES + FRAME + 1, enc), enc);
+      const over = await openCounted(object(cap + 1, enc), enc);
       expect(over.error).toBeInstanceOf(IntegrityError);
-      expect((over.error as Error).message).toMatch(/chunk 7 length \d+ invalid/);
+      expect((over.error as Error).message).toMatch(
+        new RegExp(`chunk 7 length ${cap + 1} invalid \\(most is ${cap}\\)`),
+      );
       // The first payload starts at PAYLOAD_START: nothing read it (only the index, at most, was requested).
       expect(over.reader.rangeReads.some(([offset]) => offset === PAYLOAD_START)).toBe(false);
       expect(over.reader.ranges).toBeLessThanOrEqual(1);

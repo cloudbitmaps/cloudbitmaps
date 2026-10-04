@@ -30,6 +30,7 @@ import {
   CONTAINER_CODEC_NONE,
   CRC32C_BYTES,
   DEFAULT_MAX_INDEX_BYTES,
+  DEFAULT_MAX_BITMAP_BYTES,
   DEFAULT_MAX_PAYLOAD_BYTES,
   DEFAULT_TAIL_BYTES,
   ELEMENT_WIDTH_32,
@@ -101,7 +102,7 @@ export function indexCapacity(indexLength: number): number {
 export interface CrbmReaderOptions {
   /** Speculative tail size in bytes (default 256 KB; clamped up to at least the footer size). */
   readonly tailBytes?: number;
-  /** Hard cap on a single chunk payload length (default: the 1 MiB decode cap plus the 28-byte encryption framing). */
+  /** Hard cap on a single chunk payload length (default: the 1 MiB decode cap, plus the 28-byte nonce and tag on an encrypted object). The engine decodes under `maxBitmapBytes`; raise this with it. */
   readonly maxPayloadBytes?: number;
   /** Hard cap on the whole index region fetched/parsed from one object (default 8 MB). */
   readonly maxIndexBytes?: number;
@@ -280,7 +281,6 @@ export class CrbmReader {
   static async open(blob: BlobReader, options: CrbmReaderOptions = {}): Promise<CrbmReader> {
     // Always fetch at least a footer's worth, regardless of a smaller caller request.
     const tailBytes = Math.max(options.tailBytes ?? DEFAULT_TAIL_BYTES, FOOTER_BYTES);
-    const maxPayloadBytes = options.maxPayloadBytes ?? DEFAULT_MAX_PAYLOAD_BYTES;
     const maxIndexBytes = options.maxIndexBytes ?? DEFAULT_MAX_INDEX_BYTES;
     const { bytes: tail, size } = await blob.getTail(tailBytes);
     const { footer, fview, storedFooterCrc } = checkedFooter(tail, size);
@@ -465,7 +465,7 @@ export class CrbmReader {
     const index = parseIndex(
       indexForParse,
       payloadEnd,
-      maxPayloadBytes,
+      options.maxPayloadBytes ?? (encrypted ? DEFAULT_MAX_PAYLOAD_BYTES : DEFAULT_MAX_BITMAP_BYTES),
       encrypted ? AEAD_NONCE_BYTES + AEAD_TAG_BYTES : 1,
     );
     if (encrypted) {
@@ -736,7 +736,9 @@ export function parseIndex(
     }
     if (chunkKey > 0xffff) throw new IntegrityError(`.crbm chunkKey ${chunkKey} out of range`);
     if (len < minPayloadBytes || len > maxPayloadBytes) {
-      throw new IntegrityError(`.crbm chunk ${chunkKey} length ${len} invalid`);
+      throw new IntegrityError(
+        `.crbm chunk ${chunkKey} length ${len} invalid (most is ${maxPayloadBytes})`,
+      );
     }
     if (card < 1 || card > MAX_CHUNK_CARDINALITY) {
       throw new IntegrityError(`.crbm chunk ${chunkKey} cardinality ${card} invalid`);
