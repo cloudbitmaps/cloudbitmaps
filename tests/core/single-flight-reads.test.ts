@@ -20,6 +20,10 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 /** A source whose reads take `delayMs` and are counted; `version` is what `currentVersion` reports. */
 class ParkedSource extends MemoryStorageChunkSource {
   requests: number[] = [];
+  /** `namespace/segment` of each request, in order. */
+  readonly refs: string[] = [];
+  /** Delays for the next reads, oldest first; `delayMs` once it is empty. */
+  readonly delays: number[] = [];
   version: string | undefined = 'v1';
   failNext: Error | undefined;
   /** Bytes served per version, when a test wants each generation to hold different data. */
@@ -34,9 +38,11 @@ class ParkedSource extends MemoryStorageChunkSource {
 
   override async getChunk(ref: ChunkRef): Promise<Uint8Array | null> {
     this.requests.push(ref.chunkKey);
+    this.refs.push(`${ref.namespace ?? ''}/${ref.segment}`);
+    const delay = this.delays.shift() ?? this.delayMs;
     const served = this.byVersion.get(this.version ?? '') ?? this;
     const error = this.failNext;
-    await sleep(this.delayMs);
+    await sleep(delay);
     if (error) {
       this.failNext = undefined;
       throw error;
@@ -172,6 +178,81 @@ describe('concurrent cold reads of one chunk share one request', () => {
     engine.invalidate({ segment: 'a' });
     const after = engine.has({ segment: 'a' }, 5);
     await Promise.all([before, after]);
+    expect(storage.requests).toEqual([0, 0]);
+  });
+});
+
+/** A source that cannot report a version, so its cache key carries none. */
+class UnversionedSource extends ParkedSource {
+  override currentVersion = undefined as never;
+}
+
+describe('isolation between segments', () => {
+  const x = { namespace: 'x', segment: 'a' };
+  const a = { segment: 'a' };
+  const b = { segment: 'b' };
+  function build(): { storage: ParkedSource; engine: SegmentEngine } {
+    const storage = new ParkedSource();
+    seedSegment(storage, x, [1]);
+    seedSegment(storage, a, [2]);
+    seedSegment(storage, b, [3]);
+    return { storage, engine: new SegmentEngine({ storage, codec: roaringCodec }) };
+  }
+
+  it('callers of segments that differ by namespace or name each get their own data, one request each', async () => {
+    const { storage, engine } = build();
+    const segs = [x, a, b];
+    const has = await Promise.all(
+      segs.flatMap((s, i) => [1, 2, 3].map((id) => engine.has(s, id).then((r) => [i, id, r]))),
+    );
+    expect(has.filter((h) => h[2]).map((h) => [h[0], h[1]])).toEqual([
+      [0, 1],
+      [1, 2],
+      [2, 3],
+    ]);
+    expect([...storage.refs].sort()).toEqual(['/a', '/b', 'x/a']);
+  });
+
+  it('combines on those segments each read their own data', async () => {
+    const { storage, engine } = build();
+    const out = await Promise.all([x, a, b].map((s) => drain(engine.union([s]))));
+    expect(out).toEqual([[1], [2], [3]]);
+    expect([...storage.refs].sort()).toEqual(['/a', '/b', 'x/a']);
+  });
+
+  it('invalidate(a) leaves an open read of b joinable and makes a later a caller read again', async () => {
+    const { storage, engine } = build();
+    const openB = engine.has(b, 3);
+    const openA = engine.has(a, 2);
+    await sleep(2);
+    engine.invalidate(a);
+    const laterB = engine.has(b, 3);
+    const laterA = engine.has(a, 2);
+    expect(await Promise.all([openB, openA, laterB, laterA])).toEqual([true, true, true, true]);
+    expect([...storage.refs].sort()).toEqual(['/a', '/a', '/b']);
+  });
+});
+
+describe('a read that began before invalidate()', () => {
+  it('does not write its stale bytes over a newer read cached under the same key', async () => {
+    const storage = new UnversionedSource();
+    const old = new MemoryStorageChunkSource();
+    const fresh = new MemoryStorageChunkSource();
+    seedSegment(old, 'a', [5]);
+    seedSegment(fresh, 'a', [6]);
+    storage.byVersion.set('old', old);
+    storage.byVersion.set('fresh', fresh);
+    const engine = new SegmentEngine({ storage, codec: roaringCodec, cache: lru() });
+    storage.version = 'old';
+    storage.delays.push(40, 5);
+    const stale = engine.has({ segment: 'a' }, 5);
+    await sleep(2);
+    engine.invalidate({ segment: 'a' });
+    storage.version = 'fresh';
+    const newer = engine.has({ segment: 'a' }, 6);
+    expect(await Promise.all([stale, newer])).toEqual([true, true]); // each caller has its own read's answer
+    expect(await engine.has({ segment: 'a' }, 5)).toBe(false); // served from the newer read's cache entry
+    expect(await engine.has({ segment: 'a' }, 6)).toBe(true);
     expect(storage.requests).toEqual([0, 0]);
   });
 });

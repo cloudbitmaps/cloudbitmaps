@@ -208,6 +208,8 @@ export class SegmentEngine {
    * promise per distinct key in flight.
    */
   private readonly openReads = new Map<string, Promise<CodecBitmap | null>>();
+  /** Counts `invalidate()` calls: a read that began before one does not write its result into the cache. */
+  private invalidations = 0;
 
   constructor(deps: EngineDeps) {
     this.storage = deps.storage;
@@ -743,6 +745,7 @@ export class SegmentEngine {
   invalidate(ref: SegmentRef): void {
     const prefix = segmentPrefix(ref);
     this.cache?.deleteWhere((key) => key.startsWith(prefix));
+    this.invalidations += 1;
     // A read already open was asked for before this call, so a caller after it must not join it.
     for (const key of this.openReads.keys()) if (key.startsWith(prefix)) this.openReads.delete(key);
     this.storage.invalidate?.(ref);
@@ -816,6 +819,7 @@ export class SegmentEngine {
 
   /** One request for one chunk, decoded, range-checked and cached. */
   private async fetchChunk(ref: ChunkRef, cacheKey: string): Promise<CodecBitmap | null> {
+    const invalidations = this.invalidations;
     const startedAt = this.metricsOn ? this.clock.now() : 0;
     const bytes = await this.storage.getChunk(ref);
     if (this.metricsOn) {
@@ -830,7 +834,8 @@ export class SegmentEngine {
     if (!bytes) return null;
     const bitmap = this.codec.safeDeserialize(bytes, this.maxBitmapBytes);
     this.assertChunkPayloadInRange(bitmap, ref.chunkKey);
-    this.cache?.set(cacheKey, bitmap);
+    // Bytes asked for before an invalidation are not cached: they may be older than what a newer read cached.
+    if (invalidations === this.invalidations) this.cache?.set(cacheKey, bitmap);
     return bitmap;
   }
 }
