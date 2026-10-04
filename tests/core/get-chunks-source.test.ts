@@ -583,6 +583,45 @@ describe('CrbmStorageChunkSource.getChunks: a consumer that waits holds at most 
   });
 });
 
+describe('CrbmStorageChunkSource.getChunks: a consumer that stops sends nothing more, on every path', () => {
+  it.each(['getChunks', 'getChunksAt', 'the pinned wrapper'] as const)(
+    'through %s, the requests in flight finish and are not tried again',
+    async (mode) => {
+      const { source, storage } = await world({ chunks: 400 });
+      const pin = (await source.pinGeneration(REF))!;
+      // A caller's runner that sends a request again after a transient fault, as a retrying caller would.
+      const retry = async <T>(request: () => Promise<T>): Promise<T> => {
+        for (let attempt = 0; ; attempt++) {
+          try {
+            return await request();
+          } catch (err) {
+            if (!(err instanceof TransientError) || attempt >= 20) throw err;
+            await tick(3);
+          }
+        }
+      };
+      storage.beforeRange = async (n) => {
+        if (n > 1) throw new TransientError('down');
+      };
+      const options = { concurrency: 4, retry };
+      let stream: AsyncIterable<{ key: number }>;
+      if (mode === 'getChunks') stream = source.getChunks!(REF, SPREAD, options);
+      else if (mode === 'getChunksAt') stream = source.getChunksAt(REF, 0, SPREAD, pin, options);
+      else {
+        const wrapper = new PinnedStorageChunkSource(source, new Map([[segmentKey(REF), pin]]));
+        stream = wrapper.getChunks!(REF, SPREAD, options);
+      }
+      for await (const chunk of stream) {
+        expect(chunk.key).toBe(0);
+        break;
+      }
+      await tick(250);
+      expect(storage.ranges).toHaveLength(4); // the four the window opened with, each tried once
+      expect(storage.inFlight).toBe(0);
+    },
+  );
+});
+
 describe('CrbmStorageChunkSource.getChunks: a stream that fails', () => {
   it('raises at once when the failure is not one it heals, though a later read never answers', async () => {
     const { source, storage } = await world({ chunks: 400 });
