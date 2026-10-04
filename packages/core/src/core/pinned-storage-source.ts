@@ -31,6 +31,7 @@ import type {
   SegmentSize,
 } from './ports';
 import type { CrbmStorageChunkSource, PinnedObject } from './crbm-storage-source';
+import { ItemPull } from './item-pull';
 import { segmentKey } from './keys';
 
 /**
@@ -116,14 +117,14 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
       return;
     }
     const version = await this.currentVersion(ref);
-    for await (const chunk of this.inner.getChunksAt(
-      ref,
-      pin.generation,
-      keys,
-      heldBy(pin),
-      options,
-    )) {
-      yield { ...chunk, version };
+    // Pulled by hand: a `for await` binding would keep the chunk just yielded while the next is awaited.
+    const pull = new ItemPull(
+      this.inner.getChunksAt(ref, pin.generation, keys, heldBy(pin), options),
+    );
+    try {
+      while (await pull.advance()) yield pull.take((chunk) => ({ ...chunk, version }));
+    } finally {
+      await pull.close();
     }
   }
 

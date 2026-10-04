@@ -102,14 +102,18 @@ export interface StorageChunkSource {
    * **Nothing is resolved or read until the first chunk is asked for**, and the source holds at most
    * {@link ReadChunksOptions.concurrency} ranges at a time (in flight, or landed and not yet taken), however many keys
    * there are: a consumer that is slow holds the stream back, and one that stops early (`break`, or `return()`) stops
-   * the reads, so the requests it had already started (at most that many) finish and are dropped, and are not retried. A stream that fails waits for those before it raises, so a caller that goes on to read again does not have two windows open at once. A plain chunk may
-   * be a view into a buffer of up to 1 MiB that it shares with its neighbours (and the same view at two positions for
-   * a key asked twice), so do not write to it, and copy a chunk to keep it.
+   * the reads, so the requests it had already started (at most that many) finish and are dropped, and are not retried.
+   * A stream that fails raises at once and sends nothing further, and the requests it left in flight finish in the
+   * background and never raise. A plain chunk may be a view into a buffer of up to 1 MiB that it shares with its
+   * neighbours (and the same view at two positions for a key asked twice), so do not write to it, and copy a chunk to
+   * keep it.
    *
    * One stream reads one generation. If that generation is swept, or its object replaced, while the stream runs, a
    * source may re-resolve the segment and continue with the keys not yet yielded from the generation that is current
-   * then; each chunk says which version it came from, and each is whole and verified either way. A source that reads
-   * a pinned generation never does.
+   * then; each chunk says which version it came from, and each is whole and verified either way. Before it does, it
+   * waits for the requests the failed stream left in flight, so a heal never opens a second window beside them: a
+   * request that never answers delays a heal, as it would hang a read of one chunk, until the driver's read timeout (if
+   * it has one) ends it, and never delays an error. A source that reads a pinned generation never heals.
    *
    * A source that cannot read a range of an object omits this, and a caller reads chunk by chunk; the `.crbm`
    * source, which is what the stores the library ships read through, implements it.

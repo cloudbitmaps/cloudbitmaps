@@ -632,8 +632,15 @@ export class CrbmReader {
    * `options.readRange`, when given, runs each range read, so a caller can retry one request without repeating the
    * others; `options.now` times each request for `request.ms` (a reader has no clock of its own, so 0 without it).
    * A plain chunk is a writable view into the range it was read in: copy a chunk to keep it.
+   *
+   * A stream that fails (a range that errors, a chunk that fails its check) raises at once and sends nothing further:
+   * the ranges it still had in flight finish in the background, are not retried and never raise. Its `settled()`
+   * resolves when those have finished, for a caller that is about to read again and does not want them beside its next
+   * window (the source awaits it before a heal, and only then). It waits as long as the slowest of them takes to
+   * answer, which only the store's own read timeout bounds, so a read that never answers delays a heal and never an
+   * error.
    */
-  async *readChunks(
+  readChunks(
     chunkKeys: readonly number[],
     options: {
       readonly concurrency?: number;
@@ -641,6 +648,23 @@ export class CrbmReader {
       readonly readRange?: <T>(read: () => Promise<T>) => Promise<T>;
       readonly now?: () => number;
     } = {},
+  ): ChunkStream {
+    const open: { window: { settle(): Promise<void> } | undefined } = { window: undefined };
+    const stream = this.streamChunks(chunkKeys, options, open);
+    return Object.assign(stream, {
+      settled: (): Promise<void> => open.window?.settle() ?? Promise.resolve(),
+    });
+  }
+
+  private async *streamChunks(
+    chunkKeys: readonly number[],
+    options: {
+      readonly concurrency?: number;
+      readonly ramp?: boolean;
+      readonly readRange?: <T>(read: () => Promise<T>) => Promise<T>;
+      readonly now?: () => number;
+    },
+    open: { window: { settle(): Promise<void> } | undefined },
   ): AsyncGenerator<Omit<ChunkRead, 'version'>> {
     const width = options.concurrency ?? MAX_RANGES_IN_FLIGHT;
     if (!Number.isInteger(width) || width < 1) {
@@ -681,6 +705,7 @@ export class CrbmReader {
       width,
       options.ramp === true,
     );
+    open.window = window;
     let next = 0; // the next range to take
     // The range being handed out, and where in it. It is let go of with its last chunk, before the next range is
     // asked for, so a stream holds `width` ranges and not one more.
@@ -697,11 +722,11 @@ export class CrbmReader {
           if (chunkKeys[i + 1] !== key) last = undefined;
           continue;
         }
-        last = undefined;
         let first = false;
         if (cur.range === undefined) {
-          const taken = await window.take();
-          cur.range = { read: reads[next++]!, ...taken };
+          // No local names the landed range: a binding of this loop body lives as long as the generator's frame, and
+          // would keep the range just consumed alive while the next one is awaited.
+          cur.range = { read: reads[next++]!, ...(await window.take()) };
           cur.at = 0;
           first = true;
         }
@@ -714,18 +739,19 @@ export class CrbmReader {
           yield this.nextChunk(cur, slots[i]!, key, first);
         }
       }
-    } catch (err) {
-      // A failed stream lets the reads it still has in flight settle before the error goes on, so a caller that
-      // carries on (the source, which heals) does not have those and a new window open at once. They send no
-      // retry of their own.
-      closed = true;
-      await window.settle();
-      throw err;
     } finally {
+      // However the stream ends (done, abandoned, or failed), no further attempt of any range is sent; an attempt
+      // already sent finishes, and what it brings is dropped.
       closed = true;
     }
   }
 }
+
+/** What {@link CrbmReader.readChunks} returns: the stream, and a way to wait for the reads it left in flight. */
+export type ChunkStream = AsyncGenerator<Omit<ChunkRead, 'version'>> & {
+  /** Resolves, never rejects, once every range the stream launched and did not hand out has finished. */
+  settled(): Promise<void>;
+};
 
 /** A range that has landed, with the needed chunks it carries. */
 interface LandedRange {
