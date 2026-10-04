@@ -304,7 +304,7 @@ hang-up on a real pseudo-terminal that is then closed, and the whole path by int
   client metered into the same bill: a transient failure there would otherwise leave the bucket behind.
 - **Cold reads only, and a count the network cannot move.** Each intersect gets a fresh store, so no cache can
   answer it, and the store's timed pointer refresh is off (`cache.genTtlMs: 0`). On the default 2 s refresh, an
-  intersect slower than that reads each pointer again, which adds GETs to the 204 an intersect of this shape makes,
+  intersect slower than that reads each pointer again, which adds GETs to the 6 an intersect of this shape makes,
   so a count taken on the default would describe the network. A test drives the real engine on a slow clock to prove each pointer is read once.
 - **Exact content.** Every pair of segments shares a planned set of ids, so each intersect must return precisely
   that set — the count *and* the sum — or the run refuses to report a latency.

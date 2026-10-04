@@ -94,8 +94,8 @@ chunks lie in the object, not how many there are.
   pointer read and one 256 KiB tail read per operand, and one range read each for the shared chunks, which lie together.
   Each GET round took about 26 to 27 ms (**derived**), more than the round-trip floor.
 - **The same intersect with the 100 shared chunks spread across each segment** took 98.69 ms at the median and also made
-  6 GETs. Each range returned 1,022,196 bytes of an operand to fetch the 51,600 bytes of chunks it needed: the bytes
-  between the chunks come with them (**derived**).
+  6 GETs. Each range returned 1,022,196 bytes of an operand, against the 51,600 bytes the packed layout's range returned:
+  the bytes between the chunks come with them (**derived**).
 - **Latency grows with the overlap, the requests do not.** At 1,000 shared chunks the median was 162.01 ms, and at
   2,000 it was 230.79 ms, 1.42 times as long for twice the chunks, with 6 GETs both times: each range carried more bytes.
 - **A warm intersect took 4.79 ms** at the median and made no request.
@@ -135,7 +135,7 @@ instead for the pointer refresh: at most one GET per segment every 2 s while the
 - **Bytes outside the region.** Inside the region S3 Standard does not bill the bytes read. Across regions and to the
   internet it does, and the transfer can cost more than the requests saved
   ([production](guide/production.md#reading-ranges-the-bytes-between-chunks)). The spread layout's ranges read
-  1,022,196 bytes for 51,600 of chunks; what that costs outside the region is not measured.
+  1,022,196 bytes a range, against the packed layout's 51,600; what that costs outside the region is not measured.
 - **Other clouds.** GCS and Azure Blob have no in-region run.
 - **One client on one day.** The 26 to 27 ms GET round is this run's, not a guarantee.
 

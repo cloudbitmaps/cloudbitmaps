@@ -76,7 +76,7 @@ on every combine, yields only the ids in (after, through] and fetches only the c
 
 ## Measured, expected and modelled
 
-Counts come from running the engine; prices are the default list prices. With the pointer in the same bucket as the
+The cold intersect's count is measured in region; the other counts come from running the engine; prices are the default list prices. With the pointer in the same bucket as the
 data, the topology that ships. Measured against real S3 in us-east-1, with the request counts read off the AWS SDK
 layer: a cold intersect of two 500,000-id segments sharing 100 of their 1,999 chunks made 6 GETs, $2.40 per million,
 reading neighbouring chunks as ranges, in 95.03 ms at the median; on a spread layout it reads more bytes than it needs,
