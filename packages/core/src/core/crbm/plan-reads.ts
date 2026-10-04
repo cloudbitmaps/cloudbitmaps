@@ -34,6 +34,12 @@ export const MAX_COALESCED_READ_BYTES: number = DEFAULT_MAX_BITMAP_BYTES;
  */
 export const MAX_GET_CHUNKS_BYTES: number = 32 * MAX_COALESCED_READ_BYTES;
 
+/**
+ * The most range reads one `getChunks` call has in flight at once; the rest of a call's plan follows in waves as these
+ * finish. It is the default `concurrency`, so a call opens no more connections than a window of single-chunk reads.
+ */
+export const MAX_RANGES_IN_FLIGHT = 32;
+
 /** One needed chunk, as its index entry places it in the object. */
 export interface ChunkExtent {
   readonly key: number;

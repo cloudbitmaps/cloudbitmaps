@@ -13,6 +13,7 @@ import {
   MAX_COALESCE_GAP_BYTES,
   MAX_COALESCED_READ_BYTES,
   MAX_GET_CHUNKS_BYTES,
+  MAX_RANGES_IN_FLIGHT,
 } from '@/core/crbm/plan-reads';
 
 const KIB = 1024;
@@ -320,6 +321,29 @@ describe('CrbmReader.getChunks: the bytes one call may plan', () => {
     const asked = [...keysOf(30), 30, 32, 33, 35];
     expect(await reader.getChunks(asked)).toHaveLength(asked.length);
     await expect(reader.getChunks([...asked, 36])).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it('issues a sparse plan of many tiny ranges in waves of at most 32, and returns every chunk', async () => {
+    // 100 needed chunks of 100 bytes, each followed by a 300 KiB chunk nobody asked for: 100 ranges of their own.
+    const sink = new BufferSink();
+    const writer = new CrbmWriter(sink, { generation: 1 });
+    const payload = new Uint8Array(randomBytes(300 * KIB));
+    for (let i = 0; i < 100; i++) {
+      await writer.addChunk(2 * i, payload.subarray(0, 100), 1);
+      await writer.addChunk(2 * i + 1, payload, 1);
+    }
+    await writer.finish();
+    const parking = new Parking(new BufferReader(sink.bytes()));
+    const reader = await CrbmReader.open(parking);
+    parking.requests = 0;
+    parking.peak = 0;
+    const keys = Array.from({ length: 100 }, (_, i) => 2 * i);
+    const got = await reader.getChunks(keys);
+    expect(parking.requests).toBe(100);
+    expect(parking.peak).toBeGreaterThan(1);
+    expect(parking.peak).toBeLessThanOrEqual(MAX_RANGES_IN_FLIGHT);
+    expect(got.every((c) => c !== null && c.length === 100)).toBe(true);
+    expect(MAX_RANGES_IN_FLIGHT).toBe(32);
   });
 
   it('keeps no more ranges in flight than the cap allows, and does run them together', async () => {

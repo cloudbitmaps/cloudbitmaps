@@ -82,7 +82,7 @@ export interface StorageChunkSource {
    *
    * **A call holds every chunk it returns until the caller drops them.** Ask for at most a window's worth: a call
    * that would read more than 32 MiB, the gaps between the chunks it needs included, is refused with a
-   * `ValidationError` before any request is sent. A plain chunk may be a writable view into a buffer of up to 1 MiB
+   * `ValidationError` before any request is sent, and at most 32 of its range requests are in flight at once. A plain chunk may be a writable view into a buffer of up to 1 MiB
    * that it shares with its neighbours (and the same view at two positions for a key asked twice), so copy a chunk
    * to keep it. An empty list of keys still resolves the segment.
    *

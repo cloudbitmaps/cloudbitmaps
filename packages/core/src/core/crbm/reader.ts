@@ -23,7 +23,8 @@ import type { CrbmCrypto } from '../crypto';
 import { MAX_METADATA_BYTES, metadataFromBytes } from '../metadata';
 import type { GenerationMetadata } from '../ports';
 import { crc32c } from './crc32c';
-import { MAX_GET_CHUNKS_BYTES, planChunkReads } from './plan-reads';
+import { mapWithConcurrency } from '../concurrency';
+import { MAX_GET_CHUNKS_BYTES, MAX_RANGES_IN_FLIGHT, planChunkReads } from './plan-reads';
 import type { ChunkExtent } from './plan-reads';
 import { readVarint } from './varint';
 import {
@@ -598,7 +599,8 @@ export class CrbmReader {
    *
    * A call plans at most {@link MAX_GET_CHUNKS_BYTES} of reads, gaps included, and a call that would plan more is
    * refused with a {@link ValidationError} before any request is sent. That bounds the ranges in flight and the bytes
-   * the call holds, which it does until the caller drops what it returns.
+   * the call holds, which it does until the caller drops what it returns. At most {@link MAX_RANGES_IN_FLIGHT}
+   * ranges are in flight at once, and the rest of the plan follows as they finish.
    *
    * `readRange`, when given, runs each range read, so a caller can retry one request without repeating the others.
    * A plain chunk is a writable view into the range it was read in, which may be up to 1 MiB shared with its
@@ -625,25 +627,23 @@ export class CrbmReader {
       );
     }
     const opened = new Map<number, Uint8Array>();
-    // The reads go out together, which the cap on the planned bytes bounds to about 32 ranges.
-    await Promise.all(
-      reads.map(async (read) => {
-        const bytes = await readRange(() => this.blob.getRange(read.offset, read.length));
-        if (bytes.length !== read.length) {
-          throw new IntegrityError(
-            `.crbm range [${read.offset}, +${read.length}) read short (${bytes.length} bytes)`,
-          );
-        }
-        for (const chunk of read.chunks) {
-          const from = chunk.offset - read.offset;
-          const slot = this.slotOf(chunk.key);
-          opened.set(
-            chunk.key,
-            this.openChunk(slot, chunk.key, bytes.subarray(from, from + chunk.length)),
-          );
-        }
-      }),
-    );
+    // At most a window of ranges is in flight; the rest follow as these finish.
+    await mapWithConcurrency(reads, MAX_RANGES_IN_FLIGHT, async (read) => {
+      const bytes = await readRange(() => this.blob.getRange(read.offset, read.length));
+      if (bytes.length !== read.length) {
+        throw new IntegrityError(
+          `.crbm range [${read.offset}, +${read.length}) read short (${bytes.length} bytes)`,
+        );
+      }
+      for (const chunk of read.chunks) {
+        const from = chunk.offset - read.offset;
+        const slot = this.slotOf(chunk.key);
+        opened.set(
+          chunk.key,
+          this.openChunk(slot, chunk.key, bytes.subarray(from, from + chunk.length)),
+        );
+      }
+    });
     return slots.map((slot, i) => (slot < 0 ? null : opened.get(chunkKeys[i]!)!));
   }
 }

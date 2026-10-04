@@ -19,7 +19,7 @@ so, and so do the module headers in the code.
   implements it by merging chunks that sit within 256 KiB of each other into one range read, up to 1 MiB, and checks
   each chunk exactly as a read of it alone is checked; a custom source that cannot read a range omits it. A call holds
   every chunk it returns until the caller drops them: ask for at most a window's worth, since a call that would read
-  more than 32 MiB, gaps included, is refused with a `ValidationError` before any request is sent, and a plain chunk may
+  more than 32 MiB, gaps included, is refused with a `ValidationError` before any request is sent, at most 32 of its range requests are in flight at once, and a plain chunk may
   be a view sharing a buffer of up to 1 MiB with its neighbours. Nothing in the library's reads calls it yet, so no
   request count changes.
 
