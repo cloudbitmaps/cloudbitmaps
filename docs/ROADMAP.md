@@ -36,14 +36,14 @@ registry row per segment, no background process. Every roaring-based engine that
 into immutable segments rather than mutating a stored bitmap per call; that is the shape this library builds.
 Per-call freshness, if there is demand, would be immutable delta generations on the same bucket.
 
-Where each piece sits today. A bare **shipped** is in `0.12.0` or earlier; anything on `main` after it is marked
+Where each piece sits today. A bare **shipped** is in `0.13.0` or earlier; anything on `main` after it is marked
 with the release it is to ship in, and sits under `[Unreleased]` in the [changelog](../CHANGELOG.md#unreleased):
 
 | | Status |
 | --- | --- |
 | Loads, reads, chunk-skipping combines, `*Into` materialization, subject erasure as a rewrite, crypto-shred, disposal, retention, the DR check, export | **shipped** — [below](#shipped-today) |
-| Wider read windows (`concurrency` 32), concurrent cold reads of one chunk sharing one request, erasure read-ahead, `andNot` excludes read in the same round trip, and an oversized index entry refused at open | **in 0.13.0, unreleased** — see the [changelog](../CHANGELOG.md#unreleased); the speed-ups are derived from a model, not yet measured on S3 |
-| Loaded-store benchmarks — load throughput, intersect latency | **partly owed**: the rest is below. What is measured, on S3 in-region by run `2026-10-03-e13c7` from AWS CloudShell in `us-east-1`: the median cold intersect of two 500,000-id segments sharing 100 of 1,999 chunks took 492.69 ms (on 0.12.0, whose combine window held 8 chunk keys; the current window opens 8 wide and widens to 32, and its effect is derived, not yet measured) and made 204 GETs, $81.60 per million at list prices; a segment's first single-part `store.load()` is 2 PUT + 4 GET, $11.60 per million, and ran at 2.86 million ids a second — the [benchmarks page](benchmarks.md#the-in-region-run--run-2026-10-03-e13c7) publishes it, and the [report](../bench/calibration/2026-10-03-e13c7.md) explains every figure. Still owed: Lambda cold start, the `*Into` verbs, other combine shapes, and in-region GCS and Azure runs. The **RSS ceiling** is measured and published — it needs no cloud account, because a cgroup limit is enforceable locally |
+| Wider read windows (`concurrency` 32), concurrent cold reads of one chunk sharing one request, erasure read-ahead, `andNot` excludes read in the same round trip, and an oversized index entry refused at open | **shipped** — see the [changelog](../CHANGELOG.md#0130--2026-10-03); the speed-ups are derived from a model, not yet measured on S3 |
+| Loaded-store benchmarks — load throughput, intersect latency | **partly owed**: the rest is below. What is measured, on S3 in-region by run `2026-10-03-e13c7` from AWS CloudShell in `us-east-1`: the median cold intersect of two 500,000-id segments sharing 100 of 1,999 chunks took 492.69 ms (by an engine whose combine window held 8 chunk keys, the run being made before this release widened it to 32; the widening's effect is derived, not yet measured) and made 204 GETs, $81.60 per million at list prices; a segment's first single-part `store.load()` is 2 PUT + 4 GET, $11.60 per million, and ran at 2.86 million ids a second — the [benchmarks page](benchmarks.md#the-in-region-run--run-2026-10-03-e13c7) publishes it, and the [report](../bench/calibration/2026-10-03-e13c7.md) explains every figure. Still owed: Lambda cold start, the `*Into` verbs, other combine shapes, and in-region GCS and Azure runs. The **RSS ceiling** is measured and published — it needs no cloud account, because a cgroup limit is enforceable locally |
 | `load()` with the empty guard and `guard: { minCardinality, minRetained }` | **shipped** — `store.load(ref, ids)` is the write path in one call: next generation → write → guard → publish → collect. A refusal is reported (`published: false` + `reason`), not thrown, and deletes the object it wrote while the segment's row is unchanged or gone; once another write has changed the row, it leaves the object for collection. It reads the segment's row once, checks that its next number is free instead of listing for it, and with the default `keep` collects by name, deleting the one generation its publish pushed out of the window and listing the segment only every 16th generation: a steady load on S3 is 8 requests |
 | A load from a bitmap — `{ bitmap }`, `{ serialized }` | **shipped** — a caller holding the result as an in-memory Roaring bitmap loads it as one: the bytes are checked before anything is written, the chunks are cut from the bitmap's own containers with no per-id work, and the generation is byte for byte the one its ids write. Its time against the id path is measured by `pnpm bench:load-input`, whose figures are not recorded yet |
 | Registry rows at schema 2, and tokens no two writes share | **shipped** — a row carries an optional summary of its current generation, and a token with a random incarnation id and a random part for every write; a 0.11 process refuses a schema-2 row, so every 0.11 process stops before the first 0.12 write and there is no downgrade ([upgrade order](../CHANGELOG.md#0120--2026-10-03)) |
@@ -59,7 +59,7 @@ with the release it is to ship in, and sits under `[Unreleased]` in the [changel
 | A snapshot handle, so a long job reads one instant | **shipped** — `segment.pin()` resolves the generation once and holds it, so an export or a reconciliation describes a single instant. Only that segment is pinned; an ordinary handle still re-resolves on `cache.genTtlMs` |
 | Id-range reads for keyset paging — `iterate({ after, through })` and the same bounds on every combine | **shipped**. Yields only the ids in `(after, through]` and fetches only the chunks the range overlaps |
 | A public docs + site pass leading with the loaded store's strengths | **shipped** |
-| Deferred past `0.12.0` | **not built** — `generations({ describe: true })`, the chunk-level `*Into`, the tombstone reaper, an `op` metric for `store.load`, the compare-and-swap memo, an unscoped listing that skips the due index's pointers, one generation from parts built in several processes, and the reconcile for `rollback`, `setRetention`, shred and `eraseSubject` writes: [On the way to 1.0](#on-the-way-to-10), item 9, says what each is |
+| Deferred past `0.13.0` | **not built** — `generations({ describe: true })`, the chunk-level `*Into`, the tombstone reaper, an `op` metric for `store.load`, the compare-and-swap memo, an unscoped listing that skips the due index's pointers, one generation from parts built in several processes, and the reconcile for `rollback`, `setRetention`, shred and `eraseSubject` writes: [On the way to 1.0](#on-the-way-to-10), item 9, says what each is |
 | WASM CRoaring research | **after** the loaded store |
 
 **What is next:** a Lambda run, the `*Into` verbs and other combine shapes against a real store, and in-region GCS
@@ -94,7 +94,7 @@ is a dependency of both and is never installed directly. The storage drivers are
   structurally and safely deserialized before anything is written, then written from the bitmap's own containers,
   never id by id, into the bytes the same ids write. A byte array passed as ids is refused rather than loaded byte
   by byte.
-- **A throttled write is sent again, and never lands twice** (`0.12.0`). On S3 and GCS a write-once object the service answers
+- **A throttled write is sent again, and never lands twice**. On S3 and GCS a write-once object the service answers
   as throttled (`503 SlowDown`; `429` or `503`) is sent again, up to three more times with backoff, and a random write
   id in its metadata tells a first send that landed from another writer's object; on Azure Blob the client's retry does
   the same, with the same id. A registry row is sent once by the driver. When its write gets no answer, the load reads
@@ -109,7 +109,7 @@ is a dependency of both and is never installed directly. The storage drivers are
   not documented, so correctness rests on the write id, the footer and the registry's fence, never on that, and the
   in-region calibration is where real throttle answers are measured. **Known limit:** a bare `429` from an S3-compatible
   service is not retried and not classified transient on S3.
-- **Metadata on a generation, and a row that describes its current generation** (`0.12.0`). `load` and the `*Into` verbs take a
+- **Metadata on a generation, and a row that describes its current generation**. `load` and the `*Into` verbs take a
   small record of your own (`metadata`: string keys, string or finite-number values, at most 1,024 bytes as canonical
   JSON), checked before the first request and stored in the generation's object. The write that moves the pointer also
   writes the row's summary of the generation, its id count and the metadata, sealed on an encrypted segment, so a reader
@@ -120,7 +120,7 @@ is a dependency of both and is never installed directly. The storage drivers are
   stands in for the tail read, so a steady load on S3 makes 8 requests (derived, and held by a test). **Proven
   against** the in-memory and local-file drivers and the real registry protocol over counting stores, with every
   decision mutation-checked.
-- **A one-request cold `count()`, and `stat()`** (`0.12.0`). A cold `count()` is the pointer read and nothing else: the row records
+- **A one-request cold `count()`, and `stat()`**. A cold `count()` is the pointer read and nothing else: the row records
   the current generation's id count, so no object is read, cleartext or encrypted, whatever the index's width (derived
   from the driver ports and held by a test; one wire request on each emulator in the integration lane). `seg.stat()`
   returns the generation's number, count and metadata from the same resolution, one request when cold and none when warm
@@ -132,7 +132,7 @@ is a dependency of both and is never installed directly. The storage drivers are
   local-file drivers over counting stores, random sequences of loads, materialisations, rollbacks, erasures and
   retention writes, and each emulator, with every decision mutation-checked.
 - **Chunk-skipping intersection** — `intersect` aligns on chunk keys and fetches only the chunks present in
-  *every* operand, with bounded read concurrency (32 chunk keys by default from the unreleased 0.13.0, which also shares one request among concurrent cold reads of a chunk) and a bounded streaming window.
+  *every* operand, with bounded read concurrency (32 chunk keys by default, which also shares one request among concurrent cold reads of a chunk) and a bounded streaming window.
 - **Id-range reads for keyset paging** —
   `iterate`, and every combine, take `after` / `through` and yield only the ids in `(after, through]`, fetching
   only the chunks the range overlaps, on a live or a pinned handle.
@@ -175,7 +175,7 @@ is a dependency of both and is never installed directly. The storage drivers are
   `(namespace, segment, generation, chunk)`, KEK rotation, and an offline recovery KEK. Keys stay in your
   process; no cloud KMS dependency is forced on you.
 - **Subject erasure as a rewrite.** `eraseSubject` finds every registered segment an id is in, rewrites each
-  one's current generation without the id (0.13.0, unreleased: a window of 32 chunk reads ahead of the writer, one bit cleared), publishes it fenced on the generation it streamed,
+  one's current generation without the id (a window of 32 chunk reads ahead of the writer, one bit cleared), publishes it fenced on the generation it streamed,
   and deletes every generation that held the bit before returning, above the pointer as well as below it —
   **physical deletion on return**, with a
   per-segment ledger and a `segment.rewrite` audit event. `subjectReport` is the read side (access). What a
@@ -194,7 +194,7 @@ is a dependency of both and is never installed directly. The storage drivers are
   current generation) moves on every load — a daily bucket reloaded each morning would have its expiry pushed
   forward by the very refresh meant to keep it current. The sweep is bounded (`limit`, `maxScanSegments`),
   previewable (`dryRun`), shardable across replicas, reports a per-segment ledger instead of throwing, and
-  purges the tombstone rows its own retirements leave. From `0.12.0`, on a registry that can delete a row only while it is
+  purges the tombstone rows its own retirements leave. On a registry that can delete a row only while it is
   unchanged (S3 when its client sends to an AWS S3 host and Azure Blob by default, GCS when you set
   `conditionalDelete: true`, by `If-Match` / `ifGenerationMatch`), the purge removes the row for good, so a full sweep reads what is live and inside its grace
   rather than every name a namespace ever held, and `scan: 'index'` purges as well as retires, by a pointer each
@@ -330,7 +330,7 @@ between here and there:
    sections, flagged in its footer (a reader skips a section type it does not know, and a reader before 0.12
    refuses the flag); a generation without metadata is the same bytes as before.
 8. **Adoption feedback** — real deployments finding the sharp edges that our own tests don't.
-9. **Closing the named deferrals.** None of these is in `0.12.0`:
+9. **Closing the named deferrals.** None of these is in `0.13.0`:
    - self-healing disaster recovery;
    - an exclusion predicate on the retention sweep (legal hold);
    - an automated reconcile of unstamped tombstones, and a cleanup of the tombstones a registry already holds (the

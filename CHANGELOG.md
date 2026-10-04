@@ -11,6 +11,8 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-10-03
+
 ### Breaking
 
 - **The default `concurrency` rises from 8 to 32, so a call can have four times as many reads open.** A two-operand
