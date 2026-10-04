@@ -269,7 +269,8 @@ export interface CacheOptions {
    * Ceiling on how many segments' `.crbm` readers (each holding a parsed index) the store keeps open at once
    * (default 1024) — the steady-state memory bound for a long-running server that reads across many segments.
    * Past it the least-recently-used segment's reader is evicted; re-opening it later is one cheap tail GET. A reader of a small generation, one whose whole object came with its tail read,
-   * also holds its chunk bytes, so a read of it makes no further request until the reader is evicted.
+   * also holds its chunk bytes, so a read of it makes no chunk request until the reader is evicted or the pointer refresh
+   * moves it on; a store with no timed refresh (`genTtlMs: 0`, or no registry) keeps none.
    * Applies whenever the store builds its own read path — a backend or a bare `IStorageDriver`. A pre-built
    * `StorageChunkSource` manages its own reader cache.
    */
