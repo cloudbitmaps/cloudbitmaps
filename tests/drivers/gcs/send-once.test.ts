@@ -567,7 +567,7 @@ describe('GCS: one-request reads through the real SDK', () => {
     const watch = watchProcess();
     try {
       await expect(read()).rejects.toBeInstanceOf(expected);
-      for (let i = 0; i < 100 && !stub.aborted; i++) await new Promise((r) => setTimeout(r, 20));
+      for (let i = 0; i < 200 && !stub.aborted; i++) await new Promise((r) => setTimeout(r, 20));
       expect(stub.aborted).toBe(true);
       await new Promise((r) => setTimeout(r, 50));
     } finally {

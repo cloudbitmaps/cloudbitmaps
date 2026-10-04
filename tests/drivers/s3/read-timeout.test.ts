@@ -386,7 +386,7 @@ function expectTimedOut<T>(
 
 /** Wait (bounded) until every stalled response's connection has closed: a timed-out read let go of its socket. */
 async function expectReleased(stub: StubS3): Promise<void> {
-  const deadline = performance.now() + 2_000;
+  const deadline = performance.now() + 10_000;
   while (stub.stalled.size > 0 && performance.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }

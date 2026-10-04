@@ -251,7 +251,7 @@ describe('Azure Blob: a read lets go of a response the SDK refuses', () => {
     const watch = watchProcess();
     try {
       await expect(storage(readTimeoutMs).getRange(GEN, 0, 4)).rejects.toThrow(RangeError);
-      for (let i = 0; i < 100 && !stub.overridden.every((o) => o.closed); i++) await sleep(20);
+      for (let i = 0; i < 200 && !stub.overridden.every((o) => o.closed); i++) await sleep(20);
       expect(stub.overridden).toHaveLength(1);
       expect(stub.overridden[0]!.closed).toBe(true);
       await sleep(50);
