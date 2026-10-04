@@ -467,4 +467,18 @@ describe('every chunk of the stream passes the checks of a read of it alone', ()
     ).rejects.toThrow();
     expect((await registry.get(SEG))!.currentGen).toBe(0);
   });
+
+  it('refuses a stream that ends before every chunk has come, rather than dropping chunks from the new generation', async () => {
+    const w = await packed(12);
+    const real = CrbmReader.prototype.readChunks;
+    vi.spyOn(CrbmReader.prototype, 'readChunks').mockImplementation(function (
+      this: CrbmReader,
+      keys,
+      options,
+    ) {
+      return real.call(this, keys.slice(0, 5), options);
+    });
+    await expect(eraseFrom(w, joinId(0, 1))).rejects.toThrow(/ended before chunk/);
+    expect((await w.registry.get(SEG))!.currentGen).toBe(0);
+  });
 });
