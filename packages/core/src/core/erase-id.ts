@@ -74,7 +74,6 @@
  */
 import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
 import { MAX_REMAINDER, splitId } from './bit-route';
-import { ChunkWindow } from './chunk-window';
 import type { CodecBitmap, CodecInterface } from './codec';
 import { requireCodec } from './codec';
 import type { Yielder } from './cooperative';
@@ -665,7 +664,7 @@ export async function eraseIdFromSegment(
   return { ...base, erased: true, fromGeneration: from, generation, collected };
 }
 
-/** How many chunk reads the erasure rewrite keeps open ahead of the writer. */
+/** How many ranges the erasure rewrite keeps open or landed ahead of the writer. */
 const REWRITE_READ_AHEAD = 32;
 
 /**
@@ -674,11 +673,13 @@ const REWRITE_READ_AHEAD = 32;
  * deliberate — it puts every chunk through the **safe** deserializer and the size cap on the one path that
  * rewrites a whole segment, so a chunk that is not decodable, or is larger than the cap, stops the rewrite
  * instead of being copied forward — and the writer skips a chunk the removal emptied. Reads run ahead of the writer
- * through a window of {@link REWRITE_READ_AHEAD} chunks, in key order, so the erasure costs a few round trips
- * rather than one per chunk; each chunk is decoded only as the writer reaches it, so a corrupt one still stops the
- * rewrite naming that chunk and not a later one. At most that many raw chunk payloads are held ahead of the writer,
- * plus the one being decoded: about 8 KiB each serialized for a well-formed segment, and never more than the reader's
- * per-chunk payload cap, which refuses a longer index entry when the object is opened.
+ * through the reader's coalesced stream, in key order: neighbouring chunks share one range request, so the erasure
+ * costs a few range requests rather than one per chunk. Each chunk is decoded only as the writer reaches it, so a
+ * corrupt one still stops the rewrite naming that chunk and not a later one. At most {@link REWRITE_READ_AHEAD}
+ * ranges are held ahead of the writer, in flight or landed and not yet taken, each at most 1 MiB plus 28 bytes unless
+ * one chunk alone is larger (and no chunk is larger than the reader's per-chunk payload cap, which refuses a longer
+ * index entry when the object is opened); a well-formed segment's chunks are about 8 KiB each, so a range of them
+ * holds many.
  *
  * Both halves of **invariant 5** apply, including the remainder range: a chunk of a 16-bit-keyed segment cannot
  * hold a value above `MAX_REMAINDER`, and one that does was not written by this codec. Carrying it forward would
@@ -698,24 +699,34 @@ async function* rewrite(
   read: <T>(op: () => Promise<T>) => Promise<T>,
 ): AsyncGenerator<{ chunkKey: number; bitmap: CodecBitmap }> {
   const keys = [...reader.chunkKeys()].sort((a, b) => a - b);
-  // The replaced chunk is never read: it is already in hand. Every other chunk is read, so the window opens at its
-  // full width at once; a ramp would only add round trips here, since nothing stops this read early.
-  const window = new ChunkWindow<Uint8Array | null>(
+  // The replaced chunk is never read: it is already in hand. Every other chunk comes through the reader's coalesced
+  // stream: neighbouring chunks share one range request, each range goes out under the caller's read retry on its
+  // own, and the stream holds at most REWRITE_READ_AHEAD ranges. It is the same reader, so the whole rewrite reads
+  // the one generation the call opened, and each chunk passes the checks a read of it alone passes.
+  const stream = reader.readChunks(
     keys.filter((k) => k !== chunkKey),
-    (k) => read(() => reader.getChunk(k)),
-    REWRITE_READ_AHEAD,
-    false,
+    { concurrency: REWRITE_READ_AHEAD, readRange: read },
   );
-  for (const k of keys) {
-    if (k === chunkKey) {
-      yield { chunkKey: k, bitmap: replacement };
-      continue;
+  try {
+    for (const k of keys) {
+      if (k === chunkKey) {
+        yield { chunkKey: k, bitmap: replacement };
+        continue;
+      }
+      const item = await stream.next();
+      // The stream yields one item per key asked for; it ending early would drop chunks from the new generation.
+      if (item.done === true || item.value.key !== k) {
+        throw new IntegrityError(`the chunk stream ended before chunk ${k}`);
+      }
+      const bytes = item.value.bytes;
+      if (bytes === null) continue; // listed but absent: nothing to carry forward
+      const bitmap = codec.safeDeserialize(bytes, maxBytes);
+      assertRemaindersInRange(bitmap, k);
+      yield { chunkKey: k, bitmap };
     }
-    const bytes = await window.take();
-    if (bytes === null) continue; // listed but absent: nothing to carry forward
-    const bitmap = codec.safeDeserialize(bytes, maxBytes);
-    assertRemaindersInRange(bitmap, k);
-    yield { chunkKey: k, bitmap };
+  } finally {
+    // However the rewrite ends, the stream sends nothing more; its reads in flight finish and are dropped.
+    await stream.return(undefined);
   }
 }
 
