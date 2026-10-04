@@ -90,11 +90,51 @@ const INTERSECT_CONCURRENCY = sourceConstant(
   'packages/core/src/core/engine.ts',
   'DEFAULT_INTERSECT_CONCURRENCY',
 );
-const COMBINE_WINDOW_START = sourceConstant(
+const COMBINE_RANGE_START = sourceConstant(
   'packages/core/src/core/engine.ts',
-  'COMBINE_WINDOW_START',
+  'COMBINE_RANGE_START',
 );
+const PLAN_READS = 'packages/core/src/core/crbm/plan-reads.ts';
+/** The most unneeded bytes a coalesced range may carry between two needed chunks, from the planner's source. */
+const COALESCE_GAP_BYTES =
+  1024 *
+  Number(
+    sourceMatch(
+      PLAN_READS,
+      /^export const MAX_COALESCE_GAP_BYTES = (\d+) \* 1024;/gm,
+      'the coalesce gap',
+    )[1],
+  );
+/** The largest a coalesced range may be (unless it is one chunk): the decode cap, 1 MiB. */
+const COALESCED_READ_BYTES = 1024 * 1024;
 const { windowRounds, windowPeak } = require('./lib/calibrate-stages.cjs');
+/**
+ * The requests the engine makes of the object store for a cold intersect, by deployment, overlap and layout, counted by
+ * running it (`bench/range-counts.cjs`): a combine reads each operand's needed chunks as coalesced ranges, so what an
+ * intersect asks for depends on where the chunks sit and how large they are, which the planner decides and this script
+ * does not restate. Expected, not measured on a cloud.
+ */
+const RANGE_COUNTS = JSON.parse(fs.readFileSync(path.join(__dirname, 'range-counts.json'), 'utf8'));
+/** The range requests a cold intersect makes of EACH operand, for a deployment's chunks and an overlap and layout. */
+function rangesPerOperand(id, shared, layout = 'packed') {
+  const found = RANGE_COUNTS.profiles[id]?.coldIntersect.find(
+    (c) => c.shared === shared && c.layout === layout,
+  );
+  if (found === undefined) {
+    throw new Error(
+      `sizing: bench/range-counts.json has no count for the ${id} deployment sharing ${shared} chunks, ${layout}: ` +
+        'run `node bench/range-counts.cjs`',
+    );
+  }
+  return found.rangesPerOperand;
+}
+/** The bytes a cold intersect reads from each operand, gaps between the chunks it needs included. */
+function rangeBytesPerOperand(id, shared, layout = 'packed') {
+  rangesPerOperand(id, shared, layout);
+  return RANGE_COUNTS.profiles[id].coldIntersect.find(
+    (c) => c.shared === shared && c.layout === layout,
+  ).rangeBytesPerOperand;
+}
 const calibrationFigures = require('./lib/calibration-figures.cjs');
 const { esc, logChart } = require('./lib/log-chart.cjs');
 const { markersOf, regionsOf, withRegions } = require('./lib/sizing-markers.cjs');
@@ -219,10 +259,10 @@ const PROFILES = [
 const byId = (id) => PROFILES.find((p) => p.id === id);
 
 /** One profile's workload, as the estimator takes it; `genTtlMs` is the store's `cache.genTtlMs`. */
-function workloadOf(p, { genTtlMs, shared = SHARED_CHUNKS } = {}) {
+function workloadOf(p, { genTtlMs, shared = SHARED_CHUNKS, layout = 'packed' } = {}) {
   return {
     intersectsPerSec: p.intersectsPerMonth / SECONDS_PER_MONTH,
-    chunksPerIntersect: 2 * shared,
+    chunksPerIntersect: OPERANDS * rangesPerOperand(p.id, shared, layout),
     readsPerSec: p.readsPerSec,
     cacheHitRate: p.cacheHitRate,
     loadsPerMonth: p.loadsPerMonth,
@@ -245,13 +285,18 @@ function price(p, options = {}) {
 const redisOf = (p, pricing) => price(p, { pricing }).redisBaseline;
 
 /**
- * The GETs one cold intersect makes when its operands share `k` chunks: the estimator's own count, read back out of
- * the bill it gives one intersect a second, rather than restated here.
+ * The GETs one cold intersect makes when its operands share `k` chunks, on a deployment's chunks, laid out as given:
+ * the estimator's own count, read back out of the bill it gives one intersect a second, rather than restated here.
  */
-function intersectGets(k) {
+function intersectGets(id, k, layout = 'packed') {
+  return getsFor(OPERANDS * rangesPerOperand(id, k, layout));
+}
+
+/** The GETs a cold intersect makes when it makes `chunkRequests` range requests of its operands in all. */
+function getsFor(chunkRequests) {
   const r = estimateCost({
     segments: [],
-    workload: { intersectsPerSec: 1, chunksPerIntersect: 2 * k },
+    workload: { intersectsPerSec: 1, chunksPerIntersect: chunkRequests },
     pricing: P,
   });
   const gets = r.monthlyUSD.byOp.intersects / ((SECONDS_PER_MONTH * P.storage.getPerMillion) / 1e6);
@@ -279,16 +324,20 @@ function breakEvenRate(p) {
 /** How often one reader reads one of its hot segments, in seconds, with the point reads spread evenly. */
 const readEverySec = (p) => (p.hotPerProcess * p.readerProcesses) / p.readsPerSec;
 
-/** The smallest number of shared chunks at which a profile's bill passes its Redis. */
-function breakEvenShared(p) {
-  const redis = redisOf(p).monthlyUSD;
-  for (let k = 1; k <= CHUNKS_PER_SEGMENT; k++) {
-    if (price(p, { shared: k }).monthlyUSD.total > redis) return k;
-  }
-  // Rendered as a number, a missing break-even would publish as "0 shared chunks".
-  throw new Error(
-    `sizing: the ${p.id} deployment's bill never passes its Redis at any overlap — rewrite OVERLAP_NOTE`,
-  );
+/**
+ * How a profile's bill compares with its Redis at each overlap that was counted, in either layout, the dearest first:
+ * the bill, and the overlap and layout that make it. Chunks shared only add ranges (a range covers more of the object
+ * as the shared chunks do), so the dearest of the counted overlaps is the dearest there is.
+ */
+function dearestOverlap(p) {
+  const counted = RANGE_COUNTS.profiles[p.id].coldIntersect;
+  return counted
+    .map((c) => ({
+      shared: c.shared,
+      layout: c.layout,
+      total: price(p, { shared: c.shared, layout: c.layout }).monthlyUSD.total,
+    }))
+    .sort((a, b) => b.total - a.total)[0];
 }
 
 /** The library's attempts at a request, from its default retry policy. */
@@ -373,11 +422,24 @@ const REVERSED = PROFILES.filter(
 const andList = (items) =>
   items.length === 1 ? items[0] : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`;
 
+/**
+ * The range requests a cold intersect of the calibration run's shape makes of each operand, at any size of segment: its
+ * shared chunks sit side by side and fill a range or less, whatever their size, and the counts say so for each deployment.
+ */
+const BASE_RANGES = (() => {
+  const counts = new Set(PROFILES.map((p) => rangesPerOperand(p.id, SHARED_CHUNKS)));
+  if (counts.size !== 1) {
+    throw new Error(
+      'sizing: the deployments no longer make the same requests for the calibration shape, so a data size alone no longer prices it',
+    );
+  }
+  return [...counts][0];
+})();
 /** A pure cold-intersect workload of the calibration run's shape, at one size of data. */
 function coldAt(sizeBytes, perSec) {
   return estimateCost({
     segments: [{ sizeBytes }],
-    workload: { intersectsPerSec: perSec, chunksPerIntersect: 2 * SHARED_CHUNKS },
+    workload: { intersectsPerSec: perSec, chunksPerIntersect: OPERANDS * BASE_RANGES },
   });
 }
 /** The cold intersects a second at which that workload's bill meets the Redis that holds `sizeBytes`. */
@@ -386,7 +448,7 @@ function meetsAt(sizeBytes) {
   return (r.redisBaseline.monthlyUSD - r.monthlyUSD.byOp.storage) / r.monthlyUSD.byOp.intersects;
 }
 /** The explainer's losing example: a dashboard running cold intersects hard over a small set. */
-const HOT = { sizeBytes: 5e9, perSec: 100 };
+const HOT = { sizeBytes: 5e9, perSec: 200 };
 /** The guide's planning example: its inputs are the guide's, and every figure in its comments is the estimator's. */
 const GUIDE_EXAMPLE_INPUT = {
   segments: [{ sizeBytes: 6e8, count: 2 }],
@@ -403,7 +465,7 @@ const GUIDE_EXAMPLE_INPUT = {
 const sizeOf = (p) => p.segments * p.segmentBytes;
 /** One cold intersect's GETs on its segments' data prefix: every chunk and tail read, not the pointers beside it. */
 const DATA_GETS_PER_INTERSECT =
-  intersectGets(SHARED_CHUNKS) - OPERANDS * (P.storage.requestsPerPointerRead ?? 1);
+  intersectGets(PROFILES[0].id, SHARED_CHUNKS) - OPERANDS * (P.storage.requestsPerPointerRead ?? 1);
 /** A deployment's GETs a second on its one data prefix, the point reads that miss the cache included. */
 const dataGetsOf = (p) =>
   (p.intersectsPerMonth / SECONDS_PER_MONTH) * DATA_GETS_PER_INTERSECT +
@@ -441,6 +503,14 @@ if (
   );
 }
 
+/**
+ * The cold intersects a second the bill chart prices CloudBitmaps at. A coalescing engine makes a cold intersect of
+ * the calibration shape a few requests, so at one a second its bill sits under the cheapest Redis at every size the
+ * chart draws; this rate is the lowest round one at which the two bills cross well inside it, clear of its edge.
+ */
+const CHART_RATE = 20;
+const CHART_RATE_WORDS = 'twenty cold intersects a second';
+
 /** The charts' span of data, and what they draw across it: computed once, for the charts and for their words. */
 const CHART_X = { min: 1e8, max: 2e13 };
 let chartDataMemo;
@@ -451,7 +521,7 @@ function chartData() {
     { length: SAMPLES + 1 },
     (_, i) => CHART_X.min * (CHART_X.max / CHART_X.min) ** (i / SAMPLES),
   );
-  const reports = xs.map((b) => coldAt(b, 1));
+  const reports = xs.map((b) => coldAt(b, CHART_RATE));
   const redisLine = xs.map((b, i) => [b, reports[i].redisBaseline.monthlyUSD]);
   const cbLine = xs.map((b, i) => [b, reports[i].monthlyUSD.total]);
   const crossAt = xs.findIndex((_, i) => redisLine[i][1] >= cbLine[i][1]);
@@ -502,6 +572,9 @@ const versus = (total, redis) =>
   total < redis
     ? `${Math.round((1 - total / redis) * 100)}% less`
     : `${(total / redis).toFixed(total / redis < 1.1 ? 2 : 1)}× as much`;
+/** The same, as a clause: "91% less than its Redis", "2.4× as much as its Redis". */
+const versusWords = (total, redis) =>
+  `${versus(total, redis)} ${total < redis ? 'than' : 'as'} its Redis`;
 /** "3 × r6g.xlarge", or "285 × r6g.xlarge, 95 shards". */
 function clusterLabel(b) {
   const { nodeType, shards, nodes } = b.cluster;
@@ -539,7 +612,7 @@ function chartWords() {
     bill:
       'The monthly bill as the data grows, on log scales: the Redis that holds the data climbs in steps from ' +
       `${usd(first(d.redisLine))} a month at ${bytes(CHART_X.min)} to ${usd(last(d.redisLine))} at ${bytes(CHART_X.max)}, ` +
-      `while CloudBitmaps at one cold intersect a second goes from ${usd(first(d.cbLine))} to ${usd(last(d.cbLine))}. ` +
+      `while CloudBitmaps at ${CHART_RATE_WORDS} goes from ${usd(first(d.cbLine))} to ${usd(last(d.cbLine))}. ` +
       `They cross near ${bytes(d.cross)}.`,
     where:
       'Where each costs less, on log scales: the line where the bills meet rises from ' +
@@ -694,27 +767,55 @@ function render() {
   ];
 
   const overlaps = [SHARED_CHUNKS, 1000, CHUNKS_PER_SEGMENT];
+  const overlapRows = (layout, withBytes) => {
+    const head = ['medium', 'large']
+      .map((id) => {
+        const name = byId(id).name;
+        return `${name}: GETs | ${withBytes ? `${name}: read | ` : ''}${name}, a month | against its Redis`;
+      })
+      .join(' | ');
+    return [
+      `| shared chunks, of ${int(CHUNKS_PER_SEGMENT)} | ${head} |`,
+      `|---:|${'---:|'.repeat(withBytes ? 8 : 6)}`,
+      ...overlaps.map((k) => {
+        const cells = ['medium', 'large'].map((id) => {
+          const r = price(byId(id), { shared: k, layout });
+          const read = withBytes
+            ? `${bytes(OPERANDS * rangeBytesPerOperand(id, k, layout))} | `
+            : '';
+          return `${int(intersectGets(id, k, layout))} | ${read}${usd(r.monthlyUSD.total)} | ${versus(r.monthlyUSD.total, r.redisBaseline.monthlyUSD)}`;
+        });
+        return `| ${int(k)}${layout === 'packed' && k === SHARED_CHUNKS ? ' (the tables above)' : ''} | ${cells.join(' | ')} |`;
+      }),
+    ];
+  };
   const overlap = [
-    `| shared chunks, of ${int(CHUNKS_PER_SEGMENT)} | GETs a cold intersect | ${['medium', 'large'].map((id) => `${byId(id).name}, a month | against its Redis`).join(' | ')} |`,
-    '|---:|---:|---:|---:|---:|---:|',
-    ...overlaps.map((k) => {
-      const cells = ['medium', 'large'].map((id) => {
-        const r = price(byId(id), { shared: k });
-        return `${usd(r.monthlyUSD.total)} | ${versus(r.monthlyUSD.total, r.redisBaseline.monthlyUSD)}`;
-      });
-      return `| ${int(k)}${k === SHARED_CHUNKS ? ' (the tables above)' : ''} | ${int(intersectGets(k))} | ${cells.join(' | ')} |`;
-    }),
+    ...overlapRows('packed', false),
+    '',
+    'The shared chunks of those tables sit side by side in each object, as in the calibration run. Spread over the object, with each ' +
+      "segment's own chunks between them, the same overlap reads most of each object, and the table adds what an intersect reads, " +
+      'both objects together, with the gaps it reads across included:',
+    '',
+    ...overlapRows('spread', true),
   ];
-  const perChunk = intersectGets(1) - intersectGets(0);
   const overlapIntro =
-    `A cold intersect costs ${int(intersectGets(0))} + ${int(perChunk)}k GETs for k shared chunks, so what two ` +
-    "segments share sets the price, far more than their size. The tables above use the calibration run's overlap. " +
-    'Segments that are filters over the same catalogue or the same audience can share most of their chunks:';
-  const [evenMedium, evenLarge] = ['medium', 'large'].map((id) => breakEvenShared(byId(id)));
+    `A cold intersect reads each segment's shared chunks as ranges: chunks that sit within ${kib(COALESCE_GAP_BYTES)} of each ` +
+    `other are read in one request, up to ${mib(COALESCED_READ_BYTES)}. It costs ${int(getsFor(0))} + ` +
+    `${int(getsFor(OPERANDS) - getsFor(0))}r GETs for r range requests of each segment, and r follows the bytes the ` +
+    'shared chunks span in the object, not how many there are: what two segments share, and where it sits, sets the ' +
+    "price. The tables above use the calibration run's overlap. Segments that are filters over the same catalogue or the same audience " +
+    'can share most of their chunks:';
+  const dearest = ['medium', 'large'].map((id) => {
+    const p = byId(id);
+    const d = dearestOverlap(p);
+    return { p, d, redis: redisOf(p).monthlyUSD };
+  });
   const overlapNote =
-    `The medium deployment's bill passes its Redis at **${int(evenMedium)} shared chunks**, about ` +
-    `${pct(evenMedium / CHUNKS_PER_SEGMENT)} of a segment's, and the large one's at **${int(evenLarge)}**, about ` +
-    `${pct(evenLarge / CHUNKS_PER_SEGMENT)}.`;
+    'Even with every chunk shared and spread over the objects, the ' +
+    dearest
+      .map(({ p, d, redis }) => `${p.id} deployment's bill is ${versusWords(d.total, redis)}`)
+      .join(', and the ') +
+    '.';
 
   const multipart = PROFILES.filter((p) => writeRequests(p.segmentBytes) > 1).map(
     (p) =>
@@ -725,7 +826,7 @@ function render() {
   const shape =
     `Every segment has the shape of the [calibration run's](../../bench/calibration/2026-09-23-94416.md): its ids ` +
     `spread over about ${int(CHUNKS_PER_SEGMENT)} chunks, and every cold intersect of two segments sharing ` +
-    `${int(SHARED_CHUNKS)} of them, so each fetches the shared chunks from both. A larger segment is modeled as ` +
+    `${int(SHARED_CHUNKS)} of them, side by side in each object, so each reads them from both in a range request of its own. A larger segment is modeled as ` +
     `holding its ids more densely, up to the ${bytes(CHUNKS_PER_SEGMENT * MAX_CHUNK_BYTES)} its chunks can take, ` +
     `about ${kib(MAX_CHUNK_BYTES)} each, the most one takes whatever ids it holds, not as ` +
     'sharing more chunks, which is the most favourable choice for large segments; ' +
@@ -781,7 +882,7 @@ function render() {
     `  segments: [{ sizeBytes: ${medium.segmentBytes.toLocaleString('en-US').replace(/,/g, '_')}, count: ${medium.segments.toLocaleString('en-US').replace(/,/g, '_')} }],`,
     '  workload: {',
     `    intersectsPerSec: ${medium.intersectsPerMonth / SECONDS_PER_MONTH}, // priced cold`,
-    `    chunksPerIntersect: ${2 * SHARED_CHUNKS}, // the chunks each intersect fetches, both operands`,
+    `    chunksPerIntersect: ${OPERANDS * BASE_RANGES}, // the range requests each intersect makes for its chunks, both operands`,
     `    readsPerSec: ${medium.readsPerSec},`,
     `    cacheHitRate: ${medium.cacheHitRate},`,
     `    loadsPerMonth: ${medium.loadsPerMonth.toLocaleString('en-US').replace(/,/g, '_')},`,
@@ -848,7 +949,7 @@ function render() {
     `    readsPerSec: ${w.readsPerSec}, // point reads; each cache miss is at most one GET`,
     `    cacheHitRate: ${w.cacheHitRate}, // hits are free`,
     `    intersectsPerSec: ${w.intersectsPerSec}, // priced cold: each operand's pointer and index are read too`,
-    `    chunksPerIntersect: ${w.chunksPerIntersect}, // the chunks it fetches: ${OPERANDS} operands × ${w.chunksPerIntersect / OPERANDS} shared chunks`,
+    `    chunksPerIntersect: ${w.chunksPerIntersect}, // the range requests it makes for its chunks: ${OPERANDS} operands × ${w.chunksPerIntersect / OPERANDS}`,
     `    loadsPerMonth: ${w.loadsPerMonth}, // one store.load() a day, single-part`,
     `    hotSegments: ${w.hotSegments}, // segments a long-lived reader keeps reading: each refreshes its pointer every ${ttlLabel(GEN_TTL_MS)}`,
     '  },',
@@ -964,18 +1065,23 @@ function render() {
     `The large deployment's ${int(large.segments)} segments are past the roughly ${int(VALIDATED_SEGMENTS)} the library has ` +
     'been validated at, and its readers would need an index budget and a chunk cache far past their defaults ' +
     `([what each reader holds](${guide}sizing.md#what-each-reader-holds)), in memory not priced here.`;
-  const [medium1000, large1000] = ['medium', 'large'].map((id) => {
-    const r = price(byId(id), { shared: 1000 });
-    return times(r.monthlyUSD.total / r.redisBaseline.monthlyUSD);
+  const [mediumMost, largeMost] = ['medium', 'large'].map((id) => {
+    const p = byId(id);
+    const d = dearestOverlap(p);
+    const r = price(p, { shared: d.shared, layout: d.layout });
+    return {
+      times: times(r.monthlyUSD.total / r.redisBaseline.monthlyUSD),
+      read: bytes(OPERANDS * rangeBytesPerOperand(id, d.shared, d.layout)),
+      per: bytes(p.segmentBytes),
+    };
   });
-  const [mediumPasses, largePasses] = ['medium', 'large'].map((id) => breakEvenShared(byId(id)));
   const whyCaveats = [
     redisKind,
     '',
-    `All three assume that two segments share ${int(SHARED_CHUNKS)} of their ${int(CHUNKS_PER_SEGMENT)} chunks, and ` +
-      'filters over one catalogue or one audience can share most of theirs: at ' +
-      `${int(1000)} shared chunks, the medium and large deployments cost ${medium1000} and ${large1000} their Redis, ` +
-      `and their bills pass it at ${int(mediumPasses)} and ${int(largePasses)} shared chunks.`,
+    `All three assume that two segments share ${int(SHARED_CHUNKS)} of their ${int(CHUNKS_PER_SEGMENT)} chunks, side by side in each object, and ` +
+      'filters over one catalogue or one audience can share most of theirs, spread over it: with every chunk shared and ' +
+      `spread, the medium and large deployments cost ${mediumMost.times} and ${largeMost.times} their Redis, ` +
+      `and each intersect reads ${mediumMost.read} and ${largeMost.read} from the two objects, most of them.`,
     '',
     envelope('docs/guide/'),
   ];
@@ -1064,7 +1170,7 @@ function render() {
 
   const sizes = [200 * MB, 1e9, 5e9, 20e9, 200e9, 2e12, 20e12];
   const pastQuota = sizes
-    .map((b) => ({ b, nodes: coldAt(b, 1).redisBaseline.cluster.nodes }))
+    .map((b) => ({ b, nodes: coldAt(b, CHART_RATE).redisBaseline.cluster.nodes }))
     .filter(({ nodes }) => nodes > DEFAULT_NODES_PER_CLUSTER);
   for (const { b, nodes } of pastQuota) {
     // Past the most one cluster can have, the data is several clusters, which the note below does not say.
@@ -1079,10 +1185,10 @@ function render() {
       ? `default quotas](${QUOTAS_URL}) of ${int(DEFAULT_NODES_PER_CLUSTER)} nodes a cluster and ${int(DEFAULT_NODES_PER_REGION)} a Region`
       : `default quota](${QUOTAS_URL}) of ${int(DEFAULT_NODES_PER_CLUSTER)} nodes a cluster`;
   const grows = [
-    '| data stored | the Redis that holds it | its nodes | CloudBitmaps, one cold intersect a second | where the bill meets the Redis |',
+    `| data stored | the Redis that holds it | its nodes | CloudBitmaps, ${CHART_RATE_WORDS} | where the bill meets the Redis |`,
     '|---:|---:|---|---:|---:|',
     ...sizes.map((b) => {
-      const r = coldAt(b, 1);
+      const r = coldAt(b, CHART_RATE);
       return (
         `| ${bytes(b)} | ${usd(r.redisBaseline.monthlyUSD)} | ${clusterLabel(r.redisBaseline)} | ` +
         `${usd(r.monthlyUSD.total)} | ${rate(meetsAt(b))} a second |`
@@ -1134,33 +1240,31 @@ function render() {
     "for its pointer reads, once each `cache.genTtlMs`; one that ranges over more than a reader's cache holds is " +
     "Redis's ground, or a cache's in front of CloudBitmaps.";
 
-  // The engine opens a window of COMBINE_WINDOW_START chunk keys and widens it, as keys are taken, to
-  // INTERSECT_CONCURRENCY, starting the next as the OLDEST finishes, so at an even latency the shared chunks take
+  // The engine opens each operand's stream of ranges COMBINE_RANGE_START wide and widens it, as ranges are taken, to
+  // INTERSECT_CONCURRENCY, starting the next as the OLDEST finishes, so at an even latency the ranges take
   // windowRounds request times, after the pointers and indexes.
-  const chain = 2 + windowRounds(SHARED_CHUNKS, INTERSECT_CONCURRENCY, COMBINE_WINDOW_START);
+  const chain = 2 + windowRounds(BASE_RANGES, INTERSECT_CONCURRENCY, COMBINE_RANGE_START);
   const peakInFlight =
-    OPERANDS * windowPeak(SHARED_CHUNKS, INTERSECT_CONCURRENCY, COMBINE_WINDOW_START);
-  // The latest in-region run's measurement of the same chain, read from its evidence: the rounds the median cold
-  // intersect waited through, and the sockets its client had against the requests the window can open.
+    OPERANDS * windowPeak(BASE_RANGES, INTERSECT_CONCURRENCY, COMBINE_RANGE_START);
+  // The latest in-region run measured the engine before this one, which read each shared chunk as a request of its
+  // own: its evidence is the previous engine's, and is quoted as that.
   const latestRun = JSON.parse(
     fs.readFileSync(path.join(ROOT, calibrationFigures.evidenceFiles(ROOT).at(-1)), 'utf8'),
   );
   const measuredChain = latestRun.phases.intersect;
   const measuredRounds = Number(measuredChain.medianRounds.toFixed(1));
-  const against = measuredRounds > chain ? 'above' : measuredRounds < chain ? 'below' : 'equal to';
   const measured =
-    `The in-region run of ${latestRun.runId.slice(0, 10)} measured ${measuredRounds.toFixed(1)} request times for this shape, ` +
-    `${measuredChain.p50ms.toFixed(2)} ms at the median, ${against} the derived ${int(chain)}, with a mean of ` +
+    `The previous engine, which read each shared chunk as a request of its own, was measured in region by the run of ` +
+    `${latestRun.runId.slice(0, 10)}: ${measuredRounds.toFixed(1)} request times for this shape, ` +
+    `${measuredChain.p50ms.toFixed(2)} ms at the median, with a mean of ` +
     `${measuredChain.medianMeanInFlight.toFixed(1)} requests in flight against its client's ` +
-    `${int(latestRun.measured.maxSockets)} sockets. It did not vary the socket count, so it does not say what part of ` +
-    'any gap is socket wait.';
+    `${int(latestRun.measured.maxSockets)} sockets. This engine has not been measured in region.`;
   const depth =
     `A cold intersect of two segments sharing ${int(SHARED_CHUNKS)} chunks waits on a chain of requests, derived from the engine's constants, ` +
-    `**${int(chain)} deep**: both operands' pointers, then both indexes, then the shared chunks, opening ` +
-    `${int(COMBINE_WINDOW_START)} at a time and widening to ${int(INTERSECT_CONCURRENCY)}, each read from both ` +
-    `operands together, so up to ${int(peakInFlight)} requests are in flight, and the next chunk starts as the oldest ` +
-    `finishes. At an even latency that is ${int(chain)} request times end to end. A slow request holds up those queued ` +
-    `behind it. ${measured} A repeat served from the chunk cache makes no ` +
+    `**${int(chain)} deep**: both operands' pointers, then both indexes, then each operand's range of shared chunks, a ` +
+    `stream that opens ${int(COMBINE_RANGE_START)} ranges wide and widens to ${int(INTERSECT_CONCURRENCY)}, so up to ` +
+    `${int(peakInFlight)} requests are in flight. At an even latency that is ${int(chain)} request times end to end. A slow ` +
+    `request holds up those queued behind it. ${measured} A repeat served from the chunk cache makes no ` +
     'request within `cache.genTtlMs`, and one round of pointer reads after it.';
 
   const whyPrefix =
@@ -1173,13 +1277,12 @@ function render() {
     `[AWS SDK](${SDK_RETRY_URL}), ${int(SDK_ATTEMPTS)} attempts by default, inside each of the library's ` +
     `${int(LIBRARY_ATTEMPTS)}: up to ${int(SDK_ATTEMPTS * LIBRARY_ATTEMPTS)} requests for one.`;
 
-  const base = intersectGets(0);
   const whyOverlap =
-    `A cold intersect costs ${int(base)} + ${int(intersectGets(1) - base)}k GETs for k shared chunks, so segments ` +
-    'that share most of their chunks cost far more to intersect than their size suggests. At ' +
-    `${int(1000)} shared chunks of ${int(CHUNKS_PER_SEGMENT)}, where the tables above assume ` +
-    `${int(SHARED_CHUNKS)}, the medium deployment's bill comes to **${medium1000}** its Redis's price, and the ` +
-    `large one's to **${large1000}**; they pass it at ${int(mediumPasses)} and ${int(largePasses)} shared chunks.`;
+    `A cold intersect costs ${int(getsFor(0))} + ${int(getsFor(OPERANDS) - getsFor(0))}r GETs for r range requests of each ` +
+    'segment, and r follows the bytes the shared chunks span in the object, not how many there are: segments whose shared ' +
+    'chunks are spread over them read most of each object. With every chunk shared and spread, the medium and large ' +
+    `deployments cost ${mediumMost.times} and ${largeMost.times} their Redis, and an intersect reads ${mediumMost.read} ` +
+    `and ${largeMost.read} from the two objects.`;
 
   // Each chart, picked for the reader's theme, with words that say what it shows.
   const chartText = chartWords();
@@ -1254,7 +1357,7 @@ function charts() {
     out[`bench/bill-as-data-grows${suffix}.svg`] = logChart(
       {
         title: 'The monthly bill as the data grows',
-        subtitle: [redisKind, `CloudBitmaps: one cold intersect a second, of ${shape}`],
+        subtitle: [redisKind, `CloudBitmaps: ${CHART_RATE_WORDS}, of ${shape}`],
         label: words_.bill,
         x: xAxis,
         y: {
@@ -1271,8 +1374,9 @@ function charts() {
           {
             points: d.cbLine,
             color: 'cloudbitmaps',
-            text: 'CloudBitmaps, one cold intersect a second',
-            textAt: [3e10, 110],
+            text: `CloudBitmaps, ${CHART_RATE_WORDS}`,
+            // Under the line, which is nearly flat: storage is all that grows it.
+            textAt: [3e10, d.cbLine[d.cbLine.length >> 1][1] / 2.2],
           },
         ],
         markers: [

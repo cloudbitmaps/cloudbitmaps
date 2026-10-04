@@ -1,0 +1,144 @@
+{
+  "note": "Counted by running the engine over the in-memory backend; not measured on a cloud. Rewritten by bench/range-counts.cjs.",
+  "chunksPerSegment": 2000,
+  "profiles": {
+    "small": {
+      "segmentBytes": 1000000,
+      "idsPerChunk": 237,
+      "chunkBytes": 490,
+      "coldIntersect": [
+        {
+          "shared": 100,
+          "layout": "packed",
+          "rangesPerOperand": 1,
+          "rangeBytesPerOperand": 49000
+        },
+        {
+          "shared": 100,
+          "layout": "spread",
+          "rangesPerOperand": 1,
+          "rangeBytesPerOperand": 970690
+        },
+        {
+          "shared": 1000,
+          "layout": "packed",
+          "rangesPerOperand": 1,
+          "rangeBytesPerOperand": 490000
+        },
+        {
+          "shared": 1000,
+          "layout": "spread",
+          "rangesPerOperand": 1,
+          "rangeBytesPerOperand": 979510
+        },
+        {
+          "shared": 2000,
+          "layout": "packed",
+          "rangesPerOperand": 1,
+          "rangeBytesPerOperand": 980000
+        },
+        {
+          "shared": 2000,
+          "layout": "spread",
+          "rangesPerOperand": 1,
+          "rangeBytesPerOperand": 980000
+        }
+      ]
+    },
+    "medium": {
+      "segmentBytes": 4000000,
+      "idsPerChunk": 987,
+      "chunkBytes": 1990,
+      "coldIntersect": [
+        {
+          "shared": 100,
+          "layout": "packed",
+          "rangesPerOperand": 1,
+          "rangeBytesPerOperand": 199000
+        },
+        {
+          "shared": 100,
+          "layout": "spread",
+          "rangesPerOperand": 4,
+          "rangeBytesPerOperand": 3828760
+        },
+        {
+          "shared": 1000,
+          "layout": "packed",
+          "rangesPerOperand": 2,
+          "rangeBytesPerOperand": 1990000
+        },
+        {
+          "shared": 1000,
+          "layout": "spread",
+          "rangesPerOperand": 4,
+          "rangeBytesPerOperand": 3972040
+        },
+        {
+          "shared": 2000,
+          "layout": "packed",
+          "rangesPerOperand": 4,
+          "rangeBytesPerOperand": 3980000
+        },
+        {
+          "shared": 2000,
+          "layout": "spread",
+          "rangesPerOperand": 4,
+          "rangeBytesPerOperand": 3980000
+        }
+      ]
+    },
+    "large": {
+      "segmentBytes": 10000000,
+      "idsPerChunk": 2487,
+      "chunkBytes": 4990,
+      "coldIntersect": [
+        {
+          "shared": 100,
+          "layout": "packed",
+          "rangesPerOperand": 1,
+          "rangeBytesPerOperand": 499000
+        },
+        {
+          "shared": 100,
+          "layout": "spread",
+          "rangesPerOperand": 10,
+          "rangeBytesPerOperand": 9031900
+        },
+        {
+          "shared": 1000,
+          "layout": "packed",
+          "rangesPerOperand": 5,
+          "rangeBytesPerOperand": 4990000
+        },
+        {
+          "shared": 1000,
+          "layout": "spread",
+          "rangesPerOperand": 10,
+          "rangeBytesPerOperand": 9930100
+        },
+        {
+          "shared": 2000,
+          "layout": "packed",
+          "rangesPerOperand": 10,
+          "rangeBytesPerOperand": 9980000
+        },
+        {
+          "shared": 2000,
+          "layout": "spread",
+          "rangesPerOperand": 10,
+          "rangeBytesPerOperand": 9980000
+        }
+      ]
+    }
+  },
+  "andNot": {
+    "profile": "small",
+    "includeChunks": 1999,
+    "excludes": 10,
+    "sharedChunks": 100,
+    "getRange": 11,
+    "getTail": 11,
+    "pointer": 11
+  }
+}

@@ -74,7 +74,7 @@ harness_ref() {
   ref="$(git rev-parse --short HEAD 2>/dev/null)" || { echo unknown; return; }
   if [ -n "$(git status --porcelain -- bench/calibrate-aws.cjs bench/calibrate-cloudshell.sh bench/lib/aws-meter.cjs \
     bench/lib/calibrate-guards.cjs bench/lib/calibrate-process.cjs bench/lib/calibrate-samples.cjs \
-    bench/lib/calibrate-spread.cjs bench/lib/calibrate-stages.cjs 2>/dev/null)" ]; then
+    bench/lib/calibrate-spread.cjs bench/lib/calibrate-stages.cjs bench/lib/range-counts.cjs 2>/dev/null)" ]; then
     ref="${ref}-dirty"
   fi
   echo "$ref"
@@ -206,7 +206,7 @@ run_harness() {
 
 mkdir -p "$WORK/bench/lib"
 cp bench/calibrate-aws.cjs "$WORK/bench/"
-cp bench/lib/aws-meter.cjs bench/lib/calibrate-guards.cjs bench/lib/calibrate-process.cjs bench/lib/calibrate-samples.cjs bench/lib/calibrate-spread.cjs bench/lib/calibrate-stages.cjs "$WORK/bench/lib/"
+cp bench/lib/aws-meter.cjs bench/lib/calibrate-guards.cjs bench/lib/calibrate-process.cjs bench/lib/calibrate-samples.cjs bench/lib/calibrate-spread.cjs bench/lib/calibrate-stages.cjs bench/lib/range-counts.cjs "$WORK/bench/lib/"
 echo "cloudshell: installing the published packages at ${PKG_VERSION}"
 (
   cd "$WORK"

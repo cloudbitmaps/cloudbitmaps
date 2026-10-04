@@ -170,8 +170,11 @@ describe('bench:sizing:check fails what it exists to catch', () => {
   });
 
   it('fails a generated figure edited by hand', () => {
-    expect(sizing).toContain('**$280**');
-    refused({ [SIZING]: sizing.replace('**$280**', '**$281**') }, /not what the shipped estimator/);
+    expect(sizing).toContain('**$71.66**');
+    refused(
+      { [SIZING]: sizing.replace('**$71.66**', '**$72.66**') },
+      /not what the shipped estimator/,
+    );
   });
 
   it('fails a hand-edited figure in the README, and a hand-edited or missing chart', () => {
@@ -1558,18 +1561,18 @@ describe('bench:sizing:check fails what it exists to catch', () => {
         'the hot dashboard no longer losing',
         (t: string) =>
           t.replace(
-            'const HOT = { sizeBytes: 5e9, perSec: 100 };',
+            'const HOT = { sizeBytes: 5e9, perSec: 200 };',
             'const HOT = { sizeBytes: 5e9, perSec: 1 };',
           ),
         /hot dashboard no longer loses/,
       ],
       [
-        // Two a second loses to Redis, but by less than the multiple the pages claim: only the 2× itself refuses it.
+        // Seventy a second loses to Redis, but by less than the multiple the pages claim: only the 2× itself refuses it.
         'the hot dashboard losing by less than a multiple',
         (t: string) =>
           t.replace(
-            'const HOT = { sizeBytes: 5e9, perSec: 100 };',
-            'const HOT = { sizeBytes: 5e9, perSec: 2 };',
+            'const HOT = { sizeBytes: 5e9, perSec: 200 };',
+            'const HOT = { sizeBytes: 5e9, perSec: 70 };',
           ),
         /hot dashboard no longer loses to Redis by a multiple/,
       ],
@@ -1579,13 +1582,13 @@ describe('bench:sizing:check fails what it exists to catch', () => {
         /large deployment's segments are larger than 2,000 chunks can take/,
       ],
       [
-        // Four a second is past the medium deployment's whole-bill break-even of 3.9, and still under the 4.2 the
+        // 138 a second is past the medium deployment's whole-bill break-even of 132, and still under the 143 the
         // chart's line gives cold intersects alone: only the room the pages claim is gone.
         'a deployment with no room left',
         (t: string) =>
           t.replace(
             'intersectsPerMonth: 2_628_000, // one a second',
-            'intersectsPerMonth: 10_512_000, // one a second',
+            'intersectsPerMonth: 362_664_000, // one a second',
           ),
         /medium deployment's bill already meets its Redis/,
       ],
@@ -1623,7 +1626,7 @@ describe('bench:sizing:check fails what it exists to catch', () => {
           source: (t) =>
             t.replace(
               'intersectsPerMonth: 2_628_000, // one a second',
-              'intersectsPerMonth: 11_826_000, // one a second',
+              'intersectsPerMonth: 394_200_000, // one a second',
             ),
         },
       );
