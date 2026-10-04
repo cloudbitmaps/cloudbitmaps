@@ -19,11 +19,10 @@ import type {
   IStorageDriver,
   StorageBackend,
 } from '@cloudbitmaps/core/driver-kit';
-import { Agent as HttpAgent } from 'node:http';
-import { Agent as HttpsAgent } from 'node:https';
 import { S3Client } from '@aws-sdk/client-s3';
 import { S3StorageDriver } from './storage';
 import { S3RegistryDriver } from './registry';
+import { describe } from './read-timeout';
 
 export interface S3StorageOptions {
   /** Target bucket (must already exist). */
@@ -58,8 +57,9 @@ export interface S3StorageOptions {
   /**
    * Most sockets the built client opens at once to one scheme, for `https` and for a plain-`http` endpoint alike
    * (default 128). The AWS SDK's own default is 50, which a window of 32 reads per operand outgrows on the first
-   * two-operand `intersect`; the rest of the built client keeps the SDK's defaults (keep-alive on, its timeouts and
-   * retry). A positive safe integer. Refused beside `client`, which carries its own request handler. A deployment
+   * two-operand `intersect`. Only this limit differs from the SDK's own client: its request handler, keep-alive,
+   * timeouts and retry are the SDK's. A positive safe integer. Release a built client's sockets with
+   * `store.client.destroy()`. Refused beside `client`, which carries its own request handler. A deployment
    * that runs `eraseSubject`'s 256 reads at once needs `256`, or a lower `concurrency`.
    */
   readonly maxSockets?: number;
@@ -129,6 +129,49 @@ const CLIENT_SETTINGS = ['region', 'endpoint', 'pathStyle', 'credentials', 'maxS
 /** Default socket limit of a client the store builds: two operands at the default window of 32 reads each, doubled. */
 const DEFAULT_MAX_SOCKETS = 128;
 
+/** What of the SDK's request handler the limit needs: its one `handle` and the agents it exposes once it has run. */
+interface PooledHandler {
+  handle(request: unknown, options?: unknown): Promise<unknown>;
+  httpHandlerConfigs?: () => {
+    httpAgent?: { maxSockets: number };
+    httpsAgent?: { maxSockets: number };
+  };
+}
+
+/**
+ * Cap the sockets the SDK's own request handler opens, and change nothing else about it. The handler stays the SDK's
+ * default one, so its other defaults hold: its defaults-mode connection timeout, keep-alive, and a request that
+ * sends `Expect: 100-continue` (a part of 2 MiB or more) still goes on its own connection outside this pool. Only the
+ * `maxSockets` of its two pooled agents is set, before the first request goes out. The handler makes its agents on
+ * that first request (the http one even later, per request, so a first burst to a plain-http endpoint would get one
+ * pool each), so the first request first runs an aborted one through it, which makes them, then sets the limit on
+ * the agents it made.
+ */
+function limitSockets(client: S3Client, maxSockets: number): void {
+  const handler = client.config.requestHandler as unknown as PooledHandler;
+  if (typeof handler.handle !== 'function' || typeof handler.httpHandlerConfigs !== 'function') {
+    throw new ValidationError(
+      'the installed @aws-sdk/client-s3 has a request handler that cannot take a socket limit; update the SDK',
+    );
+  }
+  const handle = handler.handle.bind(handler);
+  const agents = handler.httpHandlerConfigs.bind(handler);
+  let ready: Promise<void> | undefined;
+  const warm = async (): Promise<void> => {
+    const abort = new AbortController();
+    abort.abort();
+    await handle({ protocol: 'http:' }, { abortSignal: abort.signal }).catch(() => undefined);
+    const { httpAgent, httpsAgent } = agents();
+    if (httpAgent) httpAgent.maxSockets = maxSockets;
+    if (httpsAgent) httpsAgent.maxSockets = maxSockets;
+  };
+  handler.handle = async (request, options) => {
+    ready ??= warm();
+    await ready;
+    return handle(request, options);
+  };
+}
+
 /** Refuse an options bag that is not an object, or that holds a key not in `keys`, naming each such key. */
 function refuseUnknown(
   name: string,
@@ -160,15 +203,6 @@ export class S3Storage implements StorageBackend {
 
   constructor(options: S3StorageOptions) {
     refuseUnknown('S3Storage', options, S3_STORAGE_OPTION_KEYS, 'an S3 client goes in `client`');
-    const maxSockets = options.maxSockets ?? DEFAULT_MAX_SOCKETS;
-    if (
-      options.maxSockets !== undefined &&
-      (!Number.isSafeInteger(options.maxSockets) || options.maxSockets < 1)
-    ) {
-      throw new ValidationError(
-        `S3Storage \`maxSockets\` must be a positive integer — got ${String(options.maxSockets)}`,
-      );
-    }
     if (options.client !== undefined && options.client !== null) {
       // A supplied client already carries its region, endpoint, addressing style and credentials, so a setting
       // beside it is ignored, and ignoring it leaves the store talking to somewhere the caller did not mean:
@@ -184,19 +218,19 @@ export class S3Storage implements StorageBackend {
       }
       this.client = options.client;
     } else {
+      const { maxSockets = DEFAULT_MAX_SOCKETS } = options;
+      if (!Number.isSafeInteger(maxSockets) || maxSockets < 1) {
+        throw new ValidationError(
+          `maxSockets must be a positive safe integer; got ${describe(options.maxSockets)}`,
+        );
+      }
       this.client = new S3Client({
         ...(options.region === undefined ? {} : { region: options.region }),
         ...(options.endpoint === undefined ? {} : { endpoint: options.endpoint }),
         ...(options.pathStyle === undefined ? {} : { forcePathStyle: options.pathStyle }),
         ...(options.credentials === undefined ? {} : { credentials: options.credentials }),
-        // The agents are made here, with the SDK's own keep-alive default and the one setting changed. Passing
-        // `{ maxSockets }` for the SDK to build from does not hold on a plain-http endpoint: it makes that agent
-        // on the first request, so a first burst gets one agent, and one pool, per request.
-        requestHandler: {
-          httpAgent: new HttpAgent({ keepAlive: true, maxSockets }),
-          httpsAgent: new HttpsAgent({ keepAlive: true, maxSockets }),
-        },
       });
+      limitSockets(this.client, maxSockets);
     }
     const shared = {
       client: this.client,

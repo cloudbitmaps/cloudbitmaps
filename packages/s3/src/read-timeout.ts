@@ -37,7 +37,7 @@ export function resolveReadTimeoutMs(value: number | undefined): number {
 }
 
 /** A value as an error message can show it: a string quoted, so `'200'` is not mistaken for `200`, and never a throw. */
-function describe(value: unknown): string {
+export function describe(value: unknown): string {
   if (typeof value === 'string') return JSON.stringify(value);
   if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
     return String(value);

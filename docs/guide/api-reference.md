@@ -88,7 +88,7 @@ is built:
 
 | Backend | Option | Default | What it does |
 |---|---|---|---|
-| `S3Storage` | `maxSockets` | 128 (the AWS SDK's own default is 50) | most sockets the client the backend builds opens at once, for `https` and for a plain-`http` endpoint; the other defaults of that client (keep-alive, timeouts, retry) are the SDK's; a positive safe integer; refused beside `client`, which carries its own |
+| `S3Storage` | `maxSockets` | 128 (the AWS SDK's own default is 50) | most sockets the client the backend builds opens at once, for `https` and for a plain-`http` endpoint; only the limit differs from the SDK's own client: its request handler, defaults-mode timeouts, keep-alive and retry are the SDK's; a positive safe integer; refused beside `client`, which carries its own |
 | `S3Storage` | `partBytes` | 8 MiB; a smaller value is raised to S3's 5 MiB minimum | multipart part size, and so the peak write memory; a positive safe integer |
 | `S3Storage` | `maxObjectBytes` | `partBytes` × 10,000 (about 80 GiB at the default) | the largest object the backend will write and advertise; raise it and `partBytes` grows so the 10,000-part limit still covers it, up to S3's 5 TiB; a positive safe integer |
 | `S3Storage` | `readTimeoutMs` | `0`: no timeout | how long each `GetObject` and `HeadObject`, the SDK's own retries of it included, may take, the response body included, before it is aborted and throws `TransientError` for the store's read retry; an integer from 0 to 2,147,483,647 |

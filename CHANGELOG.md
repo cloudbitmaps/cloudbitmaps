@@ -18,8 +18,10 @@ so, and so do the module headers in the code.
   open, so the built client queued the library behind its own socket pool; a many-exclude `andNot` ran 23% faster on
   128 sockets (measured locally against a latency-modelled source). `maxSockets` is a positive integer, applies to
   `https` and plain-`http` endpoints alike, and is refused beside `client`, as `region`, `endpoint`, `pathStyle` and
-  `credentials` are. Keep-alive, timeouts and retry on the built client are unchanged, and a client you pass is never
-  changed: it keeps its own limit, so raise it there. `eraseSubject`'s 256 reads at once need `maxSockets: 256` or a
+  `credentials` are. Only the socket limit differs from the SDK's own client: its request handler, defaults-mode timeouts,
+  keep-alive, retry and the separate connection for a part of 2 MiB or more (`Expect: 100-continue`) are the SDK's, and
+  a client you pass is never changed: it keeps its own limit, so raise it there. Release a built client's sockets with
+  `store.client.destroy()`. `eraseSubject`'s 256 reads at once need `maxSockets: 256` or a
   lower `concurrency`.
 
 ## [0.13.0] — 2026-10-03

@@ -144,8 +144,8 @@ the window, never the segment: up to 32 raw chunk payloads are held ahead of the
 well-formed segment and no more than the reader's cap of 1 MiB each ([SECURITY](../../SECURITY.md)) for a corrupt one,
 32 MiB per segment and `concurrency` × 32 MiB for `eraseSubject`.
 `eraseSubject` erases up to `concurrency` segments at once (8 by default), so it can have up to `concurrency × 32` range
-reads open together, 256 by default. On S3 that is more than the SDK's default of 50 sockets: the reads past the 50th
-wait for one ([production](production.md)).
+reads open together, 256 by default. On S3 that is more than the 128 sockets the client the store builds allows (50 on a client you pass, by the SDK's
+default): the reads past the limit wait for a socket, unless you set `maxSockets: 256` ([production](production.md)).
 
 **Every generation that holds the id goes, not only the current one.** A re-seed that drops someone leaves their bit
 in the generation `keep` retains. A `store.rollback` leaves the generations it rolled back from above the pointer,

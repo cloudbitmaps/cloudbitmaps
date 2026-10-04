@@ -285,6 +285,9 @@ as an option; a client you pass is yours to set:
 const backend = new S3Storage({ bucket: 'my-bitmaps', maxSockets: 256 });
 ```
 
+The limit is the only thing that differs from the SDK's own client; free keep-alive sockets do not hold the process open,
+and `backend.client.destroy()` closes them.
+
 On a client of your own, set it on the request handler:
 
 ```ts
