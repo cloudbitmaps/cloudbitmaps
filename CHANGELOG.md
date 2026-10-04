@@ -11,6 +11,19 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Breaking
+
+- **The default `concurrency` rises from 8 to 32, so a call can have four times as many reads open.** A two-operand
+  combine can hold up to 64 open, and `eraseSubject` up to 256 (`concurrency` segments at once, 8 by default, each
+  with a window of 32 chunk reads), against the S3 SDK's default of 50 sockets. On S3 the wait for a socket counts
+  against `readTimeoutMs`, so a deployment that sets `readTimeoutMs` should raise `maxSockets` (256 covers four
+  two-operand combines or one `eraseSubject`) or pass a lower `concurrency`. See the combine and erasure entries under
+  `Changed`.
+
+- **The reader refuses, when it opens an object, an index entry longer than the decode cap: 1 MiB, plus 28 bytes when
+  encrypted.** One oversized entry makes the whole object unreadable, and a custom codec that raises `maxBitmapBytes`
+  above 1 MiB must also set `maxPayloadBytes` on the chunk source. See the payload-cap entry under `Fixed`.
+
 ### Changed
 
 - **Concurrent cold reads of one chunk make one storage request.** Callers that missed the cache on the same chunk of
@@ -19,26 +32,26 @@ so, and so do the module headers in the code.
   open, with or without a `cache`, and a failure is delivered to every caller waiting on it (the next call reads
   again). A different generation of the chunk is a different request. `andNot(a, [a])` and any combine that names a
   segment as both include and exclude no longer read each of its chunks twice (6 GETs for 3 chunks, now 3; measured
-  locally on the in-memory driver). Opening a segment's reader was already shared between concurrent first reads
-  (one registry read and one tail read for 50 concurrent cold `has()`, measured locally). A warm `has()` is
-  unchanged at about 0.40 µs through the engine (measured locally, before and after). Metrics: one `storage.get`
-  per request; a caller that waits on an open read still counts a `cache` miss, so `misses` can exceed the
-  `storage.get` count, which is the number of requests.
+  locally on the in-memory driver). `store.invalidate(ref)` also forgets the segment's open reads: a caller already
+  waiting on one still gets its answer, a call made after the invalidation starts its own read, and the read it
+  dropped is not written to the cache. Metrics: one `storage.get` per request; a caller that waits on an open read
+  still counts a `cache` miss, so `misses` can exceed the `storage.get` count, which is the number of requests.
 - **Erasing an id reads ahead through a window of 32 chunks instead of one at a time.** The erasure rewrite
   (`eraseSubject`, `eraseIdFromSegment`) used to read each chunk of the generation after the one before it, so a
   segment of `n` chunks took `n` request times. It now keeps up to 32 reads open ahead of the writer and takes them in
   key order, so it takes about `n / 32`. Modelled at 26 ms per request, erasing one id from a segment of 50, 200 and
   2,000 chunks takes about 1.4 s, 5.5 s and 54 s before and 0.14 s, 0.27 s and 1.9 s after (modelled, not measured
-  on S3). The requests are the same ones, so the request count and the cost are unchanged, and the order, the retry
+  on S3). The requests are the same ones as before, so the request count and the cost are unchanged, and the order, the retry
   of each read, the refusal of a chunk that is not decodable or holds a value above 65,535, and the chunk it names
   are as before: each chunk is decoded as the writer reaches it. Memory is bounded by the window, not the segment:
-  up to 32 raw chunk payloads are held ahead of the writer, about 8 KiB each for a well-formed segment and never more
-  than the reader's per-chunk cap. `eraseSubject`, which erases up to `concurrency` segments at once (8 by default),
+  up to 32 raw chunk payloads are held ahead of the writer, about 8 KiB each for a well-formed segment, and for a corrupt
+  object no more than the reader's cap of 1 MiB each, so 32 MiB per segment and `concurrency` × 32 MiB for
+  `eraseSubject`. `eraseSubject`, which erases up to `concurrency` segments at once (8 by default),
   can have up to `concurrency × 32` range reads open together, 256 by default.
 - **A long combine or `iterate` takes far fewer round trips: the default `concurrency` is 32, up from 8.** The
   default `concurrency` of `intersect`, `union` and `andNot` (and of the `*Into` reads that run through them) is 32
   chunk keys, and so is the most `iterate` and the storage-path `count` read ahead. A read of `n` chunks takes about
-  `n / 32` request times in sequence where it took `n / 8`; the requests themselves are the same, so the cost and the
+  `n / 32` request times in sequence where it took `n / 8`; the requests themselves are the same, apart from the duplicates the first entry removes, so the cost and the
   per-op budget are unchanged. A combine's window opens 8 keys wide (or `concurrency` wide, if that is lower) and
   doubles with each key taken until it is `concurrency` wide, so a combine that stops in its first few keys fetches no
   further ahead than it did, and `concurrency: 8` is the window the previous release had. `iterate` and `count` keep
@@ -52,9 +65,10 @@ so, and so do the module headers in the code.
 - **`andNot`, and `union` with `exclude`, read an exclude's chunk in the same round trip as the include's.** Where the
   include side cannot come out empty, which is one include or a union, the excludes that hold the key no longer wait
   for the includes. An `intersect` of two or more includes still reads its excludes only after the AND, which may be
-  empty, and then no exclude is read. The requests are the same, one round trip fewer for each key.
+  empty, and then no exclude is read. The requests are the same, apart from the duplicates the first entry removes, and each key takes one round trip
+  fewer.
 
-  **Measured on 0.12.0:** `andNot` of a 1,999-chunk segment against ten excludes took 8,687.10 ms at the median, with
+  **For the combine entry above and this one, measured on 0.12.0:** `andNot` of a 1,999-chunk segment against ten excludes took 8,687.10 ms at the median, with
   3,021 GETs (1,999 include chunks, 100 shared chunks times ten excludes, and 22 index reads) at a mean of 10.3
   requests in flight. That was bounded by the window of 8 keys, about 250 rounds of about 27 ms, and not by the
   network. **Derived, not measured on S3:** a model with lognormal GET latency (median 26 ms) and 50 sockets, sending
