@@ -207,6 +207,36 @@ for await (const id of audience.iterate()) {
 - **It needs a `.crbm` reader**: a backend does, and so does a bare `IStorageDriver` or a pre-built
   `CrbmStorageChunkSource`. Any other pre-built `StorageChunkSource` throws `UnsupportedError`.
 
+## Read a chunk at a time: `batches()`
+
+`iterate`, `intersect`, `union` and `andNot` return an `IdStream`: `for await` it for one id at a time, as always, or
+call `.batches()` on it for one `Uint32Array` per chunk.
+
+```ts
+for await (const id of audience.iterate()) send(id); // one id per await
+for await (const ids of audience.iterate().batches()) await sendMany(ids); // one array per chunk
+for await (const ids of audience.andNot([optOut]).batches()) await sendMany(ids);
+```
+
+- **When to use it.** A large scan spends its time on one `await` per id; `batches()` pays one per chunk. Measured
+  locally on an in-memory segment of 10 million ids, `iterate()` ran at about 6 million ids per second and
+  `.batches()` at about 90 million (the [changelog](../../CHANGELOG.md) has the run). Against real storage the round
+  trips dominate either way, and the two read the same chunks. Use the per-id stream when you handle ids one at a time.
+- **The same read.** The ids, their order, the chunks fetched, the budget charge, the read-ahead window and the
+  generation rules are the per-id stream's. A range (`after`, `through`) is cut at its edges exactly as it is for the
+  per-id stream, and a chunk with nothing in the range yields no array.
+- **Ordering.** Each array is ascending, and the arrays arrive in ascending chunk order, so the arrays joined end to end
+  are the per-id stream. No array is empty.
+- **Memory.** One array per chunk: at most 65,536 ids, 256 KiB. It is allocated for that chunk and is yours to keep or
+  change: the store keeps no reference to it, and changing it changes no later read.
+- **Stopping.** Leaving the loop (`break`, `return`, a throw) ends the read, as for the per-id stream, with the same
+  read-ahead already in flight.
+- **Each read is its own.** Every `for await` over the result, and every `batches()` call, resolves the segment and
+  fetches its chunks afresh, and is charged to the budget again. Nothing is fetched until one of them starts. A
+  call that throws when its stream is first read (a bad range, an absent operand, a budget refusal) throws the same
+  error from `batches()`.
+- **A custom codec** without the optional `toUint32Array` export is read through its iterator: the same arrays, slower.
+
 ## Page through a segment
 
 `iterate` and every combine take a range: `after` and `through` yield only the ids in `(after, through]`, and fetch
