@@ -427,9 +427,9 @@
             <span class="label">One way in, and nothing to run</span> A segment exists once you have
             loaded a generation into it; before that a read of it alone answers empty, and a combine
             refuses it unless you pass <span class="m">allowAbsentOperands</span>. There is no
-            daemon and no lifecycle worker &mdash; the only scheduled work is the retention sweep you
-            trigger yourself (<span class="call">retireExpired</span>). A load collects the generations
-            it supersedes itself, and an <span class="m">*Into</span> does when you pass
+            daemon and no lifecycle worker &mdash; the only scheduled work is the retention sweep
+            you trigger yourself (<span class="call">retireExpired</span>). A load collects the
+            generations it supersedes itself, and an <span class="m">*Into</span> does when you pass
             <span class="m">keep</span>.
           </p>
         </div>
@@ -604,9 +604,9 @@
               x64 Windows, and where there is no prebuilt &mdash; Graviton, an unusual libc, a
               locked-down build that forbids compilation &mdash; it compiles from source or does not
               install. Native addons <em>do</em> load on Deno, Bun and Lambda; what they cannot
-              enter is an isolate runtime such as Cloudflare Workers. The codec is what stops it there,
-              not the engine: core imports no Node builtin. Edge runtimes are not supported, and none
-              will be claimed until CI runs the suite inside one.
+              enter is an isolate runtime such as Cloudflare Workers. The codec is what stops it
+              there, not the engine: core imports no Node builtin. Edge runtimes are not supported,
+              and none will be claimed until CI runs the suite inside one.
             </p>
           </div>
           <div class="limit">
