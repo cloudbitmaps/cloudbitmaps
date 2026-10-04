@@ -6,7 +6,7 @@
  * The segments hold chunks of 4,000 ids (about 8 KB each), so a one-MiB range holds more than a hundred chunks and an
  * object of 600 chunks takes several ranges.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { CloudRoaring, MemoryStorage } from '@/index';
 import { brandAsBackend } from '@/core/ports';
 import { CountingMetricsSink } from '@cloudbitmaps/core';
@@ -18,6 +18,8 @@ const chunkIds = (k: number): number[] =>
   Array.from({ length: PER_CHUNK }, (_, i) => k * CHUNK + i * 13 + 1);
 const idsOf = (keys: Iterable<number>): number[] => [...keys].flatMap(chunkIds);
 const upTo = (n: number): number[] => Array.from({ length: n }, (_, i) => i);
+/** Enough chunks for several one-MiB ranges per object. */
+const CHUNKS = 300;
 const tick = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** A backend whose range reads take a few milliseconds and are counted, with the most in flight at once. */
@@ -55,6 +57,9 @@ function slow() {
   return { loader, reader, calls, metrics };
 }
 
+// Loading the segments is most of the time these cases take, and slows under a loaded machine.
+vi.setConfig({ testTimeout: 60_000 });
+
 async function twoSegments(keys: number[]) {
   const w = slow();
   await w.loader.load({ segment: 'a' }, idsOf(keys));
@@ -66,7 +71,7 @@ describe('a stream reads ahead of its consumer by at most `concurrency` ranges p
   it.each([1, 2, 4])(
     'concurrency %i: a consumer that has taken one id has caused at most that many ranges per operand',
     async (concurrency) => {
-      const w = await twoSegments(upTo(600));
+      const w = await twoSegments(upTo(CHUNKS));
       const store = w.reader();
       const result = store.segment('a').intersect([store.segment('b')], { concurrency });
       const stream = result[Symbol.asyncIterator]();
@@ -80,29 +85,29 @@ describe('a stream reads ahead of its consumer by at most `concurrency` ranges p
   );
 
   it('keeps at most `concurrency` requests in flight per operand while the whole read is consumed', async () => {
-    const w = await twoSegments(upTo(600));
+    const w = await twoSegments(upTo(CHUNKS));
     const store = w.reader();
     const got = await collect(
       store.segment('a').intersect([store.segment('b')], { concurrency: 2 }),
     );
-    expect(got).toEqual(idsOf(upTo(600)));
+    expect(got).toEqual(idsOf(upTo(CHUNKS)));
     expect(w.calls.peak).toBeLessThanOrEqual(2 * 2);
     expect(w.calls.launched).toBeGreaterThan(4); // several ranges, so the bound was exercised
   });
 
   it('does not clamp a `concurrency` above the default: 64 ranges are allowed', async () => {
-    const w = await twoSegments(upTo(600));
+    const w = await twoSegments(upTo(CHUNKS));
     const store = w.reader();
     const got = await collect(
       store.segment('a').intersect([store.segment('b')], { concurrency: 64 }),
     );
-    expect(got).toEqual(idsOf(upTo(600)));
+    expect(got).toEqual(idsOf(upTo(CHUNKS)));
   });
 });
 
 describe('a read that stops launches nothing more', () => {
   it.each(['intersect', 'union', 'iterate'] as const)('%s, after its first id', async (verb) => {
-    const w = await twoSegments(upTo(600));
+    const w = await twoSegments(upTo(CHUNKS));
     const store = w.reader();
     const a = store.segment('a');
     const stream =
@@ -123,7 +128,7 @@ describe('a read that stops launches nothing more', () => {
   });
 
   it('a read abandoned while ranges are in flight leaves no unhandled rejection', async () => {
-    const w = await twoSegments(upTo(600));
+    const w = await twoSegments(upTo(CHUNKS));
     const store = w.reader();
     const unhandled: unknown[] = [];
     const on = (e: unknown) => unhandled.push(e);

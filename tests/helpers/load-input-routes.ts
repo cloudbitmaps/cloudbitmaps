@@ -82,6 +82,9 @@ export const ROUTED: readonly string[] = [
 
 /** Run under ids only, each with the reason routing would change what the file tests. */
 export const IDS_ONLY: Readonly<Record<string, string>> = {
+  'tests/core/streamed-real-source.test.ts':
+    'counts the range requests of reads over segments of chunks it lays out itself; the load only builds them, so a ' +
+    'second run under the serialized input would repeat the counts and exercise no part of the load path',
   'tests/core/coalesced-request-counts.test.ts':
     'counts the storage requests of reads over segments of chunks it lays out itself; the load only builds them, so a ' +
     'second run under the serialized input would repeat the counts and exercise no part of the load path',
