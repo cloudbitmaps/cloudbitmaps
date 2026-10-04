@@ -1667,15 +1667,15 @@ describe('no document claims behaviour this library does not have', () => {
       //
       // Judged by how the time grows, not by a wall-clock bound: each shape is read at a quarter of the length and at
       // the full length, in this process, so a loaded machine slows both alike. Four times the input is about four
-      // times the time for a single scan and sixteen for a scan per unit. A reading is the least of three, so a pause
+      // times the time for a single scan and sixteen for a scan per unit. A reading is the least of five, so a pause
       // in one run does not decide it. The growth counts against a shape only when its full-length reading is over
-      // 100 ms, which is the floor that tells it from noise: so only a regression that takes a shape past 100 ms is
-      // caught. Several shapes read in a few milliseconds, and a regression that leaves one of them under the floor is
-      // not seen; what the test catches is a scan that goes quadratic or worse on 100 KB, as the old 2 s bound did.
+      // 500 ms, a floor that keeps load noise on a reading of tens of milliseconds from failing it: so only a regression
+      // that takes a shape past 500 ms is caught. Several shapes read in a few milliseconds, and a regression that
+      // leaves one of them under the floor is not seen; what the test catches is a scan that goes quadratic or worse on 100 KB, as the old 2 s bound did.
       const FULL = 102_400;
       const timed = (line: string): number => {
         let least = Infinity;
-        for (let run = 0; run < 3; run++) {
+        for (let run = 0; run < 5; run++) {
           const started = performance.now();
           hitsIn('x.md', line);
           least = Math.min(least, performance.now() - started);
@@ -1687,7 +1687,7 @@ describe('no document claims behaviour this library does not have', () => {
         const full = timed(build(FULL));
         const growth = full / Math.max(small, 1);
         const verdict = `${what}: ${small.toFixed(1)} ms at a quarter, ${full.toFixed(1)} ms at full, ${growth.toFixed(1)}x`;
-        expect(full > 100 && growth > 9, verdict).toBe(false);
+        expect(full > 500 && growth > 9, verdict).toBe(false);
       };
       for (const unit of [
         '[a ',

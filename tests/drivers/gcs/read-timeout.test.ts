@@ -412,10 +412,11 @@ describe('a GCS read with readTimeoutMs', () => {
     it.concurrent(
       'a 503 and then a stall share one deadline: the retry gets only what is left of it',
       async () => {
-        // The 503 takes 1,500 of the 2,000 ms, so a fresh clock for the retry would end past 3,500 ms. The retry that
-        // shares the deadline ends at 2,000 plus whatever a loaded machine adds, which the bound below leaves 1,250 ms
-        // for, with 250 ms to spare before a fresh clock would be seen.
-        const timeout = 2_000;
+        // The 503 takes 1,500 of the 4,000 ms, so a fresh clock for the retry would end past 5,500 ms. The retry that
+        // shares the deadline ends at 4,000 plus whatever a loaded machine adds, which the bound below leaves 1,250 ms
+        // for, with 250 ms to spare before a fresh clock would be seen. The 503 has 2,500 ms of room to arrive late
+        // before too little is left to retry at all.
+        const timeout = 4_000;
         const { run, counts, held } = await scenario(call, timeout, {
           media: [{ late503: 1_500 }, 'stall-headers'],
         });
