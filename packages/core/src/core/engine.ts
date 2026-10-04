@@ -192,6 +192,12 @@ function keysWithin(keys: readonly number[], w: IdWindow): number[] {
   return keys.slice(firstAtLeast(w.loKey), firstAtLeast(w.hiKey + 1));
 }
 
+/** A chunk read in flight: `token` tells the read whether its entry is still the registered one. */
+interface OpenRead {
+  readonly token: object;
+  readonly read: Promise<CodecBitmap | null>;
+}
+
 export class SegmentEngine {
   private readonly storage: StorageChunkSource;
   private readonly cache: BoundedLru<string, CodecBitmap> | undefined;
@@ -207,9 +213,7 @@ export class SegmentEngine {
    * read instead of making its own. An entry lives from the request until it settles, so the map holds at most one
    * promise per distinct key in flight.
    */
-  private readonly openReads = new Map<string, Promise<CodecBitmap | null>>();
-  /** Counts `invalidate()` calls: a read that began before one does not write its result into the cache. */
-  private invalidations = 0;
+  private readonly openReads = new Map<string, OpenRead>();
 
   constructor(deps: EngineDeps) {
     this.storage = deps.storage;
@@ -745,7 +749,6 @@ export class SegmentEngine {
   invalidate(ref: SegmentRef): void {
     const prefix = segmentPrefix(ref);
     this.cache?.deleteWhere((key) => key.startsWith(prefix));
-    this.invalidations += 1;
     // A read already open was asked for before this call, so a caller after it must not join it.
     for (const key of this.openReads.keys()) if (key.startsWith(prefix)) this.openReads.delete(key);
     this.storage.invalidate?.(ref);
@@ -805,21 +808,25 @@ export class SegmentEngine {
       if (this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: false });
     }
     const open = this.openReads.get(cacheKey);
-    if (open) return open;
-    const read = this.fetchChunk(ref, cacheKey);
-    this.openReads.set(cacheKey, read);
+    if (open) return open.read;
+    const token = {};
+    const entry: OpenRead = { token, read: this.fetchChunk(ref, cacheKey, token) };
+    this.openReads.set(cacheKey, entry);
     // Whether it resolves or rejects the entry goes, so a later caller reads again. An invalidation may have dropped
     // this entry and a newer read taken the key: leave that one.
     const settled = (): void => {
-      if (this.openReads.get(cacheKey) === read) this.openReads.delete(cacheKey);
+      if (this.openReads.get(cacheKey) === entry) this.openReads.delete(cacheKey);
     };
-    read.then(settled, settled);
-    return read;
+    entry.read.then(settled, settled);
+    return entry.read;
   }
 
   /** One request for one chunk, decoded, range-checked and cached. */
-  private async fetchChunk(ref: ChunkRef, cacheKey: string): Promise<CodecBitmap | null> {
-    const invalidations = this.invalidations;
+  private async fetchChunk(
+    ref: ChunkRef,
+    cacheKey: string,
+    token: object,
+  ): Promise<CodecBitmap | null> {
     const startedAt = this.metricsOn ? this.clock.now() : 0;
     const bytes = await this.storage.getChunk(ref);
     if (this.metricsOn) {
@@ -834,8 +841,8 @@ export class SegmentEngine {
     if (!bytes) return null;
     const bitmap = this.codec.safeDeserialize(bytes, this.maxBitmapBytes);
     this.assertChunkPayloadInRange(bitmap, ref.chunkKey);
-    // Bytes asked for before an invalidation are not cached: they may be older than what a newer read cached.
-    if (invalidations === this.invalidations) this.cache?.set(cacheKey, bitmap);
+    // A read whose entry an invalidation dropped is not cached: its bytes may be older than what a newer read cached.
+    if (this.openReads.get(cacheKey)?.token === token) this.cache?.set(cacheKey, bitmap);
     return bitmap;
   }
 }

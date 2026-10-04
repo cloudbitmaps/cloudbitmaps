@@ -257,6 +257,21 @@ describe('a read that began before invalidate()', () => {
   });
 });
 
+describe('invalidating one segment', () => {
+  it('does not stop an open read of another segment from populating the cache', async () => {
+    const storage = new ParkedSource();
+    seedSegment(storage, 'a', [2]);
+    seedSegment(storage, 'b', [3]);
+    const engine = new SegmentEngine({ storage, codec: roaringCodec, cache: lru() });
+    const openB = engine.has({ segment: 'b' }, 3);
+    await sleep(2);
+    engine.invalidate({ segment: 'a' });
+    await openB;
+    expect(await engine.has({ segment: 'b' }, 3)).toBe(true);
+    expect(storage.refs).toEqual(['/b']); // the second call was a cache hit
+  });
+});
+
 describe('an invalidated read settling', () => {
   it('leaves the read that replaced it open for later callers to join', async () => {
     const storage = new ParkedSource(40);
