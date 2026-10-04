@@ -1478,7 +1478,7 @@ export interface StreamWriteResult {
  * Streaming variant of {@link writeCrbmGeneration} for a **constant-memory** rewrite (the erasure rewrite, a
  * sorted load): consumes an **already-ascending** async stream of `{ chunkKey, bitmap }`, feeding each to the
  * codec and freeing it, instead of materializing the whole generation. Paired with a streaming storage sink (S3
- * multipart / LocalFs temp file), peak memory is ~one chunk + one part. Returns a tally so the caller can verify
+ * multipart / LocalFs temp file), the writer itself holds ~one chunk + one part. Returns a tally so the caller can verify
  * the re-opened object without re-iterating the (now-consumed) stream. Input **must** be ascending by `chunkKey`
  * — the codec rejects an out-of-order chunk; empty bitmaps are skipped.
  */

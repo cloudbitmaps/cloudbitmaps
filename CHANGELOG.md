@@ -13,6 +13,17 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **Erasing an id reads ahead through a window of 32 chunks instead of one at a time.** The erasure rewrite
+  (`eraseSubject`, `eraseIdFromSegment`) used to read each chunk of the generation after the one before it, so a
+  segment of `n` chunks took `n` request times. It now keeps up to 32 reads open ahead of the writer and takes them in
+  key order, so it takes about `n / 32`. Modelled at 26 ms per request, erasing one id from a segment of 50, 200 and
+  2,000 chunks takes about 1.4 s, 5.5 s and 54 s before and 0.14 s, 0.27 s and 1.9 s after (modelled, not measured
+  on S3). The requests are the same ones, so the request count and the cost are unchanged, and the order, the retry
+  of each read, the refusal of a chunk that is not decodable or holds a value above 65,535, and the chunk it names
+  are as before: each chunk is decoded as the writer reaches it. Memory is bounded by the window, not the segment:
+  up to 32 raw chunk payloads are held ahead of the writer, about 8 KiB each for a well-formed segment and never more
+  than the reader's per-chunk cap. `eraseSubject`, which erases up to `concurrency` segments at once (8 by default),
+  can have up to `concurrency × 32` range reads open together, 256 by default.
 - **A long combine or `iterate` takes far fewer round trips: the default `concurrency` is 32, up from 8.** The
   default `concurrency` of `intersect`, `union` and `andNot` (and of the `*Into` reads that run through them) is 32
   chunk keys, and so is the most `iterate` and the storage-path `count` read ahead. A read of `n` chunks takes about
