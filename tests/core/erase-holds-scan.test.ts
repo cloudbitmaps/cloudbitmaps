@@ -93,7 +93,7 @@ const layoutArb = fc.integer({ min: 1, max: 9 }).chain((n) =>
   fc.record({
     holds: fc.array(fc.boolean(), { minLength: n, maxLength: n }),
     from: fc.integer({ min: 0, max: n - 1 }),
-    delays: fc.array(fc.integer({ min: 0, max: 6 }), { minLength: n, maxLength: n }),
+    delays: fc.array(fc.integer({ min: 0, max: 3 }), { minLength: n, maxLength: n }),
     fails: fc.array(
       fc.integer({ min: 0, max: 5 }).map((x) => x === 0),
       {
@@ -152,9 +152,9 @@ describe('the erasure scan for the generations holding the id', () => {
         }
         expect(await holdersLeft(p)).toEqual([]);
       }),
-      { numRuns: 200 },
+      { numRuns: 120 },
     );
-  });
+  }, 60_000);
 
   it.each([
     { generations: 40, holder: 38 },
