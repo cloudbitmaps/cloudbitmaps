@@ -160,7 +160,7 @@ A dashboard running 200 cold intersects a second over 5 GB costs **$1,262** a mo
 **Latency.** Redis answers from memory. A cold intersect waits on object storage, request after request:
 
 <!-- SIZING:DEPTH:START -->
-A cold intersect of two segments sharing 100 chunks waits on a chain of requests, derived from the engine's constants, **3 deep**: both operands' pointers, then both indexes, then each operand's range of shared chunks, a stream that opens 4 ranges wide and widens to 32, so up to 2 requests are in flight. At an even latency that is 3 request times end to end. A slow request holds up those queued behind it. The previous engine, which read each shared chunk as a request of its own, was measured in region by the run of 2026-10-04: 7.1 request times for this shape, 290.06 ms at the median, with a mean of 29.1 requests in flight against its client's 50 sockets. This engine has not been measured in region. A repeat served from the chunk cache makes no request within `cache.genTtlMs`, and one round of pointer reads after it.
+A cold intersect of two segments sharing 100 chunks waits on a chain of requests, derived from the engine's constants, **3 deep**: both operands' pointers, then both indexes, then each operand's range of shared chunks, a stream that opens 4 ranges wide and widens to 32, so up to 2 requests are in flight. At an even latency that is 3 request times end to end. A slow request holds up those queued behind it. This has not been measured in region. A repeat served from the chunk cache makes no request within `cache.genTtlMs`, and one round of pointer reads after it.
 <!-- SIZING:DEPTH:END -->
 
 The in-region run timed one shape of cold intersect, its sweep over the overlap, an `andNot` and the point reads; the [benchmarks page](../benchmarks.md#real-cloud-calibration--aws) has the figures, and sets the wider window against the model that predicted it. The other shapes are not timed.
@@ -174,7 +174,7 @@ AWS documents [at least 5,500 GET requests a second per partitioned prefix](http
 **Overlap.**
 
 <!-- SIZING:WHY_OVERLAP:START -->
-A cold intersect costs 4 + 2r GETs for r range requests of each segment, and r follows the bytes the shared chunks span in the object, not how many there are: segments whose shared chunks are spread over them read most of each object. With every chunk shared and spread, the medium and large deployments cost 0.087× and 0.11× their Redis, and an intersect reads 7.7 MB and 18 MB from the two objects.
+A cold intersect costs 4 + 2r GETs for r range requests of each segment, and r follows the bytes the shared chunks span in the object, not how many there are: segments whose shared chunks are spread over them read most of each object. With every chunk shared and spread, the medium and large deployments cost 0.087× and 0.11× their Redis, and an intersect reads 8 MB and 20 MB from the two objects.
 <!-- SIZING:WHY_OVERLAP:END -->
 
 ## What is planned for each weakness

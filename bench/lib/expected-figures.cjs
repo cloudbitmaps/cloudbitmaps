@@ -1,6 +1,6 @@
 'use strict';
 /*
- * The figures the engine since coalesced reads is EXPECTED to cost, derived from the counts in `bench/range-counts.json`
+ * The figures the engine is EXPECTED to cost, derived from the counts in `bench/range-counts.json`
  * (the requests the engine makes, taken by running it over the in-memory backend) and the shipped estimator's prices.
  *
  * Nothing here is measured on a cloud: the request counts are the code's, and a dollar is a count times the default
@@ -73,8 +73,6 @@ function computeExpectedFigures() {
     redisLineIntersectsPerSec: (
       JSON.parse(fs.readFileSync(RESULTS, 'utf8')).readCrossoverPerSec / cold
     ).toFixed(1),
-    // What the same cold intersect made when every shared chunk was a request of its own: 4 + 2k, the previous engine's.
-    previousColdIntersectGets: 4 + 2 * 100,
   };
 }
 

@@ -109,8 +109,7 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   operands included), its pointer and then its index in one read of the object's tail, before the chunk range requests it
   makes (`chunksPerIntersect`). `chunksPerIntersect` counts chunk range requests, not chunks: chunks that lie within 256 KiB of each other are read in
   one request. Two segments whose shared chunks each need r range requests make 4 + 2r GETs: 6 GETs, $2.40 per million
-  at the default GET price, when the 100 shared chunks lie together and take one range each (expected, not yet measured;
-  the engine before coalesced reads made 4 + 2k GETs, $81.60 per million for k = 100, as measured). **The requests saved are
+  at the default GET price, when the 100 shared chunks lie together and take one range each (expected, not yet measured). **The requests saved are
   not the whole bill.** A layout that spreads the shared chunks over an object reads most of the object to get them: the
   requests fall and the bytes read rise. Inside the bucket's region S3 Standard bills no bytes read; across regions it
   bills them, and that can cost more than the requests saved. There is no setting for it: run readers in the bucket's
@@ -187,7 +186,7 @@ headers carry the version beside the bytes. **A tail read needs the object's siz
 suffix-range GET whose `Content-Range` carries the size; Azure Blob takes no suffix range, so there it is two requests,
 the properties and then the bytes. The pricing profile prices the two apart: `storage.requestsPerPointerRead` (1 by
 default) for each pointer read, and `storage.requestsPerSizedRead` (1 by default) for each tail read. For Azure Blob,
-set `storage.requestsPerSizedRead: 2` and leave `requestsPerPointerRead` at 1; chunk reads stay one request each, and
+set `storage.requestsPerSizedRead: 2` and leave `requestsPerPointerRead` at 1; a range request of chunks and a point read of one chunk are one request each, and
 S3 and GCS keep both defaults. Each count above is held to the engine by a test that counts its requests, on S3's
 request shape, and each backend's own tests pin the requests it makes (a pointer read in one everywhere; a tail read in
 one on GCS and two on Azure Blob), so the model moves when the engine does. The

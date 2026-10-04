@@ -138,7 +138,7 @@ Redis OSS cluster that would hold each one's data:
 <!-- SIZING:WHY_CAVEATS:START -->
 Each Redis is the cheapest on-demand ElastiCache for Redis OSS cluster in the estimator's catalogue that holds the data, every shard a primary and two replicas: the cheapest of one kind, not the least Redis could cost. Against [ElastiCache for Valkey](https://aws.amazon.com/elasticache/pricing/), which AWS prices 20% lower a node, CloudBitmaps costs 94% less, 90% less and 88% less; with one replica a shard, 93% less, 88% less and 86% less; with both, 91% less, 85% less and 83% less. Reserved nodes cost less again, and stack on both: on a one-year term with nothing upfront, CloudBitmaps costs 87% less, 78% less and 74% less, and on three years paid upfront, 80% less, 67% less and 61% less.
 
-All three assume that two segments share 100 of their 2,000 chunks, side by side in each object, and filters over one catalogue or one audience can share most of theirs, spread over it: with every chunk shared and spread, the medium and large deployments cost 0.087× and 0.11× their Redis, and each intersect reads 7.7 MB and 18 MB from the two objects, most of them.
+All three assume that two segments share 100 of their 2,000 chunks, side by side in each object, and filters over one catalogue or one audience can share most of theirs, spread over it: with every chunk shared and spread, the medium and large deployments cost 0.087× and 0.11× their Redis, and each intersect reads 8 MB and 20 MB from the two objects, most of them.
 
 The large deployment's 200,000 segments are past the roughly 100,000 the library has been validated at, and its readers would need an index budget and a chunk cache far past their defaults ([what each reader holds](docs/guide/sizing.md#what-each-reader-holds)), in memory not priced here.
 <!-- SIZING:WHY_CAVEATS:END -->
@@ -150,19 +150,18 @@ explains these, S3's request rate and overlap, with the charts; [what it costs a
 
 ## What it costs on real AWS
 
-Run [`2026-10-04-73668`](bench/calibration/2026-10-04-73668.md), made on 2026-10-04 from AWS CloudShell in `us-east-1`,
-drove the packages published before coalesced reads against a real AWS account, with the pointer in
-the same bucket as the data. What each operation costs:
+A cold `intersect` of two 500,000-id segments sharing 100 of 1,999 chunks is expected to make 6 GETs, **$2.40 per
+million**: the requests are counted by running the engine, priced at list, and not yet measured on a cloud. What is
+measured is the write side and a first read: run [`2026-10-04-73668`](bench/calibration/2026-10-04-73668.md), made on
+2026-10-04 from AWS CloudShell in `us-east-1` with the pointer in the same bucket as the data.
 
 | Operation | Cost | Kind |
 |---|---|---|
-| Cold `intersect` of two 500,000-id segments sharing 100 of 1,999 chunks, in this release: 6 GETs | **$2.40 / million** | expected, not yet measured |
-| The same on the engine before coalesced reads: 204 GETs at the median | $81.60 / million | measured requests at list prices |
-| The same on the engine before, each pointer read once | $81.60 / million | expected |
+| Cold `intersect` of two 500,000-id segments sharing 100 of 1,999 chunks: 6 GETs | **$2.40 / million** | expected, not yet measured |
 | A segment's first `store.load()`: 2 PUT + 4 GET, pointer included | **$11.60 / million** | measured requests at list prices |
 
-Run from inside the region with a client of 50 sockets (the client this release builds allows 128, and its effect on these figures is not measured), that cold intersect took 290.06 ms at the median, a cold `count()` is one request at
-27.82 ms, and a single-part load ran at 5,100,414 bytes a second. Its rounds sit a fifth to a half above the engine's rounds model, which assumes no socket limit; the run did not vary its 50 sockets, so it does not say why. The
+Run from inside the region with a client of 50 sockets (the client this release builds allows 128, and its effect on these figures is not measured), a cold `count()` is one request at
+27.82 ms, and a single-part load ran at 5,100,414 bytes a second. The
 [benchmarks page](docs/benchmarks.md#real-cloud-calibration--aws) says exactly what it did and did not measure.
 
 ## Your data stays yours

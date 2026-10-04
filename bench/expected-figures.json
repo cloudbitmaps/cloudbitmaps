@@ -25,6 +25,5 @@
     "each": "$0.0000012",
     "perMillion": "$1.20"
   },
-  "redisLineIntersectsPerSec": "54.9",
-  "previousColdIntersectGets": 204
+  "redisLineIntersectsPerSec": "54.9"
 }

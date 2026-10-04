@@ -19,7 +19,7 @@
     <title>CloudBitmaps benchmarks — what it costs, and where it stops paying</title>
     <meta
       name="description"
-      content="Expected, counted from the engine and not yet measured on S3: 6 GETs and $2.40 per million cold intersects sharing 100 chunks. Measured in-region on the engine before it: a segment's first store.load() is $11.60 per million. Past 329.15 GETs/s, 54.9 such intersects/s, Redis is cheaper."
+      content="Expected, counted from the engine and not yet measured on S3: 6 GETs and $2.40 per million cold intersects sharing 100 chunks. Measured in-region: a segment's first store.load() is $11.60 per million. Past 329.15 GETs/s, 54.9 such intersects/s, Redis is cheaper."
     />
     <link rel="stylesheet" href="cloudbitmaps.css" />
     <meta name="google-site-verification" content="UpdnyEE0wCiY5rHqUovfc-lRkEa9ZN9M-F67eTRNKhE" />
@@ -120,7 +120,6 @@
             </p>
             <p class="panel-row is-pair"><span>Share of the $346 cluster</span><span>0.008%</span></p>
             <p class="panel-row is-pair"><span>1M cold A&nbsp;∩&nbsp;B, 100 chunks shared · expected</span><span>$2.40</span></p>
-            <p class="panel-row is-pair"><span>…the engine before, measured on S3</span><span>$81.60</span></p>
             <p class="panel-row is-pair">
               <span>1M single-part loads · <span class="m">store.load()</span>, pointer included</span><span>$11.60</span>
             </p>
@@ -184,7 +183,7 @@
                   <td><span class="status is-shipped">Win big</span></td>
                 </tr>
                 <tr>
-                  <td>1M cold A&nbsp;∩&nbsp;B, since coalesced reads</td>
+                  <td>1M cold A&nbsp;∩&nbsp;B</td>
                   <td class="num">$2.40</td>
                   <td class="from">
                     <strong>Expected</strong>, not measured: counted by running the engine on two 500,000-id segments of about 2,000 chunks sharing
@@ -193,18 +192,6 @@
                     there are; spread over each segment they are 6 GETs too, and most of each object is read. An <span class="m">andNot</span>
                     of a segment of about 2,000 chunks against ten excludes is 33 GETs, $13.20 per million, and an
                     <span class="m">iterate</span> of it 3 GETs, $1.20. No run on S3 has measured this engine, so no latency is published for it.
-                  </td>
-                  <td><span class="status is-shipped">Win</span></td>
-                </tr>
-                <tr>
-                  <td>1M cold A&nbsp;∩&nbsp;B on real S3, the engine before</td>
-                  <td class="num">$81.60</td>
-                  <td class="from">
-                    Metered on real S3, from inside the region, on the engine before coalesced reads: two 500,000-id segments sharing 100 of 1,999 chunks, 204 GETs at the
-                    median — a pointer read and a tail read
-                    per operand, and a request for each shared chunk — in 290.06 ms (run of 2026-10-04, 50 sockets). Priced by the chunks the two share, not by their
-                    size, while each index fits the 256 KiB tail read. Every one cold, and every one exact. Its
-                    crossover is the last row. <a href="#single-bucket">The single-bucket run</a>.
                   </td>
                   <td><span class="status is-shipped">Win</span></td>
                 </tr>
@@ -233,7 +220,7 @@
                     Modelled by <span class="m">estimateCost()</span>: object GETs with the cache off — the
                     pessimal posture, chosen deliberately — against a standing three-node Redis-HA cluster at
                     $346 /mo. The same line, for cold intersects of the run's shape, is 54.9 a second at the requests the engine
-                    since coalesced reads is expected to make, and was 1.6 a second at the 204 GETs each the engine before made, as measured.
+                    is expected to make.
                     <a href="#crossover">What moves this line</a>.
                   </td>
                   <td><span class="status is-counter">Use a flat tier</span></td>

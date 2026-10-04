@@ -135,7 +135,6 @@ function rangeBytesPerOperand(id, shared, layout = 'packed') {
     (c) => c.shared === shared && c.layout === layout,
   ).rangeBytesPerOperand;
 }
-const calibrationFigures = require('./lib/calibration-figures.cjs');
 const { esc, logChart } = require('./lib/log-chart.cjs');
 const { markersOf, regionsOf, withRegions } = require('./lib/sizing-markers.cjs');
 /** The estimator's month, read from it: AWS's 730 hours, of 3,600 seconds. */
@@ -331,13 +330,18 @@ const readEverySec = (p) => (p.hotPerProcess * p.readerProcesses) / p.readsPerSe
  */
 function dearestOverlap(p) {
   const counted = RANGE_COUNTS.profiles[p.id].coldIntersect;
-  return counted
-    .map((c) => ({
-      shared: c.shared,
-      layout: c.layout,
-      total: price(p, { shared: c.shared, layout: c.layout }).monthlyUSD.total,
-    }))
-    .sort((a, b) => b.total - a.total)[0];
+  return (
+    counted
+      .map((c) => ({
+        shared: c.shared,
+        layout: c.layout,
+        total: price(p, { shared: c.shared, layout: c.layout }).monthlyUSD.total,
+        bytes: rangeBytesPerOperand(p.id, c.shared, c.layout),
+      }))
+      // The dearest bill; where bills tie (the spread rows do: one range an operand whatever is shared), the one that
+      // reads the most bytes, which is the one a sentence about "every chunk shared" is true of.
+      .sort((a, b) => b.total - a.total || b.bytes - a.bytes)[0]
+  );
 }
 
 /** The library's attempts at a request, from its default retry policy. */
@@ -1246,19 +1250,7 @@ function render() {
   const chain = 2 + windowRounds(BASE_RANGES, INTERSECT_CONCURRENCY, COMBINE_RANGE_START);
   const peakInFlight =
     OPERANDS * windowPeak(BASE_RANGES, INTERSECT_CONCURRENCY, COMBINE_RANGE_START);
-  // The latest in-region run measured the engine before this one, which read each shared chunk as a request of its
-  // own: its evidence is the previous engine's, and is quoted as that.
-  const latestRun = JSON.parse(
-    fs.readFileSync(path.join(ROOT, calibrationFigures.evidenceFiles(ROOT).at(-1)), 'utf8'),
-  );
-  const measuredChain = latestRun.phases.intersect;
-  const measuredRounds = Number(measuredChain.medianRounds.toFixed(1));
-  const measured =
-    `The previous engine, which read each shared chunk as a request of its own, was measured in region by the run of ` +
-    `${latestRun.runId.slice(0, 10)}: ${measuredRounds.toFixed(1)} request times for this shape, ` +
-    `${measuredChain.p50ms.toFixed(2)} ms at the median, with a mean of ` +
-    `${measuredChain.medianMeanInFlight.toFixed(1)} requests in flight against its client's ` +
-    `${int(latestRun.measured.maxSockets)} sockets. This engine has not been measured in region.`;
+  const measured = 'This has not been measured in region.';
   const depth =
     `A cold intersect of two segments sharing ${int(SHARED_CHUNKS)} chunks waits on a chain of requests, derived from the engine's constants, ` +
     `**${int(chain)} deep**: both operands' pointers, then both indexes, then each operand's range of shared chunks, a ` +

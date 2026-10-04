@@ -198,8 +198,7 @@ export interface Workload {
    * bytes the needed chunks span in each object: two segments sharing 100 chunks that sit side by side make one request
    * of each, `2`; the same 100 spread over each object make as many as it takes to cover most of the object, a
    * request per MiB, and read most of its bytes. Count it by running the engine over a layout of your own, as
-   * `bench/range-counts.cjs` does, or take it as one request per MiB the shared chunks span, per operand. (The field's
-   * name is from when each chunk was a request of its own.) The model adds each operand's pointer and index reads itself (see
+   * `bench/range-counts.cjs` does, or take it as one request per MiB the shared chunks span, per operand. The model adds each operand's pointer and index reads itself (see
    * {@link Workload.operandsPerIntersect}), so count chunk requests only. One more GET per operand whose index
    * outgrows the reader's tail read (256 KiB by default), which then reads the index whole, belongs here too, and so
    * does a pointer re-read by an intersect slow enough to outlive {@link Workload.genTtlMs}.
