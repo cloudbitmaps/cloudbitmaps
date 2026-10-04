@@ -176,6 +176,22 @@ describe('concurrent cold reads of one chunk share one request', () => {
   });
 });
 
+describe('an invalidated read settling', () => {
+  it('leaves the read that replaced it open for later callers to join', async () => {
+    const storage = new ParkedSource(40);
+    seedSegment(storage, 'a', [5]);
+    const engine = new SegmentEngine({ storage, codec: roaringCodec });
+    const first = engine.has({ segment: 'a' }, 5);
+    await sleep(10);
+    engine.invalidate({ segment: 'a' });
+    const second = engine.has({ segment: 'a' }, 5); // a new read, opened 10 ms after the first
+    await first; // the first settles while the second is still open
+    const third = engine.has({ segment: 'a' }, 5);
+    await Promise.all([second, third]);
+    expect(storage.requests).toEqual([0, 0]);
+  });
+});
+
 describe('metrics under sharing', () => {
   it('emits one storage.get per request; every caller that found no cached chunk counts a miss', async () => {
     const storage = new ParkedSource();

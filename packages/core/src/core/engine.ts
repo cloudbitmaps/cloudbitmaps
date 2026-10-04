@@ -803,15 +803,14 @@ export class SegmentEngine {
     }
     const open = this.openReads.get(cacheKey);
     if (open) return open;
-    const read: Promise<CodecBitmap | null> = (async () => {
-      try {
-        return await this.fetchChunk(ref, cacheKey);
-      } finally {
-        // An invalidation may have dropped this entry and a newer read taken the key: leave that one.
-        if (this.openReads.get(cacheKey) === read) this.openReads.delete(cacheKey);
-      }
-    })();
+    const read = this.fetchChunk(ref, cacheKey);
     this.openReads.set(cacheKey, read);
+    // Whether it resolves or rejects the entry goes, so a later caller reads again. An invalidation may have dropped
+    // this entry and a newer read taken the key: leave that one.
+    const settled = (): void => {
+      if (this.openReads.get(cacheKey) === read) this.openReads.delete(cacheKey);
+    };
+    read.then(settled, settled);
     return read;
   }
 
