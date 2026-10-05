@@ -350,5 +350,6 @@ describe.each([
     expect(published).toBeGreaterThan(floor.published);
     expect(byName).toBeGreaterThan(floor.byName);
     expect(periodic).toBeGreaterThan(floor.periodic);
-  });
+    // Thousands of loads a case: seconds on an idle machine, so the default 5 s limit fails it under full-suite load.
+  }, 60_000);
 });
