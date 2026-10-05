@@ -731,6 +731,21 @@ describe('a load whose publish landed does not fail on a race its collection mee
     expect(await generations(w.memory)).toEqual([3, 14, 15, 16]);
   });
 
+  it('the same for a row that records no list: the pass that keeps the window stops, and records nothing', async () => {
+    const w = await atFifteen();
+    const row = (await w.registry.get(SEG))!;
+    await w.registry.compareAndSwap(SEG, row.token, { keptGens: undefined });
+    await orphan(w.memory, 3);
+    const registry = afterPassReads(w, 2, () =>
+      rollbackSegment(SEG, 15, { storage: w.memory, registry: w.registry }),
+    );
+    const a = await loadSegment(SEG, ids(17), { ...w.deps, registry });
+    expect(a).toMatchObject({ generation: 16, published: true });
+    expect((await w.registry.get(SEG))!.currentGen).toBe(15);
+    expect((await w.registry.get(SEG))!.keptGens).toBeUndefined();
+    expect(await generations(w.memory)).toEqual([3, 14, 15, 16]);
+  });
+
   it('a purge landing after the pass read the row stops its deletes, and the load still returns', async () => {
     const w = await atFifteen();
     await orphan(w.memory, 3);
