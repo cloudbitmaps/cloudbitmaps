@@ -8,6 +8,7 @@ import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { CountingObjectStore, counting } from '../helpers/counting';
 
 /**
@@ -168,6 +169,28 @@ describe('a load that holds its row makes one registry read fewer', () => {
     };
     expect(await run(true)).toEqual(shape.with);
     expect(await run(false)).toEqual(shape.without);
+  });
+
+  it('a generation written straight to a segment, as an *Into does, makes one registry read fewer', async () => {
+    const run = async (hinted: boolean) => {
+      const w = world();
+      await w.seed();
+      const registry = hinted ? w.registry : ignoringHeld(w.registry);
+      let published: boolean | undefined;
+      const counts = await w.measure(async () => {
+        const r = await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 3 }, [1, 2, 3, 4], {
+          registry,
+          clock: w.through(registry).clock,
+        });
+        published = r.becameCurrent;
+      });
+      expect(published).toBe(true);
+      return counts;
+    };
+    const hinted = await run(true);
+    const plain = await run(false);
+    expect(plain.reads - hinted.reads).toBe(1);
+    expect(hinted.writes).toBe(plain.writes);
   });
 
   it("an erasure's rewrite makes one registry read fewer", async () => {

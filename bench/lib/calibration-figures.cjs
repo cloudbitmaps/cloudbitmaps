@@ -91,9 +91,9 @@ const {
  * drivers and the real registry protocol. A run whose load stage timed `store.load()` records each load's own
  * requests, and its loads are priced from those; this table is what a reload and a load that collects cost, which a
  * run that loads each segment once does not measure. PUT-class: the object and the pointer. GETs: on a segment's
- * first load, three pointer reads (it found no row, so it reads it again after its ids, and the create reads once
- * more) and one check that the generation number is free (a HeadObject); a reload reads the pointer twice (its row,
- * and the compare-and-swap's read of the row's version) and makes the one check, and sizes the current generation
+ * first load, two pointer reads (it found no row, so it reads it again after its ids; the create is sent without
+ * reading the row) and one check that the generation number is free (a HeadObject); a reload reads the pointer once
+ * (its row, which the compare-and-swap is written against) and makes the one check, and sizes the current generation
  * from its row's summary, so it opens no object; from the third load on, collection deletes the generation the
  * window pushed out, by name, after a second check that the current generation's object is there, and re-reads the
  * pointer before its delete, so a collecting load lists nothing. Every sixteenth load lists instead, `listing`: a
@@ -101,10 +101,10 @@ const {
  * asserts these numbers, so the prices below cannot drift from what runs.
  */
 const STORE_LOAD_REQUESTS = Object.freeze({
-  first: Object.freeze({ put: 2, get: 4 }),
-  reload: Object.freeze({ put: 2, get: 3 }),
-  collecting: Object.freeze({ put: 2, get: 5 }),
-  listing: Object.freeze({ put: 3, get: 6 }),
+  first: Object.freeze({ put: 2, get: 3 }),
+  reload: Object.freeze({ put: 2, get: 2 }),
+  collecting: Object.freeze({ put: 2, get: 4 }),
+  listing: Object.freeze({ put: 3, get: 5 }),
 });
 
 /** Roaring's portable format stores a chunk of at most this many ids as an array: a header, then 2 bytes an id. */
@@ -401,8 +401,8 @@ function derive(run, src) {
       "its loads' own requests do not add up to its load stage's",
     );
     check(
-      loadRecords.every((l) => l.put === (l.kind === 'single' ? 2 : 3 + l.parts) && l.get >= 4),
-      "a load's requests are not an object and a pointer write, and at least three pointer reads and a check",
+      loadRecords.every((l) => l.put === (l.kind === 'single' ? 2 : 3 + l.parts) && l.get >= 3),
+      "a load's requests are not an object and a pointer write, and at least two pointer reads and a check",
     );
     // Every stage's requests, with its setup's, and what is left is the bucket's: the probe, the round-trip samples,
     // its creation and teardown's listings. Nothing a stage did is missing, and nothing else is in the bill.

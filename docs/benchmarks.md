@@ -148,7 +148,7 @@ model that predicted it.
 | --- | --- | --- | --- | --- |
 | Cold intersect, two 500,000-id segments sharing 100 of 1,999 chunks, the median measured | 204 GET | $0.0000816 | **$81.60** | derived |
 | The same, with each pointer read once, as inside the region | 204 GET | $0.0000816 | $81.60 | expected |
-| A segment's first single-part `store.load()`, a 1.05 MB segment, pointer included | 2 PUT + 4 GET | $0.0000116 | **$11.60** | derived |
+| A segment's first single-part `store.load()` in run `2026-10-04-73668`, a 1.05 MB segment, pointer included | 2 PUT + 4 GET | $0.0000116 | **$11.60** | derived |
 | A segment's first multipart `store.load()`, a 12.6 MB segment | 5 PUT-class + 4 GET | $0.0000266 | **$26.60** | derived |
 
 **Derived** rows are measured request counts times the `aws-us-east-1-ondemand` list prices. The second row is the

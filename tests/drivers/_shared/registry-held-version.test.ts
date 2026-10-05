@@ -151,6 +151,16 @@ describe('the store keeps the fence', () => {
     expect(await w.registry.get(SEG)).toMatchObject({ currentGen: 7, token });
   });
 
+  it('a create with `held: null` that loses to a row gone by the time it is read is a conflict, written once', async () => {
+    const store = new CountingObjectStore(1); // the first conditional write loses, as to a writer that then went away
+    const registry = new ObjectStoreRegistry(store, 'p', clock());
+    await expect(registry.create(SEG, { currentGen: 0 }, { held: null })).rejects.toBeInstanceOf(
+      WriteConflictError,
+    );
+    expect({ reads: store.reads, writes: store.writes }).toEqual({ reads: 1, writes: 1 });
+    expect(await registry.get(SEG)).toBeNull();
+  });
+
   it('a create with `held: null` goes over a tombstone, as one without it does', async () => {
     const w = world({ conditionalDelete: false });
     const { token: first } = await w.registry.create(SEG, { currentGen: 0 });

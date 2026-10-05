@@ -1862,6 +1862,13 @@ const WRITE_AND_PUBLISH: number = (() => {
   return 1e6 * (f.loadVia === null ? f.usd.singleLoad : f.usd.singleLoad - f.price.getUSD);
 })();
 
+/**
+ * A clause that names a calibration run by its id states what that run measured, with the engine it ran: the run's
+ * evidence and its report hold it (`site:figures`, `tests/docs/calibration-reports.test.ts`), and it is not a claim
+ * about what a load costs or makes now, which the cost model gives.
+ */
+const NAMES_A_RUN = /\b\d{4}-\d{2}-\d{2}-[0-9a-f]{5}\b/;
+
 const SAYS_PER_MILLION = /\bper\s+(?:million|1M)\b|\ba million\b|\/\s*1M\b/i;
 const AMOUNT = /\$([\d,]+(?:\.\d+)?)/g;
 /**
@@ -1992,7 +1999,8 @@ function loadFigureHits(rel: string, text: string): string[] {
     if (
       ABOUT_A_LOAD.test(clause) &&
       SAYS_PER_MILLION.test(clause) &&
-      !ANOTHER_FIGURE.test(clause)
+      !ANOTHER_FIGURE.test(clause) &&
+      !NAMES_A_RUN.test(clause)
     ) {
       for (const m of clause.matchAll(AMOUNT)) {
         const value = Number(m[1]!.replace(/,/g, ''));
@@ -2059,9 +2067,9 @@ describe("a page's figures for store.load() are the estimator's", () => {
       f(LOAD_PRICES.steady),
       f(LOAD_PRICES.listing),
       f(LOAD_PRICES.average),
-    ]).toEqual(['11.60', '12.00', '17.40', '12.34']);
+    ]).toEqual(['11.20', '11.60', '17.00', '11.94']);
     expect(WRITE_AND_PUBLISH.toFixed(2)).toBe('11.20');
-    expect(LOAD_OVER_WRITE.toFixed(2)).toBe('1.10');
+    expect(LOAD_OVER_WRITE.toFixed(2)).toBe('1.07');
   });
 
   // Both directions: each stale form is caught, and the sentences that must stay legal are not.
@@ -2088,17 +2096,21 @@ describe("a page's figures for store.load() are the estimator's", () => {
     'a write and publish, with store.load() half as much again',
     'store.load() is 1.5 times a write and publish',
     'a store.load() that writes and publishes costs $17.80 per million',
+    // A figure that names no run is the model's to hold, whatever it says it measured.
+    "a segment's first store.load() was measured at $12.20 per million",
   ])('refuses the stale form %j', (text) => {
     expect(loadFigureHits('x.md', text)).not.toEqual([]);
   });
 
   it.each([
-    'about $12.34 per million single-part loads at the default prices',
-    "a segment's first store.load() is expected at $11.60 per million",
-    'a load that does not list costs $12.00 per million',
-    'a load that lists costs $17.40 per million',
-    "$12.34 per million steady single-part loads at the default prices: $12.00 when a load does not list, $17.40 when it lists (every 16th generation), and $11.60 for a segment's first load",
-    "$12.34 per million single-part loads, where it was $23.60, and $11.60 for a segment's first load, where it was $22.80.",
+    'about $11.94 per million single-part loads at the default prices',
+    "a segment's first store.load() is expected at $11.20 per million",
+    'a load that does not list costs $11.60 per million',
+    'a load that lists costs $17.00 per million',
+    // What a named run measured is the run's, held by its evidence.
+    "a segment's first store.load() in run 2026-10-04-73668 cost $12.20 per million",
+    "$11.94 per million steady single-part loads at the default prices: $11.60 when a load does not list, $17.00 when it lists (every 16th generation), and $11.20 for a segment's first load",
+    "$11.94 per million single-part loads, where it was $23.60, and $11.20 for a segment's first load, where it was $22.80.",
     'one more GET ($0.40 per million at the default prices) that a load makes',
     'S3 GETs, $0.40 a million, and a PUT-class request, $5 per million, for each load',
     '$82.40 per million cold intersects of two segments, and $11.20 per million loads written and published',
@@ -2118,13 +2130,13 @@ describe("a page's figures for store.load() are the estimator's", () => {
     'Writing and publishing a segment, pointer included, with store.load() about a tenth more on average',
     '1M writes + publishes · store.load() ≈ 1.1×',
     'store.load() costs 1.1 times a write and publish, on average',
-    'a store.load() writes and publishes for $12.34 per million on average',
+    'a store.load() writes and publishes for $11.94 per million on average',
     // Prices another load's words call for, and other backends' and encrypted segments' counts.
-    'a load that deletes by name costs $12.00 per million',
-    'from the third load on, a load costs $12.00 per million',
-    'a load that lists nothing costs $12.00 per million',
-    'a load on a generation divisible by 16 costs $17.40 per million',
-    'on Azure Blob a steady load costs $12.00 per million, $12.34 on average',
+    'a load that deletes by name costs $11.60 per million',
+    'from the third load on, a load costs $11.60 per million',
+    'a load that lists nothing costs $11.60 per million',
+    'a load on a generation divisible by 16 costs $17.00 per million',
+    'on Azure Blob a steady load costs $11.60 per million, $11.94 on average',
     "an encrypted segment's load costs $12.74 per million on average",
     // A ratio that is not a comparison with a write: a 64 × 1,024 product, and a write named without store.load().
     'the writer cuts 64 × 1,024 containers per slice, and store.load() writes each',
@@ -2298,6 +2310,7 @@ function requestCountHits(rel: string, text: string): string[] {
   }
   clauses.push(cell(start, reading.length));
   for (const { text: clause, offset } of clauses) {
+    if (NAMES_A_RUN.test(clause)) continue;
     for (const m of clause.matchAll(REQUEST_CLAIM)) {
       const n = COUNT_WORDS[m[1]!.toLowerCase()] ?? Number(m[1]!.replace(/,/g, ''));
       const before = clause.slice(Math.max(0, m.index - 40), m.index);
@@ -2365,22 +2378,24 @@ function requestCountHits(rel: string, text: string): string[] {
 describe("a page's request counts for a load, a cold count and a cold stat are the cost model's", () => {
   it('derives the counts the model gives', () => {
     expect(REQUEST_COUNTS.load).toEqual({
-      steady: { put: 2, get: 5, total: 8 },
-      listing: { put: 3, get: 6 },
-      first: { put: 2, get: 4, total: 6 },
-      second: { put: 2, get: 3, total: 5 },
+      steady: { put: 2, get: 4, total: 7 },
+      listing: { put: 3, get: 5 },
+      first: { put: 2, get: 3, total: 5 },
+      second: { put: 2, get: 2, total: 4 },
     });
     expect(REQUEST_COUNTS.coldCount).toEqual({ pointer: 1, withTail: [2, 3] });
   });
 
   // Both directions: each stale or wrong form is caught, and the honest phrasings and the look-alikes are not.
   it.each([
-    'a steady single-part load on S3 is 2 PUT-class requests, 5 GET-class and a delete, 9 requests',
-    'a steady store.load() is 3 PUT-class requests and 5 GET-class',
+    'a steady single-part load on S3 is 2 PUT-class requests, 4 GET-class and a delete, 9 requests',
+    'a steady single-part load on S3 is 2 PUT-class requests, 5 GET-class and a delete, 8 requests',
+    "a segment's first load is expected at 2 PUT-class and 4 GET requests",
+    'a steady store.load() is 3 PUT-class requests and 4 GET-class',
     "a segment's first load is expected at 2 PUT-class and 5 GET requests",
-    "a segment's second load makes 4 GET-class requests",
-    'a reload of a segment makes 4 GETs',
-    'a load that lists is 3 PUT-class and 7 GET-class',
+    "a segment's second load makes 3 GET-class requests",
+    'a reload of a segment makes 3 GETs',
+    'a load that lists is 3 PUT-class and 6 GET-class',
     'a load makes 14 requests',
     'a cold count() makes 2 requests',
     'a cold count is two requests',
@@ -2388,28 +2403,31 @@ describe("a page's request counts for a load, a cold count and a cold stat are t
     'A cold `stat()` is 2 pointer reads',
     'a cold count on S3 and GCS makes 3 requests, with the row summary',
     'store.load() sends 3 PUTs.',
-    '| A steady store.load() | 9 requests |',
-    '| A first load | 2 PUT-class requests and 5 GETs |',
+    '| A steady store.load() | 8 requests |',
+    '| A first load | 2 PUT-class requests and 4 GETs |',
+    "a segment's first load was measured at 2 PUT-class and 9 GET requests",
   ])('refuses %j', (text) => {
     expect(requestCountHits('x.md', text)).not.toEqual([]);
   });
 
   it.each([
-    'a steady single-part load on S3 is 2 PUT-class requests, 5 GET-class and a delete, 8 requests',
-    'a steady store.load() is 2 PUT-class requests and 5 GET-class',
-    "a segment's first load is expected at 2 PUT-class and 4 GET requests",
-    "a segment's second load is 2 PUT-class and 3 GET-class requests, 5 in all",
-    'a load that lists is 3 PUT-class and 6 GET-class',
-    'a load that does not list makes 8 requests',
+    'a steady single-part load on S3 is 2 PUT-class requests, 4 GET-class and a delete, 7 requests',
+    'a steady store.load() is 2 PUT-class requests and 4 GET-class',
+    "a segment's first load is expected at 2 PUT-class and 3 GET requests",
+    "a segment's second load is 2 PUT-class and 2 GET-class requests, 4 in all",
+    'a load that lists is 3 PUT-class and 5 GET-class',
+    'a load that does not list makes 7 requests',
+    // What a named run measured is the run's, held by its evidence.
+    "a segment's first load in run 2026-10-04-73668 made 2 PUT-class and 9 GET requests",
     'a cold count() makes 1 request',
     'a cold count is one request',
     'count() is one request when cold, and a cold stat() is one pointer read',
     // Where the row has no summary to use, the tail read is added: S3 and GCS two, Azure Blob three.
     'a cold count() of a row with no summary makes 2 requests, and 3 on Azure Blob',
     // History is the changelog's.
-    'a steady load makes 8 requests, where 0.11.2 made 14',
+    'a steady load makes 7 requests, where 0.11.2 made 14',
     'a cold count makes 1 request where it was 2',
-    'it takes a steady load from 14 requests to 8',
+    'it takes a steady load from 14 requests to 7',
     // Ranges, bounds, and "more" or "fewer".
     'a load makes 2 to 3 PUT-class requests',
     'a load makes one or two requests more than it needs',
@@ -2431,10 +2449,10 @@ describe("a page's request counts for a load, a cold count and a cold stat are t
     'A load past 3,500 PUT requests a second to one prefix is throttled.',
     'A load takes 2 PUT-class requests and, on the cadence, a listing.',
     'A cold count() of 4 segments in one call makes 4 requests.',
-    '| A steady store.load() | 8 requests |',
+    '| A steady store.load() | 7 requests |',
     'objects that fit one PUT, loaded through store.load(), and objects large enough to upload multipart',
     'store.load() writes the object with one PUT, then moves the pointer',
-    'a cold intersect makes 206 GETs, and a load makes 2 PUT-class requests and 5 GET-class requests',
+    'a cold intersect makes 206 GETs, and a load makes 2 PUT-class requests and 4 GET-class requests',
   ])('leaves %j alone', (text) => {
     expect(requestCountHits('x.md', text)).toEqual([]);
   });

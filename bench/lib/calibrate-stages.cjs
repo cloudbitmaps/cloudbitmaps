@@ -287,11 +287,11 @@ function expectedReads(w) {
 /**
  * What one `store.load()` of a segment's first generation bills, counted by a test against the real registry
  * protocol: the object and the pointer are PUT-class, and nothing is listed, since there is no generation yet for
- * collection to take; the pointer is read three times (it found no row, so it reads again after its ids, and
- * the create reads once more) and the generation number checked once, a HeadObject. A multipart object is a create,
+ * collection to take; the pointer is read twice (it found no row, so it reads again after its ids, and the create
+ * is sent without reading the row) and the generation number checked once, a HeadObject. A multipart object is a create,
  * its parts and a complete in place of the single PUT.
  */
-const FIRST_LOAD = Object.freeze({ put: 2, get: 4 });
+const FIRST_LOAD = Object.freeze({ put: 2, get: 3 });
 const firstLoadRequests = (parts) =>
   parts === 0 ? { ...FIRST_LOAD } : { put: FIRST_LOAD.put + 1 + parts, get: FIRST_LOAD.get };
 

@@ -72,7 +72,7 @@ name.
 A cold `intersect` of two 500,000-id segments sharing 100 of their 1,999 chunks is expected to make 6 GETs, **$2.40 per
 million**: counted by running the engine and priced at list, not yet measured on a cloud. On a spread layout it reads more
 bytes than it needs, which cross-region can cost more than the requests it saves. A segment's first `store.load()` is
-**$11.60 per million**, pointer included, from its measured requests at list prices (run of 2026-10-04, in-region, whose
+**$11.60 per million**, pointer included, from its measured requests at list prices (run 2026-10-04-73668, in-region, whose
 client had 50 sockets; the client this release builds allows 128, and its effect is not measured). A cold `count()` is one
 pointer read: it reads no payload and no object.
 

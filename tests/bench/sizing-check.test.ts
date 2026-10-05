@@ -195,9 +195,9 @@ describe('bench:sizing:check fails what it exists to catch', () => {
   });
 
   it('fails a generated figure edited by hand', () => {
-    expect(sizing).toContain('**$71.66**');
+    expect(sizing).toContain('**$71.60**');
     refused(
-      { [SIZING]: sizing.replace('**$71.66**', '**$72.66**') },
+      { [SIZING]: sizing.replace('**$71.60**', '**$72.60**') },
       /not what the shipped estimator/,
     );
   });

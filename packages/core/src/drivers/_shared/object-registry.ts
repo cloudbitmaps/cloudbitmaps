@@ -240,19 +240,23 @@ export class ObjectStoreRegistry implements IRegistryDriver {
   ): Promise<{ token: Token }> {
     const checked = validateNewRegistryRecord(record);
     const key = registryObjectKey(this.prefix, ref);
+    let lost: unknown;
     if (options?.held === null) {
-      // The caller found no row: send the create-only write without reading. A row there now (or a tombstone, which a
-      // create-only write cannot go over) fails it, and the read below says which.
+      // The caller found no row: send the create-only write without reading. One that loses to a row, or to a tombstone
+      // (which a create-only write cannot go over), is told apart by the read below.
       try {
         return await this.createOver(key, ref, checked, undefined);
       } catch (err) {
         if (!isWriteConflictError(err)) throw err;
+        lost = err;
       }
     }
     const current = await this.readRow(key);
     if (current !== null && !current.env.deleted) {
       throw new WriteConflictError(`registry row already exists for segment ${ref.segment}`);
     }
+    // No row at all now: the create-only write lost to something that has gone since, and it is not sent again.
+    if (lost !== undefined && current === null) throw lost;
     return this.createOver(key, ref, checked, current ?? undefined);
   }
 

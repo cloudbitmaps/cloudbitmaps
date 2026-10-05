@@ -19,7 +19,7 @@
     <title>CloudBitmaps benchmarks — what it costs, and where it stops paying</title>
     <meta
       name="description"
-      content="Expected, counted from the engine and not yet measured on S3: 6 GETs and $2.40 per million cold intersects sharing 100 chunks. Measured in-region: a segment's first store.load() is $11.60 per million. Past 329.15 GETs/s, 54.9 such intersects/s, Redis is cheaper."
+      content="Expected, counted from the engine and not yet measured on S3: 6 GETs and $2.40 per million cold intersects sharing 100 chunks. Measured in-region by run 2026-10-04-73668: a segment's first store.load() is $11.60 per million. Past 329.15 GETs/s, 54.9 such intersects/s, Redis is cheaper."
     />
     <link rel="stylesheet" href="cloudbitmaps.css" />
     <meta name="google-site-verification" content="UpdnyEE0wCiY5rHqUovfc-lRkEa9ZN9M-F67eTRNKhE" />
@@ -703,7 +703,7 @@
                   <td class="num">204 GETs</td>
                 </tr>
                 <tr>
-                  <td>A segment's first single-part <span class="m">store.load()</span></td>
+                  <td>A segment's first single-part <span class="m">store.load()</span> in the calibration run</td>
                   <td class="num">$11.60</td>
                   <td class="num">2 PUT + 4 GET</td>
                 </tr>
