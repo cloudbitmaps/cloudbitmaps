@@ -362,6 +362,8 @@ describe('every read site of a leased handle', () => {
     await expect(collect(snap.iterate())).rejects.toBeInstanceOf(LeaseExpiredError);
   });
 
+  // The dropping of an `expiresAt`-expired exclude, which this test holds, is the rule a separate change replaces with
+  // an error. When that merges, the last assertion here changes to expect that error; the lease tests around it do not.
   it('expiresAt is unchanged: an expired unleased handle reads empty and an expired exclude is dropped', async () => {
     const h = await seeded();
     const expired = h.reader.segment(OTHER.segment, { namespace: 'ns', expiresAt: T0 + 1 });
@@ -369,6 +371,19 @@ describe('every read site of a leased handle', () => {
     expect(await expired.count()).toBe(0);
     const left = await collect(plain(h, REF).andNot([expired]));
     expect(left).toHaveLength(200);
+  });
+
+  it('a leased exclude past its lease throws LeaseExpiredError, in every combine, whatever the other handles are', async () => {
+    const h = await seeded();
+    const optOut = await lease(h, HOUR);
+    h.advance(HOUR);
+    const live = plain(h, THIRD);
+    const reads = [
+      collect(live.intersect([plain(h)], { exclude: [optOut] })),
+      collect(live.union([plain(h)], { exclude: [optOut] })),
+      collect(live.andNot([optOut])),
+    ];
+    for (const r of reads) await expect(r).rejects.toBeInstanceOf(LeaseExpiredError);
   });
 
   it('a handle with both a lease and an expiresAt throws once the lease is past, and still when expiresAt is too', async () => {

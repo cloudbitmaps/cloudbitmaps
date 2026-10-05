@@ -2802,6 +2802,9 @@ export class Segment {
   private intersectAs<T>(out: CombineOutput<T>, others: Segment[], options?: CombineOptions): T {
     // `exclude` is read once, here. A lease is checked on every handle of the call before any expiry rule, so an
     // operand that has expired by `expiresAt` cannot hide a leased exclude that is past its lease.
+    // Order of the checks, which a change to how an `expiresAt`-expired exclusion is treated must keep: the lease check
+    // runs first, then the expired-exclusion check. A handle whose lease ended throws `LeaseExpiredError`, whatever its
+    // `expiresAt`; an unleased handle past its `expiresAt` is that rule's to answer.
     const given = options?.exclude;
     const handles = [this, ...others, ...(given ?? NO_SEGMENTS)];
     try {
@@ -2879,6 +2882,9 @@ export class Segment {
   }
 
   private unionAs<T>(out: CombineOutput<T>, others: Segment[], options?: CombineOptions): T {
+    // Order of the checks, which a change to how an `expiresAt`-expired exclusion is treated must keep: the lease check
+    // runs first, then the expired-exclusion check. A handle whose lease ended throws `LeaseExpiredError`, whatever its
+    // `expiresAt`; an unleased handle past its `expiresAt` is that rule's to answer.
     const given = options?.exclude;
     const handles = [this, ...others, ...(given ?? NO_SEGMENTS)];
     try {
@@ -2956,6 +2962,9 @@ export class Segment {
   }
 
   private andNotAs<T>(out: CombineOutput<T>, excludes: Segment[], options?: BaseCombineOptions): T {
+    // Order of the checks, which a change to how an `expiresAt`-expired exclusion is treated must keep: the lease check
+    // runs first, then the expired-exclusion check. A handle whose lease ended throws `LeaseExpiredError`, whatever its
+    // `expiresAt`; an unleased handle past its `expiresAt` is that rule's to answer.
     const handles = [this, ...excludes];
     try {
       this.assertLeases(handles);
