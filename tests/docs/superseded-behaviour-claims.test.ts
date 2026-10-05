@@ -1862,13 +1862,6 @@ const WRITE_AND_PUBLISH: number = (() => {
   return 1e6 * (f.loadVia === null ? f.usd.singleLoad : f.usd.singleLoad - f.price.getUSD);
 })();
 
-/**
- * A clause that names a calibration run by its id states what that run measured, with the engine it ran: the run's
- * evidence and its report hold it (`site:figures`, `tests/docs/calibration-reports.test.ts`), and it is not a claim
- * about what a load costs or makes now, which the cost model gives.
- */
-const NAMES_A_RUN = /\b\d{4}-\d{2}-\d{2}-[0-9a-f]{5}\b/;
-
 const SAYS_PER_MILLION = /\bper\s+(?:million|1M)\b|\ba million\b|\/\s*1M\b/i;
 const AMOUNT = /\$([\d,]+(?:\.\d+)?)/g;
 /**
@@ -1999,8 +1992,7 @@ function loadFigureHits(rel: string, text: string): string[] {
     if (
       ABOUT_A_LOAD.test(clause) &&
       SAYS_PER_MILLION.test(clause) &&
-      !ANOTHER_FIGURE.test(clause) &&
-      !NAMES_A_RUN.test(clause)
+      !ANOTHER_FIGURE.test(clause)
     ) {
       for (const m of clause.matchAll(AMOUNT)) {
         const value = Number(m[1]!.replace(/,/g, ''));
@@ -2096,7 +2088,8 @@ describe("a page's figures for store.load() are the estimator's", () => {
     'a write and publish, with store.load() half as much again',
     'store.load() is 1.5 times a write and publish',
     'a store.load() that writes and publishes costs $17.80 per million',
-    // A figure that names no run is the model's to hold, whatever it says it measured.
+    // Naming a run does not exempt a figure: a stale one beside a run id is refused.
+    "a segment's first store.load() cost $12.20 per million in run 2026-10-04-73668",
     "a segment's first store.load() was measured at $12.20 per million",
   ])('refuses the stale form %j', (text) => {
     expect(loadFigureHits('x.md', text)).not.toEqual([]);
@@ -2107,8 +2100,6 @@ describe("a page's figures for store.load() are the estimator's", () => {
     "a segment's first store.load() is expected at $11.20 per million",
     'a load that does not list costs $11.60 per million',
     'a load that lists costs $17.00 per million',
-    // What a named run measured is the run's, held by its evidence.
-    "a segment's first store.load() in run 2026-10-04-73668 cost $12.20 per million",
     "$11.94 per million steady single-part loads at the default prices: $11.60 when a load does not list, $17.00 when it lists (every 16th generation), and $11.20 for a segment's first load",
     "$11.94 per million single-part loads, where it was $23.60, and $11.20 for a segment's first load, where it was $22.80.",
     'one more GET ($0.40 per million at the default prices) that a load makes',
@@ -2310,7 +2301,6 @@ function requestCountHits(rel: string, text: string): string[] {
   }
   clauses.push(cell(start, reading.length));
   for (const { text: clause, offset } of clauses) {
-    if (NAMES_A_RUN.test(clause)) continue;
     for (const m of clause.matchAll(REQUEST_CLAIM)) {
       const n = COUNT_WORDS[m[1]!.toLowerCase()] ?? Number(m[1]!.replace(/,/g, ''));
       const before = clause.slice(Math.max(0, m.index - 40), m.index);
@@ -2406,6 +2396,7 @@ describe("a page's request counts for a load, a cold count and a cold stat are t
     '| A steady store.load() | 8 requests |',
     '| A first load | 2 PUT-class requests and 4 GETs |',
     "a segment's first load was measured at 2 PUT-class and 9 GET requests",
+    "a segment's first load made 2 PUT-class and 9 GET requests in run 2026-10-04-73668",
   ])('refuses %j', (text) => {
     expect(requestCountHits('x.md', text)).not.toEqual([]);
   });
@@ -2417,8 +2408,6 @@ describe("a page's request counts for a load, a cold count and a cold stat are t
     "a segment's second load is 2 PUT-class and 2 GET-class requests, 4 in all",
     'a load that lists is 3 PUT-class and 5 GET-class',
     'a load that does not list makes 7 requests',
-    // What a named run measured is the run's, held by its evidence.
-    "a segment's first load in run 2026-10-04-73668 made 2 PUT-class and 9 GET requests",
     'a cold count() makes 1 request',
     'a cold count is one request',
     'count() is one request when cold, and a cold stat() is one pointer read',

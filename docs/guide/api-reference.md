@@ -671,7 +671,7 @@ transient fault is a `TransientError`; and
 **`create` and `compareAndSwap` take an optional third or fourth argument, `options?: RegistryWriteOptions`.**
 `{ held?: RegistryRecord | null }` is the row the caller read and is writing against: the record this registry's `get`
 returned (`null`: the caller found no row). A driver that would read the row to learn the version its conditional write
-is fenced on may use the one it observed then, and send the write at once, which is one read fewer a publish.
+is fenced on may use the one it observed then, and send the write at once.
 `ObjectStoreRegistry` does, so the S3, GCS and Azure Blob registries do; the in-memory and local-filesystem registries
 read no more for it, since their row is read in process. It is a hint and never the fence: the write is still
 conditioned on the store's own version of the row, so a `held` row that has changed since fails the write with
