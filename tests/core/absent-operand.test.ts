@@ -153,12 +153,11 @@ describe('a combine whose other operands have all expired still checks its own s
     return { ...w, expired, never };
   }
 
-  it('refuses a base that does not exist, on union, andNot and a union with an expired exclude', async () => {
+  it('refuses a base that does not exist, on union and andNot', async () => {
     const w = await expiring();
     for (const read of [
       () => w.never.union([w.expired]),
-      () => w.never.andNot([w.expired]),
-      () => w.never.union([w.expired], { exclude: [w.expired] }),
+      () => w.never.andNot([w.audience]),
       // The same base with a live operand, which these must agree with.
       () => w.never.union([w.audience]),
     ]) {
@@ -167,16 +166,23 @@ describe('a combine whose other operands have all expired still checks its own s
     }
   });
 
+  it('refuses an expired exclusion as expired, not as an absent base', async () => {
+    const w = await expiring();
+    await expect(collect(w.never.union([w.audience], { exclude: [w.expired] }))).rejects.toThrow(
+      /exclusions have expired/,
+    );
+  });
+
   it('reads it as empty under `allowAbsentOperands: true`', async () => {
     const w = await expiring();
     const options = { allowAbsentOperands: true };
     expect(await collect(w.never.union([w.expired], options))).toEqual([]);
-    expect(await collect(w.never.andNot([w.expired], options))).toEqual([]);
+    expect(await collect(w.never.andNot([w.audience], options))).toEqual([]);
   });
 
-  it('reads a base that exists alone, subtracting nothing for an expired exclusion', async () => {
+  it('reads a base that exists alone past an expired operand, and refuses an expired exclusion', async () => {
     const w = await expiring();
     expect(await collect(w.audience.union([w.expired]))).toEqual([1, 2, 3, 4]);
-    expect(await collect(w.audience.andNot([w.expired]))).toEqual([1, 2, 3, 4]);
+    await expect(collect(w.audience.andNot([w.expired]))).rejects.toThrow(ValidationError);
   });
 });

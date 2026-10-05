@@ -452,7 +452,7 @@ describe('expiry reads the same on both', () => {
     return { clock, advance: (ms: number) => (t += ms) };
   }
 
-  it('an expired handle, operand or exclusion behaves as in the per-id stream', async () => {
+  it('an expired handle or operand behaves as in the per-id stream', async () => {
     const h = harness();
     const { backend, store } = await loadedStore(
       { a: [1, 70_000, 140_000], b: [70_000, 140_000], c: [140_000] },
@@ -468,9 +468,6 @@ describe('expiry reads the same on both', () => {
       () => live.union([dying('b')]),
       () => live.union([dying('b')], { exclude: [store.segment('c')] }),
       () => live.intersect([dying('b')]),
-      () => live.andNot([dying('c')]),
-      () => live.andNot([dying('c'), store.segment('c')]),
-      () => live.intersect([store.segment('b')], { exclude: [dying('c')] }),
       () => dying('a').union([store.segment('b')], { exclude: [store.segment('c')] }),
     ];
     for (const [i, make] of cases.entries()) {

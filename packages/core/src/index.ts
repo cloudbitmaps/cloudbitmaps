@@ -75,6 +75,7 @@ export type { PinnedAt } from './core/pinned-storage-source';
 export { loadSegment, loadSegmentChunks } from './core/load';
 export type { LoadDeps, LoadOptions, LoadGuard, LoadResult, LoadRefusal } from './core/load';
 export type { LoadInput, PortableBitmap } from './core/load-input';
+export { decodeSerialized } from './core/load-input';
 // See what a segment has been, and put it back. `rollbackSegment` is the one pointer move that goes backwards,
 // and the one no automatic path performs — forward-only is right for a writer and wrong for an operator.
 export { listGenerations, rollbackSegment } from './core/rollback';
