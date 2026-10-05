@@ -37,7 +37,7 @@ const report = CloudRoaring.estimateCost({
     hotSegments: 2, // segments a long-lived reader keeps reading: each refreshes its pointer every 2 s
   },
 });
-report.monthlyUSD.byOp; // { reads: ≈42, intersects: ≈25.2, storage: ≈0.0257, loads: ≈0.00037, pointerRefresh: ≈1.05, retention: 0 }
+report.monthlyUSD.byOp; // { reads: ≈42, intersects: ≈25.2, storage: ≈0.0257, loads: ≈0.000358, pointerRefresh: ≈1.05, retention: 0 }
 report.monthlyUSD.total; // ≈68.4
 report.redisBaseline; // $142.35 a month: the cheapest cluster in the catalogue that holds 1.12 GiB, 1 shard of 3 cache.t4g.medium nodes
 report.verdict; // 'win' — 'win-big' | 'win' | 'lose-zone', never hides the lose case
@@ -109,11 +109,11 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   operands included), its pointer and then its index in one read of the object's tail, before the chunk range requests it
   makes (`chunksPerIntersect`). `chunksPerIntersect` counts chunk range requests, not chunks: chunks that lie within 256 KiB of each other are read in
   one request. Two segments whose shared chunks each need r range requests make 4 + 2r GETs: 6 GETs, $2.40 per million
-  at the default GET price, when the 100 shared chunks lie together and take one range each (expected, not yet measured).
+  at the default GET price, when the 100 shared chunks lie together and take one range each (measured on S3 in region: [the run](../benchmarks.md#the-in-region-run--run-2026-10-04-f3599) made 6).
   A segment whose chunks all arrive with its tail read takes no range request: when the whole object fits the tail read and its
   chunks total at most the reader cache's share per reader (`cache.readerMaxBytes` over `cache.readerMax`, 64 KiB by default),
   the reader keeps them, so such an operand makes 2 GETs, its pointer and its tail, and a cold intersect of two of them 4 (counted
-  on the in-memory backend, not yet measured in region). **The requests saved are
+  on the in-memory backend: the in-region run's segments were larger than a tail read, so it did not measure this). **The requests saved are
   not the whole bill.** A layout that spreads the shared chunks over an object reads most of the object to get them: the
   requests fall and the bytes read rise. Inside the bucket's region S3 Standard bills no bytes read; across regions it
   bills them, and that can cost more than the requests saved. There is no setting for it: run readers in the bucket's
@@ -127,14 +127,14 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   that counts the requests). Counts and `stat()` calls within `cache.genTtlMs` are free beyond the pointer refresh. A
   row with no summary it can use is read from the object, which adds the tail read.
 - **A load** is `requestsPerLoad` PUT-class requests for the object (1 by default; a multipart write of P parts is
-  P + 2), plus what `store.load()` adds: the pointer's write, PUT-class on S3, and five GETs: three pointer reads and
+  P + 2), plus what `store.load()` adds: the pointer's write, PUT-class on S3, and four GETs: two pointer reads and
   two checks, each a single request on every backend (a `HeadObject` on S3), that the next generation number is free
   and that the current generation's object is there. The load reads no index: the row's summary of the current
-  generation gives its guard the size. It then deletes by name the one generation its publish pushed out of the
+  generation gives its guard the size, and its publish is written against the row the load read, with no read of its own. It then deletes by name the one generation its publish pushed out of the
   window, a request S3 does not bill, and lists the segment only on every 16th generation, which adds a PUT-class
   request and two pointer reads there and makes no check that the current object is there, a sixteenth of each a load
   on average. That is a segment with two generations behind it, whose row carries a summary, at the default `keep` of
-  1, and about $12.34 per million single-part loads at the default prices; a segment's first two loads collect
+  1, and about $11.94 per million single-part loads at the default prices; a segment's first two loads collect
   nothing and make fewer requests, and the first load of a row written before rows carried a summary reads the
   current generation's index, a tail read, in place of the check that its object is there. A publish
   that loses a race to another writer reads the pointer again, and a load whose check finds the number taken (a
@@ -194,7 +194,7 @@ set `storage.requestsPerSizedRead: 2` and leave `requestsPerPointerRead` at 1; a
 S3 and GCS keep both defaults. Each count above is held to the engine by a test that counts its requests, on S3's
 request shape, and each backend's own tests pin the requests it makes (a pointer read in one everywhere; a tail read in
 one on GCS and two on Azure Blob), so the model moves when the engine does. The
-[benchmarks page](../benchmarks.md#the-in-region-run-of-the-engine-before-coalesced-reads--run-2026-10-04-73668) has the request shapes measured
+[benchmarks page](../benchmarks.md#the-in-region-run--run-2026-10-04-f3599) has the request shapes measured
 on real S3.
 
 **See it at three sizes.** [What it costs at your size](sizing.md) prices a small, a medium and a large deployment

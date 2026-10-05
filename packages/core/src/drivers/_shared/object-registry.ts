@@ -23,6 +23,13 @@
  * as {@link WriteConflictError}. No in-process lock is needed (unlike LocalFs): the precondition fences
  * writers *across processes*.
  *
+ * **A caller that already read the row can spare the read before its write.** `get` remembers the version of the
+ * object it read, against the record it returned. A `compareAndSwap` handed that very record as `held` conditions its
+ * write on that version and sends it at once, and a `create` handed `null` (the caller found no row) sends its
+ * create-only write at once. The store's condition stays the fence: a row that changed since fails the write as a lost
+ * race, so a stale `held` can lose a write and never land one. A record this registry did not return (a copy, another
+ * registry's) is read for as without the hint.
+ *
  * **Why this is shared rather than written per cloud.** Every object store worth using has the same two
  * primitives under different names — S3 `If-None-Match: *` / `If-Match: <etag>`, GCS `ifGenerationMatch: 0`
  * / `ifGenerationMatch: <generation>`, Azure `If-None-Match: *` / `If-Match: <etag>` — so the only thing
@@ -70,6 +77,7 @@ import type {
   RegCaps,
   RegistryPatch,
   RegistryRecord,
+  RegistryWriteOptions,
   SegmentRef,
   Token,
 } from '@/core/ports';
@@ -179,6 +187,16 @@ export interface ObjectRegistryStore {
   readonly conditionalDelete?: boolean;
 }
 
+/** A row as read: its envelope, the bytes it was parsed from, and the version that fences a write to it. */
+interface ReadRow extends ObjectRow {
+  readonly env: RegistryEnvelope;
+}
+
+/** What a record `get` returned was read from. */
+interface ObservedRow extends ObjectRow {
+  readonly key: string;
+}
+
 export class ObjectStoreRegistry implements IRegistryDriver {
   /**
    * `entropy` draws the random parts of every token: a new row's incarnation id, and each write's own part. It
@@ -204,27 +222,60 @@ export class ObjectStoreRegistry implements IRegistryDriver {
     return this.store.conditionalDelete === true && typeof this.store.delete === 'function';
   }
 
+  /** The object each record `get` returned was read from, to fence a write made against it ({@link RegistryWriteOptions.held}). */
+  private readonly observed = new WeakMap<RegistryRecord, ObservedRow>();
+
   async get(ref: SegmentRef): Promise<RegistryRecord | null> {
-    const current = await this.readRow(registryObjectKey(this.prefix, ref));
-    return current && !current.env.deleted ? current.env.record : null;
+    const key = registryObjectKey(this.prefix, ref);
+    const row = await this.readRow(key);
+    if (row === null || row.env.deleted) return null;
+    this.observed.set(row.env.record, { key, bytes: row.bytes, version: row.version });
+    return row.env.record;
   }
 
-  async create(ref: SegmentRef, record: NewRegistryRecord): Promise<{ token: Token }> {
+  async create(
+    ref: SegmentRef,
+    record: NewRegistryRecord,
+    options?: RegistryWriteOptions,
+  ): Promise<{ token: Token }> {
     const checked = validateNewRegistryRecord(record);
     const key = registryObjectKey(this.prefix, ref);
+    let lost: unknown;
+    if (options?.held === null) {
+      // The caller found no row: send the create-only write without reading. One that loses to a row, or to a tombstone
+      // (which a create-only write cannot go over), is told apart by the read below.
+      try {
+        return await this.createOver(key, ref, checked, undefined);
+      } catch (err) {
+        if (!isWriteConflictError(err)) throw err;
+        lost = err;
+      }
+    }
     const current = await this.readRow(key);
     if (current !== null && !current.env.deleted) {
       throw new WriteConflictError(`registry row already exists for segment ${ref.segment}`);
     }
+    // No row at all now: the create-only write lost to something that has gone since, and it is not sent again.
+    if (lost !== undefined && current === null) throw lost;
+    return this.createOver(key, ref, checked, current ?? undefined);
+  }
+
+  /** Write a new incarnation of the row: over `tombstone` under its version, or create-only when there is none. */
+  private async createOver(
+    key: string,
+    ref: SegmentRef,
+    checked: NewRegistryRecord,
+    tombstone: ReadRow | undefined,
+  ): Promise<{ token: Token }> {
     // A new incarnation, whose counter continues across a tombstone, so with overwhelming probability a recreate never re-issues an old token.
-    const token = newIncarnationToken(this.entropy, current?.env.record);
+    const token = newIncarnationToken(this.entropy, tombstone?.env.record);
     const env: RegistryEnvelope = {
       deleted: false,
       record: recordFromNew(ref, checked, this.now(), token),
     };
     // Create-only when truly absent; overwrite the tombstone under its version when recreating. Either way
     // a concurrent create loses the precondition and surfaces as a conflict.
-    await this.putRow(key, env, current ? { version: current.version } : 'absent');
+    await this.putRow(key, env, tombstone ? { version: tombstone.version } : 'absent');
     return { token };
   }
 
@@ -232,10 +283,12 @@ export class ObjectStoreRegistry implements IRegistryDriver {
     ref: SegmentRef,
     expected: Token,
     patch: RegistryPatch,
+    options?: RegistryWriteOptions,
   ): Promise<{ token: Token }> {
     const checked = validateRegistryPatch(patch);
     const key = registryObjectKey(this.prefix, ref);
-    const current = await this.readRow(key);
+    // The row the caller read, as this registry read it, when it is the row `expected` names; otherwise read it now.
+    const current = this.observedRow(key, expected, options?.held) ?? (await this.readRow(key));
     if (current === null || current.env.deleted || current.env.record.token !== expected) {
       throw new WriteConflictError(`OCC token mismatch for registry row ${ref.segment}`);
     }
@@ -247,6 +300,22 @@ export class ObjectStoreRegistry implements IRegistryDriver {
     // The version we read fences a concurrent writer between that read and this write.
     await this.putRow(key, env, { version: current.version });
     return { token };
+  }
+
+  /**
+   * The row a caller's `held` record was read as, decoded again from the bytes `get` saw so that nothing the caller did
+   * to its copy reaches the write, or `undefined` when `held` is not a record this registry returned for this row under
+   * the token the write expects. The version it carries is the store's fence, so a row that has moved on since fails
+   * the write.
+   */
+  private observedRow(
+    key: string,
+    expected: Token,
+    held: RegistryRecord | null | undefined,
+  ): ReadRow | undefined {
+    const seen = held ? this.observed.get(held) : undefined;
+    if (seen === undefined || seen.key !== key || held?.token !== expected) return undefined;
+    return this.decodeRow(key, seen);
   }
 
   async *list(namespace?: string): AsyncIterable<RegistryRecord> {
@@ -324,11 +393,13 @@ export class ObjectStoreRegistry implements IRegistryDriver {
    * newer version — and it is bounded so a row under permanent write saturation fails typed instead of
    * spinning. Only a store that reads in two calls gets here; none of the shipped stores does.
    */
-  private async readRow(
-    objectKey: string,
-  ): Promise<{ env: RegistryEnvelope; version: string } | null> {
+  private async readRow(objectKey: string): Promise<ReadRow | null> {
     const row = await this.readRaced(objectKey);
-    if (row === null) return null;
+    return row === null ? null : this.decodeRow(objectKey, row);
+  }
+
+  /** Check and parse the bytes of a registry object. */
+  private decodeRow(objectKey: string, row: ObjectRow): ReadRow {
     if (row.bytes.length > MAX_ROW_BYTES) {
       throw new IntegrityError(
         `registry object ${row.bytes.length}B exceeds cap ${MAX_ROW_BYTES}B`,
@@ -341,7 +412,7 @@ export class ObjectStoreRegistry implements IRegistryDriver {
       );
     }
     const env = parseRegistryEnvelope(new TextDecoder().decode(row.bytes), objectKey);
-    return { env, version: row.version };
+    return { env, bytes: row.bytes, version: row.version };
   }
 
   /** {@link ObjectRegistryStore.read}, retrying the bounded number of times a mid-read overwrite allows. */

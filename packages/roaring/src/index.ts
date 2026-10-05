@@ -2860,6 +2860,7 @@ export type {
   RegistryRecord,
   RegistryStatus,
   RegistrySummary,
+  RegistryWriteOptions,
   RetentionPolicy,
   RetireEntry,
   RetireExpiredOptions,

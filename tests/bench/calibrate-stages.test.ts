@@ -556,12 +556,12 @@ describe('what the stages request, counted against the engine', () => {
   })();
   const expected = stages.expectedReads(plan());
 
-  it('a cold intersect makes 4 + 2r for r ranges of each operand, and a first load makes its counted 2 PUT-class and 4 GET', async () => {
+  it('a cold intersect makes 4 + 2r for r ranges of each operand, and a first load makes its counted 2 PUT-class and 3 GET', async () => {
     await loaded;
-    expect(stages.FIRST_LOAD).toEqual({ put: 2, get: 4 });
-    expect(stages.firstLoadRequests(0)).toEqual({ put: 2, get: 4 });
+    expect(stages.FIRST_LOAD).toEqual({ put: 2, get: 3 });
+    expect(stages.firstLoadRequests(0)).toEqual({ put: 2, get: 3 });
     // A multipart object is a create, its parts and a complete in place of one PUT.
-    expect(stages.firstLoadRequests(2)).toEqual({ put: 5, get: 4 });
+    expect(stages.firstLoadRequests(2)).toEqual({ put: 5, get: 3 });
     let total = 0;
     for (let i = 0; i < 6; i += 1) {
       const store = new CloudRoaring({ storage: backend, ...guards.TIMED_STORE });
@@ -683,7 +683,7 @@ describe('a segment is loaded once', () => {
     expect(helper.indexOf('claimFirstLoad(segment)')).toBeLessThan(helper.indexOf('loader.load('));
   });
 
-  it("a reload of a row with no summary whose number is taken and that loses four races makes more requests than a first load's bound, so a reload is not projected", async () => {
+  it("a reload, even of a row with no summary whose number is taken and that loses four races, makes no more requests than a first load's bound", async () => {
     /**
      * The GET-class requests of a segment's load number `nth` (from 2), when its publish loses `lost` races, and
      * when `taken`, a crashed load's object sits under the number it checks. `legacy` leaves the row as one written
@@ -728,24 +728,24 @@ describe('a segment is loaded once', () => {
       chunksPerRead: 0,
       retryBound: guards.RETRY_BOUND,
     }).get;
-    expect(bound).toBe(15);
+    expect(bound).toBe(14);
     // Nothing racing and the number free: a reload sizes the current generation from its row's summary, so it is the
-    // counted three, a request fewer than a first load, and a load that collects makes five (it also checks that the
-    // current object is there). Four lost publishes, the last attempt winning, put them at eleven and thirteen, inside
-    // the bound.
-    expect(await reload(2, 0)).toEqual({ gets: 3, threw: false });
-    expect(await reload(3, 0)).toEqual({ gets: 5, threw: false });
-    expect(await reload(2, 4)).toEqual({ gets: 11, threw: false });
-    expect(await reload(3, 4)).toEqual({ gets: 13, threw: false });
+    // counted two (its row, which its publish is written against, and the check of the next number), a request fewer
+    // than a first load, and a load that collects makes four (it also checks that the current object is there, and
+    // reads the row again before it deletes). Four lost publishes, the last attempt winning, each reading the row
+    // again, put them at six and eight, inside the bound.
+    expect(await reload(2, 0)).toEqual({ gets: 2, threw: false });
+    expect(await reload(3, 0)).toEqual({ gets: 4, threw: false });
+    expect(await reload(2, 4)).toEqual({ gets: 6, threw: false });
+    expect(await reload(3, 4)).toEqual({ gets: 8, threw: false });
     // A reload whose check finds the number taken lists to collect as well, and reads the pointer around its listing
-    // and before each delete: seven with nothing racing, and with four lost publishes fifteen, as many as the bound.
-    expect(await reload(3, 0, true)).toEqual({ gets: 7, threw: false });
-    expect(await reload(3, 4, true)).toEqual({ gets: 15, threw: false });
-    expect((await reload(3, 4, true)).gets).toBeLessThanOrEqual(bound);
+    // and before each delete: six with nothing racing, and with four lost publishes ten.
+    expect(await reload(3, 0, true)).toEqual({ gets: 6, threw: false });
+    expect(await reload(3, 4, true)).toEqual({ gets: 10, threw: false });
     // The same reload of a row written before rows carried a summary reads the current generation's index as well:
-    // one more, past the bound, which only a segment's first load is held to.
-    expect(await reload(3, 4, true, true)).toEqual({ gets: 16, threw: false });
-    expect((await reload(3, 4, true, true)).gets).toBeGreaterThan(bound);
+    // one more, which is still inside the bound.
+    expect(await reload(3, 4, true, true)).toEqual({ gets: 11, threw: false });
+    for (const gets of [10, 11]) expect(gets).toBeLessThanOrEqual(bound);
   });
 });
 
@@ -823,10 +823,10 @@ describe('the ceiling covers every stage', () => {
       put: 20 * single.put + 5 * multi.put,
       get: 20 * single.get + 5 * multi.get,
     };
-    expect(loads).toEqual({ put: 65, get: 100 });
+    expect(loads).toEqual({ put: 65, get: 75 });
     const setups = 10 + 3 * w.sweep.entries.length;
     const setup = { put: setups * single.put, get: setups * single.get };
-    expect(setup).toEqual({ put: 32, get: 64 });
+    expect(setup).toEqual({ put: 32, get: 48 });
     // The bucket's creation and, in a run with nothing left over, teardown's three listings: of uploads, of versions
     // while the objects are there, and of versions once they are gone. The probe and the ten round-trip samples are
     // GET-class.
@@ -834,19 +834,20 @@ describe('the ceiling covers every stage', () => {
     const get =
       loads.get + setup.get + Object.values(expected).reduce((n, g) => n + g, 0) + fixed.get;
     const put = loads.put + setup.put + fixed.put;
-    expect({ put, get }).toEqual({ put: 101, get: 5_155 });
+    expect({ put, get }).toEqual({ put: 101, get: 5_114 });
     const expectedUSD = meterLib.priceTally({ put, get }, pricing).totalUSD;
-    expect(expectedUSD).toBeCloseTo(0.002567, 6);
+    expect(expectedUSD).toBeCloseTo(0.0025506, 6);
     // The bounds are unchanged by coalescing: each is what a request for every chunk would cost, which a read of
     // ranges never exceeds, so they are far above what is expected now. The bound is above it, and under the ceiling: the stages' bounds, the fixed requests, and three discarded samples
     // at the costliest sample's bound, a cold intersect sharing 2,000 chunks.
     const projected = stages.projectStages(w);
     expect(projected.costliestSample).toBe(stages.coldIntersectBound(2_000));
     expect(projected.discards).toEqual({ put: 0, get: 3 * 4_006 });
-    // Each of the 41 loads the plan names, in the stages and their setups, is projected one GET-class request higher.
-    expect(projected.total).toEqual({ put: 364, get: 94_606 + 12_018 });
+    // Each of the 41 loads the plan names, in the stages and their setups, is projected at the load bound's 14 GET-class
+    // requests.
+    expect(projected.total).toEqual({ put: 364, get: 94_606 + 12_018 - 41 });
     const bound = meterLib.priceTally(projected.total, pricing).totalUSD;
-    expect(bound).toBeCloseTo(0.0444696, 7);
+    expect(bound).toBeCloseTo(0.0444532, 7);
     expect(bound).toBeGreaterThan(expectedUSD);
     expect(bound).toBeLessThan(0.05);
   });

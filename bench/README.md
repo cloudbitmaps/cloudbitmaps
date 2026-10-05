@@ -71,15 +71,13 @@ publishes all three:
 
 1. **Load throughput** — ids/s and bytes/s into a bucket through `store.load()`, the whole write path, for
    objects that fit one PUT and objects large enough to upload multipart. **Paid** by the in-region run,
-   [`2026-10-03-e13c7`](calibration/2026-10-03-e13c7.md), from AWS CloudShell in `us-east-1`, on the release before the one that widened the combine window, and measured
-   again on the engine that widens it by [`2026-10-04-73668`](calibration/2026-10-04-73668.md).
+   [`2026-10-04-f3599`](calibration/2026-10-04-f3599.md), from AWS CloudShell in `us-east-1`, on the published `0.15.0`.
 2. **Cold intersect latency** — wall-clock for a chunk-skipping `A ∩ B` that has to fetch from the object store.
-   **Paid** by the same in-region runs, [`2026-10-03-e13c7`](calibration/2026-10-03-e13c7.md) and, for the engine that
-   widens the window, [`2026-10-04-73668`](calibration/2026-10-04-73668.md).
+   **Paid** by the same in-region run, [`2026-10-04-f3599`](calibration/2026-10-04-f3599.md).
 3. **The single-bucket bill** — the registry pointer lives in the same bucket as the data, so resolving a
-   generation costs an object GET and advancing one costs a conditional PUT. **Paid** by its own run,
-   [`2026-09-23-94416`](calibration/2026-09-23-94416.md), from a laptop, and measured again in-region by
-   [`2026-10-03-e13c7`](calibration/2026-10-03-e13c7.md) and [`2026-10-04-73668`](calibration/2026-10-04-73668.md). A request count, and so the bill for
+   generation costs an object GET and advancing one costs a conditional PUT. **Paid** by the same in-region run,
+   [`2026-10-04-f3599`](calibration/2026-10-04-f3599.md). Every run, with its report, is listed in
+   [`calibration/`](calibration/README.md). A request count, and so the bill for
    requests, does not depend on where the client is, with one exception: an intersect
    slower than the pointer refresh reads each pointer again. The harness's timed store turns the pointer refresh
    off (`cache.genTtlMs: 0`). Bytes read out of the region are billed as transfer, which the harness counts and
@@ -94,7 +92,7 @@ file under `expectedMissed`, and the run carries on, because a count that differ
 
 | stage | what it does | requests it is expected to make |
 |---|---|---|
-| `load` | 20 single-part and 5 multipart (two-part) loads through `store.load()`, each recording its own requests | per segment's first load: 2 PUT-class and 4 GET; a multipart object swaps its PUT for a create, its parts and a complete |
+| `load` | 20 single-part and 5 multipart (two-part) loads through `store.load()`, each recording its own requests | per segment's first load: 2 PUT-class and 3 GET; a multipart object swaps its PUT for a create, its parts and a complete |
 | `intersect` | 40 cold intersects over the calibration layout (100 shared chunks packed at keys 0 to 99), each on a fresh store | 4 + 2r GET each: both pointers, both tails, and r chunk range requests from each operand, where r is what the engine makes of the layout, counted by running it over the in-memory backend (`lib/range-counts.cjs`) before anything is created |
 | `spread` | 10 segments of the same overlap with the shared chunks spread uniformly over each segment's chunks from a fixed seed, and 40 cold intersects | the same 4 + 2r, with r counted for this layout, so a difference in latency is the layout's |
 | `sweep` | segments sharing 1,000 chunks (10 intersects) and 2,000 (5), `CR_CALIBRATE_SWEEP` to change the list | 4 + 2r each, with r counted for each k |
@@ -111,9 +109,9 @@ record carries their medians as `medianPeakInFlight`, `medianMeanInFlight` and `
 engine's model of 2 + the rounds a window that opens 4 ranges wide and widens to 32 takes over r ranges (`windowRounds`
 in `lib/calibrate-stages.cjs`, stepped at an even latency from the engine's two constants), for a pointer, a tail and
 the window. A peak of 64 is the full window, 32 range requests held ahead of each operand; rounds above the model with a
-mean in flight well under that is a slow request holding the window. A run made on an earlier engine ran a fixed window of 8 chunk reads, a model of 2 + ⌈k / 8⌉ and a peak of 16, and its figures are read against that. In flight counts requests the library issued, including any waiting for a free socket, so a mean or a peak above the
-client's sockets (`maxSockets`, which the record carries: 50 for runs up to the one of 2026-10-04, which kept the SDK's default; runs from this harness on record what their client held, 128 by default, as the library's built client has) means requests queued, a wait the rounds model, which assumes no limit, does not count.
-The run of 2026-10-04 held an `andNot` mean of 80.6 in flight against 50 sockets, and its rounds sit above the model.
+mean in flight well under that is a slow request holding the window. In flight counts requests the library issued, including any waiting for a free socket, so a mean or a peak above the
+client's sockets (`maxSockets`, which the record carries: what the run's client held, read back from its agents, 128 by default, as the library's built client has) means requests queued, a wait the rounds model, which assumes no limit, does not count.
+The run of 2026-10-04 held at most 11 requests in flight against 128 sockets, and its rounds sit above the model.
 
 `andNot` reads every chunk of the segment it filters, as ranges, since any of them can survive, and each exclude only where it
 overlaps, so what it costs scales with the include operand and not with the size of the exclude list.
@@ -219,8 +217,8 @@ constants and the source text:
   fails if they differ, because a retyped number can be wrong. A load, `store.load()` of a new segment, checks that its
   generation number is free and lists nothing when it is, since it has nothing to collect (up to twice when the check
   finds the number taken, to number past the object and to collect; on S3 a listing bills at the PUT rate), and reads
-  the pointer three times with nothing racing it, up to six when the check finds the number taken, twice more for each publish
-  attempt it loses, and fourteen times at most: fifteen GET-class requests with the check. A test drives each count through the real registry code, so a projection allowing one
+  the pointer twice with nothing racing it, up to five when the check finds the number taken, twice more for each publish
+  attempt it loses, and thirteen times at most: fourteen GET-class requests with the check. A test drives each count through the real registry code, so a projection allowing one
   read per attempt fails it. The workload's client makes one attempt per request, and every attempt teardown's client
   may make is allowed for, so no SDK retry can fall outside it either. A sample discarded after a transient fault was
   billed too, so the projection allows every discard a run may make, at the costliest sample's bound, and a plan that
@@ -228,9 +226,8 @@ constants and the source text:
   actually issued against what it projected, each stage's kept samples against its bound and its discards against the
   allowance, and flags itself if it went over.
 - **A segment is loaded once.** The projection bounds a segment's first load. A reload of a row with a summary
-  opens nothing and makes fifteen GET-class requests under four lost races, as many as that bound; one of a row with none
-  also opens the current generation's index and makes sixteen. A
-  a collecting load reads the pointer once more. The harness claims each name before it loads (`firstLoads`) and
+  opens nothing and makes at most six GET-class requests under four lost races, and at most eight when it collects, inside that bound;
+  one of a row with none that also lists to collect also opens the current generation's index, and makes at most eleven. The harness claims each name before it loads (`firstLoads`) and
   refuses a repeat before sending anything.
 - **A warm read that makes a request fails the stage.** Its count is not recorded and compared afterwards: the stage
   throws, the run keeps what it had finished and exits non-zero. Each warm store trusts its pointer for an hour and
@@ -306,7 +303,7 @@ hang-up on a real pseudo-terminal that is then closed, and the whole path by int
   client metered into the same bill: a transient failure there would otherwise leave the bucket behind.
 - **Cold reads only, and a count the network cannot move.** Each intersect gets a fresh store, so no cache can
   answer it, and the store's timed pointer refresh is off (`cache.genTtlMs: 0`). On the default 2 s refresh, an
-  intersect slower than that reads each pointer again, which adds GETs to the 204 an intersect of this shape makes,
+  intersect slower than that reads each pointer again, which adds GETs to the 6 an intersect of this shape makes,
   so a count taken on the default would describe the network. A test drives the real engine on a slow clock to prove each pointer is read once.
 - **Exact content.** Every pair of segments shares a planned set of ids, so each intersect must return precisely
   that set — the count *and* the sum — or the run refuses to report a latency.

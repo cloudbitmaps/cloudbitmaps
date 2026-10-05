@@ -125,6 +125,10 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
     });
   }
 
+  /**
+   * A caller's `held` row (see `RegistryWriteOptions`) has no read to spare here: the row's file is read under its lock and its token compared
+   * there, a local read and no request, so a stale one fails exactly as a lost race does.
+   */
   async compareAndSwap(
     ref: SegmentRef,
     expected: Token,

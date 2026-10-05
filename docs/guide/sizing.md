@@ -71,8 +71,8 @@ the hot set's indices at all three sizes.
 | | cold intersects | point reads | pointer refresh | loads | storage | **a month** | the Redis that holds it | **against it** |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | **Small** | $0.05 | $0.53 | $1.05 | $0.07 | under $0.01 | **$1.70** | $35.04 (3 × t4g.micro) | **95% less** |
-| **Medium** | $6.31 | $10.51 | $52.56 | $1.85 | $0.43 | **$71.66** | $900 (3 × r6g.xlarge) | **92% less** |
-| **Large** | $126 | $105 | $2,102 | $164 | $42.84 | **$2,541** | $27,325 (3 × r6gd.16xlarge) | **91% less** |
+| **Medium** | $6.31 | $10.51 | $52.56 | $1.79 | $0.43 | **$71.60** | $900 (3 × r6g.xlarge) | **92% less** |
+| **Large** | $126 | $105 | $2,102 | $162 | $42.84 | **$2,538** | $27,325 (3 × r6gd.16xlarge) | **91% less** |
 <!-- SIZING:BILL:END -->
 
 <!-- SIZING:REDIS:START -->
@@ -99,7 +99,7 @@ held where it is:
 |---|---:|---:|---:|
 | **Small** | 0.00761 | 5.29 | 700× |
 | **Medium** | 1 | 132 | 130× |
-| **Large** | 20 | 3,949 | 200× |
+| **Large** | 20 | 3,950 | 200× |
 <!-- SIZING:HEADROOM:END -->
 
 An extra cold intersect a second of this shape costs the same at any data size, while the Redis it is measured
@@ -116,17 +116,17 @@ A cold intersect reads each segment's shared chunks as ranges: chunks that sit w
 <!-- SIZING:OVERLAP:START -->
 | shared chunks, of 2,000 | Medium: GETs | Medium, a month | against its Redis | Large: GETs | Large, a month | against its Redis |
 |---:|---:|---:|---:|---:|---:|---:|
-| 100 (the tables above) | 6 | $71.66 | 92% less | 6 | $2,541 | 91% less |
-| 1,000 | 8 | $73.76 | 92% less | 14 | $2,709 | 90% less |
-| 2,000 | 12 | $77.97 | 91% less | 24 | $2,919 | 89% less |
+| 100 (the tables above) | 6 | $71.60 | 92% less | 6 | $2,538 | 91% less |
+| 1,000 | 8 | $73.70 | 92% less | 14 | $2,706 | 90% less |
+| 2,000 | 12 | $77.91 | 91% less | 24 | $2,917 | 89% less |
 
 The shared chunks of those tables sit side by side in each object, as in the calibration run. Spread over the object, with each segment's own chunks between them, the same overlap reads most of each object, and the table adds what an intersect reads, both objects together, with the gaps it reads across included:
 
 | shared chunks, of 2,000 | Medium: GETs | Medium: read | Medium, a month | against its Redis | Large: GETs | Large: read | Large, a month | against its Redis |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 100 | 12 | 7.7 MB | $77.97 | 91% less | 24 | 18 MB | $2,919 | 89% less |
-| 1,000 | 12 | 7.9 MB | $77.97 | 91% less | 24 | 20 MB | $2,919 | 89% less |
-| 2,000 | 12 | 8 MB | $77.97 | 91% less | 24 | 20 MB | $2,919 | 89% less |
+| 100 | 12 | 7.7 MB | $77.91 | 91% less | 24 | 18 MB | $2,917 | 89% less |
+| 1,000 | 12 | 7.9 MB | $77.91 | 91% less | 24 | 20 MB | $2,917 | 89% less |
+| 2,000 | 12 | 8 MB | $77.91 | 91% less | 24 | 20 MB | $2,917 | 89% less |
 <!-- SIZING:OVERLAP:END -->
 
 <!-- SIZING:OVERLAP_NOTE:START -->
@@ -146,9 +146,9 @@ big lines have a lever:
   <!-- SIZING:LEVERS:START -->
   | `cache.genTtlMs` | pointer refresh | **a month** | against its Redis |
   |---|---:|---:|---:|
-  | 2 s, the default | $2,102 | **$2,541** | 91% less |
-  | 1 minute | $350 | **$789** | 97% less |
-  | 5 minutes | $70.08 | **$508** | 98% less |
+  | 2 s, the default | $2,102 | **$2,538** | 91% less |
+  | 1 minute | $350 | **$786** | 97% less |
+  | 5 minutes | $70.08 | **$506** | 98% less |
   <!-- SIZING:LEVERS:END -->
 
 - **The cold intersects**, which are priced as if every one started from an empty cache. A reader that serves a
@@ -194,7 +194,7 @@ const report = CloudRoaring.estimateCost({
   },
   // pricing: your region's rates; on Azure Blob, storage.requestsPerSizedRead: 2 for its tail reads.
 });
-report.monthlyUSD.total; // $71.66, the medium deployment above
+report.monthlyUSD.total; // $71.60, the medium deployment above
 report.redisBaseline; // $900 a month: 1 shard of 3 cache.r6g.xlarge nodes
 report.assumptions.notes; // what it modeled, and what it did not
 ```

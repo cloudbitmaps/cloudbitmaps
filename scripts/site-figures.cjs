@@ -328,11 +328,6 @@ const anchors = [
     'single-bucket · 1M cold intersects, each pointer read once',
     singleBucketFigure('per million cold intersects with each pointer read once'),
   ],
-  ['single-bucket · 1M single-part loads', singleBucketFigure(LOAD_ANCHORS.single)],
-  ['single-bucket · 1M multipart', singleBucketFigure(LOAD_ANCHORS.multipart)],
-  ...(LOAD_ANCHORS.first === null
-    ? []
-    : [['single-bucket · 1M first store.load()s', singleBucketFigure(LOAD_ANCHORS.first)]]),
   ['single-bucket · the whole run', singleBucketFigure('the run')],
   // The engine's cold reads, expected: owned by /benchmarks, quoted by the pages that say what a cold read costs.
   ['expected · cold intersect GETs', expectedEngine.coldIntersect.getsText],
@@ -343,6 +338,9 @@ const anchors = [
     'expected · the Redis line, in cold intersects a second',
     `${expectedEngine.redisLineIntersectsPerSec} /s`,
   ],
+  // A load is priced from the model, not from the run: the run measured the engine before a publish was written
+  // against the row the load read, which the model's counts and the engine's tests follow.
+  ['expected · 1M first store.load()', expectedEngine.firstLoad.perMillion],
   ['expected · iterate GETs', expectedEngine.iterate.getsText],
   ['expected · 1M iterate', expectedEngine.iterate.perMillion],
 ];
@@ -368,7 +366,7 @@ const anchors = [
 // quotes the calibration's figures where it says what is measured; each quotes the published cost figures, and
 // nothing else checks them.
 const EXPECTED_1M = 'expected · 1M cold intersects';
-const WRITE_1M = LOAD_ANCHORS.single;
+const WRITE_1M = 'expected · 1M first store.load()';
 const PAGES = [
   // `mustState` names the latest run's figures a page quotes, so that replacing one — a load row that turns into
   // a per-PUT $5, say — fails even where the replacement is a value some source accounts for.
@@ -572,6 +570,7 @@ for (const page of PAGES) {
   // The page legitimately restates figures owned by other gates; each is listed so that adding one is a
   // deliberate act rather than a silent widening.
   const alsoAllowed = new Set([
+    expectedEngine.firstLoad.each, // a first load's price a request, in the benchmarks table's expected row
     '$0.03', // at-rest, the rounded form
     // What one expected cold intersect, andNot and iterate cost, a count at the list price: owned by /benchmarks.
     expectedEngine.coldIntersect.each,

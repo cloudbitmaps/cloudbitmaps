@@ -91,6 +91,10 @@ export class MemoryRegistryDriver implements IRegistryDriver {
     return { token };
   }
 
+  /**
+   * A caller's `held` row (see `RegistryWriteOptions`) has no read to spare here: the token is compared with the stored row in the same step
+   * as the write, in memory, so a stale one fails exactly as a lost race does.
+   */
   async compareAndSwap(
     ref: SegmentRef,
     expected: Token,

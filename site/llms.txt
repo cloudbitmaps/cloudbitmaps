@@ -76,17 +76,17 @@ on every combine, yields only the ids in (after, through] and fetches only the c
 
 ## Measured, expected and modelled
 
-Counts come from running the engine; prices are the default list prices. With the pointer in the same bucket as the
-data, the topology that ships: a cold intersect of two 500,000-id segments sharing 100 of their 1,999 chunks is expected,
-and not yet measured on S3, to make 6 GETs, $2.40 per million, reading neighbouring chunks as ranges; on a spread layout
-it reads more bytes than it needs, which cross-region can cost more than the requests it saves. Measured against real S3
-in us-east-1, with the request counts read off the AWS SDK layer: a segment's first store.load() is 2 PUTs and 4 GETs,
-$11.60 per million, and a cold count() is one request at 27.82 ms (run of 2026-10-04 from AWS CloudShell inside the
-region, whose client had 50 sockets; the client this release builds allows 128, and its effect is not measured). For
+The cold intersect's count is measured in region; the other counts come from running the engine; prices are the default list prices. With the pointer in the same bucket as the
+data, the topology that ships. Measured against real S3 in us-east-1, with the request counts read off the AWS SDK
+layer: a cold intersect of two 500,000-id segments sharing 100 of their 1,999 chunks made 6 GETs, $2.40 per million,
+reading neighbouring chunks as ranges, in 95.03 ms at the median; on a spread layout it reads more bytes than it needs,
+which cross-region can cost more than the requests it saves. A segment's first store.load() is expected at 2 PUTs and 3 GETs,
+$11.20 per million, counted from the engine and not yet measured on S3. A cold count() is one request at 28.44 ms (run of 2026-10-04 from AWS CloudShell inside the
+region, whose client had 128 sockets). For
 comparison: an always-on Redis-HA line of $346/month standing, and a modelled $0.03/month for 1.2 GiB of segments at
 rest. One crossover is published, in GETs: past 329.15 sustained GETs a second, with every read missing the cache,
 metered GETs pass the standing cluster — a warmer cache moves that line up. For cold intersects of the shape above, at
-their expected 6 GETs each, that line is 54.9 /s intersects a second.
+their measured 6 GETs each, that line is 54.9 /s intersects a second.
 
 ## Coming from Redis bitmaps
 
@@ -141,7 +141,7 @@ backend's registry rather than the store, so a store beside them is told with st
 If you need a sub-millisecond p99, use Redis. Our cache is in-process RAM, so on a hit there is nothing between
 us; the limit is the tail: a check that misses the cache costs a ranged GET against object storage, where an
 in-process RAM store costs a memory read. CloudBitmaps is for sets that are large, mostly read, and shouldn't
-cost $346/month to keep warm. The in-region run of 2026-10-04 measured a cold count() at 27.82 ms.
+cost $346/month to keep warm. The in-region run of 2026-10-04 measured a cold count() at 28.44 ms.
 
 ## Status
 

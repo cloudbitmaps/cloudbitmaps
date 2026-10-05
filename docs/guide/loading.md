@@ -589,6 +589,14 @@ publishes the same way. Forward-only would be wrong for the erasure rewrite, who
 bit and which is numbered above everything in the bucket: a forward-only publish would out-rank a concurrent publish
 and then delete it, so the rewrite fences on its source generation and the row's token instead.
 
+**The registry write goes out on the row the load read, and the store's own condition still decides.** A publish hands
+the registry the row it read (or the fact that it found none), so a registry that keeps the version of the object it
+read sends the compare-and-swap, or the create-only write, at once, with no read of the row first. The S3, GCS and Azure
+Blob registries do. The write is conditioned on the object's own version (`If-Match` on S3 and Azure Blob,
+`ifGenerationMatch` on GCS, `If-None-Match` for a row that was absent), so a row another writer changed after the load
+read it fails the write exactly as a lost race does, and the load reports `superseded`. The row the load read is never
+what settles a write that got no answer: that is read again, as above.
+
 **A crash never moves the pointer.** If the process dies mid-write, the object never completes (every storage driver
 commits atomically: a hard link, a conditional PUT, a multipart complete) and the pointer still names the previous
 generation, which readers keep serving. A load that dies between the write and the publish leaves an orphan: an object

@@ -20,6 +20,7 @@ so, and so do the module headers in the code.
   which the roaring codec implements; a codec without it has every chunk refused), its key an integer in `[0, 65535]`
   above the one before, and its values 16-bit, or it is a `ValidationError`. The load consumes the bitmaps it is given:
   writing may re-encode one in place for size, never changing its members. `load()` and `loadSegment()` take no chunk input.
+- **`IRegistryDriver.create` and `compareAndSwap` take an optional `options?: RegistryWriteOptions`, and a load makes one registry request fewer.** Its `held` is the row the caller read and is writing against: the record a `get` of that registry returned, or `null` when the caller found none. A registry that keeps the version of the object it read can then send its conditional write at once, without reading the row first. It is a hint and never the fence: the write is still conditioned on the store's own version of the row (`If-Match` on S3 and Azure Blob, `ifGenerationMatch` on GCS, create-only for a row that was absent), so a `held` row that changed since fails the write with `WriteConflictError`, exactly as a lost race does, and a driver that does not recognise the record, or that ignores the option, reads the row. `ObjectStoreRegistry`, and so the S3, GCS and Azure Blob registries, does this; the in-memory and local-filesystem registries accept it and read no more for it. A load, an `*Into` and an erasure's rewrite pass the row their publish acts on; a write that gets no answer is settled by reading the row, never by `held`. `RegistryWriteOptions` is exported from `@cloudbitmaps/core` and `@cloudbitmaps/roaring`, and the registry conformance suite checks that a driver honours a correct `held`, refuses a stale one as a lost race, and treats a missing one as before. The requests a load makes at the registry: a segment's first load reads the row twice and writes it once, a load of an existing segment reads it once and writes it once, and one that collects by name reads it once more before it deletes; the cost model prices a load at those counts.
 
 ### Changed
 
@@ -30,6 +31,14 @@ so, and so do the module headers in the code.
   metric events, audit events, return values and refusals are unchanged: a budget refusal still throws before anything is
   written, and a read that fails part-way writes nothing. The write holds the result's chunks until the object is written,
   as a load of ids does.
+- **A combine or an `iterate` over chunks the cache already holds opens no stream and looks each chunk up once.** A stream opens at the first chunk the cache lacks, over the uncached chunks from there on (the cached ones after it are looked up again when served), and a chunk the cache loses mid-read, to an invalidation or the LRU, is then read on its own, one request each.
+- **The published in-region figures are now measured on `0.15.0`.** A run from AWS CloudShell in `us-east-1` on
+  2026-10-04 measured what the benchmarks page had only counted from the engine: a cold intersect of two segments
+  sharing 100 chunks that lie together took 95.03 ms at the median and made 6 GETs, and an `andNot` against ten
+  excludes took 269.74 ms and made 33, the counts the engine predicts. The run's requests cost $0.0025670. Its rounds
+  sit above the engine's rounds model, which assumes no socket limit; it did not vary its client's 128 sockets, and no
+  stage held more than 11 requests in flight, so it does not say why. The README, the benchmarks page, the roadmap, the
+  sizing guide and the site quote it; `iterate`'s 3 GETs stay expected, since the run did not time it.
 
 ## [0.15.0] — 2026-10-04
 

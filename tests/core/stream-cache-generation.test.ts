@@ -15,7 +15,7 @@ const clock = { now: () => 0 };
 const ref = (segment: string) => ({ segment });
 const ids = (chunks: readonly number[]): number[] => chunks.map((c) => joinId(c, 1));
 
-function setup() {
+function setup(onResolve?: (engine: SegmentEngine) => void) {
   const inner = new StreamChunkSource();
   seedSegment(inner, 'a', ids([1, 2, 3]));
   seedSegment(inner, 'b', ids([2, 3, 4]));
@@ -23,10 +23,14 @@ function setup() {
     getChunk: (r) => inner.getChunk(r),
     listChunkKeys: (r) => inner.listChunkKeys(r),
     getChunks: (r, keys, options) => inner.getChunks(r, keys, options),
-    currentGeneration: () => Promise.resolve(7),
+    currentGeneration: () => {
+      onResolve?.(engine);
+      return Promise.resolve(7);
+    },
   };
   const cache = new BoundedLru<string, CodecBitmap>({ maxEntries: 1_000, clock });
-  return { inner, engine: new SegmentEngine({ storage, codec: roaringCodec, cache }) };
+  const engine = new SegmentEngine({ storage, codec: roaringCodec, cache });
+  return { inner, cache, engine };
 }
 
 describe('a streaming source that names generations and not versions', () => {
@@ -42,5 +46,48 @@ describe('a streaming source that names generations and not versions', () => {
     const streams = inner.opened.length;
     expect(await collect(engine.intersect([ref('a'), ref('b')]))).toEqual(ids([2, 3]));
     expect(inner.opened.length).toBe(streams);
+  });
+
+  it('caches what a stream reads when no invalidation came after the read began', async () => {
+    const { cache, engine } = setup();
+    await collect(engine.iterate(ref('a')));
+    expect(cache.size).toBe(3);
+  });
+
+  it('does not cache what a stream opened after an invalidation reads: it may be newer than the generation it planned under', async () => {
+    let fired = false;
+    const { cache, engine } = setup((engine) => {
+      if (fired) return;
+      fired = true;
+      engine.invalidate(ref('a')); // lands while the read resolves its generation
+    });
+    expect(await collect(engine.iterate(ref('a')))).toEqual(ids([1, 2, 3]));
+    expect(cache.size).toBe(0);
+    expect(await collect(engine.iterate(ref('a')))).toEqual(ids([1, 2, 3])); // a later read caches again
+    expect(cache.size).toBe(3);
+  });
+
+  it('a combine invalidated while the generations of its operands resolve caches nothing it reads', async () => {
+    let fired = false;
+    const { cache, engine } = setup((engine) => {
+      if (fired) return;
+      fired = true;
+      engine.invalidate(ref('a'));
+    });
+    expect(await collect(engine.intersect([ref('a'), ref('b')]))).toEqual(ids([2, 3]));
+    expect(cache.size).toBe(0);
+  });
+
+  it('an iterate over a range invalidated while its generation resolves caches nothing it reads', async () => {
+    let fired = false;
+    const { cache, engine } = setup((e) => {
+      if (fired) return;
+      fired = true;
+      e.invalidate(ref('a'));
+    });
+    expect(await collect(engine.iterate(ref('a'), { through: joinId(3, 5) }))).toEqual(
+      ids([1, 2, 3]),
+    );
+    expect(cache.size).toBe(0);
   });
 });

@@ -182,7 +182,7 @@
                 <span class="label">CloudBitmaps</span>
                 <span class="bill-fig">$2.40</span>
                 <span class="bill-cap"
-                  >per 1M cold A&nbsp;∩&nbsp;B sharing 100 chunks, 6 GETs, expected — not yet measured on S3<small
+                  >per 1M cold A&nbsp;∩&nbsp;B sharing 100 chunks: 6 GETs measured on S3, at list price<small
                     >cold: nothing cached · metered — no reads, no read charge</small
                   ></span
                 >
@@ -209,12 +209,12 @@
                  bills per OBJECT, which is why it reads per million rather than per id. It is the write and
                  the publish, pointer included; store.load()'s checks and collection come on top. -->
             <p class="panel-row">
-              $346 a month is the standing line — past 54.9 cold intersects a second, expected, sustained, the cluster is
+              $346 a month is the standing line — past 54.9 cold intersects a second, sustained, the cluster is
               cheaper
             </p>
             <p class="panel-row is-pair">
               <span>A segment's first <span class="m">store.load()</span>,
-                pointer included</span><span>$11.60&nbsp;per&nbsp;1M</span>
+                pointer included · expected</span><span>$11.20&nbsp;per&nbsp;1M</span>
             </p>
             <p class="link-row"><a href="benchmarks.html">Method, the crossover and caveats →</a></p>
           </aside>
