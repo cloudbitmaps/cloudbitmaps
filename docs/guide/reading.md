@@ -177,15 +177,66 @@ for await (const id of audience.iterate()) {
 
 - **A pin covers one segment.** `snap.intersect([other])` reads `snap` at its pin and `other` live. Pin each segment to
   hold a whole query. A pinned handle used as an operand is still read at its pin.
-- **A pin is a hold, not a lease.** Nothing stops a collection (a load's `keep`, an erasure, the retention sweep) from
-  deleting the generation underneath you. A pinned read deliberately does not heal forward, because silently serving
-  a different generation is what a pin exists to prevent. It fails with `NotFoundError` instead, for any chunk it must
-  fetch from a generation that has since been collected. Chunks it already cached still answer, and so does every chunk of
-  a small generation whose reader kept its chunks, for as long as the pin's reader stays in the reader cache; the reader's
-  reopen after an eviction then fails the same way.
+- **A pin is a hold, and a lease makes it a bounded one.** Without a lease, nothing stops a collection (a load's
+  `keep`, an erasure, the retention sweep) from deleting the generation underneath you. A pinned read deliberately does
+  not heal forward, because silently serving a different generation is what a pin exists to prevent. It fails with
+  `NotFoundError` instead, for any chunk it must fetch from a generation that has since been collected. Chunks it
+  already cached still answer, and so does every chunk of a small generation whose reader kept its chunks, for as long
+  as the pin's reader stays in the reader cache; the reader's reopen after an eviction then fails the same way.
+  [`pin({ leaseUntil })`](#hold-a-generation-for-a-job-a-lease) keeps the generation out of a load's collection until
+  a time you choose.
 - **Size `keep` for your longest pinned job:** keep more generations than the loads that can land on the segment while
   the job runs. See [Generations and `keep`](loading.md#generations-and-keep). An erasure collects the generation it rewrote whatever
   `keep` says.
+
+### Hold a generation for a job: a lease
+
+A job with a known end, such as a send that runs for 72 hours while a refresh job keeps loading the segment, can ask
+for its generation to be kept instead of sizing `keep` for it:
+
+```ts
+const snap = await store.segment('active-30d').pin({ leaseUntil: Date.now() + 72 * 3_600_000 });
+snap.lease;            // { holder, until }
+// ... read snap for the length of the job ...
+await snap.release();  // optional: lets a load's collection take the generation as soon as you are done
+```
+
+`leaseUntil` is an absolute instant in epoch **milliseconds**, after now and at most `MAX_LEASE_MS` (14 days) from it.
+The lease is recorded in the segment's registry row, so every load that collects the segment, from any process, leaves the
+leased generation in the bucket until the lease has ended. It is a hold on one named generation and on nothing else:
+`keep` and the rest of collection are unchanged.
+
+- **A read after the lease throws, and never reads empty.** Once the clock reaches `leaseUntil`, or after
+  `release()`, every read of the handle throws `LeaseExpiredError`: `has`, `count`, `stat`, `iterate`, `batches()`,
+  `costReport`, and a call of another handle that takes this one as an operand or as an `exclude`, or as the target of an
+  `*Into`. An opt-out list held through a lease that has ended is an error, never an empty list that suppresses nobody. It
+  throws whether or not the object is still in the bucket, and a small generation's cached reader is not consulted.
+  `pin()` of a leased handle past its lease throws too; before it, `pin()` takes the generation current now, with no lease
+  of its own.
+- **A stream checks the lease each time it reads a chunk.** A read that is under way when the lease ends finishes the
+  chunk it is on and throws at the next one, per id and per batch. The 60-second margin below covers a chunk's worth of ids.
+- **Collection resumes after the lease.** A leased generation takes none of the `keep` window. After the lease and a
+  60-second margin have ended, the next load's listing pass takes it: that is every sixteenth generation of the segment, or
+  any load that has to list, so at most 15 further loads later. A segment that is never loaded again keeps it until
+  something else collects it.
+- **The longest lease is 14 days, and a segment holds at most 64 live leases.** The 65th is refused with
+  `LeaseLimitError` before anything is written. A lease that has ended makes room. Take one lease per job and give the job's
+  tasks the one handle: each lease is one write to the segment's row, and writers of one row take turns.
+- **The margin is 60 seconds, and covers clocks that differ by that much either way.** The handle ends the lease at
+  `leaseUntil` by its own store's clock, and a collector holds it for `LEASE_SKEW_MS` (60 seconds) longer by its own. A
+  reader whose clock is behind a collector's by more than that, or a collector whose clock is ahead of the reader's by
+  more, can find the generation collected inside the lease: a `NotFoundError` on a chunk it has not cached, never a wrong
+  answer and never empty.
+- **A lease is not an erasure shield.** `eraseSubject`, `eraseIdFromSegment`, `destroySegment`, `dropSegment` and a
+  retention expiry delete a leased generation and clear the lease. A lease keeps superseded generations in the bucket,
+  including ids a newer load removed, until it ends: [Erasing a subject](erasure.md) says what that means for a
+  deletion request.
+- **What it costs.** A leased pin makes the row read, one conditional write to the row and the tail read: one PUT-class
+  request more than a pin without a lease. The write moves the row's token, so a load, an erasure rewrite or a rollback
+  that read the row before it reports `superseded` or throws `WriteConflictError`, and is run again; a lease is one
+  write per job, not per read.
+- **It needs a backend with a registry**: `UnsupportedError` on a bare `IStorageDriver`, and `NotFoundError` on a segment
+  with no current generation. A failed pin releases the lease it took.
 
 ### How a pin stays correct
 

@@ -172,6 +172,23 @@ describe('a lease write against the other writers of the row', () => {
     expect(await snap.count()).toBe(30);
   });
 
+  it('a pin whose row went stale holds the new current generation, not the one it read, when the old one is still stored', async () => {
+    const x = world();
+    await x.writer.load(REF, ids(10));
+    let loaded = false;
+    const racing = hook(x.memory.registry, 'compareAndSwap', async () => {
+      if (loaded) return;
+      loaded = true;
+      await x.writer.load(REF, ids(30)); // the default keep: generation 0 stays in the bucket
+    });
+    const reader = x.make(brandAsBackend({ storage: x.memory.storage, registry: racing }));
+    const snap = await lease(reader, x.w);
+    expect(await generationsIn(x.memory.storage)).toEqual([0, 1]);
+    expect(snap.pinnedAt?.generation).toBe(1);
+    expect((await x.memory.registry.get(REF))!.leases?.map((e) => e.generation)).toEqual([1]);
+    expect(await snap.count()).toBe(30);
+  });
+
   it('a collector paused between its row read and its delete cannot take what a pin leases: the pin holds the new current', async () => {
     const x = world();
     await x.writer.load(REF, ids(10));

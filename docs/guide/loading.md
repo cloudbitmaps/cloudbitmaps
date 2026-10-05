@@ -324,7 +324,7 @@ write's own collection does the cleanup. `keep` says how many old generations to
 | anything on a normal `cache.genTtlMs`: the common case | **`1`**, the default |
 | publishes landing faster than `cache.genTtlMs` (a tight loader, or a raised TTL) | cover them: `ceil(genTtlMs ÷ gap between publishes)` |
 | a large segment where a rare re-read is cheaper than a second copy | `0` |
-| a long job on a pinned handle (`seg.pin()`), such as an export or a send | at least one for every generation written above the pinned one while the job runs: each load that lands, and each that is superseded or crashes before publishing. Set it on **every** writer that loads the segment, since each load collects with its own `keep` |
+| a long job on a pinned handle (`seg.pin()`), such as an export or a send | at least one for every generation written above the pinned one while the job runs: each load that lands, and each that is superseded or crashes before publishing. Set it on **every** writer that loads the segment, since each load collects with its own `keep`. Or lease the pin: [`pin({ leaseUntil })`](reading.md#hold-a-generation-for-a-job-a-lease) keeps that one generation whatever `keep` says, for up to 14 days |
 | a long job that must see **one** instant, not merely succeed | a pinned handle, with `keep` sized as the row above |
 
 **Each retained generation is a whole copy of the segment, billed.** `keep: 3` over a 40 GB segment holds 160 GB of
@@ -342,9 +342,11 @@ instant, such as an export, a reconciliation, or a send that must match the coun
 See [how soon a reader sees a new load](reading.md#how-soon-a-reader-sees-a-new-load).
 
 There is deliberately no time-based floor on collection ("keep nothing younger than 24 h"). It would read as a
-durability guarantee and would not be one: an ordinary read is already covered by a re-read, and a job that must not
-change generations needs a pin, not a window wide enough to hope with. See
-[Deliberately not planned](../ROADMAP.md#deliberately-not-planned).
+durability guarantee and would not be one: an ordinary read is already covered by a re-read, and a window wide enough to
+hope with is not a hold. A job that must not change generations needs a pin, and one with a known end can lease it: a lease
+names the one generation it holds, so it never delays the collection of anything else, it ends at a time you set, and a
+read after it throws rather than reads empty. See [Hold a generation for a job](reading.md#hold-a-generation-for-a-job-a-lease)
+and [Deliberately not planned](../ROADMAP.md#deliberately-not-planned).
 
 **Who collects.** Collection deletes generations strictly below the current one, keeping the newest `keep` of them.
 `keep` is a non-negative integer: a negative, fractional, `NaN` or infinite value is refused with `ValidationError`
@@ -676,6 +678,15 @@ prove a delete it stops, and the load returns. Where the row records none, it ke
 newest `keep` generations it finds, as a listing always has, and records them with one compare-and-swap on the row it
 just published: that write moves the row's token, so a derived writer in flight on the row, an erasure rewrite, meets a
 lost fence and re-derives, and it happens once for each row that records no list. A lost race there is not an error.
+
+**A lease on a pinned generation is read from the row a collection already holds.** A load's collection, by name or by
+listing, spares a generation that a live lease in the row names, and goes on to the next: the by-name pass reads the row
+before each delete and the listing pass re-proves it, so a lease that lands while the pass runs is seen at the next name,
+and one that lands in the round trip between that read and the delete is not. A leased generation takes no place in the
+`keep` window, and the record of the window leaves it out. The collection that runs for an erasure, a shred, a drop and a
+retention expiry does not read leases at all. A lease is written by one compare-and-swap on the row, so it is one more
+writer that makes a load, an erasure rewrite or a rollback that read the row first lose its fence; a load's publish drops
+the leases that have ended from the row in its own write, at no request of its own.
 
 A segment can be purged and re-created while a paginated listing is in flight, so both branches re-read the registry
 row afterwards and reconcile with it:
