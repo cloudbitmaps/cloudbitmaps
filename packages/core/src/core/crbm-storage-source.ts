@@ -33,6 +33,9 @@ import { yieldEvery } from './cooperative';
 import type { Yielder } from './cooperative';
 import type { Clock, Rng } from './determinism';
 import { sameIncarnation } from './token';
+import { nextKept } from './kept-generations';
+import type { KeptAfter } from './kept-generations';
+import type { PublishedKept } from './generation-gc';
 import { BoundedLru } from './lru';
 import { MAX_REMAINDER, splitId } from './bit-route';
 import { segmentKey } from './keys';
@@ -1908,7 +1911,7 @@ const UNANSWERED_RESEND_BASE_MS = 500;
  * sees the count and metadata that describe it, and every attempt sends the same one. It must be the shape the row's
  * keys call for: sealed for an object written with a key, clear for one written without.
  */
-export async function publishGeneration(
+export async function publishGenerationKept(
   registry: IRegistryDriver,
   key: GenKey,
   options: {
@@ -1973,8 +1976,15 @@ export async function publishGeneration(
      * held its generation for a while before another writer moved on.
      */
     onUnanswered?: () => void;
+    /**
+     * How many generations below the new pointer the caller keeps. With it, the write that moves the pointer also
+     * records the window in the row (`keptGens`: the newest `keep` of the row's own list and the generation that was
+     * current), derived from the very row the write is made against, and the result names the generations the window
+     * dropped. Without it, or above the most a row records, the row records none, and a collection lists.
+     */
+    keep?: number;
   } = {},
-): Promise<boolean> {
+): Promise<PublishResult> {
   // A row read after a write that failed, which the next attempt acts on instead of reading it again.
   let fresh: RegistryRecord | null | undefined;
   // The row a failed write was made against. The next attempt first checks its row for that write's effect.
@@ -2001,6 +2011,9 @@ export async function publishGeneration(
     fresh = undefined;
     unanswered = undefined;
     lastRecord = record;
+    // What this attempt's write records, and the token it is given: set by the write, read when it lands.
+    let next: KeptAfter | undefined;
+    let wrote: Token | undefined;
     if (failedOn !== undefined) {
       let landed: boolean;
       try {
@@ -2008,12 +2021,16 @@ export async function publishGeneration(
       } catch (proofErr) {
         throw outcomeUnknown(key, proofErr);
       }
-      if (landed) return true;
+      if (landed)
+        return {
+          published: true,
+          kept: { ...nextKept(failedOn, key.generation, options.keep), token: undefined },
+        };
       // The pointer names this number, but not over this publish's write: another writer's object under it, or
       // another incarnation of the name. That is not an already-current re-publish, which the branch below would
       // answer `true`: nothing this call wrote is published.
       if (record !== null && record.status === 'active' && record.currentGen === key.generation) {
-        return false;
+        return REFUSED;
       }
       failedOn = undefined;
     }
@@ -2021,18 +2038,18 @@ export async function publishGeneration(
       if (options.expectFrom !== undefined && record?.currentGen !== options.expectFrom) {
         // The pointer is no longer where the caller derived its content from — including the cases where the row
         // has vanished or has no generation at all. Not an error: the caller re-reads and re-derives.
-        return false;
+        return REFUSED;
       }
       if (options.expectAbsent === true && record !== null) {
         // A row appeared since the caller looked. Whatever it decided from "this segment does not exist" no
         // longer holds — most importantly "there is nothing here to overwrite".
-        return false;
+        return REFUSED;
       }
       if (options.expectToken !== undefined && record?.token !== options.expectToken) {
         // Same pointer VALUE, different row. Either the row was written since (harmless, and we re-derive
         // anyway) or the name was retired and re-created, in which case `currentGen` matching means nothing:
         // it is a different segment that restarted its generation counter at the same number.
-        return false;
+        return REFUSED;
       }
       if (
         record === null &&
@@ -2045,19 +2062,23 @@ export async function publishGeneration(
         // caller read before it wrote, which another writer may have created since, so this reads again. A row still
         // absent then is a purged one, and the object cannot be published.
         if (reused) continue;
-        return false;
+        return REFUSED;
       }
       if (record === null) {
         // First publish for the segment — carry the wrapped DEK(s) so encrypted reads can resolve the key.
-        await registry.create(
-          key,
-          {
-            currentGen: key.generation,
-            wrappedDeks: options.wrappedDeks,
-            ...(options.summary === undefined ? {} : { summary: options.summary }),
-          },
-          write,
-        );
+        next = nextKept(null, key.generation, options.keep);
+        wrote = (
+          await registry.create(
+            key,
+            {
+              currentGen: key.generation,
+              wrappedDeks: options.wrappedDeks,
+              ...(options.summary === undefined ? {} : { summary: options.summary }),
+              ...(next.list === undefined ? {} : { keptGens: next.list }),
+            },
+            write,
+          )
+        ).token;
       } else if (record.status === 'destroyed') {
         // Closes the window between a writer's own destroyed-check and its publish.
         //
@@ -2086,21 +2107,25 @@ export async function publishGeneration(
         // would wipe key material off the row whenever a cleartext generation is published onto it — a divergence
         // from the branch below, which never touches the field.
         refuseCleartextOntoKey(key, record, options.cleartext);
-        await registry.compareAndSwap(
-          key,
-          record.token,
-          {
-            currentGen: key.generation,
-            ...(options.wrappedDeks === undefined ? {} : { wrappedDeks: options.wrappedDeks }),
-            ...(options.summary === undefined ? {} : { summary: options.summary }),
-          },
-          write,
-        );
+        next = nextKept(record, key.generation, options.keep);
+        wrote = (
+          await registry.compareAndSwap(
+            key,
+            record.token,
+            {
+              currentGen: key.generation,
+              ...(options.wrappedDeks === undefined ? {} : { wrappedDeks: options.wrappedDeks }),
+              ...(options.summary === undefined ? {} : { summary: options.summary }),
+              ...(next.list === undefined ? {} : { keptGens: next.list }),
+            },
+            write,
+          )
+        ).token;
       } else if (record.currentGen > key.generation) {
-        return false; // a newer generation is already current — forward-only, never regress
+        return REFUSED; // a newer generation is already current — forward-only, never regress
       } else if (record.currentGen === key.generation) {
         if (reused) continue; // only a fresh read can show the pointer already there
-        return true; // already exactly current (an idempotent re-publish) — nothing to advance
+        return { published: true }; // already exactly current (an idempotent re-publish) — nothing to advance
       } else {
         // Advancing over an existing generation. `wrappedDeks` is deliberately NOT carried here, and a caller
         // that supplies it is refused rather than served.
@@ -2125,17 +2150,24 @@ export async function publishGeneration(
           );
         }
         refuseCleartextOntoKey(key, record, options.cleartext);
-        await registry.compareAndSwap(
-          key,
-          record.token,
-          {
-            currentGen: key.generation,
-            ...(options.summary === undefined ? {} : { summary: options.summary }),
-          },
-          write,
-        );
+        next = nextKept(record, key.generation, options.keep);
+        wrote = (
+          await registry.compareAndSwap(
+            key,
+            record.token,
+            {
+              currentGen: key.generation,
+              ...(options.summary === undefined ? {} : { summary: options.summary }),
+              ...(next.list === undefined ? {} : { keptGens: next.list }),
+            },
+            write,
+          )
+        ).token;
       }
-      return true; // created or advanced the pointer to key.generation → it is now current
+      return {
+        published: true,
+        kept: { ...(next ?? { list: undefined, evict: [] }), token: wrote },
+      }; // created or advanced the pointer to key.generation → it is now current
     } catch (err) {
       if (isWriteConflictError(err)) {
         failedOn = record; // lost the race, or met its own landed write: the next read says which
@@ -2177,12 +2209,14 @@ export async function publishGeneration(
   // `currentGen === null` after exhausting the retries is a genuine failure, not an already-current case: nothing
   // is published, so it falls through to the conflict below rather than being read as "a newer gen won".
   if (final !== null && final.currentGen !== null && final.currentGen >= key.generation) {
-    if (final.currentGen !== key.generation) return false;
-    if (!sawUnanswered) return true;
+    if (final.currentGen !== key.generation) return REFUSED;
+    if (!sawUnanswered) return { published: true };
     // A write that went unanswered may have landed during the last wait, or the number may be another writer's, or
     // another incarnation's: the incarnation and the object under it decide, as after any unanswered write.
     try {
-      return await landedHere(final, lastRecord ?? null, key, options.holdsOwnObject);
+      return {
+        published: await landedHere(final, lastRecord ?? null, key, options.holdsOwnObject),
+      };
     } catch (proofErr) {
       throw outcomeUnknown(key, proofErr);
     }
@@ -2192,6 +2226,31 @@ export async function publishGeneration(
   throw new WriteConflictError(
     `publishGeneration: contention setting currentGen for ${key.segment}`,
   );
+}
+
+/** What a publish did: whether the pointer is at the generation, and what the write recorded in the row. */
+export interface PublishResult {
+  readonly published: boolean;
+  /**
+   * What the write that moved the pointer recorded: the list, the generations the window dropped, and the new row's
+   * token. Absent when no write of this call is known to have landed (the pointer was already there, or the outcome
+   * was settled without knowing which write it was), and a collection then lists.
+   */
+  readonly kept?: PublishedKept;
+}
+
+const REFUSED: PublishResult = { published: false };
+
+/**
+ * {@link publishGenerationKept}'s answer to "did the pointer move", for a caller with no use for what it recorded:
+ * a publish with no `keep` leaves the row recording no list.
+ */
+export async function publishGeneration(
+  registry: IRegistryDriver,
+  key: GenKey,
+  options: Parameters<typeof publishGenerationKept>[2] = {},
+): Promise<boolean> {
+  return (await publishGenerationKept(registry, key, options)).published;
 }
 
 /**

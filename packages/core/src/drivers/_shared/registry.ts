@@ -10,6 +10,11 @@ import { IntegrityError, UnsupportedError, ValidationError } from '@/core/errors
 import type { Entropy } from '@/core/determinism';
 import { canonicalMetadataJson, MAX_METADATA_BYTES } from '@/core/metadata';
 import { INCARNATION_TOKEN, incarnationOf } from '@/core/token';
+import {
+  MAX_KEPT_GENERATIONS,
+  MAX_STORED_KEPT_GENERATIONS,
+  usableKeptGens,
+} from '@/core/kept-generations';
 import type {
   NewRegistryRecord,
   RegistryPatch,
@@ -25,7 +30,7 @@ const STATUSES: readonly string[] = ['active', 'destroyed'];
  * The fields a stored record may carry: {@link RegistryRecord}'s, and nothing else. A field no reader resolves
  * through is refused on read-back like any other corruption (invariant 5), rather than ignored.
  */
-export const RECORD_FIELDS = [
+const BASE_FIELDS = [
   'namespace',
   'segment',
   'currentGen',
@@ -39,8 +44,18 @@ export const RECORD_FIELDS = [
   'updatedAt',
   'token',
 ] as const;
-/** The record fields a schema-1 row may carry: every field but the ones schema 2 added. */
-const SCHEMA_1_RECORD_FIELDS: readonly string[] = RECORD_FIELDS.filter((f) => f !== 'summary');
+/**
+ * The fields schema 3 added. A schema-2 row carrying one is refused as undeclared. A field that joins schema 3 before
+ * it is released is appended here, with its validator, and needs no new schema version.
+ */
+const SCHEMA_3_FIELDS = ['keptGens'] as const;
+export const RECORD_FIELDS = [...BASE_FIELDS, ...SCHEMA_3_FIELDS] as const;
+/** The record fields a row of `schemaVersion` may carry: each schema adds to the one before. */
+function fieldsOf(schemaVersion: number): readonly string[] {
+  if (schemaVersion >= 3) return RECORD_FIELDS;
+  const base: readonly string[] = BASE_FIELDS;
+  return schemaVersion === 2 ? base : base.filter((f) => f !== 'summary');
+}
 /** The fields of the persisted envelope around a record. */
 const ENVELOPE_FIELDS: readonly string[] = ['schemaVersion', 'deleted', 'record'];
 /** Cap on a serialized governance blob (retention/residency) — bounds row size so a row can't be bricked. */
@@ -279,6 +294,59 @@ function validateSummaryKeys(
 }
 
 /**
+ * Validate a {@link RegistryRecord.keptGens} list's shape at the write or read boundary: an array of at most `max`
+ * entries, each a non-negative safe integer, strictly ascending (which refuses a duplicate). A write returns a frozen
+ * copy, so a caller that changes its array afterwards changes nothing that is written. `isStored` picks the error class
+ * (write = ValidationError; read = IntegrityError, invariant 5). Whether the entries are below the pointer is not
+ * checked here on a read: a list that disagrees with the pointer is one its reader does not use, not a row to refuse.
+ */
+function validateKeptGens(
+  value: unknown,
+  isStored: boolean,
+  ctx?: string,
+): readonly number[] | undefined {
+  if (value === undefined) return undefined;
+  const fail = (msg: string): never => {
+    const where = ctx === undefined ? '' : `: ${ctx}`;
+    throw isStored
+      ? new IntegrityError(`registry record keptGens: ${msg}${where}`)
+      : new ValidationError(`keptGens: ${msg}`);
+  };
+  if (!Array.isArray(value)) fail('must be an array');
+  const list = value as unknown[];
+  const max = isStored ? MAX_STORED_KEPT_GENERATIONS : MAX_KEPT_GENERATIONS;
+  if (list.length > max) fail(`has ${list.length} entries, cap ${max}`);
+  let last = -1;
+  for (const g of list) {
+    if (!Number.isSafeInteger(g) || (g as number) < 0) {
+      fail(`entries must be non-negative safe integers (got ${String(g)})`);
+    }
+    if ((g as number) <= last) fail('entries must be strictly ascending');
+    last = g as number;
+  }
+  return isStored ? (list as number[]) : Object.freeze([...(list as number[])]);
+}
+
+/** A list given at a write must name only generations below the pointer the row will have, and none on no pointer. */
+function validateKeptGensBelow(
+  keptGens: readonly number[] | undefined,
+  currentGen: number | null,
+): void {
+  if (keptGens === undefined) return;
+  if (currentGen === null) {
+    throw new ValidationError(
+      'keptGens: a row with no pointer has no generations below it to keep',
+    );
+  }
+  const top = keptGens[keptGens.length - 1];
+  if (top !== undefined && top >= currentGen) {
+    throw new ValidationError(
+      `keptGens names generation ${top}, which is not below the row's pointer ${currentGen}`,
+    );
+  }
+}
+
+/**
  * Validate the caller-settable fields at `create`, and return the record to store: the caller's, with its summary
  * replaced by the checked, frozen copy {@link validateSummary} builds.
  */
@@ -288,11 +356,14 @@ export function validateNewRegistryRecord(rec: NewRegistryRecord): NewRegistryRe
   validateWrappedDeks(rec.wrappedDeks, false);
   validateGovernance(rec.retention, 'retention');
   validateGovernance(rec.residency, 'residency');
-  if (!('summary' in rec)) return rec;
+  const keptGens = validateKeptGens(rec.keptGens, false);
+  validateKeptGensBelow(keptGens, rec.currentGen);
+  const withKept = keptGens === undefined ? rec : { ...rec, keptGens };
+  if (!('summary' in rec)) return withKept;
   const summary = validateSummary(rec.summary, false);
   validateSummaryNames(summary, rec.currentGen);
   validateSummaryKeys(summary, rec.wrappedDeks);
-  return { ...rec, summary };
+  return { ...withKept, summary };
 }
 
 /**
@@ -306,8 +377,12 @@ export function validateRegistryPatch(patch: RegistryPatch): RegistryPatch {
   if ('wrappedDeks' in patch) validateWrappedDeks(patch.wrappedDeks, false);
   if ('retention' in patch) validateGovernance(patch.retention, 'retention');
   if ('residency' in patch) validateGovernance(patch.residency, 'residency');
-  if (!('summary' in patch)) return patch;
-  return { ...patch, summary: validateSummary(patch.summary, false) };
+  const withKept =
+    patch.keptGens === undefined
+      ? patch
+      : { ...patch, keptGens: validateKeptGens(patch.keptGens, false) };
+  if (!('summary' in patch)) return withKept;
+  return { ...withKept, summary: validateSummary(patch.summary, false) };
 }
 
 /**
@@ -332,14 +407,15 @@ export interface RegistryEnvelope {
  * on a backward-incompatible change. Policy: a **higher** stamp than this build knows → `UnsupportedError`
  * (fail-closed); an **absent** or malformed stamp → `IntegrityError`, since every row this build writes has one.
  *
- * Schema 2 adds the record's `summary` and the incarnation-form token. Every row this build writes is stamped 2,
- * whatever it holds, and a build that reads only schema 1 refuses it, so a fleet cannot go back once one has been
- * written.
+ * Schema 2 added the record's `summary` and the incarnation-form token; schema 3 adds `keptGens`. Every row this
+ * build writes is stamped 3, whatever it holds, and a build that reads only schema 2 refuses it, so a fleet cannot go
+ * back once one has been written.
  */
-export const REGISTRY_SCHEMA_VERSION = 2;
+export const REGISTRY_SCHEMA_VERSION = 3;
 
 /**
- * The oldest schema this build reads. A schema-1 row is read as it was written; the first write to it stamps it 2.
+ * The oldest schema this build reads. A schema-1 or schema-2 row is read as it was written; the first write to it
+ * stamps it 3.
  */
 const OLDEST_REGISTRY_SCHEMA_VERSION = 1;
 
@@ -428,6 +504,8 @@ function tokenParts(token: string, schemaVersion: number | undefined, ctx: strin
   }
   return { incarnation: born ? match[1] : undefined, counter };
 }
+
+export { usableKeptGens };
 
 // `incarnationOf` is defined in `core/token`, where the publish reads it too, and is the same function here.
 export { incarnationOf };
@@ -534,6 +612,7 @@ export function recordFromNew(
     retention: rec.retention,
     residency: rec.residency,
     summary: rec.summary,
+    keptGens: rec.keptGens,
     createdAt: now,
     updatedAt: now,
     token,
@@ -569,7 +648,7 @@ export function assertStoredRecordShape(
   if (!STATUSES.includes(r.status)) {
     throw new IntegrityError(`registry record has an unknown status (${r.status}): ${ctx}`);
   }
-  const declared: readonly string[] = schemaVersion >= 2 ? RECORD_FIELDS : SCHEMA_1_RECORD_FIELDS;
+  const declared = fieldsOf(schemaVersion);
   const extra = Object.keys(r).filter((k) => !declared.includes(k));
   if (extra.length > 0) {
     throw new IntegrityError(
@@ -596,6 +675,7 @@ export function assertStoredRecordShape(
   // stored row that disagrees is a summary its reader must not use, not a row to refuse, and refusing it would let
   // one row stop every listing that reaches it.
   validateSummary(r.summary, true, ctx);
+  validateKeptGens(r.keptGens, true, ctx);
 }
 
 /**
@@ -630,6 +710,15 @@ export function applyRegistryPatch(
     const kept = currentGen === prev.currentGen ? prev.summary : undefined;
     summary = kept !== undefined && summaryAgreesWithKeys(kept, wrappedDeks) ? kept : undefined;
   }
+  // The list names generations below the pointer, so it follows the pointer as the summary does: kept while the
+  // pointer stays, dropped when it moves without the patch naming the list, and checked against the pointer it gets.
+  let keptGens: readonly number[] | undefined;
+  if ('keptGens' in patch) {
+    validateKeptGensBelow(patch.keptGens, currentGen);
+    keptGens = patch.keptGens;
+  } else {
+    keptGens = currentGen === prev.currentGen ? prev.keptGens : undefined;
+  }
   return {
     namespace: prev.namespace,
     segment: prev.segment,
@@ -640,6 +729,7 @@ export function applyRegistryPatch(
     retention: 'retention' in patch ? patch.retention : prev.retention,
     residency: 'residency' in patch ? patch.residency : prev.residency,
     summary,
+    keptGens,
     createdAt: prev.createdAt,
     updatedAt: now,
     token,

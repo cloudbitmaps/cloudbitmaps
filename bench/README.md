@@ -120,7 +120,7 @@ overlaps, so what it costs scales with the include operand and not with the size
 
 The workload's client makes one attempt per request and every timed store has its own retry off, so no retry's backoff
 can sit inside a latency sample and every count stays exact. On its own, that would let one transient fault anywhere
-in a run's requests (up to ~94,600 GET-class and 364 PUT-class at the default workload) fail the whole run, and a
+in a run's requests (up to ~94,600 GET-class and 405 PUT-class at the default workload) fail the whole run, and a
 partial run is not evidence. One in-region run failed on a single transient connection fault after about 86,300
 requests; at that rate a run of this size would finish about a third of the time. So a **sample** that fails with a
 transient fault is **discarded**, never retried inside ([`lib/calibrate-samples.cjs`](lib/calibrate-samples.cjs)):
@@ -216,9 +216,10 @@ constants and the source text:
   its retry bound must match the publish loop in `packages/core/src/core/crbm-storage-source.ts`: a test reads the loop's number out of the source and
   fails if they differ, because a retyped number can be wrong. A load, `store.load()` of a new segment, checks that its
   generation number is free and lists nothing when it is, since it has nothing to collect (up to twice when the check
-  finds the number taken, to number past the object and to collect; on S3 a listing bills at the PUT rate), and reads
-  the pointer twice with nothing racing it, up to five when the check finds the number taken, twice more for each publish
-  attempt it loses, and thirteen times at most: fourteen GET-class requests with the check. A test drives each count through the real registry code, so a projection allowing one
+  finds the number taken, to number past the object and to collect, and once more it writes the row to record the window
+  it kept; on S3 a listing and that write bill at the PUT rate), and reads
+  the pointer twice with nothing racing it, up to six when the check finds the number taken, twice more for each publish
+  attempt it loses, and fourteen times at most: fifteen GET-class requests with the check. A test drives each count through the real registry code, so a projection allowing one
   read per attempt fails it. The workload's client makes one attempt per request, and every attempt teardown's client
   may make is allowed for, so no SDK retry can fall outside it either. A sample discarded after a transient fault was
   billed too, so the projection allows every discard a run may make, at the costliest sample's bound, and a plan that

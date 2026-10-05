@@ -26,7 +26,8 @@ import {
   holdsObject,
   openGenerationReader,
   provesOwnObject,
-  publishGeneration,
+  publishGenerationKept,
+  type PublishResult,
 } from './crbm-storage-source';
 import type { Clock, Rng } from './determinism';
 import { aadFor } from './crypto';
@@ -75,10 +76,10 @@ export interface LoadDeps {
    */
   readonly readRetry?: ReadRetry;
   /**
-   * Collect by listing the segment's objects after the publish, whatever `keep` is. Absent, a load that keeps at
-   * most one generation and found nothing above its pointer deletes by name the one generation its publish pushed
-   * out of the window, and lists every sixteenth generation to take what that leaves; the generations older than
-   * the window wait for that listing. Set it for a caller whose `keep` promises every generation below the new
+   * Collect by listing the segment's objects after the publish, whatever `keep` is. Absent, a load whose row records
+   * the generations it keeps and that found nothing above its pointer deletes by name the generations its publish
+   * pushed out of the window, and lists every sixteenth generation to take what that leaves; the generations no list
+   * names wait for that listing. Set it for a caller whose `keep` promises every generation below the new
    * one beyond the window is gone when the call returns: the `*Into` verbs, whose `keep` is how an operator clears
    * a destination that earlier materialisations kept in full.
    */
@@ -125,12 +126,14 @@ export interface LoadOptions {
    * longest pinned job runs, on every writer that loads the segment — see "Generations and `keep`" in the loading
    * guide.
    *
-   * With `keep` of 0 or 1, a load that found nothing above the pointer collects without listing: it deletes the one
-   * generation its publish pushed out of the window, and lists the segment's objects on every sixteenth generation to
-   * take whatever that pass leaves, such as the generations an earlier, wider `keep` held. With `keep` of 2 or more
-   * it lists on every load, and so does one whose check found the current generation's object gone: the guard's read of
-   * it, or, when the guard took the size from the row's summary, one zero-byte read made before a `keep` of 1 takes a
-   * name. A `keep` at least the generation published collects nothing and asks for nothing.
+   * The segment's row records the generations a load keeps, up to 64, so a load that found nothing above the pointer
+   * collects without listing: it deletes the generations its publish pushed out of the window, and lists the segment's
+   * objects on every sixteenth generation to take whatever that pass leaves, such as an object a crashed load left
+   * below the pointer. A `keep` above 64 records no list and lists on every load, and so does the first load of a
+   * row that records none, which then records it; so does a load whose check found the current generation's object
+   * gone: the guard's read of it, or, when the guard took the size from the row's summary, one zero-byte read made
+   * before a `keep` of 1 or more takes a name. A `keep` at least the generation published collects nothing and asks
+   * for nothing.
    */
   readonly keep?: number;
   /**
@@ -189,7 +192,7 @@ export interface LoadResult {
   /**
    * The superseded generations collected after publishing. Empty when nothing was published.
    *
-   * When collection deleted by name (see {@link LoadOptions.keep}) this is the name it deleted, and that generation
+   * When collection deleted by name (see {@link LoadOptions.keep}) these are the names it deleted, and one
    * may have been gone already: a delete of an absent object succeeds on every backend and does not say so, so the
    * list names what the pass asked the bucket to delete, not what it found there. A listing pass names the
    * generations it found and deleted. Neither is a receipt, since a concurrent collector may have taken a generation
@@ -556,9 +559,10 @@ async function runLoad(
   // `expectToken` goes on regardless. It is incarnation identity rather than a derivation fence, it costs
   // nothing legitimate — a token only changes when the row does — and it is what stops this call publishing
   // into a segment that merely reuses the name it started with.
-  let published: boolean;
+  let published: PublishResult;
   try {
-    published = await publishGeneration(deps.registry, key, {
+    published = await publishGenerationKept(deps.registry, key, {
+      keep,
       row,
       wrappedDeks: written.wrappedDeks,
       summary: written.summary,
@@ -594,7 +598,7 @@ async function runLoad(
     if (isValidationError(err) || err instanceof KeyUnavailableError) await reclaim();
     throw err;
   }
-  if (!published) return refuse('superseded');
+  if (!published.published) return refuse('superseded');
 
   audit.onEvent({
     kind: 'segment.publish',
@@ -614,7 +618,9 @@ async function runLoad(
   const collected = await collectAfterLoad(ref, deps, {
     generation,
     keep,
-    byName: checked && !currentObjectGone && deps.collectByListing !== true,
+    byName: checked && deps.collectByListing !== true,
+    currentGone: currentObjectGone,
+    kept: published.kept,
     ...(current.fromSummary && fromGeneration !== undefined
       ? { proveCurrent: { ...ref, generation: fromGeneration } }
       : {}),

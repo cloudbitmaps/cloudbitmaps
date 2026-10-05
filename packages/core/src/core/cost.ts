@@ -221,7 +221,7 @@ export interface Workload {
   /**
    * PUT-class requests one load's object write issues, each priced at the PUT rate. Default **1** (a single-object
    * PUT). A multipart write of `P` parts bills `P + 2` (initiate, the parts, complete) — set it when you know your
-   * object sizes. The model adds what `store.load()` does around the write, at the default `keep` of 1: the pointer's
+   * object sizes. The model adds what `store.load()` does around the write, at any `keep` from 1 to 64: the pointer's
    * write, PUT-class on S3, and four GETs: the pointer read twice, one check that the next generation number is
    * free, and one that the current generation's object is there, which tells the collection that deletes by name it
    * may. The current generation's size comes from the row's summary of it, so the load reads no index. Collection
@@ -233,8 +233,8 @@ export interface Workload {
    * read, in place of the check that its object is there. A publish that loses a race to another writer
    * reads the pointer again, and a load whose check finds the number taken (a crashed load's object, or the
    * generations a rollback left above the pointer) lists the segment's objects to number past them and to collect,
-   * two PUT-class requests on S3 and two more pointer reads. So does every load that keeps two or more generations,
-   * which lists to collect: one more PUT-class request and two more pointer reads than the model counts. The counts
+   * two PUT-class requests on S3 and two more pointer reads. So does every load whose `keep` is above 64, which lists
+   * to collect: one more PUT-class request and two more pointer reads than the model counts. The counts
    * are a cleartext segment's: an encrypted segment's load reads its row once more, after its ids and before it
    * unwraps the key, one more GET ($0.40 per million at the default prices) that the model leaves out, beside the
    * key-management calls it does not price either.
@@ -374,22 +374,23 @@ const SECONDS_PER_MONTH = HOURS_PER_MONTH * 3600; // 2,628,000
 const GIB = 1024 ** 3;
 
 /**
- * What `store.load()` adds to its object's write, as the engine makes the requests on a segment with two
- * generations behind it, at the default `keep` of 1 with nothing above the pointer. Collection deletes the one
- * generation the window pushed out by name, so the pointer is read twice (the load's one read before its publish,
- * which the publish's compare-and-swap writes against without reading the row again, and the re-read before the
- * delete) and nothing is
- * listed, except on every {@link LIST_COLLECTION_CADENCE}th generation, where collection lists instead: one more
- * PUT-class request and two more pointer reads (before and after the listing). Those two are averaged over the
- * cadence, so a count of `n` loads is exact for `n` consecutive generations of the cadence. PUT-class: the
- * pointer's write and the averaged listing. Pointer reads each cost `requestsPerPointerRead` requests. The load reads
- * no index: the row's summary of the current generation gives it the size the guard needs. It makes two checks, each
- * a single metadata request on every backend (S3's `HeadObject`, GCS's object metadata, Azure Blob's properties), so
- * `requestsPerSizedRead` applies to neither: that the next generation number is free, on every load, and that the
- * current generation's object is there, before the collection deletes by name the generation it pushed out of the
- * window, so on every load but the listing one. `tests/core/cost.test.ts` holds these to the engine over sixteen
- * consecutive loads. A load that keeps two or more generations, or whose check meets an object, lists on every load:
- * one more PUT-class request and two more pointer reads than these, and one check fewer.
+ * What `store.load()` adds to its object's write, as the engine makes the requests on a segment with a window of
+ * generations behind it, with nothing above the pointer, at any `keep` from 1 to 64. The row records the generations
+ * the load keeps, so collection deletes by name the generation or generations the window pushed out, and the pointer is
+ * read twice (the load's one read before its publish, which the publish's compare-and-swap writes against without
+ * reading the row again, and the re-read before the delete) and nothing is listed, except on every
+ * {@link LIST_COLLECTION_CADENCE}th generation, where collection lists instead: one more PUT-class request and two more
+ * pointer reads (before and after the listing). Those two are averaged over the cadence, so a count of `n` loads is
+ * exact for `n` consecutive generations of the cadence. PUT-class: the pointer's write and the averaged listing.
+ * Pointer reads each cost `requestsPerPointerRead` requests. The load reads no index: the row's summary of the current
+ * generation gives it the size the guard needs. It makes two checks, each a single metadata request on every backend
+ * (S3's `HeadObject`, GCS's object metadata, Azure Blob's properties), so `requestsPerSizedRead` applies to neither:
+ * that the next generation number is free, on every load, and that the current generation's object is there, before
+ * the collection deletes by name, so on every load but the listing one. `tests/core/cost.test.ts` holds these to the
+ * engine over sixteen consecutive loads at a `keep` of 1, 2, 12 and 64. A load whose `keep` is above 64 records no list
+ * and lists on every load, and so does the first load of a row that records none, and one whose check meets an object:
+ * one more PUT-class request and two more pointer reads than these, and one check fewer. This model prices the first
+ * kind and not the others.
  */
 const STORE_LOAD_PUT_CLASS = 1 + 1 / LIST_COLLECTION_CADENCE;
 const STORE_LOAD_POINTER_READS = 2 + 2 / LIST_COLLECTION_CADENCE;
