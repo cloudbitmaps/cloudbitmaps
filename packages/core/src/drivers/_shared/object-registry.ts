@@ -400,7 +400,10 @@ export class ObjectStoreRegistry implements IRegistryDriver {
    * where the store's delete is not known to apply its precondition.
    *
    * An object that cannot be read or parsed stops the run with the error that names its key, and removes nothing
-   * more: it may be a newer release's row.
+   * more: it may be a newer release's row. Rows removed before the stop stay removed, and a re-run is safe.
+   *
+   * Not resumable: it lists and reads from the start on every call. A delete refused as a conflict, including one for a
+   * row already gone, is counted as `raced`.
    */
   async reapLegacyTombstones(
     options: ReapLegacyTombstonesOptions,
@@ -456,7 +459,7 @@ export class ObjectStoreRegistry implements IRegistryDriver {
           counts.reaped += 1;
         } catch (err) {
           if (!isWriteConflictError(err)) throw err;
-          counts.raced += 1; // a create (or another sweeper) got there first: the row is no longer this envelope
+          counts.raced += 1; // the row changed (a create, another sweeper) or is already gone
         }
       });
     };

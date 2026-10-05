@@ -1,24 +1,35 @@
 /**
- * The tombstone reaper: remove the `deleted: true` rows a release before 0.12 left in a registry.
+ * The tombstone reaper: remove the `deleted: true` rows with no incarnation id from a registry.
  *
  * A release before 0.12 never removed a row it deleted: it kept a `{ deleted: true }` envelope with the token counter
  * advanced, and its tokens are bare counters with no incarnation id. Since 0.12 a delete removes a row born with an
- * incarnation id for good, but still keeps one that has none, so no call removes these envelopes, and every full
- * listing of the registry still reads each (one GET apiece). This is the one call that removes them.
+ * incarnation id for good, but still keeps one that has none (including a row born before 0.12 that a 0.12+ release
+ * deletes), so no call removes these envelopes, and every full listing of the registry still reads each (one GET
+ * apiece). This is the one call that removes them. Both kinds are safe to remove.
  *
- * **What it touches.** Only a row that is `deleted: true` and carries no incarnation id. Never a live row, never a
- * `destroyed` row (a crypto-shred's or a drop's tombstone, the attestation of an erasure, which carries no stamp the
- * reaper could tell from another), never a deleted row with an incarnation id. So it cannot clean a bucket completely:
- * the `destroyed` tombstones `dropSegment` leaves stay.
+ * **What it touches.** Only a row that is `deleted: true` and carries no incarnation id, whatever its `status`: the
+ * sweep's own purge tombstone, `deleted: true` with `status: 'destroyed'` and a bare token, is removed. Never a live
+ * row, never a `destroyed` row that is not `deleted` (a crypto-shred's or a `dropSegment`'s tombstone, the attestation
+ * of an erasure, which carries no stamp the reaper could tell from another), never a deleted row with an incarnation
+ * id. So it cannot clean a bucket completely: the `destroyed` tombstones `dropSegment` leaves stay, and so does a
+ * tombstone a 0.12+ release wrote while `conditionalDelete` was off (it has an incarnation id, every full listing still
+ * reads it, and the reaper refuses to run on such a registry).
  *
  * **What it needs.** Every delete is conditioned on the version the reaper read, so a `create` that lands over the
  * envelope first wins and the delete is refused; the registry must say it applies that precondition
- * (`capabilities().conditionalDelete`), else `CapabilityError` before any request. And the caller must say that no
- * process on a release before 0.12 still writes this registry (`confirmNoLegacyWriters: true`), because such a process,
- * re-creating a removed name from counter 0, would issue the removed row's tokens again.
+ * (`capabilities().conditionalDelete`), else `CapabilityError` before any request. Where the gate is detected (S3 true
+ * only on an AWS host) that fence is real. On an endpoint that ignores `If-Match` (MinIO, fake-gcs-server), a
+ * `conditionalDelete: true` you set makes this an unfenced delete: run it with every writer stopped. And the caller
+ * must say that no process on a release before 0.12 still writes this registry (`confirmNoLegacyWriters: true`),
+ * because such a process, re-creating a removed name from counter 0, would issue the removed row's tokens again.
  *
  * **A racing re-create.** A `create` whose own read saw the envelope and whose write meets the removal gets
  * `WriteConflictError`, and the registry does not retry it: the caller retries, and finds no row.
+ *
+ * **Not resumable.** Each run lists and reads every key from the start, so R rows cost R GETs whatever the `limit`; a
+ * dry run with a `limit` reports the same first rows every time. `limited` is set when the limit was spent and keys
+ * remained, whether or not any of them is removable. An object that cannot be read or parsed stops the run with an error
+ * naming its key; scope the run with `namespace` to get past one.
  */
 import { UnsupportedError, ValidationError } from './errors';
 import type {

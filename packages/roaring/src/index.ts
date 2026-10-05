@@ -1672,11 +1672,15 @@ export class CloudRoaring {
    * ```
    *
    * **What it removes.** Only a row that is `deleted: true` and whose token carries no incarnation id, which is what a
-   * release before 0.12.0 wrote. It never touches a live row, a `destroyed` row (a crypto-shred's or a
-   * `dropSegment`'s tombstone: the attestation of an erasure, which it cannot tell from another), or a deleted row with
-   * an incarnation id, and it never touches a generation. **So it does not clean a bucket completely**: the
-   * `destroyed` tombstones `dropSegment` leaves stay, and so do live rows written before 0.12.0.
-   * It also covers the library's own bookkeeping rows when `namespace` is not set, by the same rule.
+   * release before 0.12.0 left, or a 0.12.0 or later release left by deleting a row born before 0.12.0 (both are safe to
+   * remove), whatever its `status`. It never touches a live row, a `destroyed` row that is not `deleted` (a crypto-shred's
+   * or a `dropSegment`'s tombstone: the attestation of an erasure, which it cannot tell from another), or a deleted row
+   * with an incarnation id, and it never touches a generation. **So it does not clean a bucket completely**: the
+   * `destroyed` tombstones `dropSegment` leaves stay, so do live rows written before 0.12.0, and so does a tombstone a
+   * 0.12.0 or later release wrote while `conditionalDelete` was off (GCS by default, S3 on a custom endpoint): every full
+   * listing still reads it, and this call neither removes it nor runs on such a store.
+   * It also covers the library's own bookkeeping rows when `namespace` is not set, by the same rule. The default
+   * namespace cannot be scoped to: leave `namespace` out to cover it.
    *
    * **The two things it asks.** `confirmNoLegacyWriters: true` is required for a real run (without it, a
    * `ValidationError`, and nothing is requested): your statement that no process on a release before 0.12.0 writes
@@ -1686,13 +1690,20 @@ export class CloudRoaring {
    * no such rows (the in-memory and local-filesystem ones) throws `UnsupportedError`.
    *
    * **Each removal is fenced** on the version it read, so a `create` that lands over the envelope first wins, the
-   * delete is refused, and the row is counted as `skipped.raced`. A `create` that had already read the envelope and
+   * delete is refused, and the row is counted as `skipped.raced` (which also counts a row already gone). That holds where
+   * the backend applies the precondition, which auto-detection checks (S3 only on an AWS host). On an endpoint that
+   * ignores `If-Match` (MinIO, fake-gcs-server), a `conditionalDelete: true` you set makes this an unfenced delete: run
+   * it with every writer stopped. On a versioned bucket a delete leaves a delete marker and the earlier version, record
+   * included, so the name is not erased from the bucket. A `create` that had already read the envelope and
    * whose write meets the removal throws `WriteConflictError`, which this library does not retry: retry the create, and
    * it finds no row and writes one.
    *
    * **Cost** over R rows read and E removed: `ceil(R / 1000)` LIST requests, R GETs and E DELETEs (a dry run, no
-   * DELETEs). `limit` bounds the removals, and the run stops listing once it is spent. An unreadable object stops the
-   * run with an error naming its key, and removes nothing more: it may be a newer release's row.
+   * DELETEs). `limit` bounds the removals, and the run stops listing once it is spent. **A run is not resumable**: each
+   * lists and reads from the start (R GETs whatever the `limit`), a dry run with a `limit` reports the same first rows
+   * every time, so `wouldReap` is a total only when `limited` is `false`, and `limited` is `true` whenever the limit was
+   * spent with keys left, removable or not. An unreadable object stops the run with an error naming its key, and
+   * removes nothing more: it may be a newer release's row. Scope the run with `namespace` to get past one.
    */
   async reapRegistryTombstones(
     options: ReapRegistryTombstonesOptions = {},

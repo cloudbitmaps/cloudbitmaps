@@ -75,7 +75,7 @@ function world(options: { conditionalDelete?: boolean } = { conditionalDelete: t
 const CONFIRM = { confirmNoLegacyWriters: true } as const;
 
 describe('what the reaper removes', () => {
-  it('removes a deleted envelope with a bare token, and one with a counter and a write part', async () => {
+  it('removes a deleted+destroyed row with a bare token (the pre-0.12 sweep’s purge tombstone), and one with a counter and a write part', async () => {
     const w = world();
     legacy(w.store, ref('bare'), { deleted: true, token: '12' });
     legacy(w.store, ref('counted'), { deleted: true, token: '13.1f9c0a7be2d4c3a1' });
@@ -91,6 +91,15 @@ describe('what the reaper removes', () => {
     });
     expect(w.store.text(keyOf(ref('bare')))).toBeUndefined();
     expect(w.store.text(keyOf(ref('counted')))).toBeUndefined();
+  });
+
+  it('removes a deleted+active row with a bare token, and a deleted+destroyed one: `deleted` decides, not `status`', async () => {
+    const w = world();
+    legacy(w.store, ref('active-deleted'), { deleted: true, status: 'active', token: '7' });
+    legacy(w.store, ref('destroyed-deleted'), { deleted: true, status: 'destroyed', token: '8' });
+    const result = await reapRegistryTombstones(w.registry, CONFIRM);
+    expect(result).toMatchObject({ examined: 2, reaped: 2, skipped: { live: 0, destroyed: 0 } });
+    expect(w.store.size(`${PREFIX}/registry/`)).toBe(0);
   });
 
   it('after a run the full listing reads nothing for them: one more run finds nothing', async () => {
@@ -154,6 +163,34 @@ describe('what the reaper never touches', () => {
     expect(result).toMatchObject({ reaped: 0, skipped: { destroyed: 1 } });
     expect(store.text(keyOf(ref('dropped')))).toBe(text);
     expect(store.deletes).toBe(0);
+  });
+});
+
+describe('an unreadable row', () => {
+  const corrupt = (store: CountingObjectStore, r: SegmentRef, text: string): void =>
+    store.plant(keyOf(r), text);
+
+  it('a corrupt or newer-schema object stops the run with an error naming its key; a re-run is safe, and a namespace scope gets past it', async () => {
+    for (const text of [
+      '{ not json',
+      JSON.stringify({ schemaVersion: 99, deleted: true, record: {} }),
+    ]) {
+      const w = world();
+      legacy(w.store, ref('a', 'good'), { deleted: true });
+      corrupt(w.store, ref('bad', 'bad'), text);
+
+      await expect(reapRegistryTombstones(w.registry, CONFIRM)).rejects.toThrow(
+        /bad\/bad\.reg|bad\.reg/,
+      );
+      // nothing half-done: the page was read before any delete, the unreadable object is untouched, and a re-run stops again
+      expect(w.store.text(keyOf(ref('bad', 'bad')))).toBe(text);
+      await expect(reapRegistryTombstones(w.registry, CONFIRM)).rejects.toThrow(/bad\.reg/);
+
+      const scoped = await reapRegistryTombstones(w.registry, { ...CONFIRM, namespace: 'good' });
+      expect(scoped).toMatchObject({ reaped: 1, examined: 1 }); // the failed runs read the page first and removed nothing
+      expect(w.store.text(keyOf(ref('a', 'good')))).toBeUndefined();
+      expect(w.store.text(keyOf(ref('bad', 'bad')))).toBe(text);
+    }
   });
 });
 

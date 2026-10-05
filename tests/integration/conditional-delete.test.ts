@@ -530,9 +530,9 @@ describe('the tombstone reaper, against the emulators', () => {
     expect(await gcsExists(registryObjectKey(pg, { segment: 'e' }))).toBe(true);
   });
 
-  // MinIO and fake-gcs-server ignore the precondition, so the fenced path (a racing write winning) cannot be shown on
-  // them: only that, with the gate turned on by the caller, the removal is sent and lands. Azurite above shows the fence.
-  it('MinIO, with the caller vouching for conditionalDelete, removes the envelope (the emulator applies no fence)', async () => {
+  // MinIO and fake-gcs-server ignore the precondition, so no fence is shown here: with `conditionalDelete: true` set by
+  // the caller, the removal is an unfenced delete that is sent and lands. Only Azurite above shows the fence.
+  it('MinIO, with conditionalDelete: true set by the caller, removes the envelope, unfenced: the emulator ignores If-Match', async () => {
     const p = prefix('reap-minio-on');
     await s3Put(registryObjectKey(p, { segment: 'e' }), legacyRow('e', true));
     const reg = new S3RegistryDriver({
