@@ -616,12 +616,12 @@ export class SegmentEngine {
     }
     const gen = await this.cacheVersion(seg); // after the shape read — see `combine`
 
-    // Ids of the first chunk at or below `after` do not count: read it to know how many there are.
+    // Ids of the first chunk at or below `after` do not count: read it to know how many there are. It is the one
+    // fetch made before the budget is charged, because the plan, and so the charge, needs its count.
     const cutsFirst = loRem > 0 && keys[0] === loKey;
     let first: Uint32Array | undefined;
     let below = 0;
     if (cutsFirst) {
-      checkBudget(this.budget, 1, 'everyNth'); // the one chunk read before the plan is known
       first = this.chunkRemainders(
         await this.storageChunk({ ...seg, chunkKey: loKey }, gen),
         loKey,
