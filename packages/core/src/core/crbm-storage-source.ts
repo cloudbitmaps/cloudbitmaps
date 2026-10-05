@@ -2308,7 +2308,7 @@ export async function bulkLoadAhead(
   driver: IStorageDriver,
   ref: SegmentRef,
   ahead: LoadAhead,
-  ids: Iterable<number> | AsyncIterable<number> | DecodedLoadInput,
+  ids: Parameters<typeof bulkLoadCrbmGeneration>[2],
   options: NonNullable<Parameters<typeof bulkLoadCrbmGeneration>[3]> = {},
 ): Promise<BulkLoadResult> {
   if (options.keystore === undefined && options.requireEncryption === true) {
