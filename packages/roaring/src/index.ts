@@ -121,7 +121,7 @@ import { refuseReservedNamespace } from './reserved-namespace';
 import { bitmapAsLoadInput, deserializePortable, roaringCodec } from './roaring-codec';
 import { SystemClock } from './system-clock';
 import { OPTION_KEYS, type OptionGroup } from './option-keys';
-import { guardChunks, guardIds } from './lease-guards';
+import { guardChunks, guardIdIterable, guardIds } from './lease-guards';
 
 /** Default randomness for backoff jitter — lives outside `core/`, so `Math.random()` is allowed here. */
 class SystemRng implements Rng {
@@ -2861,6 +2861,9 @@ export class Segment {
    * ```
    */
   everyNth(n: number, options?: IdRange): AsyncIterable<number> {
+    // The lease first, before any `expiresAt` rule: a leased handle past its lease throws, never reads empty.
+    const lease = this.leaseError();
+    if (lease !== undefined) return failing(lease);
     if (this.expired()) return EMPTY_IDS;
     if (this.pinnedAt === undefined) {
       return failing(
@@ -2870,7 +2873,16 @@ export class Segment {
         ),
       );
     }
-    return this.engine.everyNth(this.ref, n, options == null ? undefined : rangeOf(options));
+    const stream = this.engine.everyNth(
+      this.ref,
+      n,
+      options == null ? undefined : rangeOf(options),
+    );
+    // A stream with no `.batches()`: guarded before its first pull, so a stream built live and pulled after the lease
+    // ended throws even when no rank falls in its range, and at each chunk after that.
+    return this.leaseHold === undefined
+      ? stream
+      : guardIdIterable(stream, () => this.assertLeases([this]));
   }
 
   /**

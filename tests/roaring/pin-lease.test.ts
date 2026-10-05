@@ -246,6 +246,7 @@ const SITES: Array<[string, (leased: Segment, h: H) => Promise<unknown>]> = [
   ['stat', (l) => l.stat()],
   ['iterate', (l) => collect(l.iterate())],
   ['iterate().batches()', async (l) => collect(flat(l.iterate().batches()))],
+  ['everyNth', (l) => collect(l.everyNth(1))],
   ['costReport', (l) => l.costReport()],
   ['pin()', (l) => l.pin()],
   ['intersect (receiver)', (l, h) => collect(l.intersect([plain(h)]))],
@@ -515,6 +516,26 @@ describe('a stream built while the lease is live and pulled after it ended never
     await h.writer.load({ namespace: 'ns', segment: 'dest' }, [9]);
     return h;
   }
+
+  it('everyNth: a stream built live and pulled after the lease throws, even with no rank in its range', async () => {
+    const h = await setup();
+    const snap = await lease(h, 1_000);
+    const empty = snap.everyNth(1_000_000); // no window of a million ids: nothing to yield
+    const some = snap.everyNth(1);
+    h.advance(1_000);
+    await expect(collect(empty)).rejects.toBeInstanceOf(LeaseExpiredError);
+    await expect(collect(some)).rejects.toBeInstanceOf(LeaseExpiredError);
+    await expect(collect(snap.everyNth(1))).rejects.toBeInstanceOf(LeaseExpiredError);
+  });
+
+  it('everyNth: a lease that ends mid-stream throws at the next chunk', async () => {
+    const h = await seeded(spread(4));
+    const snap = await lease(h, HOUR);
+    const it = snap.everyNth(3)[Symbol.asyncIterator](); // the third id of each chunk of three
+    expect((await it.next()).value).toBe(2);
+    h.advance(HOUR);
+    await expect(it.next()).rejects.toBeInstanceOf(LeaseExpiredError);
+  });
 
   it('a stream object built live and consumed late throws on its first pull', async () => {
     const h = await setup();

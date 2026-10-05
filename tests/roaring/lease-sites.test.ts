@@ -81,6 +81,8 @@ describe('every Segment method that reads checks a lease', () => {
         'unionInto',
         'andNotInto',
         'costReport',
+        'everyNth',
+        'pinAt',
       ]),
     );
     expect(unchecked(SOURCE)).toEqual([]);
