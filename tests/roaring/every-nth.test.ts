@@ -51,7 +51,7 @@ async function pinned(ids: readonly number[]) {
 
 const read = (seg: Segment, n: number, range?: IdRange) => collect(seg.everyNth(n, range));
 
-// The design's shapes, scaled to run fast: A sparse over many chunks, B dense, C a few chunks, D three chunks.
+// Four shapes, scaled to run fast: sparse over many chunks, dense, a few chunks, three chunks.
 const SHAPES: Record<string, number[]> = {
   'A sparse, one id in about 1,000 chunks': scatter(1_500, 1_000 * CHUNK, 7),
   'B dense, over four chunks': Array.from({ length: 4 * CHUNK }, (_, i) => i),
