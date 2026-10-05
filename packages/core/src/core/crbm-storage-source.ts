@@ -684,6 +684,49 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     }
   }
 
+  /**
+   * Open one named generation and verify it is the object `at.fingerprint` names, for a pin the caller reopens. One
+   * row read and one tail read with a registry (none of the row for a store without one): the open is the one a
+   * pinned read makes ({@link readerAt}), memoised under the version the pin will read by, so the pin's first read
+   * finds it open. A generation that is gone, above the row's pointer, on a destroyed or absent row, or another
+   * object than the fingerprint names, throws `NotFoundError`; nothing here reads empty.
+   */
+  async pinGenerationAt(
+    ref: SegmentRef,
+    at: { readonly generation: number; readonly fingerprint: string },
+  ): Promise<{ generation: number } & Required<PinnedObject>> {
+    const { generation, fingerprint } = at;
+    const gone = (why: string): NotFoundError =>
+      new NotFoundError(
+        `segment "${ref.segment}" generation ${generation} cannot be pinned: ${why}`,
+      );
+    let version = versionOf(generation, undefined);
+    if (this.registry !== undefined) {
+      const record = await this.registry.get(ref);
+      if (record === null || record.status === 'destroyed')
+        throw gone('the segment has no readable row');
+      if (record.currentGen === null || generation > record.currentGen) {
+        throw gone('it is not a published generation of this segment');
+      }
+      version = versionOf(generation, record.token);
+      const key = this.pinnedKey(ref, version);
+      if (this.snapshots.get(key) === undefined) {
+        this.install(
+          key,
+          Snapshot.eager(
+            this.openForTarget(ref, {
+              generation,
+              lineage: record.token,
+              wrappedDeks: record.wrappedDeks,
+            }),
+          ),
+        );
+      }
+    }
+    await this.readerAt(ref, generation, version, fingerprint);
+    return { generation, version, fingerprint };
+  }
+
   private async pinOnce(
     ref: SegmentRef,
   ): Promise<({ generation: number } & Required<PinnedObject>) | null> {
