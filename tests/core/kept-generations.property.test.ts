@@ -226,9 +226,7 @@ describe('the kept generations, two loaders among every other writer (property)'
             const row = await registry.get(SEG);
             const current = row?.currentGen ?? -1;
             const present = await generations(storage);
-            const deletesNothing = ['retention', 'crash', 'stray', 'rollback'].includes(
-              step.kind,
-            );
+            const deletesNothing = ['retention', 'crash', 'stray', 'rollback'].includes(step.kind);
             switch (step.kind) {
               case 'load':
                 await load(step.who, step.extra);
@@ -260,7 +258,19 @@ describe('the kept generations, two loaders among every other writer (property)'
               }
               case 'erase':
                 if (row !== null && current >= 0) {
-                  await eraseIdFromSegment(SEG, step.id, deps);
+                  const erased = await eraseIdFromSegment(SEG, step.id, deps);
+                  if (erased.erased && 'generation' in erased && erased.generation !== undefined) {
+                    // A rewrite took every generation below its pointer, and the row says none is kept.
+                    const after = (await registry.get(SEG))!;
+                    expect(after.currentGen).toBe(erased.generation);
+                    // [] when the row it rewrote recorded a list to extend; none when it recorded none.
+                    expect(after.keptGens).toEqual(
+                      usableKeptGens(row) === undefined ? undefined : [],
+                    );
+                    expect(
+                      (await generations(storage)).filter((g) => g < erased.generation!),
+                    ).toEqual([]);
+                  }
                 }
                 break;
               case 'retention':
