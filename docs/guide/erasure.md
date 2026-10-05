@@ -124,10 +124,18 @@ reason for a deleted-looking id to still be in storage that is easy to forget.
 
 Erasure ignores every lease. `eraseSubject` and `eraseIdFromSegment` delete the generations that hold the id, and the
 collection that follows an erasure rewrite deletes every generation below the new one, a leased one included; the rewrite
-clears the row's leases. A `destroySegment`, a `dropSegment` and a retention expiry delete every generation and leave no
-lease on the tombstone. So erasure, shred, drop and retention always win, and a lease never holds an erased subject's data
-past the bounds in the table above. A lease written while an erasure rewrite is under way moves the row's token, so that
-rewrite reports `superseded`: run `eraseSubject` again, as for any other writer that got there first.
+clears the row's leases. An erasure that finds the id only in a generation other than the current one deletes that
+generation, leased or not, and writes no row of its own, so an entry for a generation it deleted stays in the list until the
+entry's own time ends or the next publish or lease write prunes it: it spares nothing, since the object is gone, and it
+counts toward the 64 places until then. A `destroySegment`, a `dropSegment` and a retention expiry delete every generation
+and leave no lease on the tombstone. So erasure, shred, drop and retention always win, and a lease never holds an erased
+subject's data past the bounds in the table above.
+
+A lease written while an erasure is under way does not delay it. A lease write moves the row's token, which an erasure
+rewrite is fenced on, but a row that differs from the one the rewrite read only in its leases does not refuse it: it goes on
+against the row it finds, without streaming the object again, and so does the re-proof before each delete above the pointer
+([how a load stays correct](loading.md#how-it-stays-correct) states the rule). A change of anything else refuses, and
+`eraseSubject` reports `superseded` as it always has: run it again.
 
 What a lease does not change is when a reader stops seeing the id. A leased handle in another store answers as any
 pinned handle does until its lease ends, and then every read of it throws `LeaseExpiredError`.

@@ -162,10 +162,14 @@ storage side â€” a bucket policy, a lifecycle rule, the object's own deletion â€
 its generation out of a load's collection until the lease ends: at most 14 days after it was taken, and a 60-second margin
 after that. While it does, the bucket holds a generation that a newer load has superseded, including ids that load
 removed. `eraseSubject`, `eraseIdFromSegment`, `dropSegment`, `destroySegment` and a retention expiry never read a lease:
-they delete the generations they must, a leased one included, and clear the row's leases, so a lease never holds an erased
-subject's data past the bounds above, and erasure, shred, drop and retention always win over it. What a lease holds
-against is an ordinary load's collection, and the generation is collected by the first listing pass after the lease ends.
-A leased handle stops answering when its lease ends, and its reads then throw `LeaseExpiredError`. The lease entry in the
+they delete the generations they must, a leased one included, so a lease never holds an erased subject's data past the
+bounds above, and erasure, shred, drop and retention always win over it. A rewrite, a shred and a drop clear the row's
+leases; an erasure that deletes a generation without rewriting leaves an entry for it in the row, which spares nothing and
+is pruned by the next publish or lease write after it ends. A lease write does not delay an erasure: a row that differs
+from the one the erasure read only in its leases does not refuse it. What a lease holds against is an ordinary load's
+collection, and the generation is collected by the next listing pass after the lease ends: within 16 later loads of the
+segment, and a segment that is never loaded again keeps it until an erasure, a drop or a retention expiry takes it. A
+leased handle stops answering when its lease ends, and its reads then throw `LeaseExpiredError`. The lease entry in the
 registry row is a random holder id, a generation number and an instant, with no id and no count.
 
 **Your exit path** (and a building block for a **data-portability / Art. 20** response): `store.exportSegments(sink,

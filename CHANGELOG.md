@@ -73,13 +73,16 @@ so, and so do the module headers in the code.
   as an operand or an `exclude` of a combine or as the target of an `*Into`. A stream checks the lease each time it reads
   a chunk. A segment holds at most 64 live leases (`MAX_LEASES_PER_SEGMENT`); the next throws `LeaseLimitError` with
   nothing written. A collector holds a lease for `LEASE_SKEW_MS` (60 seconds) after it ends, which covers clocks that differ
-  by that much in either direction. A leased generation takes no `keep` slot, and the first listing pass after the lease ends
-  takes it: at most 15 further loads of that segment. A leased pin costs one conditional write to the row more than a pin,
-  taken before the generation is opened, and that write makes a load, an erasure rewrite or a rollback that read the row
-  first report `superseded` or throw `WriteConflictError`, to be run again. A load's publish drops the leases that have
-  ended from the row in its own write. **A lease keeps superseded generations, including ids a newer load removed, until
-  it ends, and erasure ignores it:** `eraseSubject`, `eraseIdFromSegment`, `destroySegment`, `dropSegment` and retention
-  expiry delete a leased generation and clear the row's leases, and `PRIVACY.md` and the erasure guide say so. The registry
+  by that much in either direction. A leased generation takes no `keep` slot, and the next listing pass after the lease ends
+  takes it: within 16 later loads of that segment. A leased pin costs one conditional write to the row more than a pin,
+  taken before the generation is opened. That write moves the row's token, and a load's publish, an erasure rewrite, a
+  rollback, a retention write and a shred or drop are fenced on it, so each goes on past a row that differs from the one it
+  read only in its leases, after a jittered wait and without redoing its work, up to 136 such changes (a take and a release by each of
+  the 64 holders, and a few more); a change of anything else refuses as ever. A load's publish drops the leases that have
+  ended from the row in its own write, and a load with no clock reads none. **A lease keeps superseded generations,
+  including ids a newer load removed, until it ends, and erasure ignores it:** `eraseSubject`, `eraseIdFromSegment`,
+  `destroySegment`, `dropSegment` and retention expiry delete a leased generation, a rewrite, a shred and a drop clear the
+  row's leases, and `PRIVACY.md` and the erasure guide say so. The registry
   `RegistryRecord.leases` and `RegistryPatch.leases` are new, and a registry of your own must store and return the field and
   keep it when a patch moves `currentGen`; the conformance suite holds a driver to both. The holder id is drawn from the
   store's `Rng`. New exports: `LeaseExpiredError`, `LeaseLimitError`, `isLeaseExpiredError`, `isLeaseLimitError`,

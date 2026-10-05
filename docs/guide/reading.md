@@ -215,13 +215,17 @@ leased generation in the bucket until the lease has ended. It is a hold on one n
   of its own.
 - **A stream checks the lease each time it reads a chunk.** A read that is under way when the lease ends finishes the
   chunk it is on and throws at the next one, per id and per batch. The 60-second margin below covers a chunk's worth of ids.
-- **Collection resumes after the lease.** A leased generation takes none of the `keep` window. After the lease and a
-  60-second margin have ended, the next load's listing pass takes it: that is every sixteenth generation of the segment, or
-  any load that has to list, so at most 15 further loads later. A segment that is never loaded again keeps it until
-  something else collects it.
+- **Collection resumes after the lease.** A leased generation takes none of the `keep` window, and a load that spares it
+  does not name it again. After the lease and a 60-second margin have ended, the next listing pass takes it: that is every
+  sixteenth generation of the segment, or any load that has to list, so within 16 later loads of the segment. A segment
+  that is never loaded again keeps it until something else collects it. A number retaken after a rollback and an
+  erasure can be spared by an entry that named the object before it: a different object is then kept for at most the
+  lease's own length, and the pin's own fingerprint stops it being read as the leased one.
 - **The longest lease is 14 days, and a segment holds at most 64 live leases.** The 65th is refused with
   `LeaseLimitError` before anything is written. A lease that has ended makes room. Take one lease per job and give the job's
-  tasks the one handle: each lease is one write to the segment's row, and writers of one row take turns.
+  tasks the one handle: each lease is one write to the segment's row, and writers of one row take turns. The row is as
+  trusted as the registry: whoever can write it can fill its 64 places for 14 days, as whoever can write it can delete
+  the segment, and a job that crashes without releasing keeps its place until its lease ends.
 - **The margin is 60 seconds, and covers clocks that differ by that much either way.** The handle ends the lease at
   `leaseUntil` by its own store's clock, and a collector holds it for `LEASE_SKEW_MS` (60 seconds) longer by its own. A
   reader whose clock is behind a collector's by more than that, or a collector whose clock is ahead of the reader's by
@@ -232,11 +236,14 @@ leased generation in the bucket until the lease has ended. It is a hold on one n
   including ids a newer load removed, until it ends: [Erasing a subject](erasure.md) says what that means for a
   deletion request.
 - **What it costs.** A leased pin makes the row read, one conditional write to the row and the tail read: one PUT-class
-  request more than a pin without a lease. The write moves the row's token, so a load, an erasure rewrite or a rollback
-  that read the row before it reports `superseded` or throws `WriteConflictError`, and is run again; a lease is one
+  request more than a pin without a lease. The write moves the row's token, which a load, an erasure rewrite, a
+  shred, a drop, a rollback and a retention write are fenced on. None of them is refused by it: a row that differs from the
+  one the writer read only in its leases does not refuse the writer, which goes on against the row it finds, after a
+  jittered wait and without redoing its work ([how a load stays correct](loading.md#how-it-stays-correct)). A lease is one
   write per job, not per read.
 - **It needs a backend with a registry**: `UnsupportedError` on a bare `IStorageDriver`, and `NotFoundError` on a segment
-  with no current generation. A failed pin releases the lease it took.
+  with no current generation. A failed pin releases the lease it took. A store built with no clock cannot judge a lease,
+  and its loads read none: `CloudRoaring` always has one, and a core `loadSegment` is given one in `deps.clock`.
 
 ### How a pin stays correct
 
