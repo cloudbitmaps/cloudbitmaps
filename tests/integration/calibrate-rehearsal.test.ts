@@ -82,6 +82,10 @@ const stages = require_(join(ROOT, 'bench', 'lib', 'calibrate-stages.cjs')) as {
   STAGES: string[];
   FIRST_LOAD: { put: number; get: number };
   coldIntersectGets: (k: number) => number;
+  STEADY_KEEP: number;
+  STEADY_LOADS: number;
+  STEADY_LOAD_REQUESTS: Record<string, { put: number; get: number; free: number }>;
+  steadyKind: (generation: number) => string;
 };
 const samples = require_(join(ROOT, 'bench', 'lib', 'calibrate-samples.cjs')) as {
   QUIET_MS: number;
@@ -308,6 +312,38 @@ describe('a calibration rehearsal that meets transient faults', () => {
       const discarded = stage.discarded.reduce((n, d) => n + d.requests.get, 0);
       expect(stage.requests.get, name).toBe((stage.expectedGets ?? 0) + discarded);
     }
+  });
+
+  // One segment loaded 18 times at keep 12, over MinIO's S3 request shape: each load makes the requests of its kind, so
+  // a harness that loaded at another keep, or an engine that does not collect by name, fills `expectedMissed` above.
+  it('runs the steady stage: 18 loads in the kinds their generations make, each with the counted requests', () => {
+    const steady = run.results.phases.steadyLoad as unknown as {
+      keep: number;
+      perLoad: Array<{
+        generation: number;
+        kind: string;
+        put: number;
+        get: number;
+        free: number;
+        commands: Record<string, number>;
+      }>;
+    };
+    expect(steady.keep).toBe(stages.STEADY_KEEP);
+    expect(steady.perLoad).toHaveLength(stages.STEADY_LOADS);
+    for (const l of steady.perLoad) {
+      expect(l.kind, `generation ${l.generation}`).toBe(stages.steadyKind(l.generation));
+      expect({ put: l.put, get: l.get, free: l.free }, `generation ${l.generation}`).toEqual(
+        stages.STEADY_LOAD_REQUESTS[l.kind],
+      );
+    }
+    // By class: a by-name load deletes one object and lists nothing, and the one listing load lists once.
+    expect(steady.perLoad.filter((l) => l.kind === 'listing')).toHaveLength(1);
+    expect(
+      steady.perLoad.map((l) => l.commands.DeleteObjectCommand ?? 0).reduce((a, b) => a + b),
+    ).toBe(5);
+    expect(
+      steady.perLoad.map((l) => l.commands.ListObjectsV2Command ?? 0).reduce((a, b) => a + b),
+    ).toBe(1);
   });
 
   // A kept sample's clock starts in the attempt that finished. A clock started before it would time the failed attempt
