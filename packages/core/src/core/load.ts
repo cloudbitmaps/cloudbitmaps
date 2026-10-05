@@ -26,7 +26,8 @@ import {
   holdsObject,
   openGenerationReader,
   provesOwnObject,
-  publishGeneration,
+  publishGenerationKept,
+  type PublishResult,
 } from './crbm-storage-source';
 import type { Clock, Rng } from './determinism';
 import { aadFor } from './crypto';
@@ -556,9 +557,10 @@ async function runLoad(
   // `expectToken` goes on regardless. It is incarnation identity rather than a derivation fence, it costs
   // nothing legitimate — a token only changes when the row does — and it is what stops this call publishing
   // into a segment that merely reuses the name it started with.
-  let published: boolean;
+  let published: PublishResult;
   try {
-    published = await publishGeneration(deps.registry, key, {
+    published = await publishGenerationKept(deps.registry, key, {
+      keep,
       row,
       wrappedDeks: written.wrappedDeks,
       summary: written.summary,
@@ -594,7 +596,7 @@ async function runLoad(
     if (isValidationError(err) || err instanceof KeyUnavailableError) await reclaim();
     throw err;
   }
-  if (!published) return refuse('superseded');
+  if (!published.published) return refuse('superseded');
 
   audit.onEvent({
     kind: 'segment.publish',
@@ -614,7 +616,9 @@ async function runLoad(
   const collected = await collectAfterLoad(ref, deps, {
     generation,
     keep,
-    byName: checked && !currentObjectGone && deps.collectByListing !== true,
+    byName: checked && deps.collectByListing !== true,
+    currentGone: currentObjectGone,
+    kept: published.kept,
     ...(current.fromSummary && fromGeneration !== undefined
       ? { proveCurrent: { ...ref, generation: fromGeneration } }
       : {}),

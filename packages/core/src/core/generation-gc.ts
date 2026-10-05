@@ -10,12 +10,20 @@
  * load (`allowEmpty: true` and no `guard.minRetained`) onto a segment with no row publishes bare forward-only. An
  * `*Into` materialisation is a load, and publishes the same way. The rewrite is fenced on its source generation and
  * the row's token (see invariant 1). That leaves the superseded object in the bucket, still billed, so something has
- * to collect it: {@link gcOrphanGenerations}, or, for a load that numbered its generation with one existence check
- * and keeps at most one generation, {@link collectByName}. Pure orchestration over the driver ports — no I/O, time or
+ * to collect it: {@link gcOrphanGenerations}, or, for a load whose row records the generations it keeps, the names its
+ * publish pushed out of that window ({@link deleteEvicted}). Pure orchestration over the driver ports — no I/O, time or
  * randomness of its own.
  */
 import { ValidationError, WriteConflictError, isNotFoundError } from './errors';
-import type { GenKey, IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
+import { MAX_KEPT_GENERATIONS, usableKeptGens } from './kept-generations';
+import type {
+  GenKey,
+  IStorageDriver,
+  IRegistryDriver,
+  RegistryRecord,
+  SegmentRef,
+  Token,
+} from './ports';
 
 /** The two ports generation bookkeeping needs: the objects, and the pointer that says which one is current. */
 export interface GenerationDeps {
@@ -100,9 +108,9 @@ export async function nextLoadGeneration(
 
 /**
  * How often a load that could collect by name lists instead: every generation divisible by this. A name-only pass
- * takes one generation a load and never looks at the rest, so what it misses (a refused load's object that stayed
- * because the row had changed, extras left by a `keep` that shrank, an object a rollback or an erasure left
- * stranded below the pointer) waits for a listing. The number is a generation's, not a clock's, so the choice needs
+ * takes the names its publish pushed out of the row's window and never looks at the rest, so what it misses (a crashed
+ * or refused load's object, a delete that failed, extras a fault left after a `keep` that shrank, an object a rollback
+ * or an erasure left stranded below the pointer) waits for a listing. The number is a generation's, not a clock's, so the choice needs
  * no state and no time, and a segment that loads cleanly lists once in this many loads at most. The bound is in
  * generation numbers: a rollback moves the pointer down, and the loads that then take the numbers above it count
  * from there.
@@ -148,14 +156,36 @@ export async function gcOrphanGenerations(
   deps: GenerationDeps,
   options: { keep?: number } = {},
 ): Promise<number[]> {
+  return (await listingPass(ref, deps, options)).deleted;
+}
+
+/** What a listing pass did: the generations it deleted, and the ones below the pointer it left. */
+interface ListingResult {
+  readonly deleted: number[];
+  /** The generations below the pointer the pass kept, ascending. Empty on a tombstone or with no pointer. */
+  readonly kept: number[];
+}
+
+/**
+ * {@link gcOrphanGenerations}, and what it left. With `protect` it deletes by the row's record instead of by a window:
+ * every generation below the pointer that is not in `protect`, so an object no publish named (an orphan of a crashed
+ * or refused load, extras a fault left) goes whatever slot it would have taken in a window. The row's own list must
+ * still be usable, and still not name the generation, when each delete is proved, or the pass refuses.
+ */
+async function listingPass(
+  ref: SegmentRef,
+  deps: GenerationDeps,
+  options: { keep?: number; protect?: readonly number[] },
+): Promise<ListingResult> {
   const keep = options.keep ?? 1;
+  const protect = options.protect === undefined ? undefined : new Set(options.protect);
   // Refused, not clamped: `NaN` slices nothing off the end and would collect the whole grace window, and a
   // negative count that clamps to 0 collects it too, for a caller who wrote a typo.
   if (!Number.isInteger(keep) || keep < 0) {
     throw new ValidationError(`keep must be a non-negative integer; got ${String(keep)}`);
   }
   const record = await deps.registry.get(ref);
-  if (record === null) return []; // no authoritative pointer → don't delete anything
+  if (record === null) return { deleted: [], kept: [] }; // no authoritative pointer → don't delete anything
   const current = record.currentGen;
   // A set, not an array: a listing that spans a purge-and-recreate can yield the same generation number
   // twice (the objects are re-created under the numbers just swept), and the grace window below keeps the
@@ -206,7 +236,7 @@ export async function gcOrphanGenerations(
    *    collection working on a busy segment. A purge-and-recreate or a `rollbackSegment` can move it down, which
    *    is why the pointer is re-proved before every delete (below).
    */
-  const stillCollectable = async (): Promise<void> => {
+  const stillCollectable = async (generation: number): Promise<void> => {
     const still = await deps.registry.get(ref);
     if (still === null) {
       throw new WriteConflictError(`registry row for segment ${ref.segment} was purged mid-pass`);
@@ -215,13 +245,24 @@ export async function gcOrphanGenerations(
       record.status === 'destroyed'
         ? still.token === after.token
         : cutoff === null || (still.currentGen !== null && still.currentGen >= cutoff);
-    if (!ok) {
+    // A protecting pass deletes what the row does not name, so the row must still name something it can be held to:
+    // a rollback drops the list, and a publish since may have added a name this pass did not know.
+    const named = protect === undefined ? undefined : usableKeptGens(still);
+    const unnamed =
+      protect === undefined ||
+      record.status === 'destroyed' ||
+      (named !== undefined && !named.includes(generation));
+    if (!ok || !unnamed) {
       throw new WriteConflictError(
         `segment ${ref.segment} changed incarnation while its generations were being collected`,
       );
     }
   };
 
+  const below =
+    record.status === 'destroyed' || cutoff === null
+      ? []
+      : gens.filter((g) => g < cutoff).sort((a, b) => b - a); // newest-first
   const toDelete =
     record.status === 'destroyed'
       ? gens.sort((a, b) => a - b) // all of it: no reader can resolve a generation of a tombstoned segment
@@ -230,11 +271,12 @@ export async function gcOrphanGenerations(
           // here is either a load about to publish or an orphan we cannot tell apart from it. Deleting would race
           // that publish into a dangling pointer. It is collected once a pointer exists.
           []
-        : // Delete generations below the cutoff, except the newest `keep` of them (the grace window).
-          gens
-            .filter((g) => g < cutoff)
-            .sort((a, b) => b - a) // newest-first
-            .slice(keep);
+        : protect !== undefined
+          ? // The row's list is the window: everything below the pointer it does not name is garbage.
+            // A generation that a lease holds is spared here, beside the ones the row names, once leases exist.
+            below.filter((g) => !protect.has(g))
+          : // Delete generations below the cutoff, except the newest `keep` of them (the grace window).
+            below.slice(keep);
   // The re-read above proves the segment was intact at ONE instant; the deletes below are one round trip each,
   // so the exposure is the whole loop, not that instant. The ordinary branch deletes newest-first, which puts a
   // restarted incarnation's generation 0 LAST — the worst ordering.
@@ -247,24 +289,50 @@ export async function gcOrphanGenerations(
   // Cost is one registry read per object actually deleted, on a path that is already one round trip per object
   // and is never on the read path.
   for (const generation of toDelete) {
-    await stillCollectable();
+    await stillCollectable(generation);
     await deps.storage.delete({ namespace: ref.namespace, segment: ref.segment, generation });
   }
-  return toDelete;
+  const deleted = new Set(toDelete);
+  return {
+    deleted: toDelete,
+    kept: below.filter((g) => !deleted.has(g)).reverse(),
+  };
+}
+
+/** What a load's publish recorded in the row, as `publishGeneration` reports it. */
+export interface PublishedKept {
+  /** The list the publish wrote, or `undefined` when it wrote none (the row then does not know which are kept). */
+  readonly list: readonly number[] | undefined;
+  /** The names the publish pushed out of the window, ascending. */
+  readonly evict: readonly number[];
+  /** The token of the row the publish wrote, when it is known: a write settled by reading the row has none. */
+  readonly token: Token | undefined;
 }
 
 /**
- * Collect after a load's publish: by name when `byName` (the load numbered its generation with one existence check,
- * the object its row named was there when the guard looked, and its caller does not ask for a listing) and `keep` is
- * at most one, and by listing otherwise ({@link gcOrphanGenerations}). A load lists in three cases: `keep` of 2 or
- * more, which a name cannot serve because the window then counts generations that may be absent (a refused
- * neighbour's number is a gap, and by name would take one the window promised to keep); a number the listing chose,
- * so something sits above the pointer or the check could not answer, or a current object the load's check found gone; and
- * every {@link LIST_COLLECTION_CADENCE}th generation, which collects what a name-only pass leaves. It makes no
- * request when `keep` is at least the generation published, since no more generations than that exist below it. A
- * load onto a `destroyed` row is refused at its publish and never reaches here; a drop that lands after the publish
- * leaves this pass collecting the tombstone's generations, one by name or all of them by listing, and the drop's own
- * sweep takes the rest.
+ * Collect after a load's publish. The row records the generations the load keeps, so the pass deletes by name what the
+ * publish pushed out of that window ({@link deleteEvicted}) and lists the segment ({@link gcOrphanGenerations}'s
+ * pass) only when it cannot rely on the row or must catch what a name does not:
+ *
+ *  - the row recorded no list (a `keep` above {@link MAX_KEPT_GENERATIONS}, a row an earlier schema wrote, one a
+ *    rollback or an erasure moved, or a publish whose write was settled by reading the row): the pass keeps the
+ *    newest `keep` generations present below the pointer, and records them with one compare-and-swap, fenced on the
+ *    publish's own token, so the next load collects by name;
+ *  - the guard found the current generation's object gone, or, for a `keep` of 1 or more when the guard took the size
+ *    from the row's summary and opened nothing, one zero-byte read of it does not find it (`proveCurrent`): the
+ *    window then counts a generation that is not there, so the same pass keeps what is;
+ *  - a number the listing chose (something sits above the pointer, or the existence check could not answer), a
+ *    caller that asks for a listing, and every {@link LIST_COLLECTION_CADENCE}th generation: the pass deletes every
+ *    generation below the pointer the row does not name, which collects what a name-only pass leaves.
+ *
+ * It makes no request when `keep` is at least the generation published, since no more generations than that exist
+ * below it. A load onto a `destroyed` row is refused at its publish and never reaches here; a drop that lands after
+ * the publish leaves this pass collecting the tombstone's generations, and the drop's own sweep takes the rest.
+ *
+ * The seed's compare-and-swap moves the row's token, so a derived writer in flight on the row (an erasure rewrite)
+ * meets a lost fence and re-derives: it happens once per row that recorded no list. A `WriteConflictError` from it is
+ * a lost race, and the load took effect, so it is not raised; the next load records the list. Any other fault is
+ * raised, as every fault of a collection after a landed publish is.
  */
 export async function collectAfterLoad(
   ref: SegmentRef,
@@ -272,31 +340,63 @@ export async function collectAfterLoad(
   options: {
     generation: number;
     keep: number;
+    /** The load's number was proved free by one existence check, and no caller asked for a listing. */
     byName: boolean;
+    /** The guard opened the current generation's object and found it gone. */
+    currentGone?: boolean;
+    kept: PublishedKept | undefined;
     /**
-     * The object the load's row named as current, which the caller did not open. Before it collects by name a generation
-     * the window keeps (a `keep` of 1), the pass looks for this object with one zero-byte read, and lists instead
-     * unless that finds it: a name-only pass is safe only while the object the row named is in the bucket.
+     * The object the load's row named as current, which the caller did not open. Before it collects by name, the pass
+     * looks for this object with one zero-byte read, and lists instead unless that finds it: a name-only pass is
+     * safe only while the object the row named is in the bucket.
      */
     proveCurrent?: GenKey;
   },
 ): Promise<number[]> {
-  const { generation, keep, byName, proveCurrent } = options;
+  const { generation, keep, byName, currentGone, kept, proveCurrent } = options;
   if (keep >= generation) return [];
+  const list = kept?.list;
+  if (list === undefined || currentGone === true) return reconcile(ref, deps, { keep, kept });
   const periodic = generation % LIST_COLLECTION_CADENCE === 0;
-  if (byName && keep <= 1 && !periodic) {
-    // A `keep` of 0 deletes the generation it supersedes, which is the one in question: whether it is there or not, it is
-    // the name to take, and nothing is lost by taking it.
+  if (byName && !periodic) {
+    // A `keep` of 0 deletes the generation it supersedes, which is the one in question: whether it is there or not, it
+    // is the name to take, and nothing is lost by taking it.
     if (
-      keep === 1 &&
+      keep >= 1 &&
       proveCurrent !== undefined &&
       !(await objectIsThere(deps.storage, proveCurrent))
     ) {
-      return gcOrphanGenerations(ref, deps, { keep });
+      return reconcile(ref, deps, { keep, kept });
     }
-    return collectByName(ref, deps, { generation, keep });
+    return deleteEvicted(ref, deps, { generation, evict: kept!.evict });
   }
-  return gcOrphanGenerations(ref, deps, { keep });
+  return (await listingPass(ref, deps, { keep, protect: list })).deleted;
+}
+
+/**
+ * The listing pass that keeps the newest `keep` generations present, then records what it kept in the row, once, when
+ * the row recorded none and `keep` fits the list.
+ */
+async function reconcile(
+  ref: SegmentRef,
+  deps: GenerationDeps,
+  options: { keep: number; kept: PublishedKept | undefined },
+): Promise<number[]> {
+  const { keep, kept } = options;
+  const { deleted, kept: present } = await listingPass(ref, deps, { keep });
+  const token = kept?.token;
+  if (token !== undefined && keep <= MAX_KEPT_GENERATIONS && !sameList(kept?.list, present)) {
+    try {
+      await deps.registry.compareAndSwap(ref, token, { keptGens: present });
+    } catch (err) {
+      if (!(err instanceof WriteConflictError)) throw err;
+    }
+  }
+  return deleted;
+}
+
+function sameList(a: readonly number[] | undefined, b: readonly number[]): boolean {
+  return a !== undefined && a.length === b.length && a.every((g, i) => g === b[i]);
 }
 
 /**
@@ -314,50 +414,33 @@ async function objectIsThere(storage: IStorageDriver, key: GenKey): Promise<bool
 }
 
 /**
- * Collect, with no listing, the one generation a publish of `generation` pushed out of a grace window of `keep`
- * (0 or 1): `generation - keep - 1`, when that is a number at all. Returns that name, whether or not an object was
- * there: a delete of an absent object succeeds on every backend and says nothing, so the name returned is the one
- * asked for, not one found, and a generation a concurrent pass, an erasure or a lifecycle rule had already taken is
- * listed all the same. A list is not a receipt (invariant 4), and neither is this.
+ * Delete, with no listing, the generations a publish of `generation` pushed out of its row's window, `evict`, taken
+ * from the list the publish was written against. Returns the names asked for, whether or not an object was there: a
+ * delete of an absent object succeeds on every backend and says nothing, so a generation a concurrent pass, an erasure
+ * or a lifecycle rule had already taken is listed all the same. A list is not a receipt (invariant 4), and neither is
+ * this.
  *
- * The caller has published `generation` having numbered it with one existence check, so the row named
- * `generation - 1` and every generation the window newly evicts is below it. With `keep` of 0 or 1 that name is
- * the one a listing pass would also take, or one it left to a later pass: never a generation the listing keeps.
- * That rests on the object the row named being in the bucket, and a fault can break it (a lifecycle rule or a
- * partial restore removing it, or an erasure deleting the object of a load whose publish then landed;
- * `checkConsistency` reports the state). The caller, which learns that from its guard's read of the current
- * generation or, when the guard took the size from the row's summary and opened nothing, from one zero-byte read of
- * it (see {@link collectAfterLoad}), lists instead; a load that made neither (`allowEmpty` without `minRetained`)
- * cannot tell, and deletes by name the older generation a listing would have kept as the window. `keep` of 2 or more is refused,
- * because there the window counts the generations that exist, which a name cannot know.
- *
- * Collection never touches the current generation, and the row is re-proved before the delete as every pass does.
- * A row that is gone, or a pointer that has fallen below `generation` (a rollback, or a name purged and re-created
- * with fewer loads), deletes nothing and returns `[]`: the publish already landed, nothing here protects it or
- * needs the result, and a throw would hand the caller a failure for a load that took effect. A pointer that has
- * moved above `generation` does not stop it: a publish landing in the meantime leaves routine collection working.
- * A fault, a registry read or a delete that throws, still propagates, with the pointer at `generation`. The bound
- * is `generation`, the pointer this load's own publish set, so the lower-of-two-pointers rule of a listing pass
- * holds with one observation in place of two. Nothing is deleted when `generation` has nothing below its window,
- * and no request is made.
+ * Each delete re-reads the row first (invariant 4) and stops the pass, deleting nothing more and raising nothing, unless
+ * the row still has a pointer at or above `generation` (a rollback, or a name purged and re-created with fewer loads,
+ * has moved it below: the publish already landed, nothing here protects it or needs the result), the name is below
+ * that pointer, and the row's own list is usable and does not name it. The last condition is what keeps a late delete
+ * from taking a generation that a later publish, after a rollback, put in the window. A pointer that has moved above
+ * `generation` does not stop it: a publish landing in the meantime leaves routine collection working. A fault, a
+ * registry read or a delete that throws, propagates, with the pointer at `generation`.
  */
-export async function collectByName(
+export async function deleteEvicted(
   ref: SegmentRef,
   deps: GenerationDeps,
-  options: { generation: number; keep: number },
+  options: { generation: number; evict: readonly number[] },
 ): Promise<number[]> {
-  const { generation, keep } = options;
-  if (!Number.isInteger(keep) || keep < 0 || keep > 1) {
-    throw new ValidationError(`collecting by name needs a keep of 0 or 1; got ${String(keep)}`);
+  const deleted: number[] = [];
+  for (const generation of options.evict) {
+    const still = await deps.registry.get(ref);
+    if (still === null || still.currentGen === null || still.currentGen < options.generation) break;
+    const named = usableKeptGens(still);
+    if (named === undefined || generation >= still.currentGen || named.includes(generation)) break;
+    await deps.storage.delete({ namespace: ref.namespace, segment: ref.segment, generation });
+    deleted.push(generation);
   }
-  const evicted = generation - keep - 1;
-  if (evicted < 0) return [];
-  const still = await deps.registry.get(ref);
-  if (still === null || still.currentGen === null || still.currentGen < generation) return [];
-  await deps.storage.delete({
-    namespace: ref.namespace,
-    segment: ref.segment,
-    generation: evicted,
-  });
-  return [evicted];
+  return deleted;
 }
