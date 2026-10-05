@@ -72,7 +72,7 @@ difference can tear. The obvious case is a **registry that is ahead of the objec
 This is the exact failure `checkConsistency()` detects (issue `missing-storage-generation`). The reverse — storage
 restored to a *later* point than the registry — tears the same way. Storage generations are immutable, but they
 are not kept: a `load` collects, by default, the generations below its new pointer except the newest one (`keep: 1`),
-taking the one its publish pushes out by name and the rest on every 16th generation; a subject erasure collects every
+taking the ones its publish pushes out of its row's window by name and the rest on every 16th generation; a subject erasure collects every
 one below its rewrite (`keep: 0`); and `dropSegment` deletes them all. Two loads after the registry's point are enough
 to delete the generation the restored registry names.
 
@@ -585,14 +585,15 @@ only once the pointer is on the target — so keep the error with your incident 
 The registry reads a row only in a shape the library writes, and refuses anything else rather than guess at it:
 a body that is not JSON, that has no `schemaVersion`, that carries a field the library does not write (at the top
 level or in the record) or one its `schemaVersion` did not have, or that holds a value out of range, such as an
-unknown `status`, a malformed `wrappedDeks` list, a malformed `summary`, or a `token` in none of the forms the
-library writes. A row stamped 1 holds a decimal counter; one stamped 2 holds a decimal counter and a write part
-(16 lowercase hex digits), `.`-separated, or 32 lowercase hex digits of incarnation id before those two. Each is an
+unknown `status`, a malformed `wrappedDeks` list, a malformed `summary`, a malformed `keptGens` list, or a `token` in none of the forms the
+library writes. A row stamped 1 holds a decimal counter; one stamped 2 or 3 holds a decimal counter and a write part
+(16 lowercase hex digits), `.`-separated, or 32 lowercase hex digits of incarnation id before those two. A row stamped
+2 or 1 that carries a `keptGens` is refused too: only schema 3 has it. Each is an
 `IntegrityError`, and its message names the row's key, except for a row over the 1 MiB size cap and a malformed
-`wrappedDeks` list. This release writes rows stamped 2 and reads rows stamped 1 or 2. A row with a higher
+`wrappedDeks` list. This release writes rows stamped 3 and reads rows stamped 1, 2 or 3. A row with a higher
 `schemaVersion` than this build reads was written by a newer release; it is refused with `UnsupportedError`, and the
-fix is to upgrade the process reading it, not to touch the row. A release before 0.12 refuses every row this one
-writes the same way.
+fix is to upgrade the process reading it, not to touch the row. A release before 0.17 refuses every row this one
+writes the same way, and a restore of the registry to a point before the first 0.17 write is the only way back.
 
 One refused row costs far more than its own segment:
 

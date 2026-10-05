@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { CRC32C, Storage } from '@google-cloud/storage';
 import { CloudRoaring, MemoryStorage } from '@/index';
+import { REGISTRY_SCHEMA_VERSION } from '@/drivers/_shared/registry';
 import { GcsStorage } from '@/gcs/backend';
 import { GcsStorageDriver } from '@/gcs/storage';
 import { GcsRegistryDriver } from '@/gcs/registry';
@@ -345,8 +346,9 @@ async function realGeneration(): Promise<{ row: string; object: Buffer }> {
   const { bytes } = await memory.storage.getTail({ segment: 's', generation }, 1 << 20);
   const record = await memory.registry.get({ segment: 's' });
   return {
-    // A row the registry writes today is stamped 2: its token carries an incarnation, which a schema-1 row cannot.
-    row: JSON.stringify({ schemaVersion: 2, deleted: false, record }),
+    // A row the registry writes is stamped with the current schema: its token carries an incarnation, which a
+    // schema-1 row cannot, and a first generation records an empty window.
+    row: JSON.stringify({ schemaVersion: REGISTRY_SCHEMA_VERSION, deleted: false, record }),
     object: Buffer.from(bytes),
   };
 }

@@ -395,6 +395,13 @@ export interface RegistryRecord extends SegmentRef {
    * correct, and a reader then opens the generation instead. Trusted only for the generation it names.
    */
   readonly summary?: RegistrySummary;
+  /**
+   * The generations below `currentGen` that the last publish kept as its grace window, ascending. Optional: absent
+   * means the row does not know which generations are kept, and a load then lists the bucket to collect and records
+   * them; an empty list means none are. Trusted only while every entry is below `currentGen`. A patch that moves
+   * `currentGen` without naming it drops it.
+   */
+  readonly keptGens?: readonly number[];
   /** Epoch-ms of creation / last mutation (from the driver's injected clock). */
   readonly createdAt: number;
   readonly updatedAt: number;
@@ -422,6 +429,8 @@ export interface NewRegistryRecord {
   readonly residency?: GovernanceMeta;
   /** Must name `currentGen` when given. */
   readonly summary?: RegistrySummary;
+  /** Every entry below `currentGen`, ascending; see {@link RegistryRecord.keptGens}. */
+  readonly keptGens?: readonly number[];
 }
 
 /**
@@ -430,12 +439,20 @@ export interface NewRegistryRecord {
  * Presence-based: a field the patch does not mention is left as it was. `summary` is the one exception, because it
  * describes the current generation: a patch that moves `currentGen` and does not mention `summary` drops the old
  * one rather than keep a description of another generation. A `summary` the patch gives must name the
- * `currentGen` the row will have.
+ * `currentGen` the row will have. `keptGens` follows the pointer the same way: a patch that moves `currentGen` and does
+ * not mention it drops it, and one that gives it must name only generations below the `currentGen` the row will have.
  */
 export type RegistryPatch = Partial<
   Pick<
     RegistryRecord,
-    'currentGen' | 'wrappedDeks' | 'keyId' | 'status' | 'retention' | 'residency' | 'summary'
+    | 'currentGen'
+    | 'wrappedDeks'
+    | 'keyId'
+    | 'status'
+    | 'retention'
+    | 'residency'
+    | 'summary'
+    | 'keptGens'
   >
 >;
 

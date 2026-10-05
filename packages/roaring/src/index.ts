@@ -1428,24 +1428,26 @@ export class CloudRoaring {
    * A refused load deletes the object it wrote before returning — it sits above `currentGen`, where generation
    * collection deliberately never looks — but only while the segment's registry row is unchanged or gone. Once
    * another write has changed the row, the generation number it holds may name another incarnation's live object,
-   * so it leaves the orphan rather than risk deleting live data. The orphan is an ordinary generation once a later
-   * one is current above it, and collection counts it within `keep`.
+   * so it leaves the orphan rather than risk deleting live data. No row's list names it, so it takes no place in a
+   * window, and a listing deletes it once a later generation is current above it.
    *
-   * **Collection is by name for the default `keep`.** With `keep` of 0 or 1, a load that found nothing above the
-   * pointer deletes the one generation its publish pushed out of the window and lists nothing; it lists the segment's
-   * objects on every sixteenth generation, and on any load that met an object above the pointer or whose check found
-   * the current generation's object gone, to take what the name-only passes leave, such as the generations an
-   * earlier, wider `keep` held. `keep` of 2 or more lists on every load. {@link LoadResult.collected} then names what
-   * the pass deleted by name, and that generation may have been gone already.
+   * **Collection is by name at any `keep` up to 64.** The segment's row records the generations a load keeps, so a load
+   * that found nothing above the pointer deletes the generations its publish pushed out of the window and lists
+   * nothing. It lists the segment's objects on every sixteenth generation, and on any load that met an object above the
+   * pointer or whose check found the current generation's object gone, to take what the name-only passes leave, such as
+   * an object a crashed load left below the pointer. A `keep` above 64 records no list and lists on every load, and so
+   * does the first load of a row that records none, which then records it. {@link LoadResult.collected} then names
+   * what the pass deleted by name, and one name may have been gone already.
    *
    * What it **throws** for is a fault rather than an outcome: invalid options or ids, and a crypto-shredded
    * segment (`ValidationError`); a key the keystore cannot provide (`KeyUnavailableError`); a current generation
    * that will not open when a guard has to read its size, which it does only when the row has no usable summary of it
-   * (`IntegrityError`); a driver failure; and a collection pass
-   * by listing that could not prove the segment was still the same one (`WriteConflictError`). That one, and a
-   * failure in the collection's own reads or deletes, can be raised **after** the publish already landed, so a throw
-   * does not by itself mean the load did not take effect — re-read the pointer rather than assuming. A collection by
-   * name that finds the segment changed returns an empty `collected` instead.
+   * (`IntegrityError`); a driver failure; and a fault in the collection's own reads, listing or deletes, or in the write
+   * that records the window (anything but a lost race). A collection fault can be raised **after** the publish already
+   * landed, so a throw does not by itself mean the load did not take effect — re-read the pointer rather than assuming.
+   * A collection, by name or by listing, that finds another writer has moved the row since the publish (a load, a
+   * rollback, a purge) stops and returns what it deleted in `collected`: a load that took effect does not throw for a
+   * race it won.
    *
    * **A `TransientError` from the registry write can leave the publish unsettled, and deletes nothing.** The
    * generation's object is sent again after a throttle where the backend allows it (a write id tells a first send
@@ -1982,7 +1984,7 @@ export interface MaterializeOptions extends CombineOptions {
    * recovery story can depend on a materialisation collecting nothing: `rollbackSegment` refuses a target that
    * has been collected. Pass a number to collect on the way through; `0` keeps only the
    * generation this call publishes. It collects by listing the destination, so it clears every generation below the
-   * new one beyond `keep`, however many earlier calls kept, where a `load()` deletes by name the one generation its
+   * new one beyond `keep`, however many earlier calls kept, where a `load()` deletes by name the generations its
    * publish pushes out of the window.
    */
   readonly keep?: number;
