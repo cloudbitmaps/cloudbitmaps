@@ -274,13 +274,13 @@ describe('a load over a current object that was removed from outside', () => {
     zero.reset();
     await loadSegment(SEG, idsOf(10), zero.deps, { keep: 0 });
     expect(zero.tails).toEqual([0]);
-    // keep 2 lists, whatever is there.
+    // keep 2 collects by name a generation the window keeps, so it looks for the current object first, as keep 1 does.
     const wide = world();
     await loadMany(wide, 4, { keep: 2 });
     wide.reset();
     await loadSegment(SEG, idsOf(10), wide.deps, { keep: 2 });
-    expect(wide.tails).toEqual([0]);
-    expect(wide.calls.list).toBe(1);
+    expect(wide.tails).toEqual([0, 0]);
+    expect(wide.calls.list).toBeUndefined();
     // An unguarded load made no such read before the summary existed, and makes none now.
     const bare = world();
     await loadMany(bare, 3);

@@ -207,7 +207,9 @@ describe('a publish whose registry write ends without a definite answer reads th
     const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 1 });
     expect(r).toMatchObject({ generation: 3, published: true });
     expect(r.reason).toBeUndefined();
-    expect([...r.collected]).toEqual([1]); // the collection pass ran, as after any publish: by name, one outside keep
+    // The collection ran, as after any publish, by name: `threeLoads` kept every generation, so the row names 0 and 1
+    // and a `keep` of 1 takes both.
+    expect([...r.collected]).toEqual([0, 1]);
     expect(w.writes.compareAndSwap).toBe(1);
     expect((await w.base.get(SEG))!.currentGen).toBe(3);
     expect(await idsOf(w.storage, 3)).toEqual([1, 2, 3, 4]);
@@ -1087,5 +1089,96 @@ describe('a publish that is settled by reading the row carries the generation su
     for (const { patch } of w.sent) {
       expect(patch.summary).toEqual({ generation: 0, cardinality: 2, metadata: META });
     }
+  });
+});
+
+/**
+ * The window a publish records is derived from the row its write was made against, so a write that ends without an
+ * answer and then lands records, and deletes, exactly what the same write would have after a clean answer.
+ */
+describe('a publish whose write got no answer records the same window as one that did', () => {
+  /** `threeLoads` kept 0 and 1; a load with keep 2 now publishes 3, names 1 and 2, and pushes 0 out. */
+  const next = (w: ReturnType<typeof world>) => loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 2 });
+
+  it('a write that landed and lost its response', async () => {
+    const w = world();
+    await threeLoads(w);
+    w.arm({ kind: 'land-then-transient' });
+    const r = await next(w);
+    expect(r).toMatchObject({ generation: 3, published: true, collected: [0] });
+    expect((await w.base.get(SEG))!.keptGens).toEqual([1, 2]);
+    expect(await generations(w.storage)).toEqual([1, 2, 3]);
+    expect(w.sent.at(-1)!.patch.keptGens).toEqual([1, 2]);
+  });
+
+  it('a write that landed and then reported a conflict', async () => {
+    const w = world();
+    await threeLoads(w);
+    w.arm({ kind: 'land-then-conflict' });
+    const r = await next(w);
+    expect(r).toMatchObject({ generation: 3, published: true, collected: [0] });
+    expect((await w.base.get(SEG))!.keptGens).toEqual([1, 2]);
+    expect(await generations(w.storage)).toEqual([1, 2, 3]);
+  });
+
+  it('a write throttled and not applied, sent again from the row just read', async () => {
+    const w = world();
+    await threeLoads(w);
+    w.arm({ kind: 'transient-unapplied' });
+    const r = await next(w);
+    expect(r).toMatchObject({ generation: 3, published: true, collected: [0] });
+    expect(w.sent.map((s) => s.patch.keptGens)).toEqual([
+      [1, 2],
+      [1, 2],
+    ]);
+    expect((await w.base.get(SEG))!.keptGens).toEqual([1, 2]);
+    expect(await generations(w.storage)).toEqual([1, 2, 3]);
+  });
+
+  it('a write that landed on a row that records no list: the load lists, keeps the newest two, and seeds nothing it cannot fence', async () => {
+    const w = world();
+    await threeLoads(w);
+    const row = (await w.base.get(SEG))!;
+    await w.base.compareAndSwap(SEG, row.token, { keptGens: undefined });
+    w.arm({ kind: 'land-then-transient' });
+    const r = await next(w);
+    expect(r).toMatchObject({ generation: 3, published: true });
+    expect(await generations(w.storage)).toEqual([1, 2, 3]); // the window, found by listing
+    // The write settled by reading the row has no token to fence a seed on, so the row records none yet.
+    expect((await w.base.get(SEG))!.keptGens).toBeUndefined();
+    const again = await loadSegment(SEG, [1, 2, 3, 4, 5], w.deps, { keep: 2 });
+    expect(again).toMatchObject({ generation: 4, published: true });
+    expect((await w.base.get(SEG))!.keptGens).toEqual([2, 3]);
+    expect(await generations(w.storage)).toEqual([2, 3, 4]);
+  });
+
+  it('a write that lost to another load deletes nothing and records nothing of its own', async () => {
+    const w = world();
+    await threeLoads(w);
+    w.arm({
+      kind: 'conflict-unapplied',
+      meanwhile: async () => {
+        await loadSegment(SEG, [1, 2, 3, 4, 5], w.plain, { keep: 9 }); // publishes 3 first, keeping all
+      },
+    });
+    const r = await next(w);
+    expect(r).toMatchObject({ published: false, reason: 'superseded' });
+    // The other load numbered past the object this one had written, and published 4; the row names what it kept. The
+    // refused object stays below the pointer, named by no list: a listing takes it.
+    expect((await w.base.get(SEG))!.keptGens).toEqual([0, 1, 2]);
+    expect(await generations(w.storage)).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  it('a publish with no keep, as a bulk load makes, leaves the row recording no list', async () => {
+    const w = world();
+    await threeLoads(w);
+    expect((await w.base.get(SEG))!.keptGens).toEqual([0, 1]);
+    const published = await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 3 }, [9], {
+      registry: w.base,
+    });
+    expect(published).toBeDefined();
+    const row = (await w.base.get(SEG))!;
+    expect(row.currentGen).toBe(3);
+    expect(row.keptGens).toBeUndefined();
   });
 });

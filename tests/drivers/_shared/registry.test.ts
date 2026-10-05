@@ -10,6 +10,7 @@ import {
   recordFromNew,
   REGISTRY_SCHEMA_VERSION,
   serializeRegistryEnvelope,
+  usableKeptGens,
   validateNewRegistryRecord,
   validateRegistryPatch,
   type RegistryEnvelope,
@@ -178,12 +179,13 @@ const baseRecord = {
  * Schema 2 is read beside schema 1, never instead of it: a row 0.11 wrote is read as it was written, and holds
  * only what schema 1 could hold. Anything newer than 2 is refused, as before.
  */
-describe('registry row schema 2: what each schema may hold', () => {
-  it('stamps 2, and reads 1 and 2', () => {
-    expect(REGISTRY_SCHEMA_VERSION).toBe(2);
+describe('registry row schemas: what each schema may hold', () => {
+  it('stamps 3, and reads 1, 2 and 3', () => {
+    expect(REGISTRY_SCHEMA_VERSION).toBe(3);
     expect(assertRegistrySchemaVersion(1, 'v1')).toBe(1);
     expect(assertRegistrySchemaVersion(2, 'v2')).toBe(2);
-    expect(() => assertRegistrySchemaVersion(3, 'v3')).toThrow(UnsupportedError);
+    expect(assertRegistrySchemaVersion(3, 'v3')).toBe(3);
+    expect(() => assertRegistrySchemaVersion(4, 'v4')).toThrow(UnsupportedError);
   });
 
   it('reads a schema-1 row with its decimal token as it was written', () => {
@@ -626,5 +628,134 @@ describe('a written summary is a frozen, canonical copy', () => {
     const patched = validateRegistryPatch({ summary }).summary as { metadata: object };
     expect(Object.isFrozen(patched)).toBe(true);
     expect(Object.keys(patched.metadata)).toEqual(['2', '10', 'a', 'b']);
+  });
+});
+
+/**
+ * `keptGens` is the generations below the pointer a load keeps as its grace window, recorded in the row so a load
+ * collects by name. Absent means unknown (the load lists); `[]` means known empty.
+ */
+describe('the kept generations: schema, shape and the pointer', () => {
+  const MAX_WRITTEN = 64;
+  const MAX_READ = 256;
+  const prev: RegistryRecord = { ...baseRecord, status: 'active', token: T2, keptGens: [1, 2] };
+  const row = (keptGens: unknown, schema = 3) =>
+    rowText(schema, { ...baseRecord, token: T2, keptGens });
+  const range = (n: number): number[] => Array.from({ length: n }, (_, i) => i);
+
+  it('a schema-3 row round-trips the list, and one without it reads as absent', () => {
+    const text = serializeRegistryEnvelope({ deleted: false, record: prev });
+    expect(JSON.parse(text).record.keptGens).toEqual([1, 2]);
+    expect(parseRegistryEnvelope(text, 'k').record.keptGens).toEqual([1, 2]);
+    const none = parseRegistryEnvelope(
+      serializeRegistryEnvelope({ deleted: false, record: { ...prev, keptGens: undefined } }),
+      'k',
+    );
+    expect(none.record.keptGens).toBeUndefined();
+    expect(parseRegistryEnvelope(row([]), 'k').record.keptGens).toEqual([]);
+  });
+
+  it('a schema-2 or schema-1 row carrying the list is refused as undeclared (IntegrityError)', () => {
+    expect(() => parseRegistryEnvelope(row([1], 2), 'v2')).toThrow(IntegrityError);
+    expect(() => parseRegistryEnvelope(row([1], 2), 'v2')).toThrow(/keptGens/);
+    expect(() =>
+      parseRegistryEnvelope(rowText(1, { ...baseRecord, token: '7', keptGens: [1] }), 'v1'),
+    ).toThrow(/keptGens/);
+    expect(() =>
+      parseRegistryEnvelope(rowText(2, { ...baseRecord, token: T2 }), 'v2'),
+    ).not.toThrow();
+  });
+
+  it.each([
+    ['a string', '5'],
+    ['an object', {}],
+    ['null', null],
+    ['a fraction', [1.5]],
+    ['a negative', [-1]],
+    ['a string entry', ['3']],
+    ['a null entry', [null]],
+    ['past 2^53', [2 ** 53]],
+    ['a boolean', [true]],
+    ['descending', [3, 2]],
+    ['a duplicate', [2, 2]],
+    ['too long', range(MAX_READ + 1)],
+  ])('refuses %s on a stored row, naming the row (IntegrityError)', (_name, value) => {
+    expect(() => parseRegistryEnvelope(row(value), 'registry/k.reg')).toThrow(IntegrityError);
+    expect(() => parseRegistryEnvelope(row(value), 'registry/k.reg')).toThrow(
+      /keptGens.*: registry\/k\.reg$/,
+    );
+  });
+
+  it('reads up to 256 entries and writes at most 64', () => {
+    expect(() => parseRegistryEnvelope(row(range(MAX_READ)), 'k')).not.toThrow();
+    expect(() =>
+      validateRegistryPatch({ currentGen: 100, keptGens: range(MAX_WRITTEN) }),
+    ).not.toThrow();
+    expect(() =>
+      validateRegistryPatch({ currentGen: 100, keptGens: range(MAX_WRITTEN + 1) }),
+    ).toThrow(ValidationError);
+  });
+
+  it('a well-formed list that disagrees with the pointer is read, and is not usable', () => {
+    const stale = parseRegistryEnvelope(row([1, 5]), 'k').record; // currentGen is 3
+    expect(stale.keptGens).toEqual([1, 5]);
+    expect(usableKeptGens(stale)).toBeUndefined();
+    expect(usableKeptGens({ ...stale, keptGens: [1, 2] })).toEqual([1, 2]);
+    expect(usableKeptGens({ ...stale, keptGens: [] })).toEqual([]);
+    expect(usableKeptGens({ ...stale, keptGens: undefined })).toBeUndefined();
+    expect(usableKeptGens({ ...stale, currentGen: null, keptGens: [] })).toBeUndefined();
+  });
+
+  it('refuses at the write boundary a list that is out of order, too long, or not below the pointer', () => {
+    expect(() => validateNewRegistryRecord({ currentGen: 5, keptGens: [3, 2] })).toThrow(
+      ValidationError,
+    );
+    expect(() => validateNewRegistryRecord({ currentGen: 5, keptGens: [1, 5] })).toThrow(
+      ValidationError,
+    );
+    expect(() => validateNewRegistryRecord({ currentGen: null, keptGens: [] })).toThrow(
+      ValidationError,
+    );
+    expect(() => validateNewRegistryRecord({ currentGen: 5, keptGens: [1, 4] })).not.toThrow();
+    expect(() => applyRegistryPatch(prev, { currentGen: 2, keptGens: [1, 2] }, 2, '2')).toThrow(
+      ValidationError,
+    );
+    expect(() => applyRegistryPatch(prev, { keptGens: [1, 3] }, 2, '2')).toThrow(ValidationError);
+    expect(() => applyRegistryPatch(prev, { currentGen: null, keptGens: [] }, 2, '2')).toThrow(
+      ValidationError,
+    );
+  });
+
+  it('a patch that moves the pointer without the list drops it; one that leaves the pointer keeps it', () => {
+    expect(applyRegistryPatch(prev, { currentGen: 4 }, 2, '2').keptGens).toBeUndefined();
+    expect(applyRegistryPatch(prev, { currentGen: null }, 2, '2').keptGens).toBeUndefined();
+    expect(applyRegistryPatch(prev, { retention: { expiresAt: 9 } }, 2, '2').keptGens).toEqual([
+      1, 2,
+    ]);
+    expect(applyRegistryPatch(prev, { currentGen: 3 }, 2, '2').keptGens).toEqual([1, 2]);
+  });
+
+  it('a patch can name the list with the move, replace it, or clear it', () => {
+    expect(applyRegistryPatch(prev, { currentGen: 4, keptGens: [2, 3] }, 2, '2').keptGens).toEqual([
+      2, 3,
+    ]);
+    expect(applyRegistryPatch(prev, { keptGens: [2] }, 2, '2').keptGens).toEqual([2]);
+    expect(applyRegistryPatch(prev, { keptGens: undefined }, 2, '2').keptGens).toBeUndefined();
+  });
+
+  it('writes a frozen copy: changing the caller array afterwards changes nothing written', () => {
+    const mine = [1, 2];
+    const checked = validateRegistryPatch({ keptGens: mine });
+    mine.push(9);
+    expect(checked.keptGens).toEqual([1, 2]);
+    const created = validateNewRegistryRecord({ currentGen: 10, keptGens: mine });
+    mine.length = 0;
+    expect(created.keptGens).toEqual([1, 2, 9]);
+    expect(Object.isFrozen(created.keptGens)).toBe(true);
+  });
+
+  it('recordFromNew carries the list', () => {
+    const made = recordFromNew({ segment: 's' }, { currentGen: 5, keptGens: [4] }, 1, T2);
+    expect(made.keptGens).toEqual([4]);
   });
 });
