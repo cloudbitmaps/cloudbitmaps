@@ -65,6 +65,7 @@ export const ROUTED: readonly string[] = [
   'tests/core/summary-lifecycle.test.ts',
   'tests/core/summary-localfs.test.ts',
   'tests/core/kept-generations-legacy.test.ts',
+  'tests/core/lease-churn.test.ts',
   'tests/core/leases.test.ts',
   'tests/core/pin-lease.property.test.ts',
   'tests/core/kept-generations.property.test.ts',
