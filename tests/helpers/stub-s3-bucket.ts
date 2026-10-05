@@ -17,6 +17,7 @@ export type Operation =
   | 'CompleteMultipartUpload'
   | 'AbortMultipartUpload'
   | 'GetObject'
+  | 'ListObjectsV2'
   | 'DeleteObject';
 
 interface StubRequest {
@@ -40,7 +41,7 @@ function operationOf(req: StubRequest): Operation {
   if (req.method === 'POST')
     return 'uploads' in q ? 'CreateMultipartUpload' : 'CompleteMultipartUpload';
   if (req.method === 'DELETE') return 'uploadId' in q ? 'AbortMultipartUpload' : 'DeleteObject';
-  if (req.method === 'GET') return 'GetObject';
+  if (req.method === 'GET') return 'list-type' in q ? 'ListObjectsV2' : 'GetObject';
   throw new Error(`the stub does not serve ${req.method} ${req.path}`);
 }
 
@@ -159,6 +160,20 @@ export class StubBucket {
   private async apply(op: Operation, req: StubRequest): Promise<StubResponse> {
     const key = decodeURIComponent(req.path.slice(`/${BUCKET}/`.length));
     const q = req.query ?? {};
+    if (op === 'ListObjectsV2') {
+      const prefix = String(q.prefix ?? '');
+      const esc = (t: string): string => t.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+      const contents = [...this.objects.keys()]
+        .filter((k) => k.startsWith(prefix))
+        .sort()
+        .map((k) => `<Contents><Key>${esc(k)}</Key></Contents>`)
+        .join('');
+      return respond(
+        200,
+        { 'content-type': 'application/xml' },
+        `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><Name>${BUCKET}</Name><IsTruncated>false</IsTruncated>${contents}</ListBucketResult>`,
+      );
+    }
     const header = (name: string): string | undefined =>
       req.headers[name] ?? req.headers[name.toLowerCase()];
     const conditional = (): StubResponse | undefined => {

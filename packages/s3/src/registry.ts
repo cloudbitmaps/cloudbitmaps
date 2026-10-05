@@ -130,6 +130,11 @@ export class S3RegistryStore implements ObjectRegistryStore {
     return facts !== undefined && facts.sendsDeleteIfMatch && isAwsS3Host(facts.host);
   }
 
+  /** {@link ObjectRegistryStore.resolveCapabilities}: the client's answer, which sends no request. */
+  resolveCapabilities(): Promise<void> {
+    return this.settle();
+  }
+
   /** Ask the client once what it does with the registry's requests; every caller waits for the same answer. */
   private settle(): Promise<void> {
     this.probed ??= probeClient(this.client, this.bucket).then((facts) => {

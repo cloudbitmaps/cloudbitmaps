@@ -52,6 +52,7 @@ import {
   mapWithConcurrency,
   resolveBudget,
   resolvePerOpBudget,
+  reapRegistryTombstones,
   retireExpired,
   runConsistencyCheck,
   runExport,
@@ -72,6 +73,8 @@ import type {
   LoadOptions,
   LoadRefusal,
   LoadResult,
+  ReapRegistryTombstonesOptions,
+  ReapRegistryTombstonesResult,
   RollbackResult,
   Clock,
   CodecBitmap,
@@ -1655,6 +1658,49 @@ export class CloudRoaring {
   }
 
   /**
+   * **Remove the registry rows that releases before 0.12.0 left as `deleted: true` envelopes.** Those releases never
+   * removed a row they deleted, and no later call removes it either: it is invisible to every read, and every full
+   * listing of the registry still reads it (one GET each). This is the one call that removes them. It is an admin call,
+   * not a sweep, and nothing schedules it: run it once after the last process on a release before 0.12.0 is gone.
+   *
+   * ```ts
+   * const preview = await store.reapRegistryTombstones({ dryRun: true });
+   * console.log(`would remove ${preview.wouldReap} of ${preview.examined} rows read`);
+   *
+   * const done = await store.reapRegistryTombstones({ confirmNoLegacyWriters: true });
+   * if (done.limited) runAgain(); // `limit` (default 1,000) stopped the run with rows unread
+   * ```
+   *
+   * **What it removes.** Only a row that is `deleted: true` and whose token carries no incarnation id, which is what a
+   * release before 0.12.0 wrote. It never touches a live row, a `destroyed` row (a crypto-shred's or a
+   * `dropSegment`'s tombstone: the attestation of an erasure, which it cannot tell from another), or a deleted row with
+   * an incarnation id, and it never touches a generation. **So it does not clean a bucket completely**: the
+   * `destroyed` tombstones `dropSegment` leaves stay, and so do live rows written before 0.12.0.
+   * It also covers the library's own bookkeeping rows when `namespace` is not set, by the same rule.
+   *
+   * **The two things it asks.** `confirmNoLegacyWriters: true` is required for a real run (without it, a
+   * `ValidationError`, and nothing is requested): your statement that no process on a release before 0.12.0 writes
+   * this registry, since one that did would, re-creating a removed name, issue the removed row's tokens again. And the
+   * registry must apply a delete under a precondition: where its `conditionalDelete` capability is off (GCS by default,
+   * S3 on a custom endpoint) it throws `CapabilityError` before any request, dry run included. A registry that keeps
+   * no such rows (the in-memory and local-filesystem ones) throws `UnsupportedError`.
+   *
+   * **Each removal is fenced** on the version it read, so a `create` that lands over the envelope first wins, the
+   * delete is refused, and the row is counted as `skipped.raced`. A `create` that had already read the envelope and
+   * whose write meets the removal throws `WriteConflictError`, which this library does not retry: retry the create, and
+   * it finds no row and writes one.
+   *
+   * **Cost** over R rows read and E removed: `ceil(R / 1000)` LIST requests, R GETs and E DELETEs (a dry run, no
+   * DELETEs). `limit` bounds the removals, and the run stops listing once it is spent. An unreadable object stops the
+   * run with an error naming its key, and removes nothing more: it may be a newer release's row.
+   */
+  async reapRegistryTombstones(
+    options: ReapRegistryTombstonesOptions = {},
+  ): Promise<ReapRegistryTombstonesResult> {
+    return reapRegistryTombstones(this.requireRegistry('reapRegistryTombstones'), options);
+  }
+
+  /**
    * **Forget everything this store has cached about a segment.** Use it after destroying or retiring a segment
    * through a path this store did not perform itself.
    *
@@ -2860,6 +2906,8 @@ export type {
   RegistryRecord,
   RegistryStatus,
   RegistrySummary,
+  ReapRegistryTombstonesOptions,
+  ReapRegistryTombstonesResult,
   RegistryWriteOptions,
   RetentionPolicy,
   RetireEntry,
