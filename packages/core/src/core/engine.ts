@@ -788,10 +788,10 @@ export class SegmentEngine {
     // stays per key, since an emptied AND never needs its chunk.
     const streams: StreamedChunks[] = [];
     const streamExcludes = mode === 'any' || operands.length === 1;
-    const open = (o: Operand, wanted: (key: number) => boolean): void => {
+    const open = (o: Operand, wanted?: (key: number) => boolean): void => {
       o.streamed = this.openStreamed(
         o.seg,
-        common.filter(wanted),
+        wanted === undefined ? common : common.filter(wanted),
         o.gen,
         o.epoch,
         limit,
@@ -799,7 +799,7 @@ export class SegmentEngine {
       );
       if (o.streamed) streams.push(o.streamed);
     };
-    for (const o of operands) open(o, mode === 'all' ? () => true : (k) => o.keys.has(k));
+    for (const o of operands) open(o, mode === 'all' ? undefined : (k) => o.keys.has(k));
     if (streamExcludes) for (const e of excludes) open(e, (k) => e.keys.has(k));
 
     return {
@@ -1011,10 +1011,12 @@ export class SegmentEngine {
    */
   private streamedChunk(streamed: StreamedChunks, chunkKey: number): Promise<CodecBitmap | null> {
     if (!streamed.opened) {
-      const hit = this.cache?.get(this.chunkCacheKey({ ...streamed.seg, chunkKey }, streamed.gen));
-      if (this.cache && this.metricsOn)
-        this.metrics.onEvent({ kind: 'cache', hit: hit !== undefined });
-      if (hit) return Promise.resolve(hit);
+      const cache = this.cache;
+      if (cache) {
+        const hit = cache.get(this.chunkCacheKey({ ...streamed.seg, chunkKey }, streamed.gen));
+        if (this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: hit !== undefined });
+        if (hit) return Promise.resolve(hit);
+      }
       this.startStream(streamed, chunkKey);
     } else if (streamed.inStream !== undefined && !streamed.inStream.has(chunkKey)) {
       const ref = { ...streamed.seg, chunkKey };
