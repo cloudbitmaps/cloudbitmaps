@@ -142,7 +142,9 @@ export function prepareLoadInput(
   if (Symbol.iterator in input || Symbol.asyncIterator in input) return input;
   const keys = Object.keys(input);
   if (keys.length === 1 && keys[0] === 'serialized') {
-    return decode((input as { serialized: unknown }).serialized, '{ serialized }', codec);
+    return new DecodedLoadInput(
+      decodeSerialized((input as { serialized: unknown }).serialized, codec, '{ serialized }'),
+    );
   }
   if (keys.length === 1 && keys[0] === 'bitmap') {
     const bitmap = (input as { bitmap: unknown }).bitmap as Partial<PortableBitmap> | null;
@@ -154,7 +156,7 @@ export function prepareLoadInput(
       const size = bitmap.getSerializationSizeInBytes('portable');
       if (typeof size === 'number' && size > MAX_SERIALIZED_LOAD_BYTES) throw overCap(what, size);
     }
-    return decode(bitmap.serialize('portable'), what, codec);
+    return new DecodedLoadInput(decodeSerialized(bitmap.serialize('portable'), codec, what));
   }
   throw new ValidationError(
     `a load takes ids (an iterable of integers), { serialized } or { bitmap }, as the only key; got an object ` +
@@ -162,7 +164,22 @@ export function prepareLoadInput(
   );
 }
 
-function decode(bytes: unknown, what: string, codec: CodecInterface): DecodedLoadInput {
+/**
+ * Portable bytes a caller holds, checked and decoded by the codec's safe deserializer: the one check every bitmap
+ * input of a load goes through, and what a flavor offers its users to decode bytes they hold themselves.
+ *
+ * The bytes must be a `Uint8Array` (a Node `Buffer` is one), at most {@link MAX_SERIALIZED_LOAD_BYTES}, one whole
+ * bitmap and structurally sound. A view is read over the bytes it really holds, and bytes in a `SharedArrayBuffer`
+ * are copied first. An empty or detached buffer is the empty bitmap.
+ *
+ * @param what names the input in a refusal's message.
+ * @throws {ValidationError} for anything that is not such bytes; nothing reaches the codec's native decoder then.
+ */
+export function decodeSerialized(
+  bytes: unknown,
+  codec: CodecInterface,
+  what = 'the bytes',
+): CodecBitmap {
   if (typeof bytes !== 'object' || bytes === null || tagOf(bytes) !== 'Uint8Array') {
     throw new ValidationError(`${what} must be a Uint8Array of portable Roaring bytes`);
   }
@@ -171,9 +188,7 @@ function decode(bytes: unknown, what: string, codec: CodecInterface): DecodedLoa
   // Bytes in a SharedArrayBuffer are copied: another thread could change them between the check and the decode.
   const own = isShared(view.buffer) ? new Uint8Array(view) : view;
   try {
-    return new DecodedLoadInput(
-      codec.safeDeserialize(own, MAX_SERIALIZED_LOAD_BYTES, { whole: true }),
-    );
+    return codec.safeDeserialize(own, MAX_SERIALIZED_LOAD_BYTES, { whole: true });
   } catch (err) {
     // The codec reports bytes it refuses as corrupt; here they are the caller's input, not a stored object.
     if (!isIntegrityError(err)) throw err;

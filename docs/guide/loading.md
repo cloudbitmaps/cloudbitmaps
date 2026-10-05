@@ -200,7 +200,7 @@ generation from one process, so the parts reach one process, which joins them an
 
 ```ts
 import roaring from 'roaring';
-import { CloudRoaring, MemoryStorage, ValidationError } from '@cloudbitmaps/roaring';
+import { CloudRoaring, ValidationError, deserializePortable } from '@cloudbitmaps/roaring';
 const { RoaringBitmap32 } = roaring;
 
 // In each worker: its range's part, as portable Roaring bytes. Send these to the joining process.
@@ -208,19 +208,13 @@ export function partBytes(part: InstanceType<typeof RoaringBitmap32>): Uint8Arra
   return part.serialize('portable');
 }
 
-// In the joining process: check every part, join them, refuse an overlap, and load once.
+// In the joining process: decode every part, join them, refuse an overlap, and load once.
 export async function loadParts(
   store: CloudRoaring,
   ref: { segment: string; namespace?: string },
   shipped: Uint8Array[],
 ) {
-  // The library's own check of bytes, in a throwaway in-memory store: it touches no storage of yours.
-  const checker = new CloudRoaring({ storage: new MemoryStorage() });
-  const parts: Array<InstanceType<typeof RoaringBitmap32>> = [];
-  for (const bytes of shipped) {
-    await checker.load({ segment: 'check' }, { serialized: bytes }, { allowEmpty: true }); // ValidationError if malformed
-    parts.push(RoaringBitmap32.deserialize(bytes, 'portable')); // only bytes that passed
-  }
+  const parts = shipped.map((bytes) => deserializePortable(bytes)); // ValidationError if malformed
   const union = RoaringBitmap32.orMany(parts);
   const total = parts.reduce((sum, part) => sum + part.size, 0);
   if (union.size !== total) {
@@ -230,12 +224,13 @@ export async function loadParts(
 }
 ```
 
-- **Check the bytes before you decode them.** Parts that cross between processes are untrusted input, as stored bytes
-  are. `RoaringBitmap32.deserialize` hands the bytes to the native decoder, which bounds its reads and checks nothing
-  else: bytes of the wrong shape decode into a bitmap whose sizes and answers are wrong, and some shapes crash the
-  process. The library's safe deserializer is not exported; the check it makes is the one every `{ serialized }` load
-  makes first, so the recipe runs each part through one in a throwaway store and decodes only the bytes that pass. A
-  single part that needs no joining goes straight to `store.load(ref, { serialized: bytes })`.
+- **Decode with `deserializePortable`, not `RoaringBitmap32.deserialize`.** Parts that cross between processes are
+  untrusted input, as stored bytes are. `RoaringBitmap32.deserialize` hands the bytes to the native decoder, which
+  bounds its reads and checks nothing else: bytes of the wrong shape decode into a bitmap whose sizes and answers are
+  wrong, and some shapes crash the process. `deserializePortable(bytes)` makes the check a `{ serialized }` load makes
+  first (the size cap, the structural check, exactly one bitmap) and only then decodes, and throws `ValidationError`
+  for bytes that fail it. It takes a `Uint8Array`, which a Node `Buffer` is. A single part that needs no joining goes
+  straight to `store.load(ref, { serialized: bytes })`.
 - **Overlap is refused by the size check.** `orMany` merges parts that share ids without a word, so a range that two
   workers both built would load as if nothing were wrong. The members of disjoint parts add up to the members of their
   union, and they add up to fewer when any id is in two parts, so the recipe compares the two and refuses.
@@ -243,8 +238,7 @@ export async function loadParts(
   boundary splits one, both parts hold a piece of it and the union merges them, so the generation is the same bytes a
   load of the whole set writes. Cutting on whole chunks keeps each part's chunks its own, and a union of parts like
   that copies containers rather than merging them.
-- **It costs the requests of one load.** The parts never touch storage: they are bytes in your processes, and the
-  throwaway store is in memory. A segment's first load is 2 PUT + 3 GET, pointer included, for a single-part object,
+- **It costs the requests of one load.** The parts never touch storage: they are bytes in your processes. A segment's first load is 2 PUT + 3 GET, pointer included, for a single-part object,
   whether it was joined from one part or from eight ([measured](../benchmarks.md#the-in-region-run--run-2026-10-05-50b5d); a
   reload and a load from the third on are [expected, not measured](../benchmarks.md#expected-not-measured)).
 - **When this is not enough.** A segment too large for one process to hold, as its union and its serialization
