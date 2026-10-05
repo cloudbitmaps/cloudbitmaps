@@ -488,6 +488,25 @@ describe("the expired-operand shortcuts keep the call's own budget", () => {
   });
 });
 
+describe("an andNot keeps the call's own budget and concurrency", () => {
+  it('refuses a bad concurrency, and a per-call budget:false lifts a tight store budget', async () => {
+    const store = new CloudRoaring({
+      storage: new MemoryStorage(),
+      cache: { genTtlMs: 0 },
+      budget: { maxRequests: 2 },
+    });
+    await store.load({ segment: 'a' }, IDS); // six chunks
+    await store.load({ segment: 'live' }, [1]);
+    const a = store.segment('a');
+    const live = store.segment('live');
+    await expect(collect(a.andNot([live], { concurrency: 0 }))).rejects.toThrow(ValidationError);
+    await expect(collect(a.andNot([live]))).rejects.toThrow(BudgetExceededError);
+    expect(await collect(a.andNot([live], { budget: false }))).toEqual(
+      IDS.filter((id) => id !== 1),
+    );
+  });
+});
+
 describe('a pin keeps its guarantees under a range', () => {
   it('a pinned range read of a collected generation throws NotFoundError, not the next generation', async () => {
     const w = await world();

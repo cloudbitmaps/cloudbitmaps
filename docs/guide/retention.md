@@ -92,7 +92,8 @@ epoch-millisecond instant. Past it, every read through that handle answers empty
 `intersect` empty and drops out of a `union`. **An expired exclusion throws, in every shape**: in an
 `andNot`, and as `exclude` on an `intersect` or a `union`, the stream rejects with a `ValidationError` that names it,
 before any request is made, so an opt-out list that has lapsed cannot quietly stop suppressing. An `*Into` that
-involves an expired handle, an exclusion included, throws `ValidationError` too. A handle deadline reclaims nothing and binds no other handle, so `count()` answering `0` while the
+involves an expired handle, an exclusion included, throws `ValidationError` too. A handle deadline reclaims
+nothing and binds no other handle, so `count()` answering `0` while the
 objects are still in the bucket is expected: it is one reader's cut-off, not a policy. Record the policy with
 `setRetention` to make the expiry durable, visible to the sweep and reclaimable. A seconds-shaped value is refused at
 the handle, and `seg.expiresAt` reads it back.

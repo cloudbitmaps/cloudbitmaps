@@ -179,7 +179,7 @@ would let through the ids it exists to remove. The check is made when the combin
 clock, and runs ahead of the rules for operands, so an expired exclusion is refused even where the combine would
 read empty, and one that names a segment that does not exist is refused as expired, not as an absent operand. A
 stream already being read is not re-checked if its exclusion expires part-way. An `*Into` that involves an expired
-handle, an exclusion included, throws the same `ValidationError`: it does not publish a generation the exclusion did
+handle, an exclusion included, throws a `ValidationError` too: it does not publish a generation the exclusion did
 not shape.
 
 It does **not** reclaim the bytes (`retireExpired` does, so `count()` reporting 0 while objects still exist is the

@@ -2515,8 +2515,8 @@ export class Segment {
   /**
    * The refusal for a combine whose **exclusion** has expired, or `undefined` when none has. Unlike an expired
    * operand, which reads empty, an exclusion is a suppression or opt-out list: left out silently, the result
-   * would include the very ids it was passed to remove. So it is refused, with the same {@link ValidationError}
-   * the `*Into` verbs raise for an expired handle, naming each expired exclusion.
+   * would include the very ids it was passed to remove. So it is refused with a {@link ValidationError} naming each
+   * expired exclusion, as the `*Into` verbs refuse an expired handle.
    *
    * It is judged against the injected clock when the combine is called, before the engine is asked for anything:
    * no request is made, and an expired exclusion that names a segment that does not exist is refused as expired,
