@@ -123,6 +123,8 @@ interface Operand {
   readonly chunkless: boolean;
   /** The cache-key component — a `currentVersion` string, a generation number, or absent. */
   readonly gen: string | number | null | undefined;
+  /** The invalidation count when the operand began to be resolved: see {@link StreamedChunks.epoch}. */
+  readonly epoch: number;
   /** The operand's chunks as a coalesced stream, when it is read that way; else each chunk is read on its own. */
   streamed?: StreamedChunks;
 }
@@ -137,6 +139,12 @@ interface StreamedChunks {
   readonly seg: SegmentRef;
   /** The version the read planned under; a chunk is cached under the version it was read from, which may be newer. */
   readonly gen: string | number | undefined;
+  /**
+   * The engine's invalidation count when the read began to resolve its generation. A stream that opens after it has
+   * moved is marked `invalidated`: it may read newer bytes than the generation it planned under, which must not be
+   * cached under that generation's key.
+   */
+  readonly epoch: number;
   /** The keys the read will take, ascending. */
   readonly keys: readonly number[];
   /** The range requests the stream holds ahead, and how many it opens with. */
@@ -350,6 +358,8 @@ export class SegmentEngine {
    * they deliver, as a read whose entry an invalidation dropped does not (streams hold no `openReads` entry).
    */
   private readonly openStreams = new Set<StreamedChunks>();
+  /** How many times {@link invalidate} has been called: a read compares it with the count it began under. */
+  private invalidations = 0;
 
   constructor(deps: EngineDeps) {
     this.storage = deps.storage;
@@ -460,8 +470,16 @@ export class SegmentEngine {
     seg: SegmentRef,
     chunkKeys: readonly number[],
     gen: string | number | null | undefined,
+    epoch: number,
   ): { take(chunkKey: number): Promise<CodecBitmap | null>; close(): void } {
-    const streamed = this.openStreamed(seg, chunkKeys, gen, DEFAULT_INTERSECT_CONCURRENCY, 1);
+    const streamed = this.openStreamed(
+      seg,
+      chunkKeys,
+      gen,
+      epoch,
+      DEFAULT_INTERSECT_CONCURRENCY,
+      1,
+    );
     if (streamed !== undefined) {
       return {
         take: (chunkKey) => this.streamedChunk(streamed, chunkKey),
@@ -488,10 +506,11 @@ export class SegmentEngine {
   }
 
   private async *iterateAll(seg: SegmentRef): AsyncGenerator<number> {
+    const epoch = this.invalidations;
     const chunkKeys = await this.chunkKeys(seg);
     checkBudget(this.budget, chunkKeys.length, 'iterate'); // one storage fetch per chunk (before fan-out)
     const gen = await this.cacheVersion(seg); // after the shape read — see `combine`
-    const chunks = this.chunkSequence(seg, chunkKeys, gen);
+    const chunks = this.chunkSequence(seg, chunkKeys, gen, epoch);
     try {
       for (const chunkKey of chunkKeys) {
         const chunk = await chunks.take(chunkKey);
@@ -505,12 +524,13 @@ export class SegmentEngine {
   }
 
   private async *iterateRange(seg: SegmentRef, range: IdRange): AsyncGenerator<number> {
+    const epoch = this.invalidations;
     const w = windowOf(range) ?? WHOLE_ID_SPACE;
     if (w === 'empty') return;
     const chunkKeys = keysWithin(await this.chunkKeys(seg), w);
     checkBudget(this.budget, chunkKeys.length, 'iterate'); // one storage fetch per chunk (before fan-out)
     const gen = await this.cacheVersion(seg); // after the shape read — see `combine`
-    const chunks = this.chunkSequence(seg, chunkKeys, gen);
+    const chunks = this.chunkSequence(seg, chunkKeys, gen, epoch);
     try {
       for (const chunkKey of chunkKeys) {
         const chunk = await chunks.take(chunkKey);
@@ -533,13 +553,14 @@ export class SegmentEngine {
    * the caller's to keep.
    */
   async *iterateBatches(seg: SegmentRef, range?: IdRange): AsyncGenerator<Uint32Array> {
+    const epoch = this.invalidations;
     const w = windowOf(range);
     if (w === 'empty') return;
     const chunkKeys =
       w === null ? await this.chunkKeys(seg) : keysWithin(await this.chunkKeys(seg), w);
     checkBudget(this.budget, chunkKeys.length, 'iterate'); // one storage fetch per chunk (before fan-out)
     const gen = await this.cacheVersion(seg); // after the shape read — see `combine`
-    const chunks = this.chunkSequence(seg, chunkKeys, gen);
+    const chunks = this.chunkSequence(seg, chunkKeys, gen, epoch);
     try {
       for (const chunkKey of chunkKeys) {
         const chunk = await chunks.take(chunkKey);
@@ -693,10 +714,11 @@ export class SegmentEngine {
     // Within a call shorter than `cache.genTtlMs` the two share one snapshot, so the read is
     // generation-consistent — absent cache-pressure eviction (see `intersect`).
     const extract = async (seg: SegmentRef): Promise<Operand> => {
+      const epoch = this.invalidations;
       const all = await this.chunkKeys(seg);
       const gen = await this.cacheVersion(seg);
       const keys = w === null ? all : keysWithin(all, w);
-      return { seg, keys: new Set(keys), chunkless: all.length === 0, gen };
+      return { seg, keys: new Set(keys), chunkless: all.length === 0, gen, epoch };
     };
     const [operands, excludes] = await Promise.all([
       Promise.all(segs.map(extract)),
@@ -771,6 +793,7 @@ export class SegmentEngine {
         o.seg,
         common.filter(wanted),
         o.gen,
+        o.epoch,
         limit,
         COMBINE_RANGE_START,
       );
@@ -913,6 +936,7 @@ export class SegmentEngine {
     seg: SegmentRef,
     keys: readonly number[],
     gen: string | number | null | undefined,
+    epoch: number,
     concurrency: number,
     rampStart: number,
   ): StreamedChunks | undefined {
@@ -920,6 +944,7 @@ export class SegmentEngine {
     return {
       seg,
       gen,
+      epoch,
       keys,
       concurrency,
       rampStart,
@@ -970,6 +995,7 @@ export class SegmentEngine {
       }),
     );
     streamed.opened = true;
+    streamed.invalidated = this.invalidations !== streamed.epoch;
     this.openStreams.add(streamed);
   }
 
@@ -1137,6 +1163,7 @@ export class SegmentEngine {
    */
   invalidate(ref: SegmentRef): void {
     const prefix = segmentPrefix(ref);
+    this.invalidations += 1;
     for (const streamed of this.openStreams) {
       if (segmentPrefix(streamed.seg) === prefix) streamed.invalidated = true;
     }
