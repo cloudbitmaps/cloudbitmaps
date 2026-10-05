@@ -14,8 +14,8 @@ so, and so do the module headers in the code.
 ### Added
 
 - **`seg.pinAt({ generation, fingerprint })`, a pin at a named generation.** It reopens a generation an earlier pin recorded
-  in its `pinnedAt`, as the same pinned handle `pin()` returns, for a second task of one job. The fingerprint is required, since a
-  generation number is taken again after a purge and re-create, so a bare number throws `ValidationError`. A generation that is
+  in its `pinnedAt`, as a pinned handle like the one `pin()` returns, for a second task of one job. The fingerprint is required, since a
+  generation number is taken again after a purge and re-create, so a bare number, or a key `pinAt` does not know, throws `ValidationError`. A generation that is
   collected, purged or another object than the fingerprint names throws `NotFoundError`, and the call never reads empty. It costs
   one registry read and one tail read, and it holds nothing: how long a generation can be reopened is how long `keep` retains it.
   Exported as the `PinAt` type, with a method on `CrbmStorageChunkSource` that does the open.

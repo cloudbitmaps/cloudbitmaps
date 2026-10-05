@@ -200,18 +200,23 @@ const again = await store.segment('active-30d').pinAt({ generation, fingerprint 
 ```
 
 - **The fingerprint is required.** A generation number is taken again once its object is deleted and the name is purged
-  and loaded again, so a number alone does not name an object. A bare number, or a fingerprint that is not one a pin
-  recorded, throws `ValidationError`.
-- **A generation that is gone throws `NotFoundError`, and `pinAt` never reads empty.** Collected, purged, above the
-  row's pointer, or another object than the fingerprint names: each is `NotFoundError`, at the call.
+  and loaded again, so a number alone does not name an object. A bare number, a fingerprint that is not one a pin
+  recorded, or a key other than `generation` and `fingerprint` throws `ValidationError`.
+- **A generation that is gone throws `NotFoundError`, and `pinAt` never reads empty.** Collected, purged, on a
+  crypto-shredded segment, or another object than the fingerprint names: each is `NotFoundError`, at the call. A
+  generation above the pointer after a rollback is refused too. A rollback deletes nothing, though, so once a later load
+  moves the pointer past it, a generation it rolled back from can be reopened while its object is still stored and
+  the fingerprint matches.
+- **A pin is identified by its `generation` and `fingerprint`.** The handle `pinAt` returns reads as a `pin()` handle does,
+  but its `pinnedAt.version` can differ from the original pin's, since it names the row as it is now.
 - **It costs one row read and one tail read** (the tail read alone without a registry), and the object it opens is the
   one its first read finds open. After that the handle reads exactly as a `pin()` handle does, including what it does
   once the generation is swept (see above).
 - **It keeps nothing alive.** `pinAt` does not stop a collection, so how long a generation can be reopened is how long
-  `keep` retains it. A generation survives exactly `keep` later loads of its segment and is collectable at the next one.
-  Pass a `keep` larger than the loads that can land during your longest job, on the loads of the segments that have one
-  in flight; each retained generation is a whole copy in storage, and `keep` of 2 or more lists the segment on every load
-  ([generations and `keep`](loading.md#generations-and-keep)).
+  `keep` retains it: at least `keep` later successful loads, and fewer when a load is refused or crashes, since it
+  still uses a number. Collection runs with the `keep` of whichever writer loads, so set the same `keep` on every
+  writer of the segment. Each retained generation is a whole copy in storage. See
+  [Generations and `keep`](loading.md#generations-and-keep) for the rule and what a larger `keep` costs in requests.
 
 ### How a pin stays correct
 

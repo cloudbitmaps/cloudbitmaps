@@ -416,7 +416,8 @@ await store.rollback(ref, 4, { audit, allowForward: true });
 - `generations` is one registry read and one listing, and it does not open the objects. It lists the bucket whether or
   not the segment has a registry row, so it also finds the objects a purged row left behind. It shows what the bucket
   holds, not what the segment has ever been, since collection deletes superseded objects.
-- A rollback deletes nothing, and it is fenced on the row it read, so a load that lands meanwhile makes it throw
+- A rollback deletes nothing, so a generation it rolled back from stays in the bucket until collection, and
+  `seg.pinAt` can reopen it, with its fingerprint, once a later load has moved the pointer past it. It is fenced on the row it read, so a load that lands meanwhile makes it throw
   `WriteConflictError` instead of being undone.
 - A generation that is not in the bucket throws `NotFoundError` naming the ones that are.
 - A target above the pointer throws `ValidationError` without `allowForward`, because that is also where objects live
