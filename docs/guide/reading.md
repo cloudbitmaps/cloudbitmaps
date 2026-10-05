@@ -187,6 +187,32 @@ for await (const id of audience.iterate()) {
   the job runs. See [Generations and `keep`](loading.md#generations-and-keep). An erasure collects the generation it rewrote whatever
   `keep` says.
 
+### Reopen a pinned generation: `pinAt`
+
+A pin records what it holds in `snap.pinnedAt`. `seg.pinAt({ generation, fingerprint })` reopens that generation later,
+in another task or another process, as the same kind of pinned handle `pin()` returns.
+
+```ts
+const first = await store.segment('active-30d').pin();
+const { generation, fingerprint } = first.pinnedAt!;
+// … hand both to the next task, which reopens the same instant:
+const again = await store.segment('active-30d').pinAt({ generation, fingerprint });
+```
+
+- **The fingerprint is required.** A generation number is taken again once its object is deleted and the name is purged
+  and loaded again, so a number alone does not name an object. A bare number, or a fingerprint that is not one a pin
+  recorded, throws `ValidationError`.
+- **A generation that is gone throws `NotFoundError`, and `pinAt` never reads empty.** Collected, purged, above the
+  row's pointer, or another object than the fingerprint names: each is `NotFoundError`, at the call.
+- **It costs one row read and one tail read** (the tail read alone without a registry), and the object it opens is the
+  one its first read finds open. After that the handle reads exactly as a `pin()` handle does, including what it does
+  once the generation is swept (see above).
+- **It keeps nothing alive.** `pinAt` does not stop a collection, so how long a generation can be reopened is how long
+  `keep` retains it. A generation survives exactly `keep` later loads of its segment and is collectable at the next one.
+  Pass a `keep` larger than the loads that can land during your longest job, on the loads of the segments that have one
+  in flight; each retained generation is a whole copy in storage, and `keep` of 2 or more lists the segment on every load
+  ([generations and `keep`](loading.md#generations-and-keep)).
+
 ### How a pin stays correct
 
 - **A pin costs a generation number, not a retained index.** The pinned reader lives in the same bounded LRU as every
