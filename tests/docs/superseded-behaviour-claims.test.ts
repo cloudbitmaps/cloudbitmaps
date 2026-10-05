@@ -763,11 +763,21 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
   {
     claim: new RegExp(
       g(
-        String.raw`\b(?:a|the|each|every) (?:store\.)?load (?:that|which|with|whose|when) (?:[\w'-]+ ){0,4}?\bkeeps? (?:of )?(?:2|two|more|several|many|(?:two|2|three|3) or more)\b[^.]{0,80}?\blists?\b|\b(?:whenever|when) \`?keep\`? (?:is )?(?:2|two) or more\b[^.]{0,60}?\blists?\b|\blists? on every load\b[^.]{0,40}?\b(?:whenever|when) \`?keep\`? (?:is )?(?:2|two) or more\b|\bkeep: 12\b[^.]{0,40}?\blists? (?:on )?every`,
+        String.raw`\b(?:a|the|each|every) (?:store\.)?load (?:that|which|with|whose|when) (?:[\w'-]+ ){0,4}?\bkeeps? (?:of )?(?:2|two|more|several|many|(?:two|2|three|3) or more)\b[^.]{0,80}?\blists?\b|\b(?:whenever|when) \`?keep\`? (?:is )?(?:2|two) or more\b[^.]{0,60}?\blists?\b|\blists? on every load\b[^.]{0,40}?\b(?:whenever|when) \`?keep\`? (?:is )?(?:2|two) or more\b|\`?\bkeep\`? (?:of )?(?:2|two) or more\b[^.]{0,40}?\blists?\b[^.]{0,20}?\bevery load\b|\bkeep: 12\b[^.]{0,40}?\blists? (?:on )?every`,
       ),
       'i',
     ),
     why: 'a load collects by name at any `keep` up to 64, from the generations its row records; it lists on every sixteenth generation, for a `keep` above 64, for a row that records no list, and when its check met an object',
+  },
+  // A load's collection stops and returns where another writer moved the row; it throws only for a fault.
+  {
+    claim: new RegExp(
+      g(
+        String.raw`\b(?:a )?collection pass by listing that could not prove (?:the segment|it) (?:was|is) (?:still )?(?:the same|unchanged)[^.]{0,40}?\bWriteConflictError\b|\bWriteConflictError\b[^.]{0,80}?\b(?:after|once) the publish (?:already )?landed\b[^.]{0,80}?\blisting\b`,
+      ),
+      'i',
+    ),
+    why: 'a load whose publish has landed does not throw a lost race from its collection: where another writer moved the row it stops and returns what it deleted, and it throws only for a fault (a registry read, a listing or a delete, or a failed write that records the window)',
   },
   {
     claim: new RegExp(
@@ -1293,6 +1303,9 @@ describe('no document claims behaviour this library does not have', () => {
     'With keep of two, a load lists the segment to collect on every load.',
     'A load lists on every load whenever `keep` is 2 or more.',
     'At `keep: 12` a load lists every publish.',
+    'A `keep` of 2 or more lists on every load.',
+    'earlier, wider `keep` held. `keep` of 2 or more lists on every load. {@link LoadResult.collected} then names',
+    'and a collection pass\n   * by listing that could not prove the segment was still the same one (`WriteConflictError`).',
     'The next load of the destination collects everything below its own pointer beyond its `keep`.',
     'and the next load of its destination collects its predecessors',
     "the next store.load of that destination collects everything it didn't",
@@ -1440,6 +1453,8 @@ describe('no document claims behaviour this library does not have', () => {
     // A load's collection, true: each names that it is by name, the sixteenth generation, or what makes it list.
     'A load that keeps one generation deletes by name the generation its publish pushed out, and lists the segment to collect only every sixteenth generation.',
     'With a `keep` above 64, a load lists the segment to collect on every load.',
+    'A `keep` above 64 records no list and lists on every load.',
+    'A load that finds another writer has moved the row stops and returns what it deleted.',
     'A load lists the segment to collect when its row records no list.',
     'A load that keeps twelve generations deletes by name the generation its publish pushed out, and lists the segment only every sixteenth generation.',
     // Each word the exemption names, once: a sentence that would be refused without it.
