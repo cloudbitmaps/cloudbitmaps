@@ -149,4 +149,10 @@ export const IDS_ONLY: Readonly<Record<string, string>> = {
     'which would make its control count nothing',
   'tests/roaring/load-bitmap.property.test.ts':
     'compares the id load of each set with its bitmap loads; routing would compare the bitmap path with itself',
+  'tests/roaring/deserialize-portable.test.ts':
+    'tests the decoder against what a load of the same bytes refuses, with `{ serialized }` given on purpose; ' +
+    'routing would convert nothing it loads',
+  'tests/roaring/load-parts.property.test.ts':
+    'compares the id load of each set with the loads of its parts as bitmaps, and counts their requests against a ' +
+    'single id load; routing would compare the bitmap path with itself',
 };

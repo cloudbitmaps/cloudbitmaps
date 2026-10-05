@@ -247,6 +247,15 @@ write. A `Uint8Array`, `Uint8ClampedArray` or `Buffer` passed as ids throws `Val
 (the type accepts one, since a byte array is an iterable of numbers): pass bytes as `{ serialized }`.
 Anything that is none of these throws `ValidationError` too ([what a load accepts](loading.md#what-a-load-accepts)).
 
+### Decode portable bytes — `deserializePortable(bytes)`
+
+`deserializePortable(bytes: Uint8Array): RoaringBitmap32` decodes portable Roaring bytes you hold (a Node `Buffer`
+is one) through the check a `{ serialized }` load makes first: the 537,403,396-byte cap, the structural check, exactly
+one bitmap, and only then the native decoder. Bytes that are not one well-formed bitmap throw `ValidationError`, as a
+load refuses them; an empty buffer is the empty bitmap. Use it for bytes that crossed a process boundary, in place of
+`RoaringBitmap32.deserialize`, which checks nothing but its own reads
+([the parts recipe](loading.md#parts-of-one-segment-built-separately)).
+
 ### The segment verbs (the ~90% of daily use)
 
 | Call | Does |
@@ -486,6 +495,7 @@ a codec of your own — the `CloudRoaring` facade injects the roaring codec for 
 | `CodecInterface` | the factory the engine builds bitmaps through (`empty` / `fromValues` / `safeDeserialize`). `safeDeserialize(bytes, maxBytes, { whole? })`: with `whole: true`, which a load passes for a caller's bytes, bytes after the bitmap's end are refused too; a stored chunk is read without it. A codec must honour `whole`: core cannot read the format and relies on the codec for that refusal, so a codec that ignores it loads two concatenated bitmaps as the first |
 | `CodecBitmap` | the value type a codec produces — a `u32` set with set algebra + portable (de)serialization. Optional `maximum?()` lets the engine range-check a chunk payload in O(1); a codec that can't answer cheaply omits it and the check is skipped. Optional `optimize?()` re-encodes for storage, and must be canonical: afterwards `serialize()` depends on membership alone. Optional `toUint32Array?()` is the chunk's values as one ascending `Uint32Array` for batch reads; it must return a new array the caller owns on every call, since the engine rewrites it in place; a codec without it is read through its iterator. Optional `encodeChunks?()` is flavor-author surface: the set as `EncodedChunk`s, ascending, each exactly the bytes `fromValues` of that chunk's low 16 bits, `optimize()` and `serialize()` give, which is how a bitmap load writes without touching an id. A codec without it loads a bitmap through its ids |
 | `CodecInterface.owns?(bitmap)` | whether a bitmap is one this codec made; `loadSegmentChunks` refuses any chunk whose bitmap it does not vouch for, and a codec without it has every chunk refused. The roaring codec vouches for the bitmaps its own type made. The answer is the whole check: an `owns` that answers `true` for anything lets any object through |
+| `decodeSerialized(bytes, codec, what?)` → `CodecBitmap` | the one check every bitmap input of a load goes through, for a flavor to offer its users: `bytes` must be a `Uint8Array` of at most 537,403,396 bytes holding exactly one bitmap, read over the bytes it really holds (a `SharedArrayBuffer`'s are copied first), and `codec.safeDeserialize` decodes it. Anything else throws `ValidationError` before the codec's native decoder runs; `what` names the input in the message. `deserializePortable` is this over the roaring codec |
 | `EncodedChunk` | `{ chunkKey, payload, cardinality }`: one chunk as a `.crbm` generation stores it, what `encodeChunks?()` yields |
 
 ### Flavor-author kit (`@cloudbitmaps/core`)
@@ -880,7 +890,7 @@ does not re-export. A driver author told elsewhere on this page to import `Token
 
 ### `@cloudbitmaps/roaring` — values
 
-`CloudRoaring` · `Segment` · `MemoryStorage` · `LocalFsStorage` · `CrbmStorageChunkSource` ·
+`CloudRoaring` · `Segment` · `deserializePortable` · `MemoryStorage` · `LocalFsStorage` · `CrbmStorageChunkSource` ·
 `destroySegment` · `eraseNamespace` · `InProcessKeystore` · `NodeAead` · `aadFor` ·
 `readRetentionPolicy` · `MIN_EXPIRES_AT_MS` ·
 `excludingReservedRows` · `DEFAULT_RETRY_POLICY` ·
@@ -924,7 +934,7 @@ the store's methods](#the-standalone-forms-of-the-stores-methods) say what each 
 Values: `SegmentEngine` · `BoundedLru` · `safeMetrics` · `NOOP_METRICS` · `groundedReport` · `splitId` ·
 `mapWithConcurrency` · `resolveBudget` · `resolvePerOpBudget` · `checkBudget` · `collectWithinBudget` ·
 `DEFAULT_BUDGET` · `segmentKey` · `isStorageBackend` · `PinnedStorageChunkSource` · `withRetry` ·
-`RetryingStorageChunkSource` · `loadSegment` · `loadSegmentChunks` · `listGenerations` · `rollbackSegment` · `segmentExists` ·
+`RetryingStorageChunkSource` · `decodeSerialized` · `loadSegment` · `loadSegmentChunks` · `listGenerations` · `rollbackSegment` · `segmentExists` ·
 `listSegments` · `eraseIdFromSegment` · `dropSegment` · `runConsistencyCheck` · `runExport` ·
 `setSegmentRetention` · `getSegmentRetention` · `clearSegmentRetention` · `retireExpired` · `estimateCost`
 
