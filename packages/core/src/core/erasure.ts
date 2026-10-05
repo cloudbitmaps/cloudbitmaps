@@ -15,11 +15,12 @@
 import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
 import { mapWithConcurrency } from './concurrency';
 import { ValidationError, WriteConflictError, isWriteConflictError } from './errors';
-import type { IStorageDriver, IRegistryDriver, SegmentRef } from './ports';
+import { type ChurnDeps, leaseChurn } from './leases';
+import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
 import { validateUserNamespace, validateUserRef } from './validate';
 import { DEFAULT_MAX_SCAN_SEGMENTS, drainRegistry } from './registry-scan';
 
-export interface EraseDeps {
+export interface EraseDeps extends ChurnDeps {
   readonly registry: IRegistryDriver;
 }
 
@@ -496,8 +497,13 @@ async function shredSegment(
   op: 'destroySegment' | 'dropSegment' = 'destroySegment',
 ): Promise<DestroyResult> {
   const base = { segment: ref.segment, namespace: ref.namespace };
+  // A shred is never optional, so a row that readers keep writing the leases of does not wear its attempts out: a lost race
+  // to a lease write is waited out and costs none, up to the churn bound.
+  const churn = leaseChurn(deps);
+  let lost: RegistryRecord | undefined;
   for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt++) {
     const record = await deps.registry.get(ref);
+    if (lost !== undefined && (await churn.retry(lost, record))) attempt -= 1;
     if (record === null) {
       // No authoritative row → nothing to crypto-shred.
       return { ...base, destroyed: false, cryptoShredded: false, reason: 'absent' };
@@ -525,7 +531,8 @@ async function shredSegment(
       return { ...base, destroyed: true, cryptoShredded: encrypted };
     } catch (err) {
       if (!isWriteConflictError(err)) throw err;
-      // A concurrent publish or policy write advanced the row — re-read and shred again (it always converges).
+      // A concurrent publish or policy write advanced the row — re-read and shred again.
+      lost = record;
     }
   }
   throw new WriteConflictError(`${op}: contention shredding "${ref.segment}" — retry`);

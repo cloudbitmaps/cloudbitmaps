@@ -30,6 +30,7 @@ import {
   type PublishResult,
 } from './crbm-storage-source';
 import type { Clock, Rng } from './determinism';
+import { onlyLeasesDiffer } from './leases';
 import { aadFor } from './crypto';
 import type { Aead, CrbmCrypto, IKeystore } from './crypto';
 import {
@@ -493,7 +494,13 @@ async function runLoad(
    */
   const reclaim = async (): Promise<void> => {
     const now = await deps.registry.get(ref);
-    if (now !== null && (now.token === fromToken || now.status === 'destroyed')) {
+    // A row that differs only in its leases is the row this load read: no write that took its number landed.
+    if (
+      now !== null &&
+      (now.token === fromToken ||
+        now.status === 'destroyed' ||
+        (row !== null && onlyLeasesDiffer(row, now)))
+    ) {
       await deps.storage.delete(key);
       return;
     }
@@ -562,7 +569,8 @@ async function runLoad(
   //
   // `expectToken` goes on regardless. It is incarnation identity rather than a derivation fence, it costs
   // nothing legitimate — a token only changes when a row write lands (a policy write, a lease) — and it is what stops this call publishing
-  // into a segment that merely reuses the name it started with.
+  // into a segment that merely reuses the name it started with. A row that differs from the one this load read only
+  // in its leases does not refuse it (`expectRow`): readers write those, and they say nothing about what it derived.
   let published: PublishResult;
   try {
     published = await publishGenerationKept(deps.registry, key, {
@@ -572,7 +580,7 @@ async function runLoad(
       wrappedDeks: written.wrappedDeks,
       summary: written.summary,
       cleartext: !written.encrypted,
-      ...(fromToken === undefined ? {} : { expectToken: fromToken }),
+      ...(fromToken === undefined ? {} : { expectToken: fromToken, expectRow: row }),
       ...(needsBefore && fromGeneration !== undefined ? { expectFrom: fromGeneration } : {}),
       // The third case, and the one the two fences above structurally cannot cover: the guard judged a segment
       // that had NO ROW. Both `expectFrom` and `expectToken` compare against a value read from a row, so with no
@@ -625,7 +633,7 @@ async function runLoad(
     keep,
     byName: checked && deps.collectByListing !== true,
     currentGone: currentObjectGone,
-    leases: { now: leasesNow },
+    ...(leasesNow === undefined ? {} : { leases: { now: leasesNow } }),
     kept: published.kept,
     ...(current.fromSummary && fromGeneration !== undefined
       ? { proveCurrent: { ...ref, generation: fromGeneration } }

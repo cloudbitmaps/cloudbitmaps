@@ -354,7 +354,7 @@ function validateLeases(
   };
   if (!Array.isArray(value)) fail('must be an array');
   const list = value as unknown[];
-  const max = isStored ? MAX_STORED_LEASES : MAX_LEASES_PER_SEGMENT;
+  const max = MAX_STORED_LEASES; // a write's own cap is applied against the row it patches
   if (list.length > max) fail(`has ${list.length} entries, cap ${max}`);
   const seen = new Set<string>();
   const out: LeaseEntry[] = [];
@@ -805,6 +805,12 @@ export function applyRegistryPatch(
   if ('leases' in patch) {
     leases = patch.leases;
     validateLeasesPointer(leases, currentGen);
+    // A writer writes at most the cap, except that a list may always shrink: a release over a row that holds more
+    // (written by another build) writes that list less one, and so can never be stuck behind the cap.
+    const most = Math.max(MAX_LEASES_PER_SEGMENT, prev.leases?.length ?? 0);
+    if (leases !== undefined && leases.length > most) {
+      throw new ValidationError(`leases: has ${leases.length} entries, cap ${most}`);
+    }
   } else {
     leases = prev.leases;
   }

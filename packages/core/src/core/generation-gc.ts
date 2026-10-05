@@ -157,16 +157,18 @@ export async function gcOrphanGenerations(
   deps: GenerationDeps,
   options: { keep?: number } = {},
 ): Promise<number[]> {
-  return (await listingPass(ref, deps, options)).deleted;
+  // Only the window is passed on, whatever the caller's object carries: this pass never reads a lease.
+  return (await listingPass(ref, deps, { keep: options.keep })).deleted;
 }
 
 /**
- * What makes a collection spare leased generations: the clock that says whether a lease has ended, or none, in which
- * case every lease on the row holds and none ends. Only a load's collection passes one. A pass without it never reads
- * the row's leases, which is what keeps erasure, shred and drop deleting what a lease names.
+ * What makes a collection spare leased generations: the clock that says whether a lease has ended. Only a load's
+ * collection passes one, and a load with no clock passes none: it cannot tell a live lease from an ended one, so it
+ * reads none. A pass without a guard never reads the row's leases, which is what keeps erasure, shred and drop deleting
+ * what a lease names.
  */
 export interface LeaseGuard {
-  readonly now: (() => number) | undefined;
+  readonly now: () => number;
 }
 
 /** What a listing pass did: the generations it deleted, and the ones below the pointer it left. */
@@ -294,13 +296,13 @@ async function listingPass(
       );
     }
     // A lease that landed since the row was first read: this name is spared, and the pass goes on to the next.
-    if (guard !== undefined && heldGenerations(still, guard.now?.()).has(generation)) return 'skip';
+    if (guard !== undefined && heldGenerations(still, guard.now()).has(generation)) return 'skip';
     return 'delete';
   };
 
   // Leases are honoured only by a load's collection, and never on a tombstone, where every generation is garbage.
   const guard = record.status === 'destroyed' ? undefined : options.leases;
-  const held = guard === undefined ? undefined : heldGenerations(after, guard.now?.());
+  const held = guard === undefined ? undefined : heldGenerations(after, guard.now());
   const below =
     record.status === 'destroyed' || cutoff === null
       ? []
@@ -506,7 +508,7 @@ export async function deleteEvicted(
     // A name a live lease holds is spared, and the pass goes on: the rest of the window's evictions still go.
     if (
       options.leases !== undefined &&
-      heldGenerations(still, options.leases.now?.()).has(generation)
+      heldGenerations(still, options.leases.now()).has(generation)
     ) {
       continue;
     }

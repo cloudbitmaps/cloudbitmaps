@@ -4,8 +4,10 @@
  *
  * The row holds a list of `{ holder, generation, until }`. A collector that honours leases reads the list from the row
  * it already has and spares a live entry; erasure, shred, drop and retention expiry never look at it. The entry names
- * no fingerprint: a collector holds a generation by number, a purge and re-create drops the list with the row, and
- * the row's token names the incarnation, so there is nothing a fingerprint could be compared with.
+ * no fingerprint: a collector spares a generation by number and cannot compare an object without reading it, a purge
+ * and re-create drops the list with the row, and the row's token names the incarnation. The pin's own fingerprint,
+ * which its reads check, is what stops a number retaken after a rollback and an erasure being read as the leased
+ * object; the entry then spares a different object from collection until it ends, at most the longest lease.
  *
  * Clocks. The holder ends a lease at `until` by its own clock. A collector holds it for {@link LEASE_SKEW_MS} longer, by
  * its own. The hold is safe while the two clocks differ by at most that margin, whichever way: a reader behind by `r`
@@ -21,6 +23,7 @@ import {
   isWriteConflictError,
 } from './errors';
 import type { Clock, Rng } from './determinism';
+import { sameIncarnation } from './token';
 import type { IRegistryDriver, LeaseEntry, RegistryRecord, SegmentRef, Token } from './ports';
 
 /** The longest lease: a `leaseUntil` further than this from the clock is refused. */
@@ -63,23 +66,108 @@ export function isLive(entry: LeaseEntry, now: number): boolean {
   return now < entry.until + LEASE_SKEW_MS && entry.until <= now + MAX_LEASE_MS + LEASE_SKEW_MS;
 }
 
-/**
- * The generations a collector must spare, from the row it holds. With no `now` (a wiring with no clock) every entry
- * counts and none ever ends: the safe direction, a hold that is never released rather than a delete.
- */
-export function heldGenerations(
-  record: RegistryRecord | null,
-  now: number | undefined,
-): ReadonlySet<number> {
+/** The generations a collector reading `now` must spare, from the row it holds. */
+export function heldGenerations(record: RegistryRecord | null, now: number): ReadonlySet<number> {
   const out = new Set<number>();
-  for (const e of record?.leases ?? [])
-    if (now === undefined || isLive(e, now)) out.add(e.generation);
+  for (const e of record?.leases ?? []) if (isLive(e, now)) out.add(e.generation);
   return out;
 }
 
 /** The entries of a row that are live at `now`, in the row's order. */
 export function liveLeases(record: RegistryRecord | null, now: number): readonly LeaseEntry[] {
   return (record?.leases ?? []).filter((e) => isLive(e, now));
+}
+
+/**
+ * What a writer that fences on the row's token needs to wait out lease churn: a sleep, and the rng that spreads it.
+ * Both are optional; without a sleep a retry follows at once.
+ */
+export interface ChurnDeps {
+  readonly clock?: { readonly sleep?: (ms: number) => Promise<void> } | undefined;
+  readonly rng?: Rng | undefined;
+}
+
+/**
+ * How many times one writer retries after meeting a row that differs from the one it read only in its leases. Takers of
+ * one row serialise: each round exactly one write lands, so a writer racing `k` holders needs up to `k + 1` rounds, and a
+ * holder can take and release inside one job, so the bound covers a take and a release by every holder the row can
+ * hold, with a few to spare: 2 * {@link MAX_LEASES_PER_SEGMENT} + 8. At the 25 ms to 400 ms jittered wait it is a
+ * minute at the very most before the writer reports the conflict it had, and a lease writer that goes on beyond
+ * that has stopped being a lease writer and become a flood.
+ */
+export const LEASE_ONLY_RETRIES = 2 * MAX_LEASES_PER_SEGMENT + 8;
+
+/** The fields of a row that a lease write moves without changing what the row says, and the ones that name it. */
+const BOOKKEEPING: ReadonlySet<string> = new Set(['token', 'updatedAt', 'leases']);
+
+/** A stable text of a value: object keys in order, `undefined` as absent, so two equal rows compare equal. */
+function stable(value: unknown): string {
+  if (value === undefined) return 'u';
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`;
+  const o = value as Record<string, unknown>;
+  const keys = Object.keys(o)
+    .filter((k) => o[k] !== undefined)
+    .sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stable(o[k])}`).join(',')}}`;
+}
+
+/**
+ * Whether `now` is `held` with nothing changed but its leases: the same incarnation, and every other field equal,
+ * `updatedAt` and the token (which every write moves) aside. `alsoIgnore` names fields the caller's own earlier write
+ * changed, so a writer comparing against a row it has itself written does not take its own change for another's.
+ *
+ * This is the one test that lets a writer fenced on the row's token go on after a lease write: a lease is written by
+ * readers, in numbers no operator controls, and it says nothing about the content the writer derived, the pointer it
+ * judged or the key it holds. Any other difference is another writer's, and the fence refuses as it always has.
+ */
+export function onlyLeasesDiffer(
+  held: RegistryRecord,
+  now: RegistryRecord,
+  alsoIgnore: readonly (keyof RegistryRecord)[] = [],
+): boolean {
+  if (!sameIncarnation(held, now)) return false;
+  const skip = new Set<string>([...BOOKKEEPING, ...alsoIgnore]);
+  const keys = new Set([...Object.keys(held), ...Object.keys(now)]);
+  for (const k of keys) {
+    if (skip.has(k)) continue;
+    if (
+      stable((held as unknown as Record<string, unknown>)[k]) !==
+      stable((now as unknown as Record<string, unknown>)[k])
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** A writer's count of the lease-only changes it has waited out, and the wait. One per call of the writer. */
+export interface LeaseChurn {
+  /**
+   * `true` when `now` is `held` changed only in its leases and the bound is not spent: the caller goes on against `now`
+   * without redoing its work, after a jittered wait. `false` otherwise, and the caller does what it always did.
+   */
+  retry(
+    held: RegistryRecord | null | undefined,
+    now: RegistryRecord | null,
+    alsoIgnore?: readonly (keyof RegistryRecord)[],
+  ): Promise<boolean>;
+}
+
+export function leaseChurn(deps: ChurnDeps): LeaseChurn {
+  let used = 0;
+  return {
+    async retry(held, now, alsoIgnore) {
+      if (held === null || held === undefined || now === null) return false;
+      if (used >= LEASE_ONLY_RETRIES || !onlyLeasesDiffer(held, now, alsoIgnore)) return false;
+      const bound = Math.min(CONFLICT_BASE_MS * 2 ** Math.min(used, 4), CONFLICT_CAP_MS);
+      used += 1;
+      const sleep = deps.clock?.sleep;
+      if (sleep !== undefined)
+        await sleep.call(deps.clock, Math.floor((deps.rng?.next() ?? 1) * bound));
+      return true;
+    },
+  };
 }
 
 /** A row's leases for a patch: the given entries, sorted by generation then holder, or `undefined` when none. */

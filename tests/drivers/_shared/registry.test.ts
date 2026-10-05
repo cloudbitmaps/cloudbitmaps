@@ -833,8 +833,18 @@ describe('the leases: schema, shape and the pointer', () => {
     const many = (n: number) =>
       Array.from({ length: n }, (_, i) => entry(i.toString(16).padStart(16, '0'), 1, 5));
     expect(() => parseRegistryEnvelope(row(many(256)), 'k')).not.toThrow();
-    expect(() => validateRegistryPatch({ leases: many(64) })).not.toThrow();
-    expect(() => validateRegistryPatch({ leases: many(65) })).toThrow(ValidationError);
+    expect(() => validateRegistryPatch({ leases: many(256) })).not.toThrow();
+    expect(() => validateRegistryPatch({ leases: many(257) })).toThrow(ValidationError);
+    // A write is held to 64 against the row it patches, except that a list may always shrink.
+    const at = (n: number): RegistryRecord => ({ ...prev, leases: many(n) });
+    expect(applyRegistryPatch(at(0), { leases: many(64) }, 2, '2').leases).toHaveLength(64);
+    expect(() => applyRegistryPatch(at(0), { leases: many(65) }, 2, '2')).toThrow(ValidationError);
+    expect(() => applyRegistryPatch(at(64), { leases: many(65) }, 2, '2')).toThrow(ValidationError);
+    expect(applyRegistryPatch(at(100), { leases: many(99) }, 2, '2').leases).toHaveLength(99);
+    expect(applyRegistryPatch(at(100), { leases: many(100) }, 2, '2').leases).toHaveLength(100);
+    expect(() => applyRegistryPatch(at(100), { leases: many(101) }, 2, '2')).toThrow(
+      ValidationError,
+    );
   });
 
   it('refuses at the write boundary a malformed entry, and a list on a row with no pointer', () => {
@@ -879,6 +889,8 @@ describe('the leases: schema, shape and the pointer', () => {
     expect(recordFromNew({ segment: 's' }, { currentGen: 5 }, 1, T2).leases).toBeUndefined();
   });
 
+  // A schema-3 reader whose declared field list is the one before `leases` joined it (`keptGens` only): the row is
+  // stamped 3, so only the undeclared-field rule can refuse it, with an IntegrityError that names the field.
   it('a build that does not declare leases refuses a row carrying them', async () => {
     const { readFileSync, writeFileSync, unlinkSync } = await import('node:fs');
     const src = new URL('../../../packages/core/src/drivers/_shared/registry.ts', import.meta.url);

@@ -34,7 +34,7 @@ import type { Yielder } from './cooperative';
 import type { Clock, Rng } from './determinism';
 import { sameIncarnation } from './token';
 import { nextKept } from './kept-generations';
-import { isLive } from './leases';
+import { isLive, leaseChurn } from './leases';
 import type { KeptAfter } from './kept-generations';
 import type { PublishedKept } from './generation-gc';
 import { BoundedLru } from './lru';
@@ -1894,6 +1894,13 @@ export async function publishGenerationKept(
     expectFrom?: number;
     expectToken?: Token;
     /**
+     * The row `expectToken` names, as the caller read it. With it, a row whose token has moved but which differs from
+     * this one only in its leases (a reader took or released one) does not refuse the publish: it goes on against the
+     * fresh row, after a jittered wait and without the caller redoing its work, up to a bound. Any other difference
+     * refuses as ever. Without it, a moved token refuses.
+     */
+    expectRow?: RegistryRecord | null;
+    /**
      * Publish only while the segment still has **no registry row**.
      *
      * The fence for a caller whose decision rests on the row being ABSENT. `expectFrom` and `expectToken`
@@ -1978,6 +1985,10 @@ export async function publishGenerationKept(
   // such answers have bought so far.
   let unanswered: TransientError | undefined;
   let resends = 0;
+  // The lease-only changes this publish has waited out: a lease write moves the token and nothing the publish derived.
+  const churn = leaseChurn({ clock: options.clock, rng: options.rng });
+  // Whether this attempt went on past a token that only lease writes had moved; losing its race then costs no attempt.
+  let throughChurn = false;
   // Whether any write of this call ended without an answer: what the pointer then says about this number is not
   // taken for the caller's own write without the proof.
   let sawUnanswered = false;
@@ -2030,7 +2041,14 @@ export async function publishGenerationKept(
         // longer holds — most importantly "there is nothing here to overwrite".
         return REFUSED;
       }
-      if (options.expectToken !== undefined && record?.token !== options.expectToken) {
+      throughChurn = false;
+      if (
+        options.expectToken !== undefined &&
+        record?.token !== options.expectToken &&
+        (await churn.retry(options.expectRow, record))
+      ) {
+        throughChurn = true; // only leases changed since the caller read the row: the fence holds, on the fresh row
+      } else if (options.expectToken !== undefined && record?.token !== options.expectToken) {
         // Same pointer VALUE, different row. Either the row was written since (harmless, and we re-derive
         // anyway) or the name was retired and re-created, in which case `currentGen` matching means nothing:
         // it is a different segment that restarted its generation counter at the same number.
@@ -2157,6 +2175,7 @@ export async function publishGenerationKept(
     } catch (err) {
       if (isWriteConflictError(err)) {
         failedOn = record; // lost the race, or met its own landed write: the next read says which
+        if (throughChurn) attempt -= 1; // a lease write won it; the bound on those is the churn's
         continue;
       }
       // Only the write itself raises a transient fault in here, and it is the one outcome that is not an answer.

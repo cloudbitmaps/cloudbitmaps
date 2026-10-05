@@ -1529,7 +1529,11 @@ export class CloudRoaring {
     validateSegmentRef(ref);
     const deps = this.lifecycleDeps('dropSegment');
     try {
-      return await dropSegment(ref, { registry: deps.registry, storage: deps.storage }, options);
+      return await dropSegment(
+        ref,
+        { registry: deps.registry, storage: deps.storage, clock: deps.clock, rng: deps.rng },
+        options,
+      );
     } finally {
       if (options.dryRun !== true) this.engine.invalidate(ref);
     }
@@ -1563,7 +1567,11 @@ export class CloudRoaring {
    */
   async setRetention(ref: SegmentRef, policy: RetentionPolicy): Promise<SetRetentionResult> {
     validateSegmentRef(ref);
-    return setSegmentRetention(ref, { registry: this.requireRegistry('setRetention') }, policy);
+    return setSegmentRetention(
+      ref,
+      { registry: this.requireRegistry('setRetention'), clock: this.clock, rng: this.rng },
+      policy,
+    );
   }
 
   /**
@@ -1584,7 +1592,11 @@ export class CloudRoaring {
    */
   async clearRetention(ref: SegmentRef): Promise<boolean> {
     validateSegmentRef(ref);
-    return clearSegmentRetention(ref, { registry: this.requireRegistry('clearRetention') });
+    return clearSegmentRetention(ref, {
+      registry: this.requireRegistry('clearRetention'),
+      clock: this.clock,
+      rng: this.rng,
+    });
   }
 
   /**
@@ -1650,7 +1662,7 @@ export class CloudRoaring {
   ): Promise<RetireExpiredResult> {
     const deps = this.lifecycleDeps('retireExpired');
     const result = await retireExpired(
-      { registry: deps.registry, storage: deps.storage },
+      { registry: deps.registry, storage: deps.storage, clock: this.clock, rng: this.rng },
       { ...options, now: options.now ?? this.clock.now() },
     );
     // A retirement tombstones and reclaims segments this store may already have resolved. `dryRun` changes

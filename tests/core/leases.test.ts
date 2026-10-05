@@ -129,11 +129,10 @@ describe('isLive, heldGenerations and liveLeases', () => {
   const row = (leases: LeaseEntry[]): RegistryRecord =>
     ({ segment: 's', currentGen: 9, status: 'active', leases }) as unknown as RegistryRecord;
 
-  it('names the generations of live entries only, and every one when there is no clock', () => {
+  it('names the generations of live entries only', () => {
     const r = row([lease(1, 3, 100), lease(2, 5, 100 + 10 * LEASE_SKEW_MS), lease(3, 3, 100)]);
     const now = 100 + 2 * LEASE_SKEW_MS;
     expect([...heldGenerations(r, now)]).toEqual([5]);
-    expect([...heldGenerations(r, undefined)].sort()).toEqual([3, 5]);
     expect(heldGenerations(null, now).size).toBe(0);
     expect(heldGenerations(row([]), now).size).toBe(0);
     expect(liveLeases(r, now).map((x) => x.holder)).toEqual([H(2)]);
@@ -514,10 +513,10 @@ describe('a load collects around a lease', () => {
     expect(row.keptGens).toEqual([2]);
   });
 
-  it('holds every lease when the load has no clock, however old', async () => {
+  it('a load with no clock cannot tell a live lease from an ended one, and reads none', async () => {
     const w = world();
     await loadMany(w, 6, { keep: 5 });
-    await putLeases(w, [lease(1, 2, 1)]); // ended long ago by any clock
+    await putLeases(w, [lease(1, 2, w.clock.t + 10_000_000)]); // live by the clock the other loads have
     const noClock = { storage: w.storage, registry: w.counted, codec: roaringCodec };
     await loadSegment(
       SEG,
@@ -525,7 +524,9 @@ describe('a load collects around a lease', () => {
       noClock,
       { keep: 2 },
     );
-    expect(await generations(w.memory)).toContain(2);
+    expect(await generations(w.memory)).not.toContain(2);
+    // and its publish leaves the list as it found it: it cannot tell which entries have ended
+    expect((await leasesOf(w))?.map((x) => x.holder)).toEqual([H(1)]);
   });
 
   it('a publish drops ended entries from the row in its own write, and keeps live ones', async () => {

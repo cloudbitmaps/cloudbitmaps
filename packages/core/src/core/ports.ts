@@ -353,8 +353,10 @@ export interface SealedRegistrySummary {
 }
 
 /**
- * One lease on a generation. It names no fingerprint: a collector holds a generation by number, a purge and re-create
- * drops the whole list with the row, and the row's token names the incarnation, so nothing could compare one.
+ * One lease on a generation. It names no fingerprint: a collector spares a generation by number and cannot compare an
+ * object without reading it, and a purge and re-create drops the whole list with the row. A pin's own fingerprint,
+ * which its reads check, stops a number retaken after a rollback being read as the leased object; the entry then spares a
+ * different object from collection until it ends, at most the longest lease.
  */
 export interface LeaseEntry {
   /** 16 lowercase hex digits drawn once per pin call; names the holder, so a retried write is idempotent. */
