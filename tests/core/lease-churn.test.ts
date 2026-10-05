@@ -355,6 +355,27 @@ describe('a lease write during a writer fenced on the row token does not starve 
     expect(r.published).toBe(false);
   });
 
+  it('(c) a load refused by its guard reclaims its object through lease writes, which are not another writer', async () => {
+    const w = world();
+    await loadN(w, 2);
+    const racing = hooked(
+      w.registry,
+      'get',
+      (n) => n >= 1,
+      () => leaseWrite(w, 3),
+    );
+    const r = await loadSegment(SEG, [], {
+      storage: w.storage,
+      registry: racing,
+      codec: roaringCodec,
+      clock: w.clock,
+    });
+    expect(r).toMatchObject({ published: false, reason: 'empty' });
+    const left: number[] = [];
+    for await (const k of w.memory.list(SEG)) left.push(k.generation);
+    expect(left.sort()).toEqual([0, 1]);
+  });
+
   it('(d) destroySegment completes through more lease writes than its 8 attempts', async () => {
     const w = world();
     await loadN(w, 1);
@@ -457,13 +478,16 @@ describe('a lease write during a writer fenced on the row token does not starve 
           })();
       },
     }) as IStorageDriver;
-    let churned = 0;
+    // Lease writes ahead of the swap, and ahead of the undo, each in its own budget.
+    const churned = { swap: 0, undo: 0 };
     const racing = hooked(
       w.registry,
       'compareAndSwap',
       () => true,
       async () => {
-        if (phase !== 'done' && churned++ < 30) await leaseWrite(w, 7);
+        if (phase === 'done') return;
+        const k = phase === 'swap' ? 'swap' : 'undo';
+        if (churned[k]++ < 12) await leaseWrite(w, 7);
       },
     );
     const err = await rollbackSegment(SEG, 1, { storage, registry: racing, clock: w.clock }).catch(
