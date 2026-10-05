@@ -20,7 +20,7 @@ import type {
   LoadInput,
   PortableBitmap,
 } from '@cloudbitmaps/core';
-import { IntegrityError } from '@cloudbitmaps/core';
+import { IntegrityError, decodeSerialized } from '@cloudbitmaps/core';
 import { checkPortableLayout, containerPayloads } from './portable/layout';
 
 const { RoaringBitmap32, SerializationFormat, DeserializationFormat } = roaring;
@@ -74,6 +74,11 @@ export class SafeBitmap implements CodecBitmap {
     } catch (err) {
       throw new IntegrityError(`failed to deserialize bitmap: ${(err as Error).message}`);
     }
+  }
+
+  /** The `roaring` bitmap this wraps, for a caller that was handed it once and keeps no wrapper. */
+  unwrap(): RoaringBitmap32 {
+    return this.bitmap;
   }
 
   serialize(): Uint8Array {
@@ -218,3 +223,14 @@ export const roaringCodec: CodecInterface = {
     SafeBitmap.safeDeserialize(bytes, maxBytes, options),
   owns: (bitmap) => bitmap instanceof SafeBitmap,
 };
+
+/**
+ * Decode portable Roaring bytes you hold into a `RoaringBitmap32`, through the check a `{ serialized }` load makes
+ * first: a size cap, a structural check, one whole bitmap, and only then the native decoder.
+ *
+ * @param bytes a `Uint8Array`, which a Node `Buffer` is.
+ * @throws {ValidationError} for bytes that are not exactly one well-formed portable bitmap, as a load refuses them.
+ */
+export function deserializePortable(bytes: Uint8Array): RoaringBitmap32 {
+  return (decodeSerialized(bytes, roaringCodec) as SafeBitmap).unwrap();
+}

@@ -247,6 +247,15 @@ write. A `Uint8Array`, `Uint8ClampedArray` or `Buffer` passed as ids throws `Val
 (the type accepts one, since a byte array is an iterable of numbers): pass bytes as `{ serialized }`.
 Anything that is none of these throws `ValidationError` too ([what a load accepts](loading.md#what-a-load-accepts)).
 
+### Decode portable bytes — `deserializePortable(bytes)`
+
+`deserializePortable(bytes: Uint8Array): RoaringBitmap32` decodes portable Roaring bytes you hold (a Node `Buffer`
+is one) through the check a `{ serialized }` load makes first: the 537,403,396-byte cap, the structural check, exactly
+one bitmap, and only then the native decoder. Bytes that are not one well-formed bitmap throw `ValidationError`, as a
+load refuses them; an empty buffer is the empty bitmap. Use it for bytes that crossed a process boundary, in place of
+`RoaringBitmap32.deserialize`, which checks nothing but its own reads
+([the parts recipe](loading.md#parts-of-one-segment-built-separately)).
+
 ### The segment verbs (the ~90% of daily use)
 
 | Call | Does |
@@ -255,8 +264,10 @@ Anything that is none of these throws `ValidationError` too ([what a load accept
 | `seg.count()` → `Promise<number>` | cardinality of the generation the handle reads: **one registry read when cold, none when warm, and no read of the object**, since the row records the generation's id count. A row with no summary it can use sends it to the `.crbm` index instead, with **zero payload reads**. It trusts the row's summary, or the index: neither is confirmed against the payloads, and a summary is held against the object whenever the object is opened ([What `count()` trusts](reading.md#what-count-trusts)). A segment whose pointer names a missing object counts the row's number, and a read of the object throws |
 | `seg.stat()` → `Promise<SegmentStat>` | `{ generation, cardinality, metadata? }` from the one resolution that answers `count()`: the generation's number, its id count and the metadata it was loaded with (absent when it has none). One registry read when cold, none when warm or pinned. `{ generation: null, cardinality: 0 }` for a segment with no generation and for an expired handle ([details](reading.md#stat-the-generation-its-count-and-its-metadata)) |
 | `seg.iterate({ after?, through? }?)` → `IdStream` | stream all ids, ascending, reading ahead as ranges of the object (the window opens 1, 2, 4 and on up to 32 range requests wide). With `after` / `through`, only the ids in `(after, through]` and the chunks the range overlaps ([paging](reading.md#page-through-a-segment)) |
+| `seg.everyNth(n, { after?, through? }?)` → `AsyncIterable<number>` | **pinned handles only.** The ids at 1-based ranks `n`, `2n`, `3n` …, counted over the ids in `(after, through]`, ascending; a last partial window yields nothing. Reads the chunks that hold a boundary, each once, through `iterate`'s stream, window and budget; a range that cuts its first (or last) chunk reads that chunk too ([details](reading.md#every-nth-id-of-a-pin-everynth)). A live handle throws `UnsupportedError`, a bad `n` or bound `ValidationError`, and a chunk that is read and whose size disagrees with the index `IntegrityError`, each when first read. Chunks not read are trusted to their index counts, as `count()` trusts them |
 | `IdStream` (what `iterate`, `intersect`, `union` and `andNot` return) | an `AsyncIterable<number>`: `for await` it for one id at a time. `.batches()` → `AsyncIterable<Uint32Array>` yields the same ids one chunk at a time, ascending, an array per non-empty chunk (at most 65,536 ids, 256 KiB) that is yours to keep ([batches](reading.md#read-a-chunk-at-a-time-batches)). The per-id stream is as before (single-use); `batches()` starts its own read when called ([details](reading.md#read-a-chunk-at-a-time-batches)) |
 | `seg.pin()` → `Promise<Segment>` | **hold this segment at the generation current right now**, for the life of the returned handle, so a long job describes one instant ([pins](reading.md#read-one-fixed-point-in-time)). A hold, not a lease: size `keep` past your longest pinned job. Needs a `.crbm` reader: any backend, a bare `IStorageDriver` or a pre-built `CrbmStorageChunkSource` |
+| `seg.pinAt({ generation, fingerprint })` → `Promise<Segment>` | **reopen a generation an earlier pin named**, as a pinned handle like the one `pin()` returns (identify it by `generation` and `fingerprint`; its `pinnedAt.version` can differ): pass `{ generation, fingerprint }` from that pin's `pinnedAt`. The fingerprint is required, since a generation number is taken again after a purge and re-create: a bare number, a malformed fingerprint or an unknown key throws `ValidationError`. A generation that is gone (collected, purged or crypto-shredded), above the row's pointer (a rollback deletes nothing, so once a later load moves the pointer past a generation it rolled back from, that one can be reopened while its object is stored), or another object than the fingerprint names throws `NotFoundError`, and the call never reads empty. One row read and one tail read with a registry, the tail read alone without one. It holds nothing: a later collection can still delete the generation, so size `keep` on every writer ([pins](reading.md#reopen-a-pinned-generation-pinat)). Encrypted segments work as with `pin()` |
 | `seg.intersect([other, …], { after?, through?, concurrency?, budget?, exclude?, allowAbsentOperands? })` → `IdStream` | chunk-skipping intersection, streamed. Each operand's chunks are read as coalesced ranges: chunks within 256 KiB of each other come in one request, up to 1 MiB. `concurrency` is the range requests held ahead per operand (32 by default; the window opens 4 wide and widens as ranges are taken); on a source that reads chunk by chunk it is the chunk keys in flight (opening 8 wide). `exclude` subtracts suppression segments **in the same pass**. `after` / `through` bound the result to `(after, through]` on every operand and every exclude, as on `iterate` |
 | `seg.union([other, …], { after?, through?, concurrency?, budget?, exclude?, allowAbsentOperands? })` → `IdStream` | `this ∪ others`, streamed. The one composite with **no chunk-skipping** — every chunk of every operand is read, or every chunk inside the range when one is given |
 | `seg.andNot([sup, …], { after?, through?, concurrency?, budget?, allowAbsentOperands? })` → `IdStream` | `this \ (sup…)`. Reads all of `this`, or all of it inside the range, but each exclude **only where it overlaps** |
@@ -264,7 +275,7 @@ Anything that is none of these throws `ValidationError` too ([what a load accept
 | `seg.intersectInto(dest, [other, …], opts?)` · `seg.unionInto(dest, [other, …], opts?)` · `seg.andNotInto(dest, [sup, …], opts?)` → `Promise<MaterializeResult>` | materialize the result as a **new generation of `dest`**, superseding it ([the `*Into` verbs](loading.md#write-a-result-into-another-segment-the-into-verbs)). `opts` takes the combine's options, a range included, and `keep`, `allowEmpty`, `guard` and `metadata`. An empty result over a non-empty `dest` is refused (`published: false`); a lost race throws `WriteConflictError`. Collects nothing unless you pass `keep`. Needs a backend |
 | `seg.costReport({ pricing?, workload? })` → `Promise<CostReport>` | grounded $ report from the segment's **real** `.crbm` size (no payload reads) |
 | `seg.expiresAt` | the handle's deadline, if one was declared |
-| `seg.pinnedAt` | on a handle from `pin()`, the `PinnedAt` it is held at; `undefined` on a live handle |
+| `seg.pinnedAt` | on a handle from `pin()` or `pinAt()`, the `PinnedAt` it is held at; `undefined` on a live handle |
 | `seg.key()` → `string` | an opaque string that names the handle's segment, namespace included: two handles of one segment have the same key. Use it as a `Map` key or a log field; its format is unspecified, so compare keys and never parse one |
 
 That's the whole daily surface: **1 constructor + a backend + `store.load` + these verbs.**
@@ -485,6 +496,7 @@ a codec of your own — the `CloudRoaring` facade injects the roaring codec for 
 | `CodecInterface` | the factory the engine builds bitmaps through (`empty` / `fromValues` / `safeDeserialize`). `safeDeserialize(bytes, maxBytes, { whole? })`: with `whole: true`, which a load passes for a caller's bytes, bytes after the bitmap's end are refused too; a stored chunk is read without it. A codec must honour `whole`: core cannot read the format and relies on the codec for that refusal, so a codec that ignores it loads two concatenated bitmaps as the first |
 | `CodecBitmap` | the value type a codec produces — a `u32` set with set algebra + portable (de)serialization. Optional `maximum?()` lets the engine range-check a chunk payload in O(1); a codec that can't answer cheaply omits it and the check is skipped. Optional `optimize?()` re-encodes for storage, and must be canonical: afterwards `serialize()` depends on membership alone. Optional `toUint32Array?()` is the chunk's values as one ascending `Uint32Array` for batch reads; it must return a new array the caller owns on every call, since the engine rewrites it in place; a codec without it is read through its iterator. Optional `encodeChunks?()` is flavor-author surface: the set as `EncodedChunk`s, ascending, each exactly the bytes `fromValues` of that chunk's low 16 bits, `optimize()` and `serialize()` give, which is how a bitmap load writes without touching an id. A codec without it loads a bitmap through its ids |
 | `CodecInterface.owns?(bitmap)` | whether a bitmap is one this codec made; `loadSegmentChunks` refuses any chunk whose bitmap it does not vouch for, and a codec without it has every chunk refused. The roaring codec vouches for the bitmaps its own type made. The answer is the whole check: an `owns` that answers `true` for anything lets any object through |
+| `decodeSerialized(bytes, codec, what?)` → `CodecBitmap` | the one check every bitmap input of a load goes through, for a flavor to offer its users: `bytes` must be a `Uint8Array` of at most 537,403,396 bytes holding exactly one bitmap, read over the bytes it really holds (a `SharedArrayBuffer`'s are copied first), and `codec.safeDeserialize` decodes it. Anything else throws `ValidationError` before the codec's native decoder runs; `what` names the input in the message. `deserializePortable` is this over the roaring codec |
 | `EncodedChunk` | `{ chunkKey, payload, cardinality }`: one chunk as a `.crbm` generation stores it, what `encodeChunks?()` yields |
 
 ### Flavor-author kit (`@cloudbitmaps/core`)
@@ -880,7 +892,7 @@ does not re-export. A driver author told elsewhere on this page to import `Token
 
 ### `@cloudbitmaps/roaring` — values
 
-`CloudRoaring` · `Segment` · `MemoryStorage` · `LocalFsStorage` · `CrbmStorageChunkSource` ·
+`CloudRoaring` · `Segment` · `deserializePortable` · `MemoryStorage` · `LocalFsStorage` · `CrbmStorageChunkSource` ·
 `destroySegment` · `eraseNamespace` · `InProcessKeystore` · `NodeAead` · `aadFor` ·
 `readRetentionPolicy` · `MIN_EXPIRES_AT_MS` ·
 `excludingReservedRows` · `DEFAULT_RETRY_POLICY` ·
@@ -898,7 +910,7 @@ does not re-export. A driver author told elsewhere on this page to import `Token
 `SegmentOptions` · `SubjectReport` · `SubjectSegmentRef` · `SubjectErasureEntry` · `EraseSubjectResult` ·
 `MaterializeResult` · `MaterializeRefusal` · `BaseCombineOptions` · `CombineOptions` · `MaterializeOptions`
 · `AndNotIntoOptions` · `IdRange` · `IdStream` · `LoadInput` · `PortableBitmap` · `LoadOptions` · `LoadGuard`
-· `LoadResult` · `LoadRefusal` · `GenerationEntry` · `RollbackResult` · `SegmentInfo` · `SegmentStat`
+· `LoadResult` · `LoadRefusal` · `GenerationEntry` · `RollbackResult` · `SegmentInfo` · `SegmentStat` · `PinAt`
 · `CrbmStorageChunkSourceOptions` ·
 `MemoryStorageOptions` · `LocalFsStorageOptions` · `ExportFormat` · `ExportSink` · `ExportWriter` · `ExportOptions` ·
 `ExportedSegment` · `ExportFailure` · `ExportManifest` · `IStorageDriver` · `IRegistryDriver` ·
@@ -924,7 +936,7 @@ the store's methods](#the-standalone-forms-of-the-stores-methods) say what each 
 Values: `SegmentEngine` · `BoundedLru` · `safeMetrics` · `NOOP_METRICS` · `groundedReport` · `splitId` ·
 `mapWithConcurrency` · `resolveBudget` · `resolvePerOpBudget` · `checkBudget` · `collectWithinBudget` ·
 `DEFAULT_BUDGET` · `segmentKey` · `isStorageBackend` · `PinnedStorageChunkSource` · `withRetry` ·
-`RetryingStorageChunkSource` · `loadSegment` · `loadSegmentChunks` · `listGenerations` · `rollbackSegment` · `segmentExists` ·
+`RetryingStorageChunkSource` · `decodeSerialized` · `loadSegment` · `loadSegmentChunks` · `listGenerations` · `rollbackSegment` · `segmentExists` ·
 `listSegments` · `eraseIdFromSegment` · `dropSegment` · `runConsistencyCheck` · `runExport` ·
 `setSegmentRetention` · `getSegmentRetention` · `clearSegmentRetention` · `retireExpired` · `estimateCost`
 

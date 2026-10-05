@@ -111,7 +111,7 @@ import { listGenerations, rollbackSegment } from '@cloudbitmaps/core';
 import { listSegments, segmentExists } from '@cloudbitmaps/core';
 import type { SegmentInfo } from '@cloudbitmaps/core';
 import { refuseReservedNamespace } from './reserved-namespace';
-import { bitmapAsLoadInput, roaringCodec } from './roaring-codec';
+import { bitmapAsLoadInput, deserializePortable, roaringCodec } from './roaring-codec';
 import { SystemClock } from './system-clock';
 import { OPTION_KEYS, type OptionGroup } from './option-keys';
 
@@ -892,7 +892,7 @@ export class CloudRoaring {
       clock: this.clock,
       metrics: this.metrics,
       materialize: (dest, ids, op, options) => this.materialize(dest, ids, op, options),
-      pinned: (r, e) => this.pinSegment(r, e),
+      pinned: (r, e, at) => this.pinSegment(r, e, at),
       combineEngine: (handles) => this.engineForCombine(handles),
       expiresAt,
     });
@@ -1707,7 +1707,7 @@ export class CloudRoaring {
    * pinned view reports the version captured at pin time, marked as a pin's, so its decoded chunks are never
    * those of a live read that fetched across a publish (see {@link PinnedStorageChunkSource.currentVersion}).
    */
-  private async pinSegment(ref: SegmentRef, expiresAt?: number): Promise<Segment> {
+  private async pinSegment(ref: SegmentRef, expiresAt?: number, named?: PinAt): Promise<Segment> {
     const crbm = this.crbmSource;
     if (crbm === undefined) {
       throw new UnsupportedError(
@@ -1716,7 +1716,9 @@ export class CloudRoaring {
       );
     }
     // Under the store's retries, as its reads are: a transient fault resolving the pin must not fail pin().
-    const at = await this.withRetries(() => crbm.pinGeneration(ref));
+    const at = await this.withRetries(() =>
+      named === undefined ? crbm.pinGeneration(ref) : crbm.pinGenerationAt(ref, named),
+    );
     const pinnedAt: PinnedAt = {
       generation: at?.generation ?? null,
       version: at?.version ?? null,
@@ -1729,7 +1731,7 @@ export class CloudRoaring {
       clock: this.clock,
       metrics: this.metrics,
       materialize: (dest, ids, op, options) => this.materialize(dest, ids, op, options),
-      pinned: (r, e) => this.pinSegment(r, e),
+      pinned: (r, e, at) => this.pinSegment(r, e, at),
       combineEngine: (handles) => this.engineForCombine(handles),
       expiresAt,
       pinnedAt,
@@ -2168,7 +2170,7 @@ const KEEP_EVERY_GENERATION = Number.MAX_SAFE_INTEGER;
 
 /** How a `Segment` hands a result stream back to its store to become a new generation of `dest`. */
 /** Build a pinned twin of a handle — injected into `Segment` so it stays free of store wiring. */
-type Pin = (ref: SegmentRef, expiresAt?: number) => Promise<Segment>;
+type Pin = (ref: SegmentRef, expiresAt?: number, at?: PinAt) => Promise<Segment>;
 
 /**
  * The engine a combine should run on, given every handle involved — `undefined` when none is pinned and the
@@ -2195,6 +2197,17 @@ interface SegmentParts {
   combineEngine: CombineEngine;
   expiresAt?: number;
   pinnedAt?: PinnedAt;
+}
+
+/**
+ * The generation {@link Segment.pinAt} reopens: what an earlier pin recorded in {@link Segment.pinnedAt}. The
+ * fingerprint is required, since a generation number is taken again after a purge and re-create.
+ */
+export interface PinAt {
+  /** The generation number an earlier pin held. */
+  readonly generation: number;
+  /** The fingerprint of that generation's object, from the earlier pin's `pinnedAt.fingerprint`. */
+  readonly fingerprint: string;
 }
 
 /** What {@link Segment.stat} answers: the generation a handle reads, its id count and its metadata. */
@@ -2346,6 +2359,50 @@ export class Segment {
   }
 
   /**
+   * Reopen a generation a pin named earlier, as a pinned handle like the one {@link Segment.pin} returns, held at
+   * `at.generation` instead of the current one. Pass what the earlier pin recorded, `{ generation, fingerprint }`
+   * from its {@link Segment.pinnedAt}. A generation number alone is not an identity, since a purged and re-created
+   * name starts again at 0, so the fingerprint is required: a bare number, a malformed fingerprint or a key other
+   * than `generation` and `fingerprint` is a {@link ValidationError}. Identify a pin by its `generation` and
+   * `fingerprint`: the handle's `pinnedAt.version` can differ from the earlier pin's.
+   *
+   * Throws {@link NotFoundError} when the generation is gone (collected, purged, or on a crypto-shredded segment),
+   * is above the row's pointer, or is another object than the fingerprint names, and never reads empty. A rollback
+   * deletes nothing, so once a later load moves the pointer past a generation it rolled back from, that one can be
+   * reopened while its object is stored. Nothing keeps a generation alive: a later load's collection can delete it,
+   * which is sized by `keep` on every writer. With a registry it costs one row read and one tail read; the handle
+   * then reads as one from `pin()` does, including its failure on a chunk it has not cached once the generation is
+   * swept. Works for an encrypted segment. The argument is an object so that fields can join it later.
+   */
+  async pinAt(at: PinAt): Promise<Segment> {
+    const { generation, fingerprint } = (at ?? {}) as Partial<PinAt>;
+    // Own enumerable string keys only: a symbol, non-enumerable or inherited key is not seen.
+    const unknown =
+      typeof at === 'object' && at !== null
+        ? Object.keys(at).filter((k) => k !== 'generation' && k !== 'fingerprint')
+        : [];
+    if (unknown.length > 0) {
+      throw new ValidationError(
+        `pinAt: unknown option${unknown.length > 1 ? 's' : ''} ${unknown.map((k) => `"${k}"`).join(', ')}; ` +
+          'this version takes { generation, fingerprint } only',
+      );
+    }
+    if (
+      typeof generation !== 'number' ||
+      !Number.isSafeInteger(generation) ||
+      generation < 0 ||
+      typeof fingerprint !== 'string' ||
+      !/^\d+:\d+$/.test(fingerprint)
+    ) {
+      throw new ValidationError(
+        'pinAt: pass { generation, fingerprint } as recorded by an earlier pin (its pinnedAt); a generation number ' +
+          'without the fingerprint of its object does not identify it',
+      );
+    }
+    return this.pinned(this.ref, this.expiresAt, { generation, fingerprint });
+  }
+
+  /**
    * An opaque string that names this handle's segment, namespace included: two handles of one segment have the
    * same key, a live handle and its pins among them. Use it as a `Map` key or a log field when you track handles
    * and have not kept the name you made them with. The format is not specified and is not a storage key, so
@@ -2485,6 +2542,49 @@ export class Segment {
     const { engine, ref } = this;
     const bounds = none ? undefined : range;
     return withBatches(engine.iterate(ref, bounds), () => engine.iterateBatches(ref, bounds));
+  }
+
+  /**
+   * **Pinned handles only.** The ids at 1-based ranks `n`, `2n`, `3n` …, counted over the ids in `(after, through]`
+   * when a range is given, ascending: `everyNth(1000)` yields the 1,000th id, then the 2,000th, and so on. A last
+   * partial window yields nothing, so a caller cutting a send into windows of `n` appends its own final end.
+   *
+   * It places each boundary from the per-chunk counts the pin already holds and reads only the chunks that hold one,
+   * each once however many boundaries it holds, so it reads at most one chunk per boundary and never more chunks
+   * than the object has. A range with `after` inside a chunk reads that chunk too, to count the ids at or below
+   * `after`, even when fewer than `n` ids remain above it; when the chunks in range hold fewer than `n` ids in all,
+   * nothing is fetched. `through` stops the read and no chunk past it is read, though a `through` inside a chunk may read that last chunk and
+   * yield nothing from it. The reads and the read-ahead window are
+   * those of {@link Segment.iterate}, and the per-op budget is charged before the first fetch, with an upper bound on
+   * the chunks the read can take. A pinned read after the generation is swept throws {@link NotFoundError}.
+   *
+   * The ranks come from the index's counts, which are trusted as {@link Segment.count} trusts them. A chunk that is
+   * read must hold the number of ids its index says, or the read throws {@link IntegrityError}; a chunk that is not
+   * read is not checked, so an index that is wrong about one, and, on an unencrypted object, still adds up to the footer's
+   * total, moves the ids after it to the wrong ranks. An encrypted object's index is authenticated and bound to the
+   * object, so a wrong count there needs the key.
+   *
+   * A live handle is refused with {@link UnsupportedError} at the first read, because its counts and its chunks could
+   * come from two generations and name the wrong id. `n` that is not a positive integer throws
+   * {@link ValidationError} at the first read, as does a bad bound. An expired handle reads empty.
+   *
+   * ```ts
+   * const audience = await store.segment('audience').pin();
+   * const ends: number[] = [];
+   * for await (const id of audience.everyNth(1_000)) ends.push(id); // the end of each window of 1,000
+   * ```
+   */
+  everyNth(n: number, options?: IdRange): AsyncIterable<number> {
+    if (this.expired()) return EMPTY_IDS;
+    if (this.pinnedAt === undefined) {
+      return failing(
+        new UnsupportedError(
+          'everyNth needs a pinned handle: a live handle can place a rank by one generation ' +
+            'and read it from another. Call `pin()` first.',
+        ),
+      );
+    }
+    return this.engine.everyNth(this.ref, n, options == null ? undefined : rangeOf(options));
   }
 
   /**
@@ -2758,6 +2858,8 @@ export class Segment {
 // `@cloudbitmaps/core` and `@cloudbitmaps/core/driver-kit`. A name added here is a public name of this package, so
 // add one on purpose: `tests/docs/api-reference-sync.test.ts` fails until the API reference lists it.
 // ---------------------------------------------------------------------------------------------------
+// Decode portable bytes you hold, through the check a `{ serialized }` load makes.
+export { deserializePortable };
 export {
   // Backends
   MemoryStorage,
