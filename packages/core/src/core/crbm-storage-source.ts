@@ -728,6 +728,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   async pinGenerationAt(
     ref: SegmentRef,
     at: { readonly generation: number; readonly fingerprint: string },
+    lease?: PinLease,
   ): Promise<{ generation: number } & Required<PinnedObject>> {
     const { generation, fingerprint } = at;
     const gone = (why: string): NotFoundError =>
@@ -746,7 +747,17 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       if (record.currentGen === null || generation > record.currentGen) {
         throw gone('it is not a published generation of this segment');
       }
-      version = versionOf(generation, record.token);
+      // A lease goes before the open and the verify, as a pin's does: the write is fenced on the row just read, so what
+      // it holds is held from here on. For a generation below the pointer one window remains: a collector that read the
+      // row before this write and deletes after it, inside its own round trip, takes the generation anyway, and the verify
+      // below, or a later read, then fails with `NotFoundError`. The caller releases the lease when this throws.
+      let lineage = record.token;
+      if (lease !== undefined) {
+        const taken = await lease.take(record);
+        if (taken === 'moved') throw gone('the segment moved while its lease was taken');
+        lineage = taken.token;
+      }
+      version = versionOf(generation, lineage);
       const key = this.pinnedKey(ref, version);
       memoised = this.snapshots.peek(key) !== undefined;
       if (!memoised) {
@@ -755,7 +766,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
           Snapshot.eager(
             this.openForTarget(ref, {
               generation,
-              lineage: record.token,
+              lineage,
               wrappedDeks: record.wrappedDeks,
             }),
           ),

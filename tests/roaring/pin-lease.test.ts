@@ -536,6 +536,121 @@ describe('a stream built while the lease is live and pulled after it ended never
   });
 });
 
+describe('pinAt(at, { leaseUntil })', () => {
+  /** What an earlier pin recorded of REF's current generation, for a pinAt later. */
+  async function recorded(h: H) {
+    const first = await plain(h, REF).pin();
+    const { generation, fingerprint } = first.pinnedAt as {
+      generation: number;
+      fingerprint: string;
+    };
+    return { generation, fingerprint };
+  }
+  const leasedAt = (h: H, at: { generation: number; fingerprint: string }, ms = 72 * HOUR) =>
+    plain(h, REF).pinAt(at, { leaseUntil: h.state.t + ms });
+
+  it('holds a past generation through later loads, and a read after the lease throws', async () => {
+    const h = await seeded();
+    const at = await recorded(h);
+    await churn(h, 1); // generation 0 is the window's one kept generation
+    const snap = await leasedAt(h, at);
+    expect(snap.pinnedAt?.generation).toBe(0);
+    expect(snap.lease?.holder).toMatch(/^[0-9a-f]{16}$/);
+    expect((await h.memory.registry.get(REF))!.leases).toEqual([
+      { holder: snap.lease?.holder, generation: 0, until: snap.lease?.until },
+    ]);
+    await churn(h, 40);
+    expect(await generationsOf(h)).toContain(0);
+    expect(await snap.count()).toBe(200);
+    await snap.release();
+    await churn(h, 16);
+    expect(await generationsOf(h)).not.toContain(0);
+    await expect(snap.count()).rejects.toBeInstanceOf(LeaseExpiredError);
+  });
+
+  it('costs one row read, one write and one tail read, the write before the tail read', async () => {
+    const h = await seeded();
+    const at = await recorded(h);
+    h.reset();
+    await leasedAt(h, at);
+    expect(h.registryCalls.get).toBe(1);
+    expect(h.registryCalls.compareAndSwap).toBe(1);
+    expect(h.storageCalls.getTail).toBe(1);
+  });
+
+  it('a fingerprint that is not the object releases the lease it took, and throws NotFoundError', async () => {
+    const h = await seeded();
+    const at = await recorded(h);
+    const err = await leasedAt(h, { generation: at.generation, fingerprint: '1:2' }).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(NotFoundError);
+    expect((await h.memory.registry.get(REF))!.leases).toBeUndefined();
+  });
+
+  it('a generation above the pointer is NotFoundError and writes no lease', async () => {
+    const h = await seeded();
+    const at = await recorded(h);
+    const before = (await h.memory.registry.get(REF))!;
+    await expect(
+      leasedAt(h, { generation: 9, fingerprint: at.fingerprint }),
+    ).rejects.toBeInstanceOf(NotFoundError);
+    expect((await h.memory.registry.get(REF))!.token).toBe(before.token);
+  });
+
+  it('`at` still refuses an unknown key, leaseUntil among them; the options refuse unknown keys too', async () => {
+    const h = await seeded();
+    const at = await recorded(h);
+    const seg = plain(h, REF);
+    await expect(seg.pinAt({ ...at, leaseUntil: h.state.t + HOUR } as never)).rejects.toThrow(
+      /unknown option "leaseUntil"/,
+    );
+    await expect(seg.pinAt(at, { leaseUntil: h.state.t + HOUR, ttl: 1 } as never)).rejects.toThrow(
+      /unknown option "ttl"/,
+    );
+    await expect(seg.pinAt(at, { leaseUntil: h.state.t } as never)).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    await expect(seg.pinAt(at, { leaseUntil: h.state.t + MAX_LEASE_MS + 1 })).rejects.toThrow(
+      /14 days/,
+    );
+    await expect(seg.pinAt(at, {})).resolves.toBeDefined();
+    await expect(seg.pinAt(at)).resolves.toBeDefined();
+  });
+
+  it('needs a registry', async () => {
+    const bare = new CloudRoaring({ storage: new MemoryStorageDriver() });
+    await expect(
+      bare
+        .segment('s')
+        .pinAt({ generation: 0, fingerprint: '1:2' }, { leaseUntil: Date.now() + HOUR }),
+    ).rejects.toBeInstanceOf(UnsupportedError);
+  });
+
+  it('pinAt from a leased handle past its lease throws', async () => {
+    const h = await seeded();
+    const at = await recorded(h);
+    const snap = await leasedAt(h, at, HOUR);
+    h.advance(HOUR);
+    await expect(snap.pinAt(at)).rejects.toBeInstanceOf(LeaseExpiredError);
+  });
+
+  it.each(SITES)(
+    '%s throws LeaseExpiredError on a pinAt handle past its lease',
+    async (_name, run) => {
+      const h = await seeded();
+      const at = await recorded(h);
+      const snap = await leasedAt(h, at, HOUR);
+      h.advance(HOUR);
+      const err = await run(snap, h).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      expect(isLeaseExpiredError(err)).toBe(true);
+    },
+  );
+});
+
 describe('release()', () => {
   it('removes the entry with one read and one write, and a second call makes no request', async () => {
     const h = await seeded();

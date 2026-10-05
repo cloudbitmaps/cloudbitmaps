@@ -1753,6 +1753,10 @@ export class CloudRoaring {
       }
       const holder = this.mintHolder();
       const deps = { registry, clock: this.clock, rng: this.rng };
+      // A pin takes the generation current when its row is read, which must still be current when the write lands; a
+      // `pinAt` takes the one it names, which only has to be published.
+      const generationOf = (row: { currentGen: number | null }): number =>
+        named?.generation ?? (row.currentGen as number);
       hold = {
         holder,
         until: leaseUntil,
@@ -1764,10 +1768,10 @@ export class CloudRoaring {
         take: (row) =>
           takeLease(ref, deps, {
             holder,
-            generation: row.currentGen as number,
+            generation: generationOf(row),
             until: leaseUntil,
             row,
-            current: true,
+            current: named === undefined,
           }),
       };
     }
@@ -1775,7 +1779,9 @@ export class CloudRoaring {
     try {
       // Under the store's retries, as its reads are: a transient fault resolving the pin must not fail pin().
       at = await this.withRetries(() =>
-        named === undefined ? crbm.pinGeneration(ref, take) : crbm.pinGenerationAt(ref, named),
+        named === undefined
+          ? crbm.pinGeneration(ref, take)
+          : crbm.pinGenerationAt(ref, named, take),
       );
       if (hold !== undefined && at === null) {
         throw new NotFoundError(`segment "${ref.segment}" has no generation to lease`);
@@ -2300,7 +2306,7 @@ interface LeaseHold {
   readonly release: () => Promise<void>;
 }
 
-/** What {@link Segment.pin} takes besides the generation. */
+/** What {@link Segment.pin} and {@link Segment.pinAt} take besides the generation. */
 export interface PinOptions {
   /**
    * Hold the pinned generation until this instant: epoch-**milliseconds**, after now and at most
@@ -2498,10 +2504,6 @@ export class Segment {
     // that is current now, which is not the leased one, and holds no lease of its own unless asked.
     this.assertLeases([this]);
     const leaseUntil = this.leaseUntilOf('pin', options);
-    // For `pinAt` (a separate change): it takes `{ generation, fingerprint }` as its first argument and refuses any other
-    // key, so `leaseUntil` goes in its OPTIONS, the second argument, read by `leaseUntilOf`. It must call `assertLeases`
-    // first, as this does (a leased handle past its lease pins nothing), and it reaches `this.pinned`, whose third
-    // parameter is the lease here: that slot and its named generation need one options object, or a fourth parameter.
     return this.pinned(this.ref, this.expiresAt, leaseUntil);
   }
 
@@ -2620,12 +2622,19 @@ export class Segment {
    * Throws {@link NotFoundError} when the generation is gone (collected, purged, or on a crypto-shredded segment),
    * is above the row's pointer, or is another object than the fingerprint names, and never reads empty. A rollback
    * deletes nothing, so once a later load moves the pointer past a generation it rolled back from, that one can be
-   * reopened while its object is stored. Nothing keeps a generation alive: a later load's collection can delete it,
-   * which is sized by `keep` on every writer. With a registry it costs one row read and one tail read; the handle
+   * reopened while its object is stored. Nothing keeps a generation alive unless you lease it: a later load's
+   * collection can delete it, which is sized by `keep` on every writer, or held by `options.leaseUntil` (see
+   * {@link PinOptions} and {@link Segment.pin}). A leased `pinAt` writes the lease before it verifies the object, and
+   * releases it if the verify fails; for a generation below the pointer, a collector that read the row before the lease
+   * landed can still delete the generation inside its own round trip, and the handle then fails with `NotFoundError`
+   * like any swept pin. A leased handle is checked at every read site as a leased `pin()` is. With a registry it costs one row read and one tail read; the handle
    * then reads as one from `pin()` does, including its failure on a chunk it has not cached once the generation is
-   * swept. Works for an encrypted segment. The argument is an object so that fields can join it later.
+   * swept. Works for an encrypted segment. The first argument is an object so that fields can join it later; the lease
+   * is in `options`, the second.
    */
-  async pinAt(at: PinAt): Promise<Segment> {
+  async pinAt(at: PinAt, options?: PinOptions): Promise<Segment> {
+    // A leased handle past its lease pins nothing, as for `pin()`.
+    this.assertLeases([this]);
     const { generation, fingerprint } = (at ?? {}) as Partial<PinAt>;
     // Own enumerable string keys only: a symbol, non-enumerable or inherited key is not seen.
     const unknown =
@@ -2650,7 +2659,9 @@ export class Segment {
           'without the fingerprint of its object does not identify it',
       );
     }
-    return this.pinned(this.ref, this.expiresAt, undefined, { generation, fingerprint });
+    // `at` takes `{ generation, fingerprint }` and nothing else; the lease goes in the options, the second argument.
+    const leaseUntil = this.leaseUntilOf('pinAt', options);
+    return this.pinned(this.ref, this.expiresAt, leaseUntil, { generation, fingerprint });
   }
 
   /**
