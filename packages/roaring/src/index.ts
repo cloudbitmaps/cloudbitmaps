@@ -888,7 +888,7 @@ export class CloudRoaring {
       clock: this.clock,
       metrics: this.metrics,
       materialize: (dest, ids, op, options) => this.materialize(dest, ids, op, options),
-      pinned: (r, e) => this.pinSegment(r, e),
+      pinned: (r, e, at) => this.pinSegment(r, e, at),
       combineEngine: (handles) => this.engineForCombine(handles),
       expiresAt,
     });
@@ -1703,7 +1703,7 @@ export class CloudRoaring {
    * pinned view reports the version captured at pin time, marked as a pin's, so its decoded chunks are never
    * those of a live read that fetched across a publish (see {@link PinnedStorageChunkSource.currentVersion}).
    */
-  private async pinSegment(ref: SegmentRef, expiresAt?: number): Promise<Segment> {
+  private async pinSegment(ref: SegmentRef, expiresAt?: number, named?: PinAt): Promise<Segment> {
     const crbm = this.crbmSource;
     if (crbm === undefined) {
       throw new UnsupportedError(
@@ -1712,7 +1712,9 @@ export class CloudRoaring {
       );
     }
     // Under the store's retries, as its reads are: a transient fault resolving the pin must not fail pin().
-    const at = await this.withRetries(() => crbm.pinGeneration(ref));
+    const at = await this.withRetries(() =>
+      named === undefined ? crbm.pinGeneration(ref) : crbm.pinGenerationAt(ref, named),
+    );
     const pinnedAt: PinnedAt = {
       generation: at?.generation ?? null,
       version: at?.version ?? null,
@@ -1725,7 +1727,7 @@ export class CloudRoaring {
       clock: this.clock,
       metrics: this.metrics,
       materialize: (dest, ids, op, options) => this.materialize(dest, ids, op, options),
-      pinned: (r, e) => this.pinSegment(r, e),
+      pinned: (r, e, at) => this.pinSegment(r, e, at),
       combineEngine: (handles) => this.engineForCombine(handles),
       expiresAt,
       pinnedAt,
@@ -2164,7 +2166,7 @@ const KEEP_EVERY_GENERATION = Number.MAX_SAFE_INTEGER;
 
 /** How a `Segment` hands a result stream back to its store to become a new generation of `dest`. */
 /** Build a pinned twin of a handle — injected into `Segment` so it stays free of store wiring. */
-type Pin = (ref: SegmentRef, expiresAt?: number) => Promise<Segment>;
+type Pin = (ref: SegmentRef, expiresAt?: number, at?: PinAt) => Promise<Segment>;
 
 /**
  * The engine a combine should run on, given every handle involved — `undefined` when none is pinned and the
@@ -2191,6 +2193,17 @@ interface SegmentParts {
   combineEngine: CombineEngine;
   expiresAt?: number;
   pinnedAt?: PinnedAt;
+}
+
+/**
+ * The generation {@link Segment.pinAt} reopens: what an earlier pin recorded in {@link Segment.pinnedAt}. The
+ * fingerprint is required, since a generation number is taken again after a purge and re-create.
+ */
+export interface PinAt {
+  /** The generation number an earlier pin held. */
+  readonly generation: number;
+  /** The fingerprint of that generation's object, from the earlier pin's `pinnedAt.fingerprint`. */
+  readonly fingerprint: string;
 }
 
 /** What {@link Segment.stat} answers: the generation a handle reads, its id count and its metadata. */
@@ -2339,6 +2352,50 @@ export class Segment {
    */
   async pin(): Promise<Segment> {
     return this.pinned(this.ref, this.expiresAt);
+  }
+
+  /**
+   * Reopen a generation a pin named earlier, as a pinned handle like the one {@link Segment.pin} returns, held at
+   * `at.generation` instead of the current one. Pass what the earlier pin recorded, `{ generation, fingerprint }`
+   * from its {@link Segment.pinnedAt}. A generation number alone is not an identity, since a purged and re-created
+   * name starts again at 0, so the fingerprint is required: a bare number, a malformed fingerprint or a key other
+   * than `generation` and `fingerprint` is a {@link ValidationError}. Identify a pin by its `generation` and
+   * `fingerprint`: the handle's `pinnedAt.version` can differ from the earlier pin's.
+   *
+   * Throws {@link NotFoundError} when the generation is gone (collected, purged, or on a crypto-shredded segment),
+   * is above the row's pointer, or is another object than the fingerprint names, and never reads empty. A rollback
+   * deletes nothing, so once a later load moves the pointer past a generation it rolled back from, that one can be
+   * reopened while its object is stored. Nothing keeps a generation alive: a later load's collection can delete it,
+   * which is sized by `keep` on every writer. With a registry it costs one row read and one tail read; the handle
+   * then reads as one from `pin()` does, including its failure on a chunk it has not cached once the generation is
+   * swept. Works for an encrypted segment. The argument is an object so that fields can join it later.
+   */
+  async pinAt(at: PinAt): Promise<Segment> {
+    const { generation, fingerprint } = (at ?? {}) as Partial<PinAt>;
+    // Own enumerable string keys only: a symbol, non-enumerable or inherited key is not seen.
+    const unknown =
+      typeof at === 'object' && at !== null
+        ? Object.keys(at).filter((k) => k !== 'generation' && k !== 'fingerprint')
+        : [];
+    if (unknown.length > 0) {
+      throw new ValidationError(
+        `pinAt: unknown option${unknown.length > 1 ? 's' : ''} ${unknown.map((k) => `"${k}"`).join(', ')}; ` +
+          'this version takes { generation, fingerprint } only',
+      );
+    }
+    if (
+      typeof generation !== 'number' ||
+      !Number.isSafeInteger(generation) ||
+      generation < 0 ||
+      typeof fingerprint !== 'string' ||
+      !/^\d+:\d+$/.test(fingerprint)
+    ) {
+      throw new ValidationError(
+        'pinAt: pass { generation, fingerprint } as recorded by an earlier pin (its pinnedAt); a generation number ' +
+          'without the fingerprint of its object does not identify it',
+      );
+    }
+    return this.pinned(this.ref, this.expiresAt, { generation, fingerprint });
   }
 
   /**

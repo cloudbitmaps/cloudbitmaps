@@ -187,6 +187,38 @@ for await (const id of audience.iterate()) {
   the job runs. See [Generations and `keep`](loading.md#generations-and-keep). An erasure collects the generation it rewrote whatever
   `keep` says.
 
+### Reopen a pinned generation: `pinAt`
+
+A pin records what it holds in `snap.pinnedAt`. `seg.pinAt({ generation, fingerprint })` reopens that generation later,
+in another task or another process, as the same kind of pinned handle `pin()` returns.
+
+```ts
+const first = await store.segment('active-30d').pin();
+const { generation, fingerprint } = first.pinnedAt!;
+// … hand both to the next task, which reopens the same instant:
+const again = await store.segment('active-30d').pinAt({ generation, fingerprint });
+```
+
+- **The fingerprint is required.** A generation number is taken again once its object is deleted and the name is purged
+  and loaded again, so a number alone does not name an object. A bare number, a fingerprint that is not one a pin
+  recorded, or a key other than `generation` and `fingerprint` throws `ValidationError`.
+- **A generation that is gone throws `NotFoundError`, and `pinAt` never reads empty.** Collected, purged, on a
+  crypto-shredded segment, or another object than the fingerprint names: each is `NotFoundError`, at the call. A
+  generation above the pointer after a rollback is refused too. A rollback deletes nothing, though, so once a later load
+  moves the pointer past it, a generation it rolled back from can be reopened while its object is still stored and
+  the fingerprint matches.
+- **A pin is identified by its `generation` and `fingerprint`.** The handle `pinAt` returns reads as a `pin()` handle does,
+  but its `pinnedAt.version` can differ from the original pin's, since it names the row as it is now.
+- **It costs one row read and one tail read** (the tail read alone without a registry), and the object it opens is the
+  one its first read finds open. After that the handle reads exactly as a `pin()` handle does, including what it does
+  once the generation is swept (see above).
+- **It keeps nothing alive.** `pinAt` does not stop a collection, so how long a generation can be reopened is how long
+  `keep` retains it. With `keep` at 2 or more it stays reopenable while fewer than `keep` generation numbers have been
+  taken above it by later loads: each load that lands, and each that is superseded or crashes before publishing. A load
+  a guard refuses takes no number. Collection runs with the `keep` of whichever writer loads, so set the same `keep` on every
+  writer of the segment. Each retained generation is a whole copy in storage. See
+  [Generations and `keep`](loading.md#generations-and-keep) for the rule and what a larger `keep` costs in requests.
+
 ### How a pin stays correct
 
 - **A pin costs a generation number, not a retained index.** The pinned reader lives in the same bounded LRU as every

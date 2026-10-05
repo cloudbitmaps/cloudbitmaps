@@ -687,6 +687,86 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     }
   }
 
+  /**
+   * Open one named generation and verify it is the object `at.fingerprint` names, for a pin the caller reopens. One
+   * row read and one tail read with a registry (none of the row for a store without one): the open is the one a
+   * pinned read makes ({@link readerAt}), memoised under the version the pin will read by, so the pin's first read
+   * finds it open. A generation that is gone, above the row's pointer, on a destroyed or absent row, or another
+   * object than the fingerprint names, throws `NotFoundError`; nothing here reads empty.
+   *
+   * A generation counts as published while the pointer is at or above it. A rollback deletes nothing, so after one
+   * and a later load, a generation it rolled back from can be reopened while its object is still stored and the
+   * fingerprint matches. Like `pinGeneration`'s pinned reads, this opens the object without the live open's check
+   * of the row's summary against it, since that check is made where the row's own generation is read.
+   */
+  async pinGenerationAt(
+    ref: SegmentRef,
+    at: { readonly generation: number; readonly fingerprint: string },
+  ): Promise<{ generation: number } & Required<PinnedObject>> {
+    const { generation, fingerprint } = at;
+    const gone = (why: string): NotFoundError =>
+      new NotFoundError(
+        `segment "${ref.segment}" generation ${generation} cannot be pinned: ${why}`,
+      );
+    let version = versionOf(generation, undefined);
+    let installed: Snapshot | undefined;
+    let pinKey: string | undefined;
+    // Whether the pinned reader was already memoised: only an open this call makes has read what is under the key.
+    let memoised = false;
+    if (this.registry !== undefined) {
+      const record = await this.registry.get(ref);
+      if (record === null || record.status === 'destroyed')
+        throw gone('the segment has no readable row');
+      if (record.currentGen === null || generation > record.currentGen) {
+        throw gone('it is not a published generation of this segment');
+      }
+      version = versionOf(generation, record.token);
+      const key = this.pinnedKey(ref, version);
+      memoised = this.snapshots.peek(key) !== undefined;
+      if (!memoised) {
+        installed = this.install(
+          key,
+          Snapshot.eager(
+            this.openForTarget(ref, {
+              generation,
+              lineage: record.token,
+              wrappedDeks: record.wrappedDeks,
+            }),
+          ),
+        );
+      }
+      pinKey = key;
+    }
+    if (this.registry === undefined) {
+      memoised = this.snapshots.peek(this.pinnedKey(ref, version, fingerprint)) !== undefined;
+    }
+    try {
+      await this.readerAt(ref, generation, version, fingerprint);
+    } catch (err) {
+      // What this call opened is not the object asked for: it must not hold a place in the reader cache, and the
+      // key it unwrapped, for reads that can only fail.
+      if (
+        installed !== undefined &&
+        pinKey !== undefined &&
+        this.snapshots.peek(pinKey) === installed
+      ) {
+        this.snapshots.delete(pinKey);
+      }
+      throw err;
+    }
+    // An open this call made has read what is under the key, so it is the pinned object now whatever an earlier check
+    // found: a restore puts back what a replacement took, and a verdict kept against it would fail this pin. A reader
+    // already memoised was not read by this call, and the verdict that protects the pin holding it stays. A check
+    // under way ends itself when it finishes, so dropping one here only matters for a check started before this open,
+    // which a test cannot hold open deterministically.
+    if (!memoised) {
+      const held = this.heldKey(ref, version, fingerprint);
+      this.replacedPins.delete(held);
+      this.checking.delete(held);
+    }
+    return { generation, version, fingerprint };
+  }
+
   private async pinOnce(
     ref: SegmentRef,
   ): Promise<({ generation: number } & Required<PinnedObject>) | null> {
