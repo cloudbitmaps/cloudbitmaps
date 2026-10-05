@@ -53,6 +53,11 @@ function computeExpectedFigures() {
   const andNot = a.getRange + a.getTail + a.pointer;
   const it = counts.iterate;
   const iterate = it.getRange + it.getTail + it.pointer;
+  // A segment's first single-part `store.load()`: the counts a test holds to the engine, priced at list.
+  const { STORE_LOAD_REQUESTS } = require('./calibration-figures.cjs');
+  const PUT_USD = AWS_US_EAST_1_ONDEMAND.storage.putPerMillion / 1e6;
+  const first = STORE_LOAD_REQUESTS.first;
+  const firstEach = first.put * PUT_USD + first.get * GET_USD;
   const per = (gets) => ({
     gets,
     getsText: `${gets} GETs`,
@@ -65,6 +70,13 @@ function computeExpectedFigures() {
       ...per(coldSpread),
       bytesPerOperand: mb(spread.rangeBytesPerOperand),
       neededBytesPerOperand: mb(100 * counts.profiles.small.chunkBytes),
+    },
+    firstLoad: {
+      puts: first.put,
+      gets: first.get,
+      requestsText: `${first.put} PUT + ${first.get} GET`,
+      each: usd(firstEach),
+      perMillion: usd(firstEach * 1e6),
     },
     andNot: per(andNot),
     iterate: per(iterate),

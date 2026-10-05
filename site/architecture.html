@@ -300,8 +300,8 @@
               by compare-and-swap.
               There is no per-id write, so there is nothing to fold back in later and
               <strong>no background job on the read path</strong>. On S3 a segment's first <span class="m">store.load()</span> costs
-              <strong>$11.60 per million loads</strong>, pointer included — measured request counts at list
-              prices (run 2026-10-04-73668) — so batch the refresh.
+              <strong>$11.20 per million loads</strong>, pointer included — expected, counted from the engine at list
+              prices — so batch the refresh.
             </p>
           </div>
           <div class="limit">
@@ -665,7 +665,7 @@
               Once a store has read a segment's pointer and index, a membership check the LRU cannot answer
               costs one ranged GET against your bucket — there is no middle tier to answer it more cheaply. The
               first read of a segment also reads its pointer and its index, and while its reader stays cached the
-              pointer is read again at most once per <span class="m">cache.genTtlMs</span>, 2 s by default. Object-store latency, in other words: a first read on an open segment took 25.94 ms at the
+              pointer is read again at most once per <span class="m">cache.genTtlMs</span>, 2 s by default. Object-store latency, in other words: a first read on an open segment took 27.52 ms at the
               median in the in-region run of 2026-10-04, and what is not yet measured is
               <a href="benchmarks.html#owed">listed as owed</a>.
             </span>

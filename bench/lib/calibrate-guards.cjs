@@ -456,7 +456,7 @@ function clientConfigs(base, { adminTimeouts = ADMIN_TIMEOUTS } = {}) {
  * `cache.genTtlMs: 0` — no timed pointer refresh. A store re-reads a segment's pointer once `genTtlMs` (2 s by
  * default) has passed since it last read it, in the middle of an intersect too. Run 2026-09-23-94416 was 83 ms from
  * the region, its cold intersects took about 3 s, and the median one read both pointers twice: 206 GETs where the
- * same intersect inside the region would make 204. A request count that moves with the network describes the
+ * same intersect inside the region made 204 on the engine of that run. A request count that moves with the network describes the
  * network, and the projection has no term for it. Every timed intersect has a store of its own, so turning the
  * refresh off costs nothing in coldness: each pointer is still read, exactly once. What the default refresh costs a
  * long-lived reader is a separate figure — at most one pointer read per segment per `genTtlMs` while it is read —
