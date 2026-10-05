@@ -11,6 +11,16 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Added
+
+- **`pin.everyNth(n, range?)`, the ids at ranks `n`, `2n`, `3n` …, on a pinned handle.** It yields the id at each 1-based
+  rank counted over the ids in `(after, through]`, ascending, and nothing for a last partial window, so a send cut into
+  windows of 1,000 reads its boundaries without decoding the chunks that hold none. It places each boundary from the
+  index's per-chunk counts and reads only the chunks that hold one, each once, through `iterate`'s coalesced stream, window and
+  budget. A live handle throws `UnsupportedError`, a bad `n` `ValidationError`, and a chunk that decodes to a different size than the
+  index says `IntegrityError`. The paging recipe in the reading guide finds its window ends with a `.batches()` stride, and points at
+  `everyNth` for the boundary case.
+
 ### Changed
 
 - **A segment's first `store.load()` is now measured on S3, on `0.16.0`.** A run from AWS CloudShell in `us-east-1` on
