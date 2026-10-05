@@ -36,6 +36,11 @@ and as an `exclude` it would suppress nobody and return the whole audience. Pass
 operand may legitimately not exist yet. A segment loaded with no ids, or one that only has a retention policy, counts
 as existing.
 
+**An `exclude` handle past its `expiresAt` is refused.** An expired operand reads empty, but an exclusion that read
+empty would stop suppressing and return the ids it was passed to remove, so `andNot`, and `exclude` on `intersect`
+and `union`, throw a `ValidationError` naming the expired handle, before any request. Renew its `expiresAt`, or open
+the list without one.
+
 **To keep a result, use the `*Into` verbs.** `intersectInto`, `unionInto` and `andNotInto` write the result as a new
 generation of another segment. See [Loading in depth](loading.md#write-a-result-into-another-segment-the-into-verbs).
 
