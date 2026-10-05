@@ -352,19 +352,25 @@ ends.push(4_294_967_295); // the last, partial window yields nothing: close it y
 
 - **It reads the chunks that hold a boundary and no others.** The object's index records each chunk's id count, which
   places every boundary without reading a payload. A chunk is read and decoded once however many boundaries fall in it,
-  so a read makes at most one chunk read per boundary, and never more chunk reads than the object has chunks.
+  so a read makes at most one chunk read per boundary, and never more chunk reads than the object has chunks; the one
+  exception is a range's cut first chunk, below. When the chunks in range hold fewer than `n` ids, nothing is fetched.
   Chunks that sit near each other are still one range request, so on a sparse object it saves the decoding of the
   chunks that hold no boundary, not requests: the requests are those of the walk over the same chunks.
 - **A range counts from `after`.** The first boundary is the `n`th id after `after`. When `after` falls inside a chunk,
-  that chunk is read too, to count the ids at or below it; when it falls on a chunk's first id, nothing extra is read. No chunk
-  past `through` is read, and no boundary past `through` is yielded. `after >= through` reads nothing.
-- **Reads, window and budget are `iterate`'s.** The chunks come through the same stream of coalesced ranges and the same
-  read-ahead window, and the per-op budget is charged once per chunk read, before the first fetch (after the one chunk that
-  cuts a range, whose count the charge depends on). A pinned read after the generation was collected throws
+  that chunk is read too, to count the ids at or below it, even if fewer than `n` ids turn out to remain above `after`.
+  Nothing extra is read when `after + 1` is a multiple of 65,536, that is, when `after` is the last id a chunk can hold.
+  No chunk past `through` is read, and no boundary past `through` is yielded. `after >= through` reads nothing.
+- **Reads and window are `iterate`'s; the budget is charged first.** The chunks come through the same stream of coalesced
+  ranges and the same read-ahead window. The per-op budget is charged before any fetch, with an upper bound on the chunks
+  the read can take: the cut first chunk, if any, plus one chunk per boundary the counts allow, capped by the chunks in
+  range. That can exceed the chunks actually read. A pinned read after the generation was collected throws
   `NotFoundError`, as every pinned read does.
 - **Pinned handles only.** The ranks come from the index and the ids from the chunks, and the two must be one generation.
   A live handle can re-resolve between them and name the wrong id, so it throws `UnsupportedError` when first read. Pin it.
-- **The index is checked against the chunks.** A rank is placed by the index's count, so a chunk that decodes to a
-  different number of ids than the index says throws `IntegrityError`, rather than yield a wrong id.
+- **The ranks are only as good as the index, as with [`count()`](#what-count-trusts).** A chunk that is read must decode to
+  the number of ids its index says, or the read throws `IntegrityError`. Opening the object has already checked that the
+  index's counts add up to the footer's total (on an unencrypted object). A chunk that is not read is not checked: an
+  index that is wrong about one, and still adds up, moves every boundary after it to the wrong rank, with no error. Where
+  that matters, `iterate()` the segment and count what it yields.
 - **`n` must be a positive integer**, and each bound an integer in `0..4294967295`, or the stream throws `ValidationError`
   when first read. An expired handle reads empty.

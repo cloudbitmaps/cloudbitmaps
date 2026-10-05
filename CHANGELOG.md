@@ -17,8 +17,8 @@ so, and so do the module headers in the code.
   rank counted over the ids in `(after, through]`, ascending, and nothing for a last partial window, so a send cut into
   windows of 1,000 reads its boundaries without decoding the chunks that hold none. It places each boundary from the
   index's per-chunk counts and reads only the chunks that hold one, each once, through `iterate`'s coalesced stream, window and
-  budget. A live handle throws `UnsupportedError`, a bad `n` `ValidationError`, and a chunk that decodes to a different size than the
-  index says `IntegrityError`. The paging recipe in the reading guide finds its window ends with a `.batches()` stride, and points at
+  budget. A live handle throws `UnsupportedError`, a bad `n` `ValidationError`, and a chunk that is read and decodes to a different size than the
+  index says `IntegrityError`; the index's counts are trusted for chunks not read, as `count()` trusts them. The paging recipe in the reading guide finds its window ends with a `.batches()` stride, and points at
   `everyNth` for the boundary case.
 
 ### Changed
