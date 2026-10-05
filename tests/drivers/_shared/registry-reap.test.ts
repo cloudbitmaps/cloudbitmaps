@@ -248,6 +248,31 @@ describe('a re-create racing the delete', () => {
     expect(await w.registry.get(ref('a'))).toMatchObject({ currentGen: 0, token: created });
   });
 
+  it('a write that lands right after the reaper read the envelope is not deleted over: the condition is the version read', async () => {
+    const w = world();
+    legacy(w.store, ref('a'), { deleted: true, token: '12' });
+    const realRead = w.store.read.bind(w.store);
+    let created = '';
+    let armed = true;
+    w.store.read = async (key) => {
+      const row = await realRead(key);
+      if (armed && key === keyOf(ref('a'))) {
+        armed = false;
+        created = (
+          await new ObjectStoreRegistry(w.store, PREFIX, clock()).create(ref('a'), {
+            currentGen: 0,
+          })
+        ).token;
+      }
+      return row;
+    };
+
+    const result = await reapRegistryTombstones(w.registry, CONFIRM);
+
+    expect(result).toMatchObject({ examined: 1, reaped: 0, skipped: { raced: 1 } });
+    expect(await w.registry.get(ref('a'))).toMatchObject({ currentGen: 0, token: created });
+  });
+
   it('a re-create that comes after the delete finds no row and creates one', async () => {
     const w = world();
     legacy(w.store, ref('a'), { deleted: true });
