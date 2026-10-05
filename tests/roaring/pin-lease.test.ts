@@ -362,15 +362,34 @@ describe('every read site of a leased handle', () => {
     await expect(collect(snap.iterate())).rejects.toBeInstanceOf(LeaseExpiredError);
   });
 
-  // The dropping of an `expiresAt`-expired exclude, which this test holds, is the rule a separate change replaces with
-  // an error. When that merges, the last assertion here changes to expect that error; the lease tests around it do not.
-  it('expiresAt is unchanged: an expired unleased handle reads empty and an expired exclude is dropped', async () => {
+  it('expiresAt is unchanged: an expired unleased handle reads empty, and an expired exclude is refused', async () => {
     const h = await seeded();
     const expired = h.reader.segment(OTHER.segment, { namespace: 'ns', expiresAt: T0 + 1 });
     h.advance(10);
     expect(await expired.count()).toBe(0);
-    const left = await collect(plain(h, REF).andNot([expired]));
-    expect(left).toHaveLength(200);
+    // An expired exclusion is a lapsed suppression list: refused with a ValidationError, never dropped.
+    await expect(collect(plain(h, REF).andNot([expired]))).rejects.toBeInstanceOf(ValidationError);
+    await expect(collect(plain(h, REF).andNot([expired]))).rejects.toThrow(
+      /exclusions have expired/,
+    );
+  });
+
+  it('a leased exclude that is past its lease and past its expiresAt throws LeaseExpiredError: the lease is checked first', async () => {
+    const h = await seeded();
+    const seg = h.reader.segment(REF.segment, { namespace: 'ns', expiresAt: T0 + 2 * HOUR });
+    const optOut = await seg.pin({ leaseUntil: T0 + HOUR });
+    h.advance(3 * HOUR); // past the lease and past expiresAt
+    const live = plain(h, THIRD);
+    for (const read of [
+      collect(live.andNot([optOut])),
+      collect(live.intersect([plain(h)], { exclude: [optOut] })),
+      collect(live.union([plain(h)], { exclude: [optOut] })),
+    ]) {
+      await expect(read).rejects.toBeInstanceOf(LeaseExpiredError);
+    }
+    // An unleased handle past its expiresAt, in the same position, is the expired-exclusion rule's.
+    const plainExpired = h.reader.segment(OTHER.segment, { namespace: 'ns', expiresAt: T0 + HOUR });
+    await expect(collect(live.andNot([plainExpired]))).rejects.toBeInstanceOf(ValidationError);
   });
 
   it('a leased exclude past its lease throws LeaseExpiredError, in every combine, whatever the other handles are', async () => {
