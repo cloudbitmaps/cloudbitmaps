@@ -2489,15 +2489,19 @@ export class Segment {
    * It places each boundary from the per-chunk counts the pin already holds and reads only the chunks that hold one,
    * each once however many boundaries it holds, so it reads at most one chunk per boundary and never more chunks
    * than the object has. A range with `after` inside a chunk reads that chunk too, to count the ids at or below
-   * `after`; `through` stops the read, and no chunk past it is read. The reads, the read-ahead window and the
-   * per-op budget (charged once per chunk read, before the first fetch when the range does not cut its first
-   * chunk) are those of {@link Segment.iterate}, and a pinned read after the generation is swept throws
-   * {@link NotFoundError}.
+   * `after`, even when fewer than `n` ids remain above it; when the chunks in range hold fewer than `n` ids in all,
+   * nothing is fetched. `through` stops the read, and no chunk past it is read. The reads and the read-ahead window are
+   * those of {@link Segment.iterate}, and the per-op budget is charged before the first fetch, with an upper bound on
+   * the chunks the read can take. A pinned read after the generation is swept throws {@link NotFoundError}.
+   *
+   * The ranks come from the index's counts, which are trusted as {@link Segment.count} trusts them. A chunk that is
+   * read must hold the number of ids its index says, or the read throws {@link IntegrityError}; a chunk that is not
+   * read is not checked, so an index that is wrong about one, and still adds up to the footer's total, moves the ids
+   * after it to the wrong ranks.
    *
    * A live handle is refused with {@link UnsupportedError} at the first read, because its counts and its chunks could
    * come from two generations and name the wrong id. `n` that is not a positive integer throws
-   * {@link ValidationError} at the first read, as does a bad bound. A chunk that holds a different number of ids than
-   * its index says throws {@link IntegrityError}. An expired handle reads empty.
+   * {@link ValidationError} at the first read, as does a bad bound. An expired handle reads empty.
    *
    * ```ts
    * const audience = await store.segment('audience').pin();

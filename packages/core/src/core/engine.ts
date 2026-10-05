@@ -586,9 +586,17 @@ export class SegmentEngine {
    * `after` inside a chunk reads that chunk too, to count the ids at or below `after`. A last partial window yields
    * nothing.
    *
-   * The counts place ids, so a chunk that decodes to a different size than its index says throws
-   * {@link IntegrityError} (invariant 5). The index and the chunks must come from one generation (invariant 3): the
-   * caller reads through a source that holds one, a pinned one, and a source with no per-chunk counts is refused.
+   * The counts place ids, and are trusted as `count()` trusts them: a chunk that is read must decode to the size its
+   * index says, or the read throws {@link IntegrityError} (invariant 5), but a chunk that is not read is not checked, so
+   * an index that lies consistently about one (the sum still matches the footer's total, which opening the object
+   * checks before any boundary is placed) shifts the ranks after it. The index and the chunks must come from one
+   * generation (invariant 3): the caller reads through a source that holds one, a pinned one, and a source with no
+   * per-chunk counts is refused.
+   *
+   * Nothing is fetched when the chunks in range hold fewer than `n` ids. The budget is charged before the first fetch
+   * with an upper bound, the cut chunk plus one chunk per boundary the counts allow (capped by the chunks in range),
+   * which can exceed the chunks actually read. A range that cuts its first chunk reads it even when the ids above
+   * `after` turn out to be fewer than `n`.
    */
   async *everyNth(seg: SegmentRef, n: number, range?: IdRange): AsyncGenerator<number> {
     if (!Number.isSafeInteger(n) || n < 1) {
@@ -616,9 +624,15 @@ export class SegmentEngine {
     }
     const gen = await this.cacheVersion(seg); // after the shape read — see `combine`
 
-    // Ids of the first chunk at or below `after` do not count: read it to know how many there are. It is the one
-    // fetch made before the budget is charged, because the plan, and so the charge, needs its count.
+    // Ids of the first chunk at or below `after` do not count, so a range that cuts it reads it to know how many
+    // there are. Before any fetch: no boundary can exist when the chunks in range hold fewer than `n` ids, and the
+    // budget is charged with the most chunks the read can take (the cut chunk, and one per possible boundary).
     const cutsFirst = loRem > 0 && keys[0] === loKey;
+    let upper = 0;
+    for (const k of keys) upper += counts.get(k)!;
+    if (upper < n) return;
+    const cut = cutsFirst ? 1 : 0;
+    checkBudget(this.budget, cut + Math.min(keys.length - cut, Math.floor(upper / n)), 'everyNth');
     let first: Uint32Array | undefined;
     let below = 0;
     if (cutsFirst) {
@@ -642,7 +656,6 @@ export class SegmentEngine {
     }
     if (hits.length === 0) return;
     const streamed = hits.filter((h) => !(cutsFirst && h.key === loKey)).map((h) => h.key);
-    checkBudget(this.budget, streamed.length + (cutsFirst ? 1 : 0), 'everyNth'); // one fetch per chunk read
     const chunks = streamed.length > 0 ? this.chunkSequence(seg, streamed, gen, epoch) : undefined;
     try {
       for (const { key, index } of hits) {

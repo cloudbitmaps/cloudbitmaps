@@ -13,7 +13,10 @@ import type { IdRange, Segment } from '@/index';
 import { gcOrphanGenerations } from '@/core/generation-gc';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { chunkReads } from '../helpers/chunk-reads';
-import { writeCrbm } from '../helpers/crbm-extension';
+import { crc32c } from '@/core/crbm/crc32c';
+import { FOOTER, FOOTER_BYTES, FOOTER_CRC_COVERAGE } from '@/core/crbm/format';
+import { layoutOf, writeCrbm } from '../helpers/crbm-extension';
+import type { RawChunk } from '../helpers/crbm-extension';
 import { collect, loadedStore } from '../helpers/loaded';
 
 /**
@@ -258,7 +261,7 @@ describe('everyNth reads at most one chunk per boundary', () => {
 
     // A boundary-free chunk is not charged: n = 25 puts two boundaries in two chunks.
     expect(await read(tightSeg, 25)).toHaveLength(2);
-    // And a per-call budget on the engine is the store's: the loose store has room for all five.
+    // The store with room for all five chunks reads every id.
     expect(await read(seg, 1)).toHaveLength(50);
   });
 
@@ -271,26 +274,77 @@ describe('everyNth reads at most one chunk per boundary', () => {
     const ok = new CloudRoaring({ storage: w.backend, budget: { maxRequests: 4 } });
     expect(await read(await ok.segment('s').pin(), 6, at)).toEqual(walked(ids, 6, at));
     const tight = new CloudRoaring({ storage: w.backend, budget: { maxRequests: 3 } });
+    const tightSeg = await tight.segment('s').pin();
     reads.reset();
-    await expect(read(await tight.segment('s').pin(), 6, at)).rejects.toBeInstanceOf(
-      BudgetExceededError,
-    );
+    await expect(read(tightSeg, 6, at)).rejects.toBeInstanceOf(BudgetExceededError);
+    expect(reads.total()).toBe(0); // refused before the cut chunk is fetched
+  });
+
+  it('a range that cuts its first chunk reads nothing when the chunks in range hold fewer than n ids', async () => {
+    const ids = Array.from({ length: 3 * CHUNK }, (_, i) => i); // dense, three chunks
+    const { seg } = await pinned(ids);
+    reads.reset();
+    expect(await read(seg, 1e9, { after: 5 })).toEqual([]);
+    expect(await read(seg, 3 * CHUNK + 1, { after: 5, through: 3 * CHUNK })).toEqual([]);
+    expect(reads.total()).toBe(0);
   });
 });
 
 describe('everyNth checks what the index promised (invariant 5)', () => {
-  /** A segment whose generation 1 holds three ids in a chunk whose index says `claimed`. */
-  async function crafted(claimed: number) {
+  const portable = (values: number[]) =>
+    new RoaringBitmap32(values).serialize(SerializationFormat.portable);
+
+  /** A segment whose generation 1 is these chunks, the footer's total optionally forged. */
+  async function craftedWith(chunks: RawChunk[], footerTotal?: number) {
     const w = await loadedStore({ s: [1] });
-    const payload = new RoaringBitmap32([4, 5, 6]).serialize(SerializationFormat.portable);
-    const bytes = await writeCrbm([{ chunkKey: 0, payload, cardinality: claimed }], {
-      generation: 1,
-    });
+    let bytes = await writeCrbm(chunks, { generation: 1 });
+    if (footerTotal !== undefined) {
+      bytes = Uint8Array.from(bytes);
+      const footer = new DataView(bytes.buffer, bytes.length - FOOTER_BYTES, FOOTER_BYTES);
+      footer.setBigUint64(FOOTER.totalCardinality, BigInt(footerTotal), true);
+      footer.setUint32(
+        FOOTER.footerCrc32c,
+        crc32c(
+          bytes.subarray(
+            bytes.length - FOOTER_BYTES,
+            bytes.length - FOOTER_BYTES + FOOTER_CRC_COVERAGE,
+          ),
+        ),
+        true,
+      );
+      expect(layoutOf(bytes).indexLength).toBeGreaterThan(0);
+    }
     await w.storage.putImmutable({ segment: 's', generation: 1 }, async (out) => out.write(bytes));
     const row = (await w.registry.get({ segment: 's' }))!;
     await w.registry.compareAndSwap({ segment: 's' }, row.token, { currentGen: 1 });
     return w;
   }
+
+  /** One chunk of three ids whose index says `claimed`. */
+  const crafted = (claimed: number) =>
+    craftedWith([{ chunkKey: 0, payload: portable([4, 5, 6]), cardinality: claimed }]);
+
+  it('trusts the index for a chunk it does not read, as count() does (a stated limit)', async () => {
+    // Chunk 0 holds 3 ids (1, 2, 3) and its index says 5; chunk 1 holds 4. The true ids are 1, 2, 3, then
+    // 65537..65540, so the 6th is 65539. The index places it at the 6th of 5 + 4, which is chunk 1's first id.
+    const w = await craftedWith([
+      { chunkKey: 0, payload: portable([1, 2, 3]), cardinality: 5 },
+      { chunkKey: 1, payload: portable([1, 2, 3, 4]), cardinality: 4 },
+    ]);
+    const seg = await w.store.segment('s').pin();
+    expect(await collect(seg.iterate())).toEqual([1, 2, 3, 65_537, 65_538, 65_539, 65_540]);
+    expect(await read(seg, 6)).toEqual([65_537]);
+  });
+
+  it('an index whose counts do not add up to the footer total is refused before any id is yielded', async () => {
+    const chunks = [
+      { chunkKey: 0, payload: portable([1, 2, 3]), cardinality: 3 },
+      { chunkKey: 1, payload: portable([1, 2, 3, 4]), cardinality: 4 },
+    ];
+    const w = await craftedWith(chunks, 99);
+    const opened = async () => read(await w.store.segment('s').pin(), 1);
+    await expect(opened()).rejects.toBeInstanceOf(IntegrityError);
+  });
 
   it('a chunk that holds fewer ids than its index says throws IntegrityError', async () => {
     const w = await crafted(5);
@@ -316,3 +370,52 @@ describe('everyNth checks what the index promised (invariant 5)', () => {
     expect(await read(seg, 2)).toEqual([5]);
   });
 });
+
+describe('everyNth when the generation is swept mid-read', () => {
+  it('fails with NotFoundError, after only correct ids, never with an IntegrityError', async () => {
+    // 600 chunks of 4,096 ids with one shared payload: an object of several MiB, so the stream's first ranges do
+    // not hold it all, and a boundary at the end of every chunk.
+    const values = scatter(4_096, CHUNK, 99);
+    const payload = portable8(values);
+    const chunks: RawChunk[] = Array.from({ length: 600 }, (_, k) => ({
+      chunkKey: k,
+      payload,
+      cardinality: 4_096,
+    }));
+    const w = await loadedStore({ s: [1] });
+    const bytes = await writeCrbm(chunks, { generation: 1 });
+    await w.storage.putImmutable({ segment: 's', generation: 1 }, async (out) => out.write(bytes));
+    const row = (await w.registry.get({ segment: 's' }))!;
+    await w.registry.compareAndSwap({ segment: 's' }, row.token, { currentGen: 1 });
+    const seg = await w.store.segment('s').pin();
+
+    const truth = chunks.map((c) => c.chunkKey * CHUNK + values[4_095]!);
+    const got: number[] = [];
+    let error: unknown;
+    try {
+      for await (const id of seg.everyNth(4_096)) {
+        got.push(id);
+        if (got.length === 1) {
+          await bulkLoadCrbmGeneration(w.storage, { segment: 's', generation: 2 }, [9], {
+            registry: w.registry,
+          });
+          await gcOrphanGenerations(
+            { segment: 's' },
+            { storage: w.storage, registry: w.registry },
+            { keep: 0 },
+          );
+        }
+      }
+    } catch (e) {
+      error = e;
+    }
+    expect(error).toBeInstanceOf(NotFoundError);
+    expect(got.length).toBeGreaterThan(0);
+    expect(got.length).toBeLessThan(600);
+    expect(got).toEqual(truth.slice(0, got.length)); // no id wrong or skipped
+  });
+});
+
+function portable8(values: number[]): Uint8Array {
+  return new RoaringBitmap32(values).serialize(SerializationFormat.portable);
+}
