@@ -298,7 +298,7 @@ describe('a lease write against the other writers of the row', () => {
     });
     await destroySegment(
       REF,
-      { storage: x.memory.storage, registry: racing },
+      { registry: racing },
       {
         confirmSegment: REF.segment,
         allowCleartext: true,

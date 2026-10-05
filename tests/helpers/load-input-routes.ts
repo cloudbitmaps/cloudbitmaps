@@ -65,6 +65,8 @@ export const ROUTED: readonly string[] = [
   'tests/core/summary-lifecycle.test.ts',
   'tests/core/summary-localfs.test.ts',
   'tests/core/kept-generations-legacy.test.ts',
+  'tests/core/leases.test.ts',
+  'tests/core/pin-lease.property.test.ts',
   'tests/core/kept-generations.property.test.ts',
   'tests/core/summary-sequences.property.test.ts',
   'tests/core/subject-report-fresh.test.ts',
@@ -78,6 +80,8 @@ export const ROUTED: readonly string[] = [
   'tests/engine.property.test.ts',
   'tests/flows.test.ts',
   'tests/roaring/id-stream-batches.test.ts',
+  'tests/roaring/pin-lease.races.test.ts',
+  'tests/roaring/pin-lease.test.ts',
   'tests/roaring/segment-handle.test.ts',
   'tests/roaring/store-load-binding.test.ts',
 ];

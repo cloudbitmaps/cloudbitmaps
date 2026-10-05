@@ -144,6 +144,7 @@ describe('takeLease', () => {
   async function seeded(loads = 3) {
     const w = world();
     await loadMany(w, loads);
+    w.clock.sleeps.length = 0; // a serialized load yields on the clock; only the waits of a take are counted
     const row = (await w.registry.get(SEG))!;
     const take = (n: number, over: Partial<Parameters<typeof takeLease>[2]> = {}) =>
       takeLease(
@@ -189,7 +190,7 @@ describe('takeLease', () => {
     await expect(take(1, { generation: 99, current: false })).rejects.toBeInstanceOf(NotFoundError);
     await destroySegment(
       SEG,
-      { storage: w.storage, registry: w.registry },
+      { registry: w.registry },
       {
         confirmSegment: SEG.segment,
         allowCleartext: true,
@@ -390,7 +391,7 @@ describe('releaseLease', () => {
     const { w, release } = await leased();
     await destroySegment(
       SEG,
-      { storage: w.storage, registry: w.registry },
+      { registry: w.registry },
       {
         confirmSegment: SEG.segment,
         allowCleartext: true,
@@ -646,7 +647,7 @@ describe('what always wins over a lease', () => {
       if (how === 'shred') {
         await destroySegment(
           SEG,
-          { storage: w.storage, registry: w.registry },
+          { registry: w.registry },
           {
             confirmSegment: SEG.segment,
             allowCleartext: true,
