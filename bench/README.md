@@ -71,12 +71,12 @@ publishes all three:
 
 1. **Load throughput** — ids/s and bytes/s into a bucket through `store.load()`, the whole write path, for
    objects that fit one PUT and objects large enough to upload multipart. **Paid** by the in-region run,
-   [`2026-10-04-f3599`](calibration/2026-10-04-f3599.md), from AWS CloudShell in `us-east-1`, on the published `0.15.0`.
+   [`2026-10-05-50b5d`](calibration/2026-10-05-50b5d.md), from AWS CloudShell in `us-east-1`, on the published `0.16.0`.
 2. **Cold intersect latency** — wall-clock for a chunk-skipping `A ∩ B` that has to fetch from the object store.
-   **Paid** by the same in-region run, [`2026-10-04-f3599`](calibration/2026-10-04-f3599.md).
+   **Paid** by the same in-region run, [`2026-10-05-50b5d`](calibration/2026-10-05-50b5d.md).
 3. **The single-bucket bill** — the registry pointer lives in the same bucket as the data, so resolving a
    generation costs an object GET and advancing one costs a conditional PUT. **Paid** by the same in-region run,
-   [`2026-10-04-f3599`](calibration/2026-10-04-f3599.md). Every run, with its report, is listed in
+   [`2026-10-05-50b5d`](calibration/2026-10-05-50b5d.md). Every run, with its report, is listed in
    [`calibration/`](calibration/README.md). A request count, and so the bill for
    requests, does not depend on where the client is, with one exception: an intersect
    slower than the pointer refresh reads each pointer again. The harness's timed store turns the pointer refresh

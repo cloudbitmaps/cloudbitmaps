@@ -69,10 +69,10 @@ name.
 
 ## What it costs
 
-A cold `intersect` of two 500,000-id segments sharing 100 of their 1,999 chunks made 6 GETs and took 95.03 ms at the median, **$2.40 per
-million** at list prices: measured on S3 in-region, in the run of 2026-10-04, whose client had 128 sockets. On a spread layout it reads more
-bytes than it needs, which cross-region can cost more than the requests it saves. A segment's first `store.load()` is
-expected at **$11.20 per million**, pointer included: counted by running the engine and priced at list, not yet measured on a cloud. A cold `count()` is one
+A cold `intersect` of two 500,000-id segments sharing 100 of their 1,999 chunks made 6 GETs and took 92.63 ms at the median, **$2.40 per
+million** at list prices: measured on S3 in-region, in the run of 2026-10-05, whose client had 128 sockets. On a spread layout it reads more
+bytes than it needs, which cross-region can cost more than the requests it saves. A segment's first `store.load()` made
+2 PUT + 3 GET, **$11.20 per million** at the default prices, pointer included: the requests are measured on S3 in-region, in the same run. A cold `count()` is one
 pointer read: it reads no payload and no object.
 
 The trade is stated plainly. A membership check that misses the cache costs a ranged GET against object storage,

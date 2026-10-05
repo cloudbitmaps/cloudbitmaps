@@ -11,6 +11,18 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Changed
+
+- **A segment's first `store.load()` is now measured on S3, on `0.16.0`.** A run from AWS CloudShell in `us-east-1` on
+  2026-10-05 measured what the benchmarks page had only counted from the engine: every one of the run's 25 loads was
+  a segment's first, and made 2 PUT + 3 GET single-part and, for a multipart load, 5 PUT-class + 3 GET: $11.20 and $26.20 per million
+  at the default prices. A single-part load ran at 3.28 million ids a second. The same run measured a cold intersect of two
+  segments sharing 100 chunks that lie together at 92.63 ms at the median in 6 GETs, and an `andNot` against ten
+  excludes at 255.60 ms in 33. Its requests cost $0.0025506. A reload and a load from the third on stay expected, since
+  the run measured neither. Its rounds sit above the engine's rounds model, which assumes no socket limit; it did not
+  vary its client's 128 sockets, and no stage held more than 11 requests in flight, so it does not say why. The README,
+  the benchmarks page, the roadmap, the sizing guide and the site quote it.
+
 ## [0.16.0] — 2026-10-04
 
 ### Added
