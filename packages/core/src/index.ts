@@ -50,7 +50,20 @@ export { LocalFsStorage, MemoryStorage } from './drivers/backends';
 export type { LocalFsStorageOptions, MemoryStorageOptions } from './drivers/backends';
 // A storage source over the `.crbm` generations in an `IStorageDriver`.
 export { CrbmStorageChunkSource } from './core/crbm-storage-source';
-export type { CrbmStorageChunkSourceOptions, PinnedObject } from './core/crbm-storage-source';
+export type {
+  CrbmStorageChunkSourceOptions,
+  PinLease,
+  PinnedObject,
+} from './core/crbm-storage-source';
+// Leases: the registry half a flavor's `pin({ leaseUntil })` is built on, and the bounds it documents.
+export {
+  LEASE_SKEW_MS,
+  MAX_LEASE_MS,
+  MAX_LEASES_PER_SEGMENT,
+  releaseLease,
+  takeLease,
+} from './core/leases';
+export type { LeaseDeps, LeaseTake, TakenLease } from './core/leases';
 // A pinned view of one segment at one generation — everything else passes through to the live source.
 export { PinnedStorageChunkSource } from './core/pinned-storage-source';
 export type { PinnedAt } from './core/pinned-storage-source';
@@ -88,6 +101,7 @@ export type {
   RegistryStatus,
   RegistrySummary,
   RegistryWriteOptions,
+  LeaseEntry,
   ClearRegistrySummary,
   SealedRegistrySummary,
   GenerationMetadata,
@@ -107,6 +121,8 @@ export {
   TransientError,
   KeyUnavailableError,
   BudgetExceededError,
+  LeaseExpiredError,
+  LeaseLimitError,
   // Copy-safe predicates. On an ordinary install `instanceof` holds everywhere — every package in the family
   // is published with `@cloudbitmaps/core` left external, so one copy of these classes is shared and you can
   // catch them however you normally would. Prefer these where that stops being true and nothing here can
@@ -120,6 +136,8 @@ export {
   isNotFoundError,
   isIntegrityError,
   isValidationError,
+  isLeaseExpiredError,
+  isLeaseLimitError,
 } from './core/errors';
 
 // Encryption-at-rest: the injected crypto seams (`core/`, crypto-free) + the default in-process AES-256-GCM

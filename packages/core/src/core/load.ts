@@ -547,6 +547,10 @@ async function runLoad(
     if (written.cardinality < before * guard.minRetained) return refuse('min-retained');
   }
 
+  // What judges a lease: the load's clock, when it has one. Without one a collection holds every lease.
+  const leasesNow =
+    deps.clock === undefined ? undefined : (): number => (deps.clock as Clock).now();
+
   // Fence the publish on the row the guard judged.
   //
   // Forward-only is right for an UNGUARDED load: its ids come from upstream, so losing a race costs nothing that
@@ -557,12 +561,13 @@ async function runLoad(
   // generation land over a thousand ids, under default options, because `before` was read as "no row".
   //
   // `expectToken` goes on regardless. It is incarnation identity rather than a derivation fence, it costs
-  // nothing legitimate — a token only changes when the row does — and it is what stops this call publishing
+  // nothing legitimate — a token only changes when a row write lands (a policy write, a lease) — and it is what stops this call publishing
   // into a segment that merely reuses the name it started with.
   let published: PublishResult;
   try {
     published = await publishGenerationKept(deps.registry, key, {
       keep,
+      leasesNow,
       row,
       wrappedDeks: written.wrappedDeks,
       summary: written.summary,
@@ -620,6 +625,7 @@ async function runLoad(
     keep,
     byName: checked && deps.collectByListing !== true,
     currentGone: currentObjectGone,
+    leases: { now: leasesNow },
     kept: published.kept,
     ...(current.fromSummary && fromGeneration !== undefined
       ? { proveCurrent: { ...ref, generation: fromGeneration } }

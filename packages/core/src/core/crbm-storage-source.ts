@@ -34,6 +34,7 @@ import type { Yielder } from './cooperative';
 import type { Clock, Rng } from './determinism';
 import { sameIncarnation } from './token';
 import { nextKept } from './kept-generations';
+import { isLive } from './leases';
 import type { KeptAfter } from './kept-generations';
 import type { PublishedKept } from './generation-gc';
 import { BoundedLru } from './lru';
@@ -52,6 +53,7 @@ import type {
   GenKey,
   IStorageDriver,
   IRegistryDriver,
+  LeaseEntry,
   RegistryRecord,
   RegistryWriteOptions,
   RegistrySummary,
@@ -191,8 +193,19 @@ function versionOf(generation: number, lineage: unknown): string {
  * computed only when asked for. The key is unwrapped once however many ask, and a failure is not remembered, so a
  * transient fault in the keystore is asked again.
  */
+/** What a pin that leases its generation does between reading the row and opening the object. */
+export interface PinLease {
+  /** Write the lease against the row the pin read: its token, or `'moved'` when the pointer is no longer at the generation. */
+  take(row: RegistryRecord): Promise<{ readonly token: Token } | 'moved'>;
+}
+
+/** The pointer moved before a lease could be written against it: the pin starts again from a fresh read. */
+class PinMoved extends Error {}
+
 interface Live {
   readonly target: Target;
+  /** The row this resolution read, when it came from a registry. */
+  readonly row?: RegistryRecord;
   /** The generation's decryption context (`undefined` for a cleartext segment); applies `requireEncryption`. */
   readonly crypto: () => Promise<CrbmCrypto | undefined>;
   /** The segment's unwrapped key, shared with the next resolution while the row's wrapped keys are the same. */
@@ -678,24 +691,46 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    */
   async pinGeneration(
     ref: SegmentRef,
+    lease?: PinLease,
   ): Promise<({ generation: number } & Required<PinnedObject>) | null> {
-    try {
-      return await this.pinOnce(ref);
-    } catch (err) {
-      if (!isNotFoundError(err)) throw err;
-      return this.pinOnce(ref); // a second miss propagates
+    for (let moved = 0; ; moved++) {
+      try {
+        try {
+          return await this.pinOnce(ref, lease);
+        } catch (err) {
+          if (!isNotFoundError(err)) throw err;
+          return await this.pinOnce(ref, lease); // a second miss propagates
+        }
+      } catch (err) {
+        if (!(err instanceof PinMoved)) throw err;
+        // The pointer moved between the row read and the lease write, so the generation read is not the current one.
+        if (moved >= 2) {
+          throw new WriteConflictError(
+            `pin: the pointer of "${ref.segment}" moved on every attempt to lease its current generation`,
+          );
+        }
+      }
     }
   }
 
   private async pinOnce(
     ref: SegmentRef,
+    lease?: PinLease,
   ): Promise<({ generation: number } & Required<PinnedObject>) | null> {
     // Resolved FRESH, not through the snapshot memo. "The generation current right now" is the whole promise
     // of a pin, and the memo is allowed to be up to `cache.genTtlMs` behind — or, on a store with no timed refresh,
     // arbitrarily far behind. Pinning through it made a pin on such a store
     // return whatever generation the store happened to hold, however old.
-    const live = await this.resolveLive(ref);
+    let live = await this.resolveLive(ref);
     if (live === null) return null;
+    if (lease !== undefined && live.row !== undefined) {
+      // The lease goes first and the open second. The write lands only while the row is the one just read, so the
+      // generation was current at that instant and no collection can have taken it; every later collection reads
+      // the row, and the lease with it. The version then names the row the write made.
+      const taken = await lease.take(live.row);
+      if (taken === 'moved') throw new PinMoved();
+      live = { ...live, target: { ...live.target, lineage: taken.token } };
+    }
     const target = live.target;
     const version = versionOf(target.generation, target.lineage);
     // Opened now, not at the first pinned read, so the pin knows which object it holds: a name purged and loaded
@@ -1115,6 +1150,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
             : once(() => (this.keystore as IKeystore).openDek(keys));
       const crypto = once(() => this.cryptoForRead(ref, generation, keys, unwrap));
       return {
+        row: record,
         target: { generation, lineage: record.token, wrappedDeks: record.wrappedDeks },
         crypto,
         unwrap,
@@ -1831,6 +1867,25 @@ const UNANSWERED_RESEND_BASE_MS = 500;
  * sees the count and metadata that describe it, and every attempt sends the same one. It must be the shape the row's
  * keys call for: sealed for an object written with a key, clear for one written without.
  */
+/**
+ * What a publish over an existing row says about its leases: nothing, or the list with the ended entries dropped, or
+ * (for a caller that deletes every generation below the pointer) none. Ended entries are ignored by every collector
+ * whether or not they are pruned; pruning here costs no request, since the write is made anyway.
+ */
+function leasesPatch(
+  record: RegistryRecord,
+  options: { leasesNow?: () => number; clearLeases?: boolean },
+): { leases?: readonly LeaseEntry[] | undefined } {
+  const held = record.leases;
+  if (held === undefined) return {};
+  if (options.clearLeases === true) return { leases: undefined };
+  if (options.leasesNow === undefined) return {};
+  const now = options.leasesNow();
+  const live = held.filter((e) => isLive(e, now));
+  if (live.length === held.length) return {};
+  return { leases: live.length === 0 ? undefined : live };
+}
+
 export async function publishGenerationKept(
   registry: IRegistryDriver,
   key: GenKey,
@@ -1896,6 +1951,16 @@ export async function publishGenerationKept(
      * held its generation for a while before another writer moved on.
      */
     onUnanswered?: () => void;
+    /**
+     * The clock that judges whether a lease has ended. With it, a publish over a row that holds ended leases drops
+     * them in the write that moves the pointer, which rewrites the row anyway. Without it, leases are left as they are.
+     */
+    leasesNow?: () => number;
+    /**
+     * Clear the row's leases in the write that moves the pointer: the caller's collection deletes every generation
+     * below the new pointer whatever a lease says, as a subject erasure's does.
+     */
+    clearLeases?: boolean;
     /**
      * How many generations below the new pointer the caller keeps. With it, the write that moves the pointer also
      * records the window in the row (`keptGens`: the newest `keep` of the row's own list and the generation that was
@@ -2079,6 +2144,7 @@ export async function publishGenerationKept(
               currentGen: key.generation,
               ...(options.summary === undefined ? {} : { summary: options.summary }),
               ...(next.list === undefined ? {} : { keptGens: next.list }),
+              ...leasesPatch(record, options),
             },
             write,
           )

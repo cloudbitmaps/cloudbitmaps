@@ -759,3 +759,146 @@ describe('the kept generations: schema, shape and the pointer', () => {
     expect(made.keptGens).toEqual([4]);
   });
 });
+
+/**
+ * `leases` is the holds on a segment's generations, recorded in the row so a load's collection spares them. It joins
+ * schema 3 beside `keptGens`, so a build that does not declare it refuses the row, and unlike `keptGens` it does not
+ * follow the pointer.
+ */
+describe('the leases: schema, shape and the pointer', () => {
+  const H1 = '00112233aabbccdd';
+  const H2 = 'ffeeddcc99887766';
+  const entry = (holder: string, generation: number, until: number) => ({
+    holder,
+    generation,
+    until,
+  });
+  const prev: RegistryRecord = {
+    ...baseRecord,
+    status: 'active',
+    token: T2,
+    leases: [entry(H1, 1, 1000)],
+  };
+  const row = (leases: unknown, schema = 3) =>
+    rowText(schema, { ...baseRecord, token: T2, leases });
+
+  it('a schema-3 row round-trips the list, and one without it reads as absent', () => {
+    const text = serializeRegistryEnvelope({ deleted: false, record: prev });
+    expect(parseRegistryEnvelope(text, 'k').record.leases).toEqual([entry(H1, 1, 1000)]);
+    expect(parseRegistryEnvelope(row([]), 'k').record.leases).toEqual([]);
+    const none = parseRegistryEnvelope(
+      serializeRegistryEnvelope({ deleted: false, record: { ...prev, leases: undefined } }),
+      'k',
+    );
+    expect(none.record.leases).toBeUndefined();
+  });
+
+  it('a schema-2 or schema-1 row carrying the list is refused as undeclared', () => {
+    expect(() => parseRegistryEnvelope(row([entry(H1, 1, 5)], 2), 'v2')).toThrow(/leases/);
+    expect(() =>
+      parseRegistryEnvelope(rowText(1, { ...baseRecord, token: '7', leases: [] }), 'v1'),
+    ).toThrow(/leases/);
+  });
+
+  it.each([
+    ['a string', '5'],
+    ['null', null],
+    ['an entry that is a number', [5]],
+    ['an entry that is null', [null]],
+    ['an extra entry key', [{ ...entry(H1, 1, 5), fingerprint: '1:2' }]],
+    ['a missing key', [{ holder: H1, generation: 1 }]],
+    ['an upper-case holder', [entry(H1.toUpperCase(), 1, 5)]],
+    ['a 15-digit holder', [entry(H1.slice(1), 1, 5)]],
+    ['a 17-digit holder', [entry(`${H1}0`, 1, 5)]],
+    ['a non-hex holder', [entry('zz112233aabbccdd', 1, 5)]],
+    ['a duplicate holder', [entry(H1, 1, 5), entry(H1, 2, 6)]],
+    ['a negative generation', [entry(H1, -1, 5)]],
+    ['a fractional generation', [entry(H1, 1.5, 5)]],
+    ['a negative until', [entry(H1, 1, -5)]],
+    ['a fractional until', [entry(H1, 1, 5.5)]],
+    ['an until past 2^53', [entry(H1, 1, 2 ** 53)]],
+    ['a string until', [{ holder: H1, generation: 1, until: '5' }]],
+    [
+      'too long',
+      Array.from({ length: 257 }, (_, i) => entry(i.toString(16).padStart(16, '0'), 1, 5)),
+    ],
+  ])('refuses %s on a stored row, naming the row (IntegrityError)', (_name, value) => {
+    expect(() => parseRegistryEnvelope(row(value), 'registry/k.reg')).toThrow(IntegrityError);
+    expect(() => parseRegistryEnvelope(row(value), 'registry/k.reg')).toThrow(
+      /leases.*: registry\/k\.reg$/,
+    );
+  });
+
+  it('reads up to 256 entries and writes at most 64', () => {
+    const many = (n: number) =>
+      Array.from({ length: n }, (_, i) => entry(i.toString(16).padStart(16, '0'), 1, 5));
+    expect(() => parseRegistryEnvelope(row(many(256)), 'k')).not.toThrow();
+    expect(() => validateRegistryPatch({ leases: many(64) })).not.toThrow();
+    expect(() => validateRegistryPatch({ leases: many(65) })).toThrow(ValidationError);
+  });
+
+  it('refuses at the write boundary a malformed entry, and a list on a row with no pointer', () => {
+    expect(() => validateRegistryPatch({ leases: [entry('nothex', 1, 5)] })).toThrow(
+      ValidationError,
+    );
+    expect(() => validateRegistryPatch({ leases: [entry(H1, 1, 5), entry(H1, 1, 6)] })).toThrow(
+      ValidationError,
+    );
+    expect(() =>
+      applyRegistryPatch(prev, { currentGen: null, leases: [entry(H1, 1, 5)] }, 2, '2'),
+    ).toThrow(ValidationError);
+  });
+
+  it('writes an empty list as none, and a frozen copy of any other', () => {
+    expect(validateRegistryPatch({ leases: [] }).leases).toBeUndefined();
+    expect('leases' in validateRegistryPatch({ leases: [] })).toBe(true);
+    const mine = [entry(H1, 1, 5)];
+    const checked = validateRegistryPatch({ leases: mine });
+    mine.push(entry(H2, 2, 6));
+    expect(checked.leases).toEqual([entry(H1, 1, 5)]);
+    expect(Object.isFrozen(checked.leases)).toBe(true);
+    expect(Object.isFrozen(checked.leases?.[0])).toBe(true);
+  });
+
+  it('does not follow the pointer: a move keeps the list, and only a patch that names it changes it', () => {
+    const moved = applyRegistryPatch(prev, { currentGen: 4 }, 2, '2');
+    expect(moved.leases).toEqual([entry(H1, 1, 1000)]);
+    expect(applyRegistryPatch(prev, { currentGen: 4, keptGens: [2] }, 2, '2').leases).toEqual([
+      entry(H1, 1, 1000),
+    ]);
+    expect(applyRegistryPatch(prev, { retention: { expiresAt: 9 } }, 2, '2').leases).toEqual([
+      entry(H1, 1, 1000),
+    ]);
+    expect(applyRegistryPatch(prev, { leases: undefined }, 2, '2').leases).toBeUndefined();
+    expect(applyRegistryPatch(prev, { leases: [entry(H2, 3, 5)] }, 2, '2').leases).toEqual([
+      entry(H2, 3, 5),
+    ]);
+  });
+
+  it('a new row carries no leases', () => {
+    expect(recordFromNew({ segment: 's' }, { currentGen: 5 }, 1, T2).leases).toBeUndefined();
+  });
+
+  it('a build that does not declare leases refuses a row carrying them', async () => {
+    const { readFileSync, writeFileSync, unlinkSync } = await import('node:fs');
+    const src = new URL('../../../packages/core/src/drivers/_shared/registry.ts', import.meta.url);
+    const text = readFileSync(src, 'utf8');
+    const declared = "const SCHEMA_3_FIELDS = ['keptGens', 'leases'] as const;";
+    expect(text).toContain(declared);
+    // The same parser, with the field taken out of schema 3: what a build from before leases is.
+    const older = new URL('./older-schema-3-registry.generated.ts', import.meta.url);
+    writeFileSync(older, text.replace(declared, "const SCHEMA_3_FIELDS = ['keptGens'] as const;"));
+    try {
+      const build = (await import(older.href)) as typeof import('@/drivers/_shared/registry');
+      expect(() => build.parseRegistryEnvelope(row([entry(H1, 1, 5)]), 'k')).toThrow(
+        IntegrityError,
+      );
+      expect(() => build.parseRegistryEnvelope(row([entry(H1, 1, 5)]), 'k')).toThrow(/leases/);
+      expect(() => build.parseRegistryEnvelope(row(undefined), 'k')).not.toThrow();
+      // This build reads the same row.
+      expect(() => parseRegistryEnvelope(row([entry(H1, 1, 5)]), 'k')).not.toThrow();
+    } finally {
+      unlinkSync(older);
+    }
+  });
+});

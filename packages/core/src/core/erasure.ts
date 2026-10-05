@@ -517,6 +517,8 @@ async function shredSegment(
         // The current generation's cached count and metadata go with it: sealed, they cannot be opened without
         // the wrappings; clear, they would outlive the segment on its tombstone.
         summary: undefined,
+        // A tombstone holds nothing: a lease names a generation of a segment that now resolves none.
+        leases: undefined,
       });
       // A genuine crypto-shred only when there were wrappings to drop; a cleartext opt-in tombstone leaves the
       // Storage bytes readable, so it is not an irreversible destruction (and does not emit `segment.erase`).
