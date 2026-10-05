@@ -621,7 +621,7 @@ nothing can compare one. Branding them is you taking that on.
 
 | Symbol | What it does |
 |---|---|
-| `IStorageDriver` · `IRegistryDriver` | the two ports a driver implements — the object tier and the pointer row. A registry driver that does NOT extend `ObjectStoreRegistry` also needs `Token`, `RegCaps`, `RegistryRecord`, `NewRegistryRecord` and `RegistryPatch` to write its method signatures; those come from `@cloudbitmaps/core`'s main entry |
+| `IStorageDriver` · `IRegistryDriver` | the two ports a driver implements — the object tier and the pointer row. A registry driver that does NOT extend `ObjectStoreRegistry` also needs `Token`, `RegCaps`, `RegistryRecord`, `NewRegistryRecord`, `RegistryPatch` and `RegistryWriteOptions` to write its method signatures; those come from `@cloudbitmaps/core`'s main entry |
 | `StorageBackend` · `StorageCaps` · `SegmentRef` · `GenKey` | the backend pair, a driver's declared capabilities, and the two key shapes |
 | `brandAsBackend` · `STORAGE_BACKEND` | stamp the cross-package brand on a backend, and the symbol a backend class declares it with. A store accepts a backend by brand, never by `instanceof`, so a backend built in one package is recognised in another. It checks that `storage` has a `putImmutable` and `registry` a `compareAndSwap`, throwing `ValidationError` otherwise, or when the object is frozen or non-extensible, and returns the object it was given. It takes a class (`brandAsBackend(this)` in the constructor) or a plain `{ storage, registry }` object, which is how halves of your own are paired — see below |
 | `Token` · `segmentKey` | **from `@cloudbitmaps/core`, not from `driver-kit`.** The opaque compare-and-swap token (unique per write, compared by equality only, ABA-safe across delete→recreate) and the canonical segment key-string helper. A driver package may import core's main entry for these |
@@ -667,6 +667,18 @@ effect; when the row is unchanged it sends a **fresh** compare-and-swap from the
 wait on the injected clock), so both writes must fence on that version, for real, and at most one of the two lands; a
 transient fault is a `TransientError`; and
 `delete` is idempotent, with one addition.
+
+**`create` and `compareAndSwap` take an optional third or fourth argument, `options?: RegistryWriteOptions`.**
+`{ held?: RegistryRecord | null }` is the row the caller read and is writing against: the record this registry's `get`
+returned (`null`: the caller found no row). A driver that would read the row to learn the version its conditional write
+is fenced on may use the one it observed then, and send the write at once, which is one read fewer a publish.
+`ObjectStoreRegistry` does, so the S3, GCS and Azure Blob registries do; the in-memory and local-filesystem registries
+read no more for it, since their row is read in process. It is a hint and never the fence: the write is still
+conditioned on the store's own version of the row, so a `held` row that has changed since fails the write with
+`WriteConflictError`, exactly as a lost race does. A driver that does not recognise the record (a copy, one it did not
+return, one of another row), or whose `held` and `expected` token disagree, reads the row as it does without a hint,
+and a write that gets no answer is settled by reading the row, never by `held`. A driver that ignores the option reads
+the row, which is correct.
 
 **`RegCaps.conditionalDelete` says what `delete` leaves behind.** `true`: a delete removes a row whose token carries an
 incarnation id from the backend for good, and only while the row is still the exact version it read (by a precondition
@@ -774,7 +786,7 @@ otherwise throws the registry's `TransientError` and deletes nothing.
 
 ### Low-level ports & capabilities (driver-author typing)
 
-`StorageCaps` · `RegCaps` · `ChunkRef` · `GenKey` · `RegistryRecord` · `NewRegistryRecord` · `RegistryPatch` ·
+`StorageCaps` · `RegCaps` · `ChunkRef` · `GenKey` · `RegistryRecord` · `NewRegistryRecord` · `RegistryPatch` · `RegistryWriteOptions` ·
 `RegistryStatus` (`'active' | 'destroyed'`) · `GovernanceMeta` · `SegmentSize` · `RegistrySummary`
 (`ClearRegistrySummary` `{ generation, cardinality, metadata? }` or `SealedRegistrySummary` `{ generation, sealed }`,
 the row's cached description of its current generation) · `GenerationMetadata` (string keys, string or finite-number
@@ -872,7 +884,7 @@ does not re-export. A driver author told elsewhere on this page to import `Token
 `MemoryStorageOptions` · `LocalFsStorageOptions` · `ExportFormat` · `ExportSink` · `ExportWriter` · `ExportOptions` ·
 `ExportedSegment` · `ExportFailure` · `ExportManifest` · `IStorageDriver` · `IRegistryDriver` ·
 `StorageBackend` · `StorageChunkSource` · `PinnedAt` · `PinnedObject` · `SegmentRef` · `ChunkRef` · `GenKey` · `StorageCaps`
-· `RegCaps` · `RegistryRecord` · `NewRegistryRecord` · `RegistryPatch` · `RegistryStatus` · `GovernanceMeta`
+· `RegCaps` · `RegistryRecord` · `NewRegistryRecord` · `RegistryPatch` · `RegistryWriteOptions` · `RegistryStatus` · `GovernanceMeta`
 · `RegistrySummary` · `ClearRegistrySummary` · `SealedRegistrySummary` · `GenerationMetadata`
 · `SegmentSize` · `IKeystore` · `Aead` · `AeadSealed` · `WrappedDek` · `CrbmCrypto` ·
 `InProcessKeystoreOptions` · `EraseDeps` · `DestroyResult` · `DropResult` · `RetentionPolicy` ·
