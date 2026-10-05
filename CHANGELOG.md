@@ -35,6 +35,14 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **`pin.everyNth(n, range?)`, the ids at ranks `n`, `2n`, `3n` …, on a pinned handle.** It yields the id at each 1-based
+  rank counted over the ids in `(after, through]`, ascending, and nothing for a last partial window, so a send cut into
+  windows of 1,000 reads its boundaries without decoding the chunks that hold none. It places each boundary from the
+  index's per-chunk counts and reads only the chunks that hold one, each once, through `iterate`'s coalesced stream, window and
+  budget. A live handle throws `UnsupportedError`, a bad `n` `ValidationError`, and a chunk that is read and decodes to a different size than the
+  index says `IntegrityError`; the index's counts are trusted for chunks not read, as `count()` trusts them. The paging recipe in the reading guide finds its window ends with a `.batches()` stride, and points at
+  `everyNth` for the boundary case.
+
 - **`seg.pinAt({ generation, fingerprint })`, a pin at a named generation.** It reopens a generation an earlier pin recorded
   in its `pinnedAt`, as a pinned handle like the one `pin()` returns, for a second task of one job. Identify a pin by its `generation` and `fingerprint`: the handle's `pinnedAt.version` can differ from the earlier pin's. The fingerprint is required, since a
   generation number is taken again after a purge and re-create, so a bare number, or a key `pinAt` does not know, throws `ValidationError`. A generation that is

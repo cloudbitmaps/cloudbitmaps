@@ -2541,6 +2541,49 @@ export class Segment {
   }
 
   /**
+   * **Pinned handles only.** The ids at 1-based ranks `n`, `2n`, `3n` …, counted over the ids in `(after, through]`
+   * when a range is given, ascending: `everyNth(1000)` yields the 1,000th id, then the 2,000th, and so on. A last
+   * partial window yields nothing, so a caller cutting a send into windows of `n` appends its own final end.
+   *
+   * It places each boundary from the per-chunk counts the pin already holds and reads only the chunks that hold one,
+   * each once however many boundaries it holds, so it reads at most one chunk per boundary and never more chunks
+   * than the object has. A range with `after` inside a chunk reads that chunk too, to count the ids at or below
+   * `after`, even when fewer than `n` ids remain above it; when the chunks in range hold fewer than `n` ids in all,
+   * nothing is fetched. `through` stops the read and no chunk past it is read, though a `through` inside a chunk may read that last chunk and
+   * yield nothing from it. The reads and the read-ahead window are
+   * those of {@link Segment.iterate}, and the per-op budget is charged before the first fetch, with an upper bound on
+   * the chunks the read can take. A pinned read after the generation is swept throws {@link NotFoundError}.
+   *
+   * The ranks come from the index's counts, which are trusted as {@link Segment.count} trusts them. A chunk that is
+   * read must hold the number of ids its index says, or the read throws {@link IntegrityError}; a chunk that is not
+   * read is not checked, so an index that is wrong about one, and, on an unencrypted object, still adds up to the footer's
+   * total, moves the ids after it to the wrong ranks. An encrypted object's index is authenticated and bound to the
+   * object, so a wrong count there needs the key.
+   *
+   * A live handle is refused with {@link UnsupportedError} at the first read, because its counts and its chunks could
+   * come from two generations and name the wrong id. `n` that is not a positive integer throws
+   * {@link ValidationError} at the first read, as does a bad bound. An expired handle reads empty.
+   *
+   * ```ts
+   * const audience = await store.segment('audience').pin();
+   * const ends: number[] = [];
+   * for await (const id of audience.everyNth(1_000)) ends.push(id); // the end of each window of 1,000
+   * ```
+   */
+  everyNth(n: number, options?: IdRange): AsyncIterable<number> {
+    if (this.expired()) return EMPTY_IDS;
+    if (this.pinnedAt === undefined) {
+      return failing(
+        new UnsupportedError(
+          'everyNth needs a pinned handle: a live handle can place a rank by one generation ' +
+            'and read it from another. Call `pin()` first.',
+        ),
+      );
+    }
+    return this.engine.everyNth(this.ref, n, options == null ? undefined : rangeOf(options));
+  }
+
+  /**
    * The options a combine hands the engine, read once, when it is called ({@link readOptions}), with the `exclude`
    * it was given, already reduced to its live handles ({@link liveExcludes}) and mapped down to the plain refs
    * `core` takes. A method rather than a module function because `ref` is class-private — the encapsulation is

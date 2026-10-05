@@ -320,10 +320,14 @@ const audience = await store.segment('active-30d').pin();
 const zone = store.segment('zone-eu');
 const optOut = store.segment('global-opt-out', { namespace: 'suppression' });
 
-// One streamed pass finds the window ends: every 1,000th id, then the end of the id space.
+// One streamed pass finds the window ends: every 1,000th id, then the end of the id space. It reads a chunk at a
+// time and steps through each chunk's array by index, so there is no `await` or loop turn per id.
 const ends: number[] = [];
-let n = 0;
-for await (const id of audience.iterate()) if (++n % 1_000 === 0) ends.push(id);
+let seen = 0; // the ids passed so far
+for await (const ids of audience.iterate().batches()) {
+  for (let i = 999 - (seen % 1_000); i < ids.length; i += 1_000) ends.push(ids[i]!);
+  seen += ids.length;
+}
 ends.push(4_294_967_295);
 
 // Each window is an independent page, so workers can take them in any order. The first leaves `after` out, which
@@ -336,6 +340,9 @@ for (const through of ends) {
   after = through;
 }
 ```
+
+That pass reads every chunk of the audience. When the boundaries are all you want, a pinned handle's
+[`everyNth`](#every-nth-id-of-a-pin-everynth) reads only the chunks that hold one.
 
 The range applies to every operand and every `exclude`, and a pinned operand is read at its pin. Each bound is an
 integer in `0..4294967295`, or the stream throws `ValidationError` when first read. `after >= through` reads nothing,
@@ -360,3 +367,43 @@ as the include's, where an `intersect` of two or more segments reads an exclude'
 that chunk is known to be non-empty. A range already requested is not cancelled when the caller stops: it finishes and
 is billed, what it carries is dropped, and it is not retried, and the store reports a `storage.get` for it when it settles. On a source that reads chunk by chunk, a fetch already started finishes, lands in the chunk cache and is metered, and on one
 that retries a transient failure, its retries run to their limit after the caller has gone.
+
+## Every nth id of a pin: `everyNth`
+
+`pin.everyNth(n, range?)` yields the ids at 1-based ranks `n`, `2n`, `3n` and so on, ascending, counted over the ids in
+`(after, through]` when you pass a range: `everyNth(1_000)` yields the 1,000th id, then the 2,000th. It is the boundary
+pass of [paging through a segment](#page-through-a-segment) without decoding every chunk.
+
+```ts
+const audience = await store.segment('active-30d').pin();
+
+const ends: number[] = [];
+for await (const id of audience.everyNth(1_000)) ends.push(id);
+ends.push(4_294_967_295); // the last, partial window yields nothing: close it yourself
+```
+
+- **It reads the chunks that hold a boundary and no others.** The object's index records each chunk's id count, which
+  places every boundary without reading a payload. A chunk is read and decoded once however many boundaries fall in it,
+  so a read makes at most one chunk read per boundary, and never more chunk reads than the object has chunks; the only
+  exceptions are a range's cut first chunk and cut last chunk, below. When the chunks in range hold fewer than `n` ids, nothing is fetched.
+  Chunks that sit near each other are still one range request, so on a sparse object it saves the decoding of the
+  chunks that hold no boundary, not requests: the requests are those of the walk over the same chunks.
+- **A range counts from `after`.** The first boundary is the `n`th id after `after`. When `after` falls inside a chunk,
+  that chunk is read too, to count the ids at or below it, even if fewer than `n` ids turn out to remain above `after`.
+  Nothing extra is read when `after + 1` is a multiple of 65,536, that is, when `after` is the last id a chunk can hold.
+  No chunk past `through` is read, and no boundary past `through` is yielded; when `through` falls inside a chunk, that
+  last chunk may be read and yield nothing, because the index counts its ids above `through` too. `after >= through` reads nothing.
+- **Reads and window are `iterate`'s; the budget is charged first.** The chunks come through the same stream of coalesced
+  ranges and the same read-ahead window. The per-op budget is charged before any fetch, with an upper bound on the chunks
+  the read can take: the cut first chunk, if any, plus one chunk per boundary the counts allow, capped by the chunks in
+  range. That can exceed the chunks actually read. A pinned read after the generation was collected throws
+  `NotFoundError`, as every pinned read does.
+- **Pinned handles only.** The ranks come from the index and the ids from the chunks, and the two must be one generation.
+  A live handle can re-resolve between them and name the wrong id, so it throws `UnsupportedError` when first read. Pin it.
+- **The ranks are only as good as the index, as with [`count()`](#what-count-trusts).** A chunk that is read must decode to
+  the number of ids its index says, or the read throws `IntegrityError`. Opening the object has already checked that the
+  index's counts add up to the footer's total (on an unencrypted object). A chunk that is not read is not checked: an
+  index that is wrong about one, and still adds up, moves every boundary after it to the wrong rank, with no error. Where
+  that matters, `iterate()` the segment and count what it yields.
+- **`n` must be a positive integer**, and each bound an integer in `0..4294967295`, or the stream throws `ValidationError`
+  when first read. An expired handle reads empty.
