@@ -689,6 +689,57 @@ describe('a load whose publish landed does not fail on a race its collection mee
     expect(await generations(w.memory)).toContain(15);
   });
 
+  /** `registry`, whose `after`th read once its first compare-and-swap has landed is followed by `then`. */
+  function afterPassReads(w: World, after: number, then: () => Promise<void>): IRegistryDriver {
+    let landed = false;
+    let reads = 0;
+    return new Proxy(w.deps.registry, {
+      get(t, p, rx) {
+        const value: unknown = Reflect.get(t, p, rx);
+        if (typeof value !== 'function') return value;
+        const fn = value as (...a: unknown[]) => unknown;
+        if (p === 'compareAndSwap') {
+          return async (...a: unknown[]) => {
+            const out = await fn.apply(t, a);
+            landed = true;
+            return out;
+          };
+        }
+        if (p === 'get' && landed) {
+          return async (...a: unknown[]) => {
+            const out = await fn.apply(t, a);
+            reads += 1;
+            if (reads === after) await then();
+            return out;
+          };
+        }
+        return (...a: unknown[]) => fn.apply(t, a);
+      },
+    }) as IRegistryDriver;
+  }
+
+  it('a rollback landing after the pass read the row stops its deletes, and the load still returns', async () => {
+    const w = await atFifteen();
+    await orphan(w.memory, 3); // something below the pointer for the pass to take
+    // The pass reads the row before its listing and after it; the rollback lands before its first delete is proved.
+    const registry = afterPassReads(w, 2, () =>
+      rollbackSegment(SEG, 15, { storage: w.memory, registry: w.registry }),
+    );
+    const a = await loadSegment(SEG, ids(17), { ...w.deps, registry });
+    expect(a).toMatchObject({ generation: 16, published: true });
+    expect((await w.registry.get(SEG))!.currentGen).toBe(15);
+    expect(await generations(w.memory)).toEqual([3, 14, 15, 16]);
+  });
+
+  it('a purge landing after the pass read the row stops its deletes, and the load still returns', async () => {
+    const w = await atFifteen();
+    await orphan(w.memory, 3);
+    const registry = afterPassReads(w, 2, () => w.registry.delete(SEG));
+    const a = await loadSegment(SEG, ids(17), { ...w.deps, registry });
+    expect(a).toMatchObject({ generation: 16, published: true });
+    expect(await generations(w.memory)).toEqual([3, 14, 15, 16]);
+  });
+
   it('a purge in that gap does not fail the load either', async () => {
     const w = await atFifteen();
     const registry = hookAfter(w.deps.registry, 'compareAndSwap', async () => {
