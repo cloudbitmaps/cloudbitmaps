@@ -2353,20 +2353,24 @@ export class Segment {
   }
 
   /**
-   * Reopen a generation a pin named earlier: the same pinned handle {@link Segment.pin} returns, held at
+   * Reopen a generation a pin named earlier, as a pinned handle like the one {@link Segment.pin} returns, held at
    * `at.generation` instead of the current one. Pass what the earlier pin recorded, `{ generation, fingerprint }`
    * from its {@link Segment.pinnedAt}. A generation number alone is not an identity, since a purged and re-created
-   * name starts again at 0, so the fingerprint is required: a bare number, or a malformed fingerprint, is a
-   * {@link ValidationError}.
+   * name starts again at 0, so the fingerprint is required: a bare number, a malformed fingerprint or a key other
+   * than `generation` and `fingerprint` is a {@link ValidationError}. Identify a pin by its `generation` and
+   * `fingerprint`: the handle's `pinnedAt.version` can differ from the earlier pin's.
    *
-   * Throws {@link NotFoundError} when the generation is gone (collected, purged) or is another object than the
-   * fingerprint names, and never reads empty. Nothing keeps the generation alive: a later load's collection can
-   * delete it, which is sized by `keep`. With a registry it costs one row read and one tail read; the pinned
-   * handle then reads as one from `pin()` does, including its failure on a chunk it has not cached once the
-   * generation is swept. Works for an encrypted segment. The argument is an object so that fields can join it later.
+   * Throws {@link NotFoundError} when the generation is gone (collected, purged, or on a crypto-shredded segment),
+   * is above the row's pointer, or is another object than the fingerprint names, and never reads empty. A rollback
+   * deletes nothing, so once a later load moves the pointer past a generation it rolled back from, that one can be
+   * reopened while its object is stored. Nothing keeps a generation alive: a later load's collection can delete it,
+   * which is sized by `keep` on every writer. With a registry it costs one row read and one tail read; the handle
+   * then reads as one from `pin()` does, including its failure on a chunk it has not cached once the generation is
+   * swept. Works for an encrypted segment. The argument is an object so that fields can join it later.
    */
   async pinAt(at: PinAt): Promise<Segment> {
     const { generation, fingerprint } = (at ?? {}) as Partial<PinAt>;
+    // Own enumerable string keys only: a symbol, non-enumerable or inherited key is not seen.
     const unknown =
       typeof at === 'object' && at !== null
         ? Object.keys(at).filter((k) => k !== 'generation' && k !== 'fingerprint')

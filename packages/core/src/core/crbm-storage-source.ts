@@ -708,6 +708,8 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     let version = versionOf(generation, undefined);
     let installed: Snapshot | undefined;
     let pinKey: string | undefined;
+    // Whether the pinned reader was already memoised: only an open this call makes has read what is under the key.
+    let memoised = false;
     if (this.registry !== undefined) {
       const record = await this.registry.get(ref);
       if (record === null || record.status === 'destroyed')
@@ -717,7 +719,8 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       }
       version = versionOf(generation, record.token);
       const key = this.pinnedKey(ref, version);
-      if (this.snapshots.get(key) === undefined) {
+      memoised = this.snapshots.peek(key) !== undefined;
+      if (!memoised) {
         installed = this.install(
           key,
           Snapshot.eager(
@@ -730,6 +733,9 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         );
       }
       pinKey = key;
+    }
+    if (this.registry === undefined) {
+      memoised = this.snapshots.peek(this.pinnedKey(ref, version, fingerprint)) !== undefined;
     }
     try {
       await this.readerAt(ref, generation, version, fingerprint);
@@ -745,11 +751,16 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       }
       throw err;
     }
-    // The object under the key is the pinned one now, whatever an earlier check found: a restore puts back what a
-    // replacement took, and a verdict kept against it would fail this pin.
-    const held = this.heldKey(ref, version, fingerprint);
-    this.replacedPins.delete(held);
-    this.checking.delete(held);
+    // An open this call made has read what is under the key, so it is the pinned object now whatever an earlier check
+    // found: a restore puts back what a replacement took, and a verdict kept against it would fail this pin. A reader
+    // already memoised was not read by this call, and the verdict that protects the pin holding it stays. A check
+    // under way ends itself when it finishes, so dropping one here only matters for a check started before this open,
+    // which a test cannot hold open deterministically.
+    if (!memoised) {
+      const held = this.heldKey(ref, version, fingerprint);
+      this.replacedPins.delete(held);
+      this.checking.delete(held);
+    }
     return { generation, version, fingerprint };
   }
 
