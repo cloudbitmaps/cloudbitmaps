@@ -194,10 +194,10 @@ generations below the new pointer (default `1`; a non-negative integer, and anyt
 `NaN`, infinite — throws `ValidationError` before anything is written). The `*Into` verbs take
 the same `keep`, validated the same way. Returns a
 `LoadResult` — `{ generation, published, reason?, size, sha256, chunkCount, cardinality, cardinalityBefore,
-collected }`. With a `keep` of 0 or 1, a load that found nothing above its pointer deletes by name the one generation
-its publish pushed out of the window, and lists the segment only on every 16th generation; with a `keep` of 2 or more,
-or when its check of its generation number met an object or its check of the current generation's object found it
-gone, it lists on every load
+collected }`. The segment's row records the generations a load keeps (up to 64), so at any `keep` up to 64 a load that
+found nothing above its pointer deletes by name the generations its publish pushed out of the window, and lists the
+segment only on every 16th generation; with a `keep` above 64, on a row that records no list, or when its check of its
+generation number met an object or its check of the current generation's object found it gone, it lists
 ([how it collects](loading.md#generations-and-keep)). `collected` names what the pass deleted, and a generation
 deleted by name may have been gone already: a delete of an absent object succeeds and says nothing, so the list is not
 a receipt that the generation was there. Memory is bounded by the **distinct set** being built, not by the input length — a batch job's shape,
@@ -705,9 +705,10 @@ parameter is optional, so a driver that ignores it still compiles and keeps the 
 that do not pass it see no change. Implement it to make the library's deletes safe against a concurrent re-create;
 the registry conformance suite's `delete` cases are the test.
 
-**Registry rows are schema 2, and the record has an optional `summary`.** A shipped registry stamps every row it
-writes `schemaVersion: 2` and reads rows stamped 1 or 2; a row stamped 1 may hold only the fields schema 1 had.
-`summary` is the row's cached description of its current generation — its id count, and the metadata it was loaded
+**Registry rows are schema 3, and the record has an optional `summary` and an optional `keptGens`.** A shipped registry
+stamps every row it writes `schemaVersion: 3`, whatever it holds, and reads rows stamped 1, 2 or 3; a row may hold only
+the fields its schema had (a row stamped 2 holds no `keptGens`, and one stamped 1 holds no `summary`). A build that reads
+only schema 2 refuses a schema-3 row with `UnsupportedError`. `summary` is the row's cached description of its current generation — its id count, and the metadata it was loaded
 with — in the clear on a cleartext segment (`{ generation, cardinality, metadata? }`) or sealed under the segment's
 data key on an encrypted one (`{ generation, sealed }`). It names the generation it describes, and it follows the
 pointer and the keys: a patch that moves `currentGen`, or changes `wrappedDeks` so the summary's shape no longer
@@ -721,6 +722,21 @@ then. Every write that moves a pointer writes one, and a row without one is corr
 now requires a driver to persist it**: to round-trip it through `create`, `get`, `list` and `compareAndSwap`, keep it
 across a patch that does not mention it, store it as it was when the write was called, and refuse a malformed one with
 `ValidationError` on the write.
+
+**`keptGens` is the generations below `currentGen` that the last load kept, so the next load deletes by name.** It is a
+list of generation numbers, strictly ascending, each a non-negative safe integer and each below `currentGen`. Absent means
+the row does not know, and a load lists the bucket to collect and records what it kept; `[]` means none is kept. A load
+writes at most 64 entries (a larger `keep` records none), and a row is read with up to 256, so a later release can write
+more without a new schema. It follows the pointer as `summary` does: a patch that moves `currentGen` without mentioning
+`keptGens` drops it, a patch that leaves the pointer keeps it, and a patch or create that gives one must name only
+generations below the `currentGen` the row will have, and none on a row with no pointer (`ValidationError`, before
+anything is written). The registry stores a frozen copy. A malformed list on a stored row (not an array, an entry that is
+not a non-negative safe integer, one out of order or repeated, more than 256) is an `IntegrityError` naming the row, like
+a malformed `summary`; a well-formed list with an entry at or above `currentGen` is read and not used. A registry of your
+own must store and return the field, and drop it on a patch that moves the pointer without it: one that keeps a stale
+list across a move is not used for an entry at or above the pointer, but would hold a window that names the wrong
+generations. One that drops the field is correct and makes every load list. The conformance suite holds a driver to all
+of this.
 
 **A shipped registry's token is `<incarnation>.<counter>.<write>`.** The incarnation is 128 bits as 32 lowercase hex
 digits, drawn when a row is created, so a re-created name never meets an earlier incarnation's token, even once the

@@ -329,10 +329,11 @@ const A_LOAD = String.raw`\b(?:(?:an?|the|each|every)(?: later| next)? load|load
 const A_LOAD_CALL = String.raw`(?:${A_LOAD}|\bstore\.load\(\))`;
 /**
  * What a true sentence about a load's collection names: that it is by name, the sixteenth generation it lists on, the
- * `keep` of 2 or more or a check that met an object that make it list, or a writer that always lists. (`*Into` is
+ * `keep` above 64 (more than a row records), a row that records no list, or a check that met an object that make it
+ * list, or a writer that always lists. (`*Into` is
  * not one of the words: a reading of the page drops its asterisk, so it would be a word that can never match.)
  */
-const COLLECTION_CONDITION = String.raw`\b(?:by name|sixteenth|16th|check(?:s|ed)?|taken|meets?|holds?|held|erasure|rewrite|materiali[sz]ations?|wider|keeps? (?:of )?(?:2|two|more))\b`;
+const COLLECTION_CONDITION = String.raw`\b(?:by name|sixteenth|16th|check(?:s|ed)?|taken|meets?|holds?|held|erasure|rewrite|materiali[sz]ations?|wider|(?:above|over|more than) (?:64|sixty-four)|records? (?:no|none)|no list|absent|not know)\b`;
 /** What a true sentence about a load's numbering names: the check and what it finds, or the writers that list. */
 const NUMBERING_CONDITION = String.raw`\b(?:check(?:s|ed)?|taken|meets?|holds?|held|cannot answer|erasure|rewrite|nextGeneration)\b`;
 
@@ -756,7 +757,17 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
       ),
       'i',
     ),
-    why: 'a load that keeps at most one generation and found nothing above its pointer deletes the one generation its publish pushed out of the window by name, and lists the segment only every sixteenth generation',
+    why: 'a load whose row records the generations it keeps (a `keep` up to 64) and that found nothing above its pointer deletes the generations its publish pushed out of the window by name, and lists the segment only every sixteenth generation, for a `keep` above 64, for a row that records no list, and when its check met an object',
+  },
+  // A load's collection at a `keep` of 2 or more is by name too, so a page may not say it lists.
+  {
+    claim: new RegExp(
+      g(
+        String.raw`\b(?:a|the|each|every) (?:store\.)?load (?:that|which|with|whose|when) (?:[\w'-]+ ){0,4}?\bkeeps? (?:of )?(?:2|two|more|several|many|(?:two|2|three|3) or more)\b[^.]{0,80}?\blists?\b|\b(?:whenever|when) \`?keep\`? (?:is )?(?:2|two) or more\b[^.]{0,60}?\blists?\b|\blists? on every load\b[^.]{0,40}?\b(?:whenever|when) \`?keep\`? (?:is )?(?:2|two) or more\b|\bkeep: 12\b[^.]{0,40}?\blists? (?:on )?every`,
+      ),
+      'i',
+    ),
+    why: 'a load collects by name at any `keep` up to 64, from the generations its row records; it lists on every sixteenth generation, for a `keep` above 64, for a row that records no list, and when its check met an object',
   },
   {
     claim: new RegExp(
@@ -1277,6 +1288,11 @@ describe('no document claims behaviour this library does not have', () => {
     'Each load lists the segment to collect what its publish superseded.',
     'A load lists the bucket after it publishes, then collects the old generation.',
     'the load lists the segment and collects everything below its pointer',
+    'With `keep` of 2 or more, a load lists the segment to collect on every load.',
+    'A load that keeps two or more generations lists on every load.',
+    'With keep of two, a load lists the segment to collect on every load.',
+    'A load lists on every load whenever `keep` is 2 or more.',
+    'At `keep: 12` a load lists every publish.',
     'The next load of the destination collects everything below its own pointer beyond its `keep`.',
     'and the next load of its destination collects its predecessors',
     "the next store.load of that destination collects everything it didn't",
@@ -1423,7 +1439,9 @@ describe('no document claims behaviour this library does not have', () => {
     'A first load reads the pointer three times and checks its generation number once.',
     // A load's collection, true: each names that it is by name, the sixteenth generation, or what makes it list.
     'A load that keeps one generation deletes by name the generation its publish pushed out, and lists the segment to collect only every sixteenth generation.',
-    'With `keep` of 2 or more, a load lists the segment to collect on every load.',
+    'With a `keep` above 64, a load lists the segment to collect on every load.',
+    'A load lists the segment to collect when its row records no list.',
+    'A load that keeps twelve generations deletes by name the generation its publish pushed out, and lists the segment only every sixteenth generation.',
     // Each word the exemption names, once: a sentence that would be refused without it.
     'A load lists the segment to collect what it did not take by name.',
     'A load lists the segment to collect on the sixteenth pass.',
@@ -1439,7 +1457,7 @@ describe('no document claims behaviour this library does not have', () => {
     'A load lists the segment to collect after a materialisation.',
     'A load lists the segment to collect after a materialization.',
     'A load lists the segment to collect under a wider window.',
-    'With keep of two, a load lists the segment to collect on every load.',
+    'With a keep over sixty-four, a load lists the segment to collect on every load.',
     'A load whose check meets an object lists the segment to number past it, and lists again to collect.',
     'The retention sweep lists the segment to collect what a drop left.',
     'The erasure rewrite lists the segment and collects every generation below its own.',
