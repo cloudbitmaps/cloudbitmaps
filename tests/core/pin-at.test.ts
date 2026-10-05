@@ -1,12 +1,14 @@
 import fc from 'fast-check';
 import { randomBytes } from 'node:crypto';
 import { NotFoundError, ValidationError } from '@/core/errors';
+import { destroySegment } from '@/core/erasure';
 import { gcOrphanGenerations } from '@/core/generation-gc';
 import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { brandAsBackend } from '@/core/ports';
 import { CloudRoaring, InProcessKeystore, MemoryStorage } from '@/index';
 import type { Segment } from '@/index';
 import { counting } from '../helpers/counting';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 /**
  * `pinAt` reopens a generation an earlier pin named. A number alone is not an identity (a purged and re-created
@@ -301,6 +303,107 @@ describe('pinAt never reads empty', () => {
         }
       }),
       { numRuns: 25 },
+    );
+  });
+});
+
+describe('pinAt and the row', () => {
+  it('refuses an encrypted segment once it is crypto-shredded', async () => {
+    const keystore = new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
+    const w = world({ keystore });
+    await w.writer.load(REF, [4, 5, 6], { keep: 3 });
+    const first = await w.reader().segment('s').pin();
+    expect(await ids(await w.reader().segment('s').pinAt(atOf(first)))).toEqual([4, 5, 6]);
+    await destroySegment(REF, { registry: w.backend.registry }, { confirmSegment: 's' });
+    await expect(w.reader().segment('s').pinAt(atOf(first))).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it('refuses a generation above the pointer although its object is still stored', async () => {
+    const w = world();
+    for (const i of [1, 2, 3]) await w.writer.load(REF, [i, i + 10], { keep: 10 });
+    const top = await w.reader().segment('s').pin();
+    expect(atOf(top).generation).toBe(2);
+    await w.writer.rollback(REF, 0);
+    expect(await generationsInBucket(w.backend.storage)).toContain(2);
+    await expect(w.reader().segment('s').pinAt(atOf(top))).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it('after a rollback and one more load, reopens a generation it rolled back from while its object is stored', async () => {
+    const w = world();
+    for (const i of [1, 2, 3]) await w.writer.load(REF, [i, i + 10], { keep: 10 });
+    const top = await w.reader().segment('s').pin();
+    await w.writer.rollback(REF, 0);
+    await w.writer.load(REF, [99], { keep: 10 });
+    const again = await w.reader().segment('s').pinAt(atOf(top));
+    expect(await ids(again)).toEqual([3, 13]);
+  });
+
+  it('reads an object restored under its key, after a pinAt with the wrong fingerprint found it replaced', async () => {
+    const backend = new MemoryStorage();
+    await bulkLoadCrbmGeneration(backend.storage, { ...REF, generation: 0 }, [1, 2, 3], {
+      registry: backend.registry,
+    });
+    const whole = async (b: MemoryStorage) =>
+      (await b.storage.getTail({ ...REF, generation: 0 }, 1 << 30)).bytes;
+    const put = async (bytes: Uint8Array) => {
+      await backend.storage.delete({ ...REF, generation: 0 });
+      await backend.storage.putImmutable({ ...REF, generation: 0 }, async (sink) => {
+        await sink.write(bytes);
+      });
+    };
+    const mine = await whole(backend);
+    const scratch = new MemoryStorage();
+    await bulkLoadCrbmGeneration(scratch.storage, { ...REF, generation: 0 }, [7, 8, 9, 10], {
+      registry: scratch.registry,
+    });
+    const other = await whole(scratch);
+
+    const store = new CloudRoaring({ storage: backend });
+    const first = await store.segment('s').pin();
+    await put(other); // replaced from outside, under the same key
+    store.invalidate(REF); // the store is told, so the reopen reads what is stored
+    await expect(store.segment('s').pinAt(atOf(first))).rejects.toBeInstanceOf(NotFoundError);
+    await put(mine); // restored
+    const again = await store.segment('s').pinAt(atOf(first));
+    expect(await ids(again)).toEqual([1, 2, 3]);
+  });
+
+  it('works in one store through pin, loads, a wrong fingerprint, the right one and a later pin', async () => {
+    const backend = new MemoryStorage();
+    const store = new CloudRoaring({ storage: backend });
+    await store.load(REF, [1, 2, 3], { keep: 4 });
+    const first = await store.segment('s').pin();
+    await store.load(REF, [4, 5], { keep: 4 });
+    const at = atOf(first);
+    // A load invalidates this store's pins, so the reopen is of an object it must open again.
+    await expect(store.segment('s').pinAt({ ...at, fingerprint: '1:1' })).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
+    const again = await store.segment('s').pinAt(at);
+    expect(await ids(again)).toEqual([1, 2, 3]);
+    expect(await ids(await store.segment('s').pin())).toEqual([4, 5]);
+    expect(await ids(await store.segment('s').pinAt(at))).toEqual([1, 2, 3]);
+  });
+});
+
+describe('pinAt argument', () => {
+  it('refuses unanchored, padded and unknown fingerprints and options with ValidationError', async () => {
+    const w = world();
+    await w.writer.load(REF, [1, 2, 3]);
+    const seg = w.reader().segment('s') as unknown as { pinAt(a: unknown): Promise<Segment> };
+    for (const fingerprint of [' 1:1', '1:1x', '1:1\n', '1:']) {
+      await expect(seg.pinAt({ generation: 0, fingerprint })).rejects.toBeInstanceOf(
+        ValidationError,
+      );
+    }
+    const first = await w.reader().segment('s').pin();
+    await expect(seg.pinAt({ ...atOf(first), leaseUntil: 1 })).rejects.toThrow(/leaseUntil/);
+    await expect(seg.pinAt({ ...atOf(first), leaseUntil: 1 })).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    // A leading zero is well-formed, and names no object: it is gone, not malformed.
+    await expect(seg.pinAt({ generation: 0, fingerprint: '01:1' })).rejects.toBeInstanceOf(
+      NotFoundError,
     );
   });
 });
