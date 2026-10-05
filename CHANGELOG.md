@@ -48,8 +48,9 @@ so, and so do the module headers in the code.
   once and re-derives. A `keep` of 12 therefore makes the requests a `keep` of 1 makes, about $11.94 per million
   single-part loads at the default prices, expected and not measured; a load with a `keep` above 64 lists on every load. A
   subject-erasure rewrite records that nothing below its pointer is kept. `LoadResult.collected` names every generation
-  the pass asked to delete. A malformed `keptGens` on a stored row is an `IntegrityError` naming the row, like a
-  malformed `summary`; one with an entry at or above `currentGen` is read and not used.
+  the pass asked to delete. A load whose publish has landed does not throw from its collection because another writer moved the row
+  meanwhile: the pass spares what the row names then and stops where it cannot prove a delete. A malformed `keptGens` on a
+  stored row is an `IntegrityError` naming the row, like a malformed `summary`; one with an entry at or above `currentGen` is read and not used.
 
 - **A segment's first `store.load()` is now measured on S3, on `0.16.0`.** A run from AWS CloudShell in `us-east-1` on
   2026-10-05 measured what the benchmarks page had only counted from the engine: every one of the load stage's 25 loads was

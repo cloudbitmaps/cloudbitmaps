@@ -56,10 +56,10 @@ A refused load also emits `segment.load-refused` to the `audit` sink you pass.
   segment's row has no usable summary of it (see [the guard's size](#where-the-guard-reads-the-size-of-the-current-generation)): `IntegrityError`;
 - a failure from your backend's storage or registry service, such as `TransientError`, which does not by itself mean
   the load did not take effect ([below](#when-a-write-is-throttled-or-gets-no-answer));
-- a collection pass by listing that could not prove the segment was unchanged: `WriteConflictError`. This and a
-  failure in the collection's own reads or deletes can be raised after the publish landed, so a throw does not by
-  itself mean the load did not take effect. A collection by name that finds the segment changed returns an empty
-  `collected` instead.
+- a failure in the collection's own reads or deletes, which can be raised after the publish landed, so a throw does not
+  by itself mean the load did not take effect. A collection, by name or by listing, that finds another writer has moved
+  the row since the load's publish (a load, a rollback, a purge) stops and returns what it deleted in `collected`: a load
+  that took effect does not throw for a race it won.
 
 The `*Into` verbs throw on the same superseded condition instead of reporting it.
 
@@ -372,7 +372,11 @@ A load lists the segment's objects instead in these cases:
   load of this release has written, or that a rollback moved. That load keeps the newest `keep` generations it finds
   below the pointer and records them, so the next one collects by name. A `keep` above 64 lists on every load.
 
-The row's list is a cache of what a listing would keep, and the listing repairs it. Because each load collects with its
+The row's list is a cache of what a listing would keep, and the listing repairs it. A name in it can be missing from
+the bucket after a lifecycle rule or a collection that was not a load's took the object; the window then holds fewer than
+`keep` real generations until the name ages out, at most `keep` loads, and nothing that should stay is deleted. A fleet
+that mixes `keep` values up to 64 with larger ones, or with writers that record no list, lists on the loads with the
+smaller `keep`, because the larger one drops the list: set the same `keep` on every writer. Because each load collects with its
 own `keep`, a load with a smaller `keep` can delete a generation that a wider load's list names; the list is a request to
 keep, not a promise that the object is there.
 
@@ -423,7 +427,9 @@ await store.rollback(ref, 4, { audit, allowForward: true });
   not the segment has a registry row, so it also finds the objects a purged row left behind. It shows what the bucket
   holds, not what the segment has ever been, since collection deletes superseded objects.
 - A rollback deletes nothing, and it is fenced on the row it read, so a load that lands meanwhile makes it throw
-  `WriteConflictError` instead of being undone.
+  `WriteConflictError` instead of being undone. A rollback to a generation a concurrent load is collecting can still lose
+  that generation: the collection proves the row before each delete, and a rollback landing between that proof and the
+  delete is the one window it cannot close.
 - A generation that is not in the bucket throws `NotFoundError` naming the ones that are.
 - A target above the pointer throws `ValidationError` without `allowForward`, because that is also where objects live
   that were never published, such as those of a load that died before its publish.
@@ -523,7 +529,7 @@ otherwise. Five properties follow from "a write is a load":
 
 A `WriteConflictError` from an `*Into` means the destination changed underneath the call, and it does not by itself
 mean nothing was published. The same error covers a pointer that moved, a row rewritten by something that is not a
-supersession at all (a `setRetention`), a purge, and the collection pass that runs after a successful publish. Re-read
+supersession at all (a `setRetention`), and a purge. Re-read
 the destination and decide; do not treat it as "the write did not happen". A call that involves an expired handle is
 refused earlier and harder, with `ValidationError`. An `*Into` publishes with the fences a load does: see
 [which fence a publish carries](#how-it-stays-correct).
@@ -663,8 +669,10 @@ zero-byte read before the pass takes a name. A load that makes no such check, on
 cannot tell, and deletes the names its list pushed out.
 
 The listing pass a load runs on a row that records a list (every 16th generation, a check that met an object, a caller
-that asks for a listing) deletes every generation below the pointer that the row does not name, and re-proves before each
-delete that the row still names a list and still does not name the generation. Where the row records none, it keeps the
+that asks for a listing) deletes every generation below the pointer that the row does not name, whether the row
+names it as the publish wrote it or as it reads after the listing (a load that published meanwhile keeps its own window),
+and re-proves before each delete that the row still names a list and still does not name the generation. Where it cannot
+prove a delete it stops, and the load returns. Where the row records none, it keeps the
 newest `keep` generations it finds, as a listing always has, and records them with one compare-and-swap on the row it
 just published: that write moves the row's token, so a derived writer in flight on the row, an erasure rewrite, meets a
 lost fence and re-derives, and it happens once for each row that records no list. A lost race there is not an error.
@@ -680,8 +688,9 @@ row afterwards and reconcile with it:
   forward and so changes nothing, which is what keeps routine collection working on a busy segment.
 
 The row is re-proved before **every** delete, not once after the listing, because the deletes are one round trip each.
-If the segment changed underneath the pass, the call throws `WriteConflictError`. Re-run it, and note that a refusal
-part-way through may already have deleted objects it will now never report. One more consequence of the reconcile:
+If the segment changed underneath the pass, a collection that is not a load's throws `WriteConflictError`; re-run it, and
+note that a refusal part-way through may already have deleted objects it will now never report. A load's own pass stops
+instead and returns what it deleted. One more consequence of the reconcile:
 `keep` counts distinct generations, not listing entries, so a listing that enumerates the same generation twice cannot
 eat the grace window.
 
