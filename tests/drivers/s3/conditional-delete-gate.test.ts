@@ -3,7 +3,9 @@ import { DeleteObjectCommand, PutObjectCommand, type S3Client } from '@aws-sdk/c
 import { PROBE_KEY } from '@/s3/client-probe';
 import { S3RegistryDriver } from '@/s3/registry';
 import { S3Storage } from '@/s3/backend';
-import { ValidationError } from '@/core/errors';
+import { CapabilityError, ValidationError } from '@/core/errors';
+import { reapRegistryTombstones } from '@/core/registry-reap';
+import { registryObjectKey } from '@/drivers/_shared/object-registry-keys';
 import { isolateAwsEnv, type IsolatedAwsEnv } from '../../helpers/aws-env';
 import { BUCKET, StubBucket, sdkWithout } from '../../helpers/stub-s3-bucket';
 
@@ -273,5 +275,55 @@ describe('an SDK that does not send a write precondition cannot host the registr
     without('PutObjectCommand', 'IfMatch');
     const old = new S3RegistryDriver({ client: awsClient(bucket), bucket: BUCKET });
     expect(await old.get(REF)).toMatchObject({ token });
+  });
+});
+
+describe('the tombstone reaper follows the same gate', () => {
+  const planted = (bucket: StubBucket): string => {
+    const key = registryObjectKey(undefined, REF);
+    const body = JSON.stringify({
+      schemaVersion: 1,
+      deleted: true,
+      record: {
+        segment: REF.segment,
+        currentGen: 3,
+        status: 'destroyed',
+        createdAt: 1,
+        updatedAt: 1,
+        token: '12',
+      },
+    });
+    bucket.objects.set(key, { body: Buffer.from(body), etag: '"planted"' });
+    return key;
+  };
+
+  it('on AWS S3, a first call, before any other request, learns the gate from the client and removes the envelope', async () => {
+    const bucket = new StubBucket();
+    const key = planted(bucket);
+    const driver = new S3RegistryDriver({ client: awsClient(bucket), bucket: BUCKET });
+    expect(driver.capabilities().conditionalDelete).toBe(false); // not yet known
+
+    const result = await reapRegistryTombstones(driver, { confirmNoLegacyWriters: true });
+
+    expect(result).toMatchObject({ examined: 1, reaped: 1 });
+    expect(bucket.objects.has(key)).toBe(false);
+    expect(bucket.count('ListObjectsV2')).toBe(1);
+    expect(bucket.ifMatchOnDelete).toEqual(['"planted"']);
+  });
+
+  it('on a custom endpoint it refuses with CapabilityError and sends nothing', async () => {
+    const bucket = new StubBucket();
+    const key = planted(bucket);
+    const driver = new S3RegistryDriver({
+      client: bucket.client({ endpoint: 'http://127.0.0.1:9000' }),
+      bucket: BUCKET,
+    });
+    await expect(reapRegistryTombstones(driver, { dryRun: true })).rejects.toBeInstanceOf(
+      CapabilityError,
+    );
+    for (const op of ['ListObjectsV2', 'GetObject', 'DeleteObject'] as const) {
+      expect(bucket.count(op), op).toBe(0);
+    }
+    expect(bucket.objects.has(key)).toBe(true);
   });
 });
