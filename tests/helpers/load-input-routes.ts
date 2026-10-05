@@ -48,6 +48,7 @@ export const ROUTED: readonly string[] = [
   'tests/core/materialize-load-guard.test.ts',
   'tests/core/null-generation-row.test.ts',
   'tests/core/option-groups.test.ts',
+  'tests/core/pin-at.test.ts',
   'tests/core/pin-chunk-cache.test.ts',
   'tests/core/publish-absence-fence.test.ts',
   'tests/core/publish-fences.test.ts',
