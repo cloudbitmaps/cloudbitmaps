@@ -192,6 +192,26 @@ function readU64(view: DataView, offset: number, field: string): number {
   return Number(big);
 }
 
+/**
+ * What a caller of {@link openCrbmReaderKeeping} asked for, by the options object `open` receives: the most chunk bytes
+ * the reader may keep. Held here, not on {@link CrbmReaderOptions}, so the option is not part of the public surface.
+ */
+const keepLimits = new WeakMap<object, number>();
+
+/**
+ * {@link CrbmReader.open} for a reader that keeps a copy of the chunk region when the tail read returned the whole
+ * object and that region is at most `keepChunkBytesUpTo` bytes. Not exported from a package entry.
+ */
+export function openCrbmReaderKeeping(
+  blob: BlobReader,
+  options: CrbmReaderOptions,
+  keepChunkBytesUpTo: number | undefined,
+): Promise<CrbmReader> {
+  const asked = { ...options };
+  if (keepChunkBytesUpTo !== undefined) keepLimits.set(asked, keepChunkBytesUpTo);
+  return CrbmReader.open(blob, asked);
+}
+
 export class CrbmReader {
   private constructor(
     private readonly blob: BlobReader,
@@ -219,6 +239,12 @@ export class CrbmReader {
     private readonly metadataWeight: number,
     /** Where the chunk payloads end: the extension block's start when there is one, else the index's. */
     private readonly payloadEnd: number,
+    /**
+     * A copy of the chunk region, `[PAYLOAD_START, payloadEnd)`, when `open()` kept one (see
+     * {@link openCrbmReaderKeeping}); `undefined` otherwise. Never handed out: a read of it is a copy or is
+     * consumed before it returns.
+     */
+    private readonly kept: Uint8Array | undefined,
   ) {}
 
   /**
@@ -254,11 +280,12 @@ export class CrbmReader {
   /**
    * What this reader holds, the weight the storage reader cache bounds on: its parsed index
    * ({@link retainedIndexBytes}), plus a weight for the metadata it decoded, from its canonical length and its number
-   * of keys. Equal to {@link retainedIndexBytes} for a generation with no metadata. A cache heuristic, not a contract:
-   * how the metadata is weighed may change in any release.
+   * of keys, plus the chunk bytes kept from the open, when it kept any. Equal to {@link retainedIndexBytes} for a
+   * generation with no metadata and nothing kept. A cache heuristic, not a contract: how the metadata is weighed may
+   * change in any release.
    */
   get retainedBytes(): number {
-    return this.retainedIndexBytes + this.metadataWeight;
+    return this.retainedIndexBytes + this.metadataWeight + (this.kept?.length ?? 0);
   }
 
   /** Per-chunk cardinality (`chunkKey → count`) from the parsed index — no payload reads. */
@@ -512,6 +539,11 @@ export class CrbmReader {
         : RETAINED_BYTES_PER_METADATA_BYTE * metadataLength +
             RETAINED_BYTES_PER_METADATA_KEY * Object.keys(metadata).length,
       payloadEnd,
+      // Only a tail that began at the front of the object holds the chunks, and only a region the caller's limit
+      // allows is kept: a copy of just that region, so the tail buffer is not held.
+      tailCoversFrom === 0 && payloadEnd - PAYLOAD_START <= (keepLimits.get(options) ?? 0)
+        ? tail.slice(PAYLOAD_START, payloadEnd)
+        : undefined,
     );
   }
 
@@ -559,7 +591,28 @@ export class CrbmReader {
     if (offset < PAYLOAD_START || offset + length > this.objectSize - FOOTER_BYTES) {
       throw new IntegrityError(`chunk ${chunkKey} payload out of bounds`);
     }
-    return this.openChunk(slot, chunkKey, await this.blob.getRange(offset, length));
+    const held = this.keptRange(offset, length);
+    return this.openChunk(slot, chunkKey, held ?? (await this.blob.getRange(offset, length)));
+  }
+
+  /**
+   * `[offset, offset + length)` of the object from the kept chunk region, or `undefined` when it is not wholly in it
+   * (or nothing was kept). The bounds checks are defence on untrusted bytes: the index's validation at open keeps every
+   * extent inside the region, so they do not fire for a reader that opened.
+   *
+   * The range is returned as a copy, so nothing a caller or an AEAD does with it changes the next read.
+   */
+  private keptRange(offset: number, length: number): Uint8Array | undefined {
+    const kept = this.kept;
+    if (
+      kept === undefined ||
+      offset < PAYLOAD_START ||
+      offset + length > PAYLOAD_START + kept.length
+    ) {
+      return undefined;
+    }
+    const from = offset - PAYLOAD_START;
+    return kept.slice(from, from + length);
   }
 
   /**
@@ -700,6 +753,9 @@ export class CrbmReader {
       reads.map((_, i) => i),
       async (i) => {
         const read = reads[i]!;
+        const held = this.keptRange(read.offset, read.length);
+        // Nothing is sent, so nothing is reported: `onRequest` hears of requests.
+        if (held !== undefined) return { bytes: held };
         const startedAt = now();
         let sent = false;
         let moved = 0;

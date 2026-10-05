@@ -296,7 +296,9 @@ Two limits to know before you automate it:
 - **"Reads as empty" depends on a timed refresh.** See [how soon a reader sees a change](reading.md#how-soon-a-reader-sees-a-new-load).
   A reader with no timed refresh (no registry, or `cache: { genTtlMs: 0 }`) notices the drop only when a read has to
   fetch from a deleted generation or its reader cache evicts the segment. It can answer `true` from its cache for a
-  dropped segment indefinitely: call `store.invalidate(ref)` on it, or restart it.
+  dropped segment indefinitely: call `store.invalidate(ref)` on it, or restart it. Such a reader keeps no chunk bytes of
+  a small generation, so a sweep is never hidden from it; a store with a timed refresh does serve a small generation's
+  chunks from memory, and notices a drop within `cache.genTtlMs`.
 
 > ⚠️ **The tempting shortcut breaks reads: an object-store lifecycle rule alone.** It deletes the bytes while the
 > registry still points at them. That is exactly the state [`checkConsistency()`](disaster-recovery.md) reports as

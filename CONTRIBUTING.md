@@ -188,7 +188,7 @@ order:
    `pnpm test` · `pnpm build` · `pnpm smoke`. **`pnpm typecheck` is a required gate exactly like lint and the
    tests**, and it runs two compilers, each `--noEmit` over the root program and every package's own
    `tsconfig.json`: TypeScript 5.9, which lint and the declaration build use, and TypeScript 7
-   (`typecheck:next`). A clean typecheck (zero errors *and* zero editor red squiggles, e.g. deprecations) is
+   (`typecheck:next`); `typecheck` collapses to TypeScript 7 alone once `typescript-eslint` supports it. A clean typecheck (zero errors *and* zero editor red squiggles, e.g. deprecations) is
    mandatory, never deferred or `// @ts-ignore`-d away. CI runs the same set and more; a fresh clone must pass it
    with no manual setup. Don't open/merge a PR on a red gate.
 4. **Run the adversarial review gate (every pull request).** Spawn **multiple parallel

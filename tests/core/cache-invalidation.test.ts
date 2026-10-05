@@ -1,4 +1,8 @@
 import { MemoryStorage, CloudRoaring, InProcessKeystore } from '@/index';
+vi.mock('@/core/crbm/reader', async (original) =>
+  (await import('../helpers/chunks-not-kept')).withoutKeptChunks(await original()),
+);
+
 import { destroySegment } from '@/core/erasure';
 import { setSegmentRetention } from '@/core/retention';
 import type { IStorageDriver, SegmentRef } from '@/index';

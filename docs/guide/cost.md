@@ -109,7 +109,11 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   operands included), its pointer and then its index in one read of the object's tail, before the chunk range requests it
   makes (`chunksPerIntersect`). `chunksPerIntersect` counts chunk range requests, not chunks: chunks that lie within 256 KiB of each other are read in
   one request. Two segments whose shared chunks each need r range requests make 4 + 2r GETs: 6 GETs, $2.40 per million
-  at the default GET price, when the 100 shared chunks lie together and take one range each (expected, not yet measured). **The requests saved are
+  at the default GET price, when the 100 shared chunks lie together and take one range each (expected, not yet measured).
+  A segment whose chunks all arrive with its tail read takes no range request: when the whole object fits the tail read and its
+  chunks total at most the reader cache's share per reader (`cache.readerMaxBytes` over `cache.readerMax`, 64 KiB by default),
+  the reader keeps them, so such an operand makes 2 GETs, its pointer and its tail, and a cold intersect of two of them 4 (counted
+  on the in-memory backend, not yet measured in region). **The requests saved are
   not the whole bill.** A layout that spreads the shared chunks over an object reads most of the object to get them: the
   requests fall and the bytes read rise. Inside the bucket's region S3 Standard bills no bytes read; across regions it
   bills them, and that can cost more than the requests saved. There is no setting for it: run readers in the bucket's
@@ -172,7 +176,7 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   re-reads a pointer only on an eviction, a read that finds its generation swept, or an invalidation.
 
   It assumes each hot segment stays open in the reader's cache: 1,024 segments by default (`cache.readerMax`), and
-  64 MiB of parsed index (`cache.readerMaxBytes`). A read of a segment the cache evicted opens it again, a pointer
+  64 MiB of parsed indices, and of the chunk bytes a reader keeps of a small generation (`cache.readerMaxBytes`). A read of a segment the cache evicted opens it again, a pointer
   read and a tail read, which the model does not price, and the report says so when `hotSegments` is past 1,024.
   Nor does it price the index each reader opens again after every load. Size the caches to keep the hot set open.
 

@@ -36,7 +36,7 @@ registry row per segment, no background process. Every roaring-based engine that
 into immutable segments rather than mutating a stored bitmap per call; that is the shape this library builds.
 Per-call freshness, if there is demand, would be immutable delta generations on the same bucket.
 
-Where each piece sits today. A bare **shipped** is in `0.14.0` or earlier; anything on `main` after it is marked
+Where each piece sits today. A bare **shipped** is in `0.15.0` or earlier; anything on `main` after it is marked
 with the release it is to ship in, and sits under `[Unreleased]` in the [changelog](../CHANGELOG.md#unreleased):
 
 | | Status |
@@ -62,7 +62,7 @@ with the release it is to ship in, and sits under `[Unreleased]` in the [changel
 | A public docs + site pass leading with the loaded store's strengths | **shipped** |
 | Reading a chunk at a time — `.batches()` on `iterate`, `intersect`, `union` and `andNot` | **shipped** — the same ids in the same order as one `Uint32Array` per chunk, reading the same chunks; see the [changelog](../CHANGELOG.md#0140--2026-10-04) and [Read a chunk at a time](guide/reading.md#read-a-chunk-at-a-time-batches) |
 | The built S3 client allows 128 sockets, and `maxSockets` sets it | **shipped** — up from the SDK's 50, so one two-operand `intersect` at the default `concurrency` no longer queues behind its own socket pool; see the [changelog](../CHANGELOG.md#0140--2026-10-04). The in-region run's figures were taken with 50 sockets, and the effect of 128 on them is not measured |
-| Deferred past `0.14.0` | **not built** — `generations({ describe: true })`, the chunk-level `*Into`, the tombstone reaper, an `op` metric for `store.load`, the compare-and-swap memo, an unscoped listing that skips the due index's pointers, one generation from parts built in several processes, and the reconcile for `rollback`, `setRetention`, shred and `eraseSubject` writes: [On the way to 1.0](#on-the-way-to-10), item 9, says what each is |
+| Deferred past `0.15.0` | **not built** — `generations({ describe: true })`, the chunk-level `*Into`, the tombstone reaper, an `op` metric for `store.load`, the compare-and-swap memo, an unscoped listing that skips the due index's pointers, one generation from parts built in several processes, and the reconcile for `rollback`, `setRetention`, shred and `eraseSubject` writes: [On the way to 1.0](#on-the-way-to-10), item 9, says what each is |
 | WASM CRoaring research | **after** the loaded store |
 
 **What is next:** a Lambda run, the `*Into` verbs and other combine shapes against a real store, and in-region GCS
@@ -178,7 +178,7 @@ is a dependency of both and is never installed directly. The storage drivers are
   `(namespace, segment, generation, chunk)`, KEK rotation, and an offline recovery KEK. Keys stay in your
   process; no cloud KMS dependency is forced on you.
 - **Subject erasure as a rewrite.** `eraseSubject` finds every registered segment an id is in, rewrites each
-  one's current generation without the id (a window of 32 chunk reads ahead of the writer, one bit cleared), publishes it fenced on the generation it streamed,
+  one's current generation without the id (read through the coalesced chunk stream, at most 4 ranges ahead of the writer, one bit cleared), publishes it fenced on the generation it streamed,
   and deletes every generation that held the bit before returning, above the pointer as well as below it —
   **physical deletion on return**, with a
   per-segment ledger and a `segment.rewrite` audit event. `subjectReport` is the read side (access). What a
@@ -333,7 +333,7 @@ between here and there:
    sections, flagged in its footer (a reader skips a section type it does not know, and a reader before 0.12
    refuses the flag); a generation without metadata is the same bytes as before.
 8. **Adoption feedback** — real deployments finding the sharp edges that our own tests don't.
-9. **Closing the named deferrals.** None of these is in `0.14.0`:
+9. **Closing the named deferrals.** None of these is in `0.15.0`:
    - self-healing disaster recovery;
    - an exclusion predicate on the retention sweep (legal hold);
    - an automated reconcile of unstamped tombstones, and a cleanup of the tombstones a registry already holds (the
@@ -391,9 +391,9 @@ move it up.
     and check each chunk's checksum inside it, as today. A cold intersect's requests, and the chain they wait on,
     would stop growing with the chunks it shares where those lie together. Designed first and benchmarked on a layout that spreads the shared
     chunks, since the calibration run's puts them side by side, which flatters coalescing.
-  - **A reader cache sized by bytes, and small segments kept whole.** The chunk cache is bounded by count today, so
-    the same setting holds very different amounts of memory for sparse and dense chunks; bounding it by bytes, and
-    keeping what the index read already brought in, lets a repeat intersect read no chunks however small they are.
+  - **A chunk cache sized by bytes.** The chunk cache is bounded by count today, so the same setting holds very
+    different amounts of memory for sparse and dense chunks; bounding it by bytes lets a repeat intersect read no
+    chunks however small they are.
   - **A shared cache tier, by composition** — a port that a Valkey, Redis or local-disk adapter package implements,
     holding the hot set's immutable bytes for a fleet of stateless readers, with nothing added to a store that does
     not use it.

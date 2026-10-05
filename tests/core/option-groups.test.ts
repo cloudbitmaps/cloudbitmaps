@@ -1,4 +1,8 @@
 import { SafeBitmap } from '@/roaring-codec';
+vi.mock('@/core/crbm/reader', async (original) =>
+  (await import('../helpers/chunks-not-kept')).withoutKeptChunks(await original()),
+);
+
 import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { randomBytes } from 'node:crypto';
 import { CloudRoaring, CountingMetricsSink, MemoryStorage } from '@/index';

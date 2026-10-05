@@ -22,10 +22,15 @@ export interface OpenedStream {
  */
 export class StreamChunkSource extends MemoryStorageChunkSource {
   readonly opened: OpenedStream[] = [];
-  /** `getChunk` calls, by `segment:key`. */
+  /**
+   * Point reads, by `segment:key`: `getChunk` calls, and the one-key streams the engine opens for a read of one chunk,
+   * which carry no window options (a combine's stream names its `concurrency`), and which are not in {@link opened}.
+   */
   readonly singles: string[] = [];
   version: string | null = 'v1';
   perRequest = 1_000_000;
+  /** Report no request for any chunk: a source that answered from memory. */
+  reportNone = false;
   /** The version a chunk says it came from; defaults to {@link version}. */
   readVersion: ((segment: string, key: number) => string | null) | undefined;
   /** Runs before each chunk is yielded, with how many have been. */
@@ -55,14 +60,16 @@ export class StreamChunkSource extends MemoryStorageChunkSource {
       closedEarly: false,
       finished: false,
     };
-    this.opened.push(stream);
+    const point = keys.length === 1 && options?.concurrency === undefined;
+    if (point) this.singles.push(`${ref.segment}:${keys[0]}`);
+    else this.opened.push(stream);
     try {
       for (const [i, key] of keys.entries()) {
         await this.beforeYield?.(stream, key);
         const bytes = await super.getChunk({ ...ref, chunkKey: key });
         const version = this.readVersion ? this.readVersion(ref.segment, key) : this.version;
         // One request per `perRequest` keys, reported as a source reports a request that settled.
-        if (i % this.perRequest === 0 && bytes !== null)
+        if (!this.reportNone && i % this.perRequest === 0 && bytes !== null)
           options?.onRequest?.({ bytes: bytes.length, ms: 3 });
         stream.yielded += 1;
         yield {

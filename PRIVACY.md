@@ -40,7 +40,7 @@ from constructing a cross-region topology. The points where personal data moves 
 |---|---|---|
 | **Storage** (object store) | immutable `.crbm` generations — every generation a segment has had, until a superseded one is collected. Azure Blob objects, and GCS objects above the simple-upload threshold, also carry a random write id in their metadata (`cbwid`): 128 random bits, no data from the bitmap or the source | the region of the bucket you wire |
 | **Registry** (S3 / GCS / Azure Blob / local) | one row per segment: the current-generation pointer, wrapped keys, retention metadata, and the current generation's id count and your metadata (sealed when the segment is encrypted) — no IDs, unless you put one in the metadata, which you must not. An Azure Blob row also carries the random write id in its metadata | the region of the bucket you wire |
-| **cache** (process RAM) | decoded chunks, bounded LRU | **wherever your process/Lambda runs** — an EU segment queried from a US function is processed in the US |
+| **cache** (process RAM) | decoded chunks, and the stored chunk bytes (ciphertext on an encrypted segment) a reader keeps of a small generation it read whole; bounded LRU | **wherever your process/Lambda runs** — an EU segment queried from a US function is processed in the US |
 | **Loads and rewrites** (`store.load()`, the `*Into` verbs, `eraseSubject`) | read your source (or existing generations), write a new generation | run wherever you run them — a loader in one region writing to a bucket in another is a transfer |
 | **Intersection** | pulls chunks from N segments into one process | co-locates those segments in one region |
 
@@ -132,7 +132,7 @@ bucket.
 | the store whose verb made the call (`eraseSubject`, `dropSegment`, `retireExpired`) | on return, for every read that starts after it — it invalidates what it cached, and its pins then fail; a read already in progress there can still yield it from a chunk it had requested before |
 | another store, with a registry and a `cache.genTtlMs` above 0 | within `cache.genTtlMs` (default 2 s), when its snapshot re-resolves, **while the registry can be read** (see below) |
 | another store with **no registry** (a bare `IStorageDriver`), with `cache: { genTtlMs: 0 }`, or on a storage source built with **no clock** | **no bound** — only when its caches happen to let the segment go, or something tells it |
-| a pinned handle (`seg.pin()`) in another store | **no bound** — until that store's reader cache evicts the pin's reader and its chunk cache evicts the chunks the pin decoded, or something tells it |
+| a pinned handle (`seg.pin()`) in another store | **no bound** — until that store's reader cache evicts the pin's reader (in a store with a timed pointer refresh, a small generation's reader holds all of its chunks, decoded or not) and its chunk cache evicts the chunks the pin decoded, or something tells it |
 
 **An outage of the registry extends that bound.** A refresh that cannot read the row because of a transient fault
 (throttling, a 5xx, a dropped connection) keeps serving the generation the reader already holds, and the key it

@@ -56,7 +56,7 @@ each index is. Two more things about these columns:
 - **The index column is the reader's own count, and it is exact.** The reader holds its parsed index as typed
   arrays, so each chunk's entry weighs the fixed size in the column's heading and the reader reports the arrays'
   byte length. A test checks that count against the memory the process retains, so the figure is the index's own
-  weight; the reader's other objects and your chunk cache are not in it.
+  weight; the reader's other objects, the chunk bytes it keeps of a small generation, and your chunk cache are not in it.
 - **The hit rates assume the reads are skewed.** The fifth column is what holding a hot set whole takes, and the
   last is the share of reads a default chunk cache would answer if they were spread evenly over the hot set. The hit
   rates above hold only where most reads fall on a small part of it, or where the chunk cache is raised toward that

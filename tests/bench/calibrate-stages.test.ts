@@ -510,7 +510,7 @@ describe('a stage that reads from memory', () => {
 // here; the rehearsal then holds the harness to the same formulas on S3's request shape.
 describe('what the stages request, counted against the engine', () => {
   const stride = guards.DEFAULT_LAYOUT.stride;
-  const layout = guards.planLayout({ segments: 14, idsPerSegment: 20_000, overlap: 0.1, stride });
+  const layout = guards.planLayout({ segments: 14, idsPerSegment: 40_000, overlap: 0.1, stride });
   const calls: Record<string, number> = {};
   const pointer = new CountingObjectStore(0);
   const backend = brandAsBackend({
@@ -600,7 +600,7 @@ describe('what the stages request, counted against the engine', () => {
     let total = 0;
     for (const name of names) {
       const first = await countOf(async () => {
-        expect(await counted.segment(name).count()).toBe(20_000);
+        expect(await counted.segment(name).count()).toBe(40_000);
       });
       expect(first, 'a first count() is a pointer read').toBe(1);
       total += first;

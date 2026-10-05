@@ -88,6 +88,9 @@ export const IDS_ONLY: Readonly<Record<string, string>> = {
   'tests/roaring/into-chunk-route.test.ts':
     "compares the *Into verbs against the same call by the id route through the store's own materialisation, and builds its " +
     'operands from bitmaps; a second run under the serialized input would repeat the comparison and test no part of the load path',
+  'tests/core/erase-coalesced-reads.test.ts':
+    'its loads only seed fixtures for the erasure read path, whose range requests it counts; a second run under ' +
+    'the serialized input would repeat those counts and exercise no part of the load path',
   'tests/core/stream-re-resolve.test.ts':
     'its loads build the segments a read starts from, and its one store.load is the trigger the read is held against, not ' +
     'the behaviour under test; a second run under the serialized input would repeat the reads and exercise no part of the ' +

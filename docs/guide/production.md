@@ -311,11 +311,13 @@ request each. The client the store builds allows 128
 sockets, which covers one two-operand combine with room to spare; a client you pass keeps the SDK's default of 50, and
 its reads past the 50th are not refused: they wait for a socket, and the wait counts against `readTimeoutMs`. Raise
 `maxSockets` (on the store, or on your own client) to match your concurrent combines (256 covers four two-operand
-combines or one `eraseSubject`), or pass a lower `concurrency` to the combine.
+combines), or pass a lower `concurrency` to the combine.
 
-`eraseSubject` has up to `concurrency × 32` range reads open (256 by default, since it erases 8 segments at once, each
-with a window of 32 chunk reads), and `iterate` reads up to 32 ranges ahead (a source that reads chunk by chunk, and the
-storage-path `count`, up to 32 keys). Its 256 needs `maxSockets: 256`, or a lower `concurrency`.
+`eraseSubject` has up to `concurrency × 8` requests open (64 by default, since it erases 8 segments at once, each
+reading its segment through a stream of at most 4 ranges, each up to 1 MiB, and searching its other generations for a
+holder 4 at a time, two requests each), and `iterate` reads up to 32 ranges ahead (a source that reads chunk by chunk,
+and the storage-path `count`, up to 32 keys). Its 64 fit the client the store builds (128 sockets); on a client you
+pass with the SDK's default of 50, the requests past 50 wait for a socket unless you raise `maxSockets`.
 
 ### Reading ranges: the bytes between chunks
 
@@ -405,7 +407,7 @@ Two separate limits protect you. It helps to know which one you hit.
 | | `budget` | the memory ceilings |
 | --- | --- | --- |
 | bounds | **cost**: chunk reads a single operation may fan out into, an upper bound on its backend requests (neighbouring chunks share one) | **memory**: what a process holds resident, whatever the segments' size |
-| knobs | `budget: { maxRequests }`; `false` disables it | `cache.maxChunks` (decoded cached chunks, default 1024) · `cache.readerMax` / `cache.readerMaxBytes` (open `.crbm` indices, default 1024 / 64 MiB) · the combines' `concurrency` window · the per-chunk decode cap. **`budget: false` lifts none of them.** |
+| knobs | `budget: { maxRequests }`; `false` disables it | `cache.maxChunks` (decoded cached chunks, default 1024) · `cache.readerMax` / `cache.readerMaxBytes` (open `.crbm` readers, default 1024 / 64 MiB: their parsed indices, and the chunk bytes of a small generation) · the combines' `concurrency` window · the per-chunk decode cap. **`budget: false` lifts none of them.** |
 | covers | `count` · `iterate` · the combines · `subjectReport` · `eraseSubject` | every read, on every backend |
 
 ### The request budget
@@ -463,8 +465,8 @@ on. Re-run with a higher `budget` to finish those segments. The ledger of the er
 `intersect`'s budget is a product (surviving keys times operands), while its memory is a window
 (`concurrency × operands × the 1 MiB a range may be`, which is the chunk cap) that does not depend on segment size. A request budget cannot express a memory
 bound, and `budget: false` ("I know my fan-out") must not silently also mean "unbounded RAM". A wide segment's parsed
-index can reach about 1.3 MB (65,536 entries at 20 B), which is why the reader cache is bounded by bytes as well as by count. Lower
-`cache.readerMaxBytes` for a memory-tight deployment, such as a 128 MB Lambda that reads across many wide segments. A running combine or `iterate` holds the reader of the generation it is reading (its parsed index, and the key it unwrapped on an encrypted segment) until it moves on or ends, outside `readerMax` and `readerMaxBytes`: one reader per streamed operand, for as long as the read runs, so a process with many reads open at once holds that many readers more than the cache's bound.
+index can reach about 1.3 MB (65,536 entries at 20 B), which is why the reader cache is bounded by bytes as well as by count. A reader also keeps the chunk bytes of a generation whose whole object arrived with its tail read, when they total at most `readerMaxBytes` / `readerMax` (64 KiB by default), and those count in the same bound, so a cache of readers that each kept a whole share holds a little fewer than `readerMax` of them. Lower
+`cache.readerMaxBytes` for a memory-tight deployment, such as a 128 MB Lambda that reads across many wide segments. A running combine or `iterate` holds the reader of the generation it is reading (its parsed index, any chunk bytes it kept, and the key it unwrapped on an encrypted segment) until it moves on or ends, outside `readerMax` and `readerMaxBytes`: one reader per streamed operand, for as long as the read runs, so a process with many reads open at once holds that many readers more than the cache's bound.
 
 **Neither limits how many ids a segment can hold.** A segment holds up to the full 32-bit id space, about 4.29
 billion members. `maxScanSegments`, an option of `store.retireExpired` (`store.checkConsistency` holds the default of
