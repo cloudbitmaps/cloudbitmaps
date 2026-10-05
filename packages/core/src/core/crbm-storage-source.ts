@@ -1932,7 +1932,7 @@ export async function publishGenerationKept(
     unanswered = undefined;
     lastRecord = record;
     // What this attempt's write records, and the token it is given: set by the write, read when it lands.
-    let next: KeptAfter = { list: undefined, evict: [] };
+    let next: KeptAfter | undefined;
     let wrote: Token | undefined;
     if (failedOn !== undefined) {
       let landed: boolean;
@@ -2084,7 +2084,10 @@ export async function publishGenerationKept(
           )
         ).token;
       }
-      return { published: true, kept: { ...next, token: wrote } }; // created or advanced the pointer to key.generation → it is now current
+      return {
+        published: true,
+        kept: { ...(next ?? { list: undefined, evict: [] }), token: wrote },
+      }; // created or advanced the pointer to key.generation → it is now current
     } catch (err) {
       if (isWriteConflictError(err)) {
         failedOn = record; // lost the race, or met its own landed write: the next read says which
