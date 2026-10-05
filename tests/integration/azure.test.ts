@@ -561,6 +561,33 @@ describe('AzureBlobRegistryDriver: a pointer read is one request (Azurite)', () 
     expect((await direct.get(ref))?.currentGen).toBe(1);
   });
 
+  it('a compare-and-swap made against the row get returned is one PUT under its ETag and no GET; once the row changed, Azurite refuses it', async () => {
+    const { viaProxy, direct } = fresh();
+    await direct.create(ref, { currentGen: 0 });
+    const held = (await viaProxy.get(ref))!;
+    proxy.requests.length = 0;
+    await viaProxy.compareAndSwap(ref, held.token, { currentGen: 1 }, { held });
+    expect(proxy.requests.map((r) => [r.method, r.ifMatch !== undefined])).toEqual([['PUT', true]]);
+
+    // The same record is now stale: a writer has moved the row on, and the ETag it names is gone.
+    const stale = (await viaProxy.get(ref))!;
+    await direct.compareAndSwap(ref, stale.token, { currentGen: 2 });
+    proxy.requests.length = 0;
+    await expect(
+      viaProxy.compareAndSwap(ref, stale.token, { currentGen: 9 }, { held: stale }),
+    ).rejects.toBeInstanceOf(WriteConflictError);
+    // The PUT under the old ETag is refused, then the HEAD that reads the write id back to tell a lost race from a replay.
+    expect(proxy.requests.map((r) => r.method)).toEqual(['PUT', 'HEAD']);
+    expect((await direct.get(ref))?.currentGen).toBe(2);
+  });
+
+  it('a create made with no row held is one conditional PUT and no GET', async () => {
+    const { viaProxy } = fresh();
+    await viaProxy.create(ref, { currentGen: 0 }, { held: null });
+    expect(proxy.requests.map((r) => r.method)).toEqual(['PUT']);
+    expect((await viaProxy.get(ref))?.currentGen).toBe(0);
+  });
+
   it('a compare-and-swap is fenced on the ETag its read returned: a writer landing in between wins', async () => {
     const { viaProxy, direct } = fresh();
     const { token } = await direct.create(ref, { currentGen: 0 });

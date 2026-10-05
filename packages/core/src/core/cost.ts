@@ -222,7 +222,7 @@ export interface Workload {
    * PUT-class requests one load's object write issues, each priced at the PUT rate. Default **1** (a single-object
    * PUT). A multipart write of `P` parts bills `P + 2` (initiate, the parts, complete) — set it when you know your
    * object sizes. The model adds what `store.load()` does around the write, at the default `keep` of 1: the pointer's
-   * write, PUT-class on S3, and five GETs: the pointer read three times, one check that the next generation number is
+   * write, PUT-class on S3, and four GETs: the pointer read twice, one check that the next generation number is
    * free, and one that the current generation's object is there, which tells the collection that deletes by name it
    * may. The current generation's size comes from the row's summary of it, so the load reads no index. Collection
    * deletes the generation the window pushed out by name, so it lists only on every 16th generation, which adds a
@@ -376,8 +376,9 @@ const GIB = 1024 ** 3;
 /**
  * What `store.load()` adds to its object's write, as the engine makes the requests on a segment with two
  * generations behind it, at the default `keep` of 1 with nothing above the pointer. Collection deletes the one
- * generation the window pushed out by name, so the pointer is read three times (the load's one read before its
- * publish, the compare-and-swap's read of the row's version, and the re-read before the delete) and nothing is
+ * generation the window pushed out by name, so the pointer is read twice (the load's one read before its publish,
+ * which the publish's compare-and-swap writes against without reading the row again, and the re-read before the
+ * delete) and nothing is
  * listed, except on every {@link LIST_COLLECTION_CADENCE}th generation, where collection lists instead: one more
  * PUT-class request and two more pointer reads (before and after the listing). Those two are averaged over the
  * cadence, so a count of `n` loads is exact for `n` consecutive generations of the cadence. PUT-class: the
@@ -391,7 +392,7 @@ const GIB = 1024 ** 3;
  * one more PUT-class request and two more pointer reads than these, and one check fewer.
  */
 const STORE_LOAD_PUT_CLASS = 1 + 1 / LIST_COLLECTION_CADENCE;
-const STORE_LOAD_POINTER_READS = 3 + 2 / LIST_COLLECTION_CADENCE;
+const STORE_LOAD_POINTER_READS = 2 + 2 / LIST_COLLECTION_CADENCE;
 const STORE_LOAD_EXISTENCE_CHECKS = 2 - 1 / LIST_COLLECTION_CADENCE;
 
 /** The requests one segment's retirement or purge makes: reads (GET-class), writes (PUT-class) and deletes. */

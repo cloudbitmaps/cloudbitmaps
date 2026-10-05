@@ -583,3 +583,55 @@ describe('GCS (fake-gcs-server): a cold count is one request', () => {
     }
   });
 });
+
+// A registry write made against a row the caller read is one request on the wire, conditioned on the object's
+// generation, and fake-gcs-server refuses it once the row has moved on. Counted by a forwarding proxy.
+describe('GCS (fake-gcs-server): a registry write made against a held row', () => {
+  const registryOver = (apiEndpoint: string, prefix: string): GcsRegistryDriver =>
+    new GcsRegistryDriver({
+      storage: new Storage({ projectId: 'test', apiEndpoint }),
+      bucket: BUCKET,
+      prefix,
+    });
+  const ref = { namespace: 'ns', segment: 'held' };
+
+  it('a compare-and-swap is one write under ifGenerationMatch and no read; a stale row is refused', async () => {
+    const prefix = `${RUN}/held-row/${n++}`;
+    const direct = registryOver(ENDPOINT, prefix);
+    const proxy = await forwardingProxy(ENDPOINT);
+    try {
+      const viaProxy = registryOver(proxy.url, prefix);
+      await direct.create(ref, { currentGen: 0 });
+      const held = (await viaProxy.get(ref))!;
+      proxy.requests.length = 0;
+      await viaProxy.compareAndSwap(ref, held.token, { currentGen: 1 }, { held });
+      expect(proxy.requests.map((r) => r.method)).toEqual(['POST']);
+      expect(proxy.requests[0]!.path).toMatch(/ifGenerationMatch=\d+/);
+
+      const stale = (await viaProxy.get(ref))!;
+      await direct.compareAndSwap(ref, stale.token, { currentGen: 2 });
+      proxy.requests.length = 0;
+      await expect(
+        viaProxy.compareAndSwap(ref, stale.token, { currentGen: 9 }, { held: stale }),
+      ).rejects.toBeInstanceOf(WriteConflictError);
+      // The write reached fake-gcs-server, which refused it: nothing was read to decide it.
+      expect(proxy.requests.map((r) => r.method)).toEqual(['POST']);
+      expect((await direct.get(ref))?.currentGen).toBe(2);
+    } finally {
+      await proxy.close();
+    }
+  });
+
+  it('a create with no row held is one write under ifGenerationMatch=0 and no read', async () => {
+    const prefix = `${RUN}/held-row/${n++}`;
+    const proxy = await forwardingProxy(ENDPOINT);
+    try {
+      const viaProxy = registryOver(proxy.url, prefix);
+      await viaProxy.create(ref, { currentGen: 0 }, { held: null });
+      expect(proxy.requests.map((r) => r.method)).toEqual(['POST']);
+      expect(proxy.requests[0]!.path).toMatch(/ifGenerationMatch=0/);
+    } finally {
+      await proxy.close();
+    }
+  });
+});

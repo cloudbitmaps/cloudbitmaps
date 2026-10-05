@@ -16,8 +16,8 @@
  * change for a driver package — including ours, which is the point of making it explicit.
  *
  * Not quite self-sufficient, and worth saying rather than letting someone discover it: a registry driver
- * that does NOT extend `ObjectStoreRegistry` needs `Token`, `RegCaps`, `RegistryRecord`, `NewRegistryRecord`
- * and `RegistryPatch` to write `IRegistryDriver`'s method signatures, and those come from
+ * that does NOT extend `ObjectStoreRegistry` needs `Token`, `RegCaps`, `RegistryRecord`, `NewRegistryRecord`,
+ * `RegistryPatch` and `RegistryWriteOptions` to write `IRegistryDriver`'s method signatures, and those come from
  * `@cloudbitmaps/core`'s main entry. The contract is this subpath PLUS those record types.
  *
  * WHAT A DRIVER MUST DO. The port doc comments (`IStorageDriver`, `IRegistryDriver`) carry the full list, each with

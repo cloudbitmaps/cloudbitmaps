@@ -3,8 +3,8 @@
 For anyone deciding whether to keep large bitmap sets in CloudBitmaps or in an always-on Redis. [The short
 answer](#the-short-answer) is first. Every cost here comes from the library's own `estimateCost()`. The prices are AWS's
 `us-east-1` list prices, on demand unless a sentence says otherwise, and the three deployments are illustrative
-workloads, not anyone's measured system. There is no latency figure, because none has been measured inside a region
-yet.
+workloads, not anyone's measured system. The one latency figure is the [in-region run's](../benchmarks.md#real-cloud-calibration--aws), quoted where it
+applies.
 
 A **segment** is a named set of ids, stored in chunks of up to 65,536 ids each. A **cold intersect** is an
 intersection that starts from an empty cache, so it fetches every chunk it needs; a **point read** is one `has()`;
@@ -41,16 +41,16 @@ What that is worth at three sizes, each against the cheapest on-demand Redis OSS
                       │         │         │         │         │         │
 Small   CloudBitmaps    ●                                                  $1.70
         Redis                        ●                                     $35.04
-Medium  CloudBitmaps                     ●                                 $71.66
+Medium  CloudBitmaps                     ●                                 $71.60
         Redis                                       ●                      $900
-Large   CloudBitmaps                                    ●                  $2,541
+Large   CloudBitmaps                                    ●                  $2,538
         Redis                                                     ●        $27,325
         Redis in RAM                                                   ●   $85,509
 ```
 
 - **Small**, 200 MB: $1.70 a month against $35.04 for 3 × t4g.micro, so CloudBitmaps costs **95% less**.
-- **Medium**, 20 GB: $71.66 a month against $900 for 3 × r6g.xlarge, so CloudBitmaps costs **92% less**.
-- **Large**, 2 TB: $2,541 a month against $27,325 for 3 × r6gd.16xlarge, so CloudBitmaps costs **91% less**.
+- **Medium**, 20 GB: $71.60 a month against $900 for 3 × r6g.xlarge, so CloudBitmaps costs **92% less**.
+- **Large**, 2 TB: $2,538 a month against $27,325 for 3 × r6gd.16xlarge, so CloudBitmaps costs **91% less**.
 - The large deployment's Redis keeps the values read least recently on its SSD. All in memory it would be $85,509 a month, for 285 × r6g.xlarge, 95 shards, past ElastiCache's default quota of 90 nodes a cluster, and CloudBitmaps 97% less.
 <!-- SIZING:WHY_DEPLOYMENTS:END -->
 
@@ -93,7 +93,7 @@ So each bill grows with something different:
 
 <!-- SIZING:WHY_MOVES:START -->
 - **Redis grows with how much data you have**: in steps while the data fits a few nodes, then in proportion to it, every replica with it.
-- **CloudBitmaps grows with its reads.** Storage is 1.7% of the large deployment's bill, for one copy of its data; `load()` also keeps the generation it replaced by default, which would make it 3.3%. The rest is the cold reads that miss a reader's cache; the pointer refresh, at most one a read and one per segment per reader each `cache.genTtlMs`, which is 83% of the large bill and 73% of the medium's; and the loads, 6.5% of the large bill ([what moves the large bill](sizing.md#what-moves-the-large-bill)).
+- **CloudBitmaps grows with its reads.** Storage is 1.7% of the large deployment's bill, for one copy of its data; `load()` also keeps the generation it replaced by default, which would make it 3.3%. The rest is the cold reads that miss a reader's cache; the pointer refresh, at most one a read and one per segment per reader each `cache.genTtlMs`, which is 83% of the large bill and 73% of the medium's; and the loads, 6.4% of the large bill ([what moves the large bill](sizing.md#what-moves-the-large-bill)).
 <!-- SIZING:WHY_MOVES:END -->
 
 ## What each bill grows with
@@ -146,7 +146,7 @@ it is. It is where the bills cross, not a capacity: S3's own request rate is a l
 |---|---:|---:|---:|---:|
 | **Small** | 200 MB | 0.00761 | 5.29 | **700×** |
 | **Medium** | 20 GB | 1 | 132 | **130×** |
-| **Large** | 2 TB | 20 | 3,949 | **200×** |
+| **Large** | 2 TB | 20 | 3,950 | **200×** |
 <!-- SIZING:WHY_ROOM:END -->
 
 ## Where it loses
@@ -160,10 +160,10 @@ A dashboard running 200 cold intersects a second over 5 GB costs **$1,262** a mo
 **Latency.** Redis answers from memory. A cold intersect waits on object storage, request after request:
 
 <!-- SIZING:DEPTH:START -->
-A cold intersect of two segments sharing 100 chunks waits on a chain of requests, derived from the engine's constants, **3 deep**: both operands' pointers, then both indexes, then each operand's range of shared chunks, a stream that opens 4 ranges wide and widens to 32, so up to 2 requests are in flight. At an even latency that is 3 request times end to end. A slow request holds up those queued behind it. This has not been measured in region. A repeat served from the chunk cache makes no request within `cache.genTtlMs`, and one round of pointer reads after it.
+A cold intersect of two segments sharing 100 chunks waits on a chain of requests, derived from the engine's constants, **3 deep**: both operands' pointers, then both indexes, then each operand's range of shared chunks, a stream that opens 4 ranges wide and widens to 32, so up to 2 requests are in flight. At an even latency that is 3 request times end to end. A slow request holds up those queued behind it. The in-region run of 2026-10-04 measured 3.6 request times for this shape, 95.03 ms at the median, above the derived 3, with a mean of 1.7 requests in flight and a peak of 2, against its client's 128 sockets. It did not vary the socket count, so it does not say why the rounds differ from the derived chain. A repeat served from the chunk cache makes no request within `cache.genTtlMs`, and one round of pointer reads after it.
 <!-- SIZING:DEPTH:END -->
 
-The in-region run timed one shape of cold intersect, its sweep over the overlap, an `andNot` and the point reads; the [benchmarks page](../benchmarks.md#real-cloud-calibration--aws) has the figures, and sets the wider window against the model that predicted it. The other shapes are not timed.
+The in-region run timed one shape of cold intersect, its sweep over the overlap, an `andNot` and the point reads; the [benchmarks page](../benchmarks.md#real-cloud-calibration--aws) has the figures. The other shapes are not timed.
 
 **S3's request rate.**
 

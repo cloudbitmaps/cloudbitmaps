@@ -422,6 +422,71 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       expect((await d.get(SEG))!.currentGen).toBe(1);
     });
 
+    // ── a caller's `held` row ─────────────────────────────────────────────────────────────────────────────
+    // `held` is a hint that may spare a read, never the fence: it must not change what any write answers.
+    it('a compare-and-swap with the row it read as `held` lands, as one without it does', async () => {
+      const d = makeDriver();
+      await d.create(SEG, { currentGen: 0 });
+      const held = (await d.get(SEG))!;
+      const { token } = await d.compareAndSwap(SEG, held.token, { currentGen: 1 }, { held });
+      expect(token).not.toBe(held.token);
+      expect(await d.get(SEG)).toMatchObject({ currentGen: 1, token });
+      const next = (await d.get(SEG))!;
+      await d.compareAndSwap(SEG, next.token, { currentGen: 2 }, { held: next });
+      expect((await d.get(SEG))!.currentGen).toBe(2);
+    });
+
+    it('a compare-and-swap with a stale `held` row loses as a lost race does, and changes nothing', async () => {
+      const d = makeDriver();
+      const { token: t0 } = await d.create(SEG, { currentGen: 0 });
+      const held = (await d.get(SEG))!;
+      const { token: t1 } = await d.compareAndSwap(SEG, t0, { currentGen: 1 }); // another writer, after the read
+      await expect(
+        d.compareAndSwap(SEG, held.token, { currentGen: 9 }, { held }),
+      ).rejects.toBeInstanceOf(WriteConflictError);
+      expect(await d.get(SEG)).toMatchObject({ currentGen: 1, token: t1 });
+      // a row deleted and created again since is no different
+      await d.delete(SEG);
+      await d.create(SEG, { currentGen: 0 });
+      await expect(
+        d.compareAndSwap(SEG, held.token, { currentGen: 9 }, { held }),
+      ).rejects.toBeInstanceOf(WriteConflictError);
+      expect((await d.get(SEG))!.currentGen).toBe(0);
+    });
+
+    it('a `held` row that is a copy, or of another token than `expected`, is read for as without it', async () => {
+      const d = makeDriver();
+      await d.create(SEG, { currentGen: 0 });
+      const first = (await d.get(SEG))!;
+      await d.compareAndSwap(SEG, first.token, { currentGen: 1 });
+      const current = (await d.get(SEG))!;
+      // `expected` names the current row: the older `held` is not the row it fences on, so it is not used
+      await d.compareAndSwap(SEG, current.token, { currentGen: 2 }, { held: first });
+      // a copy no driver returned
+      const copy = structuredClone((await d.get(SEG))!);
+      await d.compareAndSwap(SEG, copy.token, { currentGen: 3 }, { held: copy });
+      // a `held` that lies about the row cannot change what a write lands on
+      const lie: RegistryRecord = { ...(await d.get(SEG))!, currentGen: 99, keyId: 'forged' };
+      await d.compareAndSwap(SEG, lie.token, { currentGen: 4 }, { held: lie });
+      expect(await d.get(SEG)).toMatchObject({ currentGen: 4 });
+      expect((await d.get(SEG))!.keyId).toBeUndefined();
+    });
+
+    it('a create with `held: null` makes the row when there is none, and conflicts when there is one', async () => {
+      const d = makeDriver();
+      const { token } = await d.create(SEG, { currentGen: 0 }, { held: null });
+      expect(await d.get(SEG)).toMatchObject({ currentGen: 0, token });
+      await expect(d.create(SEG, { currentGen: 1 }, { held: null })).rejects.toBeInstanceOf(
+        WriteConflictError,
+      );
+      expect(await d.get(SEG)).toMatchObject({ currentGen: 0, token });
+      // a row that was deleted is no row, whether the driver removed it or left a tombstone
+      await d.delete(SEG);
+      const { token: again } = await d.create(SEG, { currentGen: 2 }, { held: null });
+      expect(again).not.toBe(token);
+      expect(await d.get(SEG)).toMatchObject({ currentGen: 2, token: again });
+    });
+
     it('CAS against an absent row is a conflict', async () => {
       const d = makeDriver();
       await expect(d.compareAndSwap(SEG, '1', { currentGen: 1 })).rejects.toBeInstanceOf(

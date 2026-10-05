@@ -19,7 +19,7 @@
     <title>CloudBitmaps benchmarks — what it costs, and where it stops paying</title>
     <meta
       name="description"
-      content="Expected, counted from the engine and not yet measured on S3: 6 GETs and $2.40 per million cold intersects sharing 100 chunks. Measured in-region: a segment's first store.load() is $11.60 per million. Past 329.15 GETs/s, 54.9 such intersects/s, Redis is cheaper."
+      content="Measured in-region on S3: 6 GETs and $2.40 per million cold intersects sharing 100 chunks, and a segment's first store.load() is expected at $11.20 per million. Past 329.15 GETs/s, 54.9 such intersects/s, Redis is cheaper."
     />
     <link rel="stylesheet" href="cloudbitmaps.css" />
     <meta name="google-site-verification" content="UpdnyEE0wCiY5rHqUovfc-lRkEa9ZN9M-F67eTRNKhE" />
@@ -119,12 +119,12 @@
               <span>1.2 GiB at rest, no traffic</span><span class="is-live">$0.03 /mo</span>
             </p>
             <p class="panel-row is-pair"><span>Share of the $346 cluster</span><span>0.008%</span></p>
-            <p class="panel-row is-pair"><span>1M cold A&nbsp;∩&nbsp;B, 100 chunks shared · expected</span><span>$2.40</span></p>
+            <p class="panel-row is-pair"><span>1M cold A&nbsp;∩&nbsp;B, 100 chunks shared · measured GETs, list price</span><span>$2.40</span></p>
             <p class="panel-row is-pair">
-              <span>1M single-part loads · <span class="m">store.load()</span>, pointer included</span><span>$11.60</span>
+              <span>1M single-part loads · <span class="m">store.load()</span>, pointer included · expected</span><span>$11.20</span>
             </p>
             <p class="panel-row is-pair"><span>Crossover, in GETs</span><span>329.15 /s</span></p>
-            <p class="panel-row is-pair"><span>…as cold A&nbsp;∩&nbsp;B, 6 GETs each · expected</span><span>54.9 /s</span></p>
+            <p class="panel-row is-pair"><span>…as cold A&nbsp;∩&nbsp;B, 6 GETs each · derived</span><span>54.9 /s</span></p>
             <p class="link-row"><a href="usage.html#estimate">Estimate your own rates →</a></p>
           </aside>
         </div>
@@ -186,22 +186,22 @@
                   <td>1M cold A&nbsp;∩&nbsp;B</td>
                   <td class="num">$2.40</td>
                   <td class="from">
-                    <strong>Expected</strong>, not measured: counted by running the engine on two 500,000-id segments of about 2,000 chunks sharing
-                    100 that lie together — 6 GETs, a pointer read and a tail read per operand and one range each — at list
-                    prices. A combine reads each operand's chunks as ranges, so the requests follow the bytes the shared chunks span, not how many
+                    <strong>Measured</strong> requests at list prices: two 500,000-id segments of about 2,000 chunks sharing
+                    100 that lie together made 6 GETs, a pointer read and a tail read per operand and one range each, in
+                    95.03 ms at the median. A combine reads each operand's chunks as ranges, so the requests follow the bytes the shared chunks span, not how many
                     there are; spread over each segment they are 6 GETs too, and most of each object is read. An <span class="m">andNot</span>
-                    of a segment of about 2,000 chunks against ten excludes is 33 GETs, $13.20 per million, and an
-                    <span class="m">iterate</span> of it 3 GETs, $1.20. No run on S3 has measured this engine, so no latency is published for it.
+                    of a segment of about 2,000 chunks against ten excludes made 33 GETs, $13.20 per million, in 269.74 ms. An
+                    <span class="m">iterate</span> of it is <strong>expected</strong> to make 3 GETs, $1.20: the run did not time it.
                   </td>
                   <td><span class="status is-shipped">Win</span></td>
                 </tr>
                 <tr>
                   <td>1M loads with <span class="m">store.load()</span></td>
-                  <td class="num">$11.60</td>
+                  <td class="num">$11.20</td>
                   <td class="from">
-                    A generation written once, then the pointer moved to it: 2 PUT + 4 GET for a segment's first
-                    <span class="m">store.load()</span>, measured on real S3 with the pointer in the same bucket,
-                    at 2.42 million ids a second. The meter counts objects, not ids — so batch a refresh.
+                    A generation written once, then the pointer moved to it: 2 PUT + 3 GET expected for a segment's first
+                    <span class="m">store.load()</span>, counted from the engine; a single-part load ran on real S3, with the pointer in the same bucket,
+                    at 2.65 million ids a second. The meter counts objects, not ids — so batch a refresh.
                   </td>
                   <td><span class="status is-coming">Batch it</span></td>
                 </tr>
@@ -219,8 +219,7 @@
                   <td class="from">
                     Modelled by <span class="m">estimateCost()</span>: object GETs with the cache off — the
                     pessimal posture, chosen deliberately — against a standing three-node Redis-HA cluster at
-                    $346 /mo. The same line, for cold intersects of the run's shape, is 54.9 a second at the requests the engine
-                    is expected to make.
+                    $346 /mo. The same line, for cold intersects of the run's shape, is 54.9 a second at the 6 GETs the run measured.
                     <a href="#crossover">What moves this line</a>.
                   </td>
                   <td><span class="status is-counter">Use a flat tier</span></td>
@@ -394,7 +393,7 @@
           <li>
             <span class="rl-mark">04</span>
             <span class="rl-what">And the write side crosses nothing at all</span>
-            <span class="rl-fig">$11.60 / 1M store.load()</span>
+            <span class="rl-fig">$11.20 / 1M store.load(), expected</span>
             <span class="rl-note">
               There is no writes-per-second line here because there is no per-id write: a set changes by loading
               a <em>whole new generation</em> and advancing the registry pointer, so ingest bills per object PUT
@@ -512,8 +511,9 @@
             <span class="rl-what">Other combine shapes</span>
             <span class="rl-fig">owed</span>
             <span class="rl-note">
-              More than two operands, and other overlaps than the sweep to 2,000 shared chunks, against a real
-              object store.
+              More than two operands, other overlaps than the sweep to 2,000 shared chunks, <span class="m">iterate</span>,
+              whose request count is expected and not measured, and the larger chunks of a medium or large deployment,
+              against a real object store.
             </span>
           </li>
           <li>
@@ -679,8 +679,8 @@
              share. -->
         <div class="tpanel" id="single-bucket">
           <div class="tpanel-head">
-            <span class="label" id="single-bucket-title">The in-region run's bill, of the engine before coalesced reads · measured, and expected where marked</span>
-            <span class="label">2026-10-04 · us-east-1 · run 2026-10-04-73668</span>
+            <span class="label" id="single-bucket-title">The in-region run's bill · measured, and expected where marked</span>
+            <span class="label">2026-10-04 · us-east-1 · run 2026-10-04-f3599</span>
           </div>
           <div class="tscroll">
             <table aria-labelledby="single-bucket-title">
@@ -694,21 +694,21 @@
               <tbody>
                 <tr>
                   <td>Cold A&nbsp;∩&nbsp;B, 100 of 1,999 chunks shared, the median</td>
-                  <td class="num">$81.60</td>
-                  <td class="num">204 GETs</td>
+                  <td class="num">$2.40</td>
+                  <td class="num">6 GETs</td>
                 </tr>
                 <tr>
                   <td>The same, each pointer read once — expected</td>
-                  <td class="num">$81.60</td>
-                  <td class="num">204 GETs</td>
+                  <td class="num">$2.40</td>
+                  <td class="num">6 GETs</td>
                 </tr>
                 <tr>
-                  <td>A segment's first single-part <span class="m">store.load()</span></td>
+                  <td>A segment's first single-part <span class="m">store.load()</span> in the calibration run</td>
                   <td class="num">$11.60</td>
                   <td class="num">2 PUT + 4 GET</td>
                 </tr>
                 <tr>
-                  <td>A segment's first multipart <span class="m">store.load()</span></td>
+                  <td>A segment's first multipart <span class="m">store.load()</span> in the calibration run</td>
                   <td class="num">$26.60</td>
                   <td class="num">5 PUT-class + 4 GET</td>
                 </tr>
@@ -717,14 +717,15 @@
           </div>
           <p class="tpanel-foot">
             <strong>Measured request counts at list prices</strong>, and <strong>expected</strong> where marked:
-            the second row is the code's prediction, which the run met exactly. All 40
+            the second row is the code's prediction, which the run met exactly. The two load rows are a record of that run; what a load of
+            the current engine costs is the expected row in <a href="#anchors">the cost anchors</a>. All 40
             cold intersects — each on a fresh store, with nothing cached — returned the planned ids, checked by
-            count and by sum, and each requested 100 of 1,999 chunks per segment, the chunks the two share, and
-            no other. Each also made one tail read per segment: its last 256 KiB, which holds the footer and the
-            index. The median took 290.06 ms from AWS CloudShell inside the region with a client of 50 sockets, a cold <span class="m">count()</span>
-            27.82 ms, and a warm intersect 4.05 ms. PUT-class requests are the ones S3 bills at the PUT rate, listings included. The run's requests, teardown
-            included, cost <strong>$0.0376350</strong>; there is no data-transfer charge inside the region.
-            <a href="https://github.com/cloudbitmaps/cloudbitmaps/blob/main/bench/calibration/2026-10-04-73668.md" target="_blank" rel="noopener" aria-label="The run's report (opens in a new tab)">The run's report</a>
+            count and by sum, and each fetched 100 of 1,999 chunks per segment, the chunks the two share, and
+            no other, as one range. Each also made one tail read per segment: its last 256 KiB, which holds the footer and the
+            index. The median took 95.03 ms from AWS CloudShell inside the region with a client of 128 sockets, a cold <span class="m">count()</span>
+            28.44 ms, and a warm intersect 4.79 ms. PUT-class requests are the ones S3 bills at the PUT rate, listings included. The run's requests, teardown
+            included, cost <strong>$0.0025670</strong>; there is no data-transfer charge inside the region.
+            <a href="https://github.com/cloudbitmaps/cloudbitmaps/blob/main/bench/calibration/2026-10-04-f3599.md" target="_blank" rel="noopener" aria-label="The run's report (opens in a new tab)">The run's report</a>
             explains every figure.
           </p>
         </div>
@@ -754,8 +755,8 @@
             <span class="rl-what">One shape, one client, one day</span>
             <span class="rl-fig">a single run</span>
             <span class="rl-note">
-              The latency on this page is one in-region run from AWS CloudShell, of the engine before coalesced reads: two operands at one overlap, plus a
-              sweep. No latency is published for the engine since. It is not a guarantee for other shapes or other clients — <a href="#owed">what is still owed</a>.
+              The latency on this page is one in-region run from AWS CloudShell: two operands at one overlap, plus a
+              sweep, all of whose shared chunks lie together. It is not a guarantee for other shapes or other clients — <a href="#owed">what is still owed</a>.
             </span>
           </li>
           <li>

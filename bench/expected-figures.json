@@ -13,6 +13,13 @@
     "bytesPerOperand": "971 KB",
     "neededBytesPerOperand": "49 KB"
   },
+  "firstLoad": {
+    "puts": 2,
+    "gets": 3,
+    "requestsText": "2 PUT + 3 GET",
+    "each": "$0.0000112",
+    "perMillion": "$11.20"
+  },
   "andNot": {
     "gets": 33,
     "getsText": "33 GETs",
