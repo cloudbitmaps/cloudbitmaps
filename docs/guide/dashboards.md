@@ -81,7 +81,7 @@ so it lives on a different scale from a read), the chunk-skipping ratio
 a plain `union` is expected to skip nothing), and retry rate (a rising `transient` count means your object
 store is throttling).
 
-`CountingMetricsSink` (exported) tallies all five kinds into a `MetricsSnapshot` —
+`CountingMetricsSink` (exported) tallies the five kinds that carry a quantity into a `MetricsSnapshot` —
 `{ storage, cache, retries: { transient }, intersect, ops }` — which is enough for a test or a quick script.
 
 > **Label caveat.** `segment` / `namespace` are *your* strings — unbounded-cardinality and possibly PII. Never

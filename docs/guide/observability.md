@@ -24,7 +24,7 @@ console.log(metrics.snapshot());
 //   intersect: { calls, fetchedChunks, skippedChunks }, ops: { has, count, intersectInto, unionInto, andNotInto } }
 ```
 
-The library emits five kinds of vendor-neutral events, so it is not coupled to any telemetry system. You map the
+The library emits six kinds of vendor-neutral events, so it is not coupled to any telemetry system. You map the
 handful you care about:
 
 | Event | Carries | Fired |
@@ -34,6 +34,7 @@ handful you care about:
 | `retry` | `reason: 'transient'`, `attempt`, `delayMs` | before each transient-retry backoff wait |
 | `intersect` | `op` (`intersect` / `union` / `andNot`), `operands`, `fetchedChunks`, `skippedChunks` | per combine — `skippedChunks` is the chunk-skipping saving (distinct keys never fetched) |
 | `op` | `name` (`has` / `count` / `intersectInto` / `unionInto` / `andNotInto`), `ms` | per timed segment op |
+| `advisory` | `code` (`'socket-pool-below-window'`), `driver`, `bucket`, `maxSockets`, `threshold`, `concurrency` | once, after the first S3 read, when the client's socket pool is smaller than `threshold` (twice the default `concurrency` of 32, so 64); see [socket sizing](production.md#reliability-retries-backoff--timeouts). Not a fault, and silent for a handler the store cannot read. `bucket` is your own string: do not use it as a metric label unless your bucket names are fixed |
 
 A quick look in dev is one line:
 
@@ -71,6 +72,9 @@ Events carry raw observations (bytes, counts, ms). Two things to keep in mind:
   them to per-series metric labels/tags unless your names are known low-cardinality and PII-free (aggregate,
   bucket, or scrub inside the sink instead). Events never contain bitmap contents or ids — only names, counts,
   bytes, and timings.
+
+A sink that switches on `kind` with a `never` check in its default branch, as `CountingMetricsSink` does, stops
+compiling at `advisory` until it has a case for it: ignoring the event is fine. A sink with an ordinary default branch needs no change.
 
 A sink that throws can never break a read: its exceptions are swallowed.
 

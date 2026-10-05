@@ -11,6 +11,7 @@
 import { UnsupportedError, ValidationError } from './errors';
 import type { BlobSink } from './blob';
 import type { WrappedDek } from './crypto';
+import type { IMetricsSink } from './metrics';
 
 /** Opaque optimistic-concurrency token — unique per write, compared by equality only. */
 export type Token = string;
@@ -533,6 +534,12 @@ export interface StorageBackend {
   readonly storage: IStorageDriver;
   /** Where the `currentGen` pointer, the discovery index and the wrapped DEKs live. */
   readonly registry: IRegistryDriver;
+  /**
+   * Optional. A store with a metrics sink calls this once, as it is built, with that sink (already safe to call: it
+   * never throws back). A backend that has something to say about its own setup, such as a pool it can read and finds
+   * small, keeps the sink and emits an `advisory` event to it later. A backend without it is simply never told.
+   */
+  attachMetrics?(sink: IMetricsSink): void;
 }
 
 /**

@@ -95,7 +95,30 @@ export type MetricEvent =
        */
       readonly skippedChunks: number;
     }
-  | { readonly kind: 'op'; readonly name: MetricOpName; readonly ms: number };
+  | { readonly kind: 'op'; readonly name: MetricOpName; readonly ms: number }
+  | {
+      /**
+       * A once-only note that a setting looks too small for how the store is used. It is not a fault: nothing failed.
+       * Emitted by a backend that can read the setting, never on a request's path after the first, and silent for
+       * anything the backend cannot read, so no event does not mean the setting is large enough.
+       *
+       * `'socket-pool-below-window'`: the S3 client's pool is smaller than `threshold` sockets, twice `concurrency`.
+       * `concurrency` is the default window of a combine (32), since a combine's own `concurrency` is chosen per call
+       * and the backend cannot see it: a store that always passes a lower one can ignore the event. `maxSockets` is
+       * the smaller of the pools the client's handler has made. `driver` and `bucket` say which backend the pool
+       * belongs to; they never carry a credential, an endpoint or a key.
+       *
+       * A sink that switches on `kind` with an exhaustive `never` check stops compiling at this variant: add a case
+       * for `'advisory'` (ignoring it is fine). A sink with a `default` branch needs no change.
+       */
+      readonly kind: 'advisory';
+      readonly code: 'socket-pool-below-window';
+      readonly driver: string;
+      readonly bucket: string;
+      readonly maxSockets: number;
+      readonly threshold: number;
+      readonly concurrency: number;
+    };
 
 /**
  * The sink you plug in. One method, synchronous, fire-and-forget. It must never throw back into the
@@ -199,6 +222,9 @@ export class CountingMetricsSink implements IMetricsSink {
         op.totalMs += event.ms;
         break;
       }
+      case 'advisory':
+        // A note for the sink's author, not a quantity to total.
+        break;
       default: {
         const exhaustive: never = event;
         return exhaustive;

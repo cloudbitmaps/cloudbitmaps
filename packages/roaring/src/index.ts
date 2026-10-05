@@ -755,6 +755,10 @@ export class CloudRoaring {
     // Resolve the Storage seam to a StorageChunkSource: a raw IStorageDriver is wrapped into the `.crbm` storage source
     // here (with the store's registry/keystore) so drivers are wired once; a pre-built source is used as-is.
     const resolved = resolveStorageSource(options, clock);
+    // A backend that can say something about its own setup is handed the sink, never a no-op one.
+    if (metrics !== NOOP_METRICS && isStorageBackend(options.storage)) {
+      options.storage.attachMetrics?.(metrics);
+    }
     let storage: StorageChunkSource = resolved.source;
     // Resilience on by default: wrap the source so transient faults retry with jittered backoff. `false` opts
     // out (e.g. the injected client already retries); a RetryPolicy tunes it.

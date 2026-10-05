@@ -11,6 +11,17 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Added
+
+- **An advisory event when an S3 client's socket pool is smaller than a combine needs.** A store with a `metrics` sink
+  now sends it one `{ kind: 'advisory', code: 'socket-pool-below-window', driver, bucket, maxSockets, threshold,
+  concurrency }` event, once, after the first S3 read, when the client's pool is under 64 sockets (twice the default
+  `concurrency` of 32: a client you pass keeps the SDK's 50). Nothing is logged or printed and the check sends no
+  request. It reads the SDK's default handler and agents you give it, and says nothing for a handler it cannot read
+  (your own, HTTP/2, Fetch). `MetricEvent` gains the `advisory` variant, so a sink that ends its `switch` on `kind` with a
+  `never` check needs a case for it. `StorageBackend` gains an optional `attachMetrics(sink)`, which a store calls with its
+  sink, and `@cloudbitmaps/core/driver-kit` re-exports `IMetricsSink` and `MetricEvent`.
+
 ### Changed
 
 - **A segment's first `store.load()` is now measured on S3, on `0.16.0`.** A run from AWS CloudShell in `us-east-1` on

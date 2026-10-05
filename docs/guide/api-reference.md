@@ -322,7 +322,7 @@ that holds one can run it. Every other verb is a store method; the standalone fo
 | Construct | Pass as | For |
 |---|---|---|
 | `new InProcessKeystore({ keys, activeKeyId, recoveryKeyId? })` | `encryption.keystore` (store) | encryption-at-rest + crypto-shred (BYOK) |
-| `new CountingMetricsSink()` (or your own `IMetricsSink`; omit the option for the no-op) | `metrics` | observability — `storage.get` / `cache` / `retry` / `intersect` / `op` events |
+| `new CountingMetricsSink()` (or your own `IMetricsSink`; omit the option for the no-op) | `metrics` | observability — `storage.get` / `cache` / `retry` / `intersect` / `op` / `advisory` events |
 | `new RecordingAuditSink()` (or your own `IAuditSink`; omit the option to record nothing) | `audit`, on each call that writes: `store.load`, the `*Into` verbs, `store.rollback`, `store.eraseSubject`, `store.dropSegment`, `destroySegment`, `eraseNamespace` and `store.retireExpired` | compliance trail — `segment.publish` / `segment.load-refused` / `segment.rollback` / `segment.rewrite` / `segment.erase` / `segment.dispose` / `namespace.erase` |
 
 ### CLIs (run as binaries, env-configured)
@@ -624,7 +624,8 @@ nothing can compare one. Branding them is you taking that on.
 | Symbol | What it does |
 |---|---|
 | `IStorageDriver` · `IRegistryDriver` | the two ports a driver implements — the object tier and the pointer row. A registry driver that does NOT extend `ObjectStoreRegistry` also needs `Token`, `RegCaps`, `RegistryRecord`, `NewRegistryRecord`, `RegistryPatch` and `RegistryWriteOptions` to write its method signatures; those come from `@cloudbitmaps/core`'s main entry |
-| `StorageBackend` · `StorageCaps` · `SegmentRef` · `GenKey` | the backend pair, a driver's declared capabilities, and the two key shapes |
+| `StorageBackend` · `StorageCaps` · `SegmentRef` · `GenKey` | the backend pair, a driver's declared capabilities, and the two key shapes. A backend may also carry an optional `attachMetrics(sink)`: a store given a `metrics` sink calls it once, as it is built, so the backend can send that sink an `advisory` event about its own setup (the S3 backend's socket pool does). A backend without it is never told |
+| `IMetricsSink` · `MetricEvent` | the sink `attachMetrics` receives and the event union it emits to, re-exported so a driver does not import core's main entry for them |
 | `brandAsBackend` · `STORAGE_BACKEND` | stamp the cross-package brand on a backend, and the symbol a backend class declares it with. A store accepts a backend by brand, never by `instanceof`, so a backend built in one package is recognised in another. It checks that `storage` has a `putImmutable` and `registry` a `compareAndSwap`, throwing `ValidationError` otherwise, or when the object is frozen or non-extensible, and returns the object it was given. It takes a class (`brandAsBackend(this)` in the constructor) or a plain `{ storage, registry }` object, which is how halves of your own are paired — see below |
 | `Token` · `segmentKey` | **from `@cloudbitmaps/core`, not from `driver-kit`.** The opaque compare-and-swap token (unique per write, compared by equality only, ABA-safe across delete→recreate) and the canonical segment key-string helper. A driver package may import core's main entry for these |
 | `ObjectStoreRegistry` | compare-and-swap over a plain object store. Every cloud registry driver is a thin adapter over this, which is why all three pass one conformance suite — the OCC semantics live here, not in the drivers |
@@ -922,6 +923,8 @@ not import these.
 
 Ports and the backend brand: `IStorageDriver` · `IRegistryDriver` · `StorageBackend` · `StorageCaps` ·
 `SegmentRef` · `GenKey` · `brandAsBackend` · `STORAGE_BACKEND`
+
+Metrics: `IMetricsSink` · `MetricEvent`
 
 Object-store registry: `ObjectStoreRegistry` · `ObjectRegistryStore` · `ObjectRow` · `ObjectVersionRaced` ·
 `MAX_ROW_BYTES`
