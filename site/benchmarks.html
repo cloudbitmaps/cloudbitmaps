@@ -19,7 +19,7 @@
     <title>CloudBitmaps benchmarks — what it costs, and where it stops paying</title>
     <meta
       name="description"
-      content="Measured in-region on S3: 6 GETs and $2.40 per million cold intersects sharing 100 chunks, and a segment's first store.load() is $11.60 per million. Past 329.15 GETs/s, 54.9 such intersects/s, Redis is cheaper."
+      content="Measured in-region on S3: 6 GETs and $2.40 per million cold intersects sharing 100 chunks, and a segment's first store.load() is expected at $11.20 per million. Past 329.15 GETs/s, 54.9 such intersects/s, Redis is cheaper."
     />
     <link rel="stylesheet" href="cloudbitmaps.css" />
     <meta name="google-site-verification" content="UpdnyEE0wCiY5rHqUovfc-lRkEa9ZN9M-F67eTRNKhE" />
@@ -121,7 +121,7 @@
             <p class="panel-row is-pair"><span>Share of the $346 cluster</span><span>0.008%</span></p>
             <p class="panel-row is-pair"><span>1M cold A&nbsp;∩&nbsp;B, 100 chunks shared · measured GETs, list price</span><span>$2.40</span></p>
             <p class="panel-row is-pair">
-              <span>1M single-part loads · <span class="m">store.load()</span>, pointer included</span><span>$11.60</span>
+              <span>1M single-part loads · <span class="m">store.load()</span>, pointer included · expected</span><span>$11.20</span>
             </p>
             <p class="panel-row is-pair"><span>Crossover, in GETs</span><span>329.15 /s</span></p>
             <p class="panel-row is-pair"><span>…as cold A&nbsp;∩&nbsp;B, 6 GETs each · derived</span><span>54.9 /s</span></p>
@@ -197,10 +197,10 @@
                 </tr>
                 <tr>
                   <td>1M loads with <span class="m">store.load()</span></td>
-                  <td class="num">$11.60</td>
+                  <td class="num">$11.20</td>
                   <td class="from">
-                    A generation written once, then the pointer moved to it: 2 PUT + 4 GET for a segment's first
-                    <span class="m">store.load()</span>, measured on real S3 with the pointer in the same bucket,
+                    A generation written once, then the pointer moved to it: 2 PUT + 3 GET expected for a segment's first
+                    <span class="m">store.load()</span>, counted from the engine; a single-part load ran on real S3, with the pointer in the same bucket,
                     at 2.65 million ids a second. The meter counts objects, not ids — so batch a refresh.
                   </td>
                   <td><span class="status is-coming">Batch it</span></td>
@@ -393,7 +393,7 @@
           <li>
             <span class="rl-mark">04</span>
             <span class="rl-what">And the write side crosses nothing at all</span>
-            <span class="rl-fig">$11.60 / 1M store.load()</span>
+            <span class="rl-fig">$11.20 / 1M store.load(), expected</span>
             <span class="rl-note">
               There is no writes-per-second line here because there is no per-id write: a set changes by loading
               a <em>whole new generation</em> and advancing the registry pointer, so ingest bills per object PUT
@@ -703,12 +703,12 @@
                   <td class="num">6 GETs</td>
                 </tr>
                 <tr>
-                  <td>A segment's first single-part <span class="m">store.load()</span></td>
+                  <td>A segment's first single-part <span class="m">store.load()</span> in the calibration run</td>
                   <td class="num">$11.60</td>
                   <td class="num">2 PUT + 4 GET</td>
                 </tr>
                 <tr>
-                  <td>A segment's first multipart <span class="m">store.load()</span></td>
+                  <td>A segment's first multipart <span class="m">store.load()</span> in the calibration run</td>
                   <td class="num">$26.60</td>
                   <td class="num">5 PUT-class + 4 GET</td>
                 </tr>
@@ -717,7 +717,8 @@
           </div>
           <p class="tpanel-foot">
             <strong>Measured request counts at list prices</strong>, and <strong>expected</strong> where marked:
-            the second row is the code's prediction, which the run met exactly. All 40
+            the second row is the code's prediction, which the run met exactly. The two load rows are a record of that run; what a load of
+            the current engine costs is the expected row in <a href="#anchors">the cost anchors</a>. All 40
             cold intersects — each on a fresh store, with nothing cached — returned the planned ids, checked by
             count and by sum, and each fetched 100 of 1,999 chunks per segment, the chunks the two share, and
             no other, as one range. Each also made one tail read per segment: its last 256 KiB, which holds the footer and the

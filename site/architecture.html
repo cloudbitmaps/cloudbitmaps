@@ -300,7 +300,7 @@
               by compare-and-swap.
               There is no per-id write, so there is nothing to fold back in later and
               <strong>no background job on the read path</strong>. On S3 a segment's first <span class="m">store.load()</span> costs
-              <strong>$11.60 per million loads</strong>, pointer included — measured request counts at list
+              <strong>$11.20 per million loads</strong>, pointer included — expected, counted from the engine at list
               prices — so batch the refresh.
             </p>
           </div>

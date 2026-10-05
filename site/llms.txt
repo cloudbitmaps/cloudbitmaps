@@ -80,8 +80,8 @@ The cold intersect's count is measured in region; the other counts come from run
 data, the topology that ships. Measured against real S3 in us-east-1, with the request counts read off the AWS SDK
 layer: a cold intersect of two 500,000-id segments sharing 100 of their 1,999 chunks made 6 GETs, $2.40 per million,
 reading neighbouring chunks as ranges, in 95.03 ms at the median; on a spread layout it reads more bytes than it needs,
-which cross-region can cost more than the requests it saves. A segment's first store.load() is 2 PUTs and 4 GETs,
-$11.60 per million, and a cold count() is one request at 28.44 ms (run of 2026-10-04 from AWS CloudShell inside the
+which cross-region can cost more than the requests it saves. A segment's first store.load() is expected at 2 PUTs and 3 GETs,
+$11.20 per million, counted from the engine and not yet measured on S3. A cold count() is one request at 28.44 ms (run of 2026-10-04 from AWS CloudShell inside the
 region, whose client had 128 sockets). For
 comparison: an always-on Redis-HA line of $346/month standing, and a modelled $0.03/month for 1.2 GiB of segments at
 rest. One crossover is published, in GETs: past 329.15 sustained GETs a second, with every read missing the cache,

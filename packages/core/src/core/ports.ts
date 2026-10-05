@@ -438,6 +438,24 @@ export type RegistryPatch = Partial<
   >
 >;
 
+/**
+ * What a caller passes {@link IRegistryDriver.create} or {@link IRegistryDriver.compareAndSwap} besides the write itself.
+ */
+export interface RegistryWriteOptions {
+  /**
+   * The row the caller read, and is writing against: the record a {@link IRegistryDriver.get} of this registry returned
+   * to it, or `null` when that read found no row. A driver that would read the row to learn the version its conditional
+   * write is fenced on can use the one it observed then, and send the write at once.
+   *
+   * It is a hint, and never the fence: the write is still conditioned on the store's own version of the row, so a row
+   * that has changed since makes it fail as a lost race does, with {@link WriteConflictError}. A driver reads the row
+   * as it does without a hint when it does not recognise the record (one it did not return, or one that is not of
+   * this row), or when `held` and the `expected` token of a `compareAndSwap` disagree. A write that gets no answer is
+   * settled by reading the row, never by this record. A driver that ignores the option reads the row.
+   */
+  readonly held?: RegistryRecord | null;
+}
+
 /** Capabilities a registry driver advertises; validated fail-fast at wiring time. */
 export interface RegCaps {
   /** REQUIRED — `currentGen` feeds read correctness + the publish CAS, so reads must be strongly consistent. */
@@ -642,10 +660,27 @@ export interface IRegistryDriver {
    * serving what it holds and asks again shortly, while any other error reaches the read that met it.
    */
   get(ref: SegmentRef): Promise<RegistryRecord | null>;
-  /** Create the row; throws {@link WriteConflictError} if it already exists (use CAS to mutate). */
-  create(ref: SegmentRef, record: NewRegistryRecord): Promise<{ token: Token }>;
-  /** Server-side compare-and-set: apply `patch` iff the stored token equals `expected`, else `WriteConflictError`. */
-  compareAndSwap(ref: SegmentRef, expected: Token, patch: RegistryPatch): Promise<{ token: Token }>;
+  /**
+   * Create the row; throws {@link WriteConflictError} if it already exists (use CAS to mutate). With
+   * `options.held` of `null`, the caller found no row: a driver may send the create-only write without reading first,
+   * and one that then loses it reads the row, as it does without the hint.
+   */
+  create(
+    ref: SegmentRef,
+    record: NewRegistryRecord,
+    options?: RegistryWriteOptions,
+  ): Promise<{ token: Token }>;
+  /**
+   * Server-side compare-and-set: apply `patch` iff the stored token equals `expected`, else `WriteConflictError`.
+   * `options.held` is the row the caller read, which a driver may use to skip its own read; see
+   * {@link RegistryWriteOptions}.
+   */
+  compareAndSwap(
+    ref: SegmentRef,
+    expected: Token,
+    patch: RegistryPatch,
+    options?: RegistryWriteOptions,
+  ): Promise<{ token: Token }>;
   /**
    * Discovery: every **existing** record, optionally scoped to one namespace. Order is unspecified.
    *

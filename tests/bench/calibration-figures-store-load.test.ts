@@ -310,13 +310,13 @@ describe('a run that timed store.load()', () => {
     });
 
     it('with a load that read the pointer fewer times than a first load must, or a listing no first load makes', () => {
-      // A first load reads three times and checks once: a record of three requests names one read too few.
+      // A first load reads twice and checks once: a record of two requests names one read too few.
       expect(
         refused((r) => {
           const l = r.phases.load.perLoad[0];
-          if (l !== undefined) l.get = 3;
+          if (l !== undefined) l.get = 2;
         }),
-      ).toMatch(/at least three pointer reads and a check/);
+      ).toMatch(/at least two pointer reads and a check/);
       // The run's own command tally, which the loads' records must agree with: a listing is a command a first load
       // never sends.
       expect(

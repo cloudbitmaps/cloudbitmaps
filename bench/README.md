@@ -92,7 +92,7 @@ file under `expectedMissed`, and the run carries on, because a count that differ
 
 | stage | what it does | requests it is expected to make |
 |---|---|---|
-| `load` | 20 single-part and 5 multipart (two-part) loads through `store.load()`, each recording its own requests | per segment's first load: 2 PUT-class and 4 GET; a multipart object swaps its PUT for a create, its parts and a complete |
+| `load` | 20 single-part and 5 multipart (two-part) loads through `store.load()`, each recording its own requests | per segment's first load: 2 PUT-class and 3 GET; a multipart object swaps its PUT for a create, its parts and a complete |
 | `intersect` | 40 cold intersects over the calibration layout (100 shared chunks packed at keys 0 to 99), each on a fresh store | 4 + 2r GET each: both pointers, both tails, and r chunk range requests from each operand, where r is what the engine makes of the layout, counted by running it over the in-memory backend (`lib/range-counts.cjs`) before anything is created |
 | `spread` | 10 segments of the same overlap with the shared chunks spread uniformly over each segment's chunks from a fixed seed, and 40 cold intersects | the same 4 + 2r, with r counted for this layout, so a difference in latency is the layout's |
 | `sweep` | segments sharing 1,000 chunks (10 intersects) and 2,000 (5), `CR_CALIBRATE_SWEEP` to change the list | 4 + 2r each, with r counted for each k |
@@ -217,8 +217,8 @@ constants and the source text:
   fails if they differ, because a retyped number can be wrong. A load, `store.load()` of a new segment, checks that its
   generation number is free and lists nothing when it is, since it has nothing to collect (up to twice when the check
   finds the number taken, to number past the object and to collect; on S3 a listing bills at the PUT rate), and reads
-  the pointer three times with nothing racing it, up to six when the check finds the number taken, twice more for each publish
-  attempt it loses, and fourteen times at most: fifteen GET-class requests with the check. A test drives each count through the real registry code, so a projection allowing one
+  the pointer twice with nothing racing it, up to five when the check finds the number taken, twice more for each publish
+  attempt it loses, and thirteen times at most: fourteen GET-class requests with the check. A test drives each count through the real registry code, so a projection allowing one
   read per attempt fails it. The workload's client makes one attempt per request, and every attempt teardown's client
   may make is allowed for, so no SDK retry can fall outside it either. A sample discarded after a transient fault was
   billed too, so the projection allows every discard a run may make, at the costliest sample's bound, and a plan that
@@ -226,9 +226,8 @@ constants and the source text:
   actually issued against what it projected, each stage's kept samples against its bound and its discards against the
   allowance, and flags itself if it went over.
 - **A segment is loaded once.** The projection bounds a segment's first load. A reload of a row with a summary
-  opens nothing and makes fifteen GET-class requests under four lost races, as many as that bound; one of a row with none
-  also opens the current generation's index and makes sixteen. A
-  a collecting load reads the pointer once more. The harness claims each name before it loads (`firstLoads`) and
+  opens nothing and makes at most six GET-class requests under four lost races, and at most eight when it collects, inside that bound;
+  one of a row with none that also lists to collect also opens the current generation's index, and makes at most eleven. The harness claims each name before it loads (`firstLoads`) and
   refuses a repeat before sending anything.
 - **A warm read that makes a request fails the stage.** Its count is not recorded and compared afterwards: the stage
   throws, the run keeps what it had finished and exits non-zero. Each warm store trusts its pointer for an hour and

@@ -131,8 +131,8 @@ Redis OSS cluster that would hold each one's data:
 | | data | CloudBitmaps a month | the Redis that holds it | CloudBitmaps costs |
 |---|---:|---:|---:|---:|
 | **Small** — a product team keeping its user cohorts | 200 MB | $1.70 | $35.04 | **95% less** |
-| **Medium** — an ad platform matching audiences | 20 GB | $71.66 | $900 | **92% less** |
-| **Large** — a marketplace filtering its catalogue | 2 TB | $2,541 | $27,325 | **91% less** |
+| **Medium** — an ad platform matching audiences | 20 GB | $71.60 | $900 | **92% less** |
+| **Large** — a marketplace filtering its catalogue | 2 TB | $2,538 | $27,325 | **91% less** |
 <!-- SIZING:WHY_SIZES:END -->
 
 <!-- SIZING:WHY_CAVEATS:START -->
@@ -158,7 +158,7 @@ bucket as the data.
 | Operation | Cost | Kind |
 |---|---|---|
 | Cold `intersect` of two 500,000-id segments sharing 100 of 1,999 chunks: 6 GETs | **$2.40 / million** | measured requests at list prices |
-| A segment's first `store.load()`: 2 PUT + 4 GET, pointer included | **$11.60 / million** | measured requests at list prices |
+| A segment's first `store.load()`: 2 PUT + 3 GET, pointer included | **$11.20 / million** | expected, not yet measured |
 
 Run from inside the region with a client of 128 sockets, a cold `count()` is one request at
 28.44 ms, a single-part load ran at 5,570,733 bytes a second, and an `andNot` against ten excludes made 33 GETs in 269.74 ms. The

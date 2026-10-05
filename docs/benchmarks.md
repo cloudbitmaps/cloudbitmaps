@@ -113,16 +113,17 @@ chunks lie in the object, not how many there are.
 | --- | --- | --- | --- | --- |
 | Cold intersect, two 500,000-id segments sharing 100 of 1,999 chunks, the median measured | 6 GET | $0.0000024 | **$2.40** | derived |
 | The same, with each pointer read once, as inside the region | 6 GET | $0.0000024 | $2.40 | expected |
-| A segment's first single-part `store.load()`, a 1.05 MB segment, pointer included | 2 PUT + 4 GET | $0.0000116 | **$11.60** | derived |
-| A segment's first multipart `store.load()`, a 12.6 MB segment | 5 PUT-class + 4 GET | $0.0000266 | **$26.60** | derived |
+| A segment's first single-part `store.load()` in the calibration run, a 1.05 MB segment, pointer included | 2 PUT + 4 GET | $0.0000116 | **$11.60** | derived |
+| A segment's first multipart `store.load()` in the calibration run, a 12.6 MB segment | 5 PUT-class + 4 GET | $0.0000266 | **$26.60** | derived |
 
 **Derived** rows are measured request counts times the `aws-us-east-1-ondemand` list prices. The second row is the
-code's prediction, which the run met exactly. PUT-class requests are the ones S3 bills at the PUT rate, listings
+code's prediction, which the run met exactly. The two load rows are a record of that run; what a load of the current engine
+makes is under [expected, not measured](#expected-not-measured). PUT-class requests are the ones S3 bills at the PUT rate, listings
 included. The whole run was 101 PUT-class and 5,155 GET-class requests, teardown included, and its requests cost
 $0.0025670, against a projected upper bound of $0.044470. Inside the region there is no data-transfer charge to add.
 
 **Against the $346-a-month Redis-HA line**, that is 144.2 million cold intersects of this shape a month, 54.9 every
-second, or 29.8 million single-part loads. Below those rates this design costs less; above them, the standing
+second, or 29.8 million single-part loads at the run's price for one. Below those rates this design costs less; above them, the standing
 node does. Every intersect in the run was cold on purpose. A long-lived reader answers a repeat from memory, and pays
 instead for the pointer refresh: at most one GET per segment every 2 s while the segment is being read.
 
@@ -154,8 +155,11 @@ pointer refresh, for the segments a long-lived reader keeps reading. The
 | Operation | Requests | One | Per million | Label |
 | --- | --- | --- | --- | --- |
 | `iterate` over a 1,999-chunk segment | 3 GETs: a pointer and a tail read, and one range | $0.0000012 | $1.20 | expected |
+| A segment's first single-part `store.load()`, pointer included | 2 PUT + 3 GET | $0.0000112 | $11.20 | expected |
+| A reload of a segment | 2 PUT + 2 GET | $0.0000108 | $10.80 | expected |
+| A load from the third on, before its by-name delete, which is free | 2 PUT + 4 GET | $0.0000116 | $11.60 | expected |
 
-The run did not time `iterate`. Its count follows the same rule as the combines the run measured. For the sizing
+The run did not time `iterate`. Its count follows the same rule as the combines the run measured. The load counts are what the engine's registry and storage make, held to it by `bench/lib/calibration-figures.cjs`. For the sizing
 guide's medium and large deployments, whose chunks are larger, the requests are [counted for each overlap and
 layout](guide/sizing.md#how-much-the-overlap-matters). The layouts are the calibration's, of about 500-byte chunks;
 real ids are often denser, and the guide counts larger chunks.

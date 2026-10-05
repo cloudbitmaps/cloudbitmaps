@@ -87,6 +87,7 @@ export type {
   RegistryPatch,
   RegistryStatus,
   RegistrySummary,
+  RegistryWriteOptions,
   ClearRegistrySummary,
   SealedRegistrySummary,
   GenerationMetadata,

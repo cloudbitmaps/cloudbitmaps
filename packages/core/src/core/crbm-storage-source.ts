@@ -50,6 +50,7 @@ import type {
   IStorageDriver,
   IRegistryDriver,
   RegistryRecord,
+  RegistryWriteOptions,
   RegistrySummary,
   SegmentRef,
   SegmentSize,
@@ -1910,8 +1911,13 @@ export async function publishGeneration(
   let lastRecord: RegistryRecord | null | undefined;
   for (let attempt = 0; attempt < 5; attempt++) {
     const reused = attempt === 0 && options.row !== undefined;
+    // The row a write is made against is passed to the registry as `held`, so that it need not read the row again for
+    // the version its write is fenced on: the caller's own row on the first attempt, or the one this attempt read.
+    // Never a row read to settle a write that got no answer: that one is read again by the write that follows it.
+    const holdsRow = fresh === undefined;
     const record =
       fresh !== undefined ? fresh : reused ? (options.row ?? null) : await registry.get(key);
+    const write: RegistryWriteOptions | undefined = holdsRow ? { held: record } : undefined;
     fresh = undefined;
     unanswered = undefined;
     lastRecord = record;
@@ -1963,11 +1969,15 @@ export async function publishGeneration(
       }
       if (record === null) {
         // First publish for the segment — carry the wrapped DEK(s) so encrypted reads can resolve the key.
-        await registry.create(key, {
-          currentGen: key.generation,
-          wrappedDeks: options.wrappedDeks,
-          ...(options.summary === undefined ? {} : { summary: options.summary }),
-        });
+        await registry.create(
+          key,
+          {
+            currentGen: key.generation,
+            wrappedDeks: options.wrappedDeks,
+            ...(options.summary === undefined ? {} : { summary: options.summary }),
+          },
+          write,
+        );
       } else if (record.status === 'destroyed') {
         // Closes the window between a writer's own destroyed-check and its publish.
         //
@@ -1996,11 +2006,16 @@ export async function publishGeneration(
         // would wipe key material off the row whenever a cleartext generation is published onto it — a divergence
         // from the branch below, which never touches the field.
         refuseCleartextOntoKey(key, record, options.cleartext);
-        await registry.compareAndSwap(key, record.token, {
-          currentGen: key.generation,
-          ...(options.wrappedDeks === undefined ? {} : { wrappedDeks: options.wrappedDeks }),
-          ...(options.summary === undefined ? {} : { summary: options.summary }),
-        });
+        await registry.compareAndSwap(
+          key,
+          record.token,
+          {
+            currentGen: key.generation,
+            ...(options.wrappedDeks === undefined ? {} : { wrappedDeks: options.wrappedDeks }),
+            ...(options.summary === undefined ? {} : { summary: options.summary }),
+          },
+          write,
+        );
       } else if (record.currentGen > key.generation) {
         return false; // a newer generation is already current — forward-only, never regress
       } else if (record.currentGen === key.generation) {
@@ -2030,10 +2045,15 @@ export async function publishGeneration(
           );
         }
         refuseCleartextOntoKey(key, record, options.cleartext);
-        await registry.compareAndSwap(key, record.token, {
-          currentGen: key.generation,
-          ...(options.summary === undefined ? {} : { summary: options.summary }),
-        });
+        await registry.compareAndSwap(
+          key,
+          record.token,
+          {
+            currentGen: key.generation,
+            ...(options.summary === undefined ? {} : { summary: options.summary }),
+          },
+          write,
+        );
       }
       return true; // created or advanced the pointer to key.generation → it is now current
     } catch (err) {
