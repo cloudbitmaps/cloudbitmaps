@@ -235,6 +235,12 @@ function keysWithin(keys: readonly number[], w: IdWindow): number[] {
   return keys.slice(firstAtLeast(w.loKey), firstAtLeast(w.hiKey + 1));
 }
 
+/** One chunk of a combine's result: the bitmap of its remainders, owned by whoever reads it. */
+export interface CombinedChunk {
+  readonly chunkKey: number;
+  readonly bitmap: CodecBitmap;
+}
+
 /** What a combine settled before reading: its range window, and the ordered fan-out over the keys that survive. */
 interface CombinePlan {
   readonly w: IdWindow | null;
@@ -659,6 +665,39 @@ export class SegmentEngine {
   }
 
   /**
+   * {@link intersect}, as the chunks the result is made of: `{ chunkKey, bitmap }` in ascending key order, each a
+   * non-empty bitmap of the chunk's 16-bit remainders, cut to the read's range. What a materialisation writes
+   * straight into its new generation, with no id built on the way.
+   *
+   * **Each bitmap belongs to the caller, who may change it:** it is the combine's own accumulator or a bitmap built
+   * for the range's edge, never a chunk the cache holds or another operand's. The reads, the budget, the metric and the
+   * errors are the id reads' own.
+   */
+  intersectChunks(
+    segs: readonly SegmentRef[],
+    options?: CombineOptions,
+  ): AsyncGenerator<CombinedChunk> {
+    return this.combineChunks(segs, options?.exclude ?? [], 'all', 'intersect', options);
+  }
+
+  /** {@link union}, as chunks: see {@link intersectChunks}. */
+  unionChunks(
+    segs: readonly SegmentRef[],
+    options?: CombineOptions,
+  ): AsyncGenerator<CombinedChunk> {
+    return this.combineChunks(segs, options?.exclude ?? [], 'any', 'union', options);
+  }
+
+  /** {@link andNot}, as chunks: see {@link intersectChunks}. */
+  andNotChunks(
+    seg: SegmentRef,
+    excludes: readonly SegmentRef[],
+    options?: Omit<CombineOptions, 'exclude'>,
+  ): AsyncGenerator<CombinedChunk> {
+    return this.combineChunks([seg], excludes, 'all', 'andNot', options);
+  }
+
+  /**
    * Everything a combine decides before it reads a chunk: validation, each operand's keys and generation, the
    * absent-operand refusal, key alignment, the budget and the metric. `null` when the range is empty. The per-id
    * read and the batch read share it, so the two cannot disagree about what is read or charged.
@@ -856,6 +895,39 @@ export class SegmentEngine {
     } finally {
       for (const stream of plan.streams) this.closeStreamed(stream);
     }
+  }
+
+  /** The chunk read: the plan every combine shares, then each key's result, cut to the range at its edges. */
+  private async *combineChunks(
+    segs: readonly SegmentRef[],
+    excludeSegs: readonly SegmentRef[],
+    mode: 'all' | 'any',
+    op: 'intersect' | 'union' | 'andNot',
+    options?: Omit<CombineOptions, 'exclude'>,
+  ): AsyncGenerator<CombinedChunk> {
+    const plan = await this.combinePlan(segs, excludeSegs, mode, op, options);
+    if (plan === null) return;
+    const { w, window } = plan;
+    try {
+      for (let slot = await window.next(); slot !== undefined; slot = await window.next()) {
+        if (!slot.result || slot.result.isEmpty) continue;
+        const bitmap =
+          w !== null && isEdge(slot.key, w)
+            ? this.cutToWindow(slot.result, slot.key, w)
+            : slot.result;
+        if (!bitmap.isEmpty) yield { chunkKey: slot.key, bitmap };
+      }
+    } finally {
+      for (const stream of plan.streams) this.closeStreamed(stream);
+    }
+  }
+
+  /** An edge chunk's bitmap cut to the window, as a new bitmap: the remainders `edgeIds` would yield. */
+  private cutToWindow(chunk: CodecBitmap, chunkKey: number, w: IdWindow): CodecBitmap {
+    const from = chunkKey === w.loKey ? w.loRem : 0;
+    const to = chunkKey === w.hiKey ? w.hiRem : MAX_REMAINDER;
+    const rem = chunk.toUint32Array ? chunk.toUint32Array() : Uint32Array.from(chunk);
+    return this.codec.fromValues(rem.subarray(firstAbove(rem, from - 1), firstAbove(rem, to)));
   }
 
   /**

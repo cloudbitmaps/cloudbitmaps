@@ -48,6 +48,7 @@ import {
   estimateCost,
   groundedReport,
   loadSegment,
+  loadSegmentChunks,
   mapWithConcurrency,
   resolveBudget,
   resolvePerOpBudget,
@@ -935,7 +936,7 @@ export class CloudRoaring {
    */
   private async materialize(
     dest: SegmentRef,
-    ids: AsyncIterable<number>,
+    ids: LoadInput | CombineChunks,
     op: string,
     options?: MaterializeOptions,
   ): Promise<MaterializeResult> {
@@ -946,7 +947,7 @@ export class CloudRoaring {
     const metadata = options?.metadata;
     let result: Awaited<ReturnType<typeof loadSegment>>;
     try {
-      result = await loadSegment(dest, ids, deps, {
+      const loadOptions = {
         ...(options?.allowEmpty === undefined ? {} : { allowEmpty: options.allowEmpty }),
         ...(options?.guard === undefined ? {} : { guard: options.guard }),
         ...(metadata === undefined ? {} : { metadata }),
@@ -959,7 +960,11 @@ export class CloudRoaring {
         // as a side effect of adding a guard whose entire purpose is preventing data loss. Opt in with `keep`.
         keep: options?.keep ?? KEEP_EVERY_GENERATION,
         ...(options?.audit === undefined ? {} : { audit: options.audit }),
-      });
+      };
+      result =
+        ids instanceof CombineChunks
+          ? await loadSegmentChunks(dest, ids.chunks, deps, loadOptions)
+          : await loadSegment(dest, ids, deps, loadOptions);
     } finally {
       // As `load()` does: this store's view of `dest` is behind whatever just happened, and a throw can still have
       // published first. Left alone, the store read its own write's predecessor: indefinitely, with no timed refresh.
@@ -2076,6 +2081,66 @@ const EMPTY_IDS: IdStream = {
   },
 };
 
+type EngineCombine = Parameters<SegmentEngine['intersect']>[1];
+type EngineAndNot = Parameters<SegmentEngine['andNot']>[2];
+
+/**
+ * What a combine is read as: the ids a caller streams, or the chunks an `*Into` writes. The three verbs make the
+ * same decisions about expired operands, `exclude`, the engine and the options whichever it is, so each is written
+ * once over this, and only the last step differs.
+ */
+interface CombineOutput<T> {
+  /** What a combine over expired operands is: nothing. */
+  readonly none: T;
+  /** A combine that fails when first read, as the engine's own refusals do. */
+  readonly failing: (err: unknown) => T;
+  readonly intersect: (engine: SegmentEngine, refs: SegmentRef[], opts: EngineCombine) => T;
+  readonly union: (engine: SegmentEngine, refs: SegmentRef[], opts: EngineCombine) => T;
+  readonly andNot: (
+    engine: SegmentEngine,
+    base: SegmentRef,
+    refs: SegmentRef[],
+    opts: EngineAndNot,
+  ) => T;
+}
+
+/** Combines read as ids: what `intersect`, `union` and `andNot` return. */
+const AS_IDS: CombineOutput<IdStream> = {
+  none: EMPTY_IDS,
+  failing,
+  intersect: (engine, refs, opts) =>
+    withBatches(engine.intersect(refs, opts), () => engine.intersectBatches(refs, opts)),
+  union: (engine, refs, opts) =>
+    withBatches(engine.union(refs, opts), () => engine.unionBatches(refs, opts)),
+  andNot: (engine, base, refs, opts) =>
+    withBatches(engine.andNot(base, refs, opts), () => engine.andNotBatches(base, refs, opts)),
+};
+
+/** A combine's result as the chunks it is made of. */
+type ChunkStream = AsyncIterable<{ chunkKey: number; bitmap: CodecBitmap }>;
+
+const NO_CHUNKS: ChunkStream = {
+  async *[Symbol.asyncIterator]() {
+    // deliberately yields nothing
+  },
+};
+
+/** A combine's chunks on their way to a load, which writes them as they are. */
+class CombineChunks {
+  constructor(readonly chunks: ChunkStream) {}
+}
+
+/** Combines read as chunks: what the `*Into` verbs write into the new generation, with no id built on the way. */
+const AS_CHUNKS: CombineOutput<ChunkStream> = {
+  none: NO_CHUNKS,
+  failing: (err) => ({
+    [Symbol.asyncIterator]: () => ({ next: () => Promise.reject(err) }),
+  }),
+  intersect: (engine, refs, opts) => engine.intersectChunks(refs, opts),
+  union: (engine, refs, opts) => engine.unionChunks(refs, opts),
+  andNot: (engine, base, refs, opts) => engine.andNotChunks(base, refs, opts),
+};
+
 /**
  * What `andNotInto` takes: the write options without `exclude`, because its `excludes` argument IS the
  * subtraction — a second one in the options would be two spellings of one thing.
@@ -2107,7 +2172,7 @@ type CombineEngine = (handles: readonly Segment[]) => SegmentEngine | undefined;
 
 type Materialize = (
   dest: SegmentRef,
-  ids: AsyncIterable<number>,
+  ids: LoadInput | CombineChunks,
   op: string,
   options?: MaterializeOptions,
 ) => Promise<MaterializeResult>;
@@ -2462,20 +2527,24 @@ export class Segment {
    * override the store's per-op denial-of-wallet budget for this call (or `false` to lift it).
    */
   intersect(others: Segment[], options?: CombineOptions): IdStream {
+    return this.intersectAs(AS_IDS, others, options);
+  }
+
+  private intersectAs<T>(out: CombineOutput<T>, others: Segment[], options?: CombineOptions): T {
     // An expired operand is empty, and anything ANDed with the empty set is empty. Guarding here rather than
     // only in `count()` is what keeps the surface coherent: a segment whose `count()` is 0 must not still
     // contribute members to an intersection.
-    if (this.expired() || others.some((o) => o.expired())) return EMPTY_IDS;
+    if (this.expired() || others.some((o) => o.expired())) return out.none;
     const exclude = this.liveExcludes(options);
     let engine: SegmentEngine;
     try {
       engine = this.combineEngine([this, ...others, ...exclude]) ?? this.engine;
     } catch (err) {
-      return failing(err);
+      return out.failing(err);
     }
     const refs = [this.ref, ...others.map((o) => o.ref)];
     const opts = this.refsIn(options, exclude);
-    return withBatches(engine.intersect(refs, opts), () => engine.intersectBatches(refs, opts));
+    return out.intersect(engine, refs, opts);
   }
 
   /**
@@ -2508,7 +2577,12 @@ export class Segment {
     // broken destination would otherwise answer first, and hide the refusal behind its own error.
     this.combineEngine([this, ...others, ...(options?.exclude ?? [])]);
     return this.timed('intersectInto', () =>
-      this.materialize(dest.ref, this.intersect(others, options), 'intersectInto', options),
+      this.materialize(
+        dest.ref,
+        new CombineChunks(this.intersectAs(AS_CHUNKS, others, options)),
+        'intersectInto',
+        options,
+      ),
     );
   }
 
@@ -2523,11 +2597,15 @@ export class Segment {
    * segment once (`unionInto`, or a load) is the cheaper shape.
    */
   union(others: Segment[], options?: CombineOptions): IdStream {
+    return this.unionAs(AS_IDS, others, options);
+  }
+
+  private unionAs<T>(out: CombineOutput<T>, others: Segment[], options?: CombineOptions): T {
     // OR: drop the expired operands and union what is left. All expired ⇒ empty.
     const live = others.filter((o) => !o.expired());
     if (this.expired()) {
-      if (live.length === 0) return EMPTY_IDS;
-      return (live[0] as Segment).union(live.slice(1), options);
+      if (live.length === 0) return out.none;
+      return (live[0] as Segment).unionAs(out, live.slice(1), options);
     }
     if (live.length === 0 && others.length > 0) {
       // Every operand expired ⇒ just us. But `exclude` is not an operand of the union, it is a subtraction
@@ -2538,19 +2616,21 @@ export class Segment {
       // With no exclude it is this segment alone, read as a one-operand union rather than as `iterate()`, so the
       // call's own `budget`, `concurrency` and range apply exactly as they would have to the union.
       const exclude = this.liveExcludes(options);
-      return exclude.length > 0 ? this.andNot([...exclude], options) : this.union([], options);
+      return exclude.length > 0
+        ? this.andNotAs(out, [...exclude], options)
+        : this.unionAs(out, [], options);
     }
-    if (live.length !== others.length) return this.union(live, options);
+    if (live.length !== others.length) return this.unionAs(out, live, options);
     const exclude = this.liveExcludes(options);
     let engine: SegmentEngine;
     try {
       engine = this.combineEngine([this, ...others, ...exclude]) ?? this.engine;
     } catch (err) {
-      return failing(err);
+      return out.failing(err);
     }
     const refs = [this.ref, ...others.map((o) => o.ref)];
     const opts = this.refsIn(options, exclude);
-    return withBatches(engine.union(refs, opts), () => engine.unionBatches(refs, opts));
+    return out.union(engine, refs, opts);
   }
 
   /** Materialize `this ∪ others…` (minus `exclude`) as a **new generation of `dest`** — see {@link intersectInto}. */
@@ -2562,7 +2642,12 @@ export class Segment {
     this.refuseIfExpired('unionInto', dest, [...others, ...(options?.exclude ?? [])]);
     this.combineEngine([this, ...others, ...(options?.exclude ?? [])]); // as intersectInto: before any read
     return this.timed('unionInto', () =>
-      this.materialize(dest.ref, this.union(others, options), 'unionInto', options),
+      this.materialize(
+        dest.ref,
+        new CombineChunks(this.unionAs(AS_CHUNKS, others, options)),
+        'unionInto',
+        options,
+      ),
     );
   }
 
@@ -2582,8 +2667,12 @@ export class Segment {
    * the suppression folds into the same pass rather than materializing an intermediate segment first.
    */
   andNot(excludes: Segment[], options?: BaseCombineOptions): IdStream {
+    return this.andNotAs(AS_IDS, excludes, options);
+  }
+
+  private andNotAs<T>(out: CombineOutput<T>, excludes: Segment[], options?: BaseCombineOptions): T {
     // MINUS: an expired base is empty; an expired exclusion excludes nothing.
-    if (this.expired()) return EMPTY_IDS;
+    if (this.expired()) return out.none;
     const liveExcludes = excludes.filter((e) => !e.expired());
     // Every exclusion expired ⇒ nothing to subtract. Recursing with an empty list would throw, since `andNot`
     // requires at least one operand — a caller whose suppression list happened to age out must not get an error.
@@ -2592,21 +2681,19 @@ export class Segment {
     // Only the call's own options go on, not an `exclude` a caller routed here with it: the excludes that expired are
     // the ones this branch exists to drop, and an expired exclusion excludes nothing.
     if (liveExcludes.length === 0 && excludes.length > 0) {
-      return this.union([], options == null ? undefined : readOptions(options));
+      return this.unionAs(out, [], options == null ? undefined : readOptions(options));
     }
-    if (liveExcludes.length !== excludes.length) return this.andNot(liveExcludes, options);
+    if (liveExcludes.length !== excludes.length) return this.andNotAs(out, liveExcludes, options);
     let engine: SegmentEngine;
     try {
       engine = this.combineEngine([this, ...excludes]) ?? this.engine;
     } catch (err) {
-      return failing(err);
+      return out.failing(err);
     }
     const base = this.ref;
     const refs = excludes.map((o) => o.ref);
     const opts = options == null ? undefined : readOptions(options);
-    return withBatches(engine.andNot(base, refs, opts), () =>
-      engine.andNotBatches(base, refs, opts),
-    );
+    return out.andNot(engine, base, refs, opts);
   }
 
   /** Materialize `this \ (excludes…)` as a **new generation of `dest`** — see {@link intersectInto}. */
@@ -2618,7 +2705,12 @@ export class Segment {
     this.refuseIfExpired('andNotInto', dest, excludes);
     this.combineEngine([this, ...excludes]); // as intersectInto: before any read
     return this.timed('andNotInto', () =>
-      this.materialize(dest.ref, this.andNot(excludes, options), 'andNotInto', options),
+      this.materialize(
+        dest.ref,
+        new CombineChunks(this.andNotAs(AS_CHUNKS, excludes, options)),
+        'andNotInto',
+        options,
+      ),
     );
   }
 

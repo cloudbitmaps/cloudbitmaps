@@ -59,7 +59,7 @@ export type { PinnedAt } from './core/pinned-storage-source';
 // The loaded store's primary write path: replace a segment's contents with one immutable generation, guarded.
 // Composes next-generation → write → guard → publish → collect, which is the sequence every load performs and
 // the one whose last step gets left out when it is composed by hand.
-export { loadSegment } from './core/load';
+export { loadSegment, loadSegmentChunks } from './core/load';
 export type { LoadDeps, LoadOptions, LoadGuard, LoadResult, LoadRefusal } from './core/load';
 export type { LoadInput, PortableBitmap } from './core/load-input';
 // See what a segment has been, and put it back. `rollbackSegment` is the one pointer move that goes backwards,

@@ -10,6 +10,7 @@
  * All of it runs before the load's first request, so a malformed input costs no round trip and writes nothing.
  */
 import type { CodecBitmap, CodecInterface } from './codec';
+import type { CombinedChunk } from './engine';
 import { ValidationError, isIntegrityError } from './errors';
 
 /**
@@ -47,6 +48,14 @@ export const MAX_SERIALIZED_LOAD_BYTES = 4 + 8_192 + 8 * 65_536 + 65_536 * 8_192
 /** A bitmap input, decoded into the codec's own bitmap: written from its chunks, never id by id. */
 export class DecodedLoadInput {
   constructor(readonly bitmap: CodecBitmap) {}
+}
+
+/**
+ * A combine's result as the bitmaps of its chunks, ascending by key: written as they are, never id by id. Made only by
+ * {@link loadSegmentChunks}, never by {@link prepareLoadInput}, so no input a load is handed can be one.
+ */
+export class ChunkLoadInput {
+  constructor(readonly chunks: AsyncIterable<CombinedChunk>) {}
 }
 
 /** `Object.prototype.toString`'s tag, which names a typed array's kind across realms and for `Buffer` too. */

@@ -489,8 +489,12 @@ otherwise. Five properties follow from "a write is a load":
   ids inside `(after, through]`. Whatever it held outside the range is superseded with the rest. Materializing a range
   page by page into one destination leaves only the last page.
 - **Readers of the destination see the old generation or the new one, never a partial.** The result streams into one
-  immutable object under a bounded memory window (`concurrency × operands × chunk`, a range being at most a chunk's cap), and the pointer moves only once
-  the object is durable.
+  immutable object, and the pointer moves only once the object is durable. The combine reads its operands under a bounded
+  window (`concurrency × operands × chunk`, a range being at most a chunk's cap) and hands the result over as chunks, not
+  ids: each is written as the bitmap it is, and no id is built for a value. A result whose chunks are dense, runs or full
+  bitsets, costs the least, because the work is per chunk; for a result spread thinly over many chunks, the write costs about half what writing its ids
+  would, and the reads, which each chunk still needs, can be most of the call. Like a load, the write holds the
+  result, one compressed bitmap per non-empty chunk, until the object is written.
 - **It deletes nothing**, unlike `load()`. The destination's previous generations stay in the bucket until you collect
   them (see [Generations and `keep`](#generations-and-keep)), so a `rollback` target is still there afterwards. Pass
   `keep` to collect on the way through.

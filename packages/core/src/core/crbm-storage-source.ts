@@ -34,7 +34,7 @@ import type { Yielder } from './cooperative';
 import type { Clock, Rng } from './determinism';
 import { sameIncarnation } from './token';
 import { BoundedLru } from './lru';
-import { splitId } from './bit-route';
+import { MAX_REMAINDER, splitId } from './bit-route';
 import { segmentKey } from './keys';
 import { aadFor } from './crypto';
 import type { Aead, CrbmCrypto, IKeystore, WrappedDek } from './crypto';
@@ -68,7 +68,7 @@ import { ItemPull } from './item-pull';
 import { CrbmWriter } from './crbm/writer';
 import type { CodecBitmap, CodecInterface, EncodedChunk } from './codec';
 import { requireCodec } from './codec';
-import { DecodedLoadInput } from './load-input';
+import { ChunkLoadInput, DecodedLoadInput } from './load-input';
 import { summaryAgrees, summaryOf, usableSummary } from './summary';
 import type { GenerationDescription } from './summary';
 
@@ -2249,7 +2249,7 @@ export interface BulkLoadResult {
 export function bulkLoadCrbmGeneration(
   driver: IStorageDriver,
   key: GenKey,
-  ids: Iterable<number> | AsyncIterable<number> | DecodedLoadInput,
+  ids: Iterable<number> | AsyncIterable<number> | DecodedLoadInput | ChunkLoadInput,
   options: {
     registry?: IRegistryDriver;
     keystore?: IKeystore;
@@ -2328,7 +2328,7 @@ export async function bulkLoadAhead(
   driver: IStorageDriver,
   ref: SegmentRef,
   ahead: LoadAhead,
-  ids: Iterable<number> | AsyncIterable<number> | DecodedLoadInput,
+  ids: Parameters<typeof bulkLoadCrbmGeneration>[2],
   options: NonNullable<Parameters<typeof bulkLoadCrbmGeneration>[3]> = {},
 ): Promise<BulkLoadResult> {
   if (options.keystore === undefined && options.requireEncryption === true) {
@@ -2346,6 +2346,10 @@ export async function bulkLoadAhead(
     await pause();
     chunks = ids.bitmap.encodeChunks();
     await pause();
+  } else if (ids instanceof ChunkLoadInput) {
+    // A combine's chunks are held whole before the first write, as the bucketed ids are, so the reads they cost come
+    // where the ids' do: before the row is read, and a read that fails writes nothing.
+    chunks = encodeEach(rangeCheckedAtWrite(await collectChunks(ids, codec, options.clock)));
   } else {
     chunks = encodeEach(
       await bucketIds(ids instanceof DecodedLoadInput ? ids.bitmap : ids, codec, options.clock),
@@ -2490,6 +2494,72 @@ export async function bulkLoadAhead(
     encrypted: crypto !== undefined,
     fingerprint,
   };
+}
+
+/**
+ * Take a combine's chunks as they come, checking each as an id's chunk is checked: the bitmap one the codec made, the
+ * key a u16 and above the last, the values 16-bit (`maximum()`, one call per chunk). The bitmaps are the load's to
+ * consume: encoding may re-encode one in place (representation only), so a caller hands over bitmaps it owns. An empty bitmap is left out where the chunks are encoded, as for
+ * ids, and the writer checks the cardinality when it adds a chunk.
+ */
+/**
+ * The chunks a load was handed, each range-checked again as it is written: a caller's bitmap could have been changed
+ * after the load collected it.
+ */
+function* rangeCheckedAtWrite(
+  chunks: Iterable<{ chunkKey: number; bitmap: CodecBitmap }>,
+): Generator<{ chunkKey: number; bitmap: CodecBitmap }> {
+  for (const chunk of chunks) {
+    const max = chunk.bitmap.maximum?.();
+    if (max !== undefined && max > MAX_REMAINDER) {
+      throw new ValidationError(
+        `chunk ${chunk.chunkKey} holds ${max}, outside the 16-bit range [0, ${MAX_REMAINDER}]`,
+      );
+    }
+    yield chunk;
+  }
+}
+
+async function collectChunks(
+  input: ChunkLoadInput,
+  codec: CodecInterface,
+  clock: Clock | undefined,
+): Promise<Array<{ chunkKey: number; bitmap: CodecBitmap }>> {
+  const chunks: Array<{ chunkKey: number; bitmap: CodecBitmap }> = [];
+  const tick = yieldEvery(clock);
+  let last = -1;
+  for await (const chunk of input.chunks) {
+    if (typeof chunk !== 'object' || chunk === null) {
+      throw new ValidationError(
+        `a chunk must be an object with a chunkKey and a bitmap; got ${String(chunk)}`,
+      );
+    }
+    // Each field is read once, so the bitmap checked is the bitmap written. Only the codec's own bitmaps are written as
+    // they are: one of any other shape could hold bytes or a count the codec never checked, and would be published.
+    const { chunkKey, bitmap } = chunk;
+    if (codec.owns?.(bitmap) !== true) {
+      throw new ValidationError(
+        `chunk ${String(chunkKey)}: its bitmap is not one this load's codec made`,
+      );
+    }
+    if (!Number.isInteger(chunkKey) || chunkKey < 0 || chunkKey > MAX_REMAINDER) {
+      throw new ValidationError(`a chunk's key must be an integer in [0, 65535]; got ${chunkKey}`);
+    }
+    if (chunkKey <= last) {
+      throw new ValidationError(`chunk ${chunkKey} does not ascend: the last was ${last}`);
+    }
+    last = chunkKey;
+    const max = bitmap.maximum?.();
+    if (max !== undefined && max > MAX_REMAINDER) {
+      throw new ValidationError(
+        `chunk ${chunkKey} holds ${max}, outside the 16-bit range [0, ${MAX_REMAINDER}]`,
+      );
+    }
+    chunks.push({ chunkKey, bitmap });
+    const pause = tick();
+    if (pause !== null) await pause;
+  }
+  return chunks;
 }
 
 /** Route each id into its chunk's bitmap, consuming the source lazily. Returns the chunks, ascending by key. */
