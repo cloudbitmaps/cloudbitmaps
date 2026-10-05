@@ -891,6 +891,57 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       expect(await d.get(SEG)).toMatchObject({ token, summary: clearSummary });
     });
 
+    // ── `keptGens`: the generations a load keeps below the pointer ─────────────────────────────────────────
+    // A driver that kept the list across a patch that moved the pointer would hold a window that names the wrong
+    // generations, and a load would delete by name on the strength of it. One that dropped it is correct and slow.
+    it('round-trips the kept generations through create, get, list and compare-and-swap', async () => {
+      const d = makeDriver();
+      const { token: t0 } = await d.create(SEG, { currentGen: 5, keptGens: [2, 4] });
+      expect((await d.get(SEG))!.keptGens).toEqual([2, 4]);
+      expect((await drainRecords(d.list()))[0]!.keptGens).toEqual([2, 4]);
+      await d.compareAndSwap(SEG, t0, { currentGen: 6, keptGens: [4, 5] });
+      expect((await d.get(SEG))!.keptGens).toEqual([4, 5]);
+      expect((await drainRecords(d.list()))[0]!.keptGens).toEqual([4, 5]);
+    });
+
+    it('keeps the kept generations across a patch that leaves the pointer, and drops them when it moves it', async () => {
+      const d = makeDriver();
+      const { token: t0 } = await d.create(SEG, { currentGen: 5, keptGens: [2, 4] });
+      const { token: t1 } = await d.compareAndSwap(SEG, t0, { retention: { expiresAt: 9 } });
+      expect((await d.get(SEG))!.keptGens).toEqual([2, 4]);
+      const { token: t2 } = await d.compareAndSwap(SEG, t1, { currentGen: 6 });
+      expect((await d.get(SEG))!.keptGens).toBeUndefined();
+      await d.compareAndSwap(SEG, t2, { currentGen: 7, keptGens: [] });
+      expect((await d.get(SEG))!.keptGens).toEqual([]);
+    });
+
+    it('clears the kept generations when told to', async () => {
+      const d = makeDriver();
+      const { token } = await d.create(SEG, { currentGen: 5, keptGens: [4] });
+      await d.compareAndSwap(SEG, token, { keptGens: undefined });
+      expect((await d.get(SEG))!.keptGens).toBeUndefined();
+    });
+
+    it('refuses kept generations that are out of order, or not below the pointer, and leaves the row unchanged', async () => {
+      const d = makeDriver();
+      await expectValidationReject(d.create(SEG, { currentGen: 5, keptGens: [4, 2] }));
+      await expectValidationReject(d.create(SEG, { currentGen: 5, keptGens: [2, 5] }));
+      expect(await d.get(SEG)).toBeNull();
+      const { token } = await d.create(SEG, { currentGen: 5, keptGens: [4] });
+      await expectValidationReject(d.compareAndSwap(SEG, token, { keptGens: [4, 5] }));
+      await expectValidationReject(d.compareAndSwap(SEG, token, { currentGen: 3, keptGens: [4] }));
+      expect(await d.get(SEG)).toMatchObject({ token, keptGens: [4] });
+    });
+
+    it('stores the kept generations as they were when the write was called', async () => {
+      const d = makeDriver();
+      const mine = [1, 2];
+      const created = d.create(SEG, { currentGen: 5, keptGens: mine });
+      mine.push(99);
+      await created;
+      expect((await d.get(SEG))!.keptGens).toEqual([1, 2]);
+    });
+
     it('list(namespace) excludes a namespace that merely shares its prefix', async () => {
       const d = makeDriver();
       await d.create({ namespace: 'ns', segment: 'a' }, { currentGen: 0 });

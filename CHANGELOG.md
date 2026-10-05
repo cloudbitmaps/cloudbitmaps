@@ -11,6 +11,28 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Breaking
+
+- **Registry rows are schema 3, and there is no going back: stop every 0.16 process that writes a store before the first
+  0.17 write.** Every row a 0.17 registry writes, whether a create, a compare-and-swap or a tombstone, is stamped
+  `schemaVersion: 3`, whatever it holds, and 0.17 reads rows stamped 1, 2 or 3. A 0.16 process refuses a schema-3 row
+  with `UnsupportedError`: a load, an `*Into`, a `rollback`, a `setRetention` or a drop of that row throws, and so does
+  every `list()` that reaches it, in its namespace and in every unscoped listing, so a single 0.17 write stops each
+  0.16 call that lists the registry: `retireExpired`, `eraseSubject`, `subjectReport`, `eraseNamespace`,
+  `checkConsistency`, `store.segments()` and the `export-segments` CLI. It fails closed and typed, and never misreads
+  a row. Every process that writes a store moves together. Upgrade in this order:
+  1. Upgrade the processes that only read to 0.17 first: those that call `count`, `has`, `iterate`, the combines or
+     `pin`, and those that list, `store.segments()` and `subjectReport`. 0.17 reads every row 0.16 wrote.
+  2. Stop every 0.16 process that writes, runs a retention sweep, erases, checks consistency or exports, then start
+     the 0.17 ones. A 0.16 `eraseSubject` cannot complete once a schema-3 row exists in a namespace it lists (every
+     namespace, for an unscoped run), so schedule erasure runs around the cut-over.
+  3. There is no downgrade. After the first 0.17 write, 0.16 cannot read the registry; the only way back is a
+     registry restore to a point before that write (the disaster-recovery guide), which loses every write since.
+
+  Schema 3 adds the record's optional `keptGens`, below. A row stamped 2 may hold only what schema 2 could: a
+  `keptGens` on one is an `IntegrityError`. A registry of your own must store and return the field, and drop it on a
+  patch that moves `currentGen` without naming it; the conformance suite holds a driver to both.
+
 ### Added
 
 - **`pin.everyNth(n, range?)`, the ids at ranks `n`, `2n`, `3n` …, on a pinned handle.** It yields the id at each 1-based
@@ -22,6 +44,23 @@ so, and so do the module headers in the code.
   `everyNth` for the boundary case.
 
 ### Changed
+
+- **`store.load()` collects by name at any `keep` up to 64.** The segment's row records the generations a load keeps
+  (`keptGens`, ascending, each below the pointer, at most 64 written and 256 read). A load writes the new list in the
+  same compare-and-swap that moves the pointer, derived from the row that write is conditioned on, then deletes the
+  generations that fell out of it by name, re-reading the row before each delete and stopping unless the pointer is
+  still at or above the publish, the name is below it, and the row's own list does not name it. It lists the segment on
+  every 16th generation, which deletes every generation below the pointer that the row does not name (an object a crashed
+  or refused load left, one a failed delete left), when its check of its number met an object, when the current object
+  was found gone, for a `keep` above 64, and for a row that records no list: the first load of a row an earlier release
+  wrote, or one a rollback moved. That load keeps the newest `keep` generations it finds below the pointer and records
+  them with one more write on the row it just published, so a derived writer in flight on the row meets a lost fence
+  once and re-derives. A `keep` of 12 therefore makes the requests a `keep` of 1 makes, about $11.94 per million
+  single-part loads at the default prices, expected and not measured; a load with a `keep` above 64 lists on every load. A
+  subject-erasure rewrite records that nothing below its pointer is kept. `LoadResult.collected` names every generation
+  the pass asked to delete. A load whose publish has landed does not throw from its collection because another writer moved the row
+  meanwhile: the pass spares what the row names then and stops where it cannot prove a delete. A malformed `keptGens` on a
+  stored row is an `IntegrityError` naming the row, like a malformed `summary`; one with an entry at or above `currentGen` is read and not used.
 
 - **A segment's first `store.load()` is now measured on S3, on `0.16.0`.** A run from AWS CloudShell in `us-east-1` on
   2026-10-05 measured what the benchmarks page had only counted from the engine: every one of the load stage's 25 loads was

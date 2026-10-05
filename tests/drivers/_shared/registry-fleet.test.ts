@@ -6,6 +6,7 @@ import type { Entropy } from '@/core/determinism';
 import type { IRegistryDriver, SegmentRef, Token } from '@/core/ports';
 import { destroySegment, dropSegment } from '@/core/erasure';
 import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
+import { REGISTRY_SCHEMA_VERSION } from '@/drivers/_shared/registry';
 import { registryObjectKey } from '@/drivers/_shared/object-registry-keys';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import { registryRowPath } from '@/drivers/localfs/paths';
@@ -23,7 +24,7 @@ import { CloudRoaring } from '@/index';
 const hex = (n: number, width: number): string => n.toString(16).padStart(width, '0');
 
 /**
- * A fleet across the schema-2 cut-over. A 0.12 process must read every row 0.11 wrote; a 0.11 process must fail
+ * A fleet across the schema cut-overs. A 0.12 process must read every row 0.11 wrote; a 0.11 process must fail
  * closed, typed, on every row 0.12 writes, never misread one; and no token a re-created name is given may be one an
  * earlier incarnation held.
  */
@@ -93,7 +94,7 @@ const harnesses: ReadonlyArray<readonly [string, (entropy?: Entropy) => Harness]
   ],
 ];
 
-describe.each(harnesses)('%s across the schema-2 cut-over', (_, make) => {
+describe.each(harnesses)('%s across the schema cut-overs', (_, make) => {
   it('reads a schema-1 row as 0.11 wrote it, through get, list and compare-and-swap', async () => {
     const h = make();
     await h.plant(V1_ROW);
@@ -103,12 +104,12 @@ describe.each(harnesses)('%s across the schema-2 cut-over', (_, make) => {
     expect(listed).toHaveLength(1);
     expect(listed[0]).toMatchObject({ retention: { expiresAt: 99 }, token: '7' });
 
-    // The first write stamps the row 2. The row gains no incarnation: its counter goes on, with a write part.
+    // The first write stamps the row with the current schema. The row gains no incarnation: its counter goes on, with a write part.
     const { token } = await h.registry.compareAndSwap(REF, '7', { currentGen: 5 });
     expect(token).toMatch(/^8\.[0-9a-f]{16}$/);
     expect(incarnationOf(token)).toBeUndefined();
     const stored = JSON.parse((await h.raw())!) as { schemaVersion: number };
-    expect(stored.schemaVersion).toBe(2);
+    expect(stored.schemaVersion).toBe(REGISTRY_SCHEMA_VERSION);
     expect(await h.registry.get(REF)).toMatchObject({ currentGen: 5, createdAt: 10, token });
   });
 
