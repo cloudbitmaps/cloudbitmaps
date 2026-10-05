@@ -61,6 +61,21 @@ describe('CountingMetricsSink', () => {
     expect(s.ops).not.toHaveProperty('add');
   });
 
+  it('an advisory event is a note, not a quantity: the snapshot does not change', () => {
+    const c = new CountingMetricsSink();
+    const before = c.snapshot();
+    c.onEvent({
+      kind: 'advisory',
+      code: 'socket-pool-below-window',
+      driver: 's3',
+      bucket: 'b',
+      maxSockets: 50,
+      threshold: 64,
+      concurrency: 32,
+    });
+    expect(c.snapshot()).toEqual(before);
+  });
+
   it('snapshot() returns an independent copy (later events do not mutate it)', () => {
     const c = new CountingMetricsSink();
     c.onEvent({ kind: 'cache', hit: true });

@@ -171,11 +171,16 @@ on a bare `IStorageDriver` instead of a backend, which has no registry to hold w
 `expiresAt` is an absolute epoch-**milliseconds** deadline, declared where the segment is named. Past it, every
 read through **that handle** answers empty — `has` → `false`, `count` → `0`, `iterate` → nothing — as one integer
 compare against the injected clock, with **no I/O, on every backend**. Set algebra stays coherent with it: an
-expired operand makes an `intersect` empty and is dropped from a `union`. **An expired exclusion excludes nothing,
-in every shape** — `andNot`, and `exclude` on `intersect` and `union`, the range read included: it is skipped
-without being read, so an expired exclusion naming a segment that does not exist is not refused as an absent operand.
-An `*Into` that involves an expired handle, an exclusion included, still throws `ValidationError`: it does not
-publish a generation the exclusion did not shape.
+expired operand makes an `intersect` empty and is dropped from a `union`. **An expired exclusion throws,
+in every shape** — `andNot`, and `exclude` on `intersect` and `union`, the range read and `.batches()` included: the
+stream rejects with a `ValidationError` that names each expired exclusion (`andNot: refusing to read while these
+exclusions have expired — <name>, …`), before any request is made, because a suppression or opt-out list that is skipped
+would let through the ids it exists to remove. The check is made when the combine is called, against the injected
+clock, and runs ahead of the rules for operands, so an expired exclusion is refused even where the combine would
+read empty, and one that names a segment that does not exist is refused as expired, not as an absent operand. A
+stream already being read is not re-checked if its exclusion expires part-way. An `*Into` that involves an expired
+handle, an exclusion included, throws a `ValidationError` too: it does not publish a generation the exclusion did
+not shape.
 
 It does **not** reclaim the bytes (`retireExpired` does, so `count()` reporting 0 while objects still exist is the
 expected state in that window) and it does **not** apply to other handles — record the policy with
@@ -247,6 +252,15 @@ write. A `Uint8Array`, `Uint8ClampedArray` or `Buffer` passed as ids throws `Val
 (the type accepts one, since a byte array is an iterable of numbers): pass bytes as `{ serialized }`.
 Anything that is none of these throws `ValidationError` too ([what a load accepts](loading.md#what-a-load-accepts)).
 
+### Decode portable bytes — `deserializePortable(bytes)`
+
+`deserializePortable(bytes: Uint8Array): RoaringBitmap32` decodes portable Roaring bytes you hold (a Node `Buffer`
+is one) through the check a `{ serialized }` load makes first: the 537,403,396-byte cap, the structural check, exactly
+one bitmap, and only then the native decoder. Bytes that are not one well-formed bitmap throw `ValidationError`, as a
+load refuses them; an empty buffer is the empty bitmap. Use it for bytes that crossed a process boundary, in place of
+`RoaringBitmap32.deserialize`, which checks nothing but its own reads
+([the parts recipe](loading.md#parts-of-one-segment-built-separately)).
+
 ### The segment verbs (the ~90% of daily use)
 
 | Call | Does |
@@ -255,8 +269,10 @@ Anything that is none of these throws `ValidationError` too ([what a load accept
 | `seg.count()` → `Promise<number>` | cardinality of the generation the handle reads: **one registry read when cold, none when warm, and no read of the object**, since the row records the generation's id count. A row with no summary it can use sends it to the `.crbm` index instead, with **zero payload reads**. It trusts the row's summary, or the index: neither is confirmed against the payloads, and a summary is held against the object whenever the object is opened ([What `count()` trusts](reading.md#what-count-trusts)). A segment whose pointer names a missing object counts the row's number, and a read of the object throws |
 | `seg.stat()` → `Promise<SegmentStat>` | `{ generation, cardinality, metadata? }` from the one resolution that answers `count()`: the generation's number, its id count and the metadata it was loaded with (absent when it has none). One registry read when cold, none when warm or pinned. `{ generation: null, cardinality: 0 }` for a segment with no generation and for an expired handle ([details](reading.md#stat-the-generation-its-count-and-its-metadata)) |
 | `seg.iterate({ after?, through? }?)` → `IdStream` | stream all ids, ascending, reading ahead as ranges of the object (the window opens 1, 2, 4 and on up to 32 range requests wide). With `after` / `through`, only the ids in `(after, through]` and the chunks the range overlaps ([paging](reading.md#page-through-a-segment)) |
+| `seg.everyNth(n, { after?, through? }?)` → `AsyncIterable<number>` | **pinned handles only.** The ids at 1-based ranks `n`, `2n`, `3n` …, counted over the ids in `(after, through]`, ascending; a last partial window yields nothing. Reads the chunks that hold a boundary, each once, through `iterate`'s stream, window and budget; a range that cuts its first (or last) chunk reads that chunk too ([details](reading.md#every-nth-id-of-a-pin-everynth)). A live handle throws `UnsupportedError`, a bad `n` or bound `ValidationError`, and a chunk that is read and whose size disagrees with the index `IntegrityError`, each when first read. Chunks not read are trusted to their index counts, as `count()` trusts them |
 | `IdStream` (what `iterate`, `intersect`, `union` and `andNot` return) | an `AsyncIterable<number>`: `for await` it for one id at a time. `.batches()` → `AsyncIterable<Uint32Array>` yields the same ids one chunk at a time, ascending, an array per non-empty chunk (at most 65,536 ids, 256 KiB) that is yours to keep ([batches](reading.md#read-a-chunk-at-a-time-batches)). The per-id stream is as before (single-use); `batches()` starts its own read when called ([details](reading.md#read-a-chunk-at-a-time-batches)) |
 | `seg.pin()` → `Promise<Segment>` | **hold this segment at the generation current right now**, for the life of the returned handle, so a long job describes one instant ([pins](reading.md#read-one-fixed-point-in-time)). A hold, not a lease: size `keep` past your longest pinned job. Needs a `.crbm` reader: any backend, a bare `IStorageDriver` or a pre-built `CrbmStorageChunkSource` |
+| `seg.pinAt({ generation, fingerprint })` → `Promise<Segment>` | **reopen a generation an earlier pin named**, as a pinned handle like the one `pin()` returns (identify it by `generation` and `fingerprint`; its `pinnedAt.version` can differ): pass `{ generation, fingerprint }` from that pin's `pinnedAt`. The fingerprint is required, since a generation number is taken again after a purge and re-create: a bare number, a malformed fingerprint or an unknown key throws `ValidationError`. A generation that is gone (collected, purged or crypto-shredded), above the row's pointer (a rollback deletes nothing, so once a later load moves the pointer past a generation it rolled back from, that one can be reopened while its object is stored), or another object than the fingerprint names throws `NotFoundError`, and the call never reads empty. One row read and one tail read with a registry, the tail read alone without one. It holds nothing: a later collection can still delete the generation, so size `keep` on every writer ([pins](reading.md#reopen-a-pinned-generation-pinat)). Encrypted segments work as with `pin()` |
 | `seg.intersect([other, …], { after?, through?, concurrency?, budget?, exclude?, allowAbsentOperands? })` → `IdStream` | chunk-skipping intersection, streamed. Each operand's chunks are read as coalesced ranges: chunks within 256 KiB of each other come in one request, up to 1 MiB. `concurrency` is the range requests held ahead per operand (32 by default; the window opens 4 wide and widens as ranges are taken); on a source that reads chunk by chunk it is the chunk keys in flight (opening 8 wide). `exclude` subtracts suppression segments **in the same pass**. `after` / `through` bound the result to `(after, through]` on every operand and every exclude, as on `iterate` |
 | `seg.union([other, …], { after?, through?, concurrency?, budget?, exclude?, allowAbsentOperands? })` → `IdStream` | `this ∪ others`, streamed. The one composite with **no chunk-skipping** — every chunk of every operand is read, or every chunk inside the range when one is given |
 | `seg.andNot([sup, …], { after?, through?, concurrency?, budget?, allowAbsentOperands? })` → `IdStream` | `this \ (sup…)`. Reads all of `this`, or all of it inside the range, but each exclude **only where it overlaps** |
@@ -264,7 +280,7 @@ Anything that is none of these throws `ValidationError` too ([what a load accept
 | `seg.intersectInto(dest, [other, …], opts?)` · `seg.unionInto(dest, [other, …], opts?)` · `seg.andNotInto(dest, [sup, …], opts?)` → `Promise<MaterializeResult>` | materialize the result as a **new generation of `dest`**, superseding it ([the `*Into` verbs](loading.md#write-a-result-into-another-segment-the-into-verbs)). `opts` takes the combine's options, a range included, and `keep`, `allowEmpty`, `guard` and `metadata`. An empty result over a non-empty `dest` is refused (`published: false`); a lost race throws `WriteConflictError`. Collects nothing unless you pass `keep`. Needs a backend |
 | `seg.costReport({ pricing?, workload? })` → `Promise<CostReport>` | grounded $ report from the segment's **real** `.crbm` size (no payload reads) |
 | `seg.expiresAt` | the handle's deadline, if one was declared |
-| `seg.pinnedAt` | on a handle from `pin()`, the `PinnedAt` it is held at; `undefined` on a live handle |
+| `seg.pinnedAt` | on a handle from `pin()` or `pinAt()`, the `PinnedAt` it is held at; `undefined` on a live handle |
 | `seg.key()` → `string` | an opaque string that names the handle's segment, namespace included: two handles of one segment have the same key. Use it as a `Map` key or a log field; its format is unspecified, so compare keys and never parse one |
 
 That's the whole daily surface: **1 constructor + a backend + `store.load` + these verbs.**
@@ -323,7 +339,7 @@ that holds one can run it. Every other verb is a store method; the standalone fo
 | Construct | Pass as | For |
 |---|---|---|
 | `new InProcessKeystore({ keys, activeKeyId, recoveryKeyId? })` | `encryption.keystore` (store) | encryption-at-rest + crypto-shred (BYOK) |
-| `new CountingMetricsSink()` (or your own `IMetricsSink`; omit the option for the no-op) | `metrics` | observability — `storage.get` / `cache` / `retry` / `intersect` / `op` events |
+| `new CountingMetricsSink()` (or your own `IMetricsSink`; omit the option for the no-op) | `metrics` | observability — `storage.get` / `cache` / `retry` / `intersect` / `op` / `advisory` events |
 | `new RecordingAuditSink()` (or your own `IAuditSink`; omit the option to record nothing) | `audit`, on each call that writes: `store.load`, the `*Into` verbs, `store.rollback`, `store.eraseSubject`, `store.dropSegment`, `destroySegment`, `eraseNamespace` and `store.retireExpired` | compliance trail — `segment.publish` / `segment.load-refused` / `segment.rollback` / `segment.rewrite` / `segment.erase` / `segment.dispose` / `namespace.erase` |
 
 ### CLIs (run as binaries, env-configured)
@@ -486,6 +502,7 @@ a codec of your own — the `CloudRoaring` facade injects the roaring codec for 
 | `CodecInterface` | the factory the engine builds bitmaps through (`empty` / `fromValues` / `safeDeserialize`). `safeDeserialize(bytes, maxBytes, { whole? })`: with `whole: true`, which a load passes for a caller's bytes, bytes after the bitmap's end are refused too; a stored chunk is read without it. A codec must honour `whole`: core cannot read the format and relies on the codec for that refusal, so a codec that ignores it loads two concatenated bitmaps as the first |
 | `CodecBitmap` | the value type a codec produces — a `u32` set with set algebra + portable (de)serialization. Optional `maximum?()` lets the engine range-check a chunk payload in O(1); a codec that can't answer cheaply omits it and the check is skipped. Optional `optimize?()` re-encodes for storage, and must be canonical: afterwards `serialize()` depends on membership alone. Optional `toUint32Array?()` is the chunk's values as one ascending `Uint32Array` for batch reads; it must return a new array the caller owns on every call, since the engine rewrites it in place; a codec without it is read through its iterator. Optional `encodeChunks?()` is flavor-author surface: the set as `EncodedChunk`s, ascending, each exactly the bytes `fromValues` of that chunk's low 16 bits, `optimize()` and `serialize()` give, which is how a bitmap load writes without touching an id. A codec without it loads a bitmap through its ids |
 | `CodecInterface.owns?(bitmap)` | whether a bitmap is one this codec made; `loadSegmentChunks` refuses any chunk whose bitmap it does not vouch for, and a codec without it has every chunk refused. The roaring codec vouches for the bitmaps its own type made. The answer is the whole check: an `owns` that answers `true` for anything lets any object through |
+| `decodeSerialized(bytes, codec, what?)` → `CodecBitmap` | the one check every bitmap input of a load goes through, for a flavor to offer its users: `bytes` must be a `Uint8Array` of at most 537,403,396 bytes holding exactly one bitmap, read over the bytes it really holds (a `SharedArrayBuffer`'s are copied first), and `codec.safeDeserialize` decodes it. Anything else throws `ValidationError` before the codec's native decoder runs; `what` names the input in the message. `deserializePortable` is this over the roaring codec |
 | `EncodedChunk` | `{ chunkKey, payload, cardinality }`: one chunk as a `.crbm` generation stores it, what `encodeChunks?()` yields |
 
 ### Flavor-author kit (`@cloudbitmaps/core`)
@@ -626,7 +643,8 @@ nothing can compare one. Branding them is you taking that on.
 | Symbol | What it does |
 |---|---|
 | `IStorageDriver` · `IRegistryDriver` | the two ports a driver implements — the object tier and the pointer row. A registry driver that does NOT extend `ObjectStoreRegistry` also needs `Token`, `RegCaps`, `RegistryRecord`, `NewRegistryRecord`, `RegistryPatch` and `RegistryWriteOptions` to write its method signatures; those come from `@cloudbitmaps/core`'s main entry. It also has an optional `reapLegacyTombstones(options)`, which `store.reapRegistryTombstones` calls: implement it only if your registry keeps `deleted: true` rows, and throw `CapabilityError` before any request where its delete is not conditional |
-| `StorageBackend` · `StorageCaps` · `SegmentRef` · `GenKey` | the backend pair, a driver's declared capabilities, and the two key shapes |
+| `StorageBackend` · `StorageCaps` · `SegmentRef` · `GenKey` | the backend pair, a driver's declared capabilities, and the two key shapes. A backend may also carry an optional `attachMetrics(sink)`: a store given a `metrics` sink calls it once, as it is built, so the backend can send that sink an `advisory` event about its own setup (the S3 backend's socket pool does). A backend without it is never told. It must not throw: an exception propagates from the store's constructor |
+| `IMetricsSink` · `MetricEvent` | the sink `attachMetrics` receives and the event union it emits to, re-exported so a driver does not import core's main entry for them |
 | `brandAsBackend` · `STORAGE_BACKEND` | stamp the cross-package brand on a backend, and the symbol a backend class declares it with. A store accepts a backend by brand, never by `instanceof`, so a backend built in one package is recognised in another. It checks that `storage` has a `putImmutable` and `registry` a `compareAndSwap`, throwing `ValidationError` otherwise, or when the object is frozen or non-extensible, and returns the object it was given. It takes a class (`brandAsBackend(this)` in the constructor) or a plain `{ storage, registry }` object, which is how halves of your own are paired — see below |
 | `Token` · `segmentKey` | **from `@cloudbitmaps/core`, not from `driver-kit`.** The opaque compare-and-swap token (unique per write, compared by equality only, ABA-safe across delete→recreate) and the canonical segment key-string helper. A driver package may import core's main entry for these |
 | `ObjectStoreRegistry` | compare-and-swap over a plain object store. Every cloud registry driver is a thin adapter over this, which is why all three pass one conformance suite — the OCC semantics live here, not in the drivers |
@@ -881,7 +899,7 @@ does not re-export. A driver author told elsewhere on this page to import `Token
 
 ### `@cloudbitmaps/roaring` — values
 
-`CloudRoaring` · `Segment` · `MemoryStorage` · `LocalFsStorage` · `CrbmStorageChunkSource` ·
+`CloudRoaring` · `Segment` · `deserializePortable` · `MemoryStorage` · `LocalFsStorage` · `CrbmStorageChunkSource` ·
 `destroySegment` · `eraseNamespace` · `InProcessKeystore` · `NodeAead` · `aadFor` ·
 `readRetentionPolicy` · `MIN_EXPIRES_AT_MS` ·
 `excludingReservedRows` · `DEFAULT_RETRY_POLICY` ·
@@ -899,7 +917,7 @@ does not re-export. A driver author told elsewhere on this page to import `Token
 `SegmentOptions` · `SubjectReport` · `SubjectSegmentRef` · `SubjectErasureEntry` · `EraseSubjectResult` ·
 `MaterializeResult` · `MaterializeRefusal` · `BaseCombineOptions` · `CombineOptions` · `MaterializeOptions`
 · `AndNotIntoOptions` · `IdRange` · `IdStream` · `LoadInput` · `PortableBitmap` · `LoadOptions` · `LoadGuard`
-· `LoadResult` · `LoadRefusal` · `GenerationEntry` · `RollbackResult` · `SegmentInfo` · `SegmentStat`
+· `LoadResult` · `LoadRefusal` · `GenerationEntry` · `RollbackResult` · `SegmentInfo` · `SegmentStat` · `PinAt`
 · `CrbmStorageChunkSourceOptions` ·
 `MemoryStorageOptions` · `LocalFsStorageOptions` · `ExportFormat` · `ExportSink` · `ExportWriter` · `ExportOptions` ·
 `ExportedSegment` · `ExportFailure` · `ExportManifest` · `IStorageDriver` · `IRegistryDriver` ·
@@ -925,7 +943,7 @@ the store's methods](#the-standalone-forms-of-the-stores-methods) say what each 
 Values: `SegmentEngine` · `BoundedLru` · `safeMetrics` · `NOOP_METRICS` · `groundedReport` · `splitId` ·
 `mapWithConcurrency` · `resolveBudget` · `resolvePerOpBudget` · `checkBudget` · `collectWithinBudget` ·
 `DEFAULT_BUDGET` · `segmentKey` · `isStorageBackend` · `PinnedStorageChunkSource` · `withRetry` ·
-`RetryingStorageChunkSource` · `loadSegment` · `loadSegmentChunks` · `listGenerations` · `rollbackSegment` · `segmentExists` ·
+`RetryingStorageChunkSource` · `decodeSerialized` · `loadSegment` · `loadSegmentChunks` · `listGenerations` · `rollbackSegment` · `segmentExists` ·
 `listSegments` · `eraseIdFromSegment` · `dropSegment` · `runConsistencyCheck` · `runExport` ·
 `setSegmentRetention` · `getSegmentRetention` · `clearSegmentRetention` · `retireExpired` · `reapRegistryTombstones` · `estimateCost`
 
@@ -940,6 +958,8 @@ not import these.
 
 Ports and the backend brand: `IStorageDriver` · `IRegistryDriver` · `StorageBackend` · `StorageCaps` ·
 `SegmentRef` · `GenKey` · `brandAsBackend` · `STORAGE_BACKEND`
+
+Metrics: `IMetricsSink` · `MetricEvent`
 
 Object-store registry: `ObjectStoreRegistry` · `ObjectRegistryStore` · `ObjectRow` · `ObjectVersionRaced` ·
 `MAX_ROW_BYTES`

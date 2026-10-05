@@ -114,7 +114,7 @@ import { listGenerations, rollbackSegment } from '@cloudbitmaps/core';
 import { listSegments, segmentExists } from '@cloudbitmaps/core';
 import type { SegmentInfo } from '@cloudbitmaps/core';
 import { refuseReservedNamespace } from './reserved-namespace';
-import { bitmapAsLoadInput, roaringCodec } from './roaring-codec';
+import { bitmapAsLoadInput, deserializePortable, roaringCodec } from './roaring-codec';
 import { SystemClock } from './system-clock';
 import { OPTION_KEYS, type OptionGroup } from './option-keys';
 
@@ -758,6 +758,10 @@ export class CloudRoaring {
     // Resolve the Storage seam to a StorageChunkSource: a raw IStorageDriver is wrapped into the `.crbm` storage source
     // here (with the store's registry/keystore) so drivers are wired once; a pre-built source is used as-is.
     const resolved = resolveStorageSource(options, clock);
+    // A backend that can say something about its own setup is handed the sink, never a no-op one.
+    if (metrics !== NOOP_METRICS && isStorageBackend(options.storage)) {
+      options.storage.attachMetrics?.(metrics);
+    }
     let storage: StorageChunkSource = resolved.source;
     // Resilience on by default: wrap the source so transient faults retry with jittered backoff. `false` opts
     // out (e.g. the injected client already retries); a RetryPolicy tunes it.
@@ -891,7 +895,7 @@ export class CloudRoaring {
       clock: this.clock,
       metrics: this.metrics,
       materialize: (dest, ids, op, options) => this.materialize(dest, ids, op, options),
-      pinned: (r, e) => this.pinSegment(r, e),
+      pinned: (r, e, at) => this.pinSegment(r, e, at),
       combineEngine: (handles) => this.engineForCombine(handles),
       expiresAt,
     });
@@ -1760,7 +1764,7 @@ export class CloudRoaring {
    * pinned view reports the version captured at pin time, marked as a pin's, so its decoded chunks are never
    * those of a live read that fetched across a publish (see {@link PinnedStorageChunkSource.currentVersion}).
    */
-  private async pinSegment(ref: SegmentRef, expiresAt?: number): Promise<Segment> {
+  private async pinSegment(ref: SegmentRef, expiresAt?: number, named?: PinAt): Promise<Segment> {
     const crbm = this.crbmSource;
     if (crbm === undefined) {
       throw new UnsupportedError(
@@ -1769,7 +1773,9 @@ export class CloudRoaring {
       );
     }
     // Under the store's retries, as its reads are: a transient fault resolving the pin must not fail pin().
-    const at = await this.withRetries(() => crbm.pinGeneration(ref));
+    const at = await this.withRetries(() =>
+      named === undefined ? crbm.pinGeneration(ref) : crbm.pinGenerationAt(ref, named),
+    );
     const pinnedAt: PinnedAt = {
       generation: at?.generation ?? null,
       version: at?.version ?? null,
@@ -1782,7 +1788,7 @@ export class CloudRoaring {
       clock: this.clock,
       metrics: this.metrics,
       materialize: (dest, ids, op, options) => this.materialize(dest, ids, op, options),
-      pinned: (r, e) => this.pinSegment(r, e),
+      pinned: (r, e, at) => this.pinSegment(r, e, at),
       combineEngine: (handles) => this.engineForCombine(handles),
       expiresAt,
       pinnedAt,
@@ -1987,8 +1993,9 @@ export interface BaseCombineOptions extends IdRange {
  */
 export interface CombineOptions extends BaseCombineOptions {
   /**
-   * Segments whose ids are subtracted from the result. An **expired** handle here excludes nothing, in every
-   * combine — it is skipped without being read, exactly as in {@link Segment.andNot}.
+   * Segments whose ids are subtracted from the result. An **expired** handle here is refused, in every combine:
+   * the stream throws {@link ValidationError} naming it, before any request is made, exactly as in
+   * {@link Segment.andNot}.
    */
   readonly exclude?: Segment[];
 }
@@ -2221,7 +2228,7 @@ const KEEP_EVERY_GENERATION = Number.MAX_SAFE_INTEGER;
 
 /** How a `Segment` hands a result stream back to its store to become a new generation of `dest`. */
 /** Build a pinned twin of a handle — injected into `Segment` so it stays free of store wiring. */
-type Pin = (ref: SegmentRef, expiresAt?: number) => Promise<Segment>;
+type Pin = (ref: SegmentRef, expiresAt?: number, at?: PinAt) => Promise<Segment>;
 
 /**
  * The engine a combine should run on, given every handle involved — `undefined` when none is pinned and the
@@ -2248,6 +2255,17 @@ interface SegmentParts {
   combineEngine: CombineEngine;
   expiresAt?: number;
   pinnedAt?: PinnedAt;
+}
+
+/**
+ * The generation {@link Segment.pinAt} reopens: what an earlier pin recorded in {@link Segment.pinnedAt}. The
+ * fingerprint is required, since a generation number is taken again after a purge and re-create.
+ */
+export interface PinAt {
+  /** The generation number an earlier pin held. */
+  readonly generation: number;
+  /** The fingerprint of that generation's object, from the earlier pin's `pinnedAt.fingerprint`. */
+  readonly fingerprint: string;
 }
 
 /** What {@link Segment.stat} answers: the generation a handle reads, its id count and its metadata. */
@@ -2399,6 +2417,50 @@ export class Segment {
   }
 
   /**
+   * Reopen a generation a pin named earlier, as a pinned handle like the one {@link Segment.pin} returns, held at
+   * `at.generation` instead of the current one. Pass what the earlier pin recorded, `{ generation, fingerprint }`
+   * from its {@link Segment.pinnedAt}. A generation number alone is not an identity, since a purged and re-created
+   * name starts again at 0, so the fingerprint is required: a bare number, a malformed fingerprint or a key other
+   * than `generation` and `fingerprint` is a {@link ValidationError}. Identify a pin by its `generation` and
+   * `fingerprint`: the handle's `pinnedAt.version` can differ from the earlier pin's.
+   *
+   * Throws {@link NotFoundError} when the generation is gone (collected, purged, or on a crypto-shredded segment),
+   * is above the row's pointer, or is another object than the fingerprint names, and never reads empty. A rollback
+   * deletes nothing, so once a later load moves the pointer past a generation it rolled back from, that one can be
+   * reopened while its object is stored. Nothing keeps a generation alive: a later load's collection can delete it,
+   * which is sized by `keep` on every writer. With a registry it costs one row read and one tail read; the handle
+   * then reads as one from `pin()` does, including its failure on a chunk it has not cached once the generation is
+   * swept. Works for an encrypted segment. The argument is an object so that fields can join it later.
+   */
+  async pinAt(at: PinAt): Promise<Segment> {
+    const { generation, fingerprint } = (at ?? {}) as Partial<PinAt>;
+    // Own enumerable string keys only: a symbol, non-enumerable or inherited key is not seen.
+    const unknown =
+      typeof at === 'object' && at !== null
+        ? Object.keys(at).filter((k) => k !== 'generation' && k !== 'fingerprint')
+        : [];
+    if (unknown.length > 0) {
+      throw new ValidationError(
+        `pinAt: unknown option${unknown.length > 1 ? 's' : ''} ${unknown.map((k) => `"${k}"`).join(', ')}; ` +
+          'this version takes { generation, fingerprint } only',
+      );
+    }
+    if (
+      typeof generation !== 'number' ||
+      !Number.isSafeInteger(generation) ||
+      generation < 0 ||
+      typeof fingerprint !== 'string' ||
+      !/^\d+:\d+$/.test(fingerprint)
+    ) {
+      throw new ValidationError(
+        'pinAt: pass { generation, fingerprint } as recorded by an earlier pin (its pinnedAt); a generation number ' +
+          'without the fingerprint of its object does not identify it',
+      );
+    }
+    return this.pinned(this.ref, this.expiresAt, { generation, fingerprint });
+  }
+
+  /**
    * An opaque string that names this handle's segment, namespace included: two handles of one segment have the
    * same key, a live handle and its pins among them. Use it as a `Map` key or a log field when you track handles
    * and have not kept the name you made them with. The format is not specified and is not a storage key, so
@@ -2541,8 +2603,51 @@ export class Segment {
   }
 
   /**
+   * **Pinned handles only.** The ids at 1-based ranks `n`, `2n`, `3n` …, counted over the ids in `(after, through]`
+   * when a range is given, ascending: `everyNth(1000)` yields the 1,000th id, then the 2,000th, and so on. A last
+   * partial window yields nothing, so a caller cutting a send into windows of `n` appends its own final end.
+   *
+   * It places each boundary from the per-chunk counts the pin already holds and reads only the chunks that hold one,
+   * each once however many boundaries it holds, so it reads at most one chunk per boundary and never more chunks
+   * than the object has. A range with `after` inside a chunk reads that chunk too, to count the ids at or below
+   * `after`, even when fewer than `n` ids remain above it; when the chunks in range hold fewer than `n` ids in all,
+   * nothing is fetched. `through` stops the read and no chunk past it is read, though a `through` inside a chunk may read that last chunk and
+   * yield nothing from it. The reads and the read-ahead window are
+   * those of {@link Segment.iterate}, and the per-op budget is charged before the first fetch, with an upper bound on
+   * the chunks the read can take. A pinned read after the generation is swept throws {@link NotFoundError}.
+   *
+   * The ranks come from the index's counts, which are trusted as {@link Segment.count} trusts them. A chunk that is
+   * read must hold the number of ids its index says, or the read throws {@link IntegrityError}; a chunk that is not
+   * read is not checked, so an index that is wrong about one, and, on an unencrypted object, still adds up to the footer's
+   * total, moves the ids after it to the wrong ranks. An encrypted object's index is authenticated and bound to the
+   * object, so a wrong count there needs the key.
+   *
+   * A live handle is refused with {@link UnsupportedError} at the first read, because its counts and its chunks could
+   * come from two generations and name the wrong id. `n` that is not a positive integer throws
+   * {@link ValidationError} at the first read, as does a bad bound. An expired handle reads empty.
+   *
+   * ```ts
+   * const audience = await store.segment('audience').pin();
+   * const ends: number[] = [];
+   * for await (const id of audience.everyNth(1_000)) ends.push(id); // the end of each window of 1,000
+   * ```
+   */
+  everyNth(n: number, options?: IdRange): AsyncIterable<number> {
+    if (this.expired()) return EMPTY_IDS;
+    if (this.pinnedAt === undefined) {
+      return failing(
+        new UnsupportedError(
+          'everyNth needs a pinned handle: a live handle can place a rank by one generation ' +
+            'and read it from another. Call `pin()` first.',
+        ),
+      );
+    }
+    return this.engine.everyNth(this.ref, n, options == null ? undefined : rangeOf(options));
+  }
+
+  /**
    * The options a combine hands the engine, read once, when it is called ({@link readOptions}), with the `exclude`
-   * it was given, already reduced to its live handles ({@link liveExcludes}) and mapped down to the plain refs
+   * it was given ({@link excludesOf}) and mapped down to the plain refs
    * `core` takes. A method rather than a module function because `ref` is class-private — the encapsulation is
    * worth more than the free function.
    *
@@ -2562,18 +2667,38 @@ export class Segment {
   }
 
   /**
-   * The handles in `options.exclude` that have not expired. **An expired exclusion excludes nothing**, in every
-   * combine, so it is dropped here, before the engine is asked for anything: it is never fetched, never
-   * checked for absence, and never counted in the pin-consistency check. `exclude` is read once, so a getter sees
-   * one call.
-   *
-   * With no `exclude` this is one property read and a shared empty list, and with none expired it returns the
-   * caller's own array, so the common case allocates nothing.
+   * The handles in `options.exclude`, read once so a getter sees one call. With none this is one property read and
+   * a shared empty list; otherwise it is the caller's own array, so the common case allocates nothing.
    */
-  private liveExcludes(options: CombineOptions | null | undefined): readonly Segment[] {
+  private excludesOf(options: CombineOptions | null | undefined): readonly Segment[] {
     const exclude = options?.exclude;
-    if (exclude == null || exclude.length === 0) return NO_SEGMENTS;
-    return exclude.some((e) => e.expired()) ? exclude.filter((e) => !e.expired()) : exclude;
+    return exclude == null || exclude.length === 0 ? NO_SEGMENTS : exclude;
+  }
+
+  /**
+   * The refusal for a combine whose **exclusion** has expired, or `undefined` when none has. Unlike an expired
+   * operand, which reads empty, an exclusion is a suppression or opt-out list: left out silently, the result
+   * would include the very ids it was passed to remove. So it is refused with a {@link ValidationError} naming each
+   * expired exclusion, as the `*Into` verbs refuse an expired handle.
+   *
+   * It is judged against the injected clock when the combine is called, before the engine is asked for anything:
+   * no request is made, and an expired exclusion that names a segment that does not exist is refused as expired,
+   * not as an absent operand. It runs ahead of the expired-operand shortcuts, so a combine that would read empty
+   * anyway still refuses a lapsed exclusion. A stream already being read is not re-checked when an exclusion
+   * expires part-way, as an operand expiring part-way does not stop it either.
+   */
+  private expiredExcludes(op: string, excludes: readonly Segment[]): ValidationError | undefined {
+    let stale: string[] | undefined;
+    for (const e of excludes) {
+      if (!e.expired()) continue;
+      (stale ??= []).push(e.ref.namespace ? `${e.ref.namespace}/${e.ref.segment}` : e.ref.segment);
+    }
+    if (stale === undefined) return undefined;
+    return new ValidationError(
+      `${op}: refusing to read while these exclusions have expired — ${[...new Set(stale)].join(', ')}. ` +
+        `An expired exclusion would subtract nothing, so the result would include the ids it was passed to remove. ` +
+        `Renew the exclusion's \`expiresAt\`, open it without one, or leave it out of the call.`,
+    );
   }
 
   /**
@@ -2590,11 +2715,13 @@ export class Segment {
   }
 
   private intersectAs<T>(out: CombineOutput<T>, others: Segment[], options?: CombineOptions): T {
+    const exclude = this.excludesOf(options);
+    const refused = this.expiredExcludes('intersect', exclude);
+    if (refused) return out.failing(refused);
     // An expired operand is empty, and anything ANDed with the empty set is empty. Guarding here rather than
     // only in `count()` is what keeps the surface coherent: a segment whose `count()` is 0 must not still
     // contribute members to an intersection.
     if (this.expired() || others.some((o) => o.expired())) return out.none;
-    const exclude = this.liveExcludes(options);
     let engine: SegmentEngine;
     try {
       engine = this.combineEngine([this, ...others, ...exclude]) ?? this.engine;
@@ -2660,6 +2787,9 @@ export class Segment {
   }
 
   private unionAs<T>(out: CombineOutput<T>, others: Segment[], options?: CombineOptions): T {
+    const exclude = this.excludesOf(options);
+    const refused = this.expiredExcludes('union', exclude);
+    if (refused) return out.failing(refused);
     // OR: drop the expired operands and union what is left. All expired ⇒ empty.
     const live = others.filter((o) => !o.expired());
     if (this.expired()) {
@@ -2674,13 +2804,11 @@ export class Segment {
       // out. `andNot` reads each exclude only where it overlaps, so this is also the cheap spelling.
       // With no exclude it is this segment alone, read as a one-operand union rather than as `iterate()`, so the
       // call's own `budget`, `concurrency` and range apply exactly as they would have to the union.
-      const exclude = this.liveExcludes(options);
       return exclude.length > 0
         ? this.andNotAs(out, [...exclude], options)
         : this.unionAs(out, [], options);
     }
     if (live.length !== others.length) return this.unionAs(out, live, options);
-    const exclude = this.liveExcludes(options);
     let engine: SegmentEngine;
     try {
       engine = this.combineEngine([this, ...others, ...exclude]) ?? this.engine;
@@ -2718,9 +2846,9 @@ export class Segment {
    * suppression list: at most one read per surviving key of `this`, so subtracting a 61,000-chunk global
    * opt-out list from a 40-chunk audience costs at most 40 reads, not 61,000.
    *
-   * An expired handle in `excludes` excludes nothing, and is skipped without being read; if every one has
-   * expired the result is `this` whole. An expired `this` is empty. `exclude` on `intersect` and `union` follows
-   * the same rule.
+   * An expired handle in `excludes` is refused, not skipped: the stream throws {@link ValidationError} naming it,
+   * before any request is made, because a lapsed suppression list would otherwise let through the ids it was
+   * passed to remove. An expired `this` is empty. `exclude` on `intersect` and `union` follows the same rule.
    *
    * To filter the *result of an intersection*, do not chain — pass `exclude` to {@link intersect} instead, so
    * the suppression folds into the same pass rather than materializing an intermediate segment first.
@@ -2730,19 +2858,10 @@ export class Segment {
   }
 
   private andNotAs<T>(out: CombineOutput<T>, excludes: Segment[], options?: BaseCombineOptions): T {
-    // MINUS: an expired base is empty; an expired exclusion excludes nothing.
+    const refused = this.expiredExcludes('andNot', excludes);
+    if (refused) return out.failing(refused);
+    // MINUS: an expired base is empty.
     if (this.expired()) return out.none;
-    const liveExcludes = excludes.filter((e) => !e.expired());
-    // Every exclusion expired ⇒ nothing to subtract. Recursing with an empty list would throw, since `andNot`
-    // requires at least one operand — a caller whose suppression list happened to age out must not get an error.
-    // It is read as a one-operand union rather than as `iterate()`, so the call's own `budget`, `concurrency` and range
-    // still apply.
-    // Only the call's own options go on, not an `exclude` a caller routed here with it: the excludes that expired are
-    // the ones this branch exists to drop, and an expired exclusion excludes nothing.
-    if (liveExcludes.length === 0 && excludes.length > 0) {
-      return this.unionAs(out, [], options == null ? undefined : readOptions(options));
-    }
-    if (liveExcludes.length !== excludes.length) return this.andNotAs(out, liveExcludes, options);
     let engine: SegmentEngine;
     try {
       engine = this.combineEngine([this, ...excludes]) ?? this.engine;
@@ -2811,6 +2930,8 @@ export class Segment {
 // `@cloudbitmaps/core` and `@cloudbitmaps/core/driver-kit`. A name added here is a public name of this package, so
 // add one on purpose: `tests/docs/api-reference-sync.test.ts` fails until the API reference lists it.
 // ---------------------------------------------------------------------------------------------------
+// Decode portable bytes you hold, through the check a `{ serialized }` load makes.
+export { deserializePortable };
 export {
   // Backends
   MemoryStorage,

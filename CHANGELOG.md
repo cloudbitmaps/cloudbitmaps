@@ -37,8 +37,53 @@ so, and so do the module headers in the code.
 
 - **`store.reapRegistryTombstones({ namespace?, dryRun?, confirmNoLegacyWriters?, limit? })`, an admin call that removes the `deleted: true` rows with no incarnation id from an object-store registry.** A release before 0.12.0 kept a deleted row as an envelope whose token is a bare counter, and a 0.12.0 or later release does the same when it deletes a row born before 0.12.0; no call removes one, and every full listing still reads each (a GET apiece). The call removes a row only if it is `deleted: true` with no incarnation id, whatever its `status`: never a live row, a `destroyed` row that is not `deleted`, or a deleted row that has an incarnation id. A real run needs `confirmNoLegacyWriters: true`, your statement that no process on a release before 0.12.0 writes the registry (without it, a `ValidationError` and no request); `dryRun` counts what a real run would remove and needs no confirmation. Each delete is conditioned on the version read, so a `create` that lands over the envelope first wins and the row is counted `skipped.raced` (a row already gone counts there too); a `create` that had already read the envelope and meets the removal throws `WriteConflictError`, which the library does not retry. A registry whose `conditionalDelete` is off (GCS by default, S3 on a custom endpoint) throws `CapabilityError` before any request, and the in-memory and local-filesystem registries `UnsupportedError`; on an endpoint that ignores `If-Match` (MinIO, fake-gcs-server), a `conditionalDelete: true` you set makes it an unfenced delete, so run it with every writer stopped. It costs `ceil(R / 1000)` LIST, R GET and E DELETE requests over R rows read and E removed. `limit` (default 1,000) bounds the removals, not the reads: a run is not resumable, each lists and reads from the start, a dry run with a `limit` shows the same first rows, and `limited` is `true` whenever the limit was spent with keys left. An object it cannot read stops the run with an error naming its key; a `namespace` scope gets past one. It returns `{ dryRun, examined, reaped, wouldReap, limited, skipped: { live, destroyed, incarnated, raced } }`. **It does not clean a bucket completely**: a tombstone `dropSegment` leaves is a `destroyed` row with no stamp, and stays, as does every live row written before 0.12.0 and a tombstone a 0.12.0 or later release wrote while `conditionalDelete` was off (it has an incarnation id, and the call refuses to run on that registry). Also `reapRegistryTombstones(registry, options)` as a free function, the optional `IRegistryDriver.reapLegacyTombstones` member that `ObjectStoreRegistry` implements, the optional `ObjectRegistryStore.resolveCapabilities`, and the types `ReapRegistryTombstonesOptions`, `ReapRegistryTombstonesResult`, `ReapLegacyTombstonesOptions` and `ReapLegacyTombstonesResult`.
 
+- **An advisory event when an S3 client's socket pool is smaller than a combine needs.** A store with a `metrics` sink
+  now sends it one `{ kind: 'advisory', code: 'socket-pool-below-window', driver, bucket, maxSockets, threshold,
+  concurrency }` event, once, after the first S3 read, when the client's pool is under 64 sockets (twice the default
+  `concurrency` of 32: a client you pass keeps the SDK's 50). Nothing is logged or printed and the check sends no
+  request. It reads the SDK's default handler and agents you give it, and says nothing for a handler it cannot read
+  (your own, HTTP/2, Fetch). `MetricEvent` gains the `advisory` variant, so a sink that ends its `switch` on `kind` with a
+  `never` check needs a case for it. `StorageBackend` gains an optional `attachMetrics(sink)`, which a store calls with its
+  sink, and `@cloudbitmaps/core/driver-kit` re-exports `IMetricsSink` and `MetricEvent`.
+
+- **`pin.everyNth(n, range?)`, the ids at ranks `n`, `2n`, `3n` …, on a pinned handle.** It yields the id at each 1-based
+  rank counted over the ids in `(after, through]`, ascending, and nothing for a last partial window, so a send cut into
+  windows of 1,000 reads its boundaries without decoding the chunks that hold none. It places each boundary from the
+  index's per-chunk counts and reads only the chunks that hold one, each once, through `iterate`'s coalesced stream, window and
+  budget. A live handle throws `UnsupportedError`, a bad `n` `ValidationError`, and a chunk that is read and decodes to a different size than the
+  index says `IntegrityError`; the index's counts are trusted for chunks not read, as `count()` trusts them. The paging recipe in the reading guide finds its window ends with a `.batches()` stride, and points at
+  `everyNth` for the boundary case.
+
+- **`seg.pinAt({ generation, fingerprint })`, a pin at a named generation.** It reopens a generation an earlier pin recorded
+  in its `pinnedAt`, as a pinned handle like the one `pin()` returns, for a second task of one job. Identify a pin by its `generation` and `fingerprint`: the handle's `pinnedAt.version` can differ from the earlier pin's. The fingerprint is required, since a
+  generation number is taken again after a purge and re-create, so a bare number, or a key `pinAt` does not know, throws `ValidationError`. A generation that is
+  collected, purged, on a crypto-shredded segment, above the row's pointer, or another object than the fingerprint names throws `NotFoundError`, and the call never reads empty. It costs
+  one registry read and one tail read, and it holds nothing: how long a generation can be reopened is how long `keep` retains it.
+  Exported as the `PinAt` type, with a method on `CrbmStorageChunkSource` that does the open.
+
+- **`deserializePortable(bytes)`, and the loading guide's recipe for the parts of one segment built in separate processes.**
+  `deserializePortable` decodes portable Roaring bytes you hold into a `RoaringBitmap32` through the check a
+  `{ serialized }` load makes first (the size cap, the structural check, exactly one bitmap), and throws
+  `ValidationError` for bytes that fail it, before the native decoder runs. `@cloudbitmaps/core` exports
+  `decodeSerialized(bytes, codec, what?)`, the one check both go through. The recipe has each process serialize its part,
+  and one process decode each with `deserializePortable`, join them with `RoaringBitmap32.orMany`, refuse parts that
+  overlap by comparing the union's size with the sum of the parts', and load the union once, in the requests of one
+  load. A property test runs the recipe from the guide: the generation is byte for byte the one a load of the whole set
+  writes, wherever the ranges are cut.
+
 ### Changed
 
+- **Behaviour change: an expired exclusion now throws; it used to exclude nothing.** `a.andNot([stale])`,
+  `a.intersect([b], { exclude: [stale] })` and `a.union([b], { exclude: [stale] })`, with a range, `.batches()` or on
+  pinned handles, reject with `ValidationError` (`andNot: refusing to read while these exclusions have expired — <name>`)
+  when an exclusion's `expiresAt` has passed, before any request is made. They skipped it without reading it, so a
+  suppression or opt-out list that lapsed stopped excluding and the opted-out ids were included. The check is made when
+  the combine is called, ahead of the rules for operands, so an expired exclusion is refused even where the combine would
+  read empty, and one that names a segment that does not exist is refused as expired, not as an absent operand. A stream
+  already being read is not re-checked when its exclusion expires part-way. Renew the exclusion's `expiresAt`, open it
+  without one, or leave it out of the call. Unchanged: an expired `self` or include operand is empty or dropped, an
+  absent operand is refused unless `allowAbsentOperands` is set, and an `*Into` involving an expired handle throws
+  `ValidationError`.
 - **`store.load()` collects by name at any `keep` up to 64.** The segment's row records the generations a load keeps
   (`keptGens`, ascending, each below the pointer, at most 64 written and 256 read). A load writes the new list in the
   same compare-and-swap that moves the pointer, derived from the row that write is conditioned on, then deletes the
@@ -55,7 +100,6 @@ so, and so do the module headers in the code.
   the pass asked to delete. A load whose publish has landed does not throw from its collection because another writer moved the row
   meanwhile: the pass spares what the row names then and stops where it cannot prove a delete. A malformed `keptGens` on a
   stored row is an `IntegrityError` naming the row, like a malformed `summary`; one with an entry at or above `currentGen` is read and not used.
-
 - **A segment's first `store.load()` is now measured on S3, on `0.16.0`.** A run from AWS CloudShell in `us-east-1` on
   2026-10-05 measured what the benchmarks page had only counted from the engine: every one of the load stage's 25 loads was
   a segment's first, and made 2 PUT + 3 GET single-part and, for a multipart load, 5 PUT-class + 3 GET: $11.20 and $26.20 per million

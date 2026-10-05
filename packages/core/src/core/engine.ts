@@ -15,7 +15,7 @@ import type { Budget, BudgetOption } from './budget';
 import { ChunkStream } from './chunk-stream';
 import { ChunkWindow } from './chunk-window';
 import type { Clock } from './determinism';
-import { IntegrityError, ValidationError } from './errors';
+import { IntegrityError, UnsupportedError, ValidationError } from './errors';
 import { DEFAULT_MAX_BITMAP_BYTES } from './crbm/format';
 import { chunkGenKey, chunkRefKey, segmentPrefix } from './keys';
 import type { BoundedLru } from './lru';
@@ -577,6 +577,119 @@ export class SegmentEngine {
     } finally {
       chunks.close();
     }
+  }
+
+  /**
+   * The ids at 1-based ranks `n`, `2n`, `3n` … counted over the ids in `range`, ascending. The rank of each boundary
+   * is placed from the index's per-chunk counts, so only the chunks that hold a boundary are read, each once however
+   * many boundaries it holds, through the same coalesced stream, window and budget unit as {@link iterate}. A range with
+   * `after` inside a chunk reads that chunk too, to count the ids at or below `after`. A last partial window yields
+   * nothing.
+   *
+   * The counts place ids, and are trusted as `count()` trusts them: a chunk that is read must decode to the size its
+   * index says, or the read throws {@link IntegrityError} (invariant 5), but a chunk that is not read is not checked, so
+   * an index that lies consistently about one (on an unencrypted object, the sum still matches the footer's total,
+   * which opening the object checks before any boundary is placed) shifts the ranks after it. An encrypted object's
+   * index is authenticated and bound to the object, so a wrong count there needs the key. The index and the chunks must come from one
+   * generation (invariant 3): the caller reads through a source that holds one, a pinned one, and a source with no
+   * per-chunk counts is refused.
+   *
+   * Nothing is fetched when the chunks in range hold fewer than `n` ids. The budget is charged before the first fetch
+   * with an upper bound, the cut chunk plus one chunk per boundary the counts allow (capped by the chunks in range),
+   * which can exceed the chunks actually read. A range that cuts its first chunk reads it even when the ids above
+   * `after` turn out to be fewer than `n`, and one that cuts its last chunk may read it and yield nothing.
+   */
+  async *everyNth(seg: SegmentRef, n: number, range?: IdRange): AsyncGenerator<number> {
+    if (!Number.isSafeInteger(n) || n < 1) {
+      throw new ValidationError(`n must be a positive integer; got ${String(n)}`);
+    }
+    const epoch = this.invalidations;
+    const w = windowOf(range);
+    if (w === 'empty') return;
+    const { loKey, loRem, hiKey, hiRem } = w ?? WHOLE_ID_SPACE;
+    if (this.storage.cardinalities === undefined) {
+      throw new UnsupportedError('everyNth needs a storage source that reports per-chunk counts');
+    }
+    const counts = await this.storage.cardinalities(seg);
+    if (counts === null) return;
+    const keys = keysWithin(
+      [...counts.keys()].sort((a, b) => a - b),
+      { loKey, loRem, hiKey, hiRem },
+    );
+    for (const k of keys) {
+      this.assertChunkKeyInRange(k);
+      const c = counts.get(k)!;
+      if (!Number.isInteger(c) || c < 1 || c > CHUNK_COUNT) {
+        throw new IntegrityError(`chunk cardinality from a tier is out of range: ${c}`);
+      }
+    }
+    const gen = await this.cacheVersion(seg); // after the shape read — see `combine`
+
+    // Ids of the first chunk at or below `after` do not count, so a range that cuts it reads it to know how many
+    // there are. Before any fetch: no boundary can exist when the chunks in range hold fewer than `n` ids, and the
+    // budget is charged with the most chunks the read can take (the cut chunk, and one per possible boundary).
+    const cutsFirst = loRem > 0 && keys[0] === loKey;
+    let upper = 0;
+    for (const k of keys) upper += counts.get(k)!;
+    if (upper < n) return;
+    const cut = cutsFirst ? 1 : 0;
+    checkBudget(this.budget, cut + Math.min(keys.length - cut, Math.floor(upper / n)), 'everyNth');
+    let first: Uint32Array | undefined;
+    let below = 0;
+    if (cutsFirst) {
+      first = this.chunkRemainders(
+        await this.storageChunk({ ...seg, chunkKey: loKey }, gen),
+        loKey,
+        counts,
+      );
+      below = firstAbove(first, loRem - 1);
+    }
+
+    // Place each boundary in a chunk, by the ids counted before it; `index` is where it sits in the chunk's array.
+    const hits: Array<{ key: number; index: number }> = [];
+    let before = 0;
+    for (const key of keys) {
+      const skipped = key === loKey && cutsFirst ? below : 0;
+      const size = counts.get(key)! - skipped;
+      const next = (Math.floor(before / n) + 1) * n;
+      if (next <= before + size) hits.push({ key, index: skipped + next - before - 1 });
+      before += size;
+    }
+    if (hits.length === 0) return;
+    const streamed = hits.filter((h) => !(cutsFirst && h.key === loKey)).map((h) => h.key);
+    const chunks = streamed.length > 0 ? this.chunkSequence(seg, streamed, gen, epoch) : undefined;
+    try {
+      for (const { key, index } of hits) {
+        const rem =
+          cutsFirst && key === loKey && first !== undefined
+            ? first
+            : this.chunkRemainders(await chunks!.take(key), key, counts);
+        const base = key * CHUNK_COUNT;
+        for (let i = index; i < rem.length; i += n) {
+          const remainder = rem[i]! & MAX_REMAINDER;
+          if (key === hiKey && remainder > hiRem) return;
+          yield base + remainder;
+        }
+      }
+    } finally {
+      chunks?.close();
+    }
+  }
+
+  /** A chunk's remainders ascending, once its size is confirmed against the index's count for it (invariant 5). */
+  private chunkRemainders(
+    chunk: CodecBitmap | null,
+    chunkKey: number,
+    counts: ReadonlyMap<number, number>,
+  ): Uint32Array {
+    const expected = counts.get(chunkKey)!;
+    if (chunk === null || chunk.size !== expected) {
+      const got = chunk === null ? 'no bytes' : `${chunk.size} ids`;
+      throw new IntegrityError(
+        `chunk ${chunkKey} holds ${got}, but the object's index says ${expected}`,
+      );
+    }
+    return chunk.toUint32Array ? chunk.toUint32Array() : Uint32Array.from(chunk);
   }
 
   /**

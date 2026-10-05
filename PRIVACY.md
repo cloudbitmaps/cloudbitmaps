@@ -132,6 +132,7 @@ bucket.
 | the store whose verb made the call (`eraseSubject`, `dropSegment`, `retireExpired`) | on return, for every read that starts after it — it invalidates what it cached, and its pins then fail; a read already in progress there can still yield it from a chunk it had requested before |
 | another store, with a registry and a `cache.genTtlMs` above 0 | within `cache.genTtlMs` (default 2 s), when its snapshot re-resolves, **while the registry can be read** (see below) |
 | another store with **no registry** (a bare `IStorageDriver`), with `cache: { genTtlMs: 0 }`, or on a storage source built with **no clock** | **no bound** — only when its caches happen to let the segment go, or something tells it |
+| `seg.pinAt` of a generation the erasure rewrote, in any store | on return it fails with `NotFoundError`, since the object is deleted (and, with a registry, the row has moved on); during the erasure, between the rewrite's publish and its delete of the old generation, it can still open that generation, and a handle opened then is a pin, covered by the row below |
 | a pinned handle (`seg.pin()`) in another store | **no bound** — until that store's reader cache evicts the pin's reader (in a store with a timed pointer refresh, a small generation's reader holds all of its chunks, decoded or not) and its chunk cache evicts the chunks the pin decoded, or something tells it |
 
 **An outage of the registry extends that bound.** A refresh that cannot read the row because of a transient fault
