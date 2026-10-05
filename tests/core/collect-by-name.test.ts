@@ -755,6 +755,52 @@ describe('a load whose publish landed does not fail on a race its collection mee
     expect(await generations(w.memory)).toEqual([3, 14, 15, 16]);
   });
 
+  it("a real intersectInto at generation 16, with another load publishing in the gap, returns and spares that load's window", async () => {
+    const memory = new MemoryStorage();
+    let armed = false;
+    const gap: { run?: () => Promise<void> } = {};
+    const registry = new Proxy(memory.registry, {
+      get(t, p, rx) {
+        const value: unknown = Reflect.get(t, p, rx);
+        if (typeof value !== 'function') return value;
+        const fn = value as (...a: unknown[]) => unknown;
+        if (p !== 'compareAndSwap') return (...a: unknown[]) => fn.apply(t, a);
+        return async (...a: unknown[]) => {
+          const out = await fn.apply(t, a);
+          if (armed && (a[0] as SegmentRef).segment === 'dest') {
+            armed = false;
+            await gap.run?.();
+          }
+          return out;
+        };
+      },
+    }) as IRegistryDriver;
+    const store = new CloudRoaring({
+      storage: brandAsBackend({ storage: memory.storage, registry }),
+    });
+    await store.load({ segment: 'a' }, [1, 2, 3]);
+    await store.load({ segment: 'b' }, [2, 3]);
+    const dest = store.segment('dest');
+    for (let i = 0; i < 16; i++) {
+      await store.segment('a').intersectInto(dest, [store.segment('b')], { keep: 1 });
+    }
+    const held = async (): Promise<number[]> => {
+      const out: number[] = [];
+      for await (const k of memory.storage.list({ segment: 'dest' })) out.push(k.generation);
+      return out.sort((x, y) => x - y);
+    };
+    expect((await memory.registry.get({ segment: 'dest' }))!.currentGen).toBe(15);
+    gap.run = async () => {
+      // Another load of the destination publishes 17 over this call's 16, before this call's collection runs.
+      await new CloudRoaring({ storage: memory }).load({ segment: 'dest' }, [2, 3, 4]);
+    };
+    armed = true;
+    const res = await store.segment('a').intersectInto(dest, [store.segment('b')], { keep: 1 });
+    expect(res).toMatchObject({ generation: 16, published: true });
+    expect((await memory.registry.get({ segment: 'dest' }))!.currentGen).toBe(17);
+    expect(await held()).toEqual([16, 17]);
+  });
+
   it('a purge in that gap does not fail the load either', async () => {
     const w = await atFifteen();
     const registry = hookAfter(w.deps.registry, 'compareAndSwap', async () => {
