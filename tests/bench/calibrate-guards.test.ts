@@ -1850,6 +1850,37 @@ describe('the meter counts every attempt the SDK makes, not every send', () => {
     }
   });
 
+  // A HEAD names the object's size in its answer and sends no body, so it adds no bytes read; a GET of the same object does.
+  it('counts the bytes a GET brings down, and none for a HEAD that names the size of an object', async () => {
+    const server = createServer((req, res) => {
+      res.writeHead(200, { 'content-length': '136' });
+      res.end(req.method === 'HEAD' ? undefined : Buffer.alloc(136));
+    });
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    const { port } = server.address() as AddressInfo;
+    const client = clientFor(`http://127.0.0.1:${port}`, 1);
+    const tally = meterLib.meter(client);
+    const { HeadObjectCommand, GetObjectCommand } = require_('@aws-sdk/client-s3') as Record<
+      string,
+      new (i: { Bucket: string; Key: string }) => unknown
+    >;
+    try {
+      const head = (await client.send(new HeadObjectCommand!({ Bucket: 'b', Key: 'k' }))) as {
+        ContentLength: number;
+      };
+      expect(head.ContentLength).toBe(136);
+      expect(tally.bytesDown).toBe(0);
+      const got = (await client.send(new GetObjectCommand!({ Bucket: 'b', Key: 'k' }))) as {
+        ContentLength: number;
+      };
+      expect(got.ContentLength).toBe(136);
+      expect(tally.bytesDown).toBe(136);
+    } finally {
+      client.destroy();
+      await new Promise<void>((done) => server.close(() => done()));
+    }
+  });
+
   it('counts a retried request once per attempt', async () => {
     const server = await flakyS3(1);
     const client = clientFor(server.url, 3);
