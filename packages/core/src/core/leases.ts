@@ -91,7 +91,7 @@ export interface ChurnDeps {
  * How many times one writer retries after meeting a row that differs from the one it read only in its leases. Takers of
  * one row serialise: each round exactly one write lands, so a writer racing `k` holders needs up to `k + 1` rounds, and a
  * holder can take and release inside one job, so the bound covers a take and a release by every holder the row can
- * hold, with a few to spare: 2 * {@link MAX_LEASES_PER_SEGMENT} + 8. At the 25 ms to 400 ms jittered wait it is a
+ * hold, with a few to spare: 2 * {@link MAX_LEASES_PER_SEGMENT} + 8. At waits of up to 25 ms growing to up to 400 ms it is a
  * minute at the very most before the writer reports the conflict it had, and a lease writer that goes on beyond
  * that has stopped being a lease writer and become a flood.
  */

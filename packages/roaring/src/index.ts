@@ -2287,7 +2287,7 @@ interface LeaseHold {
   readonly release: () => Promise<void>;
 }
 
-/** What {@link Segment.pin} and {@link Segment.pinAt} take besides the generation. */
+/** What {@link Segment.pin} takes besides the generation. */
 export interface PinOptions {
   /**
    * Hold the pinned generation until this instant: epoch-**milliseconds**, after now and at most

@@ -694,14 +694,15 @@ store never is) cannot tell a live lease from an ended one, so its collection re
 rewrite and a rollback publish only against the row they read. But readers write a segment's leases, in numbers no
 operator controls, and each write moves the token. So a writer that finds the token moved re-reads the row, and when it
 differs from the one the writer read only in its leases (the same incarnation, and every other field equal, the update time and
-the token aside), it goes on against the fresh row, after a jittered wait of 25 to 400 ms, without writing its object
-again and without deriving its content again. A difference in anything else, the pointer, the kept window, the summary,
+the token aside), it waits, reads the row again, and goes on against that row, without writing its object again and
+without deriving its content again. The wait is a random time of up to 25 ms, growing with each retry to up to 400 ms, taken on the
+store's clock; a writer given no clock `sleep` retries without waiting, and one given no `rng` waits the whole bound. A difference in anything else, the pointer, the kept window, the summary,
 a retention policy, the key wrappings or the status, refuses as it always has. This covers a load's publish, an erasure
 rewrite's publish and the re-proof before each delete above the pointer, a rollback's swap and its undo, a retention
 write, and a shred or a drop, which re-read the row on every attempt and do not count a lost race to a lease write. Each waits
 out at most 136 such changes (a take and a release by each of the 64 holders a row can hold, and a few more) and then
-reports what it would have: `superseded`, or `WriteConflictError`. Without the rule, a stream of lease writes would starve
-an erasure, which the library promises to win over a lease.
+reports what it would have: `superseded`, or `WriteConflictError`. The rule is what lets an erasure, a shred, a drop and a
+retention write win over leases that readers write without limit.
 
 A segment can be purged and re-created while a paginated listing is in flight, so both branches re-read the registry
 row afterwards and reconcile with it:

@@ -624,7 +624,7 @@ describe('a leased generation survives later loads, collection resumes, and a re
     expect(await snap.count()).toBe(200);
   });
 
-  it('collection resumes at the first listing after the lease and its margin: within 15 further loads', async () => {
+  it('collection resumes at the first listing after the lease and its margin: within 16 later loads', async () => {
     const h = await seeded();
     const snap = await lease(h, HOUR);
     await churn(h, 12);

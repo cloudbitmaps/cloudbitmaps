@@ -147,6 +147,7 @@ describe('onlyLeasesDiffer', () => {
     ['a retention policy', { retention: { expiresAt: 6 } }],
     ['the status', { status: 'destroyed' as const }],
     ['the key wrappings', { wrappedDeks: [{ keyId: 'k', wrapped: 'AA==' }] }],
+    ['the external key reference', { keyId: 'other-key' }],
     ['the residency', { residency: { region: 'x' } }],
   ])('is false when %s changed', (_name, over) => {
     expect(onlyLeasesDiffer(base, next(over as Partial<RegistryRecord>))).toBe(false);

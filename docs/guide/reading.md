@@ -213,8 +213,10 @@ leased generation in the bucket until the lease has ended. It is a hold on one n
   throws whether or not the object is still in the bucket, and a small generation's cached reader is not consulted.
   `pin()` of a leased handle past its lease throws too; before it, `pin()` takes the generation current now, with no lease
   of its own.
-- **A stream checks the lease each time it reads a chunk.** A read that is under way when the lease ends finishes the
-  chunk it is on and throws at the next one, per id and per batch. The 60-second margin below covers a chunk's worth of ids.
+- **A stream checks the lease before its first pull and each time it reads a chunk.** A stream built while the lease is
+  live and first pulled after it ended throws, even when its result is empty. A read that is under way when the lease ends
+  finishes the chunk it is on and throws at the next one, per id and per batch. `has`, `count` and `stat` check once, before
+  they read, so one that starts before the lease ends may return after it.
 - **Collection resumes after the lease.** A leased generation takes none of the `keep` window, and a load that spares it
   does not name it again. After the lease and a 60-second margin have ended, the next listing pass takes it: that is every
   sixteenth generation of the segment, or any load that has to list, so within 16 later loads of the segment. A segment
