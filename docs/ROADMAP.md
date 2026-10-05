@@ -434,7 +434,8 @@ Saying no is part of the design:
   reading is swept, the fetch re-resolves the pointer and retries once, serving the newer committed generation —
   so a floor buys an avoided round trip, not a saved query. A job that genuinely must not change generations
   needs a snapshot handle (above), and a window merely wide enough to hope with is a different, weaker promise
-  wearing the same words. The cost side — generations piling up because nothing collects them — is what `keep`
+  wearing the same words. A job with a known end can lease that handle (`pin({ leaseUntil })`, up to 14 days), which
+  holds the one generation it names, never delays any other, and ends in a typed error. The cost side — generations piling up because nothing collects them — is what `keep`
   is for; sizing it is in the
   [guide](guide/loading.md#generations-and-keep).
 - **Per-id TTL.** A bitmap stores ids, not `(id, timestamp)` pairs; a timestamp per id costs 4–8 bytes each and

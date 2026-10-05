@@ -330,11 +330,12 @@ write's own collection does the cleanup. `keep` says how many old generations to
 **Each retained generation is a whole copy of the segment, billed.** `keep: 3` over a 40 GB segment holds 160 GB of
 object storage, not 40. That is the cost of a wide window, and the reason the default is `1`.
 
-**A pin is a hold, not a lease.** A pin is never re-resolved. Once its generation is collected, a chunk it has not
-already fetched fails with `NotFoundError`. So does every chunk once the pin's own store writes the segment (a load, a
-`rollback` or an `*Into` write), since that drops what the store has cached. No value of `keep` survives an erasure,
-which collects every generation below its new pointer. [Reading in depth](reading.md#read-one-fixed-point-in-time)
-covers pins.
+**A pin is a hold, and a lease makes it a bounded one.** A pin is never re-resolved. Once its generation is collected, a
+chunk it has not already fetched fails with `NotFoundError`. So does every chunk once the pin's own store writes the
+segment (a load, a `rollback` or an `*Into` write), since that drops what the store has cached. No value of `keep`
+survives an erasure, which collects every generation below its new pointer, and neither does a lease.
+[Reading in depth](reading.md#read-one-fixed-point-in-time) covers pins and
+[leases](reading.md#hold-a-generation-for-a-job-a-lease).
 
 **What no value of `keep` gives you is a single instant.** A read whose TTL elapses, whose reader is evicted, or whose
 store is invalidated moves to another generation whether or not the old one still exists. A job that needs one

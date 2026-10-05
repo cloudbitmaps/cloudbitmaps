@@ -256,7 +256,7 @@ Anything that is none of these throws `ValidationError` too ([what a load accept
 | `seg.stat()` → `Promise<SegmentStat>` | `{ generation, cardinality, metadata? }` from the one resolution that answers `count()`: the generation's number, its id count and the metadata it was loaded with (absent when it has none). One registry read when cold, none when warm or pinned. `{ generation: null, cardinality: 0 }` for a segment with no generation and for an expired handle ([details](reading.md#stat-the-generation-its-count-and-its-metadata)) |
 | `seg.iterate({ after?, through? }?)` → `IdStream` | stream all ids, ascending, reading ahead as ranges of the object (the window opens 1, 2, 4 and on up to 32 range requests wide). With `after` / `through`, only the ids in `(after, through]` and the chunks the range overlaps ([paging](reading.md#page-through-a-segment)) |
 | `IdStream` (what `iterate`, `intersect`, `union` and `andNot` return) | an `AsyncIterable<number>`: `for await` it for one id at a time. `.batches()` → `AsyncIterable<Uint32Array>` yields the same ids one chunk at a time, ascending, an array per non-empty chunk (at most 65,536 ids, 256 KiB) that is yours to keep ([batches](reading.md#read-a-chunk-at-a-time-batches)). The per-id stream is as before (single-use); `batches()` starts its own read when called ([details](reading.md#read-a-chunk-at-a-time-batches)) |
-| `seg.pin()` → `Promise<Segment>` | **hold this segment at the generation current right now**, for the life of the returned handle, so a long job describes one instant ([pins](reading.md#read-one-fixed-point-in-time)). A hold, not a lease: size `keep` past your longest pinned job. Needs a `.crbm` reader: any backend, a bare `IStorageDriver` or a pre-built `CrbmStorageChunkSource` |
+| `seg.pin(options?)` → `Promise<Segment>` | **hold this segment at the generation current right now**, for the life of the returned handle, so a long job describes one instant ([pins](reading.md#read-one-fixed-point-in-time)). A hold, which a lease makes a bounded one: pass `{ leaseUntil }` (epoch milliseconds, at most 14 days out) to keep the generation out of a load's collection until then ([leases](reading.md#hold-a-generation-for-a-job-a-lease)); without one, size `keep` past your longest pinned job. Needs a `.crbm` reader: any backend, a bare `IStorageDriver` or a pre-built `CrbmStorageChunkSource` |
 | `seg.intersect([other, …], { after?, through?, concurrency?, budget?, exclude?, allowAbsentOperands? })` → `IdStream` | chunk-skipping intersection, streamed. Each operand's chunks are read as coalesced ranges: chunks within 256 KiB of each other come in one request, up to 1 MiB. `concurrency` is the range requests held ahead per operand (32 by default; the window opens 4 wide and widens as ranges are taken); on a source that reads chunk by chunk it is the chunk keys in flight (opening 8 wide). `exclude` subtracts suppression segments **in the same pass**. `after` / `through` bound the result to `(after, through]` on every operand and every exclude, as on `iterate` |
 | `seg.union([other, …], { after?, through?, concurrency?, budget?, exclude?, allowAbsentOperands? })` → `IdStream` | `this ∪ others`, streamed. The one composite with **no chunk-skipping** — every chunk of every operand is read, or every chunk inside the range when one is given |
 | `seg.andNot([sup, …], { after?, through?, concurrency?, budget?, allowAbsentOperands? })` → `IdStream` | `this \ (sup…)`. Reads all of `this`, or all of it inside the range, but each exclude **only where it overlaps** |
@@ -265,6 +265,8 @@ Anything that is none of these throws `ValidationError` too ([what a load accept
 | `seg.costReport({ pricing?, workload? })` → `Promise<CostReport>` | grounded $ report from the segment's **real** `.crbm` size (no payload reads) |
 | `seg.expiresAt` | the handle's deadline, if one was declared |
 | `seg.pinnedAt` | on a handle from `pin()`, the `PinnedAt` it is held at; `undefined` on a live handle |
+| `seg.lease` | on a handle from `pin({ leaseUntil })`, the `Lease` it holds, `{ holder, until }` (`until` in epoch milliseconds); `undefined` otherwise |
+| `seg.release()` → `Promise<void>` | end this handle's lease now, so a load's collection may take its generation. Idempotent: a handle with no lease, one already released, and one whose lease has ended make no request; otherwise one registry read and one write. Every read of the handle after it, and after the lease's own end, throws `LeaseExpiredError` |
 | `seg.key()` → `string` | an opaque string that names the handle's segment, namespace included: two handles of one segment have the same key. Use it as a `Map` key or a log field; its format is unspecified, so compare keys and never parse one |
 
 That's the whole daily surface: **1 constructor + a backend + `store.load` + these verbs.**
@@ -738,6 +740,15 @@ list across a move is not used for an entry at or above the pointer, but would h
 generations. One that drops the field is correct and makes every load list. The conformance suite holds a driver to all
 of this.
 
+**`leases` is the holds on a segment's generations**, each `{ holder, generation, until }`: 16 lowercase hex digits naming
+the holder, the generation held, and an epoch-millisecond instant. A load's collection spares the generation of an entry
+that has not ended, and an entry has ended `LEASE_SKEW_MS` (60 seconds) after `until`. Unlike `keptGens` it does not follow
+the pointer: a patch that moves `currentGen` leaves it, and only a patch that names it, or the row going away, changes it.
+A writer writes at most 64 entries and a reader accepts 256; an empty list is stored as none; an entry carries no field
+beyond those three, and a stored row that carries one, a holder that is not 16 lowercase hex digits, a duplicate holder or
+a number that is not a non-negative safe integer is refused with `IntegrityError`. A schema-2 row, and a build that
+does not declare the field, refuse a row that carries it. `NewRegistryRecord` has no `leases`: a new row has no holder.
+
 **A shipped registry's token is `<incarnation>.<counter>.<write>`.** The incarnation is 128 bits as 32 lowercase hex
 digits, drawn when a row is created, so a re-created name never meets an earlier incarnation's token, even once the
 earlier row is gone entirely. The counter advances on every write and carries on across a tombstone. The write part
@@ -829,6 +840,8 @@ reports a missing or invalid environment variable with a plain `Error` and exits
 | `CapabilityError` | the storage you passed cannot meet a capability the store requires — a storage without range reads (one of your own; the five backends all serve them), or a keystore or `encryption.required: true` on a store built on a bare `IStorageDriver` instead of a backend, which has no registry. Raised **fail-fast at construction**, never mid-operation | pass a backend, or a storage that supports range reads | no |
 | `BudgetExceededError` | the operation would exceed its per-op denial-of-wallet budget — too many backend requests for one call. Refused **before** fanning out. Carries the projected count and the limit, never data | narrow the operation, raise `budget`, or set `budget: false`. If it fires on a normal call, something is wider than you think | no — refused by policy, not by luck |
 | `KeyUnavailableError` | an encrypted segment's DEK cannot be unwrapped: the keystore holds none of the KEKs its wrappings reference — never configured, rotated away without keeping the old key, or lost | restore the KEK. **Without it the data is unreadable**, which is what crypto-shred relies on | no |
+| `LeaseExpiredError` | a read of a leased pin came after its lease ended, by `leaseUntil` or by `release()`: at every read site of the handle, including a leased handle used as an operand or an `exclude` of a combine, or as the target of an `*Into`. It carries `until` and `reason` (`'expired'` or `'released'`), and is thrown whether or not the object is still stored: a leased handle never reads empty | take a new lease (a new `pin({ leaseUntil })`) for work that outlasts it | no |
+| `LeaseLimitError` | the segment already has 64 live leases, the most one row records; nothing was written | release a lease, wait for one to end, or take one lease per job and share its handle | no |
 | `TransientError` | a transient fault your backend classified (from its storage or registry) — throttling, a 5xx, a connection reset. The raw SDK error is preserved in `cause`, except on a read `readTimeoutMs` cut off, which has none and says `timed out after N ms` | from a read of segment data, the retry layer already retried it, and reaching you means it kept failing. From a write, it is a fault the drivers and the publish did not settle (a throttled S3 or GCS object is sent again, and a load settles an unanswered registry write by reading the row), and from a direct registry or bucket read it was not retried: re-run the call. For a `load`, once the first attempt has settled, the re-run publishes whether or not that attempt landed; to know whether it did, check `store.generations(ref)` rather than replay the request. One thrown by a load's registry write has deleted nothing, and its object may still be published. One thrown by the collection after the publish comes after a landed publish: the load is current, and only the removal of older generations did not finish ([Resilience](#resilience-the-store-wires-this-by-default), [what a throttled load leaves behind](loading.md#when-a-write-is-throttled-or-gets-no-answer), [what throws instead](loading.md#when-a-load-is-refused)) | **yes** — the only class the retry layer retries |
 
 Two things worth knowing:
@@ -888,8 +901,9 @@ does not re-export. A driver author told elsewhere on this page to import `Token
 `AWS_US_EAST_1_ONDEMAND` · `ELASTICACHE_REDIS_US_EAST_1_ONDEMAND` · `ONE_REDIS_HA_CLUSTER` · `CloudRoaringError` ·
 `ValidationError` · `WriteConflictError` · `IntegrityError` · `NotFoundError` · `UnsupportedError` ·
 `CapabilityError` · `TransientError` · `KeyUnavailableError` · `BudgetExceededError` ·
+`LeaseExpiredError` · `LeaseLimitError` · `LEASE_SKEW_MS` · `MAX_LEASE_MS` · `MAX_LEASES_PER_SEGMENT` ·
 `isCloudRoaringError` · `isWriteConflictError` · `isTransientError` · `isNotFoundError` · `isIntegrityError`
-· `isValidationError`
+· `isValidationError` · `isLeaseExpiredError` · `isLeaseLimitError`
 
 ### `@cloudbitmaps/roaring` — types
 
@@ -898,7 +912,7 @@ does not re-export. A driver author told elsewhere on this page to import `Token
 `MaterializeResult` · `MaterializeRefusal` · `BaseCombineOptions` · `CombineOptions` · `MaterializeOptions`
 · `AndNotIntoOptions` · `IdRange` · `IdStream` · `LoadInput` · `PortableBitmap` · `LoadOptions` · `LoadGuard`
 · `LoadResult` · `LoadRefusal` · `GenerationEntry` · `RollbackResult` · `SegmentInfo` · `SegmentStat`
-· `CrbmStorageChunkSourceOptions` ·
+· `CrbmStorageChunkSourceOptions` · `PinOptions` · `Lease` · `LeaseEntry` ·
 `MemoryStorageOptions` · `LocalFsStorageOptions` · `ExportFormat` · `ExportSink` · `ExportWriter` · `ExportOptions` ·
 `ExportedSegment` · `ExportFailure` · `ExportManifest` · `IStorageDriver` · `IRegistryDriver` ·
 `StorageBackend` · `StorageChunkSource` · `PinnedAt` · `PinnedObject` · `SegmentRef` · `ChunkRef` · `GenKey` · `StorageCaps`
@@ -924,11 +938,11 @@ Values: `SegmentEngine` · `BoundedLru` · `safeMetrics` · `NOOP_METRICS` · `g
 `mapWithConcurrency` · `resolveBudget` · `resolvePerOpBudget` · `checkBudget` · `collectWithinBudget` ·
 `DEFAULT_BUDGET` · `segmentKey` · `isStorageBackend` · `PinnedStorageChunkSource` · `withRetry` ·
 `RetryingStorageChunkSource` · `loadSegment` · `loadSegmentChunks` · `listGenerations` · `rollbackSegment` · `segmentExists` ·
-`listSegments` · `eraseIdFromSegment` · `dropSegment` · `runConsistencyCheck` · `runExport` ·
+`listSegments` · `eraseIdFromSegment` · `dropSegment` · `runConsistencyCheck` · `runExport` · `takeLease` · `releaseLease` ·
 `setSegmentRetention` · `getSegmentRetention` · `clearSegmentRetention` · `retireExpired` · `estimateCost`
 
 Types: `EngineDeps` · `EngineCombineOptions` · `RetryDeps` · `RetryingOptions` · `LoadDeps` ·
-`GenerationListDeps` · `GenerationSummary` · `ChunkRead` · `ReadChunksOptions` · `EraseIdDeps` · `EraseIdResult` · `RetentionDeps` · `DropDeps` · `Entropy`
+`GenerationListDeps` · `GenerationSummary` · `PinLease` · `LeaseDeps` · `LeaseTake` · `TakenLease` · `ChunkRead` · `ReadChunksOptions` · `EraseIdDeps` · `EraseIdResult` · `RetentionDeps` · `DropDeps` · `Entropy`
 
 ### `@cloudbitmaps/core/driver-kit`
 

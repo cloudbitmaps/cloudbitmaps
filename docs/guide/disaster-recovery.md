@@ -585,10 +585,10 @@ only once the pointer is on the target — so keep the error with your incident 
 The registry reads a row only in a shape the library writes, and refuses anything else rather than guess at it:
 a body that is not JSON, that has no `schemaVersion`, that carries a field the library does not write (at the top
 level or in the record) or one its `schemaVersion` did not have, or that holds a value out of range, such as an
-unknown `status`, a malformed `wrappedDeks` list, a malformed `summary`, a malformed `keptGens` list, or a `token` in none of the forms the
+unknown `status`, a malformed `wrappedDeks` list, a malformed `summary`, a malformed `keptGens` or `leases` list, or a `token` in none of the forms the
 library writes. A row stamped 1 holds a decimal counter; one stamped 2 or 3 holds a decimal counter and a write part
 (16 lowercase hex digits), `.`-separated, or 32 lowercase hex digits of incarnation id before those two. A row stamped
-2 or 1 that carries a `keptGens` is refused too: only schema 3 has it. Each is an
+2 or 1 that carries a `keptGens` or `leases` is refused too: only schema 3 has them. Each is an
 `IntegrityError`, and its message names the row's key, except for a row over the 1 MiB size cap and a malformed
 `wrappedDeks` list. This release writes rows stamped 3 and reads rows stamped 1, 2 or 3. A row with a higher
 `schemaVersion` than this build reads was written by a newer release; it is refused with `UnsupportedError`, and the

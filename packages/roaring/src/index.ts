@@ -2490,11 +2490,20 @@ export class Segment {
    * 0, so a pin of the old segment never reads the new one: what it has already read still answers, as the
    * instant it pinned, and anything it would have to fetch fails with `NotFoundError`, as a swept pin's does.
    *
-   * **It is a hold, not a lease.** Nothing here stops a collection deleting the generation underneath
-   * you: a pinned read deliberately does **not** heal forward, because silently serving a different generation
-   * is the one thing a pin exists to prevent, so it fails instead. Size `keep` to cover your longest pinned
-   * job — see [Generations and `keep`](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/loading.md#generations-and-keep) — or take the pin on a segment
-   * you are not collecting.
+   * **It is a hold, and `pin({ leaseUntil })` makes it a bounded one.** Without a lease nothing stops a collection
+   * deleting the generation underneath you: a pinned read deliberately does **not** heal forward, because silently
+   * serving a different generation is the one thing a pin exists to prevent, so it fails instead. Size `keep` to cover
+   * your longest pinned job — see [Generations and `keep`](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/loading.md#generations-and-keep) — take the pin on a segment
+   * you are not collecting, or lease it.
+   *
+   * **A lease** (`leaseUntil`: epoch **milliseconds**, after now and at most 14 days out) keeps the generation out of
+   * a load's collection until then, from any process, and the pin is taken with it: the lease is written to the segment's
+   * row before the object is opened. A read of the handle after the lease, or after {@link Segment.release}, throws
+   * {@link LeaseExpiredError} at every read site, including when the handle is an operand or an `exclude` of a combine
+   * or the target of an `*Into`, and never reads empty. A stream checks the lease each time it reads a chunk. A segment
+   * holds at most 64 live leases ({@link LeaseLimitError}). A collector holds a lease 60 seconds past its end, which covers
+   * clocks that differ by that much. Erasure, shred, drop and retention expiry ignore a lease. See
+   * [Hold a generation for a job](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/reading.md#hold-a-generation-for-a-job-a-lease).
    *
    * A segment with no current generation pins nothing and reads empty, exactly as it would unpinned. A pinned
    * segment whose row is later dropped or destroyed fails once it must open its object again, rather than go empty

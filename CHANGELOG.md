@@ -29,8 +29,8 @@ so, and so do the module headers in the code.
   3. There is no downgrade. After the first 0.17 write, 0.16 cannot read the registry; the only way back is a
      registry restore to a point before that write (the disaster-recovery guide), which loses every write since.
 
-  Schema 3 adds the record's optional `keptGens`, below. A row stamped 2 may hold only what schema 2 could: a
-  `keptGens` on one is an `IntegrityError`. A registry of your own must store and return the field, and drop it on a
+  Schema 3 adds the record's optional `keptGens` and `leases`, below. A row stamped 2 may hold only what schema 2 could: a
+  `keptGens` or a `leases` on one is an `IntegrityError`. A registry of your own must store and return the field, and drop it on a
   patch that moves `currentGen` without naming it; the conformance suite holds a driver to both.
 
 ### Changed
@@ -61,6 +61,30 @@ so, and so do the module headers in the code.
   the run measured neither. Its rounds sit above the engine's rounds model, which assumes no socket limit; it did not
   vary its client's 128 sockets, and no stage held more than 11 requests in flight, so it does not say why. Both READMEs,
   the benchmarks page, the roadmap, the guides and the site quote it.
+
+### Added
+
+- **`pin({ leaseUntil })`: a bounded lease on a pin.** A leased pin keeps its generation out of a load's collection until
+  `leaseUntil`, an epoch-millisecond instant at most 14 days out (`MAX_LEASE_MS`), whatever `keep` says and whichever
+  process loads the segment: the lease is a `leases` field of the segment's registry row (schema 3, beside `keptGens`),
+  which every collection reads from the row it already holds. `snap.lease` is `{ holder, until }`, and `snap.release()` ends
+  it early and is idempotent. A read of the handle after the lease, or after a release, throws the new `LeaseExpiredError`
+  at every read site, never empty: `has`, `count`, `stat`, `iterate`, `batches()`, `costReport`, and a leased handle used
+  as an operand or an `exclude` of a combine or as the target of an `*Into`. A stream checks the lease each time it reads
+  a chunk. A segment holds at most 64 live leases (`MAX_LEASES_PER_SEGMENT`); the next throws `LeaseLimitError` with
+  nothing written. A collector holds a lease for `LEASE_SKEW_MS` (60 seconds) after it ends, which covers clocks that differ
+  by that much in either direction. A leased generation takes no `keep` slot, and the first listing pass after the lease ends
+  takes it: at most 15 further loads of that segment. A leased pin costs one conditional write to the row more than a pin,
+  taken before the generation is opened, and that write makes a load, an erasure rewrite or a rollback that read the row
+  first report `superseded` or throw `WriteConflictError`, to be run again. A load's publish drops the leases that have
+  ended from the row in its own write. **A lease keeps superseded generations, including ids a newer load removed, until
+  it ends, and erasure ignores it:** `eraseSubject`, `eraseIdFromSegment`, `destroySegment`, `dropSegment` and retention
+  expiry delete a leased generation and clear the row's leases, and `PRIVACY.md` and the erasure guide say so. The registry
+  `RegistryRecord.leases` and `RegistryPatch.leases` are new, and a registry of your own must store and return the field and
+  keep it when a patch moves `currentGen`; the conformance suite holds a driver to both. The holder id is drawn from the
+  store's `Rng`. New exports: `LeaseExpiredError`, `LeaseLimitError`, `isLeaseExpiredError`, `isLeaseLimitError`,
+  `LEASE_SKEW_MS`, `MAX_LEASE_MS`, `MAX_LEASES_PER_SEGMENT`, `PinOptions`, `Lease`, `LeaseEntry`, and from core `takeLease`,
+  `releaseLease`, `PinLease`, `LeaseDeps`, `LeaseTake` and `TakenLease`.
 
 ## [0.16.0] — 2026-10-04
 
