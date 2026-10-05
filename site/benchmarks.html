@@ -121,7 +121,7 @@
             <p class="panel-row is-pair"><span>Share of the $346 cluster</span><span>0.008%</span></p>
             <p class="panel-row is-pair"><span>1M cold A&nbsp;∩&nbsp;B, 100 chunks shared · measured GETs, list price</span><span>$2.40</span></p>
             <p class="panel-row is-pair">
-              <span>1M single-part loads · <span class="m">store.load()</span>, pointer included · requests measured, list price</span><span>$11.20</span>
+              <span>1M segments' first single-part loads · <span class="m">store.load()</span>, pointer included · requests measured, list price</span><span>$11.20</span>
             </p>
             <p class="panel-row is-pair"><span>Crossover, in GETs</span><span>329.15 /s</span></p>
             <p class="panel-row is-pair"><span>…as cold A&nbsp;∩&nbsp;B, 6 GETs each · derived</span><span>54.9 /s</span></p>
@@ -138,10 +138,8 @@
            There is ONE crossover row here, not two, and the reason is structural rather than editorial: a
            loaded store has no per-id write, so there is no write RATE to plot. Data enters as a whole
            generation — one object PUT, a few when multipart, then the pointer — and that is the "1M loads" row
-           instead. Its figure is the single-bucket run's, not the estimator's: the run measured a write and publish,
-           and the estimator prices `store.load()`, which also checks its generation number and reads the pointer more. The two
-           real-S3 rows quote the run as it measured it; what they would be inside the region, or through
-           `store.load()`, is in the run's own panel below, labelled expected. -->
+           instead. Its figure is the in-region run's: a segment's first `store.load()`, its requests measured and priced at
+           the list price. A reload and a later load are the estimator's, labelled expected in the benchmarks doc. -->
       <section id="anchors">
         <h2>Cost anchors</h2>
         <p class="lede">
@@ -196,7 +194,7 @@
                   <td><span class="status is-shipped">Win</span></td>
                 </tr>
                 <tr>
-                  <td>1M loads with <span class="m">store.load()</span></td>
+                  <td>1M first loads with <span class="m">store.load()</span></td>
                   <td class="num">$11.20</td>
                   <td class="from">
                     A generation written once, then the pointer moved to it: a segment's first
@@ -393,7 +391,7 @@
           <li>
             <span class="rl-mark">04</span>
             <span class="rl-what">And the write side crosses nothing at all</span>
-            <span class="rl-fig">$11.20 / 1M store.load(), measured requests</span>
+            <span class="rl-fig">$11.20 / 1M first store.load(), measured requests</span>
             <span class="rl-note">
               There is no writes-per-second line here because there is no per-id write: a set changes by loading
               a <em>whole new generation</em> and advancing the registry pointer, so ingest bills per object PUT
@@ -717,7 +715,7 @@
           </div>
           <p class="tpanel-foot">
             <strong>Measured request counts at list prices</strong>, and <strong>expected</strong> where marked:
-            the second row is the code's prediction, which the run met exactly. The two load rows are a segment's first load: the requests are measured and the price is the list price; a reload and a later load are expected, in <a href="#anchors">the cost anchors</a>. All 40
+            the second row is the code's prediction, which the run met exactly. The two load rows are a segment's first load: the requests are measured and the price is the list price; a reload and a later load are expected, in <a href="https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/benchmarks.md#expected-not-measured">the benchmarks doc</a>. All 40
             cold intersects — each on a fresh store, with nothing cached — returned the planned ids, checked by
             count and by sum, and each fetched 100 of 1,999 chunks per segment, the chunks the two share, and
             no other, as one range. Each also made one tail read per segment: its last 256 KiB, which holds the footer and the
