@@ -216,9 +216,9 @@ const again = await store.segment('active-30d').pinAt({ generation, fingerprint 
   the fingerprint matches.
 - **A pin is identified by its `generation` and `fingerprint`.** The handle `pinAt` returns reads as a `pin()` handle does,
   but its `pinnedAt.version` can differ from the original pin's, since it names the row as it is now.
-- **It costs one row read and one tail read** (the tail read alone without a registry), and the object it opens is the
-  one its first read finds open. After that the handle reads exactly as a `pin()` handle does, including what it does
-  once the generation is swept (see above).
+- **It costs one row read and one tail read** (the tail read alone without a registry), and a leased `pinAt` makes one
+  conditional write to the row besides. The object it opens is the one its first read finds open. After that the handle
+  reads exactly as a `pin()` handle does, including what it does once the generation is swept (see above).
 - **It keeps nothing alive unless you lease it.** `pinAt` does not stop a collection, so how long a generation can be
   reopened is how long `keep` retains it, or how long a lease holds it: `pinAt(at, { leaseUntil })` takes a
   [lease](#hold-a-generation-for-a-job-a-lease) as `pin({ leaseUntil })` does, with the lease in the second argument
@@ -254,8 +254,8 @@ leased generation in the bucket until the lease has ended. It is a hold on one n
   `costReport`, `everyNth`, and a call of another handle that takes this one as an operand or as an `exclude`, or as the target of an
   `*Into`. An opt-out list held through a lease that has ended is an error, never an empty list that suppresses nobody. It
   throws whether or not the object is still in the bucket, and a small generation's cached reader is not consulted.
-  `pin()` of a leased handle past its lease throws too; before it, `pin()` takes the generation current now, with no lease
-  of its own.
+  `pin()` or `pinAt()` from a leased handle past its lease throws too; before it, `pin()` takes the generation current now
+  with no lease of its own.
 - **A stream checks the lease before its first pull and each time it reads a chunk.** A stream built while the lease is
   live and first pulled after it ended throws, even when its result is empty. A read that is under way when the lease ends
   finishes the chunk it is on and throws at the next one, per id and per batch. `has`, `count` and `stat` check once, before

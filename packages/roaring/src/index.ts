@@ -2684,7 +2684,8 @@ export class Segment {
    * {@link PinOptions} and {@link Segment.pin}). A leased `pinAt` writes the lease before it verifies the object, and
    * releases it if the verify fails; for a generation below the pointer, a collector that read the row before the lease
    * landed can still delete the generation inside its own round trip, and the handle then fails with `NotFoundError`
-   * like any swept pin. A leased handle is checked at every read site as a leased `pin()` is. With a registry it costs one row read and one tail read; the handle
+   * like any swept pin. A leased handle is checked at every read site as a leased `pin()` is. With a registry it costs one row read and one tail read,
+   * and a leased `pinAt` one conditional write to the row besides; the handle
    * then reads as one from `pin()` does, including its failure on a chunk it has not cached once the generation is
    * swept. Works for an encrypted segment. The first argument is an object so that fields can join it later; the lease
    * is in `options`, the second.
@@ -2868,9 +2869,6 @@ export class Segment {
    * without checking its options, as every read of one does.
    */
   iterate(options?: IdRange): IdStream {
-    // For `everyNth` (a separate change), which returns a plain `AsyncIterable<number>` with no `.batches()`: it checks
-    // `leaseError()` here, before its stream, and wraps that stream in `guardIdIterable` (lease-guards.ts), which checks
-    // before the first pull and at each chunk. The source scan fails for it until it does.
     const lease = this.leaseError();
     if (lease !== undefined) return failing(lease);
     if (this.expired()) return EMPTY_IDS;
