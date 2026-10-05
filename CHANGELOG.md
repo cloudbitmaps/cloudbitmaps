@@ -13,6 +13,17 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **Behaviour change: an expired exclusion now throws; it used to exclude nothing.** `a.andNot([stale])`,
+  `a.intersect([b], { exclude: [stale] })` and `a.union([b], { exclude: [stale] })`, with a range, `.batches()` or on
+  pinned handles, reject with `ValidationError` (`andNot: refusing to read while these exclusions have expired — <name>`)
+  when an exclusion's `expiresAt` has passed, before any request is made. They skipped it without reading it, so a
+  suppression or opt-out list that lapsed stopped excluding and the opted-out ids were included. The check is made when
+  the combine is called, ahead of the rules for operands, so an expired exclusion is refused even where the combine would
+  read empty, and one that names a segment that does not exist is refused as expired, not as an absent operand. A stream
+  already being read is not re-checked when its exclusion expires part-way. Renew the exclusion's `expiresAt`, open it
+  without one, or leave it out of the call. Unchanged: an expired `self` or include operand is empty or dropped, an
+  absent operand is refused unless `allowAbsentOperands` is set, and an `*Into` involving an expired handle throws
+  `ValidationError`.
 - **A segment's first `store.load()` is now measured on S3, on `0.16.0`.** A run from AWS CloudShell in `us-east-1` on
   2026-10-05 measured what the benchmarks page had only counted from the engine: every one of the load stage's 25 loads was
   a segment's first, and made 2 PUT + 3 GET single-part and, for a multipart load, 5 PUT-class + 3 GET: $11.20 and $26.20 per million

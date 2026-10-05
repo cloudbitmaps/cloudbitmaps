@@ -171,11 +171,16 @@ on a bare `IStorageDriver` instead of a backend, which has no registry to hold w
 `expiresAt` is an absolute epoch-**milliseconds** deadline, declared where the segment is named. Past it, every
 read through **that handle** answers empty — `has` → `false`, `count` → `0`, `iterate` → nothing — as one integer
 compare against the injected clock, with **no I/O, on every backend**. Set algebra stays coherent with it: an
-expired operand makes an `intersect` empty and is dropped from a `union`. **An expired exclusion excludes nothing,
-in every shape** — `andNot`, and `exclude` on `intersect` and `union`, the range read included: it is skipped
-without being read, so an expired exclusion naming a segment that does not exist is not refused as an absent operand.
-An `*Into` that involves an expired handle, an exclusion included, still throws `ValidationError`: it does not
-publish a generation the exclusion did not shape.
+expired operand makes an `intersect` empty and is dropped from a `union`. **An expired exclusion throws,
+in every shape** — `andNot`, and `exclude` on `intersect` and `union`, the range read and `.batches()` included: the
+stream rejects with a `ValidationError` that names each expired exclusion (`andNot: refusing to read while these
+exclusions have expired — <name>, …`), before any request is made, because a suppression or opt-out list that is skipped
+would let through the ids it exists to remove. The check is made when the combine is called, against the injected
+clock, and runs ahead of the rules for operands, so an expired exclusion is refused even where the combine would
+read empty, and one that names a segment that does not exist is refused as expired, not as an absent operand. A
+stream already being read is not re-checked if its exclusion expires part-way. An `*Into` that involves an expired
+handle, an exclusion included, throws the same `ValidationError`: it does not publish a generation the exclusion did
+not shape.
 
 It does **not** reclaim the bytes (`retireExpired` does, so `count()` reporting 0 while objects still exist is the
 expected state in that window) and it does **not** apply to other handles — record the policy with
