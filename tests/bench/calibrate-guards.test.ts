@@ -493,9 +493,11 @@ describe('calibrate guards — what a real run is held to', () => {
     // Nothing racing and the number free: two reads, the check, the object and the one conditional write, and no
     // listing, since a new segment has nothing outside its window to collect.
     expect(await load(0, false)).toEqual({ reads: 2, checks: 1, writes: 1, objects: 1, lists: 0 });
-    // The number taken: three more reads and two listings, one to number past the objects and one to collect, which
-    // re-reads the pointer before its listing, after it and before its delete.
-    expect(await load(0, true)).toEqual({ reads: 5, checks: 1, writes: 1, objects: 1, lists: 2 });
+    // The number taken: four more reads and two listings, one to number past the objects and one to collect, which
+    // re-reads the pointer before its listing, after it and before its delete. The segment's row records no list of
+    // kept generations (the listing numbered the load), so the collection records the window it kept with one more
+    // conditional write, which reads the row for its version first.
+    expect(await load(0, true)).toEqual({ reads: 6, checks: 1, writes: 2, objects: 1, lists: 2 });
     const p = guards.projectOps({
       loads: 1,
       reads: 0,
@@ -527,7 +529,7 @@ describe('calibrate guards — what a real run is held to', () => {
     }
     // The bound is tight where it is reached: a load that finds its number taken and loses every attempt but the last makes as
     // many GET-class requests as the bound allows.
-    expect(p.get).toBe(14);
+    expect(p.get).toBe(15);
     expect(p.get).toBe((await load(guards.RETRY_BOUND - 1, true)).reads + 1);
   });
 

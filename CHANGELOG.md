@@ -11,11 +11,50 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Breaking
+
+- **Registry rows are schema 3, and there is no going back: stop every 0.16 process that writes a store before the first
+  0.17 write.** Every row a 0.17 registry writes, whether a create, a compare-and-swap or a tombstone, is stamped
+  `schemaVersion: 3`, whatever it holds, and 0.17 reads rows stamped 1, 2 or 3. A 0.16 process refuses a schema-3 row
+  with `UnsupportedError`: a load, an `*Into`, a `rollback`, a `setRetention` or a drop of that row throws, and so does
+  every `list()` that reaches it, in its namespace and in every unscoped listing, so a single 0.17 write stops each
+  0.16 call that lists the registry: `retireExpired`, `eraseSubject`, `subjectReport`, `eraseNamespace`,
+  `checkConsistency`, `store.segments()` and the `export-segments` CLI. It fails closed and typed, and never misreads
+  a row. Every process that writes a store moves together. Upgrade in this order:
+  1. Upgrade the processes that only read to 0.17 first: those that call `count`, `has`, `iterate`, the combines or
+     `pin`, and those that list, `store.segments()` and `subjectReport`. 0.17 reads every row 0.16 wrote.
+  2. Stop every 0.16 process that writes, runs a retention sweep, erases, checks consistency or exports, then start
+     the 0.17 ones. A 0.16 `eraseSubject` cannot complete once a schema-3 row exists in a namespace it lists (every
+     namespace, for an unscoped run), so schedule erasure runs around the cut-over.
+  3. There is no downgrade. After the first 0.17 write, 0.16 cannot read the registry; the only way back is a
+     registry restore to a point before that write (the disaster-recovery guide), which loses every write since.
+
+  Schema 3 adds the record's optional `keptGens`, below. A row stamped 2 may hold only what schema 2 could: a
+  `keptGens` on one is an `IntegrityError`. A registry of your own must store and return the field, and drop it on a
+  patch that moves `currentGen` without naming it; the conformance suite holds a driver to both.
+
 ### Added
 
 - **`store.reapRegistryTombstones({ namespace?, dryRun?, confirmNoLegacyWriters?, limit? })`, an admin call that removes the `deleted: true` rows with no incarnation id from an object-store registry.** A release before 0.12.0 kept a deleted row as an envelope whose token is a bare counter, and a 0.12.0 or later release does the same when it deletes a row born before 0.12.0; no call removes one, and every full listing still reads each (a GET apiece). The call removes a row only if it is `deleted: true` with no incarnation id, whatever its `status`: never a live row, a `destroyed` row that is not `deleted`, or a deleted row that has an incarnation id. A real run needs `confirmNoLegacyWriters: true`, your statement that no process on a release before 0.12.0 writes the registry (without it, a `ValidationError` and no request); `dryRun` counts what a real run would remove and needs no confirmation. Each delete is conditioned on the version read, so a `create` that lands over the envelope first wins and the row is counted `skipped.raced` (a row already gone counts there too); a `create` that had already read the envelope and meets the removal throws `WriteConflictError`, which the library does not retry. A registry whose `conditionalDelete` is off (GCS by default, S3 on a custom endpoint) throws `CapabilityError` before any request, and the in-memory and local-filesystem registries `UnsupportedError`; on an endpoint that ignores `If-Match` (MinIO, fake-gcs-server), a `conditionalDelete: true` you set makes it an unfenced delete, so run it with every writer stopped. It costs `ceil(R / 1000)` LIST, R GET and E DELETE requests over R rows read and E removed. `limit` (default 1,000) bounds the removals, not the reads: a run is not resumable, each lists and reads from the start, a dry run with a `limit` shows the same first rows, and `limited` is `true` whenever the limit was spent with keys left. An object it cannot read stops the run with an error naming its key; a `namespace` scope gets past one. It returns `{ dryRun, examined, reaped, wouldReap, limited, skipped: { live, destroyed, incarnated, raced } }`. **It does not clean a bucket completely**: a tombstone `dropSegment` leaves is a `destroyed` row with no stamp, and stays, as does every live row written before 0.12.0 and a tombstone a 0.12.0 or later release wrote while `conditionalDelete` was off (it has an incarnation id, and the call refuses to run on that registry). Also `reapRegistryTombstones(registry, options)` as a free function, the optional `IRegistryDriver.reapLegacyTombstones` member that `ObjectStoreRegistry` implements, the optional `ObjectRegistryStore.resolveCapabilities`, and the types `ReapRegistryTombstonesOptions`, `ReapRegistryTombstonesResult`, `ReapLegacyTombstonesOptions` and `ReapLegacyTombstonesResult`.
 
 ### Changed
+
+- **`store.load()` collects by name at any `keep` up to 64.** The segment's row records the generations a load keeps
+  (`keptGens`, ascending, each below the pointer, at most 64 written and 256 read). A load writes the new list in the
+  same compare-and-swap that moves the pointer, derived from the row that write is conditioned on, then deletes the
+  generations that fell out of it by name, re-reading the row before each delete and stopping unless the pointer is
+  still at or above the publish, the name is below it, and the row's own list does not name it. It lists the segment on
+  every 16th generation, which deletes every generation below the pointer that the row does not name (an object a crashed
+  or refused load left, one a failed delete left), when its check of its number met an object, when the current object
+  was found gone, for a `keep` above 64, and for a row that records no list: the first load of a row an earlier release
+  wrote, or one a rollback moved. That load keeps the newest `keep` generations it finds below the pointer and records
+  them with one more write on the row it just published, so a derived writer in flight on the row meets a lost fence
+  once and re-derives. A `keep` of 12 therefore makes the requests a `keep` of 1 makes, about $11.94 per million
+  single-part loads at the default prices, expected and not measured; a load with a `keep` above 64 lists on every load. A
+  subject-erasure rewrite records that nothing below its pointer is kept. `LoadResult.collected` names every generation
+  the pass asked to delete. A load whose publish has landed does not throw from its collection because another writer moved the row
+  meanwhile: the pass spares what the row names then and stops where it cannot prove a delete. A malformed `keptGens` on a
+  stored row is an `IntegrityError` naming the row, like a malformed `summary`; one with an entry at or above `currentGen` is read and not used.
 
 - **A segment's first `store.load()` is now measured on S3, on `0.16.0`.** A run from AWS CloudShell in `us-east-1` on
   2026-10-05 measured what the benchmarks page had only counted from the engine: every one of the load stage's 25 loads was
