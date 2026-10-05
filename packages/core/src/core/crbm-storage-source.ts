@@ -2329,7 +2329,7 @@ export async function bulkLoadAhead(
   } else if (ids instanceof ChunkLoadInput) {
     // A combine's chunks are held whole before the first write, as the bucketed ids are, so the reads they cost come
     // where the ids' do: before the row is read, and a read that fails writes nothing.
-    chunks = encodeEach(await collectChunks(ids, options.clock));
+    chunks = encodeEach(await collectChunks(ids, codec, options.clock));
   } else {
     chunks = encodeEach(
       await bucketIds(ids instanceof DecodedLoadInput ? ids.bitmap : ids, codec, options.clock),
@@ -2477,18 +2477,27 @@ export async function bulkLoadAhead(
 }
 
 /**
- * Take a combine's chunks as they come, checking each as an id's chunk is checked: the key a u16 and above the last,
- * the values 16-bit (`maximum()`, one call per chunk). An empty bitmap is left out where the chunks are encoded, as for
+ * Take a combine's chunks as they come, checking each as an id's chunk is checked: the bitmap one the codec made, the
+ * key a u16 and above the last, the values 16-bit (`maximum()`, one call per chunk). The bitmaps are the load's to
+ * consume: encoding may re-encode one in place (representation only), so a caller hands over bitmaps it owns. An empty bitmap is left out where the chunks are encoded, as for
  * ids, and the writer checks the cardinality when it adds a chunk.
  */
 async function collectChunks(
   input: ChunkLoadInput,
+  codec: CodecInterface,
   clock: Clock | undefined,
 ): Promise<Array<{ chunkKey: number; bitmap: CodecBitmap }>> {
   const chunks: Array<{ chunkKey: number; bitmap: CodecBitmap }> = [];
   const tick = yieldEvery(clock);
   let last = -1;
   for await (const chunk of input.chunks) {
+    // Only the codec's own bitmaps are written as they are: a chunk of any other shape could hold bytes or a count the
+    // codec never checked, and would be published as one.
+    if (typeof chunk !== 'object' || chunk === null || codec.owns?.(chunk.bitmap) !== true) {
+      throw new ValidationError(
+        `chunk ${String((chunk as { chunkKey?: unknown } | null)?.chunkKey)}: its bitmap is not one this load's codec made`,
+      );
+    }
     const { chunkKey, bitmap } = chunk;
     if (!Number.isInteger(chunkKey) || chunkKey < 0 || chunkKey > MAX_REMAINDER) {
       throw new ValidationError(`a chunk's key must be an integer in [0, 65535]; got ${chunkKey}`);

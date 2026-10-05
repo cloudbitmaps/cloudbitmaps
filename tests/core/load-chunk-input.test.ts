@@ -1,9 +1,10 @@
-import { loadSegment } from '@/core/load';
+import { loadSegment, loadSegmentChunks } from '@/core/load';
 import type { LoadInput } from '@/core/load-input';
 import { ValidationError } from '@/core/errors';
-import type { CodecBitmap } from '@/core/codec';
+import type { CodecBitmap, CodecInterface } from '@/core/codec';
 import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
+import roaring from 'roaring';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 
 /**
@@ -12,8 +13,8 @@ import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
  * a u16 and above the one before, the values 16-bit, an empty chunk left out. Anything it refuses it refuses before it
  * has written an object or moved the pointer.
  */
+const { RoaringBitmap32 } = roaring;
 const SEG: SegmentRef = { namespace: 'ns', segment: 's' };
-const BRAND = Symbol.for('cloudbitmaps.load-input.chunks');
 
 const chunk = (
   chunkKey: number,
@@ -26,8 +27,6 @@ const chunk = (
 async function* of<T>(...items: T[]): AsyncGenerator<T> {
   for (const item of items) yield item;
 }
-
-const chunksInput = (source: unknown): LoadInput => ({ [BRAND]: source }) as unknown as LoadInput;
 
 function world() {
   const storage = new MemoryStorageDriver();
@@ -61,7 +60,7 @@ describe('a load of a combine’s chunks', () => {
     const a = world();
     const b = world();
     const byIds = await loadSegment(SEG, ids, a.deps);
-    const byChunks = await loadSegment(SEG, chunksInput(of(...chunks)), b.deps);
+    const byChunks = await loadSegmentChunks(SEG, of(...chunks), b.deps);
     expect(byChunks).toEqual(byIds);
     expect(await object(b.storage)).toEqual(await object(a.storage));
   });
@@ -74,9 +73,9 @@ describe('a load of a combine’s chunks', () => {
       [3, 4, 3 * 65_536, 3 * 65_536 + 65_535, 9 * 65_536 + 9],
       a.deps,
     );
-    const byChunks = await loadSegment(
+    const byChunks = await loadSegmentChunks(
       SEG,
-      chunksInput(of(chunk(0, 3, 4), chunk(1), chunk(2), chunk(3, 0, 65_535), chunk(9, 9))),
+      of(chunk(0, 3, 4), chunk(1), chunk(2), chunk(3, 0, 65_535), chunk(9, 9)),
       b.deps,
     );
     expect(byChunks).toEqual(byIds);
@@ -94,7 +93,7 @@ describe('a load of a combine’s chunks', () => {
       [chunk(2, 1), chunk(2, 5)],
     ]) {
       const w = world();
-      const err = await loadSegment(SEG, chunksInput(of(...bad)), w.deps).catch((e: unknown) => e);
+      const err = await loadSegmentChunks(SEG, of(...bad), w.deps).catch((e: unknown) => e);
       expect(err).toBeInstanceOf(ValidationError);
       expect(w.puts).toEqual([]);
       expect(await w.registry.get(SEG)).toBeNull();
@@ -104,9 +103,9 @@ describe('a load of a combine’s chunks', () => {
   it('refuses a chunk holding a value above 65,535, which no remainder can be', async () => {
     const w = world();
     const wide = { chunkKey: 0, bitmap: roaringCodec.fromValues([1, 70_000]) };
-    const err = await loadSegment(
+    const err = await loadSegmentChunks(
       SEG,
-      chunksInput(of(chunk(0, 1), { ...wide, chunkKey: 1 })),
+      of(chunk(0, 1), { ...wide, chunkKey: 1 }),
       w.deps,
     ).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ValidationError);
@@ -117,9 +116,9 @@ describe('a load of a combine’s chunks', () => {
   it('refuses what is not an async iterable of chunks', async () => {
     for (const bad of [[chunk(0, 1)], 5, null, { next: () => ({}) }]) {
       const w = world();
-      await expect(loadSegment(SEG, chunksInput(bad), w.deps)).rejects.toBeInstanceOf(
-        ValidationError,
-      );
+      await expect(
+        loadSegmentChunks(SEG, bad as unknown as AsyncIterable<never>, w.deps),
+      ).rejects.toBeInstanceOf(ValidationError);
       expect(w.puts).toEqual([]);
     }
   });
@@ -130,9 +129,7 @@ describe('a load of a combine’s chunks', () => {
       yield chunk(0, 1);
       throw new Error('the source failed');
     }
-    await expect(loadSegment(SEG, chunksInput(failing()), w.deps)).rejects.toThrow(
-      'the source failed',
-    );
+    await expect(loadSegmentChunks(SEG, failing(), w.deps)).rejects.toThrow('the source failed');
     expect(w.puts).toEqual([]);
     expect(await w.registry.get(SEG)).toBeNull();
   });
@@ -144,11 +141,81 @@ describe('a load of a combine’s chunks', () => {
       started = true;
       yield chunk(0, 1);
     }
-    const input = chunksInput(lazy());
+    const input = lazy();
     expect(started).toBe(false);
-    const done = loadSegment(SEG, input, w.deps);
+    const done = loadSegmentChunks(SEG, input, w.deps);
     expect(started).toBe(false);
     await done;
     expect(started).toBe(true);
+  });
+});
+
+describe('only bitmaps the codec made are written', () => {
+  const foreign: Array<[string, unknown]> = [
+    [
+      'a plain object shaped like a bitmap',
+      { isEmpty: false, size: 1, serialize: () => new Uint8Array([1]), maximum: () => 0 },
+    ],
+    [
+      'a bitmap whose serialization is garbage',
+      { isEmpty: false, size: 3, serialize: () => new Uint8Array(5), maximum: () => 2 },
+    ],
+    [
+      'a bitmap that lies about its size',
+      { isEmpty: false, size: 7, serialize: () => new Uint8Array([1]), maximum: () => 2 },
+    ],
+    [
+      'a bitmap with no maximum()',
+      { isEmpty: false, size: 2, serialize: () => new Uint8Array([1]) },
+    ],
+    ["roaring's own bitmap, which is not the codec's", new RoaringBitmap32([1, 2])],
+    ['no bitmap at all', undefined],
+  ];
+  it.each(foreign)('%s is refused before anything is written', async (_, bitmap) => {
+    const w = world();
+    const err = await loadSegmentChunks(
+      SEG,
+      of(chunk(0, 1), { chunkKey: 1, bitmap: bitmap as CodecBitmap }),
+      w.deps,
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ValidationError);
+    expect((err as Error).message).toContain('codec made');
+    expect(w.puts).toEqual([]);
+    expect(await w.registry.get(SEG)).toBeNull();
+  });
+
+  it('a null chunk is a ValidationError, not a TypeError', async () => {
+    const w = world();
+    await expect(
+      loadSegmentChunks(
+        SEG,
+        of(null as unknown as { chunkKey: number; bitmap: CodecBitmap }),
+        w.deps,
+      ),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(w.puts).toEqual([]);
+  });
+
+  it('a codec that cannot vouch for its bitmaps has every chunk refused', async () => {
+    const w = world();
+    const mute: CodecInterface = { ...roaringCodec, owns: undefined };
+    const err = await loadSegmentChunks(SEG, of(chunk(0, 1)), { ...w.deps, codec: mute }).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(ValidationError);
+    expect(w.puts).toEqual([]);
+  });
+});
+
+describe('a branded object is no longer a chunk input to the public loads', () => {
+  const branded = (): LoadInput =>
+    ({ [Symbol.for('cloudbitmaps.load-input.chunks')]: of(chunk(0, 1)) }) as unknown as LoadInput;
+
+  it('loadSegment refuses it as an object that is none of the three inputs, before any request', async () => {
+    const w = world();
+    const err = await loadSegment(SEG, branded(), w.deps).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ValidationError);
+    expect((err as Error).message).toContain('takes ids');
+    expect(w.puts).toEqual([]);
   });
 });

@@ -48,6 +48,7 @@ import {
   estimateCost,
   groundedReport,
   loadSegment,
+  loadSegmentChunks,
   mapWithConcurrency,
   resolveBudget,
   resolvePerOpBudget,
@@ -935,7 +936,7 @@ export class CloudRoaring {
    */
   private async materialize(
     dest: SegmentRef,
-    ids: LoadInput,
+    ids: LoadInput | CombineChunks,
     op: string,
     options?: MaterializeOptions,
   ): Promise<MaterializeResult> {
@@ -946,7 +947,7 @@ export class CloudRoaring {
     const metadata = options?.metadata;
     let result: Awaited<ReturnType<typeof loadSegment>>;
     try {
-      result = await loadSegment(dest, ids, deps, {
+      const loadOptions = {
         ...(options?.allowEmpty === undefined ? {} : { allowEmpty: options.allowEmpty }),
         ...(options?.guard === undefined ? {} : { guard: options.guard }),
         ...(metadata === undefined ? {} : { metadata }),
@@ -959,7 +960,11 @@ export class CloudRoaring {
         // as a side effect of adding a guard whose entire purpose is preventing data loss. Opt in with `keep`.
         keep: options?.keep ?? KEEP_EVERY_GENERATION,
         ...(options?.audit === undefined ? {} : { audit: options.audit }),
-      });
+      };
+      result =
+        ids instanceof CombineChunks
+          ? await loadSegmentChunks(dest, ids.chunks, deps, loadOptions)
+          : await loadSegment(dest, ids, deps, loadOptions);
     } finally {
       // As `load()` does: this store's view of `dest` is behind whatever just happened, and a throw can still have
       // published first. Left alone, the store read its own write's predecessor: indefinitely, with no timed refresh.
@@ -2120,6 +2125,11 @@ const NO_CHUNKS: ChunkStream = {
   },
 };
 
+/** A combine's chunks on their way to a load, which writes them as they are. */
+class CombineChunks {
+  constructor(readonly chunks: ChunkStream) {}
+}
+
 /** Combines read as chunks: what the `*Into` verbs write into the new generation, with no id built on the way. */
 const AS_CHUNKS: CombineOutput<ChunkStream> = {
   none: NO_CHUNKS,
@@ -2130,10 +2140,6 @@ const AS_CHUNKS: CombineOutput<ChunkStream> = {
   union: (engine, refs, opts) => engine.unionChunks(refs, opts),
   andNot: (engine, base, refs, opts) => engine.andNotChunks(base, refs, opts),
 };
-
-/** The input a load takes for a combine's chunks: see `CHUNK_INPUT_BRAND` in core. */
-const chunksAsLoadInput = (chunks: ChunkStream): LoadInput =>
-  ({ [Symbol.for('cloudbitmaps.load-input.chunks')]: chunks }) as unknown as LoadInput;
 
 /**
  * What `andNotInto` takes: the write options without `exclude`, because its `excludes` argument IS the
@@ -2166,7 +2172,7 @@ type CombineEngine = (handles: readonly Segment[]) => SegmentEngine | undefined;
 
 type Materialize = (
   dest: SegmentRef,
-  ids: LoadInput,
+  ids: LoadInput | CombineChunks,
   op: string,
   options?: MaterializeOptions,
 ) => Promise<MaterializeResult>;
@@ -2573,7 +2579,7 @@ export class Segment {
     return this.timed('intersectInto', () =>
       this.materialize(
         dest.ref,
-        chunksAsLoadInput(this.intersectAs(AS_CHUNKS, others, options)),
+        new CombineChunks(this.intersectAs(AS_CHUNKS, others, options)),
         'intersectInto',
         options,
       ),
@@ -2638,7 +2644,7 @@ export class Segment {
     return this.timed('unionInto', () =>
       this.materialize(
         dest.ref,
-        chunksAsLoadInput(this.unionAs(AS_CHUNKS, others, options)),
+        new CombineChunks(this.unionAs(AS_CHUNKS, others, options)),
         'unionInto',
         options,
       ),
@@ -2701,7 +2707,7 @@ export class Segment {
     return this.timed('andNotInto', () =>
       this.materialize(
         dest.ref,
-        chunksAsLoadInput(this.andNotAs(AS_CHUNKS, excludes, options)),
+        new CombineChunks(this.andNotAs(AS_CHUNKS, excludes, options)),
         'andNotInto',
         options,
       ),

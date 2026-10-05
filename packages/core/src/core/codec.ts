@@ -158,6 +158,15 @@ export interface CodecInterface {
     maxBytes: number,
     options?: { readonly whole?: boolean },
   ): CodecBitmap;
+  /**
+   * Whether `bitmap` is one this codec made: its own type, with the invariants its own operations keep (a `size` that
+   * is the true cardinality, a `serialize()` that decodes back to the same set). A load of a combine's chunks
+   * ({@link loadSegmentChunks}) writes bitmaps it is given without decoding them again, so it asks this of each and
+   * refuses any that answers `false`.
+   *
+   * **Optional.** A codec without it cannot vouch for a bitmap, so a load of chunks refuses every chunk it is given.
+   */
+  owns?(bitmap: unknown): boolean;
 }
 
 /**

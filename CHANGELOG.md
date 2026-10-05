@@ -11,6 +11,16 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Added
+
+- **`loadSegmentChunks(ref, chunks, deps, options?)`, the form of `loadSegment` for a result already held as chunks.**
+  `chunks` is an `AsyncIterable<{ chunkKey, bitmap }>` ascending by key, and each bitmap is written as it is, so no id is
+  built for a value. The `*Into` verbs call it. Its options, result and refusals are `loadSegment`'s. Each chunk is checked
+  before anything is written: its bitmap must be one the `codec` made (the new optional `CodecInterface.owns?(bitmap)`,
+  which the roaring codec implements; a codec without it has every chunk refused), its key an integer in `[0, 65535]`
+  above the one before, and its values 16-bit, or it is a `ValidationError`. The load consumes the bitmaps it is given:
+  writing may re-encode one in place for size, never changing its members. `load()` and `loadSegment()` take no chunk input.
+
 ### Changed
 
 - **`intersectInto`, `unionInto` and `andNotInto` write the combine's chunks straight into the new generation.** The

@@ -20,7 +20,7 @@
  * object, so it stays, and collection takes it like any other generation once one above it is current.
  */
 import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
-import { type CodecInterface, requireCodec } from './codec';
+import { type CodecBitmap, type CodecInterface, requireCodec } from './codec';
 import {
   bulkLoadAhead,
   holdsObject,
@@ -39,7 +39,7 @@ import {
   isWriteConflictError,
 } from './errors';
 import { collectAfterLoad, nextLoadGeneration } from './generation-gc';
-import { type LoadInput, prepareLoadInput } from './load-input';
+import { ChunkLoadInput, type LoadInput, prepareLoadInput } from './load-input';
 import { copiedMetadata } from './metadata';
 import { type ReadRetry, retryRead } from './retry';
 import { assertRegistryCanWrite } from './ports';
@@ -287,11 +287,56 @@ async function currentCardinality(
  * with a `reason` is a normal outcome a caller branches on, in the same shape as a successful load, because the
  * interesting cases (a guard tripped, a racing writer won) are operational facts rather than faults.
  */
-export async function loadSegment(
+export function loadSegment(
   ref: SegmentRef,
   input: LoadInput,
   deps: LoadDeps,
   options: LoadOptions = {},
+): Promise<LoadResult> {
+  return runLoad(ref, (codec) => prepareLoadInput(input, codec), deps, options);
+}
+
+/**
+ * {@link loadSegment} for the result of a combine, as the chunks it is made of: each `{ chunkKey, bitmap }` is the
+ * bitmap of one 16-bit chunk's remainders, and they ascend by key. The chunks are written as they are, so no id is built
+ * for a value. What the `*Into` verbs call; the unwired form of them, as {@link loadSegment} is of `store.load`.
+ *
+ * Every chunk is checked before anything is written. Its bitmap must be one the `codec` made (`codec.owns`, so a codec
+ * without it refuses every chunk), its key an integer in `[0, 65535]` above the one before, and its values 16-bit;
+ * anything else is a {@link ValidationError}. An empty bitmap is left out, as no empty chunk is stored.
+ *
+ * **The load consumes the bitmaps it is given.** Writing a chunk may re-encode its bitmap in place for size, which
+ * changes its representation and never its members, so pass bitmaps you made for this call and do not reuse them. A
+ * bitmap the chunk cache holds, or one a caller still reads, is not one to pass.
+ *
+ * Everything else is `loadSegment`'s, the options, the result and the refusals included.
+ */
+export function loadSegmentChunks(
+  ref: SegmentRef,
+  chunks: AsyncIterable<{ readonly chunkKey: number; readonly bitmap: CodecBitmap }>,
+  deps: LoadDeps,
+  options: LoadOptions = {},
+): Promise<LoadResult> {
+  return runLoad(
+    ref,
+    () => {
+      if (typeof chunks !== 'object' || chunks === null || !(Symbol.asyncIterator in chunks)) {
+        throw new ValidationError(
+          'loadSegmentChunks takes an async iterable of { chunkKey, bitmap }',
+        );
+      }
+      return new ChunkLoadInput(chunks);
+    },
+    deps,
+    options,
+  );
+}
+
+async function runLoad(
+  ref: SegmentRef,
+  prepare: (codec: CodecInterface) => ReturnType<typeof prepareLoadInput> | ChunkLoadInput,
+  deps: LoadDeps,
+  options: LoadOptions,
 ): Promise<LoadResult> {
   validateUserRef(ref);
   // Before any round trip: a core caller that forgot the codec learns it from this call's name, not the loader's.
@@ -322,7 +367,7 @@ export async function loadSegment(
   });
   const audit = safeAudit(options.audit ?? NOOP_AUDIT);
   // Still before any round trip: a malformed input costs none, and a `{ bitmap }` is the bitmap as of this call.
-  const ids = prepareLoadInput(input, codec);
+  const ids = prepare(codec);
   // Before the first request: the generation is written before the row, so a registry that cannot write a row
   // would leave it behind.
   assertRegistryCanWrite(deps.registry, 'load');

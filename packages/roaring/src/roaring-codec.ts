@@ -216,4 +216,5 @@ export const roaringCodec: CodecInterface = {
   fromValues: (values) => SafeBitmap.fromValues(values),
   safeDeserialize: (bytes, maxBytes, options) =>
     SafeBitmap.safeDeserialize(bytes, maxBytes, options),
+  owns: (bitmap) => bitmap instanceof SafeBitmap,
 };

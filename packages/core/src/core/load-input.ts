@@ -51,16 +51,9 @@ export class DecodedLoadInput {
 }
 
 /**
- * The brand a flavor puts on an object to hand a load the chunks of a combine's result, in place of ids:
- * `{ [Symbol.for(CHUNK_INPUT_BRAND)]: AsyncIterable<{ chunkKey, bitmap }> }`. A registered symbol, so it names the
- * input without core exporting anything: `loadSegment`'s public input type is unchanged, and so is its entry.
- *
- * Whoever holds the object can pass any chunks, so the load checks every one as it does an id's chunk: the key,
- * the order, the values and the size ({@link collectChunks}).
+ * A combine's result as the bitmaps of its chunks, ascending by key: written as they are, never id by id. Made only by
+ * {@link loadSegmentChunks}, never by {@link prepareLoadInput}, so no input a load is handed can be one.
  */
-export const CHUNK_INPUT_BRAND = 'cloudbitmaps.load-input.chunks';
-
-/** A combine's result as the bitmaps of its chunks, ascending by key: written as they are, never id by id. */
 export class ChunkLoadInput {
   constructor(readonly chunks: AsyncIterable<CombinedChunk>) {}
 }
@@ -133,7 +126,7 @@ function overCap(what: string, length: number): ValidationError {
 export function prepareLoadInput(
   input: LoadInput,
   codec: CodecInterface,
-): Iterable<number> | AsyncIterable<number> | DecodedLoadInput | ChunkLoadInput {
+): Iterable<number> | AsyncIterable<number> | DecodedLoadInput {
   if (typeof input !== 'object' || input === null) {
     throw new ValidationError(
       `a load takes ids, { serialized } or { bitmap }; got ${String(input)}`,
@@ -147,13 +140,6 @@ export function prepareLoadInput(
     );
   }
   if (Symbol.iterator in input || Symbol.asyncIterator in input) return input;
-  const chunks = (input as { [brand: symbol]: unknown })[Symbol.for(CHUNK_INPUT_BRAND)];
-  if (chunks !== undefined) {
-    if (typeof chunks !== 'object' || chunks === null || !(Symbol.asyncIterator in chunks)) {
-      throw new ValidationError('a load takes chunks as an async iterable of { chunkKey, bitmap }');
-    }
-    return new ChunkLoadInput(chunks as AsyncIterable<CombinedChunk>);
-  }
   const keys = Object.keys(input);
   if (keys.length === 1 && keys[0] === 'serialized') {
     return decode((input as { serialized: unknown }).serialized, '{ serialized }', codec);
