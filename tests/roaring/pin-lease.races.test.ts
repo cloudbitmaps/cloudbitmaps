@@ -24,6 +24,7 @@ import { collect } from '../helpers/loaded';
  */
 
 const HOUR = 3_600_000;
+const FAR_MS = 4_000_000_000_000;
 const T0 = 2_000_000_000_000;
 const REF: SegmentRef = { namespace: 'ns', segment: 'audience' };
 const ids = (n: number): number[] => Array.from({ length: n }, (_, i) => i);
@@ -137,7 +138,7 @@ describe('a lease write against the other writers of the row', () => {
   const lease = (s: CloudRoaring, w: { t: number }) =>
     s.segment(REF.segment, { namespace: 'ns' }).pin({ leaseUntil: w.t + HOUR });
 
-  it('a load that read the row before the lease and publishes after is superseded, and a re-run lands', async () => {
+  it('a load that read the row before the lease and publishes after still publishes, and a load that another write beat is superseded', async () => {
     const x = world();
     await x.writer.load(REF, ids(10));
     let snap: Awaited<ReturnType<typeof lease>> | undefined;
@@ -146,12 +147,23 @@ describe('a lease write against the other writers of the row', () => {
     });
     const writer = x.make(brandAsBackend({ storage: x.memory.storage, registry: racing }));
     const r = await writer.load(REF, ids(20));
-    expect(r).toMatchObject({ published: false, reason: 'superseded' });
-    // The row changed under it, so it leaves its object rather than risk deleting another incarnation's: an orphan above
-    // the pointer, which the re-run numbers past and a later collection takes.
-    expect(await generationsIn(x.memory.storage)).toEqual([0, 1]);
-    expect(await x.writer.load(REF, ids(20))).toMatchObject({ published: true, generation: 2 });
+    // A lease write changed nothing the load derived: it publishes, and its object was written once.
+    expect(r).toMatchObject({ published: true, generation: 1 });
     expect(await snap!.count()).toBe(10);
+    // Any other write beats it, as ever: it leaves its object, an orphan above the pointer that the re-run numbers past.
+    const beaten = hook(x.memory.registry, 'compareAndSwap', async (nth) => {
+      if (nth === 0)
+        await x.memory.registry.compareAndSwap(REF, (await x.memory.registry.get(REF))!.token, {
+          retention: { expiresAt: FAR_MS },
+        });
+    });
+    const loser = x.make(brandAsBackend({ storage: x.memory.storage, registry: beaten }));
+    expect(await loser.load(REF, ids(30))).toMatchObject({
+      published: false,
+      reason: 'superseded',
+    });
+    expect(await generationsIn(x.memory.storage)).toEqual([0, 1, 2]);
+    expect(await x.writer.load(REF, ids(30))).toMatchObject({ published: true, generation: 3 });
   });
 
   it('a pin whose row went stale before its write lands re-reads and pins the new current generation', async () => {
@@ -243,7 +255,7 @@ describe('a lease write against the other writers of the row', () => {
     );
   });
 
-  it('an erasure rewrite that read the row before the lease reports superseded, and its re-run erases', async () => {
+  it('an erasure rewrite that read the row before the lease still lands, and one that another write beat reports superseded', async () => {
     const x = world();
     await x.writer.load(REF, [5, 6, 7]);
     const racing = hook(x.memory.registry, 'compareAndSwap', async (nth) => {
@@ -251,11 +263,19 @@ describe('a lease write against the other writers of the row', () => {
     });
     const deps = { storage: x.memory.storage, registry: racing, codec: roaringCodec };
     const first = await eraseIdFromSegment(REF, 7, deps);
-    expect(first).toMatchObject({ erased: false, reason: 'superseded' });
-    const second = await eraseIdFromSegment(REF, 7, { ...deps, registry: x.memory.registry });
-    expect(second.erased).toBe(true);
+    expect(first).toMatchObject({ erased: true, generation: 1 });
     expect((await x.memory.registry.get(REF))!.leases).toBeUndefined();
-    expect(await generationsIn(x.memory.storage)).not.toContain(0);
+    expect(await generationsIn(x.memory.storage)).toEqual([1]);
+    // A write of anything else refuses it, as ever.
+    await x.writer.load(REF, [5, 6, 8]);
+    const beaten = hook(x.memory.registry, 'compareAndSwap', async (nth) => {
+      if (nth === 0)
+        await x.memory.registry.compareAndSwap(REF, (await x.memory.registry.get(REF))!.token, {
+          retention: { expiresAt: FAR_MS },
+        });
+    });
+    const second = await eraseIdFromSegment(REF, 8, { ...deps, registry: beaten });
+    expect(second).toMatchObject({ erased: false, reason: 'superseded' });
   });
 
   it('a lease that lands during an erasure delete does not keep the generation: erasure ignores it', async () => {
@@ -275,19 +295,28 @@ describe('a lease write against the other writers of the row', () => {
     expect(Array.isArray(read) || read instanceof NotFoundError).toBe(true);
   });
 
-  it('a rollback that read the row before the lease throws WriteConflictError, and its re-run moves the pointer', async () => {
+  it('a rollback that read the row before the lease still moves the pointer, and one that another write beat throws WriteConflictError', async () => {
     const x = world();
     await x.writer.load(REF, ids(5));
     await x.writer.load(REF, ids(6));
     const racing = hook(x.memory.registry, 'compareAndSwap', async (nth) => {
       if (nth === 0) await lease(x.reader, x.w);
     });
-    await expect(
-      rollbackSegment(REF, 0, { storage: x.memory.storage, registry: racing }),
-    ).rejects.toBeInstanceOf(WriteConflictError);
-    expect((await x.memory.registry.get(REF))!.currentGen).toBe(1);
-    await rollbackSegment(REF, 0, { storage: x.memory.storage, registry: x.memory.registry });
+    await rollbackSegment(REF, 0, { storage: x.memory.storage, registry: racing });
     expect((await x.memory.registry.get(REF))!.currentGen).toBe(0);
+    // A write of anything else beats it, as ever.
+    const beaten = hook(x.memory.registry, 'compareAndSwap', async (nth) => {
+      if (nth === 0)
+        await x.memory.registry.compareAndSwap(REF, (await x.memory.registry.get(REF))!.token, {
+          retention: { expiresAt: FAR_MS },
+        });
+    });
+    await x.writer.load(REF, ids(8));
+    const current = (await x.memory.registry.get(REF))!.currentGen as number;
+    const target = (await generationsIn(x.memory.storage)).find((g) => g < current) as number;
+    await expect(
+      rollbackSegment(REF, target, { storage: x.memory.storage, registry: beaten }),
+    ).rejects.toBeInstanceOf(WriteConflictError);
   });
 
   it('a shred that meets a lease write converges and leaves no lease on the tombstone', async () => {
