@@ -8,8 +8,8 @@ import roaring from 'roaring';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 
 /**
- * The input a flavor gives a load for a combine's result: its chunks as bitmaps, in place of ids, marked with a
- * registered symbol. The load writes them as it writes the chunks of ids, and checks each as it checks an id: the key
+ * The input a flavor gives a load for a combine's result, through `loadSegmentChunks`: its chunks as bitmaps, in place
+ * of ids. The load writes them as it writes the chunks of ids, and checks each as it checks an id: the key
  * a u16 and above the one before, the values 16-bit, an empty chunk left out. Anything it refuses it refuses before it
  * has written an object or moved the pointer.
  */
@@ -196,6 +196,42 @@ describe('only bitmaps the codec made are written', () => {
     expect(w.puts).toEqual([]);
   });
 
+  it('a chunk whose bitmap changes between reads is checked and written as one value', async () => {
+    const w = world();
+    const real = roaringCodec.fromValues([1]);
+    const fake = {
+      isEmpty: false,
+      size: 999,
+      serialize: () => new Uint8Array(3),
+      maximum: () => 2,
+    };
+    let reads = 0;
+    const shifty = {
+      chunkKey: 0,
+      get bitmap(): CodecBitmap {
+        reads += 1;
+        return (reads === 1 ? real : fake) as CodecBitmap;
+      },
+    };
+    const result = await loadSegmentChunks(SEG, of(shifty), w.deps);
+    expect(reads).toBe(1);
+    expect(result.cardinality).toBe(1);
+  });
+
+  it('a bitmap changed after it was handed over is refused where it is written', async () => {
+    const w = world();
+    const first = chunk(0, 1);
+    async function* changing(): AsyncGenerator<{ chunkKey: number; bitmap: CodecBitmap }> {
+      yield first;
+      first.bitmap.add(70_000);
+      yield chunk(1, 1);
+    }
+    const err = await loadSegmentChunks(SEG, changing(), w.deps).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ValidationError);
+    expect((err as Error).message).toContain('16-bit');
+    expect(await w.registry.get(SEG)).toBeNull();
+  });
+
   it('a codec that cannot vouch for its bitmaps has every chunk refused', async () => {
     const w = world();
     const mute: CodecInterface = { ...roaringCodec, owns: undefined };
@@ -207,7 +243,7 @@ describe('only bitmaps the codec made are written', () => {
   });
 });
 
-describe('a branded object is no longer a chunk input to the public loads', () => {
+describe('the public loads take ids or a bitmap, never chunks', () => {
   const branded = (): LoadInput =>
     ({ [Symbol.for('cloudbitmaps.load-input.chunks')]: of(chunk(0, 1)) }) as unknown as LoadInput;
 

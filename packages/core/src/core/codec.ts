@@ -165,6 +165,7 @@ export interface CodecInterface {
    * refuses any that answers `false`.
    *
    * **Optional.** A codec without it cannot vouch for a bitmap, so a load of chunks refuses every chunk it is given.
+   * The answer is the whole check: an `owns` that answers `true` for anything lets any object through as a bitmap.
    */
   owns?(bitmap: unknown): boolean;
 }

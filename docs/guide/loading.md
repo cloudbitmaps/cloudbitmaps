@@ -492,8 +492,8 @@ otherwise. Five properties follow from "a write is a load":
   immutable object, and the pointer moves only once the object is durable. The combine reads its operands under a bounded
   window (`concurrency × operands × chunk`, a range being at most a chunk's cap) and hands the result over as chunks, not
   ids: each is written as the bitmap it is, and no id is built for a value. A result whose chunks are dense, runs or full
-  bitsets, costs the least, because the work is per chunk; a result spread thinly over many chunks costs about half what
-  writing its ids would, since each chunk still has to be read, combined and encoded. Like a load, the write holds the
+  bitsets, costs the least, because the work is per chunk; for a result spread thinly over many chunks, the write costs about half what writing its ids
+  would, and the reads, which each chunk still needs, can be most of the call. Like a load, the write holds the
   result, one compressed bitmap per non-empty chunk, until the object is written.
 - **It deletes nothing**, unlike `load()`. The destination's previous generations stay in the bucket until you collect
   them (see [Generations and `keep`](#generations-and-keep)), so a `rollback` target is still there afterwards. Pass

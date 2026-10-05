@@ -2329,7 +2329,7 @@ export async function bulkLoadAhead(
   } else if (ids instanceof ChunkLoadInput) {
     // A combine's chunks are held whole before the first write, as the bucketed ids are, so the reads they cost come
     // where the ids' do: before the row is read, and a read that fails writes nothing.
-    chunks = encodeEach(await collectChunks(ids, codec, options.clock));
+    chunks = encodeEach(rangeCheckedAtWrite(await collectChunks(ids, codec, options.clock)));
   } else {
     chunks = encodeEach(
       await bucketIds(ids instanceof DecodedLoadInput ? ids.bitmap : ids, codec, options.clock),
@@ -2482,6 +2482,24 @@ export async function bulkLoadAhead(
  * consume: encoding may re-encode one in place (representation only), so a caller hands over bitmaps it owns. An empty bitmap is left out where the chunks are encoded, as for
  * ids, and the writer checks the cardinality when it adds a chunk.
  */
+/**
+ * The chunks a load was handed, each range-checked again as it is written: a caller's bitmap could have been changed
+ * after the load collected it.
+ */
+function* rangeCheckedAtWrite(
+  chunks: Iterable<{ chunkKey: number; bitmap: CodecBitmap }>,
+): Generator<{ chunkKey: number; bitmap: CodecBitmap }> {
+  for (const chunk of chunks) {
+    const max = chunk.bitmap.maximum?.();
+    if (max !== undefined && max > MAX_REMAINDER) {
+      throw new ValidationError(
+        `chunk ${chunk.chunkKey} holds ${max}, outside the 16-bit range [0, ${MAX_REMAINDER}]`,
+      );
+    }
+    yield chunk;
+  }
+}
+
 async function collectChunks(
   input: ChunkLoadInput,
   codec: CodecInterface,
@@ -2491,14 +2509,19 @@ async function collectChunks(
   const tick = yieldEvery(clock);
   let last = -1;
   for await (const chunk of input.chunks) {
-    // Only the codec's own bitmaps are written as they are: a chunk of any other shape could hold bytes or a count the
-    // codec never checked, and would be published as one.
-    if (typeof chunk !== 'object' || chunk === null || codec.owns?.(chunk.bitmap) !== true) {
+    if (typeof chunk !== 'object' || chunk === null) {
       throw new ValidationError(
-        `chunk ${String((chunk as { chunkKey?: unknown } | null)?.chunkKey)}: its bitmap is not one this load's codec made`,
+        `a chunk must be an object with a chunkKey and a bitmap; got ${String(chunk)}`,
       );
     }
+    // Each field is read once, so the bitmap checked is the bitmap written. Only the codec's own bitmaps are written as
+    // they are: one of any other shape could hold bytes or a count the codec never checked, and would be published.
     const { chunkKey, bitmap } = chunk;
+    if (codec.owns?.(bitmap) !== true) {
+      throw new ValidationError(
+        `chunk ${String(chunkKey)}: its bitmap is not one this load's codec made`,
+      );
+    }
     if (!Number.isInteger(chunkKey) || chunkKey < 0 || chunkKey > MAX_REMAINDER) {
       throw new ValidationError(`a chunk's key must be an integer in [0, 65535]; got ${chunkKey}`);
     }
