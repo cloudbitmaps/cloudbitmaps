@@ -213,8 +213,9 @@ const again = await store.segment('active-30d').pinAt({ generation, fingerprint 
   one its first read finds open. After that the handle reads exactly as a `pin()` handle does, including what it does
   once the generation is swept (see above).
 - **It keeps nothing alive.** `pinAt` does not stop a collection, so how long a generation can be reopened is how long
-  `keep` retains it: at least `keep` later successful loads, and fewer when a load is refused or crashes, since it
-  still uses a number. Collection runs with the `keep` of whichever writer loads, so set the same `keep` on every
+  `keep` retains it. With `keep` at 2 or more it stays reopenable while fewer than `keep` generation numbers have been
+  taken above it by later loads: each load that lands, and each that is superseded or crashes before publishing. A load
+  a guard refuses takes no number. Collection runs with the `keep` of whichever writer loads, so set the same `keep` on every
   writer of the segment. Each retained generation is a whole copy in storage. See
   [Generations and `keep`](loading.md#generations-and-keep) for the rule and what a larger `keep` costs in requests.
 
