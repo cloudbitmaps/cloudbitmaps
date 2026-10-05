@@ -130,17 +130,21 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   P + 2), plus what `store.load()` adds: the pointer's write, PUT-class on S3, and four GETs: two pointer reads and
   two checks, each a single request on every backend (a `HeadObject` on S3), that the next generation number is free
   and that the current generation's object is there. The load reads no index: the row's summary of the current
-  generation gives its guard the size, and its publish is written against the row the load read, with no read of its own. It then deletes by name the one generation its publish pushed out of the
-  window, a request S3 does not bill, and lists the segment only on every 16th generation, which adds a PUT-class
-  request and two pointer reads there and makes no check that the current object is there, a sixteenth of each a load
-  on average. That is a segment with two generations behind it, whose row carries a summary, at the default `keep` of
-  1, and about $11.94 per million single-part loads at the default prices; a segment's first two loads collect
+  generation gives its guard the size, and its publish is written against the row the load read, with no read of its own. The
+  row records which generations the load keeps, so the load then deletes by name the generations its publish pushed out
+  of the window, a request S3 does not bill, and lists the segment only on every 16th generation, which adds a
+  PUT-class request and two pointer reads there and makes no check that the current object is there, a sixteenth of each
+  a load on average. That is a segment with a full window behind it, whose row carries a summary and a list of kept
+  generations, at any `keep` from 1 to 64, and about $11.94 per million single-part loads at the default prices,
+  expected and not measured at a `keep` above 1; a segment's first two loads collect
   nothing and make fewer requests, and the first load of a row written before rows carried a summary reads the
   current generation's index, a tail read, in place of the check that its object is there. A publish
   that loses a race to another writer reads the pointer again, and a load whose check finds the number taken (a
   crashed load's object, or the generations a rollback left above the pointer) lists the segment to number past it
-  and lists again to collect, two PUT-class requests and two more pointer reads. So does every load with a `keep` of
-  2 or more, which lists to collect: one more PUT-class request and two more pointer reads than the model counts.
+  and lists again to collect, two PUT-class requests and two more pointer reads. So does every load with a `keep`
+  above 64, which a row cannot record and which therefore lists to collect: one more PUT-class request and two more
+  pointer reads than the model counts. The first load of a row that records no list (one an earlier release wrote, or a
+  rollback moved) lists once and records it with one more write.
   These are a cleartext segment's counts: an encrypted segment's load reads its row once more, after its ids and
   before it unwraps the key, one more GET ($0.40 per million at the default prices), which the model leaves out, as
   it leaves out the key-management calls an encrypted load makes. Loads are cheap by construction: a thousand

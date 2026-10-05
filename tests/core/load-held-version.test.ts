@@ -132,12 +132,13 @@ const SHAPES: Shape[] = [
     without: { reads: 2, writes: 1 },
   },
   {
-    name: 'an existing cleartext segment that collects the generation its publish pushed out',
+    // The seed kept every generation, so the row names 0 and 1, and a `keep` of 1 takes both: one read of the row each.
+    name: 'an existing cleartext segment that collects the generations its publish pushed out',
     encrypted: false,
     existing: true,
     options: { keep: 1 },
-    with: { reads: 2, writes: 1 },
-    without: { reads: 3, writes: 1 },
+    with: { reads: 3, writes: 1 },
+    without: { reads: 4, writes: 1 },
   },
   {
     name: 'an existing encrypted segment',
