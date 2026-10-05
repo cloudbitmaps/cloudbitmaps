@@ -2794,6 +2794,8 @@ export class Segment {
    * without checking its options, as every read of one does.
    */
   iterate(options?: IdRange): IdStream {
+    // Hook for `everyNth`, when it lands: it checks `leaseError()` here, before its stream, and wraps that stream in
+    // `guardIds` as this does, so a leased handle reads nothing past its lease there either.
     const lease = this.leaseError();
     if (lease !== undefined) return failing(lease);
     if (this.expired()) return EMPTY_IDS;
