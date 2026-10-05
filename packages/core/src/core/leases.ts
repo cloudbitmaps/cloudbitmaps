@@ -144,28 +144,37 @@ export function onlyLeasesDiffer(
 /** A writer's count of the lease-only changes it has waited out, and the wait. One per call of the writer. */
 export interface LeaseChurn {
   /**
-   * `true` when `now` is `held` changed only in its leases and the bound is not spent: the caller goes on against `now`
-   * without redoing its work, after a jittered wait. `false` otherwise, and the caller does what it always did.
+   * When `now` is `held` changed only in its leases and the bound is not spent: wait, then read the row again with
+   * `reread`, and return what it found. The wait comes before the read, so the writer's next write is made against a row
+   * as fresh as one round trip, not one as stale as the wait. The caller checks that row against `held` once more (a
+   * write may have landed during the wait) and goes on against it, without redoing its work. `undefined` otherwise, and
+   * the caller does what it always did.
+   *
+   * The wait is uniform in `[0, bound)`, the bound starting at 25 ms and doubling to 400 ms, taken on the injected
+   * clock's `sleep` and spread by its `rng`. With no `sleep` there is no wait, and the retries follow one another at
+   * once; with no `rng` the wait is exactly the bound, so contenders stay in step. The store always supplies both.
    */
-  retry(
+  settle(
     held: RegistryRecord | null | undefined,
     now: RegistryRecord | null,
+    reread: () => Promise<RegistryRecord | null>,
     alsoIgnore?: readonly (keyof RegistryRecord)[],
-  ): Promise<boolean>;
+  ): Promise<{ readonly row: RegistryRecord | null } | undefined>;
 }
 
 export function leaseChurn(deps: ChurnDeps): LeaseChurn {
   let used = 0;
   return {
-    async retry(held, now, alsoIgnore) {
-      if (held === null || held === undefined || now === null) return false;
-      if (used >= LEASE_ONLY_RETRIES || !onlyLeasesDiffer(held, now, alsoIgnore)) return false;
+    async settle(held, now, reread, alsoIgnore) {
+      if (held === null || held === undefined || now === null) return undefined;
+      if (used >= LEASE_ONLY_RETRIES || !onlyLeasesDiffer(held, now, alsoIgnore)) return undefined;
       const bound = Math.min(CONFLICT_BASE_MS * 2 ** Math.min(used, 4), CONFLICT_CAP_MS);
       used += 1;
       const sleep = deps.clock?.sleep;
-      if (sleep !== undefined)
+      if (sleep !== undefined) {
         await sleep.call(deps.clock, Math.floor((deps.rng?.next() ?? 1) * bound));
-      return true;
+      }
+      return { row: await reread() };
     },
   };
 }

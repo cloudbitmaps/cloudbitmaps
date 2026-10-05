@@ -34,7 +34,7 @@ import type { Yielder } from './cooperative';
 import type { Clock, Rng } from './determinism';
 import { sameIncarnation } from './token';
 import { nextKept } from './kept-generations';
-import { isLive, leaseChurn } from './leases';
+import { isLive, leaseChurn, onlyLeasesDiffer } from './leases';
 import type { KeptAfter } from './kept-generations';
 import type { PublishedKept } from './generation-gc';
 import { BoundedLru } from './lru';
@@ -1989,6 +1989,8 @@ export async function publishGenerationKept(
   const churn = leaseChurn({ clock: options.clock, rng: options.rng });
   // Whether this attempt went on past a token that only lease writes had moved; losing its race then costs no attempt.
   let throughChurn = false;
+  // The row the last wait for lease churn read, which the next attempt acts on without waiting again.
+  let waited: RegistryRecord | null | undefined;
   // Whether any write of this call ended without an answer: what the pointer then says about this number is not
   // taken for the caller's own write without the proof.
   let sawUnanswered = false;
@@ -2042,17 +2044,33 @@ export async function publishGenerationKept(
         return REFUSED;
       }
       throughChurn = false;
-      if (
-        options.expectToken !== undefined &&
-        record?.token !== options.expectToken &&
-        (await churn.retry(options.expectRow, record))
-      ) {
-        throughChurn = true; // only leases changed since the caller read the row: the fence holds, on the fresh row
-      } else if (options.expectToken !== undefined && record?.token !== options.expectToken) {
-        // Same pointer VALUE, different row. Either the row was written since (harmless, and we re-derive
-        // anyway) or the name was retired and re-created, in which case `currentGen` matching means nothing:
-        // it is a different segment that restarted its generation counter at the same number.
-        return REFUSED;
+      if (options.expectToken !== undefined && record?.token !== options.expectToken) {
+        const held = options.expectRow;
+        if (
+          record !== null &&
+          held != null &&
+          record === waited &&
+          onlyLeasesDiffer(held, record)
+        ) {
+          // Only leases changed since the caller read the row, and the wait is done: the fence holds, on this fresh row.
+          throughChurn = true;
+        } else {
+          // Waited out first and read again, so the write is made against a row one round trip old.
+          const settled =
+            record === waited
+              ? undefined
+              : await churn.settle(held, record, () => registry.get(key));
+          if (settled !== undefined) {
+            waited = settled.row;
+            fresh = settled.row;
+            attempt -= 1; // the wait is the churn's, and costs no attempt
+            continue;
+          }
+          // Same pointer VALUE, different row. Either the row was written since (harmless, and we re-derive
+          // anyway) or the name was retired and re-created, in which case `currentGen` matching means nothing:
+          // it is a different segment that restarted its generation counter at the same number.
+          return REFUSED;
+        }
       }
       if (
         record === null &&

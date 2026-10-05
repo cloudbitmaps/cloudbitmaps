@@ -172,8 +172,10 @@ describe('the retry is bounded, and waits with a jitter', () => {
       ...a,
       token: tokenOf(INC, 1),
     } as RegistryRecord;
-    for (let i = 0; i < LEASE_ONLY_RETRIES; i++) expect(await churn.retry(a, b)).toBe(true);
-    expect(await churn.retry(a, b)).toBe(false);
+    const again = () => Promise.resolve(b);
+    for (let i = 0; i < LEASE_ONLY_RETRIES; i++)
+      expect(await churn.settle(a, b, again)).toEqual({ row: b });
+    expect(await churn.settle(a, b, again)).toBeUndefined();
   });
 
   it('waits a jittered time that grows and stops growing, on the injected clock', async () => {
@@ -191,7 +193,7 @@ describe('the retry is bounded, and waits with a jitter', () => {
       ...a,
       token: tokenOf(INC, 1),
     } as RegistryRecord;
-    for (let i = 0; i < 8; i++) await churn.retry(a, b);
+    for (let i = 0; i < 8; i++) await churn.settle(a, b, () => Promise.resolve(b));
     expect(waits.slice(0, 5)).toEqual([24, 49, 99, 199, 399]);
     expect(Math.max(...waits)).toBeLessThanOrEqual(400);
   });
@@ -374,6 +376,36 @@ describe('a lease write during a writer fenced on the row token does not starve 
     const left: number[] = [];
     for await (const k of w.memory.list(SEG)) left.push(k.generation);
     expect(left.sort()).toEqual([0, 1]);
+  });
+
+  it('a writer waits first and reads after: its write is made against the row the wait left, and wins at once', async () => {
+    const w = world();
+    await loadN(w, 1);
+    const seen = { calls: 0 };
+    // One lease write before the writer's first attempt makes it lose; the wait itself lands another.
+    const racing = hooked(
+      w.registry,
+      'compareAndSwap',
+      (n) => n === 0,
+      () => leaseWrite(w, 11),
+      seen,
+    );
+    let waits = 0;
+    const clock: Clock = {
+      now: () => w.t.now,
+      sleep: async () => {
+        waits += 1;
+        await leaseWrite(w, 12); // lands during the wait, so a row read before it is already stale
+      },
+    };
+    const res = await destroySegment(
+      SEG,
+      { registry: racing, clock },
+      { confirmSegment: 's', allowCleartext: true },
+    );
+    expect(res.destroyed).toBe(true);
+    expect(waits).toBe(1);
+    expect(seen.calls).toBe(2); // the first, lost; the second, made against the row after the wait
   });
 
   it('(d) destroySegment completes through more lease writes than its 8 attempts', async () => {

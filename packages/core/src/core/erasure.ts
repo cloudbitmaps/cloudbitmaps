@@ -502,8 +502,15 @@ async function shredSegment(
   const churn = leaseChurn(deps);
   let lost: RegistryRecord | undefined;
   for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt++) {
-    const record = await deps.registry.get(ref);
-    if (lost !== undefined && (await churn.retry(lost, record))) attempt -= 1;
+    let record = await deps.registry.get(ref);
+    if (lost !== undefined) {
+      // Waited out first, then read again: the CAS below is made against a row one round trip old, not one wait old.
+      const settled = await churn.settle(lost, record, () => deps.registry.get(ref));
+      if (settled !== undefined) {
+        record = settled.row;
+        attempt -= 1;
+      }
+    }
     if (record === null) {
       // No authoritative row → nothing to crypto-shred.
       return { ...base, destroyed: false, cryptoShredded: false, reason: 'absent' };

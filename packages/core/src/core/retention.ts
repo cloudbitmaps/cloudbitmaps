@@ -218,8 +218,15 @@ export async function setSegmentRetention(
   const churn = leaseChurn(deps);
   let lost: RegistryRecord | undefined;
   for (let attempt = 0; attempt < RETENTION_CAS_ATTEMPTS; attempt += 1) {
-    const record = await deps.registry.get(ref);
-    if (lost !== undefined && (await churn.retry(lost, record))) attempt -= 1;
+    let record = await deps.registry.get(ref);
+    if (lost !== undefined) {
+      // Waited out first, then read again, so the write below is made against a fresh row.
+      const settled = await churn.settle(lost, record, () => deps.registry.get(ref));
+      if (settled !== undefined) {
+        record = settled.row;
+        attempt -= 1;
+      }
+    }
     try {
       previousExpiresAt = readExpiresAt(record);
       if (record === null) {
@@ -274,8 +281,15 @@ export async function clearSegmentRetention(
   const churn = leaseChurn(deps);
   let lost: RegistryRecord | undefined;
   for (let attempt = 0; attempt < RETENTION_CAS_ATTEMPTS; attempt += 1) {
-    const record = await deps.registry.get(ref);
-    if (lost !== undefined && (await churn.retry(lost, record))) attempt -= 1;
+    let record = await deps.registry.get(ref);
+    if (lost !== undefined) {
+      // Waited out first, then read again, so the write below is made against a fresh row.
+      const settled = await churn.settle(lost, record, () => deps.registry.get(ref));
+      if (settled !== undefined) {
+        record = settled.row;
+        attempt -= 1;
+      }
+    }
     if (record === null) return false; // nothing to clear — and creating a row to say so would be litter
     if (record.status === 'destroyed') return false; // terminal; a tombstone has no expiry to cancel
     if (record.retention === undefined || !(EXPIRES_AT in record.retention)) return false;

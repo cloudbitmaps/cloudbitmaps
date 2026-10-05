@@ -27,7 +27,7 @@ import {
   isIntegrityError,
   isWriteConflictError,
 } from './errors';
-import { type ChurnDeps, leaseChurn } from './leases';
+import { type ChurnDeps, leaseChurn, onlyLeasesDiffer } from './leases';
 import type {
   IStorageDriver,
   GenerationMetadata,
@@ -288,8 +288,11 @@ export async function rollbackSegment(
       break;
     } catch (err) {
       if (!isWriteConflictError(err)) throw err;
-      const now = await deps.registry.get(ref);
-      if (now === null || !(await churn.retry(record, now))) throw err;
+      const seen = await deps.registry.get(ref);
+      const settled = await churn.settle(record, seen, () => deps.registry.get(ref));
+      const now = settled?.row ?? null;
+      // The row after the wait is the one the swap goes on against, if it is still the one read with only leases changed.
+      if (settled === undefined || now === null || !onlyLeasesDiffer(record, now)) throw err;
       against = now.token;
     }
   }
@@ -345,19 +348,22 @@ export async function rollbackSegment(
         // A lost race is retried when the row is the one the swap wrote with only its leases changed: the pointer is
         // at the target and every other field is the row's from before the swap, bar what the swap itself moved.
         if (!isWriteConflictError(err)) break;
+        const moved = ['currentGen', 'summary', 'keptGens'] as const;
         let now: RegistryRecord | null;
         try {
-          now = await deps.registry.get(ref);
+          const seen = await deps.registry.get(ref);
+          if (seen === null || seen.currentGen !== toGeneration) break;
+          const settled = await churn.settle(record, seen, () => deps.registry.get(ref), moved);
+          now = settled?.row ?? null;
         } catch {
           break;
         }
         if (
           now === null ||
           now.currentGen !== toGeneration ||
-          !(await churn.retry(record, now, ['currentGen', 'summary', 'keptGens']))
-        ) {
+          !onlyLeasesDiffer(record, now, moved)
+        )
           break;
-        }
         undoAgainst = now.token;
       }
     }
