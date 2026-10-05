@@ -17,6 +17,7 @@ const REACHES = [
   /\{[^}]*\bengine\b[^}]*\} = this;/,
   /this\.combineEngine\(/,
   /this\.materialize\(/,
+  /this\.pinned\(/,
 ];
 /** What counts as checking a lease. */
 const CHECKS = [/assertLeases\(/, /leaseError\(/, /refuseIfExpired\(/];
@@ -99,6 +100,12 @@ describe('every Segment method that reads checks a lease', () => {
       '  sneaky(): Promise<number> {\n    return this.engine.count(this.ref);\n  }\n\n  key(): string {',
     );
     expect(unchecked(added)).toEqual(['sneaky']);
+    // A new route to the object that skips the check: the way `pinAt` reaches it.
+    const pinned = SOURCE.replace(
+      '  key(): string {',
+      '  sneakyPin(): Promise<Segment> {\n    return this.pinned(this.ref, this.expiresAt);\n  }\n\n  key(): string {',
+    );
+    expect(unchecked(pinned)).toEqual(['sneakyPin']);
     // `key` reads no data, and is not flagged.
     expect(unchecked(SOURCE)).not.toContain('key');
   });
