@@ -282,6 +282,23 @@ describe('the decoded-chunk cache', () => {
       });
     }
 
+    it('looks each cached chunk up once: one cache read per operand chunk', async () => {
+      const { engine, cache } = setup({ a: A, b: B });
+      await collect(engine.intersect([ref('a'), ref('b')]));
+      await collect(engine.iterate(ref('a')));
+      const get = cache!.get.bind(cache!);
+      let gets = 0;
+      cache!.get = (key) => {
+        gets += 1;
+        return get(key);
+      };
+      await collect(engine.intersect([ref('a'), ref('b')]));
+      expect(gets).toBe(6); // chunks 2, 3, 4 of each operand
+      gets = 0;
+      await collect(engine.iterate(ref('a')));
+      expect(gets).toBe(4); // chunks 1 to 4
+    });
+
     it('counts one hit per chunk looked up', async () => {
       const { engine, metrics } = setup({ a: A, b: B });
       await collect(engine.intersect([ref('a'), ref('b')]));
