@@ -834,6 +834,11 @@ describe('a run with a steady-load stage', () => {
     expect(stageFigures.stagesOf(named)).not.toContain('steadyLoad');
     versioned(named, '0.17.0');
     expect(stageFigures.stagesOf(named)).toContain('steadyLoad');
+    // A version that is not a release, or none, is the current engine, as it is for the window: held to the stage too.
+    versioned(named, 'main');
+    expect(stageFigures.stagesOf(named)).toContain('steadyLoad');
+    delete (named as unknown as { measured: { packageVersion?: string } }).measured.packageVersion;
+    expect(stageFigures.stagesOf(named)).toContain('steadyLoad');
     expect(
       refused((r) => {
         delete (r.phases as Record<string, unknown>).steadyLoad;

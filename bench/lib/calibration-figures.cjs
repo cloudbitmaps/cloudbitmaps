@@ -241,13 +241,14 @@ const pct = (fraction, dp) => `${fixed(100 * fraction, dp)}%`;
  */
 const STEADY_SINCE = [0, 17, 0];
 function stagesOf(run) {
+  // A version that is not a release reads as the current engine, as it does for the window, so it is held to the stage.
   const release = releaseOf(run.measured?.packageVersion);
   const since =
-    release !== null &&
-    (release[0] > STEADY_SINCE[0] ||
-      (release[0] === STEADY_SINCE[0] &&
-        (release[1] > STEADY_SINCE[1] ||
-          (release[1] === STEADY_SINCE[1] && release[2] >= STEADY_SINCE[2]))));
+    release === null ||
+    release[0] > STEADY_SINCE[0] ||
+    (release[0] === STEADY_SINCE[0] &&
+      (release[1] > STEADY_SINCE[1] ||
+        (release[1] === STEADY_SINCE[1] && release[2] >= STEADY_SINCE[2])));
   return STAGES.filter(
     (name) => name !== 'steadyLoad' || since || run.phases?.steadyLoad !== undefined,
   );
