@@ -238,9 +238,11 @@ export async function loadParts(
   boundary splits one, both parts hold a piece of it and the union merges them, so the generation is the same bytes a
   load of the whole set writes. Cutting on whole chunks keeps each part's chunks its own, and a union of parts like
   that copies containers rather than merging them.
-- **It costs the requests of one load.** The parts never touch storage: they are bytes in your processes. A segment's first load is 2 PUT + 3 GET, pointer included, for a single-part object,
-  whether it was joined from one part or from eight ([measured](../benchmarks.md#the-in-region-run--run-2026-10-05-50b5d); a
-  reload and a load from the third on are [expected, not measured](../benchmarks.md#expected-not-measured)).
+- **It costs the requests of one load.** The parts never touch storage: they are bytes in your processes, so one part
+  or eight make the same requests. A segment's first load is 2 PUT + 3 GET, pointer included, for a single-part
+  object. A multipart load, one whose union is large enough to be uploaded in parts, makes 5 PUT-class + 3 GET. Both
+  are [measured](../benchmarks.md#the-in-region-run--run-2026-10-05-50b5d), on a 1.05 MB and a 12.6 MB segment. A
+  reload and a load from the third on are [expected, not measured](../benchmarks.md#expected-not-measured).
 - **When this is not enough.** A segment too large for one process to hold, as its union and its serialization
   together, is not served by this recipe.
 

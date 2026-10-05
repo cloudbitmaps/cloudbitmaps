@@ -111,7 +111,7 @@ function isShared(buffer: ArrayBufferLike): boolean {
 function overCap(what: string, length: number): ValidationError {
   return new ValidationError(
     `${what} is ${length} bytes, more than any canonical 32-bit bitmap serializes to ` +
-      `(${MAX_SERIALIZED_LOAD_BYTES}). Call runOptimize() on the bitmap before serializing it.`,
+      `(${MAX_SERIALIZED_LOAD_BYTES}). If it was serialized from a bitmap, call runOptimize() on the bitmap first.`,
   );
 }
 
@@ -178,7 +178,7 @@ export function prepareLoadInput(
 export function decodeSerialized(
   bytes: unknown,
   codec: CodecInterface,
-  what = 'the bytes',
+  what = 'the buffer',
 ): CodecBitmap {
   if (typeof bytes !== 'object' || bytes === null || tagOf(bytes) !== 'Uint8Array') {
     throw new ValidationError(`${what} must be a Uint8Array of portable Roaring bytes`);

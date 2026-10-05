@@ -1,7 +1,9 @@
 import roaring from 'roaring';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CloudRoaring, MemoryStorage, ValidationError, deserializePortable } from '@/index';
-import { MAX_SERIALIZED_LOAD_BYTES } from '@/core/load-input';
+import { MAX_SERIALIZED_LOAD_BYTES, decodeSerialized } from '@/core/load-input';
+import type { CodecInterface } from '@/core/codec';
+import { roaringCodec } from '@/roaring-codec';
 import { craftPortable } from '../helpers/portable-bytes';
 
 /**
@@ -54,6 +56,18 @@ describe('deserializePortable: bytes that are one well-formed bitmap', () => {
     expect(deserializePortable(padded.subarray(3, 3 + bytes.length)).size).toBe(sample().size);
   });
 
+  it('are read from a SharedArrayBuffer as a copy no other thread can change', () => {
+    const bytes = sample().serialize('portable');
+    const shared = new Uint8Array(new SharedArrayBuffer(bytes.length));
+    shared.set(bytes);
+    const native = vi.spyOn(RoaringBitmap32, 'deserialize');
+    expect(deserializePortable(shared).size).toBe(sample().size);
+    expect(native).toHaveBeenCalledTimes(1);
+    const handed = native.mock.calls[0]?.[0] as Uint8Array;
+    expect(handed.buffer instanceof SharedArrayBuffer).toBe(false);
+    expect(Buffer.from(handed)).toEqual(Buffer.from(bytes));
+  });
+
   it('are accepted by a load too, and an empty buffer is the empty bitmap in both', async () => {
     expect(deserializePortable(new Uint8Array(0)).size).toBe(0);
     expect(await loadRefuses(sample().serialize('portable'))).toBe(false);
@@ -90,6 +104,12 @@ describe('deserializePortable: bytes it refuses, as a load refuses them, before 
     expect(await loadRefuses(bytes)).toBe(true);
   });
 
+  it('the spy sees the native decoder when the bytes are good (a control for the cases above)', () => {
+    const native = vi.spyOn(RoaringBitmap32, 'deserialize');
+    deserializePortable(good());
+    expect(native).toHaveBeenCalledTimes(1);
+  });
+
   it('every prefix of a bitmap shorter than the bitmap, except the empty one, is refused', () => {
     const bytes = good();
     for (let n = 1; n < bytes.length; n++) {
@@ -107,6 +127,47 @@ describe('deserializePortable: bytes it refuses, as a load refuses them, before 
   it('the over-cap refusal says to runOptimize()', () => {
     expect(() => deserializePortable(new Uint8Array(MAX_SERIALIZED_LOAD_BYTES + 1))).toThrow(
       /runOptimize/,
+    );
+  });
+});
+
+describe('decodeSerialized: the size cap, at its boundary, in front of the codec', () => {
+  /** A codec that records what reaches it and decodes nothing. */
+  function recording(): { codec: CodecInterface; lengths: number[] } {
+    const lengths: number[] = [];
+    const codec: CodecInterface = {
+      ...roaringCodec,
+      safeDeserialize: (bytes) => {
+        lengths.push(bytes.byteLength);
+        return roaringCodec.empty();
+      },
+    };
+    return { codec, lengths };
+  }
+
+  it('one byte over the cap is a ValidationError and the codec is not called', () => {
+    const { codec, lengths } = recording();
+    const over = new Uint8Array(new ArrayBuffer(MAX_SERIALIZED_LOAD_BYTES + 1));
+    expect(() => decodeSerialized(over, codec)).toThrow(ValidationError);
+    expect(lengths).toEqual([]);
+  });
+
+  it('exactly the cap reaches the codec', () => {
+    const { codec, lengths } = recording();
+    decodeSerialized(new Uint8Array(new ArrayBuffer(MAX_SERIALIZED_LOAD_BYTES)), codec);
+    expect(lengths).toEqual([MAX_SERIALIZED_LOAD_BYTES]);
+  });
+
+  it('names the input in its refusals, in a sentence that reads right by default', () => {
+    const { codec } = recording();
+    expect(() => decodeSerialized('x', codec)).toThrow(
+      'the buffer must be a Uint8Array of portable Roaring bytes',
+    );
+    expect(() => decodeSerialized(new Uint8Array(1), roaringCodec)).toThrow(
+      /^the buffer is not a valid bitmap: /,
+    );
+    expect(() => decodeSerialized('x', codec, '{ serialized }')).toThrow(
+      /^\{ serialized \} must be/,
     );
   });
 });

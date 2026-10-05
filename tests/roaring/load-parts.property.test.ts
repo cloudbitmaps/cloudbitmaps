@@ -32,13 +32,45 @@ interface Recipe {
   loadParts(store: CloudRoaring, ref: Ref, parts: Uint8Array[]): Promise<library.LoadResult>;
 }
 
-/** The guide's recipe: its ```ts block that declares `loadParts`, compiled and evaluated against this repo. */
-function recipeFromGuide(): Recipe {
-  const guide = readFileSync(join(__dirname, '..', '..', 'docs', 'guide', 'loading.md'), 'utf8');
-  const fences = [...guide.matchAll(/```ts\n([\s\S]*?)```/g)].map((m) => m[1] as string);
+const ROOT = join(__dirname, '..', '..');
+
+/** The guide's recipe block: its ```ts fence that declares `loadParts`. */
+function recipeSource(): string {
+  const guide = readFileSync(join(ROOT, 'docs', 'guide', 'loading.md'), 'utf8');
+  const fences = [...guide.matchAll(/```ts\r?\n([\s\S]*?)```/g)].map((m) => m[1] as string);
   const blocks = fences.filter((code) => /export async function loadParts\b/.test(code));
-  expect(blocks).toHaveLength(1);
-  const js = ts.transpileModule(blocks[0] as string, {
+  if (blocks.length !== 1) {
+    throw new Error(
+      'docs/guide/loading.md must hold exactly one ```ts code block that declares ' +
+        `\`export async function loadParts\` (the parts recipe); it holds ${blocks.length}`,
+    );
+  }
+  return blocks[0] as string;
+}
+
+/** The compiler's errors for `source` as a file of this repo, resolving the packages to their source. */
+function typeErrorsOf(source: string): string[] {
+  const config = ts.readConfigFile(join(ROOT, 'tsconfig.json'), ts.sys.readFile);
+  const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, ROOT);
+  const virtual = join(ROOT, 'tests', 'roaring', 'guide-recipe.virtual.ts');
+  const host = ts.createCompilerHost(parsed.options);
+  const { fileExists, readFile, getSourceFile } = host;
+  host.fileExists = (f) => f === virtual || fileExists.call(host, f);
+  host.readFile = (f) => (f === virtual ? source : readFile.call(host, f));
+  host.getSourceFile = (f, ...rest) =>
+    f === virtual
+      ? ts.createSourceFile(f, source, parsed.options.target ?? ts.ScriptTarget.ES2022)
+      : getSourceFile.call(host, f, ...rest);
+  const program = ts.createProgram([virtual], parsed.options, host);
+  const file = program.getSourceFile(virtual);
+  return ts
+    .getPreEmitDiagnostics(program, file)
+    .map((d) => ts.flattenDiagnosticMessageText(d.messageText, '\n'));
+}
+
+/** The guide's recipe: its code block, compiled and evaluated against this repo. */
+function recipeFromGuide(): Recipe {
+  const js = ts.transpileModule(recipeSource(), {
     compilerOptions: {
       module: ts.ModuleKind.CommonJS,
       target: ts.ScriptTarget.ES2022,
@@ -145,6 +177,16 @@ async function loadViaRecipe(
 }
 
 describe('the parts recipe in the loading guide', () => {
+  it('type-checks as printed, against the packages it imports', () => {
+    expect(typeErrorsOf(recipeSource())).toEqual([]);
+  }, 60_000);
+
+  it('the type check sees a type error in the recipe', () => {
+    const broken = recipeSource().replace('shipped: Uint8Array[]', 'shipped: string[]');
+    expect(broken).not.toBe(recipeSource());
+    expect(typeErrorsOf(broken).length).toBeGreaterThan(0);
+  }, 60_000);
+
   it('writes the generation a load of the whole set writes, for 1 to 8 parts cut anywhere', async () => {
     await fc.assert(
       fc.asyncProperty(splitCase, async ({ set, cutPoints }) => {
