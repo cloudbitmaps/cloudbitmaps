@@ -27,6 +27,7 @@ const STAGES = Object.freeze([
   'warm',
   'pointReads',
   'andNot',
+  'steadyLoad',
 ]);
 
 /*
@@ -168,6 +169,7 @@ const coldIntersectBound = (k) => 2 * (3 + k);
  *   w.warm             { segments, sharedChunks, rangesPerOperand }  one priming pass over `segments` segments
  *   w.pointReads       { segments, sharedChunks }                    `count()`, then `has()` per chunk, open and first read
  *   w.andNot           { calls, excludes, includeChunks, sharedChunks, ranges }
+ *   w.steadyLoad       { loads, keep }                               one segment loaded `loads` times at `keep`
  *
  * The `ranges` fields are the range requests the engine makes of the layout, counted by running it over the in-memory
  * backend (`bench/lib/range-counts.cjs`); they appear in the exact EXPECTED counts and in no BOUND, since a bound is
@@ -220,6 +222,9 @@ function projectStages(w) {
 
   stages.andNot = { put: 0, get: w.andNot.calls * andNotCallBound(w.andNot) };
 
+  // Every steady load is bounded as a first load is: the most any load makes, losing races, is inside it.
+  stages.steadyLoad = loads(w.steadyLoad.loads);
+
   const perRun = w.discards?.perRun;
   if (!Number.isInteger(perRun) || perRun < 0) {
     throw new Error(`discards.perRun must be a non-negative integer, got ${perRun}`);
@@ -257,6 +262,8 @@ function sampleBounds(w) {
     // for its first.
     pointReads: p.segments === 0 ? 0 : p.sharedChunks > 0 ? 4 : 3,
     andNot: w.andNot.calls > 0 ? andNotCallBound(w.andNot) : 0,
+    // Loads are not samples, and a plan from before the stage has no `steadyLoad`.
+    steadyLoad: 0,
   };
 }
 
@@ -281,6 +288,8 @@ function expectedReads(w) {
     pointReads: 2 * w.pointReads.segments + 4 * w.pointReads.segments * w.pointReads.sharedChunks,
     // Each operand's pointer and tail, and the ranges of the include and of every exclude together.
     andNot: a.calls * (2 * (1 + a.excludes) + a.ranges),
+    // The loads' GET-class requests, by kind.
+    steadyLoad: expectedSteady(w.steadyLoad.loads, w.steadyLoad.keep).get,
   };
 }
 
@@ -295,7 +304,54 @@ const FIRST_LOAD = Object.freeze({ put: 2, get: 3 });
 const firstLoadRequests = (parts) =>
   parts === 0 ? { ...FIRST_LOAD } : { put: FIRST_LOAD.put + 1 + parts, get: FIRST_LOAD.get };
 
+/**
+ * The steady-load stage: one small segment loaded `STEADY_LOADS` times at `keep: STEADY_KEEP`, so the run covers the
+ * loads that collect nothing (generation at most `keep`), the loads that delete by name, and a load that lists (a
+ * generation divisible by the engine's `LIST_COLLECTION_CADENCE`, 16). Both are held to the engine's source by a test.
+ */
+const STEADY_KEEP = 12;
+const STEADY_LOADS = 18;
+/** The generations between listing loads, `LIST_COLLECTION_CADENCE` in the engine. */
+const LIST_CADENCE = 16;
+
+/** Which kind of load generation `g` of the steady segment is. */
+function steadyKind(g, keep = STEADY_KEEP) {
+  if (g === 0) return 'first';
+  if (g <= keep) return 'reload';
+  return g % LIST_CADENCE === 0 ? 'listing' : 'byName';
+}
+
+/**
+ * What one load of each kind requests when nothing races it, on S3's request shape: PUT-class (the object, the pointer and
+ * a listing), GET-class (pointer reads and zero-byte object checks), and deletes, which are free. Counted by a test
+ * against the real registry protocol and held equal to the figures module's `STORE_LOAD_REQUESTS`.
+ */
+const STEADY_LOAD_REQUESTS = Object.freeze({
+  first: Object.freeze({ put: 2, get: 3, free: 0 }),
+  reload: Object.freeze({ put: 2, get: 2, free: 0 }),
+  byName: Object.freeze({ put: 2, get: 4, free: 1 }),
+  listing: Object.freeze({ put: 3, get: 5, free: 1 }),
+});
+
+/** The exact requests of the stage's loads, by class: the sum of each load's kind. */
+function expectedSteady(loads = STEADY_LOADS, keep = STEADY_KEEP) {
+  const total = { put: 0, get: 0, free: 0 };
+  for (let g = 0; g < loads; g += 1) {
+    const r = STEADY_LOAD_REQUESTS[steadyKind(g, keep)];
+    total.put += r.put;
+    total.get += r.get;
+    total.free += r.free;
+  }
+  return total;
+}
+
 module.exports = {
+  STEADY_KEEP,
+  STEADY_LOADS,
+  LIST_CADENCE,
+  STEADY_LOAD_REQUESTS,
+  steadyKind,
+  expectedSteady,
   STAGES,
   ENGINE_WINDOW,
   ENGINE_WINDOW_START,

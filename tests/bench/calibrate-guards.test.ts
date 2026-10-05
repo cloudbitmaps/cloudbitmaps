@@ -939,7 +939,7 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     expect(out.stderr).toMatch(/teardown's first listing/);
     expect(
       runHarness([], {
-        CR_CALIBRATE_SEGMENTS: '498',
+        CR_CALIBRATE_SEGMENTS: '471',
         CR_CALIBRATE_LARGE: '2',
         CR_CALIBRATE_READS: '0',
         CR_CALIBRATE_SPREAD_SEGMENTS: '0',
