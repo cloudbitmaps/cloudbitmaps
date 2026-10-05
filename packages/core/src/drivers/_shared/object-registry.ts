@@ -65,6 +65,7 @@
  * else is damaged, and discovery resumes on its own.
  */
 import {
+  CapabilityError,
   IntegrityError,
   TransientError,
   ValidationError,
@@ -74,6 +75,8 @@ import {
 import type {
   IRegistryDriver,
   NewRegistryRecord,
+  ReapLegacyTombstonesOptions,
+  ReapLegacyTombstonesResult,
   RegCaps,
   RegistryPatch,
   RegistryRecord,
@@ -185,6 +188,11 @@ export interface ObjectRegistryStore {
    * a live one included. Absent or `false`, the registry never calls `delete` and tombstones every row instead.
    */
   readonly conditionalDelete?: boolean;
+  /**
+   * Optional: settle {@link conditionalDelete} without a request to the backend, for a store that learns it from its
+   * client rather than knowing it at construction. A caller that must refuse before its first request awaits it first.
+   */
+  resolveCapabilities?(): Promise<void>;
 }
 
 /** A row as read: its envelope, the bytes it was parsed from, and the version that fences a write to it. */
@@ -383,6 +391,108 @@ export class ObjectStoreRegistry implements IRegistryDriver {
       }
     }
     throw new WriteConflictError(`registry delete: contention deleting "${ref.segment}" — retry`);
+  }
+
+  /**
+   * Remove the `deleted: true` rows with no incarnation id (the envelopes a release before 0.12 left), or count them.
+   * One listing, a read per key and a conditional delete per envelope, so a row that a create wrote over since it was
+   * read keeps its new version and the delete is refused. Refuses with {@link CapabilityError}, before any request,
+   * where the store's delete is not known to apply its precondition.
+   *
+   * An object that cannot be read or parsed stops the run with the error that names its key, and removes nothing
+   * more: it may be a newer release's row. Rows removed before the stop stay removed, and a re-run is safe.
+   *
+   * Not resumable: it lists and reads from the start on every call. A delete refused as a conflict, including one for a
+   * row already gone, is counted as `raced`.
+   */
+  async reapLegacyTombstones(
+    options: ReapLegacyTombstonesOptions,
+  ): Promise<ReapLegacyTombstonesResult> {
+    await this.store.resolveCapabilities?.();
+    const remove = this.removesRows() ? this.store.delete : undefined;
+    if (remove === undefined) {
+      throw new CapabilityError(
+        `reapRegistryTombstones: this registry's delete is not conditional (capabilities().conditionalDelete is false), ` +
+          'so a removal could take a row a create has just written over the envelope. Nothing was requested',
+      );
+    }
+    const { dryRun, limit } = options;
+    const counts = {
+      examined: 0,
+      reaped: 0,
+      wouldReap: 0,
+      live: 0,
+      destroyed: 0,
+      incarnated: 0,
+      raced: 0,
+    };
+    let limited = false;
+    const removable = (): number => counts.reaped + counts.wouldReap;
+
+    const handle = async (keys: string[]): Promise<void> => {
+      const rows = await mapWithConcurrency(keys, LIST_READ_CONCURRENCY, (key) =>
+        this.readRow(key).then((row) => ({ key, row })),
+      );
+      const found: Array<{ key: string; version: string }> = [];
+      for (const { key, row } of rows) {
+        if (row === null) continue; // gone between the listing and the read
+        counts.examined += 1;
+        const { deleted, record } = row.env;
+        if (!deleted) {
+          if (record.status === 'destroyed') counts.destroyed += 1;
+          else counts.live += 1;
+        } else if (incarnationOf(record.token) !== undefined) {
+          counts.incarnated += 1;
+        } else if (removable() + found.length >= limit) {
+          limited = true;
+        } else {
+          found.push({ key, version: row.version });
+        }
+      }
+      if (dryRun) {
+        counts.wouldReap += found.length;
+        return;
+      }
+      await mapWithConcurrency(found, LIST_READ_CONCURRENCY, async ({ key, version }) => {
+        try {
+          await remove.call(this.store, key, { version });
+          counts.reaped += 1;
+        } catch (err) {
+          if (!isWriteConflictError(err)) throw err;
+          counts.raced += 1; // the row changed (a create, another sweeper) or is already gone
+        }
+      });
+    };
+
+    let page: string[] = [];
+    for await (const key of this.store.listKeys(
+      registryListPrefix(this.prefix, options.namespace),
+    )) {
+      if (parseRegistryKey(this.prefix, key) === null) continue; // stray or foreign object
+      if (removable() >= limit) {
+        limited = true; // spent: stop listing, and say rows may remain
+        break;
+      }
+      page.push(key);
+      if (page.length >= LIST_READ_CONCURRENCY) {
+        await handle(page);
+        page = [];
+      }
+    }
+    if (page.length > 0) await handle(page);
+    return {
+      dryRun,
+      examined: counts.examined,
+      reaped: counts.reaped,
+      wouldReap: counts.wouldReap,
+      limited,
+      skipped: {
+        live: counts.live,
+        destroyed: counts.destroyed,
+        incarnated: counts.incarnated,
+        raced: counts.raced,
+      },
+    };
   }
 
   /**

@@ -499,6 +499,49 @@ export interface RegCaps {
   readonly conditionalDelete?: boolean;
 }
 
+/** What {@link IRegistryDriver.reapLegacyTombstones} is asked to do. */
+export interface ReapLegacyTombstonesOptions {
+  /** Only rows in this namespace; every namespace, the library's bookkeeping namespaces included, when absent. */
+  readonly namespace?: string;
+  /** Count what would be removed and remove nothing. */
+  readonly dryRun: boolean;
+  /** The most rows to remove (or, in a dry run, to count as removable) in this call. */
+  readonly limit: number;
+}
+
+/** What a reap of the tombstones a registry holds found. Every count is of rows, not requests. */
+export interface ReapLegacyTombstonesResult {
+  /** The call was a dry run: nothing was removed, and `wouldReap` says what a real run removes. */
+  readonly dryRun: boolean;
+  /** Rows read. Rows the `limit` stopped the run before reading are not counted. */
+  readonly examined: number;
+  /** Rows removed. Always 0 in a dry run. */
+  readonly reaped: number;
+  /** Rows a dry run found removable. Always 0 in a real run. */
+  readonly wouldReap: number;
+  /**
+   * The `limit` was spent and the listing had more keys: rows were left unread, and they may or may not be removable,
+   * so run again. A run is not resumable: each lists and reads from the start, so a dry run with a `limit` reports the
+   * same first rows every time, and `wouldReap` is a total only when this is `false`.
+   */
+  readonly limited: boolean;
+  /** Rows read and left, by why. */
+  readonly skipped: {
+    /** A live (`active`, not deleted) row. */
+    readonly live: number;
+    /** A `destroyed` row that is not `deleted`: a crypto-shred's or a drop's tombstone, kept as the attestation of an erasure. */
+    readonly destroyed: number;
+    /**
+     * A deleted row that carries an incarnation id, written by a 0.12 or later release. On a registry that removes rows,
+     * `delete` and the sweep remove such a row themselves; one left while the registry could not remove rows (GCS by
+     * default, S3 on a custom endpoint) stays, and this call, which refuses on such a registry, does not remove it.
+     */
+    readonly incarnated: number;
+    /** A row that changed, or was already gone (a 404), between its read and its delete, so the delete (fenced on the version read) refused. */
+    readonly raced: number;
+  };
+}
+
 /**
  * Refuse, with `UnsupportedError`, a write that would write an object before its row when the registry reports it
  * cannot write a row (see {@link RegCaps.canWrite}). Called before the write's first request.
@@ -733,4 +776,19 @@ export interface IRegistryDriver {
    * created after the decision. A third-party driver that ignores `expected` keeps the unfenced behaviour.
    */
   delete(ref: SegmentRef, expected?: Token): Promise<void>;
+  /**
+   * Optional: remove the `deleted: true` rows with no incarnation id, which a release before 0.12 left, or a 0.12 or
+   * later release left by deleting a row born before 0.12, so that no later full `list` reads them. Only a registry that
+   * keeps such rows in its backend implements it; the object registries do.
+   *
+   * It removes a row only if it is `deleted: true` with no incarnation id (whatever its `status`), and only by a delete
+   * the backend applies under the version it read (see {@link RegCaps.conditionalDelete}), so a `create` that lands over
+   * the row first wins. A registry that cannot delete under that precondition throws `CapabilityError` before its first
+   * request. It never touches a live row, a `destroyed` row that is not `deleted`, or a deleted row with an incarnation
+   * id, so it does not remove every row a full `list` reads. If `conditionalDelete` was set on a backend that ignores the
+   * precondition, the delete is unfenced.
+   *
+   * Not resumable: every call lists and reads from the start (R reads for R rows, whatever the `limit`).
+   */
+  reapLegacyTombstones?(options: ReapLegacyTombstonesOptions): Promise<ReapLegacyTombstonesResult>;
 }

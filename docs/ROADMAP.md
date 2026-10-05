@@ -65,7 +65,8 @@ with the release it is to ship in, and sits under `[Unreleased]` in the [changel
 | Reading a chunk at a time — `.batches()` on `iterate`, `intersect`, `union` and `andNot` | **shipped** — the same ids in the same order as one `Uint32Array` per chunk, reading the same chunks; see the [changelog](../CHANGELOG.md#0140--2026-10-04) and [Read a chunk at a time](guide/reading.md#read-a-chunk-at-a-time-batches) |
 | The ids at ranks `n`, `2n`, `3n` … of a pin — `pin.everyNth(n, range?)` | **on `main`, unreleased, to ship in `0.17.0`** — places each boundary from the index's per-chunk counts and reads only the chunks that hold one, each once, through `iterate`'s stream, window and budget; a live handle is refused, and a chunk that is read must match its count ([reading guide](guide/reading.md#every-nth-id-of-a-pin-everynth)) |
 | The built S3 client allows 128 sockets, and `maxSockets` sets it | **shipped** — twice the SDK's 50, so one two-operand `intersect` at the default `concurrency` does not queue behind its own socket pool; see the [changelog](../CHANGELOG.md#0140--2026-10-04). The in-region run's client had 128 sockets |
-| Deferred past `0.16.0` | **not built** — `generations({ describe: true })`, the tombstone reaper, an `op` metric for `store.load`, an unscoped listing that skips the due index's pointers, one generation from parts built in several processes, and the reconcile for `rollback`, `setRetention`, shred and `eraseSubject` writes: [On the way to 1.0](#on-the-way-to-10), item 9, says what each is |
+| The tombstone reaper — `store.reapRegistryTombstones` removes the `deleted: true` rows a release before 0.12 left in an object-store registry | **unreleased, to ship in `0.17.0`** — admin call, `dryRun` first, each delete fenced on the version read, refused with `CapabilityError` where `conditionalDelete` is off; it cannot remove the `destroyed` tombstones `dropSegment` leaves, or one written while `conditionalDelete` was off, so it does not clean a bucket completely; see the [guide](guide/retention.md#remove-the-deleted-rows-a-release-before-012-left-storereapregistrytombstones) |
+| Deferred past `0.16.0` | **not built** — `generations({ describe: true })`, an `op` metric for `store.load`, an unscoped listing that skips the due index's pointers, one generation from parts built in several processes, and the reconcile for `rollback`, `setRetention`, shred and `eraseSubject` writes: [On the way to 1.0](#on-the-way-to-10), item 9, says what each is |
 | WASM CRoaring research | **after** the loaded store |
 
 **What is next:** a Lambda run, the `*Into` verbs and other combine shapes against a real store, and in-region GCS
@@ -339,9 +340,7 @@ between here and there:
 9. **Closing the named deferrals.** None of these is in `0.16.0`:
    - self-healing disaster recovery;
    - an exclusion predicate on the retention sweep (legal hold);
-   - an automated reconcile of unstamped tombstones, and a cleanup of the tombstones a registry already holds (the
-     tombstone reaper: each is still read by every full listing, and safe to remove once no process on a release
-     before 0.12 is left);
+   - an automated reconcile of unstamped tombstones;
    - an unscoped listing that skips the due index's pointers before reading them;
    - `generations({ describe: true })`, which would open every listed generation to describe it;
    - an `op` metric for `store.load`, which the metrics sink does not time;
