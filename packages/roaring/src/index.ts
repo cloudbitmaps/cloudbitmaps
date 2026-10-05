@@ -2474,7 +2474,10 @@ export class Segment {
     // that is current now, which is not the leased one, and holds no lease of its own unless asked.
     this.assertLeases([this]);
     const leaseUntil = this.leaseUntilOf('pin', options);
-    // `pinAt` (when it lands) takes its lease through the same hook, between its row read and its verify of the object.
+    // For `pinAt` (a separate change): it takes `{ generation, fingerprint }` as its first argument and refuses any other
+    // key, so `leaseUntil` goes in its OPTIONS, the second argument, read by `leaseUntilOf`. It must call `assertLeases`
+    // first, as this does (a leased handle past its lease pins nothing), and it reaches `this.pinned`, whose third
+    // parameter is the lease here: that slot and its named generation need one options object, or a fourth parameter.
     return this.pinned(this.ref, this.expiresAt, leaseUntil);
   }
 
@@ -2729,8 +2732,9 @@ export class Segment {
    * without checking its options, as every read of one does.
    */
   iterate(options?: IdRange): IdStream {
-    // Hook for `everyNth`, when it lands: it checks `leaseError()` here, before its stream, and wraps that stream in
-    // `guardIds` as this does, so a leased handle reads nothing past its lease there either.
+    // For `everyNth` (a separate change), which returns a plain `AsyncIterable<number>` with no `.batches()`: it checks
+    // `leaseError()` here, before its stream, and wraps that stream in `guardIdIterable` (lease-guards.ts), which checks
+    // before the first pull and at each chunk. The source scan fails for it until it does.
     const lease = this.leaseError();
     if (lease !== undefined) return failing(lease);
     if (this.expired()) return EMPTY_IDS;
