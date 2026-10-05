@@ -73,6 +73,7 @@ import {
   totalFromContentRange,
 } from './s3-errors';
 import { resolveReadTimeoutMs, timedRead, type ReadSendOptions } from './read-timeout';
+import type { SocketAdvisory } from './socket-advisory';
 import { sendOnce } from './send-once';
 
 /** Part size for multipart uploads. ≥ the S3 5 MiB minimum; an object that fits in one part uses a single
@@ -125,6 +126,8 @@ export interface S3StorageDriverOptions {
    * `cacheMiddleware: true`, a timed read resolves its middleware each time.
    */
   readonly readTimeoutMs?: number;
+  /** The socket-pool check, run as each read finishes; absent for a driver built on its own. */
+  readonly sockets?: SocketAdvisory;
   /** What the backoff before re-sending a throttled commit waits on; real time when absent. */
   readonly clock?: Sleeper;
 }
@@ -137,9 +140,11 @@ export class S3StorageDriver implements IStorageDriver {
   private readonly partBytes: number;
   private readonly readTimeoutMs: number;
   private readonly clock: Sleeper;
+  private readonly sockets: SocketAdvisory | undefined;
 
   constructor(options: S3StorageDriverOptions) {
     this.client = options.client;
+    this.sockets = options.sockets;
     this.bucket = options.bucket;
     this.prefix = normalizeS3Prefix(options.prefix);
     this.clock = options.clock ?? REAL_TIME;
@@ -279,6 +284,8 @@ export class S3StorageDriver implements IStorageDriver {
         return await run(options);
       } catch (err) {
         throw this.mapReadError(err, key);
+      } finally {
+        this.sockets?.afterRequest();
       }
     });
   }

@@ -313,6 +313,18 @@ its reads past the 50th are not refused: they wait for a socket, and the wait co
 `maxSockets` (on the store, or on your own client) to match your concurrent combines (256 covers four two-operand
 combines), or pass a lower `concurrency` to the combine.
 
+**The store tells you when a client you pass is below that.** When the store has a `metrics` sink and the
+client's socket pool is smaller than twice the default window (64), the first read sends the sink one `advisory` event
+and no more: `{ kind: 'advisory', code: 'socket-pool-below-window', driver: 's3', bucket, maxSockets, threshold: 64,
+concurrency: 32 }`. Nothing is logged or printed, and the check sends no request of its own. It compares against the
+default `concurrency` of 32, because a combine's `concurrency` is chosen per call and the store cannot see it: if you
+always pass a lower one, the event is a false alarm for you and you can ignore it. It reads the pool through the SDK's
+own request handler, so it sees the SDK's default handler and the agents you give it (`maxSockets` on its `httpAgent` or
+`httpsAgent`, for the scheme your endpoint uses). It **cannot read** a request handler you wrote yourself, an HTTP/2
+handler, the Fetch handler, or an agent that does not expose `maxSockets`, and for those it sends nothing and raises no
+error, so no event does not mean the pool is large enough. A pool you raise after the first read is not seen. When your client has an `endpoint`, it reads the agent for that scheme. When it has none, or its endpoint comes from the environment (`AWS_ENDPOINT_URL`), which the client does not expose, the scheme is not known, so it reads every agent the handler has made and sends the event only if all of them are below 64: it never warns on a pool your reads do not use, and it can miss a small pool when the other agent is large. A backend given to several stores sends each store's sink its own event, once; a store built after the check has run gets it as soon as the check's result is known. The client
+the store builds, at its 128 sockets, sends none unless you set `maxSockets` below 64.
+
 `eraseSubject` has up to `concurrency × 8` requests open (64 by default, since it erases 8 segments at once, each
 reading its segment through a stream of at most 4 ranges, each up to 1 MiB, and searching its other generations for a
 holder 4 at a time, two requests each), and `iterate` reads up to 32 ranges ahead (a source that reads chunk by chunk,

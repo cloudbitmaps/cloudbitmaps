@@ -33,6 +33,42 @@ so, and so do the module headers in the code.
   `keptGens` on one is an `IntegrityError`. A registry of your own must store and return the field, and drop it on a
   patch that moves `currentGen` without naming it; the conformance suite holds a driver to both.
 
+### Added
+
+- **An advisory event when an S3 client's socket pool is smaller than a combine needs.** A store with a `metrics` sink
+  now sends it one `{ kind: 'advisory', code: 'socket-pool-below-window', driver, bucket, maxSockets, threshold,
+  concurrency }` event, once, after the first S3 read, when the client's pool is under 64 sockets (twice the default
+  `concurrency` of 32: a client you pass keeps the SDK's 50). Nothing is logged or printed and the check sends no
+  request. It reads the SDK's default handler and agents you give it, and says nothing for a handler it cannot read
+  (your own, HTTP/2, Fetch). `MetricEvent` gains the `advisory` variant, so a sink that ends its `switch` on `kind` with a
+  `never` check needs a case for it. `StorageBackend` gains an optional `attachMetrics(sink)`, which a store calls with its
+  sink, and `@cloudbitmaps/core/driver-kit` re-exports `IMetricsSink` and `MetricEvent`.
+
+- **`pin.everyNth(n, range?)`, the ids at ranks `n`, `2n`, `3n` …, on a pinned handle.** It yields the id at each 1-based
+  rank counted over the ids in `(after, through]`, ascending, and nothing for a last partial window, so a send cut into
+  windows of 1,000 reads its boundaries without decoding the chunks that hold none. It places each boundary from the
+  index's per-chunk counts and reads only the chunks that hold one, each once, through `iterate`'s coalesced stream, window and
+  budget. A live handle throws `UnsupportedError`, a bad `n` `ValidationError`, and a chunk that is read and decodes to a different size than the
+  index says `IntegrityError`; the index's counts are trusted for chunks not read, as `count()` trusts them. The paging recipe in the reading guide finds its window ends with a `.batches()` stride, and points at
+  `everyNth` for the boundary case.
+
+- **`seg.pinAt({ generation, fingerprint })`, a pin at a named generation.** It reopens a generation an earlier pin recorded
+  in its `pinnedAt`, as a pinned handle like the one `pin()` returns, for a second task of one job. Identify a pin by its `generation` and `fingerprint`: the handle's `pinnedAt.version` can differ from the earlier pin's. The fingerprint is required, since a
+  generation number is taken again after a purge and re-create, so a bare number, or a key `pinAt` does not know, throws `ValidationError`. A generation that is
+  collected, purged, on a crypto-shredded segment, above the row's pointer, or another object than the fingerprint names throws `NotFoundError`, and the call never reads empty. It costs
+  one registry read and one tail read, and it holds nothing: how long a generation can be reopened is how long `keep` retains it.
+  Exported as the `PinAt` type, with a method on `CrbmStorageChunkSource` that does the open.
+
+- **`deserializePortable(bytes)`, and the loading guide's recipe for the parts of one segment built in separate processes.**
+  `deserializePortable` decodes portable Roaring bytes you hold into a `RoaringBitmap32` through the check a
+  `{ serialized }` load makes first (the size cap, the structural check, exactly one bitmap), and throws
+  `ValidationError` for bytes that fail it, before the native decoder runs. `@cloudbitmaps/core` exports
+  `decodeSerialized(bytes, codec, what?)`, the one check both go through. The recipe has each process serialize its part,
+  and one process decode each with `deserializePortable`, join them with `RoaringBitmap32.orMany`, refuse parts that
+  overlap by comparing the union's size with the sum of the parts', and load the union once, in the requests of one
+  load. A property test runs the recipe from the guide: the generation is byte for byte the one a load of the whole set
+  writes, wherever the ranges are cut.
+
 ### Changed
 
 - **Behaviour change: an expired exclusion now throws; it used to exclude nothing.** `a.andNot([stale])`,

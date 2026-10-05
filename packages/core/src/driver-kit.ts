@@ -50,6 +50,9 @@ export type {
 } from './core/ports';
 export { brandAsBackend, STORAGE_BACKEND } from './core/ports';
 
+// The metrics sink a store hands a backend that implements `StorageBackend.attachMetrics`, and the event union it emits to.
+export type { IMetricsSink, MetricEvent } from './core/metrics';
+
 // The typed errors a driver must throw, and the predicates that classify one.
 //
 // In an ordinary install `instanceof` holds: every package here leaves `@cloudbitmaps/core` external, so one
