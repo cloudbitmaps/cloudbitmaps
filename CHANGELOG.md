@@ -43,6 +43,23 @@ so, and so do the module headers in the code.
   index says `IntegrityError`; the index's counts are trusted for chunks not read, as `count()` trusts them. The paging recipe in the reading guide finds its window ends with a `.batches()` stride, and points at
   `everyNth` for the boundary case.
 
+- **`seg.pinAt({ generation, fingerprint })`, a pin at a named generation.** It reopens a generation an earlier pin recorded
+  in its `pinnedAt`, as a pinned handle like the one `pin()` returns, for a second task of one job. Identify a pin by its `generation` and `fingerprint`: the handle's `pinnedAt.version` can differ from the earlier pin's. The fingerprint is required, since a
+  generation number is taken again after a purge and re-create, so a bare number, or a key `pinAt` does not know, throws `ValidationError`. A generation that is
+  collected, purged, on a crypto-shredded segment, above the row's pointer, or another object than the fingerprint names throws `NotFoundError`, and the call never reads empty. It costs
+  one registry read and one tail read, and it holds nothing: how long a generation can be reopened is how long `keep` retains it.
+  Exported as the `PinAt` type, with a method on `CrbmStorageChunkSource` that does the open.
+
+- **`deserializePortable(bytes)`, and the loading guide's recipe for the parts of one segment built in separate processes.**
+  `deserializePortable` decodes portable Roaring bytes you hold into a `RoaringBitmap32` through the check a
+  `{ serialized }` load makes first (the size cap, the structural check, exactly one bitmap), and throws
+  `ValidationError` for bytes that fail it, before the native decoder runs. `@cloudbitmaps/core` exports
+  `decodeSerialized(bytes, codec, what?)`, the one check both go through. The recipe has each process serialize its part,
+  and one process decode each with `deserializePortable`, join them with `RoaringBitmap32.orMany`, refuse parts that
+  overlap by comparing the union's size with the sum of the parts', and load the union once, in the requests of one
+  load. A property test runs the recipe from the guide: the generation is byte for byte the one a load of the whole set
+  writes, wherever the ranges are cut.
+
 ### Changed
 
 - **`store.load()` collects by name at any `keep` up to 64.** The segment's row records the generations a load keeps
