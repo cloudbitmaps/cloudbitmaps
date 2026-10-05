@@ -294,9 +294,10 @@ describe('S3Storage (MinIO) — the backend builds its own client', () => {
 // What `store.load()` sends to S3, counted by the request meter the calibration harness bills with. The in-memory
 // counts that the cost model is held to (`tests/core/cost.test.ts`) are of the driver ports; these are of the wire,
 // command by command. A load reads its row once before the publish and checks the next generation number with one
-// HeadObject instead of listing, and sizes the current generation from the row's summary of it. It collects by name:
-// it looks for the current object with a second HeadObject, re-reads the pointer and deletes the one generation its
-// publish pushed out of the window, listing nothing, except on every sixteenth generation, where it lists instead.
+// HeadObject instead of listing, and sizes the current generation from the row's summary of it. Its publish is written
+// against the row it read, so the write makes no read of the row. It collects by name: it looks for the current object
+// with a second HeadObject, re-reads the pointer and deletes the one generation its publish pushed out of the window,
+// listing nothing, except on every sixteenth generation, where it lists instead.
 describe('S3 (MinIO): the requests one store.load() sends', () => {
   const require_ = createRequire(import.meta.url);
   const { meter } = require_('../../bench/lib/aws-meter.cjs') as {
@@ -328,29 +329,28 @@ describe('S3 (MinIO): the requests one store.load() sends', () => {
       return { put: tally.put, get: tally.get, byCommand: { ...tally.byCommand } };
     };
     // The object and the row (2 PutObject) are PUT-class; the row read, its second read after the ids (a first load
-    // found no row), the create's read and the check are GET-class. Nothing is outside the window yet, so nothing
-    // is read or deleted after the publish.
+    // found no row) and the check are GET-class, and the create is sent without reading the row. Nothing is outside
+    // the window yet, so nothing is read or deleted after the publish.
     const first = {
-      put: 2,
-      get: 4,
-      byCommand: { GetObjectCommand: 3, HeadObjectCommand: 1, PutObjectCommand: 2 },
-    };
-    expect(await load(0)).toEqual(first);
-    // A reload takes the size of the current generation, to count what it replaces, from its row's summary and opens
-    // nothing: its row read and the compare-and-swap's read of the row's version, where the first load's second row read
-    // and create's read were, and no tail read.
-    expect(await load(1)).toEqual({
       put: 2,
       get: 3,
       byCommand: { GetObjectCommand: 2, HeadObjectCommand: 1, PutObjectCommand: 2 },
+    };
+    expect(await load(0)).toEqual(first);
+    // A reload takes the size of the current generation, to count what it replaces, from its row's summary and opens
+    // nothing: its one row read, which its compare-and-swap is written against, and the check, with no tail read.
+    expect(await load(1)).toEqual({
+      put: 2,
+      get: 2,
+      byCommand: { GetObjectCommand: 1, HeadObjectCommand: 1, PutObjectCommand: 2 },
     });
     // From the third load on the collection deletes by name: a second HeadObject first, that the current generation's
     // object is there, and the pointer re-read before the delete.
     const steady = {
       put: 2,
-      get: 5,
+      get: 4,
       byCommand: {
-        GetObjectCommand: 3,
+        GetObjectCommand: 2,
         HeadObjectCommand: 2,
         PutObjectCommand: 2,
         DeleteObjectCommand: 1,
@@ -361,9 +361,9 @@ describe('S3 (MinIO): the requests one store.load() sends', () => {
     // word that the current object is there.
     expect(await load(16)).toEqual({
       put: 3,
-      get: 6,
+      get: 5,
       byCommand: {
-        GetObjectCommand: 5,
+        GetObjectCommand: 4,
         HeadObjectCommand: 1,
         PutObjectCommand: 2,
         ListObjectsV2Command: 1,
