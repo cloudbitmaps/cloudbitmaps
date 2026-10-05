@@ -1,17 +1,25 @@
-import { MIN_EXPIRES_AT_MS, ValidationError, type Clock, type Segment } from '@/index';
+import {
+  MIN_EXPIRES_AT_MS,
+  ValidationError,
+  type Clock,
+  type IdStream,
+  type Segment,
+} from '@/index';
+import { CloudRoaring, CrbmStorageChunkSource } from '@/index';
+import type { IRegistryDriver, IStorageDriver } from '@/index';
 import { collect, loadedStore } from '../helpers/loaded';
 
 /**
- * **An expired exclusion excludes nothing, in every shape of combine.**
+ * **An exclusion past its `expiresAt` is refused, in every shape of combine.**
  *
- * Expiry is a read rule: past its deadline a handle reads as gone. As an *exclusion*, gone means it subtracts
- * nothing, whichever way the combine is spelled. This table holds every shape (`andNot`, `intersect`, `union`, a
- * union whose operands have expired) to the one rule, live and pinned, whole and range-read, against a model that
- * knows nothing about the shortcuts: a plain set algebra over the ids each case says are live.
+ * An exclusion is a suppression or opt-out list. Read as empty, as an expired operand is, it would silently stop
+ * excluding and the ids it exists to remove would come back. So a combine given an expired exclusion throws
+ * `ValidationError` naming it, before any request is made: `andNot`, and `exclude` on `intersect` and `union`,
+ * live and pinned, whole and range-read, per-id and `.batches()`. This table holds every shape to that rule, and
+ * holds a live exclusion to a model that knows nothing about the shortcuts: a plain set algebra.
  *
- * Every other rule is held where it was: an expired `self` or include operand is empty, and an absent operand is
- * refused unless `allowAbsentOperands` is set. The `*Into` verbs still throw on any expired handle, an exclusion
- * included, rather than publish a generation the exclusion did not shape.
+ * Every other rule is where it was: an expired `self` or include operand is empty or dropped, an absent operand is
+ * refused unless `allowAbsentOperands` is set, and the `*Into` verbs throw on any expired handle.
  */
 
 const DEADLINE = MIN_EXPIRES_AT_MS + 1_000;
@@ -46,7 +54,7 @@ interface Ctx {
 /** A shape: how the combine is spelled, and what it yields when `drop` is what the live exclusions hold. */
 interface Shape {
   name: string;
-  run: (c: Ctx) => AsyncIterable<number>;
+  run: (c: Ctx) => IdStream;
   model: (drop: Ids) => number[];
 }
 
@@ -96,6 +104,46 @@ const SHAPES: Shape[] = [
   },
 ];
 
+const STALE = /exclusions have expired/;
+
+/** A store whose storage and registry count every call made on them, over the same segments. */
+async function counted(pinned: boolean) {
+  const clock = fakeClock();
+  const seed = await loadedStore(IDS, { cache: { genTtlMs: 0 }, seams: { clock } });
+  const calls: string[] = [];
+  const recording = <T extends object>(target: T): T =>
+    new Proxy(target, {
+      get(t, p, rx) {
+        const v = Reflect.get(t, p, rx) as unknown;
+        if (typeof v !== 'function') return v;
+        return (...args: unknown[]) => {
+          calls.push(String(p));
+          return (v as (...a: unknown[]) => unknown).apply(t, args);
+        };
+      },
+    });
+  const storage: IStorageDriver = recording(seed.backend.storage);
+  const registry: IRegistryDriver = recording(seed.backend.registry);
+  const store = new CloudRoaring({
+    storage: new CrbmStorageChunkSource(storage, { registry }),
+    cache: { genTtlMs: 0 },
+    seams: { clock },
+  });
+  const handle = async (name: string, expiresAt?: number) => {
+    const seg = store.segment(name, expiresAt === undefined ? {} : { expiresAt });
+    return pinned ? seg.pin() : seg;
+  };
+  return { clock, store, handle, calls };
+}
+
+async function world(pinned: boolean) {
+  const w = await counted(pinned);
+  return {
+    ...w,
+    handle: w.handle as (name: keyof typeof IDS, expiresAt?: number) => Promise<Segment>,
+  };
+}
+
 type Kind = 'live' | 'expired' | 'both expired' | 'one of two expired';
 const KINDS: { kind: Kind; ex: ('x1' | 'x2')[]; expired: ('x1' | 'x2')[] }[] = [
   { kind: 'live', ex: ['x1'], expired: [] },
@@ -104,17 +152,7 @@ const KINDS: { kind: Kind; ex: ('x1' | 'x2')[]; expired: ('x1' | 'x2')[] }[] = [
   { kind: 'one of two expired', ex: ['x1', 'x2'], expired: ['x1'] },
 ];
 
-async function world(pinned: boolean) {
-  const clock = fakeClock();
-  const { store } = await loadedStore(IDS, { cache: { genTtlMs: 0 }, seams: { clock } });
-  const handle = async (name: keyof typeof IDS, expiresAt?: number) => {
-    const seg = store.segment(name, expiresAt === undefined ? {} : { expiresAt });
-    return pinned ? seg.pin() : seg;
-  };
-  return { clock, store, handle };
-}
-
-describe.each([false, true])('an expired exclusion excludes nothing, pinned: %s', (pinned) => {
+describe.each([false, true])('an expired exclusion is refused, pinned: %s', (pinned) => {
   describe.each(SHAPES)('$name', (shape) => {
     describe.each(RANGES)('range %j', (range) => {
       it.each(KINDS)('$kind', async ({ ex, expired }) => {
@@ -126,78 +164,135 @@ describe.each([false, true])('an expired exclusion excludes nothing, pinned: %s'
           ex.map((n) => w.handle(n, expired.includes(n) ? DEADLINE : DEADLINE * 2)),
         );
         w.clock.set(DEADLINE + 1); // `gone` and every expired exclusion are past it; the rest are not
+        w.calls.length = 0;
 
-        const live = ex.filter((n) => !expired.includes(n)).map((n) => IDS[n]);
-        const got = await collect(shape.run({ a, b, gone, ex: handles, opts: range }));
-        const inRange = (id: number) =>
-          (range.after === undefined || id > range.after) &&
-          (range.through === undefined || id <= range.through);
-        expect(got).toEqual(shape.model(live.flat()).filter(inRange));
+        const ctx = { a, b, gone, ex: handles, opts: range };
+        if (expired.length === 0) {
+          const inRange = (id: number) =>
+            (range.after === undefined || id > range.after) &&
+            (range.through === undefined || id <= range.through);
+          const live = ex.map((n) => IDS[n]).flat();
+          expect(await collect(shape.run(ctx))).toEqual(shape.model(live).filter(inRange));
+          return;
+        }
+        const message = new RegExp(`exclusions have expired — ${expired.join(', ')}\\.`);
+        await expect(collect(shape.run(ctx))).rejects.toThrow(ValidationError);
+        await expect(collect(shape.run(ctx))).rejects.toThrow(message);
+        await expect(
+          (async () => {
+            for await (const batch of shape.run(ctx).batches()) void batch;
+          })(),
+        ).rejects.toThrow(message);
+        expect(w.calls).toEqual([]); // before any request
       });
     });
   });
 });
 
-describe('an expired exclusion naming an absent segment is not refused as absent', () => {
-  it.each(SHAPES.filter((s) => !s.name.includes('expired')))('$name', async (shape) => {
+describe('an expired exclusion naming an absent segment is refused as expired, not as absent', () => {
+  it.each(SHAPES)('$name', async (shape) => {
     const w = await world(false);
     const ghost = w.store.segment('no-such-list', { expiresAt: DEADLINE });
     const a = await w.handle('a');
     const b = await w.handle('b');
     const gone = await w.handle('gone', DEADLINE);
     w.clock.set(DEADLINE + 1);
-    const ctx = { a, b, gone, ex: [ghost], opts: {} };
-    expect(await collect(shape.run(ctx))).toEqual(shape.model([]));
+    const err = await collect(shape.run({ a, b, gone, ex: [ghost], opts: {} })).catch(
+      (e: unknown) => e as Error,
+    );
+    expect(err).toBeInstanceOf(ValidationError);
+    expect((err as Error).message).toMatch(STALE);
+    expect((err as Error).message).not.toMatch(/does not exist/);
   });
 });
 
-describe('an expired exclusion beside an absent include operand', () => {
-  /** What each shape does with an absent include operand is unchanged: refused, or empty where none is read. */
-  const cases: [
-    string,
-    (c: Ctx, absent: Segment, allow?: boolean) => AsyncIterable<number>,
-    number[],
-  ][] = [
-    [
-      'intersect',
-      (c, absent, allow) => c.a.intersect([absent], { exclude: c.ex, allowAbsentOperands: allow }),
-      [],
-    ],
-    [
-      'union',
-      (c, absent, allow) => c.a.union([absent], { exclude: c.ex, allowAbsentOperands: allow }),
-      IDS.a,
-    ],
-    [
-      'andNot (absent self)',
-      (c, absent, allow) => absent.andNot(c.ex, { allowAbsentOperands: allow }),
-      [],
-    ],
-  ];
-
-  it.each(cases)('%s: refused, exactly as without the exclusion', async (_name, run) => {
+describe('an expired exclusion is refused ahead of the expired-operand shortcuts', () => {
+  it('on an expired self, an expired include operand, and an absent one', async () => {
     const w = await world(false);
+    const a = await w.handle('a');
+    const gone = await w.handle('gone', DEADLINE);
+    const stale = await w.handle('x1', DEADLINE);
     const absent = w.store.segment('not-loaded');
-    const ex = [w.store.segment('x1', { expiresAt: DEADLINE })];
     w.clock.set(DEADLINE + 1);
-    const c = { a: w.store.segment('a'), b: w.store.segment('b'), gone: absent, ex, opts: {} };
-    await expect(collect(run(c, absent))).rejects.toThrow(/does not exist/);
+    for (const read of [
+      () => gone.intersect([a], { exclude: [stale] }),
+      () => a.intersect([gone], { exclude: [stale] }),
+      () => gone.andNot([stale]),
+      () => gone.union([gone], { exclude: [stale] }),
+      () => a.union([absent], { exclude: [stale] }),
+      () => a.intersect([absent], { exclude: [stale], allowAbsentOperands: true }),
+      () => a.union([absent], { exclude: [stale], allowAbsentOperands: true }),
+    ]) {
+      await expect(collect(read())).rejects.toThrow(STALE);
+    }
   });
-
-  it.each(cases)(
-    '%s: with allowAbsentOperands, the exclusion subtracts nothing',
-    async (_name, run, want) => {
-      const w = await world(false);
-      const absent = w.store.segment('not-loaded');
-      const ex = [w.store.segment('x1', { expiresAt: DEADLINE })];
-      w.clock.set(DEADLINE + 1);
-      const c = { a: w.store.segment('a'), b: w.store.segment('b'), gone: absent, ex, opts: {} };
-      expect(await collect(run(c, absent, true))).toEqual(want);
-    },
-  );
 });
 
-describe('an expired exclusion is left out of the pin-consistency check', () => {
+describe('an expired operand reads exactly as before, beside a live exclusion', () => {
+  it('is empty on an intersect, dropped from a union, and an expired self is empty or replaced', async () => {
+    const w = await world(false);
+    const a = await w.handle('a');
+    const b = await w.handle('b');
+    const gone = await w.handle('gone', DEADLINE);
+    const x2 = await w.handle('x2');
+    w.clock.set(DEADLINE + 1);
+    expect(await collect(a.intersect([gone], { exclude: [x2] }))).toEqual([]);
+    expect(await collect(a.union([gone], { exclude: [x2] }))).toEqual([1, 2, 70_000]);
+    expect(await collect(gone.union([b], { exclude: [x2] }))).toEqual([2, 4, 70_000]);
+    expect(await collect(gone.andNot([x2]))).toEqual([]);
+    expect(await collect(a.union([gone]))).toEqual(IDS.a);
+    expect(await collect(a.intersect([gone]))).toEqual([]);
+    expect(await gone.count()).toBe(0);
+  });
+});
+
+describe('an exclusion that has not expired still works', () => {
+  it('whose deadline is ahead of the clock', async () => {
+    const w = await world(false);
+    const a = await w.handle('a');
+    const b = await w.handle('b');
+    const x1 = await w.handle('x1', DEADLINE * 2);
+    w.clock.set(DEADLINE + 1);
+    expect(await collect(a.andNot([x1]))).toEqual([1, 3]);
+    expect(await collect(a.intersect([b], { exclude: [x1] }))).toEqual([3]);
+    expect(await collect(a.union([b], { exclude: [x1] }))).toEqual([1, 3, 4]);
+  });
+});
+
+describe('the refusal names each expired exclusion once, namespace-qualified', () => {
+  it('lists the expired ones only', async () => {
+    const w = await world(false);
+    const a = await w.handle('a');
+    const live = w.store.segment('x2', { expiresAt: DEADLINE * 2 });
+    const x1 = w.store.segment('x1', { expiresAt: DEADLINE });
+    const other = w.store.segment('x1', { namespace: 'acme', expiresAt: DEADLINE });
+    w.clock.set(DEADLINE + 1);
+    const err = await collect(a.andNot([x1, live, x1, other])).catch((e: unknown) => e as Error);
+    expect((err as Error).message).toBe(
+      'andNot: refusing to read while these exclusions have expired — x1, acme/x1. ' +
+        'An expired exclusion would subtract nothing, so the result would include the ids it was passed to remove. ' +
+        "Renew the exclusion's `expiresAt`, open it without one, or leave it out of the call.",
+    );
+  });
+});
+
+describe('the check is made when the combine is called, not per chunk', () => {
+  it('a stream already reading when its exclusion expires finishes', async () => {
+    const w = await world(false);
+    const a = await w.handle('a');
+    const x1 = await w.handle('x1', DEADLINE);
+    const stream = a.andNot([x1]);
+    const it = stream[Symbol.asyncIterator]();
+    expect((await it.next()).value).toBe(1);
+    w.clock.set(DEADLINE + 1);
+    const rest: number[] = [];
+    for (let r = await it.next(); !r.done; r = await it.next()) rest.push(r.value);
+    expect(rest).toEqual([3]);
+    await expect(collect(a.andNot([x1]))).rejects.toThrow(STALE);
+  });
+});
+
+describe('an expired exclusion is checked before the pin-consistency check', () => {
   /** The only pinned handle is the exclusion, and it names the segment `self` reads live. */
   const run = async (expiresAt: number | undefined, after: number) => {
     const w = await world(false);
@@ -209,31 +304,24 @@ describe('an expired exclusion is left out of the pin-consistency check', () => 
   };
 
   it.each(['intersect', 'union'] as const)(
-    '%s: a live pin of the same segment is still refused',
+    '%s: a live pin of the same segment is still refused as a pin mismatch',
     async (verb) => {
       const { a, b, pinnedA } = await run(undefined, DEADLINE + 1);
-      await expect(collect(a[verb]([b], { exclude: [pinnedA] }))).rejects.toThrow(ValidationError);
+      const err = await collect(a[verb]([b], { exclude: [pinnedA] })).catch(
+        (e: unknown) => e as Error,
+      );
+      expect(err).toBeInstanceOf(ValidationError);
+      expect((err as Error).message).not.toMatch(STALE);
     },
   );
 
   it.each(['intersect', 'union'] as const)(
-    '%s: an expired one is skipped, not refused',
+    '%s: an expired pin is refused as expired',
     async (verb) => {
       const { a, b, pinnedA } = await run(DEADLINE, DEADLINE + 1);
-      const want = verb === 'intersect' ? [2, 3, 70_000] : [1, 2, 3, 4, 70_000];
-      expect(await collect(a[verb]([b], { exclude: [pinnedA] }))).toEqual(want);
+      await expect(collect(a[verb]([b], { exclude: [pinnedA] }))).rejects.toThrow(STALE);
     },
   );
-
-  it('a pinned self reads its pin when the only exclusion expires after the pin', async () => {
-    const w = await world(false);
-    const pinnedA = await w.store.segment('a').pin();
-    const stale = w.store.segment('x1', { expiresAt: DEADLINE });
-    w.clock.set(DEADLINE + 1);
-    expect(await collect(pinnedA.intersect([w.store.segment('b')], { exclude: [stale] }))).toEqual([
-      2, 3, 70_000,
-    ]);
-  });
 });
 
 describe('the *Into verbs refuse an expired exclusion and leave the destination alone', () => {
@@ -248,7 +336,11 @@ describe('the *Into verbs refuse an expired exclusion and leave the destination 
       verb === 'andNotInto'
         ? a.andNotInto(dest, [stale])
         : a[verb](dest, [b], { exclude: [stale] });
-    await expect(go).rejects.toBeInstanceOf(ValidationError);
+    const err = await go.catch((e: unknown) => e as Error);
+    expect(err).toBeInstanceOf(ValidationError);
+    expect((err as Error).message).toMatch(
+      /refusing to publish a generation while these handles have expired/,
+    );
     expect(await dest.count()).toBe(0);
   });
 });

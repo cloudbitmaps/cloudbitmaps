@@ -205,6 +205,6 @@ describe('the *Into verbs refuse an expired handle instead of publishing over th
     expect(await collect(a.intersect([expiredB]))).toEqual([]); // AND with the empty set
     expect(await expiredB.count()).toBe(0);
     expect(await expiredB.has(2)).toBe(false);
-    expect(await collect(a.andNot([expiredB]))).toEqual([1, 2, 3]); // excludes nothing
+    await expect(collect(a.andNot([expiredB]))).rejects.toThrow(/exclusions have expired/); // refused, not skipped
   });
 });

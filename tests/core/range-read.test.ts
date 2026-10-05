@@ -375,24 +375,24 @@ describe('the shortcuts for expired operands keep the range', () => {
     ).toEqual(within(IDS, K, 2 * K + 1).filter((id) => id !== K + 2));
   });
 
-  it('a union routed through an andNot whose excludes all expired subtracts nothing, and keeps the range', async () => {
+  it('a union routed through an andNot whose excludes all expired is refused, range or not', async () => {
     const w = await expiring();
     const gone = w.store.segment('gone', { expiresAt: T0 + DAY });
     const staleOptOut = w.store.segment('s', { expiresAt: T0 + DAY });
     w.expire();
     const range = { after: K, through: 2 * K + 1 };
-    expect(
-      await collect(w.store.segment('a').union([gone], { ...range, exclude: [staleOptOut] })),
-    ).toEqual(within(IDS, K, 2 * K + 1));
+    await expect(
+      collect(w.store.segment('a').union([gone], { ...range, exclude: [staleOptOut] })),
+    ).rejects.toThrow(ValidationError);
   });
 
-  it('an andNot whose every exclude expired is a range read of this one', async () => {
+  it('an andNot whose every exclude expired is refused, range or not', async () => {
     const w = await expiring();
     const gone = w.store.segment('gone', { expiresAt: T0 + DAY });
     w.expire();
-    expect(
-      await collect(w.store.segment('a').andNot([gone], { after: K, through: 2 * K + 1 })),
-    ).toEqual(within(IDS, K, 2 * K + 1));
+    await expect(
+      collect(w.store.segment('a').andNot([gone], { after: K, through: 2 * K + 1 })),
+    ).rejects.toThrow(ValidationError);
   });
 });
 
@@ -467,7 +467,7 @@ describe("the expired-operand shortcuts keep the call's own budget", () => {
   const DAY = 86_400_000;
   const T0 = 1_754_000_000_000;
 
-  it('a per-op budget, tighter or lifted, applies to a union or an andNot whose other operands expired', async () => {
+  it('a per-op budget, tighter or lifted, applies to a union whose other operands expired', async () => {
     let t = T0;
     const clock = { now: () => t, sleep: () => Promise.resolve() };
     const store = new CloudRoaring({
@@ -483,10 +483,8 @@ describe("the expired-operand shortcuts keep the call's own budget", () => {
     t += 2 * DAY;
     // The store's budget of 2 refuses a six-chunk read; `budget: false` on the call lifts it, as on any combine.
     expect(await collect(a.union([gone], { budget: false }))).toEqual(IDS);
-    expect(await collect(a.andNot([gone], { budget: false }))).toEqual(IDS);
     // …and a bad `concurrency` is refused there too.
     await expect(collect(a.union([gone], { concurrency: 0 }))).rejects.toThrow(ValidationError);
-    await expect(collect(a.andNot([gone], { concurrency: 0 }))).rejects.toThrow(ValidationError);
   });
 });
 
@@ -595,7 +593,7 @@ describe('one-id ranges, and union edges held only by a later include', () => {
 describe('the remaining expired-operand shortcuts keep the range', () => {
   const DAY = 86_400_000;
   const T0 = 1_754_000_000_000;
-  it('this handle expired; some operands expired; some excludes expired', async () => {
+  it('this handle expired; some operands expired', async () => {
     let t = T0;
     const clock = { now: () => t, sleep: () => Promise.resolve() };
     const store = new CloudRoaring({
@@ -615,7 +613,7 @@ describe('the remaining expired-operand shortcuts keep the range', () => {
     const want = within(IDS, K, 2 * K + 1);
     expect(await collect(expiredA.union([a], range))).toEqual(want);
     expect(await collect(a.union([gone, s], range))).toEqual(want);
-    expect(await collect(a.andNot([gone, s], range))).toEqual(want.filter((id) => id !== K + 2));
+    expect(await collect(a.andNot([s], range))).toEqual(want.filter((id) => id !== K + 2));
   });
 });
 

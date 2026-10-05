@@ -126,12 +126,14 @@ describe('lazy expiry — set algebra stays coherent with count()', () => {
     expect(await collect(aud.union([rolling], { exclude: [optout] }))).toEqual([1, 77]);
     // The control: with no exclusion the same shortcut is just the base segment.
     expect(await collect(aud.union([rolling]))).toEqual([1, 42, 77]);
-    // …and an expired exclusion still excludes nothing, even down this branch.
+    // …and an expired exclusion is refused, even down this branch.
     const staleOptout = store.segment('optout', { expiresAt: T0 + DAY });
-    expect(await collect(aud.union([rolling], { exclude: [staleOptout] }))).toEqual([1, 42, 77]);
+    await expect(collect(aud.union([rolling], { exclude: [staleOptout] }))).rejects.toThrow(
+      /exclusions have expired — optout/,
+    );
   });
 
-  it('an expired exclusion excludes nothing, and an expired base is empty', async () => {
+  it('an expired exclusion is refused, and an expired base is empty', async () => {
     // 42 is in `suppress` and NOT in `base`, so the expired-base case below can actually fail: without the
     // guard, `suppress.andNot([base])` would yield [42]. With [2] alone both paths would be empty and the
     // assertion would prove nothing.
@@ -142,7 +144,7 @@ describe('lazy expiry — set algebra stays coherent with count()', () => {
     expect(await collect(base.andNot([suppress]))).toEqual([1, 3]);
 
     advance(DAY);
-    expect(await collect(base.andNot([suppress]))).toEqual([1, 2, 3]); // suppression is gone, so it suppresses nothing
+    await expect(collect(base.andNot([suppress]))).rejects.toThrow(ValidationError); // a lapsed suppression is not skipped
     expect(await collect(suppress.andNot([base]))).toEqual([]); // expired base
   });
 });

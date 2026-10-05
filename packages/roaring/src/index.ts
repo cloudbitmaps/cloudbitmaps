@@ -1928,8 +1928,9 @@ export interface BaseCombineOptions extends IdRange {
  */
 export interface CombineOptions extends BaseCombineOptions {
   /**
-   * Segments whose ids are subtracted from the result. An **expired** handle here excludes nothing, in every
-   * combine — it is skipped without being read, exactly as in {@link Segment.andNot}.
+   * Segments whose ids are subtracted from the result. An **expired** handle here is refused, in every combine:
+   * the stream throws {@link ValidationError} naming it, before any request is made, exactly as in
+   * {@link Segment.andNot}.
    */
   readonly exclude?: Segment[];
 }
@@ -2483,7 +2484,7 @@ export class Segment {
 
   /**
    * The options a combine hands the engine, read once, when it is called ({@link readOptions}), with the `exclude`
-   * it was given, already reduced to its live handles ({@link liveExcludes}) and mapped down to the plain refs
+   * it was given ({@link excludesOf}) and mapped down to the plain refs
    * `core` takes. A method rather than a module function because `ref` is class-private — the encapsulation is
    * worth more than the free function.
    *
@@ -2503,18 +2504,38 @@ export class Segment {
   }
 
   /**
-   * The handles in `options.exclude` that have not expired. **An expired exclusion excludes nothing**, in every
-   * combine, so it is dropped here, before the engine is asked for anything: it is never fetched, never
-   * checked for absence, and never counted in the pin-consistency check. `exclude` is read once, so a getter sees
-   * one call.
-   *
-   * With no `exclude` this is one property read and a shared empty list, and with none expired it returns the
-   * caller's own array, so the common case allocates nothing.
+   * The handles in `options.exclude`, read once so a getter sees one call. With none this is one property read and
+   * a shared empty list; otherwise it is the caller's own array, so the common case allocates nothing.
    */
-  private liveExcludes(options: CombineOptions | null | undefined): readonly Segment[] {
+  private excludesOf(options: CombineOptions | null | undefined): readonly Segment[] {
     const exclude = options?.exclude;
-    if (exclude == null || exclude.length === 0) return NO_SEGMENTS;
-    return exclude.some((e) => e.expired()) ? exclude.filter((e) => !e.expired()) : exclude;
+    return exclude == null || exclude.length === 0 ? NO_SEGMENTS : exclude;
+  }
+
+  /**
+   * The refusal for a combine whose **exclusion** has expired, or `undefined` when none has. Unlike an expired
+   * operand, which reads empty, an exclusion is a suppression or opt-out list: left out silently, the result
+   * would include the very ids it was passed to remove. So it is refused, with the same {@link ValidationError}
+   * the `*Into` verbs raise for an expired handle, naming each expired exclusion.
+   *
+   * It is judged against the injected clock when the combine is called, before the engine is asked for anything:
+   * no request is made, and an expired exclusion that names a segment that does not exist is refused as expired,
+   * not as an absent operand. It runs ahead of the expired-operand shortcuts, so a combine that would read empty
+   * anyway still refuses a lapsed exclusion. A stream already being read is not re-checked when an exclusion
+   * expires part-way, as an operand expiring part-way does not stop it either.
+   */
+  private expiredExcludes(op: string, excludes: readonly Segment[]): ValidationError | undefined {
+    let stale: string[] | undefined;
+    for (const e of excludes) {
+      if (!e.expired()) continue;
+      (stale ??= []).push(e.ref.namespace ? `${e.ref.namespace}/${e.ref.segment}` : e.ref.segment);
+    }
+    if (stale === undefined) return undefined;
+    return new ValidationError(
+      `${op}: refusing to read while these exclusions have expired — ${[...new Set(stale)].join(', ')}. ` +
+        `An expired exclusion would subtract nothing, so the result would include the ids it was passed to remove. ` +
+        `Renew the exclusion's \`expiresAt\`, open it without one, or leave it out of the call.`,
+    );
   }
 
   /**
@@ -2531,11 +2552,13 @@ export class Segment {
   }
 
   private intersectAs<T>(out: CombineOutput<T>, others: Segment[], options?: CombineOptions): T {
+    const exclude = this.excludesOf(options);
+    const refused = this.expiredExcludes('intersect', exclude);
+    if (refused) return out.failing(refused);
     // An expired operand is empty, and anything ANDed with the empty set is empty. Guarding here rather than
     // only in `count()` is what keeps the surface coherent: a segment whose `count()` is 0 must not still
     // contribute members to an intersection.
     if (this.expired() || others.some((o) => o.expired())) return out.none;
-    const exclude = this.liveExcludes(options);
     let engine: SegmentEngine;
     try {
       engine = this.combineEngine([this, ...others, ...exclude]) ?? this.engine;
@@ -2601,6 +2624,9 @@ export class Segment {
   }
 
   private unionAs<T>(out: CombineOutput<T>, others: Segment[], options?: CombineOptions): T {
+    const exclude = this.excludesOf(options);
+    const refused = this.expiredExcludes('union', exclude);
+    if (refused) return out.failing(refused);
     // OR: drop the expired operands and union what is left. All expired ⇒ empty.
     const live = others.filter((o) => !o.expired());
     if (this.expired()) {
@@ -2615,13 +2641,11 @@ export class Segment {
       // out. `andNot` reads each exclude only where it overlaps, so this is also the cheap spelling.
       // With no exclude it is this segment alone, read as a one-operand union rather than as `iterate()`, so the
       // call's own `budget`, `concurrency` and range apply exactly as they would have to the union.
-      const exclude = this.liveExcludes(options);
       return exclude.length > 0
         ? this.andNotAs(out, [...exclude], options)
         : this.unionAs(out, [], options);
     }
     if (live.length !== others.length) return this.unionAs(out, live, options);
-    const exclude = this.liveExcludes(options);
     let engine: SegmentEngine;
     try {
       engine = this.combineEngine([this, ...others, ...exclude]) ?? this.engine;
@@ -2659,9 +2683,9 @@ export class Segment {
    * suppression list: at most one read per surviving key of `this`, so subtracting a 61,000-chunk global
    * opt-out list from a 40-chunk audience costs at most 40 reads, not 61,000.
    *
-   * An expired handle in `excludes` excludes nothing, and is skipped without being read; if every one has
-   * expired the result is `this` whole. An expired `this` is empty. `exclude` on `intersect` and `union` follows
-   * the same rule.
+   * An expired handle in `excludes` is refused, not skipped: the stream throws {@link ValidationError} naming it,
+   * before any request is made, because a lapsed suppression list would otherwise let through the ids it was
+   * passed to remove. An expired `this` is empty. `exclude` on `intersect` and `union` follows the same rule.
    *
    * To filter the *result of an intersection*, do not chain — pass `exclude` to {@link intersect} instead, so
    * the suppression folds into the same pass rather than materializing an intermediate segment first.
@@ -2671,19 +2695,10 @@ export class Segment {
   }
 
   private andNotAs<T>(out: CombineOutput<T>, excludes: Segment[], options?: BaseCombineOptions): T {
-    // MINUS: an expired base is empty; an expired exclusion excludes nothing.
+    const refused = this.expiredExcludes('andNot', excludes);
+    if (refused) return out.failing(refused);
+    // MINUS: an expired base is empty.
     if (this.expired()) return out.none;
-    const liveExcludes = excludes.filter((e) => !e.expired());
-    // Every exclusion expired ⇒ nothing to subtract. Recursing with an empty list would throw, since `andNot`
-    // requires at least one operand — a caller whose suppression list happened to age out must not get an error.
-    // It is read as a one-operand union rather than as `iterate()`, so the call's own `budget`, `concurrency` and range
-    // still apply.
-    // Only the call's own options go on, not an `exclude` a caller routed here with it: the excludes that expired are
-    // the ones this branch exists to drop, and an expired exclusion excludes nothing.
-    if (liveExcludes.length === 0 && excludes.length > 0) {
-      return this.unionAs(out, [], options == null ? undefined : readOptions(options));
-    }
-    if (liveExcludes.length !== excludes.length) return this.andNotAs(out, liveExcludes, options);
     let engine: SegmentEngine;
     try {
       engine = this.combineEngine([this, ...excludes]) ?? this.engine;
