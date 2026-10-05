@@ -60,7 +60,7 @@ name.
 | Option | What it holds |
 |---|---|
 | `storage` (required) | a backend (see above) |
-| `cache` | `maxChunks`, `genTtlMs` (how soon a reader sees a new load, default 2000 ms), `readerMax`, `readerMaxBytes` |
+| `cache` | `maxChunks`, `ttlMs` (an optional age limit on a cached chunk; omitted, a chunk stays until evicted), `genTtlMs` (how soon a reader sees a new load, default 2000 ms), `readerMax`, `readerMaxBytes` |
 | `encryption` | `{ keystore, required }`: encrypt segments at rest with your own key |
 | `retry` | tune the retry of reads, or `false` to turn it off |
 | `metrics` | a metrics sink; off by default |

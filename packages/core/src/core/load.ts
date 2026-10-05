@@ -22,7 +22,7 @@
 import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
 import { type CodecInterface, requireCodec } from './codec';
 import {
-  bulkLoadCrbmGeneration,
+  bulkLoadAhead,
   holdsObject,
   openGenerationReader,
   provesOwnObject,
@@ -198,6 +198,12 @@ export interface LoadResult {
   readonly collected: readonly number[];
 }
 
+/** `promise`, marked as observed: a caller that abandons it (a load that failed elsewhere) leaves no unhandled rejection. */
+function settled<T>(promise: Promise<T>): Promise<T> {
+  promise.catch(() => undefined);
+  return promise;
+}
+
 /** What the guard learned of the segment's current generation, and how it learned it. */
 interface CurrentSize {
   /** The number of ids it holds, or `null` when there is no current generation to compare against, or its object is gone. */
@@ -225,6 +231,7 @@ async function currentCardinality(
   ref: SegmentRef,
   deps: LoadDeps,
   record: RegistryRecord | null,
+  unwrapped: PromiseLike<Aead> | undefined,
 ): Promise<CurrentSize> {
   if (record === null || record.currentGen === null || record.status === 'destroyed') {
     return { cardinality: null, fromSummary: false };
@@ -239,7 +246,8 @@ async function currentCardinality(
         `segment "${ref.segment}" is encrypted but load was given no keystore`,
       );
     }
-    aead = await deps.keystore.openDek(wrapped);
+    // The load already asked the keystore for this row's key (see `loadSegment`): one unwrap serves the guard and the write.
+    aead = await (unwrapped ?? deps.keystore.openDek(wrapped));
     const opened = aead;
     crypto = { aead: opened, aadFor: (scope) => aadFor(ref, generation, scope) };
   }
@@ -324,22 +332,41 @@ export async function loadSegment(
   // destroyed check, and the publish's first attempt all come from it. Reusing it is sound because the publish is
   // fenced on this row (its token, the pointer the guard judged, or its absence), so a row that changes before then
   // makes the publish lose rather than land on the strength of a stale read. The write reads the row again after
-  // the ids when this read found none, or found key material (see `bulkLoadCrbmGeneration`'s `row`).
+  // the ids when this read found none, or found key material (see the `row` option of `bulkLoadCrbmGeneration`, whose write `bulkLoadAhead` shares).
   const row = await deps.registry.get(ref);
   const fromToken: Token | undefined = row?.token;
   const fromGeneration = row?.currentGen ?? undefined;
+
+  // The segment's data key, asked for now so the keystore's round trip overlaps the guard's read and the encoding.
+  // One unwrap serves both: the guard opens the current generation with it, and the write encrypts with it when the
+  // row it reads after the ids carries these same wrappings. Nothing is cached beyond this call. A failed unwrap
+  // fails the load where the guard or the write awaits it, and `settled` keeps an abandoned one from rejecting
+  // unobserved.
+  const wrappedKeys = row?.wrappedDeks;
+  const keystore = deps.keystore;
+  const unwrapped =
+    row !== null &&
+    row.status !== 'destroyed' &&
+    wrappedKeys !== undefined &&
+    wrappedKeys.length > 0 &&
+    keystore !== undefined
+      ? { wrapped: wrappedKeys, aead: settled((async () => keystore.openDek(wrappedKeys))()) }
+      : undefined;
 
   // Read the "before" cardinality ONLY when a bound needs it. The empty guard needs to know whether the current
   // generation is non-empty; `minRetained` needs its size. `minCardinality` compares against the new generation
   // alone, so it costs nothing extra.
   const needsBefore = guard?.minRetained !== undefined || options.allowEmpty !== true;
   const current: CurrentSize = needsBefore
-    ? await currentCardinality(ref, deps, row)
+    ? await currentCardinality(ref, deps, row, unwrapped?.aead)
     : { cardinality: null, fromSummary: false };
   const before = current.cardinality;
 
-  const { generation, checked } = await nextLoadGeneration(ref, deps, row);
-  const key = { namespace: ref.namespace, segment: ref.segment, generation };
+  // The existence check starts here and is joined where the write needs the number (after the ids are bucketed), so
+  // its round trip overlaps the encoding. It reads only the row already in hand and the bucket, so nothing it learns
+  // depends on the guard or the ids, and the fences below are untouched: the publish still waits on the row read
+  // the guard judged, and the write still reads the row again after the ids.
+  const numbering = settled(nextLoadGeneration(ref, deps, row));
 
   // `publish: false`, deliberately: the guard has to run while the old generation is still authoritative, so the
   // pointer moves below rather than here. The registry is still passed — it is where an existing encrypted
@@ -347,16 +374,22 @@ export async function loadSegment(
   // result so the deferred publish can store it.
   let written;
   try {
-    written = await bulkLoadCrbmGeneration(deps.storage, key, ids, {
-      registry: deps.registry,
-      publish: false,
-      keystore: deps.keystore,
-      requireEncryption: deps.requireEncryption,
-      codec: deps.codec,
-      clock: deps.clock,
-      metadata,
-      row,
-    });
+    written = await bulkLoadAhead(
+      deps.storage,
+      ref,
+      { generation: settled(numbering.then((n) => n.generation)), unwrapped },
+      ids,
+      {
+        registry: deps.registry,
+        publish: false,
+        keystore: deps.keystore,
+        requireEncryption: deps.requireEncryption,
+        codec: deps.codec,
+        clock: deps.clock,
+        metadata,
+        row,
+      },
+    );
   } catch (err) {
     // Another loader took this generation number first — write-once refused the second put. That is a lost race,
     // and `LoadRefusal` documents a lost race as `'superseded'`; letting a `WriteConflictError` escape here would
@@ -364,6 +397,7 @@ export async function loadSegment(
     // told to expect. Nothing was written, so there is nothing to clean up; the refusal is still audited, as every
     // other one is, since a downstream reconciliation needs to know the replacement it asked for did not happen.
     if (!isWriteConflictError(err)) throw err;
+    const { generation } = await numbering;
     audit.onEvent({
       kind: 'segment.load-refused',
       segment: ref.segment,
@@ -384,6 +418,10 @@ export async function loadSegment(
       collected: [],
     };
   }
+
+  // The write joined the number, so it has settled.
+  const { generation, checked } = await numbering;
+  const key = { namespace: ref.namespace, segment: ref.segment, generation };
 
   /**
    * Reclaim this load's object after a DEFINITE refusal: a guard that said no before any publish, or a publish that
