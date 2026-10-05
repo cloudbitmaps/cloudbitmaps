@@ -36,6 +36,9 @@ const SEG: SegmentRef = { namespace: 'ns', segment: 's' };
 const T0 = MIN_EXPIRES_AT_MS * 2;
 const H = (n: number): string => n.toString(16).padStart(16, '0');
 const FAR = T0 * 2;
+/** A token in the incarnation form: 32 hex digits of incarnation, a counter, a write part. */
+const INC = '0123456789abcdef0123456789abcdef';
+const tokenOf = (inc: string, n: number): string => `${inc}.${n}.fedcba987654321${n}`;
 
 function world() {
   const t = { now: T0 };
@@ -120,12 +123,12 @@ describe('onlyLeasesDiffer', () => {
     retention: { expiresAt: 5 },
     createdAt: 1,
     updatedAt: 1,
-    token: '0123456789abcdef0123456789abcdef.1.fedcba9876543210',
+    token: tokenOf(INC, 0),
   } as RegistryRecord;
   const next = (over: Partial<RegistryRecord>): RegistryRecord =>
     ({
       ...base,
-      token: '0123456789abcdef0123456789abcdef.2.fedcba9876543211',
+      token: tokenOf(INC, 1),
       updatedAt: 9,
       ...over,
     }) as RegistryRecord;
@@ -151,10 +154,7 @@ describe('onlyLeasesDiffer', () => {
 
   it('is false for another incarnation, and ignores what the caller says its own write moved', () => {
     expect(
-      onlyLeasesDiffer(
-        base,
-        next({ token: 'ffffffffffffffffffffffffffffffff.1.fedcba9876543210' }),
-      ),
+      onlyLeasesDiffer(base, next({ token: tokenOf('ffffffffffffffffffffffffffffffff', 0) })),
     ).toBe(false);
     expect(onlyLeasesDiffer(base, next({ currentGen: 4 }), ['currentGen'])).toBe(true);
   });
@@ -166,11 +166,11 @@ describe('the retry is bounded, and waits with a jitter', () => {
     const a = {
       currentGen: 1,
       createdAt: 1,
-      token: '0123456789abcdef0123456789abcdef.1.fedcba9876543210',
+      token: tokenOf(INC, 0),
     } as RegistryRecord;
     const b = {
       ...a,
-      token: '0123456789abcdef0123456789abcdef.2.fedcba9876543210',
+      token: tokenOf(INC, 1),
     } as RegistryRecord;
     for (let i = 0; i < LEASE_ONLY_RETRIES; i++) expect(await churn.retry(a, b)).toBe(true);
     expect(await churn.retry(a, b)).toBe(false);
@@ -185,11 +185,11 @@ describe('the retry is bounded, and waits with a jitter', () => {
     const a = {
       currentGen: 1,
       createdAt: 1,
-      token: '0123456789abcdef0123456789abcdef.1.fedcba9876543210',
+      token: tokenOf(INC, 0),
     } as RegistryRecord;
     const b = {
       ...a,
-      token: '0123456789abcdef0123456789abcdef.2.fedcba9876543210',
+      token: tokenOf(INC, 1),
     } as RegistryRecord;
     for (let i = 0; i < 8; i++) await churn.retry(a, b);
     expect(waits.slice(0, 5)).toEqual([24, 49, 99, 199, 399]);
