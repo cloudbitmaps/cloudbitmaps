@@ -18,7 +18,7 @@ import type { IMetricsSink, MetricEvent } from '@/core/metrics';
  * leaves loopback, and the credentials are dummies.
  */
 
-const CREDENTIALS = { accessKeyId: 'AKIDTESTONLY', secretAccessKey: 'shhh-test-secret' };
+const CREDENTIALS = { accessKeyId: 'a', secretAccessKey: 's' };
 const KEY = { segment: 'seg', generation: 1 };
 
 let server: Server | undefined;
@@ -110,23 +110,19 @@ describe('socket pool advisory', () => {
     client.destroy();
   });
 
-  it('the event carries no credential, endpoint or key', async () => {
+  it('the event carries only its seven fields: no credential, endpoint, prefix or key', async () => {
     const url = await endpoint();
     const client = sdkClient(url);
-    const store = new S3Storage({ bucket: 'b', prefix: 'secret-prefix', client });
+    const store = new S3Storage({ bucket: 'b', prefix: 'tenant-prefix', client });
     const { sink, events } = recorder();
     store.attachMetrics(sink);
     await read(store);
+    expect(events).toHaveLength(1);
+    expect(Object.keys(events[0]!).sort()).toEqual(
+      ['bucket', 'code', 'concurrency', 'driver', 'kind', 'maxSockets', 'threshold'].sort(),
+    );
     const text = JSON.stringify(events);
-    for (const needle of [
-      CREDENTIALS.accessKeyId,
-      CREDENTIALS.secretAccessKey,
-      url,
-      'secret-prefix',
-      'seg',
-    ]) {
-      expect(text).not.toContain(needle);
-    }
+    for (const needle of [url, 'tenant-prefix', 'seg']) expect(text).not.toContain(needle);
     client.destroy();
   });
 
