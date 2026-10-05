@@ -2367,6 +2367,16 @@ export class Segment {
    */
   async pinAt(at: PinAt): Promise<Segment> {
     const { generation, fingerprint } = (at ?? {}) as Partial<PinAt>;
+    const unknown =
+      typeof at === 'object' && at !== null
+        ? Object.keys(at).filter((k) => k !== 'generation' && k !== 'fingerprint')
+        : [];
+    if (unknown.length > 0) {
+      throw new ValidationError(
+        `pinAt: unknown option${unknown.length > 1 ? 's' : ''} ${unknown.map((k) => `"${k}"`).join(', ')}; ` +
+          'this version takes { generation, fingerprint } only',
+      );
+    }
     if (
       typeof generation !== 'number' ||
       !Number.isSafeInteger(generation) ||

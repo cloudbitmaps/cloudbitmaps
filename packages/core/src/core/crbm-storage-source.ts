@@ -690,6 +690,11 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * pinned read makes ({@link readerAt}), memoised under the version the pin will read by, so the pin's first read
    * finds it open. A generation that is gone, above the row's pointer, on a destroyed or absent row, or another
    * object than the fingerprint names, throws `NotFoundError`; nothing here reads empty.
+   *
+   * A generation counts as published while the pointer is at or above it. A rollback deletes nothing, so after one
+   * and a later load, a generation it rolled back from can be reopened while its object is still stored and the
+   * fingerprint matches. Like `pinGeneration`'s pinned reads, this opens the object without the live open's check
+   * of the row's summary against it, since that check is made where the row's own generation is read.
    */
   async pinGenerationAt(
     ref: SegmentRef,
@@ -701,6 +706,8 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         `segment "${ref.segment}" generation ${generation} cannot be pinned: ${why}`,
       );
     let version = versionOf(generation, undefined);
+    let installed: Snapshot | undefined;
+    let pinKey: string | undefined;
     if (this.registry !== undefined) {
       const record = await this.registry.get(ref);
       if (record === null || record.status === 'destroyed')
@@ -711,7 +718,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       version = versionOf(generation, record.token);
       const key = this.pinnedKey(ref, version);
       if (this.snapshots.get(key) === undefined) {
-        this.install(
+        installed = this.install(
           key,
           Snapshot.eager(
             this.openForTarget(ref, {
@@ -722,8 +729,27 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
           ),
         );
       }
+      pinKey = key;
     }
-    await this.readerAt(ref, generation, version, fingerprint);
+    try {
+      await this.readerAt(ref, generation, version, fingerprint);
+    } catch (err) {
+      // What this call opened is not the object asked for: it must not hold a place in the reader cache, and the
+      // key it unwrapped, for reads that can only fail.
+      if (
+        installed !== undefined &&
+        pinKey !== undefined &&
+        this.snapshots.peek(pinKey) === installed
+      ) {
+        this.snapshots.delete(pinKey);
+      }
+      throw err;
+    }
+    // The object under the key is the pinned one now, whatever an earlier check found: a restore puts back what a
+    // replacement took, and a verdict kept against it would fail this pin.
+    const held = this.heldKey(ref, version, fingerprint);
+    this.replacedPins.delete(held);
+    this.checking.delete(held);
     return { generation, version, fingerprint };
   }
 
