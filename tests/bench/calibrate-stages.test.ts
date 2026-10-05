@@ -986,7 +986,7 @@ describe('the steady-load stage', () => {
   // the figures module prices a load from.
   it('makes the counted requests of each kind: a first load, a reload, a delete by name and a listing', async () => {
     const { load } = rig();
-    const kinds: Record<string, Load> = {};
+    const kinds = {} as Record<string, Load>;
     for (let g = 0; g < 34; g += 1) {
       const got = (await load(g)) as Load;
       const kind = stages.steadyKind(g);
@@ -999,10 +999,15 @@ describe('the steady-load stage', () => {
     }
     expect(Object.keys(kinds).sort()).toEqual(['byName', 'first', 'listing', 'reload']);
     const stored = figuresLib.STORE_LOAD_REQUESTS;
-    expect({ put: kinds.first.put, get: kinds.first.get }).toEqual(stored.first);
-    expect({ put: kinds.reload.put, get: kinds.reload.get }).toEqual(stored.reload);
-    expect({ put: kinds.byName.put, get: kinds.byName.get }).toEqual(stored.collecting);
-    expect({ put: kinds.listing.put, get: kinds.listing.get }).toEqual(stored.listing);
+    const billed = (kind: string): Bound => {
+      const k = kinds[kind];
+      if (k === undefined) throw new Error(`no ${kind} load`);
+      return { put: k.put, get: k.get };
+    };
+    expect(billed('first')).toEqual(stored.first);
+    expect(billed('reload')).toEqual(stored.reload);
+    expect(billed('byName')).toEqual(stored.collecting);
+    expect(billed('listing')).toEqual(stored.listing);
     // The stage's 18 loads, summed.
     expect(stages.expectedSteady(stages.STEADY_LOADS, stages.STEADY_KEEP)).toEqual({
       put: 37,

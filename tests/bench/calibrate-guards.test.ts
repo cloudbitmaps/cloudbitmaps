@@ -200,7 +200,7 @@ const meterLib = require_(join(ROOT, 'bench', 'lib', 'aws-meter.cjs')) as {
   meter: (
     client: unknown,
     tally?: unknown,
-  ) => { put: number; get: number; byCommand: Record<string, number> };
+  ) => { put: number; get: number; bytesDown: number; byCommand: Record<string, number> };
   classify: (command: string) => 'put' | 'get' | 'free';
   rangeShape: (range: unknown) => 'whole' | 'suffix' | 'range';
   priceTally: (
