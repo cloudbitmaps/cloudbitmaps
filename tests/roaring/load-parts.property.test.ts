@@ -86,6 +86,19 @@ const cuts = fc.array(
   { maxLength: 7 },
 );
 
+/**
+ * A set and the cut points to split it at: those of {@link cuts}, and some at a member or just past one, which is
+ * where a range that drops or repeats an id at its edge shows.
+ */
+const splitCase = fc
+  .record({ set: wholeSet, cuts, picks: fc.array(fc.nat(), { maxLength: 4 }) })
+  .map(({ set, cuts: cutPoints, picks }) => {
+    const ids = set.toArray();
+    const atMembers =
+      ids.length === 0 ? [] : picks.map((n) => (ids[n % ids.length] as number) + (n % 2));
+    return { set, cutPoints: [...cutPoints, ...atMembers].slice(0, 7) };
+  });
+
 /** The ids of `set` in each range between consecutive cuts: disjoint, and together exactly `set`. */
 function split(set: Bitmap, cutPoints: number[]): Bitmap[] {
   const edges = [0, ...[...cutPoints].sort((a, b) => a - b), 2 ** 32];
@@ -134,12 +147,12 @@ async function loadViaRecipe(
 describe('the parts recipe in the loading guide', () => {
   it('writes the generation a load of the whole set writes, for 1 to 8 parts cut anywhere', async () => {
     await fc.assert(
-      fc.asyncProperty(wholeSet, cuts, async (set, cutPoints) => {
+      fc.asyncProperty(splitCase, async ({ set, cutPoints }) => {
         const parts = split(set, cutPoints);
         expect(parts.length).toBeGreaterThanOrEqual(1);
         expect(parts.length).toBeLessThanOrEqual(8);
         expect(parts.reduce((n, p) => n + p.size, 0)).toBe(set.size);
-        // `allowEmpty` on the reference load; the recipe's own load refuses an empty union as any load does.
+        // An empty union is refused by any load, so there is nothing to compare.
         fc.pre(set.size > 0);
         const whole = await loadWhole(set);
         const joined = await loadViaRecipe(parts);
@@ -169,11 +182,10 @@ describe('the parts recipe in the loading guide', () => {
   it('refuses parts that overlap, and writes nothing', async () => {
     await fc.assert(
       fc.asyncProperty(
-        wholeSet,
-        cuts,
+        splitCase,
         fc.nat(),
         fc.nat(),
-        async (set, cutPoints, pickFrom, pickTo) => {
+        async ({ set, cutPoints }, pickFrom, pickTo) => {
           const parts = split(set, cutPoints);
           const filled = parts.map((p, i) => ({ p, i })).filter(({ p }) => p.size > 0);
           fc.pre(filled.length >= 2);
