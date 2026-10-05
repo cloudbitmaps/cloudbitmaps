@@ -407,3 +407,57 @@ describe('pinAt argument', () => {
     );
   });
 });
+
+describe('pinAt and a pin already holding the object', () => {
+  it('keeps the verdict that protects an existing pin when pinAt hits its memoised reader', async () => {
+    // Many chunks, each holding enough ids that the object is far past what a reader keeps whole from its tail read.
+    const many = Array.from(
+      { length: 2500 * 300 },
+      (_, i) => Math.floor(i / 300) * 65_536 + (i % 300) * 100,
+    );
+    const backend = new MemoryStorage();
+    await bulkLoadCrbmGeneration(backend.storage, { ...REF, generation: 0 }, many, {
+      registry: backend.registry,
+    });
+    const scratch = new MemoryStorage();
+    await bulkLoadCrbmGeneration(scratch.storage, { ...REF, generation: 0 }, [7, 8, 9, 10], {
+      registry: scratch.registry,
+    });
+    const other = (await scratch.storage.getTail({ ...REF, generation: 0 }, 1 << 30)).bytes;
+
+    const counts: Record<string, number> = {};
+    const store = new CloudRoaring({
+      storage: brandAsBackend({
+        storage: counting(backend.storage, counts),
+        registry: backend.registry,
+      }),
+    });
+    const first = await store.segment('s').pin();
+    // Replaced from outside under the same key, with the store not told.
+    await backend.storage.delete({ ...REF, generation: 0 });
+    await backend.storage.putImmutable({ ...REF, generation: 0 }, async (sink) => {
+      await sink.write(other);
+    });
+    await expect(first.has(many[1500 * 300]!)).rejects.toBeInstanceOf(NotFoundError); // the pin finds it replaced
+
+    await store.segment('s').pinAt(atOf(first)); // hits the pin's memoised reader
+    delete counts.getRange;
+    await expect(first.has(many[2000 * 300]!)).rejects.toBeInstanceOf(NotFoundError);
+    expect(counts.getRange).toBeUndefined(); // still refused from the verdict, with no request
+  });
+});
+
+describe('pinAt and the numbers a load takes', () => {
+  it('counts each number taken above the pinned one, and not a refused load', async () => {
+    const w = world();
+    await w.writer.load(REF, [1, 2, 3], { keep: 2 });
+    const first = await w.reader().segment('s').pin();
+    const refused = await w.writer.load(REF, [], { keep: 2 });
+    expect(refused.published).toBe(false);
+    await w.writer.load(REF, [4], { keep: 2 });
+    await w.writer.load(REF, [5], { keep: 2 });
+    expect(await ids(await w.reader().segment('s').pinAt(atOf(first)))).toEqual([1, 2, 3]);
+    await w.writer.load(REF, [6], { keep: 2 });
+    await expect(w.reader().segment('s').pinAt(atOf(first))).rejects.toBeInstanceOf(NotFoundError);
+  });
+});
