@@ -314,6 +314,20 @@ describe('every read site of a leased handle', () => {
     expect((err as LeaseExpiredError).reason).toBe('released');
   });
 
+  it('a live lease reads as the plain pin does: a leased exclude subtracts, a leased operand intersects', async () => {
+    const h = await seeded();
+    await h.writer.load(REF, [0, 1, 2, 3, 4]);
+    const small = await lease(h);
+    expect(await collect(plain(h, THIRD).andNot([small]))).toEqual(SMALL.slice(5));
+    expect(await collect(plain(h, THIRD).intersect([small]))).toEqual([0, 1, 2, 3, 4]);
+    expect(await collect(plain(h, THIRD).intersect([plain(h)], { exclude: [small] }))).toEqual(
+      SMALL.slice(5),
+    );
+    expect(await collect(plain(h, THIRD).union([small], { exclude: [small] }))).toEqual(
+      SMALL.slice(5),
+    );
+  });
+
   it('the boundary is the instant: one millisecond short reads, the instant throws', async () => {
     const h = await seeded();
     const snap = await lease(h, HOUR);
