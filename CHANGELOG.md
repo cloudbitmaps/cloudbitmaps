@@ -39,8 +39,8 @@ so, and so do the module headers in the code.
   times at `keep: 12` and records each load's requests by class (PUT, GET, HEAD, LIST, DELETE), its bytes and its time.
   Each load is held to the requests of its kind on S3's request shape: the first load, the loads up to generation 12 that
   collect nothing, a load that deletes by name (2 PUT-class, 4 GET-class and a delete) and the load at generation 16 that
-  lists. The stage is bounded as a load is, 162 PUT-class and 270 GET-class, and the default run's projection is 567
-  PUT-class and 106,894 GET-class, $0.0455926 against the $0.05 ceiling. Before it creates anything the harness checks, in
+  lists. The stage is bounded as a load is, and the default run's projection is 567
+  PUT-class and 106,894 GET-class requests, $0.0455926 against the $0.05 ceiling. Before it creates anything the harness checks, in
   memory, that the installed library collects by name at that `keep`, and refuses one that does not. The figures
   derivation holds a run that recorded the stage to the counts of each kind and states each kind's price; a run of an
   earlier release is not asked for it. The meter no longer counts the `ContentLength` of a `HeadObject` as bytes read.
