@@ -17,6 +17,7 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **A combine or an `iterate` over chunks the cache already holds opens no stream and looks each chunk up once.** A stream opens at the first chunk the cache lacks, over the uncached chunks from there on (the cached ones after it are looked up again when served), and a chunk the cache loses mid-read, to an invalidation or the LRU, is then read on its own, one request each.
 - **The published in-region figures are now measured on `0.15.0`.** A run from AWS CloudShell in `us-east-1` on
   2026-10-04 measured what the benchmarks page had only counted from the engine: a cold intersect of two segments
   sharing 100 chunks that lie together took 95.03 ms at the median and made 6 GETs, and an `andNot` against ten
