@@ -98,6 +98,7 @@ import {
   WriteConflictError,
   isIntegrityError,
   isNotFoundError,
+  isWriteConflictError,
 } from './errors';
 import { gcOrphanGenerations, nextGeneration } from './generation-gc';
 import { assertRegistryCanWrite } from './ports';
@@ -501,6 +502,7 @@ export async function eraseIdFromSegment(
     if (newest === undefined) return notMember;
 
     const collected = [...(await gcOrphanGenerations(ref, deps, { keep: 0 }))];
+    await recordNoKeptGenerations(ref, deps);
     let moved: ReturnType<typeof rowVerdict> = null;
     for (const generation of holdersAbove) {
       moved = rowVerdict(await deps.registry.get(ref));
@@ -708,6 +710,24 @@ export async function eraseIdFromSegment(
   const left = await holderLeft(new Set([generation]));
   if (left !== undefined) throw cannotRemove(left);
   return { ...base, erased: true, fromGeneration: from, generation, collected };
+}
+
+/**
+ * After a collection with `keep: 0` that left the pointer where it was, the row's list of kept generations names objects
+ * that are gone. Record that none is kept. Best effort: a row that changed since is one a later load rewrites, and a
+ * list that names an absent object only makes the window smaller until it ages out, so a lost race is not an error.
+ */
+async function recordNoKeptGenerations(
+  ref: SegmentRef,
+  deps: { registry: IRegistryDriver },
+): Promise<void> {
+  const row = await deps.registry.get(ref);
+  if (row === null || row.keptGens === undefined || row.keptGens.length === 0) return;
+  try {
+    await deps.registry.compareAndSwap(ref, row.token, { keptGens: [] });
+  } catch (err) {
+    if (!isWriteConflictError(err)) throw err;
+  }
 }
 
 /** How many ranges the erasure rewrite keeps open or landed ahead of the writer. */
