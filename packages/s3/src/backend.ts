@@ -23,6 +23,8 @@ import { S3Client } from '@aws-sdk/client-s3';
 import { S3StorageDriver } from './storage';
 import { S3RegistryDriver } from './registry';
 import { describe } from './read-timeout';
+import { SocketAdvisory, type PooledHandler } from './socket-advisory';
+import type { IMetricsSink } from '@cloudbitmaps/core/driver-kit';
 
 export interface S3StorageOptions {
   /** Target bucket (must already exist). */
@@ -131,15 +133,6 @@ const CLIENT_SETTINGS = ['region', 'endpoint', 'pathStyle', 'credentials', 'maxS
 /** Default socket limit of a client the store builds: two operands at the default window of 32 reads each, doubled. */
 const DEFAULT_MAX_SOCKETS = 128;
 
-/** What of the SDK's request handler the limit needs: its one `handle` and the agents it exposes once it has run. */
-interface PooledHandler {
-  handle(request: unknown, options?: unknown): Promise<unknown>;
-  httpHandlerConfigs?: () => {
-    httpAgent?: { maxSockets: number };
-    httpsAgent?: { maxSockets: number };
-  };
-}
-
 /**
  * Cap the sockets the SDK's own request handler opens, and change nothing else about it. The handler stays the SDK's
  * default one, so its other defaults hold: its defaults-mode connection timeout, keep-alive, and a request that
@@ -207,6 +200,7 @@ export class S3Storage implements StorageBackend {
   readonly registry: IRegistryDriver;
   /** The client both halves share — built here unless one was supplied. */
   readonly client: S3Client;
+  private readonly sockets: SocketAdvisory;
 
   constructor(options: S3StorageOptions) {
     refuseUnknown('S3Storage', options, S3_STORAGE_OPTION_KEYS, 'an S3 client goes in `client`');
@@ -239,6 +233,7 @@ export class S3Storage implements StorageBackend {
       });
       limitSockets(this.client, maxSockets);
     }
+    this.sockets = new SocketAdvisory(this.client, options.bucket);
     const shared = {
       client: this.client,
       bucket: options.bucket,
@@ -247,6 +242,7 @@ export class S3Storage implements StorageBackend {
     };
     this.storage = new S3StorageDriver({
       ...shared,
+      sockets: this.sockets,
       ...(options.maxObjectBytes === undefined ? {} : { maxObjectBytes: options.maxObjectBytes }),
       ...(options.partBytes === undefined ? {} : { partBytes: options.partBytes }),
     });
@@ -258,5 +254,13 @@ export class S3Storage implements StorageBackend {
         : { conditionalDelete: options.conditionalDelete }),
     });
     brandAsBackend(this);
+  }
+
+  /**
+   * Called by a store given a metrics sink. After the first read, a client whose socket pool is smaller than twice the
+   * default window (64) sends the sink one `advisory` event, once; see the production guide's socket sizing.
+   */
+  attachMetrics(sink: IMetricsSink): void {
+    this.sockets.attach(sink);
   }
 }

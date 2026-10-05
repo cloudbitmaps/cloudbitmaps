@@ -18,7 +18,7 @@ carry the API reference.
 
 ## 1. Operational dashboard (metrics → OpenTelemetry)
 
-The metrics sink pushes raw observations on the I/O path. There are five event kinds:
+The metrics sink pushes raw observations on the I/O path. There are six event kinds:
 
 | `kind` | When | Payload |
 | --- | --- | --- |
@@ -27,6 +27,7 @@ The metrics sink pushes raw observations on the I/O path. There are five event k
 | `retry` | a transient infrastructure fault (throttling, 5xx, a dropped connection) is about to be retried — the one kind of retry the store does | `reason: 'transient'`, `attempt`, `delayMs` |
 | `intersect` | one chunk-aligned combine | `op` (`intersect` / `union` / `andNot`; absent means `intersect`), `operands`, `fetchedChunks`, `skippedChunks` |
 | `op` | one timed segment operation | `name` (`has` / `count` / `intersectInto` / `unionInto` / `andNotInto`), `ms` |
+| `advisory` | once, after the first S3 read finishes, when the client's socket pool is smaller than twice the default `concurrency` (64): a note, not a fault, and silent for a handler the store cannot read | `code` (`'socket-pool-below-window'`), `driver`, `bucket`, `maxSockets`, `threshold`, `concurrency`. Not a quantity to chart: route it to an alert or a log line |
 
 Map the handful you chart to counters/histograms:
 
@@ -81,7 +82,7 @@ so it lives on a different scale from a read), the chunk-skipping ratio
 a plain `union` is expected to skip nothing), and retry rate (a rising `transient` count means your object
 store is throttling).
 
-`CountingMetricsSink` (exported) tallies all five kinds into a `MetricsSnapshot` —
+`CountingMetricsSink` (exported) tallies the five kinds that carry a quantity into a `MetricsSnapshot` —
 `{ storage, cache, retries: { transient }, intersect, ops }` — which is enough for a test or a quick script.
 
 > **Label caveat.** `segment` / `namespace` are *your* strings — unbounded-cardinality and possibly PII. Never
