@@ -11,6 +11,8 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-10-04
+
 ### Added
 
 - **`loadSegmentChunks(ref, chunks, deps, options?)`, the form of `loadSegment` for a result already held as chunks.**

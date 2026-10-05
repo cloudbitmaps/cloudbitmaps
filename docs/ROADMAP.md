@@ -36,7 +36,7 @@ registry row per segment, no background process. Every roaring-based engine that
 into immutable segments rather than mutating a stored bitmap per call; that is the shape this library builds.
 Per-call freshness, if there is demand, would be immutable delta generations on the same bucket.
 
-Where each piece sits today. A bare **shipped** is in `0.15.0` or earlier; anything on `main` after it is marked
+Where each piece sits today. A bare **shipped** is in `0.16.0` or earlier; anything on `main` after it is marked
 with the release it is to ship in, and sits under `[Unreleased]` in the [changelog](../CHANGELOG.md#unreleased):
 
 | | Status |
@@ -44,6 +44,8 @@ with the release it is to ship in, and sits under `[Unreleased]` in the [changel
 | Loads, reads, chunk-skipping combines, `*Into` materialization, subject erasure as a rewrite, crypto-shred, disposal, retention, the DR check, export | **shipped** — [below](#shipped-today) |
 | Wider read windows (`concurrency` 32), concurrent cold reads of one chunk sharing one request (point reads and chunk-by-chunk sources only), erasure read-ahead, `andNot` excludes read in the same round trip, and an oversized index entry refused at open | **shipped** — see the [changelog](../CHANGELOG.md#0130--2026-10-03); measured on S3 in-region by run `2026-10-04-f3599`: the `andNot` against ten excludes took 269.74 ms and the cold intersect 95.03 ms ([the run, on the benchmarks page](benchmarks.md#the-in-region-run--run-2026-10-04-f3599)) |
 | Coalesced chunk reads — combines and `iterate` read each operand's chunks as ranges through the optional `getChunks` port method | **shipped, measured on S3 in-region** by run `2026-10-04-f3599` — chunks within 256 KiB of each other are one range request, up to 1 MiB, and each is checked as before; a cold intersect of two segments sharing 100 chunks that lie together took 95.03 ms at the median and made 6 GETs, $2.40 per million, and an `andNot` against ten excludes took 269.74 ms and made 33, as [`bench/range-counts.cjs`](../bench/range-counts.cjs) counts from the engine and CI holds it to; `concurrency` counts range requests held ahead per operand; spread layouts read most of an object (a range of 1,022,196 bytes, against 51,600 when the chunks lie together), which matters outside the bucket's region. `iterate`'s 3 GETs are [expected, not measured](benchmarks.md#expected-not-measured): the run did not time it |
+| `*Into` written from the combine's chunks, through `loadSegmentChunks` | **shipped** — `intersectInto`, `unionInto` and `andNotInto` hand each chunk's result to the encoder as the bitmap it is, so no id is built for a value; the generation is byte for byte what the ids would write, and the load writes only bitmaps the store's codec made |
+| A registry write sent on the row the load read | **shipped** — a publish passes the row it read, so the S3, GCS and Azure Blob registries send their conditional write with no read of the row first; the store's own condition still refuses a row another writer changed |
 | Loaded-store benchmarks — load throughput, intersect latency | **partly owed**: the rest is below. What is measured, on S3 in-region by run `2026-10-04-f3599` from AWS CloudShell in `us-east-1`: a single-part load ran at 2.65 million ids a second, and a segment's first single-part `store.load()` is expected at 2 PUT + 3 GET, $11.20 per million, counted from the engine and not yet measured — the [benchmarks page](benchmarks.md#the-in-region-run--run-2026-10-04-f3599) publishes it, and the [report](../bench/calibration/2026-10-04-f3599.md) explains every figure. Still owed: Lambda cold start, the `*Into` verbs, other combine shapes, and in-region GCS and Azure runs. The **RSS ceiling** is measured and published — it needs no cloud account, because a cgroup limit is enforceable locally |
 | `load()` with the empty guard and `guard: { minCardinality, minRetained }` | **shipped** — `store.load(ref, ids)` is the write path in one call: next generation → write → guard → publish → collect. A refusal is reported (`published: false` + `reason`), not thrown, and deletes the object it wrote while the segment's row is unchanged or gone; once another write has changed the row, it leaves the object for collection. It reads the segment's row once, checks that its next number is free instead of listing for it, and with the default `keep` collects by name, deleting the one generation its publish pushed out of the window and listing the segment only every 16th generation: a steady load on S3 is 7 requests |
 | A load from a bitmap — `{ bitmap }`, `{ serialized }` | **shipped** — a caller holding the result as an in-memory Roaring bitmap loads it as one: the bytes are checked before anything is written, the chunks are cut from the bitmap's own containers with no per-id work, and the generation is byte for byte the one its ids write. Its time against the id path is measured by `pnpm bench:load-input`, whose figures are not recorded yet |
@@ -62,7 +64,7 @@ with the release it is to ship in, and sits under `[Unreleased]` in the [changel
 | A public docs + site pass leading with the loaded store's strengths | **shipped** |
 | Reading a chunk at a time — `.batches()` on `iterate`, `intersect`, `union` and `andNot` | **shipped** — the same ids in the same order as one `Uint32Array` per chunk, reading the same chunks; see the [changelog](../CHANGELOG.md#0140--2026-10-04) and [Read a chunk at a time](guide/reading.md#read-a-chunk-at-a-time-batches) |
 | The built S3 client allows 128 sockets, and `maxSockets` sets it | **shipped** — twice the SDK's 50, so one two-operand `intersect` at the default `concurrency` does not queue behind its own socket pool; see the [changelog](../CHANGELOG.md#0140--2026-10-04). The in-region run's client had 128 sockets |
-| Deferred past `0.15.0` | **not built** — `generations({ describe: true })`, the chunk-level `*Into`, the tombstone reaper, an `op` metric for `store.load`, the compare-and-swap memo, an unscoped listing that skips the due index's pointers, one generation from parts built in several processes, and the reconcile for `rollback`, `setRetention`, shred and `eraseSubject` writes: [On the way to 1.0](#on-the-way-to-10), item 9, says what each is |
+| Deferred past `0.16.0` | **not built** — `generations({ describe: true })`, the tombstone reaper, an `op` metric for `store.load`, an unscoped listing that skips the due index's pointers, one generation from parts built in several processes, and the reconcile for `rollback`, `setRetention`, shred and `eraseSubject` writes: [On the way to 1.0](#on-the-way-to-10), item 9, says what each is |
 | WASM CRoaring research | **after** the loaded store |
 
 **What is next:** a Lambda run, the `*Into` verbs and other combine shapes against a real store, and in-region GCS
@@ -333,7 +335,7 @@ between here and there:
    sections, flagged in its footer (a reader skips a section type it does not know, and a reader before 0.12
    refuses the flag); a generation without metadata is the same bytes as before.
 8. **Adoption feedback** — real deployments finding the sharp edges that our own tests don't.
-9. **Closing the named deferrals.** None of these is in `0.15.0`:
+9. **Closing the named deferrals.** None of these is in `0.16.0`:
    - self-healing disaster recovery;
    - an exclusion predicate on the retention sweep (legal hold);
    - an automated reconcile of unstamped tombstones, and a cleanup of the tombstones a registry already holds (the
@@ -341,11 +343,10 @@ between here and there:
      before 0.12 is left);
    - an unscoped listing that skips the due index's pointers before reading them;
    - `generations({ describe: true })`, which would open every listed generation to describe it;
-   - an `op` metric for `store.load`, which the metrics sink does not time, and a memo of the row version a load has
-     already read, which would take the compare-and-swap's own read of the row out of a steady load's three row reads;
+   - an `op` metric for `store.load`, which the metrics sink does not time;
    - the reconcile of an unanswered registry write, for the writes of `rollback`, `setRetention`, a crypto-shred and
      `eraseSubject`; the publish of a load, an `*Into` or an erasure's rewrite settles one by reading the row;
-   - the chunk-level `*Into` and the parts stretch, both under [Planned](#planned--exploring);
+   - the parts stretch, under [Planned](#planned--exploring);
    - a `rollback` onto an encrypted target on a store with no keystore, which opens nothing: it checks that the object
      is in the bucket, and from its footer that it is encrypted exactly when the row has keys, so it can still move
      onto a generation a first load wrote and never published, sealed under a key the registry never stored, which
@@ -367,9 +368,6 @@ move it up.
   would also answer what the native Roaring addon is buying you on your particular ids &mdash; which is a real
   question, since the answer ranges from 543x to nothing.
 - **Multi-region active/active** — region-local by design for the `1.0` line; not ruled out beyond it.
-- **`*Into` written from the combine's own chunks.** A materialisation holds each result chunk as a bitmap, then
-  hands the load its ids, which the load groups back into the same chunks. Writing those chunks through the path a
-  bitmap load uses would remove the per-id work from every `*Into`, with no change to the API or the bytes.
 - **One generation from parts built in several processes.** Several workers, each owning a disjoint range of the id
   space, publishing one generation together without re-encoding. The format already allows it (a chunk's checksum
   and its encryption are bound to the chunk, not its position); what it needs is a server-side compose on every

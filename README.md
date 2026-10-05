@@ -152,7 +152,7 @@ explains these, S3's request rate and overlap, with the charts; [what it costs a
 
 A cold `intersect` of two 500,000-id segments sharing 100 of 1,999 chunks made 6 GETs and took 95.03 ms at the median,
 **$2.40 per million** at list prices. The requests are measured: run [`2026-10-04-f3599`](bench/calibration/2026-10-04-f3599.md),
-made on 2026-10-04 from AWS CloudShell in `us-east-1` on the published `0.15.0` packages, with the pointer in the same
+made on 2026-10-04 from AWS CloudShell in `us-east-1` on the published packages, with the pointer in the same
 bucket as the data.
 
 | Operation | Cost | Kind |

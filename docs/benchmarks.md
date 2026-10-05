@@ -68,13 +68,13 @@ Every number above is turned into a **deterministic, build-breaking CI assertion
 ## Real-cloud calibration — AWS
 
 One run of the loaded store against real S3 in `us-east-1` is published here, driven from AWS CloudShell inside the
-region. It measured the published `0.15.0` packages on the topology that ships, with the pointer in the same bucket as
+region. It measured the published packages on the topology that ships, with the pointer in the same bucket as
 the data: what a cold intersect, an `andNot` and a load cost, and how long they take.
 
 ### The in-region run — run `2026-10-04-f3599`
 
 > **Measured** against real S3 in `us-east-1` on 2026-10-04 (UTC), from AWS CloudShell in the same region, with the
-> published `0.15.0` packages and a client of 128 sockets, the number this release's own client allows: a round-trip
+> published packages and a client of 128 sockets, the number this release's own client allows: a round-trip
 > floor of 5.40 ms. The run's report explains every figure:
 > [`bench/calibration/2026-10-04-f3599.md`](../bench/calibration/2026-10-04-f3599.md). The evidence beside it is the
 > harness's own results file. [`tests/docs/calibration-reports.test.ts`](../tests/docs/calibration-reports.test.ts)
