@@ -393,7 +393,7 @@
           <li>
             <span class="rl-mark">04</span>
             <span class="rl-what">And the write side crosses nothing at all</span>
-            <span class="rl-fig">$11.20 / 1M store.load()</span>
+            <span class="rl-fig">$11.20 / 1M store.load(), expected</span>
             <span class="rl-note">
               There is no writes-per-second line here because there is no per-id write: a set changes by loading
               a <em>whole new generation</em> and advancing the registry pointer, so ingest bills per object PUT
@@ -717,7 +717,8 @@
           </div>
           <p class="tpanel-foot">
             <strong>Measured request counts at list prices</strong>, and <strong>expected</strong> where marked:
-            the second row is the code's prediction, which the run met exactly. All 40
+            the second row is the code's prediction, which the run met exactly. The two load rows are a record of that run; what a load of
+            the current engine costs is the expected row in <a href="#anchors">the cost anchors</a>. All 40
             cold intersects — each on a fresh store, with nothing cached — returned the planned ids, checked by
             count and by sum, and each fetched 100 of 1,999 chunks per segment, the chunks the two share, and
             no other, as one range. Each also made one tail read per segment: its last 256 KiB, which holds the footer and the
