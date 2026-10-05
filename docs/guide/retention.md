@@ -311,6 +311,50 @@ Two limits to know before you automate it:
 > A lifecycle rule is still a fine backstop for orphans left by a failed `dropSegment`. Set its expiry window
 > comfortably longer than your retention window, so it can never get there first.
 
+## Remove the deleted rows a release before 0.12 left: `store.reapRegistryTombstones`
+
+A release before 0.12 never removed a row it deleted. It kept a `{ deleted: true }` envelope, its token a bare counter
+with no incarnation id, and no later call removes one: `retireExpired` and `dropSegment` leave it as they found it, and
+every full listing of the registry still reads it, one GET apiece, though no read of a segment ever returns it. A name
+that was personal data also survives in it, in the row's record. This call removes them. It is an admin call, run once by
+hand after the last process on a release before 0.12 is gone, and nothing schedules it.
+
+```ts
+const preview = await store.reapRegistryTombstones({ dryRun: true });
+console.log(`would remove ${preview.wouldReap} of ${preview.examined} rows read`, preview.skipped);
+
+const done = await store.reapRegistryTombstones({ confirmNoLegacyWriters: true, namespace: 'sends', limit: 5_000 });
+if (done.limited) runAgain(); // `limit` stopped it with rows unread
+```
+
+| option | |
+| --- | --- |
+| `confirmNoLegacyWriters` | required `true` for a real run, else a `ValidationError` and no request. Your statement that no process on a release before 0.12 writes this registry: one that did, re-creating a removed name over nothing, would start its counter at 0 and issue the removed row's tokens again |
+| `dryRun` | counts what a real run would remove (`wouldReap`) and removes nothing; needs no confirmation |
+| `namespace` | only that namespace; without it, every namespace, the library's own bookkeeping rows included |
+| `limit` | the most removals (default 1,000); the run stops listing once it is spent and says `limited: true` |
+
+**What it removes, and what it never touches.** Only a row that is `deleted: true` and whose token has no incarnation id.
+The result says what it left, by reason, in `skipped`: a `live` row, a `destroyed` row (a crypto-shred's tombstone or one
+`dropSegment` left, the attestation of an erasure), an `incarnated` row (a deleted row a 0.12 or later release wrote, which
+`delete` and the sweep remove themselves), and a `raced` row. It never touches a generation. **It does not clean a bucket
+completely**: a tombstone `dropSegment` leaves has no stamp the call could tell from a crypto-shred's, so it stays, and so
+does every live row written before 0.12.
+
+**Every removal is fenced.** Each delete is conditioned on the version the call read (`If-Match` on S3 and Azure Blob,
+`ifGenerationMatch` on GCS), so a `create` that writes over the envelope first wins: the delete is refused, the new row
+survives, and the row is counted as `raced`. A `create` that had already read the envelope, and whose own write meets the
+removal, throws `WriteConflictError`, which the library does not retry. Retry the create: it finds no row and writes one.
+Where the registry's `conditionalDelete` is off (GCS by default, S3 on a custom endpoint, or set to `false`), the call
+throws `CapabilityError` before its first request, a dry run included, and never falls back to an unconditional delete.
+Turn it on [as above](#how-it-stays-correct) only once your store applies the precondition. The in-memory and
+local-filesystem registries throw `UnsupportedError`.
+
+**Cost**, over R rows read and E removed: `ceil(R / 1000)` LIST requests, R GETs and E DELETEs (a dry run, no DELETEs).
+Reads run 48 at a time. R = 100,000 is 100 LIST requests, 100,000 GETs and up to 100,000 DELETEs, about $0.04 on S3 at
+the default prices. An object that cannot be read or parsed stops the run with an error that names its key and removes
+nothing more, since it may be a newer release's row; a run stopped that way is safe to run again.
+
 ## There is no per-id TTL
 
 A bitmap stores ids, not `(id, timestamp)` pairs. Expiring individual ids means keeping a timestamp per id, 4 to 8
@@ -455,9 +499,8 @@ one request per row. That is the case:
   tombstone: the new row has an incarnation, and when it is purged nothing keeps the legacy counter. It matters only for
   a 0.11 process that outlived the upgrade's stop-every-0.11-process step, which the upgrade does not support.
 
-A tombstone already in the bucket stays: the purge never sees a row that is already deleted, and nothing in the library
-removes one. A cleanup for them, safe once no process on a release before 0.12 is left, is on the
-[roadmap](../ROADMAP.md).
+A `deleted: true` row already in the bucket stays: the purge never sees a row that is already deleted. The one call that
+removes the ones a release before 0.12 left is [`store.reapRegistryTombstones`](#remove-the-deleted-rows-a-release-before-012-left-storereapregistrytombstones).
 
 **An index scan purges too, where the registry removes rows.** Each retirement files a pointer in the due index under
 the day its tombstone's grace ends, beside the expiry pointers, and `scan: 'index'` reads it with them, so a namespace

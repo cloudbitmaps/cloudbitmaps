@@ -36,7 +36,8 @@ import { GcsStorage } from '@cloudbitmaps/gcs';
 import { AzureBlobStorage } from '@cloudbitmaps/azure-blob';
 import { ObjectStoreRegistry, type ObjectRegistryStore } from '@/drivers/_shared/object-registry';
 import { registryObjectKey } from '@/drivers/_shared/object-registry-keys';
-import { WriteConflictError } from '@/core/errors';
+import { CapabilityError, WriteConflictError } from '@/core/errors';
+import { reapRegistryTombstones } from '@/core/registry-reap';
 import type { SegmentRef, StorageBackend } from '@/core/ports';
 import { CloudRoaring } from '@/index';
 
@@ -434,6 +435,116 @@ describe('Azure Blob (Azurite): the precondition is applied', () => {
     expect(next.purgeFaults).toBe(0);
     expect(await backend.registry.get(stuck)).toBeNull();
     expect(await azureExists(registryObjectKey(p, stuck))).toBe(false);
+  });
+});
+
+// ── The tombstone reaper ──────────────────────────────────────────────────────────────────────────────────────────
+
+/** A row as a release before 0.12 left it: schema 1, a bare counter for a token, no incarnation id. */
+const legacyRow = (segment: string, deleted: boolean): string =>
+  JSON.stringify({
+    schemaVersion: 1,
+    deleted,
+    record: {
+      segment,
+      currentGen: 3,
+      status: deleted ? 'destroyed' : 'active',
+      createdAt: 1,
+      updatedAt: 1,
+      token: '12',
+    },
+  });
+
+describe('the tombstone reaper, against the emulators', () => {
+  it('Azurite applies the precondition: it removes the legacy envelope, leaves a live row, and a write after its read wins', async () => {
+    const p = prefix('reap');
+    const reg = new AzureBlobRegistryDriver({
+      containerClient: container,
+      prefix: p,
+      now: ticking(),
+    });
+    await azurePut(registryObjectKey(p, { segment: 'envelope' }), legacyRow('envelope', true));
+    await azurePut(registryObjectKey(p, { segment: 'live' }), legacyRow('live', false));
+
+    const result = await reapRegistryTombstones(reg, { confirmNoLegacyWriters: true });
+
+    expect(result).toMatchObject({ examined: 2, reaped: 1, skipped: { live: 1 } });
+    expect(await azureExists(registryObjectKey(p, { segment: 'envelope' }))).toBe(false);
+    expect(await azureExists(registryObjectKey(p, { segment: 'live' }))).toBe(true);
+
+    // Another writer re-creates the name between the reaper's read and its delete: Azurite refuses the delete (412).
+    const race = { segment: 'raced' };
+    await azurePut(registryObjectKey(p, race), legacyRow('raced', true));
+    const real = new AzureBlobRegistryStore(container, 0, true);
+    const other = new AzureBlobRegistryDriver({
+      containerClient: container,
+      prefix: p,
+      now: ticking(),
+    });
+    let created = '';
+    const store: ObjectRegistryStore = {
+      label: real.label,
+      conditionalDelete: true,
+      read: async (k) => {
+        const row = await real.read(k);
+        if (k === registryObjectKey(p, race) && created === '') {
+          created = (await other.create(race, { currentGen: 0 })).token;
+        }
+        return row;
+      },
+      write: (k, b, e) => real.write(k, b, e),
+      listKeys: (pre) => real.listKeys(pre),
+      delete: (k, e) => real.delete(k, e),
+    };
+    const raced = await reapRegistryTombstones(new ObjectStoreRegistry(store, p, ticking()), {
+      confirmNoLegacyWriters: true,
+    });
+    expect(raced).toMatchObject({ reaped: 0, skipped: { raced: 1 } });
+    expect(await other.get(race)).toMatchObject({ currentGen: 0, token: created });
+  });
+
+  it('MinIO and fake-gcs-server, by default, refuse: CapabilityError, and the envelope stays', async () => {
+    const ps = prefix('reap-minio');
+    const pg = prefix('reap-gcs');
+    await s3Put(registryObjectKey(ps, { segment: 'e' }), legacyRow('e', true));
+    await gcsPut(registryObjectKey(pg, { segment: 'e' }), legacyRow('e', true));
+    const minioReg = new S3RegistryDriver({
+      client: s3,
+      bucket: BUCKET,
+      prefix: ps,
+      now: ticking(),
+    });
+    const gcsReg = new GcsRegistryDriver({
+      storage: gcs,
+      bucket: BUCKET,
+      prefix: pg,
+      now: ticking(),
+    });
+    await expect(
+      reapRegistryTombstones(minioReg, { confirmNoLegacyWriters: true }),
+    ).rejects.toBeInstanceOf(CapabilityError);
+    await expect(
+      reapRegistryTombstones(gcsReg, { confirmNoLegacyWriters: true }),
+    ).rejects.toBeInstanceOf(CapabilityError);
+    expect(await s3Exists(registryObjectKey(ps, { segment: 'e' }))).toBe(true);
+    expect(await gcsExists(registryObjectKey(pg, { segment: 'e' }))).toBe(true);
+  });
+
+  // MinIO and fake-gcs-server ignore the precondition, so the fenced path (a racing write winning) cannot be shown on
+  // them: only that, with the gate turned on by the caller, the removal is sent and lands. Azurite above shows the fence.
+  it('MinIO, with the caller vouching for conditionalDelete, removes the envelope (the emulator applies no fence)', async () => {
+    const p = prefix('reap-minio-on');
+    await s3Put(registryObjectKey(p, { segment: 'e' }), legacyRow('e', true));
+    const reg = new S3RegistryDriver({
+      client: s3,
+      bucket: BUCKET,
+      prefix: p,
+      now: ticking(),
+      conditionalDelete: true,
+    });
+    const result = await reapRegistryTombstones(reg, { confirmNoLegacyWriters: true });
+    expect(result).toMatchObject({ reaped: 1 });
+    expect(await s3Exists(registryObjectKey(p, { segment: 'e' }))).toBe(false);
   });
 });
 
