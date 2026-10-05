@@ -247,7 +247,16 @@ describe('the decoded-chunk cache', () => {
       };
       return count;
     }
-    const reads: Record<string, (e: SegmentEngine) => AsyncIterable<unknown>> = {
+    /** Every id a read yields, one at a time or in batches. */
+    async function drain(read: AsyncIterable<number | Uint32Array>): Promise<number[]> {
+      const out: number[] = [];
+      for await (const item of read) {
+        if (typeof item === 'number') out.push(item);
+        else out.push(...item);
+      }
+      return out;
+    }
+    const reads: Record<string, (e: SegmentEngine) => AsyncIterable<number | Uint32Array>> = {
       intersect: (e) => e.intersect([ref('a'), ref('b')]),
       union: (e) => e.union([ref('a'), ref('b')]),
       andNot: (e) => e.andNot(ref('a'), [ref('s')]),
@@ -260,10 +269,10 @@ describe('the decoded-chunk cache', () => {
     for (const [name, read] of Object.entries(reads)) {
       it(`${name}: every chunk cached, so getChunks is not called`, async () => {
         const { storage, engine, metrics } = setup({ a: A, b: B, s: S });
-        const first = await collect(read(engine) as AsyncGenerator<number | Uint32Array>);
+        const first = await drain(read(engine));
         const calls = counted(storage);
         const before = metrics.snapshot();
-        const again = await collect(read(engine) as AsyncGenerator<number | Uint32Array>);
+        const again = await drain(read(engine));
         expect(again).toEqual(first);
         expect(calls.calls).toBe(0);
         // Each chunk is one lookup and counted once, as a hit.
