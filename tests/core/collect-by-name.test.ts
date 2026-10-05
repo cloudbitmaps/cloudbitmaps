@@ -722,9 +722,9 @@ describe('a load whose publish landed does not fail on a race its collection mee
     const w = await atFifteen();
     await orphan(w.memory, 3); // something below the pointer for the pass to take
     // The pass reads the row before its listing and after it; the rollback lands before its first delete is proved.
-    const registry = afterPassReads(w, 2, () =>
-      rollbackSegment(SEG, 15, { storage: w.memory, registry: w.registry }),
-    );
+    const registry = afterPassReads(w, 2, async () => {
+      await rollbackSegment(SEG, 15, { storage: w.memory, registry: w.registry });
+    });
     const a = await loadSegment(SEG, ids(17), { ...w.deps, registry });
     expect(a).toMatchObject({ generation: 16, published: true });
     expect((await w.registry.get(SEG))!.currentGen).toBe(15);
@@ -736,9 +736,9 @@ describe('a load whose publish landed does not fail on a race its collection mee
     const row = (await w.registry.get(SEG))!;
     await w.registry.compareAndSwap(SEG, row.token, { keptGens: undefined });
     await orphan(w.memory, 3);
-    const registry = afterPassReads(w, 2, () =>
-      rollbackSegment(SEG, 15, { storage: w.memory, registry: w.registry }),
-    );
+    const registry = afterPassReads(w, 2, async () => {
+      await rollbackSegment(SEG, 15, { storage: w.memory, registry: w.registry });
+    });
     const a = await loadSegment(SEG, ids(17), { ...w.deps, registry });
     expect(a).toMatchObject({ generation: 16, published: true });
     expect((await w.registry.get(SEG))!.currentGen).toBe(15);
