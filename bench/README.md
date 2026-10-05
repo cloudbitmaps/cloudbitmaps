@@ -71,12 +71,12 @@ publishes all three:
 
 1. **Load throughput** — ids/s and bytes/s into a bucket through `store.load()`, the whole write path, for
    objects that fit one PUT and objects large enough to upload multipart. **Paid** by the in-region run,
-   [`2026-10-04-f3599`](calibration/2026-10-04-f3599.md), from AWS CloudShell in `us-east-1`, on the published `0.15.0`.
+   [`2026-10-05-50b5d`](calibration/2026-10-05-50b5d.md), from AWS CloudShell in `us-east-1`, on the published `0.16.0`.
 2. **Cold intersect latency** — wall-clock for a chunk-skipping `A ∩ B` that has to fetch from the object store.
-   **Paid** by the same in-region run, [`2026-10-04-f3599`](calibration/2026-10-04-f3599.md).
+   **Paid** by the same in-region run, [`2026-10-05-50b5d`](calibration/2026-10-05-50b5d.md).
 3. **The single-bucket bill** — the registry pointer lives in the same bucket as the data, so resolving a
    generation costs an object GET and advancing one costs a conditional PUT. **Paid** by the same in-region run,
-   [`2026-10-04-f3599`](calibration/2026-10-04-f3599.md). Every run, with its report, is listed in
+   [`2026-10-05-50b5d`](calibration/2026-10-05-50b5d.md). Every run, with its report, is listed in
    [`calibration/`](calibration/README.md). A request count, and so the bill for
    requests, does not depend on where the client is, with one exception: an intersect
    slower than the pointer refresh reads each pointer again. The harness's timed store turns the pointer refresh
@@ -111,7 +111,7 @@ in `lib/calibrate-stages.cjs`, stepped at an even latency from the engine's two 
 the window. A peak of 64 is the full window, 32 range requests held ahead of each operand; rounds above the model with a
 mean in flight well under that is a slow request holding the window. In flight counts requests the library issued, including any waiting for a free socket, so a mean or a peak above the
 client's sockets (`maxSockets`, which the record carries: what the run's client held, read back from its agents, 128 by default, as the library's built client has) means requests queued, a wait the rounds model, which assumes no limit, does not count.
-The run of 2026-10-04 held at most 11 requests in flight against 128 sockets, and its rounds sit above the model.
+The run of 2026-10-05 held at most 11 requests in flight against 128 sockets, and its rounds sit above the model.
 
 `andNot` reads every chunk of the segment it filters, as ranges, since any of them can survive, and each exclude only where it
 overlaps, so what it costs scales with the include operand and not with the size of the exclude list.
@@ -326,7 +326,7 @@ hang-up on a real pseudo-terminal that is then closed, and the whole path by int
   the run, and `maxSocketsSource`, which says where it came from. The harness gives that client 128, the limit the library
   gives the client it builds (`CR_CALIBRATE_MAX_SOCKETS` overrides it: a positive integer of at most 1024; the run is refused before anything is created if the handler does not take the limit), by setting `maxSockets` on the
   SDK handler's own agents and changing nothing else about it; teardown's client keeps the SDK's default of 50. A value that
-  could not be read back is `null`. Runs before the harness set it (up to 2026-10-04) record 50, the SDK's default, as they
+  could not be read back is `null`. Runs before the harness set it (up to run `2026-10-04-73668`) record 50, the SDK's default, as they
   ran with. The limit bounds how many requests can really be in flight: an `andNot` widens its window from 8 keys to 32 and fetches every exclude of a key in the same round as its include, so
   on its first shared keys it can want more than the limit, and its latency is read against that.
 - **What it measured.** The package version, the harness commit (marked `-dirty` when the harness had uncommitted

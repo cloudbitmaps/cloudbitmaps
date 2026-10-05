@@ -1788,11 +1788,11 @@ function hitsIn(rel: string, text: string): string[] {
 // names a load and says "per million" gives its dollar amounts, and each must be the one its words call for:
 // a segment's first load, a load that does not list (or deletes by name, or is the third or later), one that lists,
 // or, with no such word, the average a million single-part loads cost. The price of one GET or one PUT-class
-// request is allowed anywhere, and so are the run's write-and-publish price and a price 0.11.2 published, after
+// request is allowed anywhere, and so are the write-and-publish price a run measured and a price 0.11.2 published, after
 // "was". A clause about a multipart write, an intersect, or another backend's or an encrypted segment's load is
 // another figure's, and is left to the gates that hold it (the calibration report and the site's figures).
 // Ratio: a clause that compares `store.load()` with a write and publish says, just after `store.load()`, the
-// multiple the model's average makes of the run's write-and-publish price.
+// multiple the model's average makes of that measured write-and-publish price.
 // Cadence: a sentence about listing or collecting that says how many generations apart the listings are ("every 16th
 // generation", "within 16 generations", "divisible by 16", "a sixteenth of a listing") says the constant.
 //
@@ -1841,25 +1841,24 @@ const LOAD_PRICES: Dollars = (() => {
 /** What 0.11.2 published for a steady and a first load. History belongs to the changelog, after "was". */
 const PRICES_BEFORE = [23.6, 22.8];
 /**
- * A million single-part writes and publishes, pointer included: the run's figure, from its committed evidence by the
- * module the site's figures take it from. A page compares `store.load()` with it, so the ratio it states is checked
- * against the two sources the figures come from. A run that timed `store.load()` records a segment's first load, which
- * makes one more GET than a write and publish, for its generation number's check.
+ * A million single-part writes and publishes, pointer included: the figure of the newest run that timed a write and
+ * publish alone, from its committed evidence by the module the site's figures take it from. A page compares
+ * `store.load()` with it, so the ratio it states is checked against the two sources the figures come from. A run that
+ * timed `store.load()` does not give it: how many requests a load makes beyond a write and publish is the engine's,
+ * and moves with it.
  */
 const WRITE_AND_PUBLISH: number = (() => {
   const calibration = createRequire(import.meta.url)('../../bench/lib/calibration-figures.cjs') as {
     evidenceFiles: (root: string) => string[];
     readSources: (root: string) => unknown;
-    derive: (
-      run: unknown,
-      src: unknown,
-    ) => { loadVia: string | null; usd: { singleLoad: number }; price: { getUSD: number } };
+    derive: (run: unknown, src: unknown) => { loadVia: string | null; usd: { singleLoad: number } };
   };
-  const latest = calibration.evidenceFiles(ROOT).at(-1);
-  if (latest === undefined) throw new Error('bench/calibration/ holds no run evidence');
-  const run: unknown = JSON.parse(readFileSync(join(ROOT, latest), 'utf8'));
-  const f = calibration.derive(run, calibration.readSources(ROOT));
-  return 1e6 * (f.loadVia === null ? f.usd.singleLoad : f.usd.singleLoad - f.price.getUSD);
+  const src = calibration.readSources(ROOT);
+  for (const rel of calibration.evidenceFiles(ROOT).reverse()) {
+    const f = calibration.derive(JSON.parse(readFileSync(join(ROOT, rel), 'utf8')), src);
+    if (f.loadVia === null) return 1e6 * f.usd.singleLoad;
+  }
+  throw new Error('bench/calibration/ holds no run that timed a write and publish alone');
 })();
 
 const SAYS_PER_MILLION = /\bper\s+(?:million|1M)\b|\ba million\b|\/\s*1M\b/i;

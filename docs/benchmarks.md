@@ -71,12 +71,12 @@ One run of the loaded store against real S3 in `us-east-1` is published here, dr
 region. It measured the published packages on the topology that ships, with the pointer in the same bucket as
 the data: what a cold intersect, an `andNot` and a load cost, and how long they take.
 
-### The in-region run — run `2026-10-04-f3599`
+### The in-region run — run `2026-10-05-50b5d`
 
-> **Measured** against real S3 in `us-east-1` on 2026-10-04 (UTC), from AWS CloudShell in the same region, with the
+> **Measured** against real S3 in `us-east-1` on 2026-10-05 (UTC), from AWS CloudShell in the same region, with the
 > published packages and a client of 128 sockets, the number this release's own client allows: a round-trip
-> floor of 5.40 ms. The run's report explains every figure:
-> [`bench/calibration/2026-10-04-f3599.md`](../bench/calibration/2026-10-04-f3599.md). The evidence beside it is the
+> floor of 4.32 ms. The run's report explains every figure:
+> [`bench/calibration/2026-10-05-50b5d.md`](../bench/calibration/2026-10-05-50b5d.md). The evidence beside it is the
 > harness's own results file. [`tests/docs/calibration-reports.test.ts`](../tests/docs/calibration-reports.test.ts)
 > holds this section and the report to it in both directions: every dollar amount, percentage, duration, byte size
 > and ratio, every number written before the request, chunk, id or load it counts, and the bill below, row by row.
@@ -90,40 +90,42 @@ chunks lie in the object, not how many there are.
 - **Chunk-skipping works on real S3.** 40 of 40 cold intersects of two 500,000-id segments returned the planned ids,
   checked by count and by sum. Each fetched 100 of 1,999 chunks per segment, the 100 the two share, and skipped the
   other 95.0%.
-- **A cold intersect of that shape took 95.03 ms at the median** (p95 122.55 ms, p99 144.42 ms) and made 6 GETs: one
+- **A cold intersect of that shape took 92.63 ms at the median** (p95 116.50 ms, p99 127.81 ms) and made 6 GETs: one
   pointer read and one 256 KiB tail read per operand, and one range read each for the shared chunks, which lie together.
-  Each GET round took about 26 to 27 ms (**derived**), more than the round-trip floor.
-- **The same intersect with the 100 shared chunks spread across each segment** took 98.69 ms at the median and also made
+  Each GET round took about 25 to 28 ms (**derived**), more than the round-trip floor.
+- **The same intersect with the 100 shared chunks spread across each segment** took 104.00 ms at the median and also made
   6 GETs. Each range returned 1,022,196 bytes of an operand, against the 51,600 bytes the packed layout's range returned:
   the bytes between the chunks come with them (**derived**).
-- **Latency grows with the overlap, the requests do not.** At 1,000 shared chunks the median was 162.01 ms, and at
-  2,000 it was 230.79 ms, 1.42 times as long for twice the chunks, with 6 GETs both times: each range carried more bytes.
-- **A warm intersect took 4.79 ms** at the median and made no request.
-- **Point reads.** A cold `count()` is one request, 28.44 ms at the median. `has()` on an open segment is one
-  request, 27.52 ms, and microseconds once the chunk is cached.
-- **Load throughput.** A single-part `store.load()` of a 1.05 MB segment ran at 2.65 million ids a second, 5,570,733
-  bytes a second; a multipart load of a 12.6 MB segment at 9.39 million ids a second, 9,422,173 bytes a second.
-- **`andNot`** of a 1,999-chunk segment against ten excludes took 269.74 ms at the median and made 33 GETs: for each
+- **Latency grows with the overlap, the requests do not.** At 1,000 shared chunks the median was 152.02 ms, and at
+  2,000 it was 218.45 ms, 1.44 times as long for twice the chunks, with 6 GETs both times: each range carried more bytes.
+- **A warm intersect took 3.94 ms** at the median and made no request.
+- **Point reads.** A cold `count()` is one request, 28.17 ms at the median. `has()` on an open segment is one
+  request, 27.15 ms, and microseconds once the chunk is cached.
+- **Load throughput.** A single-part `store.load()` of a 1.05 MB segment ran at 3.28 million ids a second, 6,900,490
+  bytes a second; a multipart load of a 12.6 MB segment at 10.57 million ids a second, 10,601,958 bytes a second.
+  Every load was a segment's first, and made 2 PUT + 3 GET single-part and, for a multipart load, 5 PUT-class + 3 GET.
+- **`andNot`** of a 1,999-chunk segment against ten excludes took 255.60 ms at the median and made 33 GETs: for each
   of the eleven operands, a pointer read, a tail read and one range read.
-- **The rounds sit above the rounds model.** A cold intersect took 3.6 rounds against the model's 3, and the sweeps
-  5.9 and 8.5. The client had 128 sockets and no stage held more than 11 requests in flight, so a socket limit did not
+- **The rounds sit above the rounds model.** A cold intersect took 3.7 rounds against the model's 3, and the sweeps
+  6.0 and 7.7. The client had 128 sockets and no stage held more than 11 requests in flight, so a socket limit did not
   bind. The run does not say why the rounds are above the model.
 
 | Operation | Requests | One | Per million | Label |
 | --- | --- | --- | --- | --- |
 | Cold intersect, two 500,000-id segments sharing 100 of 1,999 chunks, the median measured | 6 GET | $0.0000024 | **$2.40** | derived |
 | The same, with each pointer read once, as inside the region | 6 GET | $0.0000024 | $2.40 | expected |
-| A segment's first single-part `store.load()` in the calibration run, a 1.05 MB segment, pointer included | 2 PUT + 4 GET | $0.0000116 | **$11.60** | derived |
-| A segment's first multipart `store.load()` in the calibration run, a 12.6 MB segment | 5 PUT-class + 4 GET | $0.0000266 | **$26.60** | derived |
+| A segment's first single-part `store.load()` in the calibration run, a 1.05 MB segment, pointer included | 2 PUT + 3 GET | $0.0000112 | **$11.20** | derived |
+| A segment's first multipart `store.load()` in the calibration run, a 12.6 MB segment | 5 PUT-class + 3 GET | $0.0000262 | **$26.20** | derived |
 
-**Derived** rows are measured request counts times the `aws-us-east-1-ondemand` list prices. The second row is the
-code's prediction, which the run met exactly. The two load rows are a record of that run; what a load of the current engine
-makes is under [expected, not measured](#expected-not-measured). PUT-class requests are the ones S3 bills at the PUT rate, listings
-included. The whole run was 101 PUT-class and 5,155 GET-class requests, teardown included, and its requests cost
-$0.0025670, against a projected upper bound of $0.044470. Inside the region there is no data-transfer charge to add.
+**Derived** rows are measured request counts times the `aws-us-east-1-ondemand` list prices: the GETs and PUT-class requests are
+measured, and the price is the list price. The second row is the code's prediction, which the run met exactly. The two
+load rows are a segment's first load; a reload and a load from the third on are under
+[expected, not measured](#expected-not-measured). PUT-class requests are the ones S3 bills at the PUT rate, listings
+included. The whole run was 101 PUT-class and 5,114 GET-class requests, teardown included, and its requests cost
+$0.0025506, against a projected upper bound of $0.044453. Inside the region there is no data-transfer charge to add.
 
 **Against the $346-a-month Redis-HA line**, that is 144.2 million cold intersects of this shape a month, 54.9 every
-second, or 29.8 million single-part loads at the run's price for one. Below those rates this design costs less; above them, the standing
+second, or 30.9 million single-part loads at the run's price for one. Below those rates this design costs less; above them, the standing
 node does. Every intersect in the run was cold on purpose. A long-lived reader answers a repeat from memory, and pays
 instead for the pointer refresh: at most one GET per segment every 2 s while the segment is being read.
 
@@ -138,7 +140,7 @@ instead for the pointer refresh: at most one GET per segment every 2 s while the
   ([production](guide/production.md#reading-ranges-the-bytes-between-chunks)). The spread layout's ranges read
   1,022,196 bytes a range, against the packed layout's 51,600; what that costs outside the region is not measured.
 - **Other clouds.** GCS and Azure Blob have no in-region run.
-- **One client on one day.** The 26 to 27 ms GET round is this run's, not a guarantee.
+- **One client on one day.** The 25 to 28 ms GET round is this run's, not a guarantee.
 
 **`estimateCost()` counts what this run's bill counted**: each cold operand's pointer and tail read, and a request for
 each range read, which prices this run's intersect at 6 GETs; what `store.load()` adds to its object's write; and the
@@ -155,11 +157,10 @@ pointer refresh, for the segments a long-lived reader keeps reading. The
 | Operation | Requests | One | Per million | Label |
 | --- | --- | --- | --- | --- |
 | `iterate` over a 1,999-chunk segment | 3 GETs: a pointer and a tail read, and one range | $0.0000012 | $1.20 | expected |
-| A segment's first single-part `store.load()`, pointer included | 2 PUT + 3 GET | $0.0000112 | $11.20 | expected |
 | A reload of a segment | 2 PUT + 2 GET | $0.0000108 | $10.80 | expected |
 | A load from the third on, before its by-name delete, which is free | 2 PUT + 4 GET | $0.0000116 | $11.60 | expected |
 
-The run did not time `iterate`. Its count follows the same rule as the combines the run measured. The load counts are what the engine's registry and storage make, held to it by `bench/lib/calibration-figures.cjs`. For the sizing
+The run did not time `iterate`. Its count follows the same rule as the combines the run measured. A segment's first load, 2 PUT + 3 GET, is measured by the run above. The reload and later load counts are what the engine's registry and storage make, held to it by `bench/lib/calibration-figures.cjs`. For the sizing
 guide's medium and large deployments, whose chunks are larger, the requests are [counted for each overlap and
 layout](guide/sizing.md#how-much-the-overlap-matters). The layouts are the calibration's, of about 500-byte chunks;
 real ids are often denser, and the guide counts larger chunks.
@@ -289,7 +290,7 @@ inside the region and not from a laptop.
 - **Three kinds of number here.** The crossover chart is _modeled money_ (estimator, deterministic, CI-gated);
   the at-scale table is _measured memory + wall-clock_ (a real run, the fleet on local disk and the large
   intersect in memory, machine-dependent, never CI-gated — shared runners are too noisy); and the real-cloud section is _measured AWS cost_ (owner-run against
-  a real account, on 2026-10-04, from inside the region). Only the third is cloud-calibrated, and even then the dollars are
+  a real account, on 2026-10-05, from inside the region). Only the third is cloud-calibrated, and even then the dollars are
   published prices applied to wire-metered requests, not the invoice itself.
 - **Rates are the vendor's to change, and are region-specific.** Every dollar figure in this document uses the
   default `aws-us-east-1-ondemand` rates, dated where it was measured; the crossover is drawn against
@@ -300,7 +301,7 @@ inside the region and not from a laptop.
 
 ## What is still owed
 
-The [in-region run](#the-in-region-run--run-2026-10-04-f3599) measured the loaded store's latency and load
+The [in-region run](#the-in-region-run--run-2026-10-05-50b5d) measured the loaded store's latency and load
 throughput on S3. These are not published yet:
 
 - **`iterate` on S3.** Its request count is [expected, not measured](#expected-not-measured), and the run did not time it.
@@ -330,7 +331,7 @@ while the bill counts both; and a run's report states how many it discarded. A f
 fails the run. Every run records its own round-trip floor to the
 region and labels its latency in-region only below 30 ms — a line that keeps another continent out, not a
 neighbouring region, so the raw floor is recorded with it for a reader who wants a stricter one, and so is the region the shell ran in. A page states a run's latency as in-region only when that region is the bucket's too. Each cold intersect also records how many requests were in flight at once and how many it waited for one after another, and every run records the AWS SDK and handler versions and the handler's socket cap. Its run
-`2026-10-04-f3599`, from AWS CloudShell in `us-east-1`, paid the in-region rows: intersect and point-read latency,
+`2026-10-05-50b5d`, from AWS CloudShell in `us-east-1`, paid the in-region rows: intersect and point-read latency,
 load throughput, `andNot` with a large `exclude`, the sweep, and what `store.load()` costs on S3. The `*Into` verbs and
 the Lambda figure are not in it yet.
 How it guards against spending more than it says, and how to run it from inside the region:

@@ -150,18 +150,18 @@ explains these, S3's request rate and overlap, with the charts; [what it costs a
 
 ## What it costs on real AWS
 
-A cold `intersect` of two 500,000-id segments sharing 100 of 1,999 chunks made 6 GETs and took 95.03 ms at the median,
-**$2.40 per million** at list prices. The requests are measured: run [`2026-10-04-f3599`](bench/calibration/2026-10-04-f3599.md),
-made on 2026-10-04 from AWS CloudShell in `us-east-1` on the published packages, with the pointer in the same
+A cold `intersect` of two 500,000-id segments sharing 100 of 1,999 chunks made 6 GETs and took 92.63 ms at the median,
+**$2.40 per million** at list prices. The requests are measured: run [`2026-10-05-50b5d`](bench/calibration/2026-10-05-50b5d.md),
+made on 2026-10-05 from AWS CloudShell in `us-east-1` on the published packages, with the pointer in the same
 bucket as the data.
 
 | Operation | Cost | Kind |
 |---|---|---|
 | Cold `intersect` of two 500,000-id segments sharing 100 of 1,999 chunks: 6 GETs | **$2.40 / million** | measured requests at list prices |
-| A segment's first `store.load()`: 2 PUT + 3 GET, pointer included | **$11.20 / million** | expected, not yet measured |
+| A segment's first `store.load()`: 2 PUT + 3 GET, pointer included | **$11.20 / million** | measured requests at list prices |
 
 Run from inside the region with a client of 128 sockets, a cold `count()` is one request at
-28.44 ms, a single-part load ran at 5,570,733 bytes a second, and an `andNot` against ten excludes made 33 GETs in 269.74 ms. The
+28.17 ms, a single-part load ran at 6,900,490 bytes a second, and an `andNot` against ten excludes made 33 GETs in 255.60 ms. The
 [benchmarks page](docs/benchmarks.md#real-cloud-calibration--aws) says exactly what it did and did not measure.
 
 ## Your data stays yours
