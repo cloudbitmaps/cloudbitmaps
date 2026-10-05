@@ -942,6 +942,39 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       expect((await d.get(SEG))!.keptGens).toEqual([1, 2]);
     });
 
+    // ── `leases`: the holds on a segment's generations ───────────────────────────────────────────────────────
+    // A lease names a generation a holder pinned and does not follow the pointer: a driver that dropped it when the
+    // pointer moved would let the next load collect a leased generation.
+    it('round-trips leases through compare-and-swap, get and list, and keeps them across a pointer move', async () => {
+      const d = makeDriver();
+      const entry = { holder: '00112233aabbccdd', generation: 3, until: 1_900_000_000_000 };
+      const { token: t0 } = await d.create(SEG, { currentGen: 5 });
+      const { token: t1 } = await d.compareAndSwap(SEG, t0, { leases: [entry] });
+      expect((await d.get(SEG))!.leases).toEqual([entry]);
+      expect((await drainRecords(d.list()))[0]!.leases).toEqual([entry]);
+      const { token: t2 } = await d.compareAndSwap(SEG, t1, { currentGen: 6, keptGens: [5] });
+      expect((await d.get(SEG))!.leases).toEqual([entry]);
+      const { token: t3 } = await d.compareAndSwap(SEG, t2, { retention: { expiresAt: 9 } });
+      expect((await d.get(SEG))!.leases).toEqual([entry]);
+      await d.compareAndSwap(SEG, t3, { leases: undefined });
+      expect((await d.get(SEG))!.leases).toBeUndefined();
+    });
+
+    it('refuses malformed leases and leaves the row unchanged', async () => {
+      const d = makeDriver();
+      const { token } = await d.create(SEG, { currentGen: 5 });
+      const ok = { holder: '00112233aabbccdd', generation: 3, until: 1_900_000_000_000 };
+      await expectValidationReject(
+        d.compareAndSwap(SEG, token, { leases: [{ ...ok, holder: 'x' }] }),
+      );
+      await expectValidationReject(d.compareAndSwap(SEG, token, { leases: [ok, ok] }));
+      await expectValidationReject(
+        d.compareAndSwap(SEG, token, { leases: [{ ...ok, until: -1 }] }),
+      );
+      expect(await d.get(SEG)).toMatchObject({ token });
+      expect((await d.get(SEG))!.leases).toBeUndefined();
+    });
+
     it('list(namespace) excludes a namespace that merely shares its prefix', async () => {
       const d = makeDriver();
       await d.create({ namespace: 'ns', segment: 'a' }, { currentGen: 0 });

@@ -103,6 +103,7 @@ no bus, and no connection between two stores that happen to point at the same bu
 | another store, with a registry and a `cache.genTtlMs` above 0 | within `cache.genTtlMs` (default 2 s), while the registry can be read, for a small generation's chunks too, which its reader holds and serves until the refresh moves it on; an outage of the registry stretches it ([how soon a reader sees a new load](reading.md#how-soon-a-reader-sees-a-new-load)) |
 | `seg.pinAt` of a generation the erasure rewrote, in any store | on return it fails with `NotFoundError`, since the object is deleted (and, with a registry, the row has moved on); during the erasure, between the rewrite's publish and its delete of the old generation, it can still open that generation, and a handle opened then is a pin, covered by the next row |
 | a pinned handle (`seg.pin()`) in another store | **no bound**: until that store's reader cache evicts the pin's reader (in a store with a timed pointer refresh, a small generation's reader holds all of its chunks, decoded or not) and its chunk cache evicts the chunks the pin decoded, or `store.invalidate(ref)` is called there |
+| a leased pinned handle (`seg.pin({ leaseUntil })`) in another store | until its lease ends, at most 14 days after it was taken: its reads then throw `LeaseExpiredError`, whether or not its reader still holds the chunks. Until then, as for any pinned handle in the row above |
 | another store with **no registry** (built on a bare `IStorageDriver` instead of a backend), with `cache: { genTtlMs: 0 }`, or on a pre-built `StorageChunkSource` built with **no clock** | **no bound**: only when its caches happen to let the segment go, or something tells it |
 
 A refresh that fails with anything but a transient fault (an access denial, a row that will not parse) does not keep
@@ -114,6 +115,31 @@ is the hook, and fanning the reference out to your fleet is yours, because the t
 `destroySegment` and `eraseNamespace`, which are free functions over a backend's `registry` and invalidate no store: every store
 beside them keeps the **unwrapped** key for as long as that table's row for it says. See
 [freshness](reading.md#how-soon-a-reader-sees-a-new-load).
+
+## A lease keeps superseded generations, and erasure ignores it
+
+A pinned handle taken with [`pin({ leaseUntil })`](reading.md#hold-a-generation-for-a-job-a-lease) keeps its generation out
+of a load's collection until the lease ends, at most 14 days after it was taken and a 60-second margin after that. While it
+does, the bucket holds a generation that a newer load has superseded, including ids that load removed, and a lease is a
+reason for a deleted-looking id to still be in storage that is easy to forget.
+
+Erasure ignores every lease. `eraseSubject` and `eraseIdFromSegment` delete the generations that hold the id, and the
+collection that follows an erasure rewrite deletes every generation below the new one, a leased one included; the rewrite
+clears the row's leases. An erasure that finds the id only in a generation other than the current one deletes that
+generation, leased or not, and writes no row of its own, so an entry for a generation it deleted stays in the list until the
+entry's own time ends or the next publish or lease write prunes it: it spares nothing, since the object is gone, and it
+counts toward the 64 places until then. A `destroySegment`, a `dropSegment` and a retention expiry delete every generation
+and leave no lease on the tombstone. So erasure, shred, drop and retention always win, and a lease never holds an erased
+subject's data past the bounds in the table above.
+
+A lease written while an erasure is under way does not delay it. A lease write moves the row's token, which an erasure
+rewrite is fenced on, but a row that differs from the one the rewrite read only in its leases does not refuse it: it goes on
+against the row it finds, without streaming the object again, and so does the re-proof before each delete above the pointer
+([how a load stays correct](loading.md#how-it-stays-correct) states the rule). A change of anything else refuses, and
+`eraseSubject` reports `superseded` as it always has: run it again.
+
+What a lease does not change is when a reader stops seeing the id. A leased handle in another store answers as any
+pinned handle does until its lease ends, and then every read of it throws `LeaseExpiredError`.
 
 ## What an erasure does not reach
 

@@ -48,6 +48,7 @@ export default defineConfig({
       { find: /^@\/index$/, replacement: ROARING + '/index.ts' },
       { find: /^@\/roaring-codec$/, replacement: ROARING + '/roaring-codec.ts' },
       { find: /^@\/option-keys$/, replacement: ROARING + '/option-keys.ts' },
+      { find: /^@\/lease-guards$/, replacement: ROARING + '/lease-guards.ts' },
       { find: /^@\/reserved-namespace$/, replacement: ROARING + '/reserved-namespace.ts' },
       { find: /^@\/system-clock$/, replacement: ROARING + '/system-clock.ts' },
       { find: /^@\/testing\/(.*)$/, replacement: ROARING + '/testing/$1' },

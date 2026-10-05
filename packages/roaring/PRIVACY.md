@@ -138,6 +138,7 @@ bucket.
 | another store with **no registry** (a bare `IStorageDriver`), with `cache: { genTtlMs: 0 }`, or on a storage source built with **no clock** | **no bound** — only when its caches happen to let the segment go, or something tells it |
 | `seg.pinAt` of a generation the erasure rewrote, in any store | on return it fails with `NotFoundError`, since the object is deleted (and, with a registry, the row has moved on); during the erasure, between the rewrite's publish and its delete of the old generation, it can still open that generation, and a handle opened then is a pin, covered by the row below |
 | a pinned handle (`seg.pin()`) in another store | **no bound** — until that store's reader cache evicts the pin's reader (in a store with a timed pointer refresh, a small generation's reader holds all of its chunks, decoded or not) and its chunk cache evicts the chunks the pin decoded, or something tells it |
+| a leased pinned handle (`seg.pin({ leaseUntil })`) in another store | until its lease ends, at most 14 days after it was taken: its reads then throw `LeaseExpiredError`, whether or not its reader still holds the chunks. Until then, as for any pinned handle in the row above |
 
 **An outage of the registry extends that bound.** A refresh that cannot read the row because of a transient fault
 (throttling, a 5xx, a dropped connection) keeps serving the generation the reader already holds, and the key it
@@ -161,6 +162,20 @@ yours.
 
 A read served from a stale cache is bounded by the same window and answers from memory, so nothing on the
 storage side — a bucket policy, a lifecycle rule, the object's own deletion — can shorten it.
+
+**A lease keeps superseded generations, and erasure ignores it.** A pinned handle taken with `pin({ leaseUntil })` keeps
+its generation out of a load's collection until the lease ends: at most 14 days after it was taken, and a 60-second margin
+after that. While it does, the bucket holds a generation that a newer load has superseded, including ids that load
+removed. `eraseSubject`, `eraseIdFromSegment`, `dropSegment`, `destroySegment` and a retention expiry never read a lease:
+they delete the generations they must, a leased one included, so a lease never holds an erased subject's data past the
+bounds above, and erasure, shred, drop and retention always win over it. A rewrite, a shred and a drop clear the row's
+leases; an erasure that deletes a generation without rewriting leaves an entry for it in the row, which spares nothing and
+is pruned by the next publish or lease write after it ends. A lease write does not delay an erasure: a row that differs
+from the one the erasure read only in its leases does not refuse it. What a lease holds against is an ordinary load's
+collection, and the generation is collected by the next listing pass after the lease ends: within 16 later loads of the
+segment, and a segment that is never loaded again keeps it until an erasure, a drop or a retention expiry takes it. A
+leased handle stops answering when its lease ends, and its reads then throw `LeaseExpiredError`. The lease entry in the
+registry row is a random holder id, a generation number and an instant, with no id and no count.
 
 **Your exit path** (and a building block for a **data-portability / Art. 20** response): `store.exportSegments(sink,
 { format })` (and the `export-segments` CLI) dumps every registered segment's current generation to a portable

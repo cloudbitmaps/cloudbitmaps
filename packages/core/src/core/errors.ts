@@ -51,6 +51,30 @@ export class IntegrityError extends CloudRoaringError {}
 export class NotFoundError extends CloudRoaringError {}
 
 /**
+ * A read of a leased pin came after its lease ended, by `until` or by `release()`. Thrown at every read site of the
+ * handle, including a leased handle used as an operand or an exclude of a combine, and never answered empty: a
+ * handle that read empty here would be an opt-out list that suppresses nobody. Carries the instant the lease ended
+ * and why; never an id or a key.
+ */
+export class LeaseExpiredError extends CloudRoaringError {
+  /** Epoch-ms the lease was taken until. */
+  readonly until: number;
+  /** `'expired'` when the clock reached `until`, `'released'` after `release()`. */
+  readonly reason: 'expired' | 'released';
+  constructor(message: string, until: number, reason: 'expired' | 'released') {
+    super(message);
+    this.until = until;
+    this.reason = reason;
+  }
+}
+
+/**
+ * A segment already has as many live leases as one row records, so another cannot be taken. Nothing was written.
+ * Release one, wait for one to end, or share one lease across the tasks of a job.
+ */
+export class LeaseLimitError extends CloudRoaringError {}
+
+/**
  * This build/configuration cannot perform the requested operation, though nothing is malformed. Two uses:
  * (1) **format** — the bytes are well-formed but unreadable here (an unknown `.crbm` major version) —
  * distinct from `IntegrityError` (corruption); and (2)
@@ -132,6 +156,16 @@ export function isWriteConflictError(err: unknown): err is WriteConflictError {
 /** A retryable transient infrastructure fault. The retry layer keys on this. */
 export function isTransientError(err: unknown): err is TransientError {
   return hasBrand(err, TRANSIENT_BRAND);
+}
+
+/** A read came after its pin's lease ended. */
+export function isLeaseExpiredError(err: unknown): err is LeaseExpiredError {
+  return isCloudRoaringError(err) && err.name === 'LeaseExpiredError';
+}
+
+/** A segment has no room for another live lease. */
+export function isLeaseLimitError(err: unknown): err is LeaseLimitError {
+  return isCloudRoaringError(err) && err.name === 'LeaseLimitError';
 }
 
 /** A requested object/row does not exist. */

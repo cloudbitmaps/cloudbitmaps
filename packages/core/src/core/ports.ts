@@ -354,6 +354,21 @@ export interface SealedRegistrySummary {
 }
 
 /**
+ * One lease on a generation. It names no fingerprint: a collector spares a generation by number and cannot compare an
+ * object without reading it, and a purge and re-create drops the whole list with the row. A pin's own fingerprint,
+ * which its reads check, stops a number retaken after a rollback being read as the leased object; the entry then spares a
+ * different object from collection until it ends, at most the longest lease.
+ */
+export interface LeaseEntry {
+  /** 16 lowercase hex digits drawn once per pin call; names the holder, so a retried write is idempotent. */
+  readonly holder: string;
+  /** The generation held. */
+  readonly generation: number;
+  /** Epoch-ms the lease runs to on the holder's clock; a collector holds it for the skew margin longer. */
+  readonly until: number;
+}
+
+/**
  * One registry row — the authoritative per-segment record. Exactly one per segment.
  */
 export interface RegistryRecord extends SegmentRef {
@@ -402,6 +417,14 @@ export interface RegistryRecord extends SegmentRef {
    * `currentGen` without naming it drops it.
    */
   readonly keptGens?: readonly number[];
+  /**
+   * The leases on this segment's generations: each keeps one generation out of a load's collection until it ends.
+   * Optional; absent means none. Unlike {@link keptGens} it does not follow the pointer: a patch that moves
+   * `currentGen` leaves it as it was, and only a patch that names it, or the row going away, changes it. Entries
+   * past their end are ignored by every collector and pruned by the next write that names the list. A row's identity
+   * is its token, so a purged and re-created segment starts with none.
+   */
+  readonly leases?: readonly LeaseEntry[];
   /** Epoch-ms of creation / last mutation (from the driver's injected clock). */
   readonly createdAt: number;
   readonly updatedAt: number;
@@ -453,6 +476,7 @@ export type RegistryPatch = Partial<
     | 'residency'
     | 'summary'
     | 'keptGens'
+    | 'leases'
   >
 >;
 

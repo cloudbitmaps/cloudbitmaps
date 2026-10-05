@@ -16,6 +16,7 @@
  */
 import { ValidationError, WriteConflictError, isNotFoundError } from './errors';
 import { MAX_KEPT_GENERATIONS, usableKeptGens } from './kept-generations';
+import { heldGenerations } from './leases';
 import type {
   GenKey,
   IStorageDriver,
@@ -156,7 +157,18 @@ export async function gcOrphanGenerations(
   deps: GenerationDeps,
   options: { keep?: number } = {},
 ): Promise<number[]> {
-  return (await listingPass(ref, deps, options)).deleted;
+  // Only the window is passed on, whatever the caller's object carries: this pass never reads a lease.
+  return (await listingPass(ref, deps, { keep: options.keep })).deleted;
+}
+
+/**
+ * What makes a collection spare leased generations: the clock that says whether a lease has ended. Only a load's
+ * collection passes one, and a load with no clock passes none: it cannot tell a live lease from an ended one, so it
+ * reads none. A pass without a guard never reads the row's leases, which is what keeps erasure, shred and drop deleting
+ * what a lease names.
+ */
+export interface LeaseGuard {
+  readonly now: () => number;
 }
 
 /** What a listing pass did: the generations it deleted, and the ones below the pointer it left. */
@@ -182,7 +194,12 @@ interface ListingResult {
 async function listingPass(
   ref: SegmentRef,
   deps: GenerationDeps,
-  options: { keep?: number; protect?: readonly number[]; quiet?: boolean },
+  options: {
+    keep?: number;
+    protect?: readonly number[];
+    quiet?: boolean;
+    leases?: LeaseGuard;
+  },
 ): Promise<ListingResult> {
   const keep = options.keep ?? 1;
   const quiet = options.quiet === true;
@@ -255,10 +272,10 @@ async function listingPass(
    *    collection working on a busy segment. A purge-and-recreate or a `rollbackSegment` can move it down, which
    *    is why the pointer is re-proved before every delete (below).
    */
-  const stillCollectable = async (generation: number): Promise<boolean> => {
+  const stillCollectable = async (generation: number): Promise<'delete' | 'skip' | 'stop'> => {
     const still = await deps.registry.get(ref);
     if (still === null) {
-      if (quiet) return false;
+      if (quiet) return 'stop';
       throw new WriteConflictError(`registry row for segment ${ref.segment} was purged mid-pass`);
     }
     const ok =
@@ -273,19 +290,24 @@ async function listingPass(
       record.status === 'destroyed' ||
       (now !== undefined && !now.includes(generation));
     if (!ok || !unnamed) {
-      if (quiet) return false;
+      if (quiet) return 'stop';
       throw new WriteConflictError(
         `segment ${ref.segment} changed incarnation while its generations were being collected`,
       );
     }
-    return true;
+    // A lease that landed since the row was first read: this name is spared, and the pass goes on to the next.
+    if (guard !== undefined && heldGenerations(still, guard.now()).has(generation)) return 'skip';
+    return 'delete';
   };
 
+  // Leases are honoured only by a load's collection, and never on a tombstone, where every generation is garbage.
+  const guard = record.status === 'destroyed' ? undefined : options.leases;
+  const held = guard === undefined ? undefined : heldGenerations(after, guard.now());
   const below =
     record.status === 'destroyed' || cutoff === null
       ? []
       : gens.filter((g) => g < cutoff).sort((a, b) => b - a); // newest-first
-  const toDelete =
+  const candidates =
     record.status === 'destroyed'
       ? gens.sort((a, b) => a - b) // all of it: no reader can resolve a generation of a tombstoned segment
       : cutoff === null
@@ -295,10 +317,12 @@ async function listingPass(
           []
         : protect !== undefined
           ? // The row's list is the window: everything below the pointer it does not name is garbage.
-            // A generation that a lease holds is spared here, beside the ones the row names, once leases exist.
             below.filter((g) => !protect.has(g))
           : // Delete generations below the cutoff, except the newest `keep` of them (the grace window).
             below.slice(keep);
+  // A generation a live lease holds is spared beside the ones the row names, and takes no slot of the window.
+  const leasedSpared = new Set(candidates.filter((g) => held?.has(g) === true));
+  const toDelete = candidates.filter((g) => !leasedSpared.has(g));
   // The re-read above proves the segment was intact at ONE instant; the deletes below are one round trip each,
   // so the exposure is the whole loop, not that instant. The ordinary branch deletes newest-first, which puts a
   // restarted incarnation's generation 0 LAST — the worst ordering.
@@ -312,14 +336,19 @@ async function listingPass(
   // and is never on the read path.
   const done: number[] = [];
   for (const generation of toDelete) {
-    if (!(await stillCollectable(generation))) return { deleted: done, kept: [], complete: false };
+    const verdict = await stillCollectable(generation);
+    if (verdict === 'stop') return { deleted: done, kept: [], complete: false };
+    if (verdict === 'skip') {
+      leasedSpared.add(generation);
+      continue;
+    }
     await deps.storage.delete({ namespace: ref.namespace, segment: ref.segment, generation });
     done.push(generation);
   }
-  const deleted = new Set(toDelete);
+  const deleted = new Set(done);
   return {
-    deleted: toDelete,
-    kept: below.filter((g) => !deleted.has(g)).reverse(),
+    deleted: done,
+    kept: below.filter((g) => !deleted.has(g) && !leasedSpared.has(g)).reverse(),
     complete: true,
   };
 }
@@ -376,12 +405,15 @@ export async function collectAfterLoad(
      * safe only while the object the row named is in the bucket.
      */
     proveCurrent?: GenKey;
+    /** Spare the generations the row's live leases hold. Absent, the pass ignores leases. */
+    leases?: LeaseGuard;
   },
 ): Promise<number[]> {
-  const { generation, keep, byName, currentGone, kept, proveCurrent } = options;
+  const { generation, keep, byName, currentGone, kept, proveCurrent, leases } = options;
   if (keep >= generation) return [];
   const list = kept?.list;
-  if (list === undefined || currentGone === true) return reconcile(ref, deps, { keep, kept });
+  if (list === undefined || currentGone === true)
+    return reconcile(ref, deps, { keep, kept, leases });
   const periodic = generation % LIST_COLLECTION_CADENCE === 0;
   if (byName && !periodic) {
     // A `keep` of 0 deletes the generation it supersedes, which is the one in question: whether it is there or not, it
@@ -391,11 +423,11 @@ export async function collectAfterLoad(
       proveCurrent !== undefined &&
       !(await objectIsThere(deps.storage, proveCurrent))
     ) {
-      return reconcile(ref, deps, { keep, kept });
+      return reconcile(ref, deps, { keep, kept, leases });
     }
-    return deleteEvicted(ref, deps, { generation, evict: kept!.evict });
+    return deleteEvicted(ref, deps, { generation, evict: kept!.evict, leases });
   }
-  return (await listingPass(ref, deps, { keep, protect: list, quiet: true })).deleted;
+  return (await listingPass(ref, deps, { keep, protect: list, quiet: true, leases })).deleted;
 }
 
 /**
@@ -405,10 +437,14 @@ export async function collectAfterLoad(
 async function reconcile(
   ref: SegmentRef,
   deps: GenerationDeps,
-  options: { keep: number; kept: PublishedKept | undefined },
+  options: { keep: number; kept: PublishedKept | undefined; leases?: LeaseGuard },
 ): Promise<number[]> {
-  const { keep, kept } = options;
-  const { deleted, kept: present, complete } = await listingPass(ref, deps, { keep, quiet: true });
+  const { keep, kept, leases } = options;
+  const {
+    deleted,
+    kept: present,
+    complete,
+  } = await listingPass(ref, deps, { keep, quiet: true, leases });
   const token = kept?.token;
   if (
     complete &&
@@ -461,7 +497,7 @@ async function objectIsThere(storage: IStorageDriver, key: GenKey): Promise<bool
 export async function deleteEvicted(
   ref: SegmentRef,
   deps: GenerationDeps,
-  options: { generation: number; evict: readonly number[] },
+  options: { generation: number; evict: readonly number[]; leases?: LeaseGuard },
 ): Promise<number[]> {
   const deleted: number[] = [];
   for (const generation of options.evict) {
@@ -469,6 +505,13 @@ export async function deleteEvicted(
     if (still === null || still.currentGen === null || still.currentGen < options.generation) break;
     const named = usableKeptGens(still);
     if (named === undefined || generation >= still.currentGen || named.includes(generation)) break;
+    // A name a live lease holds is spared, and the pass goes on: the rest of the window's evictions still go.
+    if (
+      options.leases !== undefined &&
+      heldGenerations(still, options.leases.now()).has(generation)
+    ) {
+      continue;
+    }
     await deps.storage.delete({ namespace: ref.namespace, segment: ref.segment, generation });
     deleted.push(generation);
   }

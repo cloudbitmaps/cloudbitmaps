@@ -100,6 +100,7 @@ import {
   isNotFoundError,
 } from './errors';
 import { gcOrphanGenerations, nextGeneration } from './generation-gc';
+import { onlyLeasesDiffer } from './leases';
 import { assertRegistryCanWrite } from './ports';
 import type {
   GenKey,
@@ -308,7 +309,10 @@ export async function eraseIdFromSegment(
     if (row.status === 'destroyed') return 'destroyed';
     if (row.currentGen === null) return 'no-generation';
     // A different row is a different lineage even at the same pointer value — see `fromToken`.
-    return row.currentGen === from && row.token === fromToken ? null : 'superseded';
+    // A write of the row's leases alone, which readers make, is not another writer's: the premise still holds.
+    return row.currentGen === from && (row.token === fromToken || onlyLeasesDiffer(record, row))
+      ? null
+      : 'superseded';
   };
 
   /**
@@ -669,9 +673,13 @@ export async function eraseIdFromSegment(
   const published = await publishGeneration(deps.registry, key, {
     expectFrom: from,
     expectToken: fromToken,
+    // A lease written while the rewrite streams moves the token and nothing it derived from: it does not refuse it.
+    expectRow: record,
     summary,
     // The row then records that no generation below the new pointer is kept, as the collection below leaves it.
     keep: 0,
+    // Every generation below the new pointer is deleted whatever a lease says, so the row drops its leases.
+    clearLeases: true,
     // A write that ends without an answer is settled by reading the row, and a pointer at this number is this
     // rewrite's only over the object it wrote: the footer proves it, so another incarnation's cannot pass for it.
     holdsOwnObject: () => provesOwnObject(deps.storage, key, fingerprint),

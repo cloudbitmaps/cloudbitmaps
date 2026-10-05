@@ -10,12 +10,14 @@ import { IntegrityError, UnsupportedError, ValidationError } from '@/core/errors
 import type { Entropy } from '@/core/determinism';
 import { canonicalMetadataJson, MAX_METADATA_BYTES } from '@/core/metadata';
 import { INCARNATION_TOKEN, incarnationOf } from '@/core/token';
+import { MAX_LEASES_PER_SEGMENT, MAX_STORED_LEASES } from '@/core/leases';
 import {
   MAX_KEPT_GENERATIONS,
   MAX_STORED_KEPT_GENERATIONS,
   usableKeptGens,
 } from '@/core/kept-generations';
 import type {
+  LeaseEntry,
   NewRegistryRecord,
   RegistryPatch,
   RegistryRecord,
@@ -48,7 +50,7 @@ const BASE_FIELDS = [
  * The fields schema 3 added. A schema-2 row carrying one is refused as undeclared. A field that joins schema 3 before
  * it is released is appended here, with its validator, and needs no new schema version.
  */
-const SCHEMA_3_FIELDS = ['keptGens'] as const;
+const SCHEMA_3_FIELDS = ['keptGens', 'leases'] as const;
 export const RECORD_FIELDS = [...BASE_FIELDS, ...SCHEMA_3_FIELDS] as const;
 /** The record fields a row of `schemaVersion` may carry: each schema adds to the one before. */
 function fieldsOf(schemaVersion: number): readonly string[] {
@@ -327,6 +329,78 @@ function validateKeptGens(
   return isStored ? (list as number[]) : Object.freeze([...(list as number[])]);
 }
 
+const HOLDER = /^[0-9a-f]{16}$/;
+const LEASE_ENTRY_KEYS: readonly string[] = ['holder', 'generation', 'until'];
+
+/**
+ * Validate a {@link RegistryRecord.leases} list at the write or read boundary: an array of at most the writer's cap
+ * (write) or the reader's (read), each entry exactly `{ holder, generation, until }`, the holder 16 lowercase hex digits
+ * and unique, the two numbers non-negative safe integers. A write returns a frozen copy, and an empty list as
+ * `undefined`, so a row that never held a lease is the row it was before leases. `isStored` picks the error class
+ * (write = ValidationError; read = IntegrityError, invariant 5). Whether an entry is still live, or its generation
+ * exists, is not checked here: a collector reads that, and a row is not refused for it.
+ */
+function validateLeases(
+  value: unknown,
+  isStored: boolean,
+  ctx?: string,
+): readonly LeaseEntry[] | undefined {
+  if (value === undefined) return undefined;
+  const fail = (msg: string): never => {
+    const where = ctx === undefined ? '' : `: ${ctx}`;
+    throw isStored
+      ? new IntegrityError(`registry record leases: ${msg}${where}`)
+      : new ValidationError(`leases: ${msg}`);
+  };
+  if (!Array.isArray(value)) fail('must be an array');
+  const list = value as unknown[];
+  const max = MAX_STORED_LEASES; // a write's own cap is applied against the row it patches
+  if (list.length > max) fail(`has ${list.length} entries, cap ${max}`);
+  const seen = new Set<string>();
+  const out: LeaseEntry[] = [];
+  for (const e of list) {
+    if (typeof e !== 'object' || e === null || Array.isArray(e)) fail('an entry must be an object');
+    const entry = e as Record<string, unknown>;
+    const extra = Object.keys(entry).filter((k) => !LEASE_ENTRY_KEYS.includes(k));
+    if (extra.length > 0) fail(`an entry carries an undeclared field (${extra.join(', ')})`);
+    const { holder, generation, until } = entry;
+    if (typeof holder !== 'string' || !HOLDER.test(holder)) {
+      fail('a holder must be 16 lowercase hex digits');
+    }
+    if (seen.has(holder as string)) fail('holders must be unique');
+    seen.add(holder as string);
+    for (const [name, n] of [
+      ['generation', generation],
+      ['until', until],
+    ] as const) {
+      if (!Number.isSafeInteger(n) || (n as number) < 0) {
+        fail(`${name} must be a non-negative safe integer (got ${String(n)})`);
+      }
+    }
+    out.push(
+      isStored
+        ? (entry as unknown as LeaseEntry)
+        : Object.freeze({
+            holder: holder as string,
+            generation: generation as number,
+            until: until as number,
+          }),
+    );
+  }
+  if (isStored) return out;
+  return out.length === 0 ? undefined : Object.freeze(out);
+}
+
+/** A non-empty list given at a write needs a pointer to hold generations of. */
+function validateLeasesPointer(
+  leases: readonly LeaseEntry[] | undefined,
+  currentGen: number | null,
+): void {
+  if (leases !== undefined && leases.length > 0 && currentGen === null) {
+    throw new ValidationError('leases: a row with no pointer has no generation to lease');
+  }
+}
+
 /** A list given at a write must name only generations below the pointer the row will have, and none on no pointer. */
 function validateKeptGensBelow(
   keptGens: readonly number[] | undefined,
@@ -381,8 +455,12 @@ export function validateRegistryPatch(patch: RegistryPatch): RegistryPatch {
     patch.keptGens === undefined
       ? patch
       : { ...patch, keptGens: validateKeptGens(patch.keptGens, false) };
-  if (!('summary' in patch)) return withKept;
-  return { ...withKept, summary: validateSummary(patch.summary, false) };
+  const withLeases =
+    'leases' in withKept
+      ? { ...withKept, leases: validateLeases(withKept.leases, false) }
+      : withKept;
+  if (!('summary' in patch)) return withLeases;
+  return { ...withLeases, summary: validateSummary(patch.summary, false) };
 }
 
 /**
@@ -613,6 +691,8 @@ export function recordFromNew(
     residency: rec.residency,
     summary: rec.summary,
     keptGens: rec.keptGens,
+    // A new row has no holder: a lease is written only against a row that already exists.
+    leases: undefined,
     createdAt: now,
     updatedAt: now,
     token,
@@ -676,6 +756,7 @@ export function assertStoredRecordShape(
   // one row stop every listing that reaches it.
   validateSummary(r.summary, true, ctx);
   validateKeptGens(r.keptGens, true, ctx);
+  validateLeases(r.leases, true, ctx);
 }
 
 /**
@@ -719,6 +800,20 @@ export function applyRegistryPatch(
   } else {
     keptGens = currentGen === prev.currentGen ? prev.keptGens : undefined;
   }
+  // Leases name generations a holder pinned, and the pointer moving does not end them: kept unless the patch names the list.
+  let leases: readonly LeaseEntry[] | undefined;
+  if ('leases' in patch) {
+    leases = patch.leases;
+    validateLeasesPointer(leases, currentGen);
+    // A writer writes at most the cap, except that a list may always shrink: a release over a row that holds more
+    // (written by another build) writes that list less one, and so can never be stuck behind the cap.
+    const most = Math.max(MAX_LEASES_PER_SEGMENT, prev.leases?.length ?? 0);
+    if (leases !== undefined && leases.length > most) {
+      throw new ValidationError(`leases: has ${leases.length} entries, cap ${most}`);
+    }
+  } else {
+    leases = prev.leases;
+  }
   return {
     namespace: prev.namespace,
     segment: prev.segment,
@@ -730,6 +825,7 @@ export function applyRegistryPatch(
     residency: 'residency' in patch ? patch.residency : prev.residency,
     summary,
     keptGens,
+    leases,
     createdAt: prev.createdAt,
     updatedAt: now,
     token,

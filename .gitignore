@@ -63,3 +63,6 @@ bench/calibration/*.partial.json
 
 # Python bytecode, should a maintenance script's import ever leave one
 __pycache__/
+
+# Written and removed by a test that builds an older registry parser
+tests/**/*.generated.ts

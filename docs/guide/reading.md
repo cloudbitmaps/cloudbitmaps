@@ -182,12 +182,14 @@ for await (const id of audience.iterate()) {
 
 - **A pin covers one segment.** `snap.intersect([other])` reads `snap` at its pin and `other` live. Pin each segment to
   hold a whole query. A pinned handle used as an operand is still read at its pin.
-- **A pin is a hold, not a lease.** Nothing stops a collection (a load's `keep`, an erasure, the retention sweep) from
-  deleting the generation underneath you. A pinned read deliberately does not heal forward, because silently serving
-  a different generation is what a pin exists to prevent. It fails with `NotFoundError` instead, for any chunk it must
-  fetch from a generation that has since been collected. Chunks it already cached still answer, and so does every chunk of
-  a small generation whose reader kept its chunks, for as long as the pin's reader stays in the reader cache; the reader's
-  reopen after an eviction then fails the same way.
+- **A pin is a hold, and a lease makes it a bounded one.** Without a lease, nothing stops a collection (a load's
+  `keep`, an erasure, the retention sweep) from deleting the generation underneath you. A pinned read deliberately does
+  not heal forward, because silently serving a different generation is what a pin exists to prevent. It fails with
+  `NotFoundError` instead, for any chunk it must fetch from a generation that has since been collected. Chunks it
+  already cached still answer, and so does every chunk of a small generation whose reader kept its chunks, for as long
+  as the pin's reader stays in the reader cache; the reader's reopen after an eviction then fails the same way.
+  [`pin({ leaseUntil })`](#hold-a-generation-for-a-job-a-lease) keeps the generation out of a load's collection until
+  a time you choose.
 - **Size `keep` for your longest pinned job:** keep more generations than the loads that can land on the segment while
   the job runs. See [Generations and `keep`](loading.md#generations-and-keep). An erasure collects the generation it rewrote whatever
   `keep` says.
@@ -214,15 +216,79 @@ const again = await store.segment('active-30d').pinAt({ generation, fingerprint 
   the fingerprint matches.
 - **A pin is identified by its `generation` and `fingerprint`.** The handle `pinAt` returns reads as a `pin()` handle does,
   but its `pinnedAt.version` can differ from the original pin's, since it names the row as it is now.
-- **It costs one row read and one tail read** (the tail read alone without a registry), and the object it opens is the
-  one its first read finds open. After that the handle reads exactly as a `pin()` handle does, including what it does
-  once the generation is swept (see above).
-- **It keeps nothing alive.** `pinAt` does not stop a collection, so how long a generation can be reopened is how long
-  `keep` retains it. With `keep` at 2 or more it stays reopenable while fewer than `keep` generation numbers have been
+- **It costs one row read and one tail read** (the tail read alone without a registry), and a leased `pinAt` makes one
+  conditional write to the row besides. The object it opens is the one its first read finds open. After that the handle
+  reads exactly as a `pin()` handle does, including what it does once the generation is swept (see above).
+- **It keeps nothing alive unless you lease it.** `pinAt` does not stop a collection, so how long a generation can be
+  reopened is how long `keep` retains it, or how long a lease holds it: `pinAt(at, { leaseUntil })` takes a
+  [lease](#hold-a-generation-for-a-job-a-lease) as `pin({ leaseUntil })` does, with the lease in the second argument
+  (`at` still refuses any key but `generation` and `fingerprint`, and the options refuse any key but `leaseUntil`). The lease
+  is written before the object is verified, and released if the verify fails. For a generation below the pointer one
+  window remains: a collector that read the row before the lease landed can delete the generation inside its own round
+  trip, and the handle then fails with `NotFoundError` like any swept pin. The handle is checked at every read site as a
+  leased `pin()` is. Without a lease, with `keep` at 2 or more it stays reopenable while fewer than `keep` generation numbers have been
   taken above it by later loads: each load that lands, and each that is superseded or crashes before publishing. A load
   a guard refuses takes no number. Collection runs with the `keep` of whichever writer loads, so set the same `keep` on every
   writer of the segment. Each retained generation is a whole copy in storage. See
   [Generations and `keep`](loading.md#generations-and-keep) for the rule and what a larger `keep` costs in requests.
+
+### Hold a generation for a job: a lease
+
+A job with a known end, such as a send that runs for 72 hours while a refresh job keeps loading the segment, can ask
+for its generation to be kept instead of sizing `keep` for it:
+
+```ts
+const snap = await store.segment('active-30d').pin({ leaseUntil: Date.now() + 72 * 3_600_000 });
+snap.lease;            // { holder, until }
+// ... read snap for the length of the job ...
+await snap.release();  // optional: lets a load's collection take the generation as soon as you are done
+```
+
+`leaseUntil` is an absolute instant in epoch **milliseconds**, after now and at most `MAX_LEASE_MS` (14 days) from it.
+The lease is recorded in the segment's registry row, so every load that collects the segment, from any process, leaves the
+leased generation in the bucket until the lease has ended. It is a hold on one named generation and on nothing else:
+`keep` and the rest of collection are unchanged.
+
+- **A read after the lease throws, and never reads empty.** Once the clock reaches `leaseUntil`, or after
+  `release()`, every read of the handle throws `LeaseExpiredError`: `has`, `count`, `stat`, `iterate`, `batches()`,
+  `costReport`, `everyNth`, and a call of another handle that takes this one as an operand or as an `exclude`, or as the target of an
+  `*Into`. An opt-out list held through a lease that has ended is an error, never an empty list that suppresses nobody. It
+  throws whether or not the object is still in the bucket, and a small generation's cached reader is not consulted.
+  `pin()` or `pinAt()` from a leased handle past its lease throws too; before it, `pin()` takes the generation current now
+  with no lease of its own.
+- **A stream checks the lease before its first pull and each time it reads a chunk.** A stream built while the lease is
+  live and first pulled after it ended throws, even when its result is empty. A read that is under way when the lease ends
+  finishes the chunk it is on and throws at the next one, per id and per batch. `has`, `count` and `stat` check once, before
+  they read, so one that starts before the lease ends may return after it.
+- **Collection resumes after the lease.** A leased generation takes none of the `keep` window, and a load that spares it
+  does not name it again. After the lease and a 60-second margin have ended, the next listing pass takes it: that is every
+  sixteenth generation of the segment, or any load that has to list, so within 16 later loads of the segment. A segment
+  that is never loaded again keeps it until something else collects it. A number retaken after a rollback and an
+  erasure can be spared by an entry that named the object before it: a different object is then kept for at most the
+  lease's own length, and the pin's own fingerprint stops it being read as the leased one.
+- **The longest lease is 14 days, and a segment holds at most 64 live leases.** The 65th is refused with
+  `LeaseLimitError` before anything is written. A lease that has ended makes room. Take one lease per job and give the job's
+  tasks the one handle: each lease is one write to the segment's row, and writers of one row take turns. The row is as
+  trusted as the registry: whoever can write it can fill its 64 places for 14 days, as whoever can write it can delete
+  the segment, and a job that crashes without releasing keeps its place until its lease ends.
+- **The margin is 60 seconds, and covers clocks that differ by that much either way.** The handle ends the lease at
+  `leaseUntil` by its own store's clock, and a collector holds it for `LEASE_SKEW_MS` (60 seconds) longer by its own. A
+  reader whose clock is behind a collector's by more than that, or a collector whose clock is ahead of the reader's by
+  more, can find the generation collected inside the lease: a `NotFoundError` on a chunk it has not cached, never a wrong
+  answer and never empty.
+- **A lease is not an erasure shield.** `eraseSubject`, `eraseIdFromSegment`, `destroySegment`, `dropSegment` and a
+  retention expiry delete a leased generation and clear the lease. A lease keeps superseded generations in the bucket,
+  including ids a newer load removed, until it ends: [Erasing a subject](erasure.md) says what that means for a
+  deletion request.
+- **What it costs.** A leased pin makes the row read, one conditional write to the row and the tail read: one PUT-class
+  request more than a pin without a lease. The write moves the row's token, which a load, an erasure rewrite, a
+  shred, a drop, a rollback and a retention write are fenced on. None of them is refused by it: a row that differs from the
+  one the writer read only in its leases does not refuse the writer, which goes on against the row it finds, after a
+  jittered wait and without redoing its work ([how a load stays correct](loading.md#how-it-stays-correct)). A lease is one
+  write per job, not per read.
+- **It needs a backend with a registry**: `UnsupportedError` on a bare `IStorageDriver`, and `NotFoundError` on a segment
+  with no current generation. A failed pin releases the lease it took. A store built with no clock cannot judge a lease,
+  and its loads read none: `CloudRoaring` always has one, and a core `loadSegment` is given one in `deps.clock`.
 
 ### How a pin stays correct
 
@@ -403,6 +469,9 @@ ends.push(4_294_967_295); // the last, partial window yields nothing: close it y
   the read can take: the cut first chunk, if any, plus one chunk per boundary the counts allow, capped by the chunks in
   range. That can exceed the chunks actually read. A pinned read after the generation was collected throws
   `NotFoundError`, as every pinned read does.
+- **On a leased handle it throws past the lease.** `everyNth` throws `LeaseExpiredError` once the lease has ended, before
+  its first pull (so a stream built live and pulled late throws even when no rank falls in its range) and at each chunk
+  it reads, as `iterate` does; see [leases](#hold-a-generation-for-a-job-a-lease).
 - **Pinned handles only.** The ranks come from the index and the ids from the chunks, and the two must be one generation.
   A live handle can re-resolve between them and name the wrong id, so it throws `UnsupportedError` when first read. Pin it.
 - **The ranks are only as good as the index, as with [`count()`](#what-count-trusts).** A chunk that is read must decode to

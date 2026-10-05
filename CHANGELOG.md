@@ -29,12 +29,36 @@ so, and so do the module headers in the code.
   3. There is no downgrade. After the first 0.17 write, 0.16 cannot read the registry; the only way back is a
      registry restore to a point before that write (the disaster-recovery guide), which loses every write since.
 
-  Schema 3 adds the record's optional `keptGens`, below. A row stamped 2 may hold only what schema 2 could: a
-  `keptGens` on one is an `IntegrityError`. A registry of your own must store and return the field, and drop it on a
+  Schema 3 adds the record's optional `keptGens` and `leases`, below. A row stamped 2 may hold only what schema 2 could: a
+  `keptGens` or a `leases` on one is an `IntegrityError`. A registry of your own must store and return the field, and drop it on a
   patch that moves `currentGen` without naming it; the conformance suite holds a driver to both.
 
 ### Added
 
+- **`pin({ leaseUntil })` and `pinAt(at, { leaseUntil })`: a bounded lease on a pin.** A leased pin keeps its generation out of a load's collection until
+  `leaseUntil`, an epoch-millisecond instant at most 14 days out (`MAX_LEASE_MS`), whatever `keep` says and whichever
+  process loads the segment: the lease is a `leases` field of the segment's registry row (schema 3, beside `keptGens`),
+  which every collection reads from the row it already holds. `snap.lease` is `{ holder, until }`, and `snap.release()` ends
+  it early and is idempotent. A read of the handle after the lease, or after a release, throws the new `LeaseExpiredError`
+  at every read site, never empty: `has`, `count`, `stat`, `iterate`, `batches()`, `everyNth`, `costReport`, and a leased handle used
+  as an operand or an `exclude` of a combine or as the target of an `*Into`. A stream checks the lease each time it reads
+  a chunk. A segment holds at most 64 live leases (`MAX_LEASES_PER_SEGMENT`); the next throws `LeaseLimitError` with
+  nothing written. A collector holds a lease for `LEASE_SKEW_MS` (60 seconds) after it ends, which covers clocks that differ
+  by that much in either direction. A leased generation takes no `keep` slot, and the next listing pass after the lease ends
+  takes it: within 16 later loads of that segment. A leased pin costs one conditional write to the row more than a pin,
+  taken before the generation is opened. That write moves the row's token, and a load's publish, an erasure rewrite, a
+  rollback, a retention write and a shred or drop are fenced on it, so each goes on past a row that differs from the one it
+  read only in its leases, after a jittered wait and without redoing its work, up to 136 such changes (a take and a release by each of
+  the 64 holders, and a few more); a change of anything else refuses as ever. A load's publish drops the leases that have
+  ended from the row in its own write, and a load with no clock reads none. **A lease keeps superseded generations,
+  including ids a newer load removed, until it ends, and erasure ignores it:** `eraseSubject`, `eraseIdFromSegment`,
+  `destroySegment`, `dropSegment` and retention expiry delete a leased generation, a rewrite, a shred and a drop clear the
+  row's leases, and `PRIVACY.md` and the erasure guide say so. The registry
+  `RegistryRecord.leases` and `RegistryPatch.leases` are new, and a registry of your own must store and return the field and
+  keep it when a patch moves `currentGen`; the conformance suite holds a driver to both. The holder id is drawn from the
+  store's `Rng`. New exports: `LeaseExpiredError`, `LeaseLimitError`, `isLeaseExpiredError`, `isLeaseLimitError`,
+  `LEASE_SKEW_MS`, `MAX_LEASE_MS`, `MAX_LEASES_PER_SEGMENT`, `PinOptions`, `Lease`, `LeaseEntry`, and from core `takeLease`,
+  `releaseLease`, `PinLease`, `LeaseDeps`, `LeaseTake` and `TakenLease`.
 - **`store.reapRegistryTombstones({ namespace?, dryRun?, confirmNoLegacyWriters?, limit? })`, an admin call that removes the `deleted: true` rows with no incarnation id from an object-store registry.** A release before 0.12.0 kept a deleted row as an envelope whose token is a bare counter, and a 0.12.0 or later release does the same when it deletes a row born before 0.12.0; no call removes one, and every full listing still reads each (a GET apiece). The call removes a row only if it is `deleted: true` with no incarnation id, whatever its `status`: never a live row, a `destroyed` row that is not `deleted`, or a deleted row that has an incarnation id. A real run needs `confirmNoLegacyWriters: true`, your statement that no process on a release before 0.12.0 writes the registry (without it, a `ValidationError` and no request); `dryRun` counts what a real run would remove and needs no confirmation. Each delete is conditioned on the version read, so a `create` that lands over the envelope first wins and the row is counted `skipped.raced` (a row already gone counts there too); a `create` that had already read the envelope and meets the removal throws `WriteConflictError`, which the library does not retry. A registry whose `conditionalDelete` is off (GCS by default, S3 on a custom endpoint) throws `CapabilityError` before any request, and the in-memory and local-filesystem registries `UnsupportedError`; on an endpoint that ignores `If-Match` (MinIO, fake-gcs-server), a `conditionalDelete: true` you set makes it an unfenced delete, so run it with every writer stopped. It costs `ceil(R / 1000)` LIST, R GET and E DELETE requests over R rows read and E removed. `limit` (default 1,000) bounds the removals, not the reads: a run is not resumable, each lists and reads from the start, a dry run with a `limit` shows the same first rows, and `limited` is `true` whenever the limit was spent with keys left. An object it cannot read stops the run with an error naming its key; a `namespace` scope gets past one. It returns `{ dryRun, examined, reaped, wouldReap, limited, skipped: { live, destroyed, incarnated, raced } }`. **It does not clean a bucket completely**: a tombstone `dropSegment` leaves is a `destroyed` row with no stamp, and stays, as does every live row written before 0.12.0 and a tombstone a 0.12.0 or later release wrote while `conditionalDelete` was off (it has an incarnation id, and the call refuses to run on that registry). Also `reapRegistryTombstones(registry, options)` as a free function, the optional `IRegistryDriver.reapLegacyTombstones` member that `ObjectStoreRegistry` implements, the optional `ObjectRegistryStore.resolveCapabilities`, and the types `ReapRegistryTombstonesOptions`, `ReapRegistryTombstonesResult`, `ReapLegacyTombstonesOptions` and `ReapLegacyTombstonesResult`.
 
 - **An advisory event when an S3 client's socket pool is smaller than a combine needs.** A store with a `metrics` sink
@@ -58,7 +82,8 @@ so, and so do the module headers in the code.
   in its `pinnedAt`, as a pinned handle like the one `pin()` returns, for a second task of one job. Identify a pin by its `generation` and `fingerprint`: the handle's `pinnedAt.version` can differ from the earlier pin's. The fingerprint is required, since a
   generation number is taken again after a purge and re-create, so a bare number, or a key `pinAt` does not know, throws `ValidationError`. A generation that is
   collected, purged, on a crypto-shredded segment, above the row's pointer, or another object than the fingerprint names throws `NotFoundError`, and the call never reads empty. It costs
-  one registry read and one tail read, and it holds nothing: how long a generation can be reopened is how long `keep` retains it.
+  one registry read and one tail read, and it holds nothing unless leased: how long a generation can be reopened is how long `keep` retains it, or how long
+  `pinAt(at, { leaseUntil })` holds it.
   Exported as the `PinAt` type, with a method on `CrbmStorageChunkSource` that does the open.
 
 - **`deserializePortable(bytes)`, and the loading guide's recipe for the parts of one segment built in separate processes.**

@@ -36,6 +36,10 @@ import {
   NOOP_METRICS,
   RetryingStorageChunkSource,
   SegmentEngine,
+  LEASE_SKEW_MS,
+  LeaseExpiredError,
+  MAX_LEASE_MS,
+  NotFoundError,
   UnsupportedError,
   ValidationError,
   WriteConflictError,
@@ -59,10 +63,13 @@ import {
   setSegmentRetention,
   clearSegmentRetention,
   getSegmentRetention,
+  releaseLease,
   safeMetrics,
   splitId,
+  takeLease,
 } from '@cloudbitmaps/core';
 import { validateSegmentRef } from '@cloudbitmaps/core/driver-kit';
+import type { PinLease } from '@cloudbitmaps/core';
 import type {
   Budget,
   BudgetOption,
@@ -117,6 +124,7 @@ import { refuseReservedNamespace } from './reserved-namespace';
 import { bitmapAsLoadInput, deserializePortable, roaringCodec } from './roaring-codec';
 import { SystemClock } from './system-clock';
 import { OPTION_KEYS, type OptionGroup } from './option-keys';
+import { guardChunks, guardIdIterable, guardIds } from './lease-guards';
 
 /** Default randomness for backoff jitter — lives outside `core/`, so `Math.random()` is allowed here. */
 class SystemRng implements Rng {
@@ -895,7 +903,7 @@ export class CloudRoaring {
       clock: this.clock,
       metrics: this.metrics,
       materialize: (dest, ids, op, options) => this.materialize(dest, ids, op, options),
-      pinned: (r, e, at) => this.pinSegment(r, e, at),
+      pinned: (r, e, l, at) => this.pinSegment(r, e, l, at),
       combineEngine: (handles) => this.engineForCombine(handles),
       expiresAt,
     });
@@ -1529,7 +1537,11 @@ export class CloudRoaring {
     validateSegmentRef(ref);
     const deps = this.lifecycleDeps('dropSegment');
     try {
-      return await dropSegment(ref, { registry: deps.registry, storage: deps.storage }, options);
+      return await dropSegment(
+        ref,
+        { registry: deps.registry, storage: deps.storage, clock: deps.clock, rng: deps.rng },
+        options,
+      );
     } finally {
       if (options.dryRun !== true) this.engine.invalidate(ref);
     }
@@ -1563,7 +1575,11 @@ export class CloudRoaring {
    */
   async setRetention(ref: SegmentRef, policy: RetentionPolicy): Promise<SetRetentionResult> {
     validateSegmentRef(ref);
-    return setSegmentRetention(ref, { registry: this.requireRegistry('setRetention') }, policy);
+    return setSegmentRetention(
+      ref,
+      { registry: this.requireRegistry('setRetention'), clock: this.clock, rng: this.rng },
+      policy,
+    );
   }
 
   /**
@@ -1584,7 +1600,11 @@ export class CloudRoaring {
    */
   async clearRetention(ref: SegmentRef): Promise<boolean> {
     validateSegmentRef(ref);
-    return clearSegmentRetention(ref, { registry: this.requireRegistry('clearRetention') });
+    return clearSegmentRetention(ref, {
+      registry: this.requireRegistry('clearRetention'),
+      clock: this.clock,
+      rng: this.rng,
+    });
   }
 
   /**
@@ -1650,7 +1670,7 @@ export class CloudRoaring {
   ): Promise<RetireExpiredResult> {
     const deps = this.lifecycleDeps('retireExpired');
     const result = await retireExpired(
-      { registry: deps.registry, storage: deps.storage },
+      { registry: deps.registry, storage: deps.storage, clock: this.clock, rng: this.rng },
       { ...options, now: options.now ?? this.clock.now() },
     );
     // A retirement tombstones and reclaims segments this store may already have resolved. `dryRun` changes
@@ -1764,7 +1784,12 @@ export class CloudRoaring {
    * pinned view reports the version captured at pin time, marked as a pin's, so its decoded chunks are never
    * those of a live read that fetched across a publish (see {@link PinnedStorageChunkSource.currentVersion}).
    */
-  private async pinSegment(ref: SegmentRef, expiresAt?: number, named?: PinAt): Promise<Segment> {
+  private async pinSegment(
+    ref: SegmentRef,
+    expiresAt?: number,
+    leaseUntil?: number,
+    named?: PinAt,
+  ): Promise<Segment> {
     const crbm = this.crbmSource;
     if (crbm === undefined) {
       throw new UnsupportedError(
@@ -1772,10 +1797,57 @@ export class CloudRoaring {
           'that cannot resolve a generation has nothing to pin)',
       );
     }
-    // Under the store's retries, as its reads are: a transient fault resolving the pin must not fail pin().
-    const at = await this.withRetries(() =>
-      named === undefined ? crbm.pinGeneration(ref) : crbm.pinGenerationAt(ref, named),
-    );
+    // A lease is taken between the pin's row read and its open (see `pinGeneration`). The holder is drawn once, here,
+    // outside the retries, so a write that landed unseen is found by its holder when the pin is run again.
+    let hold: LeaseHold | undefined;
+    let take: PinLease | undefined;
+    if (leaseUntil !== undefined) {
+      const registry = this.requireRegistry('pin({ leaseUntil })');
+      if (registry.capabilities().canWrite === false) {
+        throw new UnsupportedError(
+          "pin({ leaseUntil }) needs a registry that can write a row, and this store's cannot in this runtime",
+        );
+      }
+      const holder = this.mintHolder();
+      const deps = { registry, clock: this.clock, rng: this.rng };
+      // A pin takes the generation current when its row is read, which must still be current when the write lands; a
+      // `pinAt` takes the one it names, which only has to be published.
+      const generationOf = (row: { currentGen: number | null }): number =>
+        named?.generation ?? (row.currentGen as number);
+      hold = {
+        holder,
+        until: leaseUntil,
+        released: false,
+        done: false,
+        release: () => releaseLease(ref, deps, holder),
+      };
+      take = {
+        take: (row) =>
+          takeLease(ref, deps, {
+            holder,
+            generation: generationOf(row),
+            until: leaseUntil,
+            row,
+            current: named === undefined,
+          }),
+      };
+    }
+    let at: Awaited<ReturnType<CrbmStorageChunkSource['pinGeneration']>>;
+    try {
+      // Under the store's retries, as its reads are: a transient fault resolving the pin must not fail pin().
+      at = await this.withRetries(() =>
+        named === undefined
+          ? crbm.pinGeneration(ref, take)
+          : crbm.pinGenerationAt(ref, named, take),
+      );
+      if (hold !== undefined && at === null) {
+        throw new NotFoundError(`segment "${ref.segment}" has no generation to lease`);
+      }
+    } catch (err) {
+      // A lease that landed and was not handed to a caller is released, so it holds nothing for its whole length.
+      if (hold !== undefined) await hold.release().catch(() => undefined);
+      throw err;
+    }
     const pinnedAt: PinnedAt = {
       generation: at?.generation ?? null,
       version: at?.version ?? null,
@@ -1788,11 +1860,22 @@ export class CloudRoaring {
       clock: this.clock,
       metrics: this.metrics,
       materialize: (dest, ids, op, options) => this.materialize(dest, ids, op, options),
-      pinned: (r, e, at) => this.pinSegment(r, e, at),
+      pinned: (r, e, l, at) => this.pinSegment(r, e, l, at),
       combineEngine: (handles) => this.engineForCombine(handles),
       expiresAt,
       pinnedAt,
+      lease: hold,
     });
+  }
+
+  /** 16 hex digits from the store's `Rng`, which names the holder of one lease: unique, not secret. */
+  private mintHolder(): string {
+    let id = '';
+    for (let i = 0; i < 4; i++)
+      id += Math.floor(this.rng.next() * 0x10000)
+        .toString(16)
+        .padStart(4, '0');
+    return id;
   }
 
   /**
@@ -2160,6 +2243,8 @@ interface CombineOutput<T> {
   readonly none: T;
   /** A combine that fails when first read, as the engine's own refusals do. */
   readonly failing: (err: unknown) => T;
+  /** The same combine, checking a lease each time it reads a chunk. */
+  readonly guard: (result: T, check: () => void) => T;
   readonly intersect: (engine: SegmentEngine, refs: SegmentRef[], opts: EngineCombine) => T;
   readonly union: (engine: SegmentEngine, refs: SegmentRef[], opts: EngineCombine) => T;
   readonly andNot: (
@@ -2174,6 +2259,7 @@ interface CombineOutput<T> {
 const AS_IDS: CombineOutput<IdStream> = {
   none: EMPTY_IDS,
   failing,
+  guard: guardIds,
   intersect: (engine, refs, opts) =>
     withBatches(engine.intersect(refs, opts), () => engine.intersectBatches(refs, opts)),
   union: (engine, refs, opts) =>
@@ -2199,6 +2285,7 @@ class CombineChunks {
 /** Combines read as chunks: what the `*Into` verbs write into the new generation, with no id built on the way. */
 const AS_CHUNKS: CombineOutput<ChunkStream> = {
   none: NO_CHUNKS,
+  guard: guardChunks,
   failing: (err) => ({
     [Symbol.asyncIterator]: () => ({ next: () => Promise.reject(err) }),
   }),
@@ -2228,7 +2315,12 @@ const KEEP_EVERY_GENERATION = Number.MAX_SAFE_INTEGER;
 
 /** How a `Segment` hands a result stream back to its store to become a new generation of `dest`. */
 /** Build a pinned twin of a handle — injected into `Segment` so it stays free of store wiring. */
-type Pin = (ref: SegmentRef, expiresAt?: number, at?: PinAt) => Promise<Segment>;
+type Pin = (
+  ref: SegmentRef,
+  expiresAt?: number,
+  leaseUntil?: number,
+  at?: PinAt,
+) => Promise<Segment>;
 
 /**
  * The engine a combine should run on, given every handle involved — `undefined` when none is pinned and the
@@ -2255,6 +2347,38 @@ interface SegmentParts {
   combineEngine: CombineEngine;
   expiresAt?: number;
   pinnedAt?: PinnedAt;
+  /** The lease this handle holds, when it came from `pin({ leaseUntil })`. */
+  lease?: LeaseHold;
+}
+
+/**
+ * The state of the lease a handle holds. `released` is set first by `release()`, so a read racing it already fails; `done`
+ * once the registry write has landed, so a second `release()` makes no request.
+ */
+interface LeaseHold {
+  readonly holder: string;
+  readonly until: number;
+  released: boolean;
+  done: boolean;
+  readonly release: () => Promise<void>;
+}
+
+/** What {@link Segment.pin} and {@link Segment.pinAt} take besides the generation. */
+export interface PinOptions {
+  /**
+   * Hold the pinned generation until this instant: epoch-**milliseconds**, after now and at most
+   * {@link MAX_LEASE_MS} (14 days) from it. A load's collection leaves a leased generation in the bucket until the lease
+   * ends, and a read of the handle after it throws {@link LeaseExpiredError}, never empty.
+   */
+  readonly leaseUntil?: number;
+}
+
+/** The lease a pinned handle holds, as {@link Segment.lease} reports it. */
+export interface Lease {
+  /** 16 hex digits naming this lease in the segment's registry row. */
+  readonly holder: string;
+  /** Epoch-ms the lease runs to on this store's clock. */
+  readonly until: number;
 }
 
 /**
@@ -2308,6 +2432,13 @@ export class Segment {
    * pinned handle passed as an **operand** is still read at its pin rather than live.
    */
   readonly pinnedAt?: PinnedAt;
+  /**
+   * The lease this handle holds, when it came from `pin({ leaseUntil })`; `undefined` otherwise. It reports what was
+   * taken and does not change when the lease ends: a read after `lease.until` (or after {@link Segment.release}) throws
+   * {@link LeaseExpiredError}.
+   */
+  readonly lease?: Lease;
+  private readonly leaseHold?: LeaseHold;
 
   static {
     makeSegment = (parts) => {
@@ -2339,6 +2470,10 @@ export class Segment {
     this.combineEngine = parts.combineEngine;
     this.expiresAt = parts.expiresAt;
     this.pinnedAt = parts.pinnedAt;
+    this.leaseHold = parts.lease;
+    if (parts.lease !== undefined) {
+      this.lease = Object.freeze({ holder: parts.lease.holder, until: parts.lease.until });
+    }
     this.metricsOn = parts.metrics !== NOOP_METRICS;
   }
 
@@ -2368,11 +2503,20 @@ export class Segment {
    * 0, so a pin of the old segment never reads the new one: what it has already read still answers, as the
    * instant it pinned, and anything it would have to fetch fails with `NotFoundError`, as a swept pin's does.
    *
-   * **It is a hold, not a lease.** Nothing here stops a collection deleting the generation underneath
-   * you: a pinned read deliberately does **not** heal forward, because silently serving a different generation
-   * is the one thing a pin exists to prevent, so it fails instead. Size `keep` to cover your longest pinned
-   * job — see [Generations and `keep`](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/loading.md#generations-and-keep) — or take the pin on a segment
-   * you are not collecting.
+   * **It is a hold, and `pin({ leaseUntil })` makes it a bounded one.** Without a lease nothing stops a collection
+   * deleting the generation underneath you: a pinned read deliberately does **not** heal forward, because silently
+   * serving a different generation is the one thing a pin exists to prevent, so it fails instead. Size `keep` to cover
+   * your longest pinned job — see [Generations and `keep`](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/loading.md#generations-and-keep) — take the pin on a segment
+   * you are not collecting, or lease it.
+   *
+   * **A lease** (`leaseUntil`: epoch **milliseconds**, after now and at most 14 days out) keeps the generation out of
+   * a load's collection until then, from any process, and the pin is taken with it: the lease is written to the segment's
+   * row before the object is opened. A read of the handle after the lease, or after {@link Segment.release}, throws
+   * {@link LeaseExpiredError} at every read site, including when the handle is an operand or an `exclude` of a combine
+   * or the target of an `*Into`, and never reads empty. A stream checks the lease each time it reads a chunk. A segment
+   * holds at most 64 live leases ({@link LeaseLimitError}). A collector holds a lease 60 seconds past its end, which covers
+   * clocks that differ by that much. Erasure, shred, drop and retention expiry ignore a lease. See
+   * [Hold a generation for a job](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/reading.md#hold-a-generation-for-a-job-a-lease).
    *
    * A segment with no current generation pins nothing and reads empty, exactly as it would unpinned. A pinned
    * segment whose row is later dropped or destroyed fails once it must open its object again, rather than go empty
@@ -2412,8 +2556,116 @@ export class Segment {
    * Needs a store built on the `.crbm` storage source (the default when you pass a backend or a raw driver). Throws
    * {@link UnsupportedError} on a store wired with a pre-built source that cannot pin.
    */
-  async pin(): Promise<Segment> {
-    return this.pinned(this.ref, this.expiresAt);
+  async pin(options?: PinOptions): Promise<Segment> {
+    // A leased handle pins nothing once its lease is over. The pin it makes is an ordinary one: it takes the generation
+    // that is current now, which is not the leased one, and holds no lease of its own unless asked.
+    this.assertLeases([this]);
+    const leaseUntil = this.leaseUntilOf('pin', options);
+    return this.pinned(this.ref, this.expiresAt, leaseUntil);
+  }
+
+  /**
+   * Hold what this pin names until `leaseUntil`, or `undefined` for a pin with no lease. Refuses an option it does not
+   * know, a value that is not epoch-milliseconds in the future, one past the longest lease, and one past the handle's own
+   * `expiresAt`, before any request is made.
+   */
+  private leaseUntilOf(op: string, options: PinOptions | null | undefined): number | undefined {
+    if (options === undefined || options === null) return undefined;
+    if (typeof options !== 'object' || Array.isArray(options)) {
+      throw new ValidationError(`${op}: options must be an object such as { leaseUntil }`);
+    }
+    // Own enumerable string keys only, as `pinAt` reads its argument.
+    const unknown = Object.keys(options).filter((k) => k !== 'leaseUntil');
+    if (unknown.length > 0) {
+      throw new ValidationError(
+        `${op}: unknown option${unknown.length > 1 ? 's' : ''} ${unknown.map((k) => `"${k}"`).join(', ')}; ` +
+          'this version takes { leaseUntil } only',
+      );
+    }
+    const until = options.leaseUntil;
+    if (until === undefined) return undefined;
+    const now = this.clock.now();
+    if (typeof until !== 'number' || !Number.isSafeInteger(until)) {
+      throw new ValidationError(
+        `${op}: leaseUntil must be an integer epoch-MILLISECONDS; got ${String(until)}`,
+      );
+    }
+    if (until <= now) {
+      throw new ValidationError(
+        `${op}: leaseUntil (${until}) is not after now (${now}); it is epoch MILLISECONDS, so a value in seconds ` +
+          'reads as long past. Use `Date.now() + hours * 3_600_000`',
+      );
+    }
+    if (until > now + MAX_LEASE_MS) {
+      throw new ValidationError(
+        `${op}: leaseUntil is more than 14 days away; the longest lease is ${MAX_LEASE_MS} ms. Take a new lease when a job outlasts it`,
+      );
+    }
+    if (this.expiresAt !== undefined && until > this.expiresAt) {
+      throw new ValidationError(
+        `${op}: leaseUntil outlasts this handle's own expiresAt, which would have it read empty while it still holds the generation`,
+      );
+    }
+    return until;
+  }
+
+  /**
+   * End this handle's lease now, so a load's collection may take its generation. Idempotent: a handle with no lease, or
+   * one already released, does nothing and makes no request. Every read of the handle after it throws
+   * {@link LeaseExpiredError} (reason `'released'`), including one already under way at its next chunk. A lease that has
+   * ended by its own time needs no release: this then makes no request either, and the registry row's entry is pruned
+   * by a later write. Otherwise it is one registry read and one write; a failure of either is thrown as the registry's own
+   * typed error, and the entry then holds until its time ends, `release()` being safe to call again.
+   */
+  async release(): Promise<void> {
+    const hold = this.leaseHold;
+    if (hold === undefined) return;
+    hold.released = true;
+    if (hold.done) return;
+    if (this.clock.now() >= hold.until + LEASE_SKEW_MS) {
+      hold.done = true;
+      return;
+    }
+    await hold.release();
+    hold.done = true;
+  }
+
+  /**
+   * The error a read of this handle must throw, or `undefined` when it holds no lease or the lease is live. One property
+   * read on a handle with no lease. It is not {@link Segment.expired}: that rule reads empty, and a lease must never.
+   */
+  private leaseError(): LeaseExpiredError | undefined {
+    const hold = this.leaseHold;
+    if (hold === undefined) return undefined;
+    const name = this.ref.namespace
+      ? `${this.ref.namespace}/${this.ref.segment}`
+      : this.ref.segment;
+    if (hold.released) {
+      return new LeaseExpiredError(
+        `the lease on segment "${name}" was released`,
+        hold.until,
+        'released',
+      );
+    }
+    if (this.clock.now() >= hold.until) {
+      return new LeaseExpiredError(
+        `the lease on segment "${name}" ended; a read of a handle past its lease throws, never reads empty`,
+        hold.until,
+        'expired',
+      );
+    }
+    return undefined;
+  }
+
+  /**
+   * Throw the first lease error among `handles`: this handle and every operand and exclude of a call. It runs before
+   * any `expiresAt` rule and before the engine, so no operand, exclude or cached reader can answer past a lease.
+   */
+  private assertLeases(handles: readonly Segment[]): void {
+    for (const h of handles) {
+      const err = h.leaseError();
+      if (err !== undefined) throw err;
+    }
   }
 
   /**
@@ -2427,12 +2679,20 @@ export class Segment {
    * Throws {@link NotFoundError} when the generation is gone (collected, purged, or on a crypto-shredded segment),
    * is above the row's pointer, or is another object than the fingerprint names, and never reads empty. A rollback
    * deletes nothing, so once a later load moves the pointer past a generation it rolled back from, that one can be
-   * reopened while its object is stored. Nothing keeps a generation alive: a later load's collection can delete it,
-   * which is sized by `keep` on every writer. With a registry it costs one row read and one tail read; the handle
+   * reopened while its object is stored. Nothing keeps a generation alive unless you lease it: a later load's
+   * collection can delete it, which is sized by `keep` on every writer, or held by `options.leaseUntil` (see
+   * {@link PinOptions} and {@link Segment.pin}). A leased `pinAt` writes the lease before it verifies the object, and
+   * releases it if the verify fails; for a generation below the pointer, a collector that read the row before the lease
+   * landed can still delete the generation inside its own round trip, and the handle then fails with `NotFoundError`
+   * like any swept pin. A leased handle is checked at every read site as a leased `pin()` is. With a registry it costs one row read and one tail read,
+   * and a leased `pinAt` one conditional write to the row besides; the handle
    * then reads as one from `pin()` does, including its failure on a chunk it has not cached once the generation is
-   * swept. Works for an encrypted segment. The argument is an object so that fields can join it later.
+   * swept. Works for an encrypted segment. The first argument is an object so that fields can join it later; the lease
+   * is in `options`, the second.
    */
-  async pinAt(at: PinAt): Promise<Segment> {
+  async pinAt(at: PinAt, options?: PinOptions): Promise<Segment> {
+    // A leased handle past its lease pins nothing, as for `pin()`.
+    this.assertLeases([this]);
     const { generation, fingerprint } = (at ?? {}) as Partial<PinAt>;
     // Own enumerable string keys only: a symbol, non-enumerable or inherited key is not seen.
     const unknown =
@@ -2457,7 +2717,9 @@ export class Segment {
           'without the fingerprint of its object does not identify it',
       );
     }
-    return this.pinned(this.ref, this.expiresAt, { generation, fingerprint });
+    // `at` takes `{ generation, fingerprint }` and nothing else; the lease goes in the options, the second argument.
+    const leaseUntil = this.leaseUntilOf('pinAt', options);
+    return this.pinned(this.ref, this.expiresAt, leaseUntil, { generation, fingerprint });
   }
 
   /**
@@ -2504,6 +2766,8 @@ export class Segment {
    * awaiting.
    */
   private refuseIfExpired(op: string, dest: Segment, operands: readonly Segment[]): void {
+    // A lease first, and as its own error: a past lease is never "expired" in the sense this method refuses.
+    this.assertLeases([this, dest, ...operands]);
     const stale: string[] = [];
     for (const seg of [this, dest, ...operands]) {
       if (seg.expired())
@@ -2516,6 +2780,13 @@ export class Segment {
           `Open the handles without \`expiresAt\` if you meant to materialise, or drop the deadline.`,
       );
     }
+  }
+
+  /** `result` as is, or, when a handle of the call holds a lease, checking that lease each time it reads a chunk. */
+  private guarded<T>(out: CombineOutput<T>, handles: readonly Segment[], result: T): T {
+    return handles.some((h) => h.leaseHold !== undefined)
+      ? out.guard(result, () => this.assertLeases(handles))
+      : result;
   }
 
   /**
@@ -2534,6 +2805,8 @@ export class Segment {
 
   /** Membership: one chunk — the cache, else one ranged GET. Throws {@link ValidationError} on a bad id. */
   has(id: number): Promise<boolean> {
+    const lease = this.leaseError();
+    if (lease !== undefined) return Promise.reject(lease);
     if (this.expired()) return Promise.resolve(false);
     return this.timed('has', () => this.engine.has(this.ref, id));
   }
@@ -2556,6 +2829,8 @@ export class Segment {
    * structure is checked.
    */
   count(): Promise<number> {
+    const lease = this.leaseError();
+    if (lease !== undefined) return Promise.reject(lease);
     if (this.expired()) return Promise.resolve(0);
     return this.timed('count', () => this.engine.count(this.ref));
   }
@@ -2574,6 +2849,7 @@ export class Segment {
    * ```
    */
   async stat(): Promise<SegmentStat> {
+    this.assertLeases([this]);
     if (this.expired()) return { generation: null, cardinality: 0 };
     return this.engine.stat(this.ref);
   }
@@ -2593,13 +2869,20 @@ export class Segment {
    * without checking its options, as every read of one does.
    */
   iterate(options?: IdRange): IdStream {
+    const lease = this.leaseError();
+    if (lease !== undefined) return failing(lease);
     if (this.expired()) return EMPTY_IDS;
     // Neither bound set is no range at all, which the engine reads on its full-read path.
     const range = options == null ? undefined : rangeOf(options);
     const none = range === undefined || (range.after === undefined && range.through === undefined);
     const { engine, ref } = this;
     const bounds = none ? undefined : range;
-    return withBatches(engine.iterate(ref, bounds), () => engine.iterateBatches(ref, bounds));
+    const stream = withBatches(engine.iterate(ref, bounds), () =>
+      engine.iterateBatches(ref, bounds),
+    );
+    return this.leaseHold === undefined
+      ? stream
+      : guardIds(stream, () => this.assertLeases([this]));
   }
 
   /**
@@ -2633,6 +2916,9 @@ export class Segment {
    * ```
    */
   everyNth(n: number, options?: IdRange): AsyncIterable<number> {
+    // The lease first, before any `expiresAt` rule: a leased handle past its lease throws, never reads empty.
+    const lease = this.leaseError();
+    if (lease !== undefined) return failing(lease);
     if (this.expired()) return EMPTY_IDS;
     if (this.pinnedAt === undefined) {
       return failing(
@@ -2642,7 +2928,16 @@ export class Segment {
         ),
       );
     }
-    return this.engine.everyNth(this.ref, n, options == null ? undefined : rangeOf(options));
+    const stream = this.engine.everyNth(
+      this.ref,
+      n,
+      options == null ? undefined : rangeOf(options),
+    );
+    // A stream with no `.batches()`: guarded before its first pull, so a stream built live and pulled after the lease
+    // ended throws even when no rank falls in its range, and at each chunk after that.
+    return this.leaseHold === undefined
+      ? stream
+      : guardIdIterable(stream, () => this.assertLeases([this]));
   }
 
   /**
@@ -2715,7 +3010,16 @@ export class Segment {
   }
 
   private intersectAs<T>(out: CombineOutput<T>, others: Segment[], options?: CombineOptions): T {
+    // Order of the checks: the lease check runs first, then the expired-exclusion check. A handle whose lease ended throws
+    // `LeaseExpiredError`, whatever its `expiresAt`; an unleased handle past its `expiresAt` is the expired-exclusion
+    // check's to answer. Both run before any operand shortcut, so an operand that has expired cannot hide either.
     const exclude = this.excludesOf(options);
+    const handles = [this, ...others, ...exclude];
+    try {
+      this.assertLeases(handles);
+    } catch (err) {
+      return out.failing(err);
+    }
     const refused = this.expiredExcludes('intersect', exclude);
     if (refused) return out.failing(refused);
     // An expired operand is empty, and anything ANDed with the empty set is empty. Guarding here rather than
@@ -2730,7 +3034,7 @@ export class Segment {
     }
     const refs = [this.ref, ...others.map((o) => o.ref)];
     const opts = this.refsIn(options, exclude);
-    return out.intersect(engine, refs, opts);
+    return this.guarded(out, handles, out.intersect(engine, refs, opts));
   }
 
   /**
@@ -2787,7 +3091,16 @@ export class Segment {
   }
 
   private unionAs<T>(out: CombineOutput<T>, others: Segment[], options?: CombineOptions): T {
+    // Order of the checks: the lease check runs first, then the expired-exclusion check. A handle whose lease ended throws
+    // `LeaseExpiredError`, whatever its `expiresAt`; an unleased handle past its `expiresAt` is the expired-exclusion
+    // check's to answer. Both run before any operand shortcut, so an operand that has expired cannot hide either.
     const exclude = this.excludesOf(options);
+    const handles = [this, ...others, ...exclude];
+    try {
+      this.assertLeases(handles);
+    } catch (err) {
+      return out.failing(err);
+    }
     const refused = this.expiredExcludes('union', exclude);
     if (refused) return out.failing(refused);
     // OR: drop the expired operands and union what is left. All expired ⇒ empty.
@@ -2817,7 +3130,7 @@ export class Segment {
     }
     const refs = [this.ref, ...others.map((o) => o.ref)];
     const opts = this.refsIn(options, exclude);
-    return out.union(engine, refs, opts);
+    return this.guarded(out, handles, out.union(engine, refs, opts));
   }
 
   /** Materialize `this ∪ others…` (minus `exclude`) as a **new generation of `dest`** — see {@link intersectInto}. */
@@ -2858,6 +3171,15 @@ export class Segment {
   }
 
   private andNotAs<T>(out: CombineOutput<T>, excludes: Segment[], options?: BaseCombineOptions): T {
+    // Order of the checks: the lease check runs first, then the expired-exclusion check. A handle whose lease ended throws
+    // `LeaseExpiredError`, whatever its `expiresAt`; an unleased handle past its `expiresAt` is the expired-exclusion
+    // check's to answer. Both run before any operand shortcut, so an operand that has expired cannot hide either.
+    const handles = [this, ...excludes];
+    try {
+      this.assertLeases(handles);
+    } catch (err) {
+      return out.failing(err);
+    }
     const refused = this.expiredExcludes('andNot', excludes);
     if (refused) return out.failing(refused);
     // MINUS: an expired base is empty.
@@ -2871,7 +3193,7 @@ export class Segment {
     const base = this.ref;
     const refs = excludes.map((o) => o.ref);
     const opts = options == null ? undefined : readOptions(options);
-    return out.andNot(engine, base, refs, opts);
+    return this.guarded(out, handles, out.andNot(engine, base, refs, opts));
   }
 
   /** Materialize `this \ (excludes…)` as a **new generation of `dest`** — see {@link intersectInto}. */
@@ -2903,6 +3225,7 @@ export class Segment {
     pricing?: PricingProfile;
     workload?: Workload;
   }): Promise<CostReport> {
+    this.assertLeases([this]);
     const canMeasure = this.engine.supportsStorageSize;
     const size = canMeasure ? await this.engine.segmentSize(this.ref) : null;
     const refreshMs = this.engine.pointerRefreshMs;
@@ -2943,6 +3266,10 @@ export {
   excludingReservedRows,
   readRetentionPolicy,
   MIN_EXPIRES_AT_MS,
+  // The bounds of a lease on a pin
+  LEASE_SKEW_MS,
+  MAX_LEASE_MS,
+  MAX_LEASES_PER_SEGMENT,
   // Encryption
   InProcessKeystore,
   NodeAead,
@@ -2958,12 +3285,16 @@ export {
   TransientError,
   KeyUnavailableError,
   BudgetExceededError,
+  LeaseExpiredError,
+  LeaseLimitError,
   isCloudRoaringError,
   isWriteConflictError,
   isTransientError,
   isNotFoundError,
   isIntegrityError,
   isValidationError,
+  isLeaseExpiredError,
+  isLeaseLimitError,
   // The `.crbm` reader and its blob source
   CrbmReader,
   BufferReader,
@@ -3043,6 +3374,7 @@ export type {
   ReapRegistryTombstonesOptions,
   ReapRegistryTombstonesResult,
   RegistryWriteOptions,
+  LeaseEntry,
   RetentionPolicy,
   RetireEntry,
   RetireExpiredOptions,

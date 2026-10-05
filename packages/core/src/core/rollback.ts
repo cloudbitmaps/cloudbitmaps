@@ -20,7 +20,14 @@ import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
 import { openRollbackTarget, provesOwnObject } from './crbm-storage-source';
 import { aadFor } from './crypto';
 import type { Aead, CrbmCrypto, IKeystore } from './crypto';
-import { IntegrityError, NotFoundError, ValidationError, isIntegrityError } from './errors';
+import {
+  IntegrityError,
+  NotFoundError,
+  ValidationError,
+  isIntegrityError,
+  isWriteConflictError,
+} from './errors';
+import { type ChurnDeps, leaseChurn, onlyLeasesDiffer } from './leases';
 import type {
   IStorageDriver,
   GenerationMetadata,
@@ -28,12 +35,13 @@ import type {
   RegistryRecord,
   RegistrySummary,
   SegmentRef,
+  Token,
 } from './ports';
 import { summaryOf, usableSummary } from './summary';
 import { validateUserRef } from './validate';
 
 /** What the generation helpers need: the objects, and the pointer that says which one is current. */
-export interface GenerationListDeps {
+export interface GenerationListDeps extends ChurnDeps {
   readonly storage: IStorageDriver;
   readonly registry: IRegistryDriver;
   /**
@@ -266,10 +274,28 @@ export async function rollbackSegment(
   // Fenced on the row this decision was made against. A rollback is the most derived write there is — an
   // operator looked at a particular state and chose — so publishing it into a row that has moved since would
   // undo whatever moved it, which is the opposite of what they asked for.
-  const { token } = await deps.registry.compareAndSwap(ref, record.token, {
-    currentGen: toGeneration,
-    summary,
-  });
+  // A write of the row's leases alone, which readers make, is not another writer's: the swap goes on against the row
+  // it finds, after a jittered wait, up to a bound. Any other change throws the conflict, as ever.
+  const churn = leaseChurn(deps);
+  let against = record.token;
+  let token: Token;
+  for (;;) {
+    try {
+      ({ token } = await deps.registry.compareAndSwap(ref, against, {
+        currentGen: toGeneration,
+        summary,
+      }));
+      break;
+    } catch (err) {
+      if (!isWriteConflictError(err)) throw err;
+      const seen = await deps.registry.get(ref);
+      const settled = await churn.settle(record, seen, () => deps.registry.get(ref));
+      const now = settled?.row ?? null;
+      // The row after the wait is the one the swap goes on against, if it is still the one read with only leases changed.
+      if (settled === undefined || now === null || !onlyLeasesDiffer(record, now)) throw err;
+      against = now.token;
+    }
+  }
 
   // THE check, and it has to be here rather than above. Every target but an `allowForward` one is below the old
   // pointer, which is precisely generation collection's range — and a collector never writes the row, so the
@@ -306,15 +332,40 @@ export async function rollbackSegment(
   }
   if (!stillThere || replaced) {
     let undone = false;
-    try {
-      await deps.registry.compareAndSwap(ref, token, {
-        currentGen: record.currentGen,
-        summary: describingSummary(record),
-      });
-      undone = true;
-    } catch {
-      // Not proof the undo did not land: a swap can apply and still throw, as when its response is lost. Only a
-      // read of the row says where the pointer is, so the message below says "may", not "does".
+    let undoAgainst = token;
+    for (;;) {
+      try {
+        await deps.registry.compareAndSwap(ref, undoAgainst, {
+          currentGen: record.currentGen,
+          summary: describingSummary(record),
+        });
+        undone = true;
+        break;
+      } catch (err) {
+        // Not proof the undo did not land: a swap can apply and still throw, as when its response is lost. Only a
+        // read of the row says where the pointer is, so the message below says "may", not "does".
+        //
+        // A lost race is retried when the row is the one the swap wrote with only its leases changed: the pointer is
+        // at the target and every other field is the row's from before the swap, bar what the swap itself moved.
+        if (!isWriteConflictError(err)) break;
+        const moved = ['currentGen', 'summary', 'keptGens'] as const;
+        let now: RegistryRecord | null;
+        try {
+          const seen = await deps.registry.get(ref);
+          if (seen === null || seen.currentGen !== toGeneration) break;
+          const settled = await churn.settle(record, seen, () => deps.registry.get(ref), moved);
+          now = settled?.row ?? null;
+        } catch {
+          break;
+        }
+        if (
+          now === null ||
+          now.currentGen !== toGeneration ||
+          !onlyLeasesDiffer(record, now, moved)
+        )
+          break;
+        undoAgainst = now.token;
+      }
     }
     throw new NotFoundError(
       `rollback: generation ${toGeneration} of "${ref.segment}" was ${replaced ? 'replaced' : 'collected'} while the pointer was moving` +

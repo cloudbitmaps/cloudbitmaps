@@ -59,7 +59,8 @@ with the release it is to ship in, and sits under `[Unreleased]` in the [changel
 | No character rules on names | **shipped** — a name is any non-empty string; each storage layer escapes what it cannot take literally rather than the library rejecting it, Windows device names like `con` and names ending in a dot included on the local filesystem. Three limits remain: 256 characters once encoded for storage, where escaping makes a name longer than it looks (anything outside `[A-Za-z0-9._-]`, and on the local filesystem the device names and trailing dots above); well-formed UTF-16, since an unpaired surrogate has no UTF-8 encoding; and a namespace starting with `cbm.due.`, which the retention index keeps its own rows in and every fleet-wide scan skips |
 | `exists()` + `segments()` | **shipped** — `exists()` is one point read of the registry, and `segments()` streams the registry's own enumeration, namespace-scoped, admin-path. Neither is inferred from `count()`, which cannot tell *never loaded* from *loaded and empty*, and neither needs a list of names kept beside the store |
 | Extending the load guard to the `*Into` verbs | **shipped** — a materialization routes through the same guarded write path as `load()`, so an empty or implausible combine is refused (`published: false` + `reason`) instead of replacing `dest`. `allowEmpty: true` publishes an empty result where emptying the destination is the intent; `guard: { minCardinality, minRetained }` adds the plausibility bounds, judged against what `dest` held |
-| A snapshot handle, so a long job reads one instant | **shipped** — `segment.pin()` resolves the generation once and holds it, so an export or a reconciliation describes a single instant, and `segment.pinAt({ generation, fingerprint })` reopens a generation an earlier pin recorded (`NotFoundError` if it is gone or another object, never empty, and no lease: `keep` sizes how long). Only that segment is pinned; an ordinary handle still re-resolves on `cache.genTtlMs` |
+| A lease on a pin — `pin({ leaseUntil })` keeps the pinned generation out of a load's collection until the lease ends, and a read after it throws `LeaseExpiredError` at every site, never empty | **unreleased, to ship in `0.17.0`** — recorded in the registry row's `leases` field (schema 3, with `keptGens`), so it ships in the same release as the schema; erasure, shred, drop and retention ignore it; see [Hold a generation for a job](guide/reading.md#hold-a-generation-for-a-job-a-lease) and the [changelog](../CHANGELOG.md#unreleased) |
+| A snapshot handle, so a long job reads one instant | **shipped** — `segment.pin()` resolves the generation once and holds it, so an export or a reconciliation describes a single instant. Only that segment is pinned; an ordinary handle still re-resolves on `cache.genTtlMs`. Unreleased, to ship in `0.17.0`: `segment.pinAt({ generation, fingerprint })` reopens a generation an earlier pin recorded (`NotFoundError` if it is gone or another object, never empty), and `pin({ leaseUntil })` and `pinAt(at, { leaseUntil })` hold the generation out of every load's collection for up to 14 days, besides sizing `keep` |
 | Id-range reads for keyset paging — `iterate({ after, through })` and the same bounds on every combine | **shipped**. Yields only the ids in `(after, through]` and fetches only the chunks the range overlaps |
 | A public docs + site pass leading with the loaded store's strengths | **shipped** |
 | Reading a chunk at a time — `.batches()` on `iterate`, `intersect`, `union` and `andNot` | **shipped** — the same ids in the same order as one `Uint32Array` per chunk, reading the same chunks; see the [changelog](../CHANGELOG.md#0140--2026-10-04) and [Read a chunk at a time](guide/reading.md#read-a-chunk-at-a-time-batches) |
@@ -310,12 +311,13 @@ between here and there:
    non-empty destination is refused rather than published.
 4. **A snapshot handle — one instant for a long job. ✅ Shipped.** `segment.pin()` resolves the current
    generation once and reads from it for as long as the handle lives, so an export, a reconciliation or a send
-   describes a single instant rather than whichever generations happened to be current as it went. `segment.pinAt({ generation, fingerprint })` reopens a generation an earlier pin recorded, and holds nothing alive. Generation
+   describes a single instant rather than whichever generations happened to be current as it went. `segment.pinAt({ generation, fingerprint })` reopens a generation an earlier pin recorded, and, unless leased, holds nothing alive. Generation
    GC's grace window (`keep`) never provided this: of the four things that move a long read to another
    generation, a larger `keep` removes one, the sweep's heal, except after an erasure, whose rewrite collects the
    erased generation whatever `keep` says; it leaves the TTL, evictions and invalidations.
-   Size `keep` past your longest pinned job — a pinned read does not heal
-   forward, it fails, which is the honest failure for a caller that asked for one instant.
+   Size `keep` past your longest pinned job, or lease the pin (`pin({ leaseUntil })`, up to 14 days;
+   unreleased, to ship in `0.17.0`) — a pinned read does not heal forward, it fails, which is the honest failure for a
+   caller that asked for one instant.
 5. **A curated public surface — ✅ Shipped.** `@cloudbitmaps/core`'s main entry exports what the library
    supports and not what it merely happens to reach: the due-index scheduler, `.crbm` construction internals,
    object-key layout and defaults stated in prose are not importable. `1.0` freezes the format; a small surface is
@@ -434,7 +436,8 @@ Saying no is part of the design:
   reading is swept, the fetch re-resolves the pointer and retries once, serving the newer committed generation —
   so a floor buys an avoided round trip, not a saved query. A job that genuinely must not change generations
   needs a snapshot handle (above), and a window merely wide enough to hope with is a different, weaker promise
-  wearing the same words. The cost side — generations piling up because nothing collects them — is what `keep`
+  wearing the same words. A job with a known end can lease that handle (`pin({ leaseUntil })`, up to 14 days), which
+  holds the one generation it names, never delays any other, and ends in a typed error. The cost side — generations piling up because nothing collects them — is what `keep`
   is for; sizing it is in the
   [guide](guide/loading.md#generations-and-keep).
 - **Per-id TTL.** A bitmap stores ids, not `(id, timestamp)` pairs; a timestamp per id costs 4–8 bytes each and
