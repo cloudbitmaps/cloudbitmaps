@@ -121,6 +121,7 @@ import { refuseReservedNamespace } from './reserved-namespace';
 import { bitmapAsLoadInput, roaringCodec } from './roaring-codec';
 import { SystemClock } from './system-clock';
 import { OPTION_KEYS, type OptionGroup } from './option-keys';
+import { guardChunks, guardIds } from './lease-guards';
 
 /** Default randomness for backoff jitter — lives outside `core/`, so `Math.random()` is allowed here. */
 class SystemRng implements Rng {
@@ -2109,93 +2110,6 @@ const failing = (err: unknown): IdStream => {
     batches: () => ({ [Symbol.asyncIterator]: rejecting }),
   };
 };
-
-/**
- * An id stream that checks a lease each time it reads a chunk: after the engine has the next chunk and before an id of it
- * is yielded, so nothing of a chunk fetched past the lease is served. Ids ascend, so a chunk is entered when
- * `id >>> 16` changes. A throw ends the engine's reads. Used only when a handle in the call holds a lease: a call with
- * none returns the engine's stream untouched.
- */
-const guardIds = (inner: IdStream, check: () => void): IdStream => {
-  const ids = (): AsyncIterator<number> => {
-    const it = inner[Symbol.asyncIterator]();
-    let chunk = -1;
-    const ended = async (): Promise<IteratorResult<number>> => {
-      await it.return?.();
-      return { done: true, value: undefined };
-    };
-    return {
-      async next() {
-        const r = await it.next();
-        if (r.done === true) return r;
-        const key = r.value >>> 16;
-        if (key !== chunk) {
-          try {
-            check();
-          } catch (err) {
-            await it.return?.();
-            throw err;
-          }
-          chunk = key;
-        }
-        return r;
-      },
-      return: ended,
-    };
-  };
-  return { [Symbol.asyncIterator]: ids, batches: () => guardBatches(inner.batches(), check) };
-};
-
-/** A batch stream that checks a lease before each batch is yielded: a batch is one chunk. */
-const guardBatches = (
-  inner: AsyncIterable<Uint32Array>,
-  check: () => void,
-): AsyncIterable<Uint32Array> => ({
-  [Symbol.asyncIterator]: () => {
-    const it = inner[Symbol.asyncIterator]();
-    return {
-      async next() {
-        const r = await it.next();
-        if (r.done === true) return r;
-        try {
-          check();
-        } catch (err) {
-          await it.return?.();
-          throw err;
-        }
-        return r;
-      },
-      async return() {
-        await it.return?.();
-        return { done: true, value: undefined };
-      },
-    };
-  },
-});
-
-/** A chunk stream (what an `*Into` writes) that checks a lease before each chunk is handed on. */
-const guardChunks = (inner: ChunkStream, check: () => void): ChunkStream => ({
-  [Symbol.asyncIterator]: () => {
-    const it = inner[Symbol.asyncIterator]();
-    return {
-      async next() {
-        const r = await it.next();
-        if (r.done === true) return r;
-        try {
-          check();
-        } catch (err) {
-          await it.return?.();
-          throw err;
-        }
-        return r;
-      },
-      async return() {
-        await it.return?.();
-        return { done: true, value: undefined };
-      },
-    };
-  },
-});
 
 /** Whether two handles of one segment read it at one generation: both live, or both pinned to one object. */
 const samePin = (a: PinnedAt | undefined, b: PinnedAt | undefined): boolean =>

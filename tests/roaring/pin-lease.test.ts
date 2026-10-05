@@ -469,6 +469,58 @@ describe('a stream checks the lease each time it reads a chunk', () => {
   });
 });
 
+describe('a stream built while the lease is live and pulled after it ended never ends empty', () => {
+  // Chunk 0 and chunk 1 share no id, so the combines below have no result: nothing would reach a per-chunk check.
+  const zero = [0, 1, 2];
+  const one = [65_536, 65_537];
+
+  async function setup() {
+    const h = harness();
+    await h.writer.load(REF, zero);
+    await h.writer.load(OTHER, one);
+    await h.writer.load({ namespace: 'ns', segment: 'dest' }, [9]);
+    return h;
+  }
+
+  it('a stream object built live and consumed late throws on its first pull', async () => {
+    const h = await setup();
+    const snap = await lease(h, 1_000);
+    const other = plain(h, OTHER);
+    const streams = [
+      snap.intersect([other]),
+      snap.andNot([snap]),
+      other.intersect([snap]),
+      snap.iterate({ after: 1_000_000 }),
+    ];
+    const batched = [snap.intersect([other]).batches(), snap.andNot([snap]).batches()];
+    h.advance(1_000);
+    for (const s of streams) await expect(collect(s)).rejects.toBeInstanceOf(LeaseExpiredError);
+    for (const b of batched)
+      await expect(collect(flat(b))).rejects.toBeInstanceOf(LeaseExpiredError);
+  });
+
+  it('an *Into whose lease ends before its first chunk fails, and never publishes an empty generation', async () => {
+    const h = await setup();
+    const snap = await lease(h, 1_000);
+    const reg = h.memory.registry;
+    const real = reg.get.bind(reg);
+    let armed = true;
+    reg.get = ((...a: Parameters<typeof real>) => {
+      if (armed) {
+        armed = false;
+        h.advance(1_000); // the lease ends after the call's own checks, before its first pull
+      }
+      return real(...a);
+    }) as typeof reg.get;
+    const err = await plain(h, OTHER)
+      .intersectInto(dest(h), [snap], { allowEmpty: true })
+      .catch((e: unknown) => e);
+    reg.get = real;
+    expect(isLeaseExpiredError(err)).toBe(true);
+    expect(await dest(h).count()).toBe(1);
+  });
+});
+
 describe('release()', () => {
   it('removes the entry with one read and one write, and a second call makes no request', async () => {
     const h = await seeded();
