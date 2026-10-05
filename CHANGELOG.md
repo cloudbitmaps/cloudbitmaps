@@ -11,6 +11,8 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-10-05
+
 ### Breaking
 
 - **Registry rows are schema 3, and there is no going back: stop every 0.16 process that writes a store before the first
